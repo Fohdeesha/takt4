@@ -1,0 +1,81 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-latest carries Visual Studio 2026 only; the preset targets 2022.
+          - os: windows-2025
+            preset: windows-msvc
+            app: build/windows-msvc/bin/Release/takt4.exe
+          - os: macos-latest
+            preset: macos
+            app: build/macos/bin/takt4
+          - os: ubuntu-24.04
+            preset: linux
+            app: build/linux/bin/takt4
+          # Engine and tests only. Proves takt4_core stands without Slint or a Rust
+          # toolchain; the job checks that Slint was never even downloaded.
+          - os: ubuntu-24.04
+            preset: linux-core
+            app: ""
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libfontconfig-dev
+
+      # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
+      # requirements in README.md. Record what was actually used.
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          ninja --version || true
+          rustc --version || true
+          cargo --version || true
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+      - name: Version banner
+        if: matrix.app != ''
+        run: ${{ matrix.app }} --version
+
+      - name: Slint was not fetched
+        if: matrix.preset == 'linux-core'
+        run: test ! -e build/linux-core/_deps/slint-src
