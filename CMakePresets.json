@@ -9,9 +9,8 @@
     },
     {
       "name": "windows-msvc",
-      "displayName": "Windows — Visual Studio 2022, x64",
+      "displayName": "Windows — newest installed Visual Studio, x64",
       "inherits": "base",
-      "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },

@@ -238,7 +238,12 @@ if(TAKT4_BUILD_UI)
   elseif(LINUX)
     # System font enumeration goes through libfontconfig. Everything else Slint touches on
     # Linux (X11, xcb, xkbcommon, Wayland, EGL, GLX) is dlopen'ed at run time.
-    find_package(Fontconfig REQUIRED)   # libfontconfig-dev
+    #
+    # GLOBAL matters: a subdirectory only sees the imported targets its parent had when
+    # add_subdirectory ran, and Slint's directory was created above, before this call.
+    # Fontconfig::Fontconfig is resolved from slint_cpp-static's directory when takt4 is
+    # generated, so without GLOBAL it is "not found" there.
+    find_package(Fontconfig REQUIRED GLOBAL)   # libfontconfig-dev
     set_property(TARGET slint_cpp-static APPEND PROPERTY INTERFACE_LINK_LIBRARIES
       Fontconfig::Fontconfig
     )

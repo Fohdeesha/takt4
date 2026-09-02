@@ -25,6 +25,6 @@ TEST_CASE("RTNeural dense layer computes a forward pass", "[deps][rtneural]") {
     model.forward(input.data());
 
     const float* out = model.getOutputs();
-    CHECK_THAT(out[0], WithinAbs(1.5f, 1e-6f)); // 1*1 + 0.5
-    CHECK_THAT(out[1], WithinAbs(1.5f, 1e-6f)); // 1*2 - 0.5
+    CHECK_THAT(static_cast<double>(out[0]), WithinAbs(1.5, 1e-6)); // 1*1 + 0.5
+    CHECK_THAT(static_cast<double>(out[1]), WithinAbs(1.5, 1e-6)); // 1*2 - 0.5
 }

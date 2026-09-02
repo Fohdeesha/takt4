@@ -32,10 +32,13 @@ else()
     -Wold-style-cast
     -Wcast-align
     -Woverloaded-virtual
-    -Wnull-dereference
     -Wdouble-promotion
     -Wformat=2
     -Wimplicit-fallthrough
+    # Not -Wnull-dereference: it is an optimiser pass, not a front-end check, so the
+    # SYSTEM include marking does not silence it. GCC 13 at -O3 reports it inside asio's
+    # any_executor equality (io_context.hpp, via ableton/Link.hpp) when compiling
+    # link_session.cpp, and there is nothing of ours to fix.
   )
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(takt4_warnings INTERFACE

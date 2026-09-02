@@ -19,7 +19,7 @@ opens.
 Requirements:
 
 - CMake 3.28 or newer
-- A C++20 compiler — MSVC 2022, Apple Clang, or GCC
+- A C++20 compiler — Visual Studio 2022 or 2026, Apple Clang, or GCC
 - A Rust toolchain, 1.92 or newer, on `PATH` (Slint is built from source through cargo).
   Only needed when the UI is built; see `TAKT4_BUILD_UI` below.
 - Ninja on macOS and Linux
@@ -49,7 +49,9 @@ ctest --preset linux
 ```
 
 The build tree is `build/<preset>/`; the executable is `build/<preset>/bin/takt4`
-(`bin/Release/takt4.exe` with Visual Studio).
+(`bin/Release/takt4.exe` with Visual Studio). The `windows-msvc` preset names no
+generator on purpose: CMake picks the newest Visual Studio it knows and finds, x64, so
+the same preset serves a 2022 install and the 2026-only CI image.
 
 ### Options
 

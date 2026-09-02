@@ -26,8 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # windows-latest carries Visual Studio 2026 only; the preset targets 2022.
-          - os: windows-2025
+          # The hosted Windows images (windows-latest and windows-2025 alike, as of the
+          # 2026-08-24 image) ship Visual Studio 2026 only. The preset names no
+          # generator, so CMake picks whatever Visual Studio is installed.
+          - os: windows-latest
             preset: windows-msvc
             app: build/windows-msvc/bin/Release/takt4.exe
           - os: macos-latest
