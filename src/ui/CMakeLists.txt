@@ -9,8 +9,13 @@
 # every build.)
 add_library(takt4_ui_slint STATIC)
 slint_target_sources(takt4_ui_slint main_window.slint)
-# Never let generated code refer to files by their build-machine paths.
-set_target_properties(takt4_ui_slint PROPERTIES SLINT_EMBED_RESOURCES embed-files)
+set_target_properties(takt4_ui_slint PROPERTIES
+  # Never let generated code refer to files by their build-machine paths.
+  SLINT_EMBED_RESOURCES embed-files
+  # The generated header is third-party code too: consumers get its directory as a
+  # system include, so our warning flags do not apply to it there either.
+  SYSTEM ON
+)
 if(MSVC)
   target_compile_options(takt4_ui_slint PRIVATE /W0)
 else()
