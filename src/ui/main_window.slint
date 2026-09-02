@@ -1,0 +1,20 @@
+// Phase 0 placeholder: proves the .slint -> C++ pipeline. The real interface is Phase 6.
+
+export component MainWindow inherits Window {
+    title: "takt4";
+    preferred-width: 480px;
+    preferred-height: 200px;
+
+    in property <string> status-text;
+
+    VerticalLayout {
+        padding: 24px;
+        alignment: center;
+
+        Text {
+            text: root.status-text;
+            font-size: 20px;
+            horizontal-alignment: center;
+        }
+    }
+}

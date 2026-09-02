@@ -1,0 +1,65 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows — Visual Studio 2022, x64",
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS — Ninja, Release",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux — Ninja, Release",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-core",
+      "displayName": "Linux — engine and tests only (no Slint, no Rust toolchain needed)",
+      "inherits": "linux",
+      "cacheVariables": { "TAKT4_BUILD_UI": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc", "configuration": "Debug" },
+    { "name": "macos", "configurePreset": "macos" },
+    { "name": "linux", "configurePreset": "linux" },
+    { "name": "linux-core", "configurePreset": "linux-core" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "macos", "configurePreset": "macos", "output": { "outputOnFailure": true } },
+    { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
+    { "name": "linux-core", "configurePreset": "linux-core", "output": { "outputOnFailure": true } }
+  ]
+}
