@@ -1,0 +1,9 @@
+# Our own files are LF everywhere, whatever the platform's git defaults say.
+* text=auto eol=lf
+
+# The Steinberg ASIO SDK is committed byte-identical to the package it came from
+# (CRLF and all), so it can be diffed against a fresh download.
+third_party/asiosdk/** -text
+
+*.pdf binary
+*.png binary

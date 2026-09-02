@@ -1,0 +1,25 @@
+# Build trees
+/build/
+/out/
+/cmake-build-*/
+
+# Per-machine CMake presets (build paths, local toolchains)
+/CMakeUserPresets.json
+
+# IDE / editor state
+/.vs/
+/.vscode/
+/.idea/
+/.cache/
+*.swp
+*~
+
+# Python tooling (tools/)
+__pycache__/
+*.pyc
+/.venv/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,33 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBraces: Attach
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Own headers first, then third-party, then the standard library.
+  - Regex: '^"core/'
+    Priority: 1
+  - Regex: '^"ui/'
+    Priority: 1
+  - Regex: '^"'
+    Priority: 2
+  - Regex: '^<(portaudio|pa_|ableton|RTNeural|RtMidi|nlohmann|slint|catch2)'
+    Priority: 3
+  - Regex: '^<.*\.h>'
+    Priority: 4
+  - Regex: '^<'
+    Priority: 5
+NamespaceIndentation: None
+SortIncludes: CaseSensitive
+SpaceAfterTemplateKeyword: true
+...
