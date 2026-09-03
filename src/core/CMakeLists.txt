@@ -41,6 +41,11 @@ add_library(takt4_core STATIC
   io/npy_file.hpp
   io/wav_file.cpp
   io/wav_file.hpp
+  model/beat_model.cpp
+  model/beat_model.hpp
+  model/dimensions.hpp
+  model/weights.cpp
+  model/weights.hpp
   output/link_session.cpp
   output/link_session.hpp
   output/midi_ports.cpp
@@ -64,6 +69,7 @@ target_link_libraries(takt4_core
     kissfft
     Ableton::Link
     rtmidi
+    RTNeural
     nlohmann_json::nlohmann_json
     takt4::warnings
 )

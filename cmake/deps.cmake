@@ -143,6 +143,14 @@ endblock()
 # RTNeural warns on every inclusion unless this is defined. 16 is its own default.
 target_compile_definitions(RTNeural PUBLIC RTNEURAL_DEFAULT_ALIGNMENT=16)
 
+# One LSTMLayerT<float, 150, 150> holds a fixed 600 x 301 matrix — 722 KB, well past
+# Eigen's default 128 KB cap on a fixed-size object, which BeatNet+'s four stacked
+# layers would otherwise fail to compile against. Zero means "no cap" (DenseStorage.h),
+# and it also makes Eigen heap-allocate any dynamic temporary rather than alloca it:
+# takt4 keeps the whole network on the heap behind BeatModel, and a stray temporary
+# should fail the [rt] allocation test loudly rather than eat the audio thread's stack.
+target_compile_definitions(RTNeural PUBLIC EIGEN_STACK_ALLOCATION_LIMIT=0)
+
 # ---------------------------------------------------------------------------------------
 # RtMidi 6.0.0. Static. Its JACK API follows PortAudio's: on for Linux, off elsewhere,
 # where RtMidi would otherwise switch it on by itself on any machine with a libjack.
