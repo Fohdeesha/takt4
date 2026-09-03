@@ -19,6 +19,7 @@ add_executable(takt4_tests
   features/filterbank_test.cpp
   io/npy_file_test.cpp
   io/wav_file_test.cpp
+  model/activation_engine_test.cpp
   model/beat_model_test.cpp
   model/weights_test.cpp
   output/link_session_test.cpp

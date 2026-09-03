@@ -1,0 +1,120 @@
+#pragma once
+
+#include "core/audio/hop_processor.hpp"
+#include "core/audio/rates.hpp"
+#include "core/features/feature_extractor.hpp"
+#include "core/model/beat_model.hpp"
+#include "core/model/weights.hpp"
+#include "core/rt/spsc_ring.hpp"
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <thread>
+
+namespace takt4::model {
+
+/// What the network made of one feature frame, on its way to the tracker and the UI.
+struct FrameActivation {
+    std::uint64_t frameIndex = 0; ///< madmom's frame number: centred on sample 441 · k
+    std::uint64_t hopIndex = 0;   ///< the hop whose arrival completed the frame
+    float beat = 0.0f;
+    float downbeat = 0.0f;
+    float nonBeat = 0.0f;
+};
+
+/// The live half of Phase 3 (HANDOFF §8): hops in from the audio callback, class
+/// probabilities out at 50 Hz.
+///
+/// Per §6's ruling the audio thread does nothing but copy each hop into a lock-free
+/// ring; a worker thread drains it and runs the feature front end and the model. The
+/// audio path therefore cannot be blamed for a dropout, at the cost of a few
+/// milliseconds — on top of the 40 ms that madmom's centred framing costs inherently,
+/// which the latency-offset slider (§5.5) is there to compensate.
+///
+/// The worker polls rather than waiting on a condition variable: signalling one from
+/// the audio thread would mean a syscall on the thread that must not make any.
+///
+/// One producer (the audio thread, through processHop) and one consumer (whoever calls
+/// pop) — SpscRing's contract. Neither side ever blocks the other; a reader that falls
+/// behind loses activations and is told how many.
+class ActivationEngine final : public audio::HopProcessor {
+public:
+    /// Hops the audio thread may run ahead by: 1.28 s, far more than the worker can
+    /// fall behind without something being badly wrong, and 113 KB of ring.
+    static constexpr std::size_t kHopQueueCapacity = 64;
+    /// Activations a reader may fall behind by: 10 s at 50 Hz.
+    static constexpr std::size_t kActivationQueueCapacity = 512;
+    /// How long the worker sleeps when the hop queue is empty.
+    static constexpr std::chrono::microseconds kIdleSleep{2000};
+
+    /// Copies the weights in; the ModelWeights need not outlive this. Does not start
+    /// the worker.
+    explicit ActivationEngine(const ModelWeights& weights);
+    ~ActivationEngine() override;
+
+    ActivationEngine(const ActivationEngine&) = delete;
+    ActivationEngine& operator=(const ActivationEngine&) = delete;
+
+    /// Clears both queues, resets the front end and the model's LSTM state, and starts
+    /// the worker. Call before the stream is started, never while it is running.
+    void start();
+
+    /// Stops the worker and waits for it. Safe to call twice.
+    void stop() noexcept;
+
+    bool running() const noexcept { return running_.load(std::memory_order_acquire); }
+
+    /// Audio thread. Copies the hop into the queue and returns; counts a drop if the
+    /// worker has fallen an entire queue behind.
+    void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
+
+    /// Reader thread. False when nothing is queued.
+    bool pop(FrameActivation& out) noexcept { return activations_.tryPop(out); }
+
+    /// Hops queued but not yet worked. Exact when read by the audio thread or the
+    /// worker; a snapshot from anywhere else.
+    std::size_t hopsPending() const noexcept { return hops_.size(); }
+
+    std::uint64_t hopsQueued() const noexcept { return hopsQueued_.load(std::memory_order_relaxed); }
+    std::uint64_t hopsDropped() const noexcept { return hopsDropped_.load(std::memory_order_relaxed); }
+    std::uint64_t framesEmitted() const noexcept { return framesEmitted_.load(std::memory_order_relaxed); }
+    std::uint64_t framesDropped() const noexcept { return framesDropped_.load(std::memory_order_relaxed); }
+
+    /// The Phase 3 real-time check (§8): the worst the worker has taken over one hop,
+    /// and over the model alone, in microseconds. One hop is 20000 µs of audio.
+    double worstHopMicros() const noexcept { return worstHopMicros_.load(std::memory_order_relaxed); }
+    double worstModelMicros() const noexcept { return worstModelMicros_.load(std::memory_order_relaxed); }
+
+    /// Runs one queued hop on the calling thread, for tests and offline use; returns
+    /// false when the queue is empty. Only valid while the worker is not running.
+    bool step() noexcept;
+
+private:
+    struct QueuedHop {
+        std::uint64_t index = 0;
+        std::array<float, audio::kHopSize> samples{};
+    };
+
+    void run() noexcept;
+    void process(const QueuedHop& hop) noexcept;
+    static void recordWorst(std::atomic<double>& worst, double micros) noexcept;
+
+    features::FeatureExtractor extractor_;
+    BeatModel model_;
+    rt::SpscRing<QueuedHop, kHopQueueCapacity> hops_;
+    rt::SpscRing<FrameActivation, kActivationQueueCapacity> activations_;
+
+    std::thread worker_;
+    std::atomic<bool> running_{false};
+    std::atomic<std::uint64_t> hopsQueued_{0};
+    std::atomic<std::uint64_t> hopsDropped_{0};
+    std::atomic<std::uint64_t> framesEmitted_{0};
+    std::atomic<std::uint64_t> framesDropped_{0};
+    std::atomic<double> worstHopMicros_{0.0};
+    std::atomic<double> worstModelMicros_{0.0};
+};
+
+} // namespace takt4::model

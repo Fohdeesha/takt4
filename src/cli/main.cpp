@@ -16,6 +16,8 @@
 #include "core/features/feature_extractor.hpp"
 #include "core/io/npy_file.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/model/activation_engine.hpp"
+#include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
 
 #include <algorithm>
@@ -78,6 +80,14 @@ void printUsage(std::ostream& out) {
         << "      --compare G.npy  also print the largest difference to a matrix that\n"
         << "                       tools/make_golden.py computed with madmom; exit 1 if it\n"
         << "                       exceeds the Phase 2 tolerance\n"
+        << "\n"
+        << "  takt4-cli beats (IN.wav | --device N (--channel C | --channels A,B))\n"
+        << "                  [--weights SET|PATH] [--software] [--rate HZ] [--seconds S]\n"
+        << "      Run the feature front end and the BeatNet+ model over a file or a live\n"
+        << "      input and print P(beat), P(downbeat) and P(non-beat) as they come.\n"
+        << "      --weights S     generic (default), generic-main, af-non-percussive, or a\n"
+        << "                      path to a .bin from tools/convert_weights.py\n"
+        << "      The other options are the meter's, and mean the same.\n"
         << "\n"
         << "  takt4-cli --version\n";
 }
@@ -454,6 +464,178 @@ int runFeatures(const std::vector<std::string_view>& args) {
     return worst <= kTolerance ? 0 : 1;
 }
 
+// HANDOFF §8 Phase 3: the console prints the three class probabilities live.
+struct BeatsArgs {
+    std::optional<std::filesystem::path> file; // offline instead of a device
+    MeterArgs stream;
+    std::string weights = "generic";
+};
+
+BeatsArgs parseBeatsArgs(const std::vector<std::string_view>& args) {
+    BeatsArgs out;
+    std::vector<std::string_view> forwarded;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--weights") {
+            if (i + 1 >= args.size()) {
+                throw std::invalid_argument("--weights needs a value");
+            }
+            out.weights = std::string(args[++i]);
+        } else if (args[i].starts_with("--")) {
+            forwarded.push_back(args[i]);
+            // Options that take a value carry it along.
+            if ((args[i] == "--device" || args[i] == "--channel" || args[i] == "--channels" ||
+                 args[i] == "--rate" || args[i] == "--seconds") &&
+                i + 1 < args.size()) {
+                forwarded.push_back(args[++i]);
+            }
+        } else if (!out.file) {
+            out.file = std::filesystem::path(args[i]);
+        } else {
+            throw std::invalid_argument("beats takes at most one input file");
+        }
+    }
+    if (out.file) {
+        if (!forwarded.empty()) {
+            throw std::invalid_argument("beats over a file takes no device options");
+        }
+        return out;
+    }
+    out.stream = parseMeterArgs(forwarded);
+    if (out.stream.all) {
+        throw std::invalid_argument("beats tracks one input, not --all");
+    }
+    return out;
+}
+
+// A bare name is one of the committed sets; anything with a separator or a suffix is
+// taken as a path, so a set converted somewhere else can be tried without a rebuild.
+std::filesystem::path resolveWeights(const std::string& spec) {
+    const std::filesystem::path given(spec);
+    if (given.has_parent_path() || given.has_extension()) {
+        return given;
+    }
+    return std::filesystem::path(TAKT4_WEIGHTS_DIR) / (spec + ".bin");
+}
+
+std::string formatProbability(float value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << std::setw(5) << static_cast<double>(value);
+    return out.str();
+}
+
+// One line per frame, with a bar so a run is readable as it scrolls past.
+std::string activationLine(const takt4::model::FrameActivation& activation) {
+    constexpr int kBarWidth = 24;
+    const auto bar = [&](float value) {
+        const int filled = std::clamp(static_cast<int>(value * kBarWidth + 0.5f), 0, kBarWidth);
+        return std::string(static_cast<std::size_t>(filled), '#') +
+               std::string(static_cast<std::size_t>(kBarWidth - filled), '.');
+    };
+    std::ostringstream line;
+    line << std::setw(7) << activation.frameIndex << "  "
+         << fixed1(static_cast<double>(activation.frameIndex) / takt4::audio::kHopRate, 7) << "s"
+         << "  beat " << formatProbability(activation.beat) << " " << bar(activation.beat) << "  down "
+         << formatProbability(activation.downbeat) << "  non " << formatProbability(activation.nonBeat);
+    return line.str();
+}
+
+int runBeatsFile(const std::filesystem::path& in, const takt4::model::ModelWeights& weights) {
+    const takt4::io::WavData audio = takt4::io::readWavFile(in);
+    if (audio.channels != 1 || static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
+        throw std::invalid_argument(in.string() + ": expected mono at " +
+                                    std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) + " Hz");
+    }
+    using takt4::audio::kHopSize;
+    const std::size_t hops = (audio.samples.size() + kHopSize - 1) / kHopSize;
+    std::vector<float> padded(hops * kHopSize, 0.0f);
+    std::copy(audio.samples.begin(), audio.samples.end(), padded.begin());
+
+    // The engine's own path, stepped on this thread: what the worker would compute.
+    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
+    std::cout << in.string() << ": " << hops << " hops, weights " << weights.path().filename().string() << '\n';
+    takt4::model::FrameActivation activation;
+    double loudest = 0.0;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(padded.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->pop(activation)) {
+            std::cout << activationLine(activation) << '\n';
+            loudest = std::max(loudest, static_cast<double>(activation.beat));
+        }
+    }
+    std::cout << engine->framesEmitted() << " frames, strongest beat probability " << fixed1(loudest * 100.0)
+              << "%, worst hop " << fixed1(engine->worstHopMicros()) << " us of 20000 us of audio\n";
+    return 0;
+}
+
+int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& weights) {
+    const takt4::audio::PortAudioSession session;
+    const auto devices = takt4::audio::listInputDevices(session);
+    const auto& device = findDevice(devices, parsed.stream.device);
+    const takt4::audio::ChannelSelection selection =
+        parsed.stream.channel
+            ? takt4::audio::ChannelSelection::single(*parsed.stream.channel)
+            : takt4::audio::ChannelSelection::pair(parsed.stream.pair->first, parsed.stream.pair->second);
+
+    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
+    takt4::audio::InputStreamOptions options;
+    options.sampleRate = parsed.stream.rate;
+    options.forceSoftwareSlice = parsed.stream.software;
+    takt4::audio::InputStream stream(session, device, selection, *engine, options);
+
+    std::cout << "device:    " << device.hostApiName << " / " << device.name << '\n'
+              << "channel:   " << selection.channels[0] + 1;
+    if (selection.count == 2) {
+        std::cout << " + " << selection.channels[1] + 1 << " summed";
+    }
+    std::cout << " (" << takt4::audio::toString(stream.picker().mode()) << " pick)\n"
+              << "rate:      " << stream.sampleRate() << " Hz -> " << takt4::audio::kInternalSampleRate
+              << " Hz, hop " << takt4::audio::kHopSize << " samples\n"
+              << "weights:   " << weights.path().string() << '\n'
+              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0) << " ms input buffer + "
+              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) / stream.sampleRate())
+              << " ms resampler + 40.0 ms centred framing\n"
+              << "rt guard:  " << (takt4::rt::allocationGuardEnabled() ? "on" : "off") << '\n';
+
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
+    engine->start();
+    stream.start();
+
+    const auto start = std::chrono::steady_clock::now();
+    takt4::model::FrameActivation activation;
+    while (!shouldStop(start, parsed.stream.seconds)) {
+        std::this_thread::sleep_for(20ms);
+        while (engine->pop(activation)) {
+            std::cout << activationLine(activation) << '\n';
+        }
+        std::cout << std::flush;
+    }
+    stream.stop();
+    engine->stop();
+    while (engine->pop(activation)) {
+        std::cout << activationLine(activation) << '\n';
+    }
+
+    const auto counters = stream.counters();
+    std::cout << "stopped after " << counters.hopsOut << " hops, " << engine->framesEmitted() << " frames"
+              << ", " << engine->hopsDropped() << " hops dropped"
+              << ", " << engine->framesDropped() << " frames dropped"
+              << ", " << counters.inputOverflows << " input overflows\n"
+              << "worst hop " << fixed1(engine->worstHopMicros()) << " us (model alone "
+              << fixed1(engine->worstModelMicros()) << " us) of 20000 us of audio\n";
+    return 0;
+}
+
+int runBeats(const std::vector<std::string_view>& args) {
+    const BeatsArgs parsed = parseBeatsArgs(args);
+    const takt4::model::ModelWeights weights = takt4::model::ModelWeights::fromFile(resolveWeights(parsed.weights));
+    if (parsed.file) {
+        return runBeatsFile(*parsed.file, weights);
+    }
+    return runBeatsDevice(parsed, weights);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -478,6 +660,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "features") {
             return runFeatures({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "beats") {
+            return runBeats({args.begin() + 1, args.end()});
         }
         std::cerr << "takt4-cli: unknown command: " << args[0] << "\n\n";
         printUsage(std::cerr);
