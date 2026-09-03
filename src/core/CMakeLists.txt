@@ -60,6 +60,8 @@ add_library(takt4_core STATIC
   tracking/random.hpp
   tracking/state_space.cpp
   tracking/state_space.hpp
+  tracking/tempo_tracker.cpp
+  tracking/tempo_tracker.hpp
 )
 add_library(takt4::core ALIAS takt4_core)
 
