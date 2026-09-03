@@ -1,0 +1,135 @@
+{
+  "annotations": "CPJKU/BallroomAnnotations @ 1db08914a8ae15edb01f104046e30bad88effe67",
+  "beatnet_plus_trained_on_this": [
+    "ballroom"
+  ],
+  "cli": "C:\\build\\takt4\\windows-core\\bin\\Release\\takt4-cli.exe",
+  "confidence_threshold": 0.15,
+  "dataset": "Ballroom (references/ballroom-audio), not vendored",
+  "failures": {},
+  "files": 698,
+  "octave_fold": "70-140",
+  "per_group": {
+    "ChaChaCha": {
+      "Downbeat F-measure": 0.8648903284677503,
+      "F-measure": 0.879314544826054,
+      "files": 111
+    },
+    "Jive": {
+      "Downbeat F-measure": 0.8943861752233916,
+      "F-measure": 0.9006354230261896,
+      "files": 60
+    },
+    "Quickstep": {
+      "Downbeat F-measure": 0.8629980056886049,
+      "F-measure": 0.900076741251733,
+      "files": 82
+    },
+    "Rumba-American": {
+      "Downbeat F-measure": 0.9081905671967784,
+      "F-measure": 0.9353204252712738,
+      "files": 7
+    },
+    "Rumba-International": {
+      "Downbeat F-measure": 0.8260170381032186,
+      "F-measure": 0.8977759695620909,
+      "files": 51
+    },
+    "Rumba-Misc": {
+      "Downbeat F-measure": 0.7217248516746262,
+      "F-measure": 0.8364203739646208,
+      "files": 40
+    },
+    "Samba": {
+      "Downbeat F-measure": 0.7098310985540087,
+      "F-measure": 0.7963872080795893,
+      "files": 86
+    },
+    "Tango": {
+      "Downbeat F-measure": 0.9481403907506555,
+      "F-measure": 0.9611485321535822,
+      "files": 86
+    },
+    "VienneseWaltz": {
+      "Downbeat F-measure": 0.9421933324625759,
+      "F-measure": 0.9608429919928321,
+      "files": 65
+    },
+    "Waltz": {
+      "Downbeat F-measure": 0.8810636842061043,
+      "F-measure": 0.9024326776212659,
+      "files": 110
+    }
+  },
+  "platform": "Windows-10-10.0.19045-SP0",
+  "seed": 1,
+  "summary": {
+    "Any Metric Level Continuous": {
+      "files": 698,
+      "mean": 0.4922526708626985,
+      "median": 0.3915981198589894
+    },
+    "Any Metric Level Total": {
+      "files": 698,
+      "mean": 0.7754250513426114,
+      "median": 0.8207142857142857
+    },
+    "Cemgil": {
+      "files": 698,
+      "mean": 0.8001087025966224,
+      "median": 0.8274198289199363
+    },
+    "Cemgil Best Metric Level": {
+      "files": 698,
+      "mean": 0.8018234553895881,
+      "median": 0.8274198289199363
+    },
+    "Correct Metric Level Continuous": {
+      "files": 698,
+      "mean": 0.4888707236008693,
+      "median": 0.3902439024390244
+    },
+    "Correct Metric Level Total": {
+      "files": 698,
+      "mean": 0.7711265191284076,
+      "median": 0.8196385542168674
+    },
+    "Downbeat F-measure": {
+      "files": 698,
+      "mean": 0.8574930521108253,
+      "median": 0.9039938556067588
+    },
+    "F-measure": {
+      "files": 698,
+      "mean": 0.8941395812334986,
+      "median": 0.9223227752639518
+    },
+    "Goto": {
+      "files": 698,
+      "mean": 0.21203438395415472,
+      "median": 0.0
+    },
+    "Information gain": {
+      "files": 698,
+      "mean": 0.5030567878598007,
+      "median": 0.5119751551990304
+    },
+    "P-score": {
+      "files": 698,
+      "mean": 0.8614874262266033,
+      "median": 0.9038461538461539
+    },
+    "Tempo accuracy 1": {
+      "files": 698,
+      "mean": 0.6905444126074498,
+      "median": 1.0
+    },
+    "Tempo accuracy 2": {
+      "files": 698,
+      "mean": 0.9799426934097422,
+      "median": 1.0
+    }
+  },
+  "unmatched": [],
+  "weights": "generic"
+}
