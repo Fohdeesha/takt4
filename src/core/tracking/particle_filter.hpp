@@ -66,7 +66,13 @@ public:
     };
 
     /// The model has to outlive the filter; nothing is copied out of it.
-    explicit ParticleFilter(const StateSpaceModel& model, Options options = {});
+    ///
+    /// Two constructors rather than `Options options = {}`: a default argument is
+    /// written inside the enclosing class but outside any member function, where a
+    /// nested class's own default member initialisers are not yet available. MSVC
+    /// accepts it; Clang rejects it, correctly.
+    ParticleFilter(const StateSpaceModel& model, Options options);
+    explicit ParticleFilter(const StateSpaceModel& model);
 
     /// Back to the state a freshly built filter is in, same seed and all.
     void reset() noexcept;

@@ -18,6 +18,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
+#include <cerrno>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>

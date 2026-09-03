@@ -32,6 +32,8 @@ constexpr std::size_t injectionSize(std::size_t intervals, std::size_t stride) {
 
 } // namespace
 
+ParticleFilter::ParticleFilter(const StateSpaceModel& model) : ParticleFilter(model, Options{}) {}
+
 ParticleFilter::ParticleFilter(const StateSpaceModel& model, Options options)
     : model_(&model), options_(options), rng_(options.seed) {
     if (options_.particles == 0 || options_.downbeatParticles == 0) {

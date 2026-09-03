@@ -59,8 +59,8 @@ public:
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         address.sin_port = 0; // let the OS pick
-        REQUIRE(::bind(socket_, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0);
-        socklen_t length = sizeof address;
+        socklen_t length = static_cast<socklen_t>(sizeof address);
+        REQUIRE(::bind(socket_, reinterpret_cast<const sockaddr*>(&address), length) == 0);
         REQUIRE(::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
         port_ = ntohs(address.sin_port);
 
@@ -100,7 +100,12 @@ public:
     /// The next datagram, or an empty string if none arrived before the timeout.
     std::string receive() {
         char buffer[1024];
-        const auto got = ::recv(socket_, buffer, static_cast<int>(sizeof buffer), 0);
+#if defined(_WIN32)
+        const int length = static_cast<int>(sizeof buffer);
+#else
+        const std::size_t length = sizeof buffer;
+#endif
+        const auto got = ::recv(socket_, buffer, length, 0);
         return got > 0 ? std::string(buffer, static_cast<std::size_t>(got)) : std::string();
     }
 
