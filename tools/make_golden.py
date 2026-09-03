@@ -16,11 +16,13 @@ read back from the WAV, so both sides start from identical numbers. The test
 tests/features/feature_extractor_test.cpp checks every pair it finds.
 
     python tools/make_golden.py references/audio/track.flac [--name NAME] [--offset SECONDS]
+    python tools/make_golden.py references/audio/track.flac --auto
     python tools/make_golden.py --synthetic
 
 Any format libsndfile decodes works (WAV, FLAC, MP3, OGG, AIFF); AAC/M4A do not. The
-default window starts 30 s in, or is centred for tracks shorter than 40 s. --synthetic
-writes a deterministic drum-machine signal instead, for a pair that carries no rights.
+default window starts 30 s in, or is centred for tracks shorter than 40 s. --auto reads
+the whole track and picks the window instead (see pick_offset); --synthetic writes a
+deterministic drum-machine signal, for a pair that carries no rights.
 """
 
 import argparse
@@ -42,6 +44,116 @@ DURATION = 10.0
 DEFAULT_OFFSET = 30.0
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent / "tests" / "data" / "features"
 RESAMPLER = "soxr_hq"  # librosa.load's default; spelled out so the sidecar records it
+
+# --auto scoring. A window is wanted that sounds like the track: a clear pulse, at the
+# loudness the track spends most of its time at, with no hole in it. The constants are
+# taste, not theory — they are here, named, so a pick can be argued with.
+LEVEL_HOP = SAMPLE_RATE // 10  # 100 ms level frames, ten to the second
+BLOCK_HOP = SAMPLE_RATE  # 1 s level frames, for finding holes
+ONSET_HOP = 512  # librosa's onset envelope, 43 frames a second
+CANDIDATE_STEP = 1.0  # candidate offsets are whole seconds
+PULSE_PERIODS = (0.3, 1.5)  # lags searched for a pulse: 200 down to 40 BPM
+LEVEL_SCALE = 6.0  # dB the window's median may sit off the track's usual level for e^-1
+DIP_TOLERANCE = 10.0  # dB a single second may fall below that level for free
+DIP_SCALE = 8.0  # dB of further dip for another factor of e^-1
+END_MARGIN = 1.0  # seconds left untouched at the end; some MP3 seeks read short there
+
+
+def level_dbfs(audio, hop):
+    """Frame level in dBFS, frames starting at 0, hop long, no centring or padding."""
+    rms = librosa.feature.rms(y=audio, frame_length=hop, hop_length=hop, center=False)[0]
+    return 20.0 * np.log10(np.maximum(rms, 1e-10))
+
+
+def modal_level(level):
+    """The track's most common loudness: the peak of a 1 dB histogram of its frames.
+
+    Frames more than 60 dB below the loudest are dropped first, so leading digital
+    silence — or a fade — cannot become the mode of a track that is mostly music.
+    """
+    audible = level[level > level.max() - 60.0]
+    if audible.size == 0:
+        raise SystemExit("the track is silent")
+    edges = np.arange(np.floor(audible.min()), np.ceil(audible.max()) + 1.0)
+    if edges.size < 2:
+        return float(audible.mean())
+    counts = np.histogram(audible, bins=edges)[0].astype(np.float64)
+    smoothed = np.convolve(counts, np.ones(3) / 3.0, mode="same")  # 1 dB bins are noisy
+    peak = int(np.argmax(smoothed))
+    return float((edges[peak] + edges[peak + 1]) / 2.0)
+
+
+def pulse_clarity(onset_envelope):
+    """How strongly the window pulses: the top of its onset envelope's autocorrelation.
+
+    Biased normalisation (every lag divided by lag zero), so a periodicity that only
+    fits into the window twice is not flattered. Roughly 0 for unmetred sound, 0.2-0.6
+    for a plain drum pattern.
+    """
+    centred = onset_envelope - onset_envelope.mean()
+    energy = float(np.dot(centred, centred))
+    if energy <= 0.0:
+        return 0.0
+    correlation = np.correlate(centred, centred, mode="full")[centred.size - 1 :] / energy
+    low = int(round(PULSE_PERIODS[0] * SAMPLE_RATE / ONSET_HOP))
+    high = min(correlation.size - 1, int(round(PULSE_PERIODS[1] * SAMPLE_RATE / ONSET_HOP)))
+    return float(correlation[low : high + 1].max()) if high > low else 0.0
+
+
+def window_at(offset, fine, blocks, envelope, usual):
+    """Score the 10 s window starting at offset. Higher is a better excerpt."""
+    window_fine = fine[int(offset * SAMPLE_RATE / LEVEL_HOP) : int((offset + DURATION) * SAMPLE_RATE / LEVEL_HOP)]
+    window_blocks = blocks[int(offset * SAMPLE_RATE / BLOCK_HOP) : int((offset + DURATION) * SAMPLE_RATE / BLOCK_HOP)]
+    window_env = envelope[int(offset * SAMPLE_RATE / ONSET_HOP) : int((offset + DURATION) * SAMPLE_RATE / ONSET_HOP)]
+    if window_fine.size == 0 or window_blocks.size == 0 or window_env.size < 2:
+        return None
+    clarity = pulse_clarity(window_env)
+    median = float(np.median(window_fine))
+    quietest = float(window_blocks.min())
+    dip = max(0.0, usual - quietest - DIP_TOLERANCE)
+    score = clarity * np.exp(-(((median - usual) / LEVEL_SCALE) ** 2)) * np.exp(-((dip / DIP_SCALE) ** 2))
+    return {
+        "offset": offset,
+        "score": float(score),
+        "pulse_clarity": round(clarity, 3),
+        "level_dbfs": round(median, 1),
+        "track_usual_level_dbfs": round(usual, 1),
+        "quietest_second_dbfs": round(quietest, 1),
+    }
+
+
+def pick_offset(source, report_top=0):
+    """Choose where to cut, by scoring every whole-second window of the whole track.
+
+    A window is wanted that sounds like the track: pulse clarity, discounted for sitting
+    off the track's usual loudness and for containing a second much quieter than that —
+    which is what an intro, an outro or a breakdown looks like from here. Returns the
+    winning window's scores, offset included.
+    """
+    audio, _ = librosa.load(source, sr=SAMPLE_RATE, mono=True, res_type=RESAMPLER)
+    decoded = audio.size / SAMPLE_RATE  # not get_duration: MP3 headers over-report
+    last = decoded - DURATION - END_MARGIN
+    if last < 0.0:
+        raise SystemExit(f"{source} decodes to {decoded:.1f} s; --auto needs {DURATION + END_MARGIN:.0f} s")
+
+    fine = level_dbfs(audio, LEVEL_HOP)
+    blocks = level_dbfs(audio, BLOCK_HOP)
+    usual = modal_level(fine)
+    envelope = librosa.onset.onset_strength(y=audio, sr=SAMPLE_RATE, hop_length=ONSET_HOP)
+
+    scored = [window_at(step * CANDIDATE_STEP, fine, blocks, envelope, usual) for step in range(int(last / CANDIDATE_STEP) + 1)]
+    scored = [window for window in scored if window is not None]
+    if not scored:
+        raise SystemExit(f"no window of {source} could be scored")
+    scored.sort(key=lambda window: (-window["score"], window["offset"]))  # ties go to the earlier window
+
+    if report_top:
+        print(f"  {decoded:.0f} s decoded, usual level {usual:.1f} dBFS; best {min(report_top, len(scored))} of {len(scored)} windows:")
+        for window in scored[:report_top]:
+            print(f"    {window['offset']:6.0f} s  score {window['score']:.3f}  pulse {window['pulse_clarity']:.3f}"
+                  f"  level {window['level_dbfs']:+6.1f} dBFS ({window['level_dbfs'] - usual:+.1f})"
+                  f"  quietest second {window['quietest_second_dbfs']:+6.1f}")
+    return scored[0]
 
 
 def excerpt_from_file(source, offset):
@@ -124,17 +236,29 @@ def main():
     parser.add_argument("--synthetic", action="store_true", help="generate the built-in test signal instead")
     parser.add_argument("--name", help="base name of the output files (default: from the source name)")
     parser.add_argument("--offset", type=float, help=f"start of the excerpt in seconds (default: {DEFAULT_OFFSET:.0f}, or centred)")
+    parser.add_argument("--auto", action="store_true", help="choose the offset by analysing the whole track")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help=f"default: {DEFAULT_OUT_DIR}")
     args = parser.parse_args()
     if args.synthetic == (args.source is not None):
         parser.error("give either a source file or --synthetic")
+    if args.auto and (args.offset is not None or args.synthetic):
+        parser.error("--auto takes a source file and no --offset")
 
+    selection = None
     if args.synthetic:
         audio, offset, total = synthetic_excerpt(), 0.0, DURATION
         source_name = "synthetic (tools/make_golden.py --synthetic)"
+        offset_source = "synthetic"
         name = args.name or "synthetic"
     else:
-        audio, offset, total = excerpt_from_file(args.source, args.offset)
+        chosen = args.offset
+        offset_source = "explicit" if chosen is not None else "default"
+        if args.auto:
+            offset_source = "auto"
+            selection = pick_offset(args.source, report_top=5)
+            chosen = selection.pop("offset")
+            selection["score"] = round(selection["score"], 3)
+        audio, offset, total = excerpt_from_file(args.source, chosen)
         source_name = args.source.name
         name = args.name or re.sub(r"[^a-z0-9]+", "-", args.source.stem.lower()).strip("-")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
@@ -165,6 +289,7 @@ def main():
     info = {
         "source": source_name,
         "offset_seconds": round(offset, 3),
+        "offset_source": offset_source,
         "source_duration_seconds": round(total, 3),
         "duration_seconds": DURATION,
         "sample_rate": SAMPLE_RATE,
@@ -180,6 +305,9 @@ def main():
         "librosa": librosa.__version__,
         "soundfile": sf.__version__ + " / libsndfile " + sf.__libsndfile_version__,
     }
+    if selection is not None:
+        # What --auto measured on the whole track when it settled on this window.
+        info["offset_selection"] = selection
     json_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     print(f"{name}: {source_name} @ {offset:.1f} s -> {wav_path.name}, {npy_path.name}, {json_path.name}")

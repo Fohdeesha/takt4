@@ -1,6 +1,7 @@
 {
   "source": "synthetic (tools/make_golden.py --synthetic)",
   "offset_seconds": 0.0,
+  "offset_source": "synthetic",
   "source_duration_seconds": 10.0,
   "duration_seconds": 10.0,
   "sample_rate": 22050,
