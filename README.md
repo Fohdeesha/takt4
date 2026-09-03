@@ -14,9 +14,10 @@ Early. The build system, dependencies and CI are in place, and the audio path ex
 one channel (or a summed pair) of any input device is opened, resampled to the engine's
 22050 Hz and cut into 20 ms hops. The feature front end that feeds the beat tracker —
 madmom's log-filterbank spectrogram and its positive differences, 288 values per hop —
-is implemented in C++ and verified against madmom itself to one float32 ulp on the
-excerpts under `tests/data/features/`. Nothing is tracked yet. `takt4 --version` prints
-what it was built with, and the window opens.
+is implemented in C++ and verified against madmom itself on eighteen excerpts under
+`tests/data/features/`: no filterbank value anywhere differs by more than one float32
+ulp. Nothing is tracked yet. `takt4 --version` prints what it was built with, and the
+window opens.
 
 ### Development console
 
@@ -56,7 +57,7 @@ python -m venv .venv
 .venv\Scripts\activate                                     # . .venv/bin/activate elsewhere
 pip install -r tools/requirements-build.txt
 pip install --no-build-isolation -r tools/requirements.txt
-python tools/make_golden.py path/to/track.flac --offset 30  # 10 s excerpt + madmom features
+python tools/make_golden.py path/to/track.flac --auto       # 10 s excerpt + madmom features
 python tools/dump_filterbank.py                             # regenerate the table
 ```
 
