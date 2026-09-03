@@ -29,6 +29,8 @@ add_library(takt4_core STATIC
   audio/resampler.hpp
   audio/stream_setup.cpp
   audio/stream_setup.hpp
+  dsp/real_fft.cpp
+  dsp/real_fft.hpp
   output/link_session.cpp
   output/link_session.hpp
   output/midi_ports.cpp
@@ -49,6 +51,7 @@ target_link_libraries(takt4_core
   PRIVATE
     portaudio
     r8brain
+    kissfft
     Ableton::Link
     rtmidi
     nlohmann_json::nlohmann_json

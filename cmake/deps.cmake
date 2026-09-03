@@ -225,6 +225,62 @@ add_library(r8brain INTERFACE)
 target_include_directories(r8brain SYSTEM INTERFACE "${r8brain_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------------------
+# KissFFT 131.2.0 (HANDOFF §5.2: the STFT). Static, double precision.
+#
+# The 1764-point frame factors as 2²·3²·7², and for the 7s KissFFT's generic butterfly
+# takes a scratch buffer per call, from malloc unless KISS_FFT_USE_ALLOCA puts it on the
+# stack — which it must, because the transform runs on the audio thread (§4.2). With
+# that define _kiss_fft_guts.h includes <alloca.h>, a header MSVC does not have (its
+# alloca is in <malloc.h>), so KissFFT's own compilation gets cmake/shims/msvc-alloca
+# on its include path. KissFFT itself is not patched. Its other case for a scratch
+# buffer, an in-place transform, does not arise: the wrapper in src/core/dsp always
+# transforms out of place.
+#
+# KissFFT's CMakeLists reads its version from its Makefile, and the Makefile in the
+# 131.2.0 archive still says 131.1.0: upstream tagged the release without bumping it
+# (master is the same as of 2026-09). So the tag is what build_info reports, and the
+# stale self-reported version is pinned alongside it so that a bumped archive that
+# says something else is noticed rather than silently reported as 131.2.0.
+# ---------------------------------------------------------------------------------------
+FetchContent_Declare(kissfft
+  URL "https://github.com/mborgerding/kissfft/archive/refs/tags/131.2.0.tar.gz"
+  URL_HASH SHA256=205a8f6a448ef12b091f8ac6a514b5091bb5f6b0b543431ed75f673116cf5cbf
+  SYSTEM
+  EXCLUDE_FROM_ALL
+)
+block()
+  set(KISSFFT_DATATYPE "double")
+  set(KISSFFT_STATIC ON)
+  set(KISSFFT_USE_ALLOCA ON)
+  set(KISSFFT_OPENMP OFF)
+  set(KISSFFT_PKGCONFIG OFF)
+  set(KISSFFT_TEST OFF)
+  set(KISSFFT_TOOLS OFF)
+  FetchContent_MakeAvailable(kissfft)
+endblock()
+set(TAKT4_KISSFFT_VERSION "131.2.0")   # the tag
+set(kissfft_self_reported_version "131.1.0")   # what its Makefile says; see above
+
+takt4_require_definitions(kissfft INTERFACE_COMPILE_DEFINITIONS kiss_fft_scalar=double KISS_FFT_USE_ALLOCA)
+takt4_forbid_definitions(kissfft INTERFACE_COMPILE_DEFINITIONS KISS_FFT_SHARED)
+
+FetchContent_GetProperties(kissfft SOURCE_DIR kissfft_SOURCE_DIR)
+file(READ "${kissfft_SOURCE_DIR}/Makefile" kissfft_makefile)
+string(REGEX MATCH "KFVER_MAJOR = ([0-9]+)\n.*KFVER_MINOR = ([0-9]+)\n.*KFVER_PATCH = ([0-9]+)\n" _ "${kissfft_makefile}")
+if(NOT "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}" STREQUAL kissfft_self_reported_version)
+  message(FATAL_ERROR
+    "KissFFT's Makefile says ${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}, not the "
+    "${kissfft_self_reported_version} expected for ${TAKT4_KISSFFT_VERSION}. Re-pin both in cmake/deps.cmake."
+  )
+endif()
+unset(kissfft_makefile)
+unset(kissfft_self_reported_version)
+
+if(MSVC)
+  target_include_directories(kissfft PRIVATE "${CMAKE_CURRENT_LIST_DIR}/shims/msvc-alloca")
+endif()
+
+# ---------------------------------------------------------------------------------------
 # Catch2 v3 (tests only).
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_TESTS)

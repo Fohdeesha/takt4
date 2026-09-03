@@ -15,6 +15,7 @@ struct BuildInfo {
     std::string kohlhoffAsio; // the networking asio bundled with Link, not Steinberg's
     std::string rtmidi;
     std::string rtneuralRevision;
+    std::string kissfft;
     std::string nlohmannJson;
     std::string slint; // empty when built without the UI
 };

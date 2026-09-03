@@ -18,6 +18,7 @@ TEST_CASE("build info reports every dependency", "[build_info]") {
     CHECK(info.rtmidi == "6.0.0");
     CHECK(info.nlohmannJson == "3.12.0");
     CHECK(info.rtneuralRevision.size() == 40);
+    CHECK(info.kissfft == "131.2.0"); // the tag pinned in cmake/deps.cmake
 
     // Both come from the third_party/link submodule. The asio version is read from its
     // header, so bumping the submodule fails this test until TAKT4_LINK_VERSION in
@@ -35,6 +36,7 @@ TEST_CASE("describe() renders one line per component", "[build_info]") {
     CHECK_THAT(text, ContainsSubstring("Ableton Link:"));
     CHECK_THAT(text, ContainsSubstring("RtMidi:"));
     CHECK_THAT(text, ContainsSubstring("RTNeural:"));
+    CHECK_THAT(text, ContainsSubstring("KissFFT:"));
     CHECK_THAT(text, ContainsSubstring("nlohmann/json:"));
     CHECK_THAT(text, ContainsSubstring("Slint:"));
 }

@@ -8,6 +8,7 @@
 // Versions that no header exposes; pinned in cmake/deps.cmake.
 #define TAKT4_LINK_VERSION "@TAKT4_LINK_VERSION@"
 #define TAKT4_RTNEURAL_REV "@TAKT4_RTNEURAL_REV@"
+#define TAKT4_KISSFFT_VERSION "@TAKT4_KISSFFT_VERSION@"
 #define TAKT4_SLINT_VERSION "@TAKT4_SLINT_VERSION@"
 
 #cmakedefine01 TAKT4_BUILD_UI
