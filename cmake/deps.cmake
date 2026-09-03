@@ -25,34 +25,62 @@ foreach(marker IN ITEMS
   endif()
 endforeach()
 
+# Fails unless every one of the given definitions is in <target>'s <property>. PortAudio's
+# and RtMidi's optional backends are switched on only when the library each needs is
+# found; when it is not, the request is dropped without a word (a cmake_dependent_option
+# is forced OFF), and the build would quietly ship without that backend.
+function(takt4_require_definitions target property)
+  get_target_property(defs ${target} ${property})
+  foreach(def IN LISTS ARGN)
+    if(NOT def IN_LIST defs)
+      message(FATAL_ERROR
+        "${target} was configured without ${def}: a backend takt4 needs was dropped. "
+        "On Linux this usually means a development package is missing; see README.md."
+      )
+    endif()
+  endforeach()
+endfunction()
+
 # ---------------------------------------------------------------------------------------
 # PortAudio (submodule). Static. On Windows, ASIO is enabled through the vendored SDK.
-# On Linux the host API set is pinned to ALSA: PortAudio otherwise switches PulseAudio,
-# sndio and JACK on or off depending on which -dev packages happen to be installed, and
-# PortAudio and RtMidi both silently drop ALSA when its headers are missing. JACK is
-# left out on purpose for now: PortAudio links libjack directly, which would make every
-# Linux binary depend on it. Revisit when packaging for Linux.
+# On Linux the host APIs are ALSA and JACK, and nothing else: left to itself, PortAudio
+# switches PulseAudio and sndio on or off depending on which -dev packages happen to be
+# installed. JACK is linked directly (libjack.so.0, or PipeWire's replacement for it),
+# so every Linux binary needs one of the two at run time; that was accepted so that JACK
+# and PipeWire ports show up as ordinary devices. A server does not have to be running:
+# PortAudio opens its client with JackNoStartServer, and without a server the host API
+# is simply absent from the list.
 # ---------------------------------------------------------------------------------------
 block()
   if(WIN32)
     include("${CMAKE_CURRENT_LIST_DIR}/asiosdk.cmake")   # defines ASIO::host
+    if(NOT TARGET ASIO::host)
+      # Without the target, PortAudio downloads the SDK from Steinberg during configure.
+      message(FATAL_ERROR "ASIO::host was not defined; PortAudio would fetch the SDK itself")
+    endif()
     set(PA_USE_ASIO ON)
   endif()
   if(LINUX)
     find_package(ALSA REQUIRED)   # libasound2-dev; used by PortAudio and RtMidi
+    set(PA_USE_JACK ON)           # libjack-jackd2-dev; used by PortAudio and RtMidi
     set(PA_USE_PULSEAUDIO OFF)
     set(PA_USE_SNDIO OFF)
+  else()
+    set(PA_USE_JACK OFF)
   endif()
   set(PA_BUILD_SHARED_LIBS OFF)
   set(PA_BUILD_TESTS OFF)
   set(PA_BUILD_EXAMPLES OFF)
-  set(PA_USE_JACK OFF)
   set(PA_USE_OSS OFF)
   add_subdirectory("${TAKT4_THIRD_PARTY_DIR}/portaudio" EXCLUDE_FROM_ALL SYSTEM)
 endblock()
 
-if(WIN32 AND NOT TARGET ASIO::host)
-  message(FATAL_ERROR "ASIO::host was not defined; PortAudio would build without ASIO")
+if(WIN32)
+  takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_ASIO=1 PA_USE_WASAPI=1)
+elseif(APPLE)
+  takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_COREAUDIO=1)
+elseif(LINUX)
+  takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_ALSA=1 PA_USE_JACK=1)
 endif()
 
 # ---------------------------------------------------------------------------------------
@@ -96,7 +124,8 @@ endblock()
 target_compile_definitions(RTNeural PUBLIC RTNEURAL_DEFAULT_ALIGNMENT=16)
 
 # ---------------------------------------------------------------------------------------
-# RtMidi 6.0.0. Static. JACK off for the same reason as PortAudio.
+# RtMidi 6.0.0. Static. Its JACK API follows PortAudio's: on for Linux, off elsewhere,
+# where RtMidi would otherwise switch it on by itself on any machine with a libjack.
 # ---------------------------------------------------------------------------------------
 FetchContent_Declare(rtmidi
   URL "https://github.com/thestk/rtmidi/archive/refs/tags/6.0.0.tar.gz"
@@ -107,11 +136,24 @@ FetchContent_Declare(rtmidi
 block()
   set(RTMIDI_BUILD_STATIC_LIBS ON)
   set(RTMIDI_BUILD_TESTING OFF)
-  set(RTMIDI_API_JACK OFF)
+  if(LINUX)
+    set(RTMIDI_API_JACK ON)   # RtMidi fails the configure itself if libjack is missing
+  else()
+    set(RTMIDI_API_JACK OFF)
+  endif()
   set(RTMIDI_TARGETNAME_UNINSTALL "rtmidi_uninstall")   # PortAudio already owns "uninstall"
   FetchContent_MakeAvailable(rtmidi)
 endblock()
 set(TAKT4_RTMIDI_VERSION "6.0.0")
+
+# RtMidi's API macros are PRIVATE to its target, hence COMPILE_DEFINITIONS.
+if(WIN32)
+  takt4_require_definitions(rtmidi COMPILE_DEFINITIONS __WINDOWS_MM__)
+elseif(APPLE)
+  takt4_require_definitions(rtmidi COMPILE_DEFINITIONS __MACOSX_CORE__)
+elseif(LINUX)
+  takt4_require_definitions(rtmidi COMPILE_DEFINITIONS __LINUX_ALSA__ __UNIX_JACK__)
+endif()
 
 if(WIN32)
   # RtMidi compiles with RTMIDI_EXPORT (__declspec(dllexport) on its classes) even when

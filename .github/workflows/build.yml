@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libfontconfig-dev
+            pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev
 
       # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
       # requirements in README.md. Record what was actually used.

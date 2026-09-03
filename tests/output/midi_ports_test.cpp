@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <string_view>
 
-TEST_CASE("RtMidi was compiled with the platform's native API", "[midi]") {
+TEST_CASE("RtMidi was compiled with the platform's APIs", "[midi]") {
     const auto apis = takt4::output::compiledMidiApis();
     REQUIRE_FALSE(apis.empty());
 
@@ -24,6 +24,8 @@ TEST_CASE("RtMidi was compiled with the platform's native API", "[midi]") {
     CHECK(has("core"));
 #else
     CHECK(has("alsa"));
+    // Compiled in whether or not a JACK server is running; see cmake/deps.cmake.
+    CHECK(has("jack"));
 #endif
     CHECK_FALSE(has("dummy"));
 }

@@ -23,9 +23,16 @@ Requirements:
 - A Rust toolchain, 1.92 or newer, on `PATH` (Slint is built from source through cargo).
   Only needed when the UI is built; see `TAKT4_BUILD_UI` below.
 - Ninja on macOS and Linux
-- Linux packages, Debian/Ubuntu names: `pkg-config libasound2-dev libfontconfig-dev`.
-  Everything else Slint needs on Linux (X11, xcb, xkbcommon, Wayland, EGL/GLX) is loaded
-  at run time.
+- Linux packages, Debian/Ubuntu names: `pkg-config libasound2-dev libjack-jackd2-dev
+  libfontconfig-dev`. Everything else Slint needs on Linux (X11, xcb, xkbcommon,
+  Wayland, EGL/GLX) is loaded at run time.
+
+On Linux the binary links `libjack.so.0` directly, so it needs that library at run time
+even when no JACK server is running (without one, JACK devices are simply not offered).
+jackd2's `libjack-jackd2-0` puts it on the default library path. PipeWire's
+`pipewire-jack` installs it under `/usr/lib/<triplet>/pipewire-0.3/jack/` instead, which
+is reached by running takt4 through `pw-jack` or by enabling the `ld.so.conf.d` snippet
+that package ships under `/usr/share/doc/pipewire/examples/`.
 
 PortAudio, Ableton Link and the Steinberg ASIO SDK are in `third_party/` (see
 [third_party/README.md](third_party/README.md)); the first two are submodules, so clone
@@ -78,7 +85,7 @@ GPLv3 — see [LICENSE](LICENSE).
 
 | Component | Used for | License |
 |---|---|---|
-| [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA | MIT |
+| [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |
 | [Ableton Link](https://github.com/Ableton/link) | Tempo sync | GPLv2 or later |
 | [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
 | [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |
