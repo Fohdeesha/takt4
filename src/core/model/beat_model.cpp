@@ -17,7 +17,8 @@ namespace {
 
 /// PyTorch keeps a Linear's weight as (out, in) and RTNeural's Dense wants
 /// weights[out][in], so this is a reshape and nothing more.
-std::vector<std::vector<float>> rows(std::span<const float> flat, std::size_t outer, std::size_t inner) {
+std::vector<std::vector<float>> rows(std::span<const float> flat, std::size_t outer,
+                                     std::size_t inner) {
     std::vector<std::vector<float>> out(outer, std::vector<float>(inner));
     for (std::size_t r = 0; r < outer; ++r) {
         std::copy_n(flat.begin() + static_cast<std::ptrdiff_t>(r * inner), inner, out[r].begin());
@@ -28,7 +29,8 @@ std::vector<std::vector<float>> rows(std::span<const float> flat, std::size_t ou
 /// The transpose: RTNeural's LSTM wants weights[in][4 · out] where PyTorch stores
 /// (4 · out, in). Both put the gates in the order input, forget, cell, output, so only
 /// the two indices swap — RTNeural::torch_helpers::loadLSTM does exactly this.
-std::vector<std::vector<float>> transposed(std::span<const float> flat, std::size_t outer, std::size_t inner) {
+std::vector<std::vector<float>> transposed(std::span<const float> flat, std::size_t outer,
+                                           std::size_t inner) {
     std::vector<std::vector<float>> out(inner, std::vector<float>(outer));
     for (std::size_t r = 0; r < outer; ++r) {
         for (std::size_t c = 0; c < inner; ++c) {
@@ -44,13 +46,13 @@ struct BeatModel::Impl {
     // Everything after the convolution block. RTNeural has no pooling layer and its
     // Conv1D convolves along time rather than across one frame's features, so the
     // 22-parameter front of the network is done here by hand instead; see extract().
-    using Net = RTNeural::ModelT<float, kDenseIn, kNumClasses,
-                                 RTNeural::DenseT<float, kDenseIn, kHidden>,
-                                 RTNeural::LSTMLayerT<float, kHidden, kHidden>,
-                                 RTNeural::LSTMLayerT<float, kHidden, kHidden>,
-                                 RTNeural::LSTMLayerT<float, kHidden, kHidden>,
-                                 RTNeural::LSTMLayerT<float, kHidden, kHidden>,
-                                 RTNeural::DenseT<float, kHidden, kNumClasses>>;
+    using Net =
+        RTNeural::ModelT<float, kDenseIn, kNumClasses, RTNeural::DenseT<float, kDenseIn, kHidden>,
+                         RTNeural::LSTMLayerT<float, kHidden, kHidden>,
+                         RTNeural::LSTMLayerT<float, kHidden, kHidden>,
+                         RTNeural::LSTMLayerT<float, kHidden, kHidden>,
+                         RTNeural::LSTMLayerT<float, kHidden, kHidden>,
+                         RTNeural::DenseT<float, kHidden, kNumClasses>>;
     static_assert(kLstmLayers == 4, "the layer list above is written out; keep it in step");
 
     Net net;

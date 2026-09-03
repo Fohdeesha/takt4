@@ -78,15 +78,27 @@ public:
     /// worker; a snapshot from anywhere else.
     std::size_t hopsPending() const noexcept { return hops_.size(); }
 
-    std::uint64_t hopsQueued() const noexcept { return hopsQueued_.load(std::memory_order_relaxed); }
-    std::uint64_t hopsDropped() const noexcept { return hopsDropped_.load(std::memory_order_relaxed); }
-    std::uint64_t framesEmitted() const noexcept { return framesEmitted_.load(std::memory_order_relaxed); }
-    std::uint64_t framesDropped() const noexcept { return framesDropped_.load(std::memory_order_relaxed); }
+    std::uint64_t hopsQueued() const noexcept {
+        return hopsQueued_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t hopsDropped() const noexcept {
+        return hopsDropped_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t framesEmitted() const noexcept {
+        return framesEmitted_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t framesDropped() const noexcept {
+        return framesDropped_.load(std::memory_order_relaxed);
+    }
 
     /// The Phase 3 real-time check (§8): the worst the worker has taken over one hop,
     /// and over the model alone, in microseconds. One hop is 20000 µs of audio.
-    double worstHopMicros() const noexcept { return worstHopMicros_.load(std::memory_order_relaxed); }
-    double worstModelMicros() const noexcept { return worstModelMicros_.load(std::memory_order_relaxed); }
+    double worstHopMicros() const noexcept {
+        return worstHopMicros_.load(std::memory_order_relaxed);
+    }
+    double worstModelMicros() const noexcept {
+        return worstModelMicros_.load(std::memory_order_relaxed);
+    }
 
     /// Runs one queued hop on the calling thread, for tests and offline use; returns
     /// false when the queue is empty. Only valid while the worker is not running.

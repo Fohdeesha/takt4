@@ -76,7 +76,8 @@ void printUsage(std::ostream& out) {
         << "  takt4-cli features IN.wav OUT.npy [--compare GOLDEN.npy]\n"
         << "      Run the feature front end over a mono " << takt4::audio::kInternalSampleRate
         << " Hz WAV and write the\n"
-        << "      (frames x " << takt4::features::kFeatureDim << ") float32 matrix as numpy's .npy.\n"
+        << "      (frames x " << takt4::features::kFeatureDim
+        << ") float32 matrix as numpy's .npy.\n"
         << "      --compare G.npy  also print the largest difference to a matrix that\n"
         << "                       tools/make_golden.py computed with madmom; exit 1 if it\n"
         << "                       exceeds the Phase 2 tolerance\n"
@@ -534,16 +535,19 @@ std::string activationLine(const takt4::model::FrameActivation& activation) {
     std::ostringstream line;
     line << std::setw(7) << activation.frameIndex << "  "
          << fixed1(static_cast<double>(activation.frameIndex) / takt4::audio::kHopRate, 7) << "s"
-         << "  beat " << formatProbability(activation.beat) << " " << bar(activation.beat) << "  down "
-         << formatProbability(activation.downbeat) << "  non " << formatProbability(activation.nonBeat);
+         << "  beat " << formatProbability(activation.beat) << " " << bar(activation.beat)
+         << "  down " << formatProbability(activation.downbeat) << "  non "
+         << formatProbability(activation.nonBeat);
     return line.str();
 }
 
 int runBeatsFile(const std::filesystem::path& in, const takt4::model::ModelWeights& weights) {
     const takt4::io::WavData audio = takt4::io::readWavFile(in);
-    if (audio.channels != 1 || static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
-        throw std::invalid_argument(in.string() + ": expected mono at " +
-                                    std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) + " Hz");
+    if (audio.channels != 1 ||
+        static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
+        throw std::invalid_argument(
+            in.string() + ": expected mono at " +
+            std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) + " Hz");
     }
     using takt4::audio::kHopSize;
     const std::size_t hops = (audio.samples.size() + kHopSize - 1) / kHopSize;
@@ -552,7 +556,8 @@ int runBeatsFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
 
     // The engine's own path, stepped on this thread: what the worker would compute.
     auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
-    std::cout << in.string() << ": " << hops << " hops, weights " << weights.path().filename().string() << '\n';
+    std::cout << in.string() << ": " << hops << " hops, weights "
+              << weights.path().filename().string() << '\n';
     takt4::model::FrameActivation activation;
     double loudest = 0.0;
     for (std::size_t h = 0; h < hops; ++h) {
@@ -563,8 +568,9 @@ int runBeatsFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
             loudest = std::max(loudest, static_cast<double>(activation.beat));
         }
     }
-    std::cout << engine->framesEmitted() << " frames, strongest beat probability " << fixed1(loudest * 100.0)
-              << "%, worst hop " << fixed1(engine->worstHopMicros()) << " us of 20000 us of audio\n";
+    std::cout << engine->framesEmitted() << " frames, strongest beat probability "
+              << fixed1(loudest * 100.0) << "%, worst hop " << fixed1(engine->worstHopMicros())
+              << " us of 20000 us of audio\n";
     return 0;
 }
 
@@ -573,9 +579,9 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
     const auto devices = takt4::audio::listInputDevices(session);
     const auto& device = findDevice(devices, parsed.stream.device);
     const takt4::audio::ChannelSelection selection =
-        parsed.stream.channel
-            ? takt4::audio::ChannelSelection::single(*parsed.stream.channel)
-            : takt4::audio::ChannelSelection::pair(parsed.stream.pair->first, parsed.stream.pair->second);
+        parsed.stream.channel ? takt4::audio::ChannelSelection::single(*parsed.stream.channel)
+                              : takt4::audio::ChannelSelection::pair(parsed.stream.pair->first,
+                                                                     parsed.stream.pair->second);
 
     auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
     takt4::audio::InputStreamOptions options;
@@ -589,11 +595,14 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
         std::cout << " + " << selection.channels[1] + 1 << " summed";
     }
     std::cout << " (" << takt4::audio::toString(stream.picker().mode()) << " pick)\n"
-              << "rate:      " << stream.sampleRate() << " Hz -> " << takt4::audio::kInternalSampleRate
-              << " Hz, hop " << takt4::audio::kHopSize << " samples\n"
+              << "rate:      " << stream.sampleRate() << " Hz -> "
+              << takt4::audio::kInternalSampleRate << " Hz, hop " << takt4::audio::kHopSize
+              << " samples\n"
               << "weights:   " << weights.path().string() << '\n'
-              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0) << " ms input buffer + "
-              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) / stream.sampleRate())
+              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0)
+              << " ms input buffer + "
+              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) /
+                        stream.sampleRate())
               << " ms resampler + 40.0 ms centred framing\n"
               << "rt guard:  " << (takt4::rt::allocationGuardEnabled() ? "on" : "off") << '\n';
 
@@ -618,7 +627,8 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
     }
 
     const auto counters = stream.counters();
-    std::cout << "stopped after " << counters.hopsOut << " hops, " << engine->framesEmitted() << " frames"
+    std::cout << "stopped after " << counters.hopsOut << " hops, " << engine->framesEmitted()
+              << " frames"
               << ", " << engine->hopsDropped() << " hops dropped"
               << ", " << engine->framesDropped() << " frames dropped"
               << ", " << counters.inputOverflows << " input overflows\n"
@@ -629,7 +639,8 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
 
 int runBeats(const std::vector<std::string_view>& args) {
     const BeatsArgs parsed = parseBeatsArgs(args);
-    const takt4::model::ModelWeights weights = takt4::model::ModelWeights::fromFile(resolveWeights(parsed.weights));
+    const takt4::model::ModelWeights weights =
+        takt4::model::ModelWeights::fromFile(resolveWeights(parsed.weights));
     if (parsed.file) {
         return runBeatsFile(*parsed.file, weights);
     }

@@ -13,7 +13,8 @@
 
 // The floats are copied straight from the file into float storage, which is only right
 // on a little-endian host — the only kind takt4 is built for, as in io/npy_file.cpp.
-static_assert(std::endian::native == std::endian::little, "model weights assume a little-endian host");
+static_assert(std::endian::native == std::endian::little,
+              "model weights assume a little-endian host");
 
 namespace takt4::model {
 
@@ -41,8 +42,8 @@ std::uint32_t readU32(const unsigned char* at) noexcept {
 
 void expect(std::uint32_t got, std::size_t want, const char* what, const std::string& name) {
     if (got != want) {
-        throw std::runtime_error(name + ": " + what + " is " + std::to_string(got) + ", this build needs " +
-                                 std::to_string(want));
+        throw std::runtime_error(name + ": " + what + " is " + std::to_string(got) +
+                                 ", this build needs " + std::to_string(want));
     }
 }
 
@@ -97,7 +98,8 @@ ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
     }
 
     std::array<unsigned char, kHeaderBytes> header{};
-    if (!in.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()))) {
+    if (!in.read(reinterpret_cast<char*>(header.data()),
+                 static_cast<std::streamsize>(header.size()))) {
         throw std::runtime_error(name + ": too short to be a takt4 weight blob");
     }
     if (std::memcmp(header.data(), kMagic.data(), kMagic.size()) != 0) {
@@ -108,8 +110,9 @@ ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
         fields[i] = readU32(header.data() + kMagic.size() + i * sizeof(std::uint32_t));
     }
     if (fields[0] != kFormatVersion) {
-        throw std::runtime_error(name + ": weight blob format version " + std::to_string(fields[0]) +
-                                 ", this build reads version " + std::to_string(kFormatVersion));
+        throw std::runtime_error(name + ": weight blob format version " +
+                                 std::to_string(fields[0]) + ", this build reads version " +
+                                 std::to_string(kFormatVersion));
     }
     expect(fields[1], kFeatureDim, "feature dimension", name);
     expect(fields[2], kConvFilters, "convolution filter count", name);
@@ -125,16 +128,18 @@ ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
     weights.values_.resize(kTotalParameters);
     const auto bytes = static_cast<std::streamsize>(kTotalParameters * sizeof(float));
     if (!in.read(reinterpret_cast<char*>(weights.values_.data()), bytes) || in.gcount() != bytes) {
-        throw std::runtime_error(name + ": weight blob holds fewer than " + std::to_string(kTotalParameters) +
-                                 " parameters");
+        throw std::runtime_error(name + ": weight blob holds fewer than " +
+                                 std::to_string(kTotalParameters) + " parameters");
     }
     if (in.peek() != std::char_traits<char>::eof()) {
         throw std::runtime_error(name + ": weight blob is longer than its header says");
     }
-    const std::uint32_t checksum = fnv1a32(weights.values_.data(), kTotalParameters * sizeof(float));
+    const std::uint32_t checksum =
+        fnv1a32(weights.values_.data(), kTotalParameters * sizeof(float));
     if (checksum != fields[9]) {
-        throw std::runtime_error(name + ": weight blob checksum mismatch (file says " + std::to_string(fields[9]) +
-                                 ", contents give " + std::to_string(checksum) + ")");
+        throw std::runtime_error(name + ": weight blob checksum mismatch (file says " +
+                                 std::to_string(fields[9]) + ", contents give " +
+                                 std::to_string(checksum) + ")");
     }
     return weights;
 }
