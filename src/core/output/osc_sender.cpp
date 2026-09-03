@@ -18,12 +18,13 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
-#include <cerrno>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <cerrno>
 #endif
 
 namespace takt4::output {
