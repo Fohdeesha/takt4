@@ -84,6 +84,10 @@ The build tree is `build/<preset>/`; the executable is `build/<preset>/bin/takt4
 generator on purpose: CMake picks the newest Visual Studio it knows and finds, x64, so
 the same preset serves a 2022 install and the 2026-only CI image.
 
+CI (`.github/workflows/`) builds and tests the `*-core` presets on every push and the
+full presets with the UI weekly, on demand, and whenever `src/ui/`, `cmake/` or the
+CMake files change.
+
 The UI is drawn by Slint's Skia renderer: Metal on macOS, OpenGL on Windows and Linux,
 falling back to Skia's software rasteriser when no GPU context can be created. Setting
 `SLINT_BACKEND=winit-skia-software` in the environment forces the software path, and
@@ -94,7 +98,7 @@ using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 | Option | Default | Effect |
 |---|---|---|
-| `TAKT4_BUILD_UI` | `ON` | Build the Slint UI and the `takt4` executable. `OFF` builds the engine library, `takt4-cli` and the tests only, needs no Rust toolchain, and never fetches Slint. The `linux-core` preset sets this. |
+| `TAKT4_BUILD_UI` | `ON` | Build the Slint UI and the `takt4` executable. `OFF` builds the engine library, `takt4-cli` and the tests only, needs no Rust toolchain, and never fetches Slint. The `windows-core`, `macos-core` and `linux-core` presets set this. |
 | `TAKT4_BUILD_TESTS` | `ON` when top-level | Build the Catch2 test suite. |
 | `TAKT4_WARNINGS_AS_ERRORS` | `ON` | `/WX` or `-Werror` for takt4's own sources. Third-party code is compiled as system headers and is never subject to these flags. |
 
