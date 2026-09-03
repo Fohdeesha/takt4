@@ -1,0 +1,22 @@
+# The Python side of takt4's build-time tooling (HANDOFF §5.2, §8 Phase 2): the scripts
+# in tools/ that dump madmom's filterbank and produce the golden feature files under
+# tests/data/. Their outputs are committed; nothing here is needed to build, test or run
+# takt4, and CI never installs it.
+#
+# madmom's last PyPI release (0.16.1, 2018) no longer imports on a current Python, so a
+# commit of its master branch is pinned and built from source. pip cannot build it in
+# an isolated environment (its setup.py imports numpy and Cython), hence two steps:
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate            (Windows)   or   . .venv/bin/activate   (elsewhere)
+#   pip install -r tools/requirements-build.txt
+#   pip install --no-build-isolation -r tools/requirements.txt
+#
+# The goldens are madmom's float32 output for float32 input, so the packages that touch
+# the numbers (numpy, scipy, madmom, librosa's resampler) are pinned exactly. Bumping any
+# of them means re-running tools/dump_filterbank.py and every tools/make_golden.py.
+-r requirements-build.txt
+madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae
+librosa==1.0.0
+soundfile==0.14.0
+soxr==1.1.0

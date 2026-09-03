@@ -12,8 +12,11 @@ generative visuals. Windows, macOS and Linux.
 
 Early. The build system, dependencies and CI are in place, and the audio path exists:
 one channel (or a summed pair) of any input device is opened, resampled to the engine's
-22050 Hz and cut into 20 ms hops. Nothing is tracked yet. `takt4 --version` prints what
-it was built with, and the window opens.
+22050 Hz and cut into 20 ms hops. The feature front end that feeds the beat tracker —
+madmom's log-filterbank spectrogram and its positive differences, 288 values per hop —
+is implemented in C++ and verified against madmom itself to one float32 ulp on the
+excerpts under `tests/data/features/`. Nothing is tracked yet. `takt4 --version` prints
+what it was built with, and the window opens.
 
 ### Development console
 
@@ -25,6 +28,7 @@ takt4-cli devices                       # host APIs, then every input device and
 takt4-cli meter --device 1 --channel 7  # open input 7 of device 1, print RMS/peak at 10 Hz
 takt4-cli meter --device 1 --channels 7,8
 takt4-cli meter --device 1 --all        # every channel of the device, unresampled
+takt4-cli features in.wav out.npy --compare golden.npy   # feature front end on a file
 ```
 
 Channel numbers count from 1, as printed on the interface. On ASIO and CoreAudio the
@@ -33,6 +37,32 @@ or with `--software`, the whole device is opened and the channel is sliced out i
 software. `--rate HZ` overrides the device's default rate and `--seconds S` stops
 without Ctrl-C. Debug builds carry a real-time allocation guard that aborts on any heap
 use from the audio callback; `meter` reports whether it is on.
+
+`features` runs a mono 22050 Hz WAV through the C++ feature front end and writes the
+result as a numpy `.npy` file; with `--compare` it reports the largest difference to a
+reference file and fails above 1e-5, the same check the test suite makes against the
+golden excerpts (see [tests/data/features/README.md](tests/data/features/README.md)).
+
+### Python tooling
+
+`tools/` holds the build-time Python that produces committed artifacts — the filterbank
+table in `src/core/features/filterbank_table.cpp` and the golden feature files under
+`tests/data/features/` — by running madmom, the reference implementation, at a pinned
+commit. Nothing in it is needed to build, test or run takt4, and CI never installs it.
+It is needed when adding golden excerpts or bumping the pinned numpy/scipy/madmom:
+
+```sh
+python -m venv .venv
+.venv\Scripts\activate                                     # . .venv/bin/activate elsewhere
+pip install -r tools/requirements-build.txt
+pip install --no-build-isolation -r tools/requirements.txt
+python tools/make_golden.py path/to/track.flac --offset 30  # 10 s excerpt + madmom features
+python tools/dump_filterbank.py                             # regenerate the table
+```
+
+Two steps because madmom builds from source and its `setup.py` imports numpy and
+Cython. Full-length source tracks belong outside git; `references/` is ignored for
+that purpose.
 
 ## Building
 
@@ -106,14 +136,19 @@ using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 ```
 src/core/     the engine — no UI dependency, must always build without Slint
-src/core/audio/   devices, channel picking, resampling, hop accumulation
-src/core/rt/      real-time allocation guard, lock-free SPSC ring
+src/core/audio/     devices, channel picking, resampling, hop accumulation
+src/core/dsp/       real FFT (KissFFT)
+src/core/features/  madmom-equivalent feature front end: STFT, filterbank, log, diff
+src/core/io/        WAV and .npy readers/writers for tests and tools, not the audio path
+src/core/rt/        real-time allocation guard, lock-free SPSC ring
 src/cli/      takt4-cli, the development console; links takt4_core only
 src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp
 tests/        Catch2; links takt4_core only
+tests/data/   golden excerpts: audio plus madmom's features for it
+tools/        Python that generates committed artifacts from madmom (see above)
 third_party/  PortAudio, Ableton Link (+ Kohlhoff asio), Steinberg ASIO SDK
-cmake/        dependency wiring, warning flags, ASIO SDK handling
+cmake/        dependency wiring, warning flags, ASIO SDK handling, the MSVC alloca shim
 ```
 
 ## License
@@ -124,6 +159,7 @@ GPLv3 — see [LICENSE](LICENSE).
 |---|---|---|
 | [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |
 | [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | Resampling the input to 22050 Hz | MIT |
+| [KissFFT](https://github.com/mborgerding/kissfft) | The STFT behind the feature front end | BSD-3-Clause |
 | [Ableton Link](https://github.com/Ableton/link) | Tempo sync | GPLv2 or later |
 | [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
 | [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |

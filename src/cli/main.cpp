@@ -1,5 +1,6 @@
 // takt4-cli — the development console (HANDOFF §8 Phase 1: list devices, open one
-// channel, print RMS). Links takt4_core only; never packaged.
+// channel, print RMS; Phase 2: run the feature front end over a file). Links
+// takt4_core only; never packaged.
 
 #include "core/audio/channel_meter.hpp"
 #include "core/audio/channel_picker.hpp"
@@ -11,6 +12,10 @@
 #include "core/audio/rates.hpp"
 #include "core/audio/resampler.hpp"
 #include "core/build_info.hpp"
+#include "core/features/dimensions.hpp"
+#include "core/features/feature_extractor.hpp"
+#include "core/io/npy_file.hpp"
+#include "core/io/wav_file.hpp"
 #include "core/rt/alloc_guard.hpp"
 
 #include <algorithm>
@@ -18,12 +23,15 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -62,6 +70,14 @@ void printUsage(std::ostream& out) {
         << "                      could open the selection natively (ASIO, CoreAudio)\n"
         << "      --rate HZ       open at this rate instead of the device default\n"
         << "      --seconds S     stop after S seconds instead of on Ctrl-C\n"
+        << "\n"
+        << "  takt4-cli features IN.wav OUT.npy [--compare GOLDEN.npy]\n"
+        << "      Run the feature front end over a mono " << takt4::audio::kInternalSampleRate
+        << " Hz WAV and write the\n"
+        << "      (frames x " << takt4::features::kFeatureDim << ") float32 matrix as numpy's .npy.\n"
+        << "      --compare G.npy  also print the largest difference to a matrix that\n"
+        << "                       tools/make_golden.py computed with madmom; exit 1 if it\n"
+        << "                       exceeds the Phase 2 tolerance\n"
         << "\n"
         << "  takt4-cli --version\n";
 }
@@ -348,6 +364,96 @@ int runMeter(const std::vector<std::string_view>& args) {
     return runMeterPicked(session, device, parsed);
 }
 
+// The Phase 2 gate, by hand: the same hop-by-hop path the tests take (pad to whole
+// hops, push, flush), written out for numpy, and optionally held against madmom's.
+int runFeatures(const std::vector<std::string_view>& args) {
+    std::vector<std::string_view> positional;
+    std::optional<std::filesystem::path> golden;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--compare") {
+            if (i + 1 >= args.size()) {
+                throw std::invalid_argument("--compare needs a value");
+            }
+            golden = std::filesystem::path(args[++i]);
+        } else if (args[i].starts_with("--")) {
+            throw std::invalid_argument("unknown option: " + std::string(args[i]));
+        } else {
+            positional.push_back(args[i]);
+        }
+    }
+    if (positional.size() != 2) {
+        throw std::invalid_argument("features needs IN.wav and OUT.npy");
+    }
+    const std::filesystem::path in(positional[0]);
+    const std::filesystem::path out(positional[1]);
+
+    const takt4::io::WavData audio = takt4::io::readWavFile(in);
+    if (audio.channels != 1) {
+        throw std::invalid_argument(in.string() + ": expected mono, got " + std::to_string(audio.channels) +
+                                    " channels (tools/make_golden.py writes what this reads)");
+    }
+    if (static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
+        throw std::invalid_argument(in.string() + ": expected " +
+                                    std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) +
+                                    " Hz, got " + std::to_string(audio.sampleRate));
+    }
+
+    using takt4::audio::kHopSize;
+    using takt4::features::kFeatureDim;
+    const std::size_t hops = (audio.samples.size() + kHopSize - 1) / kHopSize;
+    std::vector<float> padded(hops * kHopSize, 0.0f);
+    std::copy(audio.samples.begin(), audio.samples.end(), padded.begin());
+
+    takt4::features::FeatureExtractor extractor;
+    std::vector<float> matrix;
+    matrix.reserve(hops * kFeatureDim);
+    const auto collect = [&](bool delivered) {
+        if (delivered) {
+            matrix.insert(matrix.end(), extractor.frame().begin(), extractor.frame().end());
+        }
+    };
+    for (std::size_t h = 0; h < hops; ++h) {
+        collect(extractor.pushHop(std::span<const float, kHopSize>(padded.data() + h * kHopSize, kHopSize)));
+    }
+    collect(extractor.flush());
+    const std::size_t frames = matrix.size() / kFeatureDim;
+
+    takt4::io::writeNpyFloat32(out, frames, kFeatureDim, matrix);
+    std::cout << in.string() << ": " << audio.samples.size() << " samples, " << hops << " hops -> " << frames
+              << " frames x " << kFeatureDim << " written to " << out.string() << '\n';
+
+    if (!golden) {
+        return 0;
+    }
+    constexpr double kTolerance = 1e-5; // as tests/features/feature_extractor_test.cpp
+    const takt4::io::NpyMatrix reference = takt4::io::readNpyFloat32(*golden);
+    if (reference.rows != frames || reference.cols != kFeatureDim) {
+        std::cout << golden->string() << ": shape (" << reference.rows << ", " << reference.cols
+                  << ") does not match (" << frames << ", " << kFeatureDim << ")\n";
+        return 1;
+    }
+    double worst = 0.0;
+    std::size_t worstFrame = 0;
+    std::size_t worstColumn = 0;
+    for (std::size_t f = 0; f < frames; ++f) {
+        for (std::size_t c = 0; c < kFeatureDim; ++c) {
+            const double diff =
+                std::abs(static_cast<double>(matrix[f * kFeatureDim + c]) - static_cast<double>(reference.at(f, c)));
+            if (diff > worst) {
+                worst = diff;
+                worstFrame = f;
+                worstColumn = c;
+            }
+        }
+    }
+    std::ostringstream line;
+    line << std::scientific << std::setprecision(3) << "largest difference to " << golden->string() << ": " << worst
+         << " at frame " << worstFrame << ", column " << worstColumn << " (tolerance " << kTolerance
+         << "): " << (worst <= kTolerance ? "PASS" : "FAIL");
+    std::cout << line.str() << '\n';
+    return worst <= kTolerance ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -369,6 +475,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "meter") {
             return runMeter({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "features") {
+            return runFeatures({args.begin() + 1, args.end()});
         }
         std::cerr << "takt4-cli: unknown command: " << args[0] << "\n\n";
         printUsage(std::cerr);

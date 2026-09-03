@@ -1,0 +1,7 @@
+# Step 1 of 2 (see requirements.txt): what madmom needs present before pip can build it
+# from source. Install these first, then requirements.txt with --no-build-isolation.
+Cython==3.3.0
+numpy==2.5.2
+scipy==1.18.1
+setuptools>=80
+wheel>=0.45
