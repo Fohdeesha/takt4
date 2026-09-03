@@ -55,6 +55,8 @@ add_library(takt4_core STATIC
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
   rt/spsc_ring.hpp
+  tracking/state_space.cpp
+  tracking/state_space.hpp
 )
 add_library(takt4::core ALIAS takt4_core)
 
