@@ -7,3 +7,7 @@ third_party/asiosdk/** -text
 
 *.pdf binary
 *.png binary
+
+# Golden test data (tests/data): audio excerpts and the numpy matrices computed from them.
+*.wav binary
+*.npy binary

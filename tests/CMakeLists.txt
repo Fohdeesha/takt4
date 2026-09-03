@@ -15,6 +15,10 @@ add_executable(takt4_tests
   audio/input_stream_test.cpp
   audio/resampler_test.cpp
   dsp/real_fft_test.cpp
+  features/feature_extractor_test.cpp
+  features/filterbank_test.cpp
+  io/npy_file_test.cpp
+  io/wav_file_test.cpp
   output/link_session_test.cpp
   output/midi_ports_test.cpp
   rt/alloc_guard_test.cpp
@@ -22,7 +26,14 @@ add_executable(takt4_tests
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
+  support/temp_dir.hpp
 )
+
+target_include_directories(takt4_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# The golden feature excerpts (tests/data/features, see the README there) are read in
+# place from the source tree; the test binary is not relocatable, and need not be.
+target_compile_definitions(takt4_tests PRIVATE "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\"")
 
 target_link_libraries(takt4_tests
   PRIVATE

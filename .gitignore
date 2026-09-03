@@ -19,6 +19,10 @@ __pycache__/
 *.pyc
 /.venv/
 
+# Local reference material, including the full-length tracks that
+# tools/make_golden.py cuts the committed excerpts from
+/references/
+
 # OS noise
 .DS_Store
 Thumbs.db
