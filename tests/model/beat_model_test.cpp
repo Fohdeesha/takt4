@@ -1,6 +1,5 @@
-#include "core/model/beat_model.hpp"
-
 #include "core/io/npy_file.hpp"
+#include "core/model/beat_model.hpp"
 #include "core/model/dimensions.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
@@ -38,8 +37,8 @@ std::vector<Frame> featureFrames(const std::filesystem::path& path) {
     REQUIRE(golden.cols == kFeatureDim);
     std::vector<Frame> frames(golden.rows);
     for (std::size_t f = 0; f < golden.rows; ++f) {
-        std::copy_n(golden.values.begin() + static_cast<std::ptrdiff_t>(f * kFeatureDim), kFeatureDim,
-                    frames[f].begin());
+        std::copy_n(golden.values.begin() + static_cast<std::ptrdiff_t>(f * kFeatureDim),
+                    kFeatureDim, frames[f].begin());
     }
     return frames;
 }
@@ -98,28 +97,31 @@ TEST_CASE("the C++ model matches PyTorch on every golden excerpt", "[model][gold
             const takt4::io::NpyMatrix reference = takt4::io::readNpyFloat32(trace);
             REQUIRE(reference.cols == kReferenceColumns);
 
-            const std::vector<Frame> frames = featureFrames(kTestData / "features" / trace.filename());
+            const std::vector<Frame> frames =
+                featureFrames(kTestData / "features" / trace.filename());
             REQUIRE(frames.size() == reference.rows);
 
             model.reset();
             for (std::size_t f = 0; f < frames.size(); ++f) {
                 const BeatModel::Activation activation = model.process(frames[f]);
                 for (std::size_t c = 0; c < kNumClasses; ++c) {
-                    const double logit =
-                        std::abs(static_cast<double>(activation.logits[c]) - static_cast<double>(reference.at(f, c)));
-                    const double probability = std::abs(static_cast<double>(activation.probabilities[c]) -
-                                                        static_cast<double>(reference.at(f, kNumClasses + c)));
+                    const double logit = std::abs(static_cast<double>(activation.logits[c]) -
+                                                  static_cast<double>(reference.at(f, c)));
+                    const double probability =
+                        std::abs(static_cast<double>(activation.probabilities[c]) -
+                                 static_cast<double>(reference.at(f, kNumClasses + c)));
                     if (logit > worstLogit) {
                         worstLogit = logit;
-                        worstWhere = trace.filename().string() + " frame " + std::to_string(f) + " class " +
-                                     std::to_string(c);
+                        worstWhere = trace.filename().string() + " frame " + std::to_string(f) +
+                                     " class " + std::to_string(c);
                     }
                     worstProbability = std::max(worstProbability, probability);
                 }
             }
             REQUIRE(model.framesProcessed() == frames.size());
         }
-        INFO("largest logit difference " << worstLogit << " at " << worstWhere << "; largest probability difference "
+        INFO("largest logit difference " << worstLogit << " at " << worstWhere
+                                         << "; largest probability difference "
                                          << worstProbability);
         CHECK(worstLogit <= kLogitTolerance);
         CHECK(worstProbability <= kProbabilityTolerance);

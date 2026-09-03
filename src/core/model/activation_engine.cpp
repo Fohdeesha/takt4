@@ -94,8 +94,8 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         const BeatModel::Activation activation = model_.process(extractor_.frame());
         recordWorst(worstModelMicros_, microsSince(modelStart));
 
-        const FrameActivation out{extractor_.frameIndex(), hop.index, activation.beat(), activation.downbeat(),
-                                  activation.nonBeat()};
+        const FrameActivation out{extractor_.frameIndex(), hop.index, activation.beat(),
+                                  activation.downbeat(), activation.nonBeat()};
         if (activations_.tryPush(out)) {
             framesEmitted_.fetch_add(1, std::memory_order_relaxed);
         } else {

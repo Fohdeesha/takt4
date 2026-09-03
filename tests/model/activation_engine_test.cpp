@@ -1,7 +1,6 @@
-#include "core/model/activation_engine.hpp"
-
 #include "core/audio/rates.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
 
@@ -26,7 +25,8 @@ const std::filesystem::path kTestData{TAKT4_TEST_DATA_DIR};
 const std::filesystem::path kWeightsDir{TAKT4_WEIGHTS_DIR};
 
 std::vector<float> syntheticExcerpt() {
-    const takt4::io::WavData audio = takt4::io::readWavFile(kTestData / "features" / "synthetic.wav");
+    const takt4::io::WavData audio =
+        takt4::io::readWavFile(kTestData / "features" / "synthetic.wav");
     REQUIRE(audio.channels == 1);
     REQUIRE(audio.samples.size() % kHopSize == 0);
     return audio.samples;
@@ -74,7 +74,8 @@ TEST_CASE("the engine turns hops into one activation each, a hop behind", "[mode
     CHECK(loudest > 0.5f); // the synthetic excerpt is a drum machine at 128 BPM
 }
 
-TEST_CASE("the worker thread produces the same activations as stepping by hand", "[model][engine]") {
+TEST_CASE("the worker thread produces the same activations as stepping by hand",
+          "[model][engine]") {
     const std::vector<float> signal = syntheticExcerpt();
     const std::size_t hops = signal.size() / kHopSize;
 
@@ -126,15 +127,16 @@ TEST_CASE("the worker thread produces the same activations as stepping by hand",
     // of audio is 20 ms, and the worker has to be well inside that or the queue grows
     // without bound. Optimised builds only — a Debug build of Eigen is an order of
     // magnitude slower and says nothing about what ships.
-    INFO("worst hop " << threaded->worstHopMicros() << " us, worst model " << threaded->worstModelMicros()
-                      << " us, of 20000 us of audio");
+    INFO("worst hop " << threaded->worstHopMicros() << " us, worst model "
+                      << threaded->worstModelMicros() << " us, of 20000 us of audio");
     CHECK(threaded->worstHopMicros() > 0.0);
 #ifdef NDEBUG
     CHECK(threaded->worstHopMicros() < 20000.0);
 #endif
 }
 
-TEST_CASE("start() clears the queues and the model's memory of the last stream", "[model][engine]") {
+TEST_CASE("start() clears the queues and the model's memory of the last stream",
+          "[model][engine]") {
     const std::vector<float> signal = syntheticExcerpt();
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<ActivationEngine> engine = makeEngine();
@@ -180,7 +182,8 @@ TEST_CASE("start() clears the queues and the model's memory of the last stream",
 TEST_CASE("a reader that never reads loses activations instead of blocking", "[model][engine]") {
     const std::vector<float> signal = syntheticExcerpt();
     const std::unique_ptr<ActivationEngine> engine = makeEngine();
-    const std::size_t hops = std::min<std::size_t>(signal.size() / kHopSize, ActivationEngine::kHopQueueCapacity);
+    const std::size_t hops =
+        std::min<std::size_t>(signal.size() / kHopSize, ActivationEngine::kHopQueueCapacity);
 
     for (std::size_t h = 0; h < hops; ++h) {
         engine->processHop(signal.data() + h * kHopSize, h);
