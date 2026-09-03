@@ -15,6 +15,7 @@ add_executable(takt4_tests
   audio/input_stream_test.cpp
   audio/resampler_test.cpp
   dsp/real_fft_test.cpp
+  engine/beat_engine_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   io/npy_file_test.cpp
@@ -28,6 +29,7 @@ add_executable(takt4_tests
   output/midi_ports_test.cpp
   output/osc_test.cpp
   rt/alloc_guard_test.cpp
+  rt/published_test.cpp
   rt/spsc_ring_test.cpp
   tracking/particle_filter_test.cpp
   tracking/state_space_test.cpp

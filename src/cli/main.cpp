@@ -12,6 +12,7 @@
 #include "core/audio/rates.hpp"
 #include "core/audio/resampler.hpp"
 #include "core/build_info.hpp"
+#include "core/engine/beat_engine.hpp"
 #include "core/features/dimensions.hpp"
 #include "core/features/feature_extractor.hpp"
 #include "core/io/npy_file.hpp"
@@ -631,6 +632,8 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
                               : takt4::audio::ChannelSelection::pair(parsed.stream.pair->first,
                                                                      parsed.stream.pair->second);
 
+    // `beats` is the Phase 3 command and stops at the network's output, so it drives the
+    // activation engine directly rather than through the tracker.
     auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
     takt4::audio::InputStreamOptions options;
     options.sampleRate = parsed.stream.rate;
@@ -802,19 +805,18 @@ std::string beatLine(const takt4::tracking::BeatEvent& event,
     return line.str();
 }
 
-/// The chain from activations onwards — filter, tempo state machine, transports —
-/// shared by the file and the live paths.
+/// The transports, and the printing. The tracking is engine::BeatEngine's now.
 ///
-/// The transports are optional and owned here. Everything they are given comes from one
-/// beat: Link gets the host time the audio actually arrived at (through the frame's
-/// stamp, HANDOFF §4.3), OSC gets the tempo and the bar position, and the MIDI clock is
-/// re-phased on the beat and left to tick in between.
-class Chain {
+/// Everything a transport is given comes from one beat: Link gets the host time the
+/// audio actually arrived at (from the frame's stamp, HANDOFF §4.3), OSC gets the tempo
+/// and the bar position, and the MIDI clock is re-phased on the beat and left to tick in
+/// between. §4.2 puts this on an output thread of its own; the console drives it from
+/// its drain loop instead, which is a deviation the handoff records and Phase 5's
+/// restructuring is where it goes away.
+class Transports {
 public:
-    Chain(const takt4::tracking::StateSpaceModel& model, const TrackArgs& args)
-        : filter_(model, takt4::tracking::ParticleFilter::Options{1500, 250, args.seed}),
-          tempo_(model.secondsPerFrame(), args.tempo),
-          latencyMicros_(static_cast<std::int64_t>(args.tempo.latencyOffsetSeconds * 1e6)) {
+    explicit Transports(const TrackArgs& args)
+        : latencyMicros_(static_cast<std::int64_t>(args.tempo.latencyOffsetSeconds * 1e6)) {
         if (!args.oscTargets.empty()) {
             osc_ = std::make_unique<takt4::output::OscPublisher>(args.oscPrefix);
             for (const auto& [host, port] : args.oscTargets) {
@@ -856,12 +858,12 @@ public:
     }
 
     /// Ticks the MIDI clock up to `now`, and republishes any OSC state that moved.
-    void advance(double now) {
+    void advance(double now, const takt4::tracking::TempoState& state) {
         if (midi_) {
             (void)midi_->advance(now);
         }
         if (osc_) {
-            osc_->publishState(tempo_.state());
+            osc_->publishState(state);
         }
     }
 
@@ -879,39 +881,34 @@ public:
         beatsOut_ << std::fixed << std::setprecision(6);
     }
 
-    void feed(const takt4::model::FrameActivation& activation, double now) {
-        const takt4::tracking::TrackedFrame frame =
-            filter_.process(activation.beat, activation.downbeat);
-        ++frames_;
-        const std::optional<takt4::tracking::BeatEvent> event = tempo_.process(frame);
-        if (!event) {
-            return;
-        }
+    /// One beat: printed, written, and handed to whichever transports are on.
+    /// `hostMicros` is the frame's §4.3 stamp, zero offline; `now` is the
+    /// seconds-since-start clock the MIDI clock ticks on.
+    void publish(const takt4::tracking::BeatEvent& event, const takt4::tracking::TempoState& state,
+                 std::int64_t hostMicros, double now) {
         ++beats_;
-        if (event->downbeat) {
+        if (event.downbeat) {
             ++downbeats_;
         }
-        std::cout << beatLine(*event, tempo_.state()) << '\n';
+        std::cout << beatLine(event, state) << '\n';
         if (beatsOut_.is_open()) {
-            beatsOut_ << event->time << '\t' << event->beatInBar << '\t' << event->bpm << '\n';
+            beatsOut_ << event.time << '\t' << event.beatInBar << '\t' << event.bpm << '\n';
         }
 
         if (osc_) {
-            osc_->publishBeat(*event);
+            osc_->publishBeat(event);
         }
         if (midi_) {
-            midi_->setTempo(event->bpm);
+            midi_->setTempo(event.bpm);
             // The beat's audio arrived a pipeline's worth of time ago; the latency
             // offset is the one place that is compensated (§5.5).
             midi_->syncToBeat(now + static_cast<double>(latencyMicros_) / 1e6);
         }
         if (link_) {
-            publishToLink(*event, activation.hostMicros);
+            publishToLink(event, hostMicros);
         }
     }
 
-    const takt4::tracking::TempoState& state() const { return tempo_.state(); }
-    std::uint64_t frames() const { return frames_; }
     std::uint64_t beats() const { return beats_; }
     std::uint64_t downbeats() const { return downbeats_; }
 
@@ -936,8 +933,6 @@ private:
         }
     }
 
-    takt4::tracking::ParticleFilter filter_;
-    takt4::tracking::TempoTracker tempo_;
     std::int64_t latencyMicros_ = 0;
     std::unique_ptr<takt4::output::LinkSession> link_;
     std::unique_ptr<takt4::output::OscPublisher> osc_;
@@ -945,10 +940,39 @@ private:
     std::unique_ptr<takt4::output::MidiClock> midi_;
     std::ofstream beatsOut_;
     double lastLinkBpm_ = -1.0;
-    std::uint64_t frames_ = 0;
     std::uint64_t beats_ = 0;
     std::uint64_t downbeats_ = 0;
 };
+
+/// The engine's options from the console's arguments.
+takt4::engine::BeatEngine::Options engineOptions(const TrackArgs& args) {
+    takt4::engine::BeatEngine::Options options;
+    options.filter.seed = args.seed;
+    options.tempo = args.tempo;
+    return options;
+}
+
+/// Drains one round of the engine and returns how many frames it had tracked.
+///
+/// The beats carry everything the transports need, including the state as it stood at
+/// each one, so no pairing against the frame ring is needed — which is the point of
+/// EngineBeat. The frames themselves are drained and dropped: the console has no use for
+/// the per-frame trace, which is §5.9's scrolling activation display and the UI's
+/// business, but a ring nobody drains fills up and the engine would rightly start
+/// counting frames lost.
+std::size_t drain(takt4::engine::BeatEngine& engine, Transports& transports, double now) {
+    takt4::engine::EngineFrame frame;
+    std::size_t frames = 0;
+    while (engine.popFrame(frame)) {
+        ++frames;
+    }
+    takt4::engine::EngineBeat beat;
+    while (engine.popBeat(beat)) {
+        transports.publish(beat.event, beat.state, beat.hostMicros, now);
+    }
+    transports.advance(now, engine.state());
+    return frames;
+}
 
 int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeights& weights,
                  const takt4::tracking::StateSpaceModel& model, const TrackArgs& args) {
@@ -972,10 +996,10 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
     offline.oscTargets.clear();
     offline.midiClockPort.reset();
 
-    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
-    Chain chain(model, offline);
+    auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
+    Transports transports(offline);
     if (args.beatsOut) {
-        chain.writeBeatsTo(*args.beatsOut);
+        transports.writeBeatsTo(*args.beatsOut);
     }
     std::cout << in.string() << ": " << hops << " hops, weights "
               << weights.path().filename().string() << ", fold " << fixed1(args.tempo.minBpm) << "-"
@@ -985,19 +1009,19 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
                      "over a file this prints beats and nothing else.\n";
     }
 
-    takt4::model::FrameActivation activation;
+    std::size_t frames = 0;
     for (std::size_t h = 0; h < hops; ++h) {
         engine->processHop(padded.data() + h * kHopSize, h);
         (void)engine->step();
-        while (engine->pop(activation)) {
-            chain.feed(activation,
-                       static_cast<double>(activation.frameIndex) * model.secondsPerFrame());
-        }
+        // Offline the "now" a transport would tick on is the audio's own time; nothing is
+        // enabled here, but passing anything else would be a lie in the argument.
+        frames += drain(*engine, transports,
+                        static_cast<double>(engine->framesTracked()) * model.secondsPerFrame());
     }
-    std::cout << chain.frames() << " frames, " << chain.beats() << " beats (" << chain.downbeats()
-              << " downbeats), ending at " << fixed1(chain.state().bpm) << " BPM in "
-              << chain.state().beatsPerBar << "/4, "
-              << (chain.state().locked ? "locked" : "not locked") << '\n';
+    const takt4::tracking::TempoState state = engine->state();
+    std::cout << frames << " frames, " << transports.beats() << " beats (" << transports.downbeats()
+              << " downbeats), ending at " << fixed1(state.bpm) << " BPM in " << state.beatsPerBar
+              << "/4, " << (state.locked ? "locked" : "not locked") << '\n';
     return 0;
 }
 
@@ -1012,20 +1036,20 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             : takt4::audio::ChannelSelection::pair(args.beats.stream.pair->first,
                                                    args.beats.stream.pair->second);
 
-    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
+    auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
     takt4::audio::InputStreamOptions options;
     options.sampleRate = args.beats.stream.rate;
     options.forceSoftwareSlice = args.beats.stream.software;
     takt4::audio::InputStream stream(session, device, selection, *engine, options);
-    Chain chain(model, args);
+    Transports transports(args);
     if (args.beatsOut) {
-        chain.writeBeatsTo(*args.beatsOut);
+        transports.writeBeatsTo(*args.beatsOut);
     }
     // HANDOFF §4.3: the audio thread stamps each hop through Link's regression, so a
     // beat carries the host time of the audio it was found in rather than of the moment
     // this loop happened to notice it.
-    if (chain.link() != nullptr) {
-        engine->setHostTimeSource(chain.link());
+    if (transports.link() != nullptr) {
+        engine->setHostTimeSource(transports.link());
     }
 
     std::cout << "device:    " << device.hostApiName << " / " << device.name << '\n'
@@ -1048,16 +1072,16 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     if (!args.anyOutput()) {
         std::cout << "none (--link, --osc HOST:PORT, --midi-clock PORT)";
     }
-    if (chain.link() != nullptr) {
+    if (transports.link() != nullptr) {
         std::cout << "Link ";
     }
-    if (chain.osc() != nullptr) {
-        for (std::size_t i = 0; i < chain.osc()->targetCount(); ++i) {
-            std::cout << "OSC " << chain.osc()->target(i).resolved() << " ";
+    if (transports.osc() != nullptr) {
+        for (std::size_t i = 0; i < transports.osc()->targetCount(); ++i) {
+            std::cout << "OSC " << transports.osc()->target(i).resolved() << " ";
         }
     }
-    if (chain.midiPort() != nullptr) {
-        std::cout << "MIDI clock to \"" << chain.midiPort()->portName() << "\"";
+    if (transports.midiPort() != nullptr) {
+        std::cout << "MIDI clock to \"" << transports.midiPort()->portName() << "\"";
     }
     std::cout << '\n';
 
@@ -1067,25 +1091,23 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     stream.start();
 
     const auto start = std::chrono::steady_clock::now();
-    chain.startOutputs(0.0);
+    transports.startOutputs(0.0);
     auto lastStatus = start;
-    takt4::model::FrameActivation activation;
     // A MIDI clock tick is 19 ms apart at 130 BPM, so the loop has to come round faster
     // than that or the ticks inherit its period as jitter. Without an output there is
-    // nothing to be punctual for.
+    // nothing to be punctual for. Note that the tracking no longer waits on this loop:
+    // the engine's inference thread runs at the audio's pace, and this only decides how
+    // promptly a beat it already found reaches a transport.
     const auto period = args.anyOutput() ? 1ms : 10ms;
     while (!shouldStop(start, args.beats.stream.seconds)) {
         std::this_thread::sleep_for(period);
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        while (engine->pop(activation)) {
-            chain.feed(activation, elapsed);
-        }
-        chain.advance(elapsed);
+        (void)drain(*engine, transports, elapsed);
         const auto now = std::chrono::steady_clock::now();
         if (now - lastStatus >= 2s) {
             lastStatus = now;
-            const auto& state = chain.state();
+            const takt4::tracking::TempoState state = engine->state();
             std::cout << "         "
                       << fixed1(std::chrono::duration<double>(now - start).count(), 8)
                       << "s  ..        " << fixed1(state.bpm, 12) << " BPM  "
@@ -1096,34 +1118,35 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         std::cout << std::flush;
     }
     stream.stop();
-    engine->stop();
+    engine->stop(); // tracks whatever the model worker had left before joining
     engine->setHostTimeSource(nullptr);
-    {
-        const double elapsed =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        while (engine->pop(activation)) {
-            chain.feed(activation, elapsed);
-        }
-    }
-    chain.stopOutputs();
+    (void)drain(*engine, transports,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    transports.stopOutputs();
 
     const auto counters = stream.counters();
-    std::cout << "stopped after " << counters.hopsOut << " hops, " << chain.frames() << " frames, "
-              << chain.beats() << " beats (" << chain.downbeats() << " downbeats), "
-              << counters.inputOverflows << " input overflows, " << engine->hopsDropped()
-              << " hops dropped\n";
-    if (chain.osc() != nullptr) {
-        std::cout << "OSC: " << chain.osc()->messagesSent() << " messages sent, "
-                  << chain.osc()->messagesFailed() << " failed\n";
+    std::cout << "stopped after " << counters.hopsOut << " hops, " << engine->framesTracked()
+              << " frames, " << transports.beats() << " beats (" << transports.downbeats()
+              << " downbeats), " << counters.inputOverflows << " input overflows, "
+              << engine->activations().hopsDropped() << " hops dropped\n"
+              << "inference: " << fixed1(engine->meanFrameMicros()) << " us mean / "
+              << fixed1(engine->worstFrameMicros()) << " us worst per frame, of 20000 us of audio"
+              << (engine->framesDropped() != 0
+                      ? ", " + std::to_string(engine->framesDropped()) + " frames not drained"
+                      : "")
+              << '\n';
+    if (transports.osc() != nullptr) {
+        std::cout << "OSC: " << transports.osc()->messagesSent() << " messages sent, "
+                  << transports.osc()->messagesFailed() << " failed\n";
     }
-    if (chain.midiClock() != nullptr) {
-        std::cout << "MIDI clock: " << chain.midiClock()->ticksSent() << " ticks, "
-                  << chain.midiClock()->ticksSkipped() << " skipped\n";
+    if (transports.midiClock() != nullptr) {
+        std::cout << "MIDI clock: " << transports.midiClock()->ticksSent() << " ticks, "
+                  << transports.midiClock()->ticksSkipped() << " skipped\n";
     }
-    if (chain.link() != nullptr) {
-        std::cout << "Link: " << chain.link()->tempoUpdates() << " tempo updates, "
-                  << chain.link()->beatRequests() << " beat requests, " << chain.link()->numPeers()
-                  << " peers at the end\n";
+    if (transports.link() != nullptr) {
+        std::cout << "Link: " << transports.link()->tempoUpdates() << " tempo updates, "
+                  << transports.link()->beatRequests() << " beat requests, "
+                  << transports.link()->numPeers() << " peers at the end\n";
     }
     return 0;
 }
