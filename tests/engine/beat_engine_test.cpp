@@ -10,6 +10,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -83,7 +84,9 @@ TEST_CASE("the engine turns hops into tracked frames and beats", "[engine]") {
         CHECK(frame.tracked.bpm <= 215.0);
         CHECK(frame.state.beatsPerBar >= 2);
         CHECK(frame.state.beatsPerBar <= 4);
-        beatFrames += frame.beat ? 1 : 0;
+        if (frame.beat) {
+            ++beatFrames;
+        }
         loudest = std::max(loudest, static_cast<double>(frame.activation.beat));
         ++expected;
     }
@@ -205,7 +208,9 @@ TEST_CASE("the threads give what stepping by hand gives", "[engine]") {
         CHECK(fromThreads[f].state.bpm == byHand[f].state.bpm);
         CHECK(fromThreads[f].state.locked == byHand[f].state.locked);
         CHECK(fromThreads[f].beat == byHand[f].beat);
-        beatFrames += byHand[f].beat ? 1 : 0;
+        if (byHand[f].beat) {
+            ++beatFrames;
+        }
     }
     CHECK(beats.size() == beatFrames);
 
