@@ -217,8 +217,12 @@ TEST_CASE("the golden synthetic features read as numpy wrote them", "[io]") {
     std::size_t negative = 0;
     std::size_t positive = 0;
     for (const float v : m.values) {
-        negative += v < 0.0f ? 1 : 0;
-        positive += v > 0.0f ? 1 : 0;
+        if (v < 0.0f) {
+            ++negative;
+        }
+        if (v > 0.0f) {
+            ++positive;
+        }
     }
     CHECK(negative == 0);      // log10(1 + x) of a magnitude, and clipped differences
     CHECK(positive == 102395); // numpy: (m > 0).sum()
