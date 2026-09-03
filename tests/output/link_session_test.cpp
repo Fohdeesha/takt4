@@ -123,9 +123,16 @@ TEST_CASE("the host time filter stamps a hop with the time it was fed at", "[lin
     // takt4 does it; a hop only exists once its 20 ms of audio has arrived.
     LinkSession session(120.0);
 
+    // A quarter of a second of slack, which is not a statement about how accurate the
+    // filter is. Real hops arrive on a hardware clock, evenly; this test fakes them with
+    // sleep_for, and a 2 ms sleep on a shared CI runner can take twenty. The regression
+    // fits a straight line through whatever intervals it was actually handed, so the
+    // tolerance has to cover the test's own scheduling. What is being checked is that
+    // the stamp is on Link's clock and tracks it — an off-by-an-hour, a wrong slope, a
+    // value in the wrong unit — not microseconds of accuracy.
     constexpr std::uint64_t kWarmUp = 5;
     constexpr std::uint64_t kHops = 40;
-    constexpr std::int64_t kTolerance = 20'000; // 20 ms, an order of magnitude of slack
+    constexpr std::int64_t kTolerance = 250'000;
     std::int64_t worst = 0;
     for (std::uint64_t hop = 0; hop < kHops; ++hop) {
         const std::int64_t before = session.now().count();
