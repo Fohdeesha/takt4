@@ -1,0 +1,104 @@
+name: full
+
+# The whole application, Slint included, on all three platforms. Every job builds
+# Slint from scratch through cargo (7–25 minutes, macOS billed at 10×), so this runs
+# only when something that can affect the UI build changes, once a week to catch
+# drift, and on demand. core.yml covers the engine on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/ui/**'
+      - 'src/main.cpp'
+      - 'src/CMakeLists.txt'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - '.github/workflows/full.yml'
+  pull_request:
+    paths:
+      - 'src/ui/**'
+      - 'src/main.cpp'
+      - 'src/CMakeLists.txt'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - '.github/workflows/full.yml'
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The hosted Windows images (windows-latest and windows-2025 alike, as of the
+          # 2026-08-24 image) ship Visual Studio 2026 only. The preset names no
+          # generator, so CMake picks whatever Visual Studio is installed.
+          - os: windows-latest
+            preset: windows-msvc
+            app: build/windows-msvc/bin/Release/takt4.exe
+            cli: build/windows-msvc/bin/Release/takt4-cli.exe
+          - os: macos-latest
+            preset: macos
+            app: build/macos/bin/takt4
+            cli: build/macos/bin/takt4-cli
+          - os: ubuntu-24.04
+            preset: linux
+            app: build/linux/bin/takt4
+            cli: build/linux/bin/takt4-cli
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev
+
+      # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
+      # requirements in README.md. Record what was actually used.
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          ninja --version || true
+          rustc --version || true
+          cargo --version || true
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+      - name: Version banner
+        run: ${{ matrix.app }} --version
+
+      - name: Console tool
+        run: |
+          ${{ matrix.cli }} --version
+          ${{ matrix.cli }} devices

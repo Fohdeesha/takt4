@@ -1,4 +1,9 @@
-name: build
+name: core
+
+# The engine, the console tool and the tests on every push, on all three platforms,
+# without Slint — so without a Rust toolchain and without the 7–25 minute cargo build.
+# full.yml builds the UI. A change to takt4_core that breaks src/ui/ is therefore only
+# caught by full.yml's weekly run or a manual dispatch; run one before a milestone.
 
 on:
   push:
@@ -21,7 +26,7 @@ jobs:
   build:
     name: ${{ matrix.preset }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -30,22 +35,13 @@ jobs:
           # 2026-08-24 image) ship Visual Studio 2026 only. The preset names no
           # generator, so CMake picks whatever Visual Studio is installed.
           - os: windows-latest
-            preset: windows-msvc
-            app: build/windows-msvc/bin/Release/takt4.exe
-            cli: build/windows-msvc/bin/Release/takt4-cli.exe
+            preset: windows-core
+            cli: build/windows-core/bin/Release/takt4-cli.exe
           - os: macos-latest
-            preset: macos
-            app: build/macos/bin/takt4
-            cli: build/macos/bin/takt4-cli
-          - os: ubuntu-24.04
-            preset: linux
-            app: build/linux/bin/takt4
-            cli: build/linux/bin/takt4-cli
-          # Engine and tests only. Proves takt4_core stands without Slint or a Rust
-          # toolchain; the job checks that Slint was never even downloaded.
+            preset: macos-core
+            cli: build/macos-core/bin/takt4-cli
           - os: ubuntu-24.04
             preset: linux-core
-            app: ""
             cli: build/linux-core/bin/takt4-cli
 
     steps:
@@ -58,16 +54,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev
+            pkg-config libasound2-dev libjack-jackd2-dev
 
-      # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
-      # requirements in README.md. Record what was actually used.
+      # The hosted images ship CMake and Ninja that satisfy the requirements in
+      # README.md. Record what was actually used.
       - name: Toolchain versions
         run: |
           cmake --version
           ninja --version || true
-          rustc --version || true
-          cargo --version || true
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -78,10 +72,6 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-      - name: Version banner
-        if: matrix.app != ''
-        run: ${{ matrix.app }} --version
-
       # The Windows and Linux runners have no audio devices; the macOS runner exposes
       # virtual CoreAudio ones, which the [hardware] test above opens. This proves the
       # console tool starts, brings PortAudio up with the expected host APIs, and copes
@@ -91,6 +81,6 @@ jobs:
           ${{ matrix.cli }} --version
           ${{ matrix.cli }} devices
 
+      # Proves takt4_core stands without Slint or a Rust toolchain.
       - name: Slint was not fetched
-        if: matrix.preset == 'linux-core'
-        run: test ! -e build/linux-core/_deps/slint-src
+        run: test ! -e build/${{ matrix.preset }}/_deps/slint-src
