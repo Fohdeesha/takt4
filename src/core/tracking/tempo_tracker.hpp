@@ -111,7 +111,12 @@ public:
         double refineTempoTolerance = 0.10;
     };
 
-    explicit TempoTracker(double secondsPerFrame, Options options = {});
+    /// Two constructors rather than `Options options = {}`: a default argument is
+    /// written inside the enclosing class but outside any member function, where a
+    /// nested class's own default member initialisers are not yet available. MSVC
+    /// accepts it; Clang rejects it, correctly.
+    TempoTracker(double secondsPerFrame, Options options);
+    explicit TempoTracker(double secondsPerFrame);
 
     /// Feeds one frame from the particle filter. Returns a beat if one was called.
     std::optional<BeatEvent> process(const TrackedFrame& frame) noexcept;

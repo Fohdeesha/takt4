@@ -38,6 +38,8 @@ double applyShift(double bpm, std::int64_t shift) noexcept {
 
 } // namespace
 
+TempoTracker::TempoTracker(double secondsPerFrame) : TempoTracker(secondsPerFrame, Options{}) {}
+
 TempoTracker::TempoTracker(double secondsPerFrame, Options options)
     : secondsPerFrame_(secondsPerFrame), options_(options) {
     if (!(secondsPerFrame > 0.0)) {

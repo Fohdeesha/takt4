@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -112,32 +113,43 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
     }
 }
 
-TEST_CASE("the host time filter turns a sample counter into host time", "[link]") {
+TEST_CASE("the host time filter stamps a hop with the time it was fed at", "[link]") {
     // HANDOFF §4.3: "the only requirement is a monotonically increasing sample counter".
-    // The regression is fed one point per hop, the way ActivationEngine feeds it.
+    // Feed it the way ActivationEngine does — one point per hop, with real time passing
+    // between them — and the stamp for the hop being fed is the present. What it must
+    // not be given is a burst of points taken at the same instant: the least-squares
+    // line through those has no slope worth anything, and asking for one back is asking
+    // the regression about noise. That is not a fault in the filter, and nothing in
+    // takt4 does it; a hop only exists once its 20 ms of audio has arrived.
     LinkSession session(120.0);
 
-    const std::int64_t first = session.hostMicrosForSample(0.0);
-    CHECK(first != 0);
-
-    // Feed it a run of hops and check the mapping came out monotonic and roughly the
-    // right slope: 441 samples at 22050 Hz is 20000 us, and this loop takes far less
-    // than that, so the regression is dominated by the sample times it is given.
-    std::int64_t previous = first;
-    for (std::uint64_t hop = 1; hop < 200; ++hop) {
-        const std::int64_t micros = session.hostMicrosForSample(static_cast<double>(hop * 441));
-        CHECK(micros >= previous);
-        previous = micros;
+    constexpr std::uint64_t kWarmUp = 5;
+    constexpr std::uint64_t kHops = 40;
+    constexpr std::int64_t kTolerance = 20'000; // 20 ms, an order of magnitude of slack
+    std::int64_t worst = 0;
+    for (std::uint64_t hop = 0; hop < kHops; ++hop) {
+        const std::int64_t before = session.now().count();
+        const std::int64_t micros = session.hostMicrosForSample(static_cast<double>(hop) * 441.0);
+        const std::int64_t after = session.now().count();
+        if (hop >= kWarmUp) {
+            // The stamp is when the regression thinks this hop's samples arrived, and
+            // this hop's samples are arriving now.
+            CHECK(micros > before - kTolerance);
+            CHECK(micros < after + kTolerance);
+            worst = std::max(worst, std::abs(micros - before));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
-    // The clock barely moved while the sample counter advanced by four seconds, so the
-    // regression's slope is tiny and the extrapolation is nearly flat. What matters is
-    // that it is a straight line through the points, not that it predicts real audio.
-    const std::int64_t elapsed = previous - first;
-    CHECK(elapsed >= 0);
+    INFO("worst stamp error " << worst << " us");
+    CHECK(worst < kTolerance);
 
     SECTION("resetting forgets it, for a stream that was restarted") {
         session.resetHostTimeFilter();
-        CHECK(session.hostMicrosForSample(0.0) != 0);
+        const std::int64_t before = session.now().count();
+        const std::int64_t micros = session.hostMicrosForSample(0.0);
+        // One point is a degenerate fit, and Link returns the mean host time rather than
+        // dividing by zero, which is still the present.
+        CHECK(micros > before - kTolerance);
     }
 }
 
