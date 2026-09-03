@@ -140,6 +140,18 @@ python tools/pf_reference.py                                # regenerate the tra
 until this project's restatement of the particle filter has been held against the real
 one.
 
+`tools/evaluate.py` is the odd one out: it produces nothing committed. It measures beat
+and downbeat F-measure against an annotated dataset by running every file through
+`takt4-cli track` and scoring with mir_eval, so the number is the shipped C++ scored by
+the reference implementation the published figures come from. No dataset is vendored —
+they are large and their licences are their own — and the layouts of Ballroom, SMC and
+GTZAN work as they come:
+
+```sh
+pip install -r tools/requirements-eval.txt
+python tools/evaluate.py path/to/audio --annotations path/to/annotations --report eval.json
+```
+
 Two steps because madmom builds from source and its `setup.py` imports numpy and
 Cython. Full-length source tracks belong outside git; `references/` is ignored for
 that purpose.

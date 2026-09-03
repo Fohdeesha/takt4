@@ -1,0 +1,13 @@
+# What tools/evaluate.py needs on top of tools/requirements.txt (HANDOFF §8 Phase 4's
+# offline evaluation). Separate because nothing else here wants it and it is only needed
+# when there is an annotated dataset to run against.
+#
+#   pip install -r tools/requirements-eval.txt
+#
+# mir_eval is the reference implementation of the beat metrics: its f_measure is the
+# 70 ms-tolerance number §A.1 quotes, and its evaluate() trims the first five seconds off
+# both sides, which is the convention the published figures follow. A hand-rolled
+# F-measure would give a number that is not comparable to them, which would defeat the
+# purpose. Pinned so a bumped metric cannot silently move takt4's score.
+-r requirements.txt
+mir_eval==0.8.2
