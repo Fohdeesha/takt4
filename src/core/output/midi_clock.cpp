@@ -46,7 +46,7 @@ unsigned int findPort(RtMidiOut& out, std::string_view spec) {
         }
     }
 
-    std::string message = "no MIDI output port matching \"" + std::string(spec) + "\"; ";
+    std::string message = "MIDI output: no port matching \"" + std::string(spec) + "\"; ";
     if (names.empty()) {
         message += "there are none";
     } else {
@@ -65,7 +65,18 @@ struct MidiOutput::Impl {
 };
 
 MidiOutput::MidiOutput(std::string_view portName) {
-    auto impl = std::make_unique<Impl>();
+    std::unique_ptr<Impl> impl;
+    try {
+        impl = std::make_unique<Impl>();
+    } catch (const RtMidiError& error) {
+        // A machine can have no usable MIDI API at all — a headless Linux box without an
+        // ALSA sequencer is the ordinary case, and CI runs on one — and RtMidi reports
+        // that by throwing from its own constructor rather than offering an empty port
+        // list. listMidiOutputPorts() swallows the same thing to keep a listing simple;
+        // here it has to become an error the caller can print.
+        throw std::runtime_error("MIDI output: no usable MIDI API on this machine (" +
+                                 error.getMessage() + ")");
+    }
     try {
         const unsigned int index = findPort(impl->out, portName);
         portName_ = impl->out.getPortName(index);

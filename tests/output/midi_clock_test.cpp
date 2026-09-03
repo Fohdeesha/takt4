@@ -161,11 +161,29 @@ TEST_CASE("a long stall is skipped rather than flooded", "[output][midi]") {
     CHECK(clock.ticksSent() + clock.ticksSkipped() >= 60 * 48);
 }
 
-TEST_CASE("a MIDI port that is not there is named as an error", "[output][midi]") {
+TEST_CASE("a MIDI port that is not there fails with something worth reading", "[output][midi]") {
     // No machine this runs on is guaranteed to have a MIDI device, so the negative case
-    // is the one that can be asserted anywhere. The message lists what was found, which
-    // is what an operator with a differently-named interface needs.
-    CHECK_THROWS_WITH(MidiOutput("no such port, surely"),
-                      ContainsSubstring("no MIDI output port matching"));
-    CHECK_THROWS_WITH(MidiOutput("99999"), ContainsSubstring("no MIDI output port matching"));
+    // is the one that can be asserted anywhere. Two things differ across machines and
+    // both have to come out as a std::runtime_error rather than RtMidi's own exception
+    // type: a working API with no matching port, and — a headless Linux CI runner, for
+    // instance — no usable MIDI API at all, which RtMidi signals by throwing from its
+    // own constructor.
+    for (const char* spec : {"no such port, surely", "99999"}) {
+        INFO("asked for \"" << spec << "\"");
+        bool threw = false;
+        try {
+            const MidiOutput opened(spec);
+            (void)opened;
+        } catch (const std::runtime_error& error) {
+            threw = true;
+            const std::string message = error.what();
+            INFO("message: " << message);
+            CHECK_THAT(message, ContainsSubstring("MIDI output"));
+            // Where there is an API the message lists the ports that were found, which
+            // is what an operator with a differently-named interface needs.
+            CHECK((message.find("no port matching") != std::string::npos ||
+                   message.find("no usable MIDI API") != std::string::npos));
+        }
+        CHECK(threw);
+    }
 }
