@@ -58,9 +58,9 @@ void ActivationEngine::processHop(const float* hop, std::uint64_t hopIndex) noex
     queued.index = hopIndex;
     // HANDOFF §4.3: the sample counter goes in here, on the audio thread, and Link's
     // regression turns it into a host time. Nothing else on this thread reads a clock.
-    if (hostTime_ != nullptr) {
-        queued.hostMicros = hostTime_->hostMicrosForSample(static_cast<double>(hopIndex) *
-                                                           static_cast<double>(audio::kHopSize));
+    if (audio::HostTimeSource* clock = hostTime_.load(std::memory_order_relaxed)) {
+        queued.hostMicros = clock->hostMicrosForSample(static_cast<double>(hopIndex) *
+                                                       static_cast<double>(audio::kHopSize));
     }
     std::copy_n(hop, audio::kHopSize, queued.samples.begin());
     if (hops_.tryPush(queued)) {

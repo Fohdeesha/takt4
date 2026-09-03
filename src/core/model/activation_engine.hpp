@@ -66,8 +66,14 @@ public:
     /// Installs the clock that stamps each activation with the host time of the audio it
     /// was made from (HANDOFF §4.3). It is called from the audio thread, once per hop,
     /// and must outlive the stream. Null — the default — leaves `hostMicros` at zero,
-    /// which is what offline runs and most tests want. Set before start().
-    void setHostTimeSource(audio::HostTimeSource* source) noexcept { hostTime_ = source; }
+    /// which is what offline runs and most tests want.
+    ///
+    /// Atomic because the audio thread reads it, but that only makes the swap itself
+    /// safe: the source has to be installed before the stream is started and cleared
+    /// after it is stopped, or a hop could still be in the callback with the old one.
+    void setHostTimeSource(audio::HostTimeSource* source) noexcept {
+        hostTime_.store(source, std::memory_order_relaxed);
+    }
 
     /// Clears both queues, resets the front end and the model's LSTM state, and starts
     /// the worker. Call before the stream is started, never while it is running.
@@ -131,7 +137,7 @@ private:
 
     features::FeatureExtractor extractor_;
     BeatModel model_;
-    audio::HostTimeSource* hostTime_ = nullptr;
+    std::atomic<audio::HostTimeSource*> hostTime_{nullptr};
     rt::SpscRing<QueuedHop, kHopQueueCapacity> hops_;
     rt::SpscRing<FrameActivation, kActivationQueueCapacity> activations_;
 

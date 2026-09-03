@@ -1,7 +1,7 @@
-#include "core/model/activation_engine.hpp"
-
+#include "core/audio/host_time.hpp"
 #include "core/audio/rates.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
 
@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -32,6 +33,10 @@ std::vector<float> syntheticExcerpt() {
     REQUIRE(audio.samples.size() % kHopSize == 0);
     return audio.samples;
 }
+
+/// An arbitrary point on the host clock for the ruler below to start from, big enough
+/// to catch an off-by-a-lot rather than an off-by-a-little.
+constexpr std::int64_t kClockOrigin = 7'000'000'000;
 
 // The rings are 130 KB together; an engine belongs on the heap, here as anywhere.
 std::unique_ptr<ActivationEngine> makeEngine() {
@@ -73,6 +78,56 @@ TEST_CASE("the engine turns hops into one activation each, a hop behind", "[mode
     }
     CHECK(expected == hops - 1);
     CHECK(loudest > 0.5f); // the synthetic excerpt is a drum machine at 128 BPM
+}
+
+TEST_CASE("an activation carries the host time of the audio it was made from", "[model][engine]") {
+    // HANDOFF §4.3. LinkSession is the real source; this one is a straight line, so the
+    // arithmetic can be checked rather than merely exercised.
+    struct RulerClock final : takt4::audio::HostTimeSource {
+        std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
+            ++calls;
+            // 22050 samples a second, and the stream started at this arbitrary offset.
+            return kClockOrigin + static_cast<std::int64_t>(sampleTime * 1e6 / 22050.0);
+        }
+        std::size_t calls = 0;
+    };
+
+    const std::vector<float> signal = syntheticExcerpt();
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<ActivationEngine> engine = makeEngine();
+
+    RulerClock clock;
+    engine->setHostTimeSource(&clock);
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        CHECK(engine->step());
+    }
+    CHECK(clock.calls == hops); // once per hop, on the audio thread, and nowhere else
+
+    // Frame k is centred on sample kHopSize * k, whichever hop happened to complete it.
+    FrameActivation activation;
+    std::uint64_t expected = 0;
+    while (engine->pop(activation)) {
+        CHECK(activation.frameIndex == expected);
+        CHECK(activation.hostMicros == kClockOrigin + static_cast<std::int64_t>(expected) * 20000);
+        ++expected;
+    }
+    CHECK(expected == hops - 1);
+
+    SECTION("without a source the stamp is left at zero rather than guessed") {
+        const std::unique_ptr<ActivationEngine> plain = makeEngine();
+        for (std::size_t h = 0; h < 8; ++h) {
+            plain->processHop(signal.data() + h * kHopSize, h);
+            (void)plain->step();
+        }
+        FrameActivation frame;
+        std::size_t frames = 0;
+        while (plain->pop(frame)) {
+            CHECK(frame.hostMicros == 0);
+            ++frames;
+        }
+        CHECK(frames == 7);
+    }
 }
 
 TEST_CASE("the worker thread produces the same activations as stepping by hand",
