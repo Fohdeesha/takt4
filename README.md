@@ -27,8 +27,31 @@ hops to a lock-free ring and a worker thread runs the front end and the model; o
 those excerpts the worker averages 0.086 ms per hop and has never taken more than
 0.31 ms, out of the 20 ms of audio each hop stands for.
 
-Nothing turns those probabilities into beats yet — that is the particle filter, next.
-`takt4 --version` prints what it was built with, and the window opens.
+Those probabilities become beats through BeatNet+'s two-stage particle filter cascade.
+madmom's bar-pointer state space and its transition models are precomputed into
+`assets/statespace/default.bin` — 40 KB covering 55 to 215 BPM and 2 to 4 beats to the
+bar — so the C++ implements only the runtime loop. It is deterministic: the generator is
+specified rather than inherited, and `src/core/tracking/` reproduces
+`tools/pf_reference.py` frame for frame on all eighteen excerpts. That restatement in
+turn has to track the real BeatNet+ filter as closely as it tracks itself across six
+seeds before anything is committed; see
+[tests/data/tracking/README.md](tests/data/tracking/README.md), which also records what
+that catches and what it cannot.
+
+On top sits the tempo state machine: octave folding into a range you set, a lock that
+needs sustained agreement and sustained disagreement to change, a confidence gate that
+holds the last good tempo rather than publishing a wrong one, a latency offset on every
+beat, and the meter taken from the filter rather than assumed. Tempo is refined from the
+spacing of the beats themselves, because the state space's whole-frame intervals are 5
+BPM apart at 130 and nothing inside the filter can do better.
+
+The three transports are driven from it: Ableton Link (tempo, and phase with the
+detected meter as the quantum, timed through Link's own regression on the audio thread's
+sample counter), a generic OSC namespace on any number of targets, and MIDI beat clock
+at 24 PPQN.
+
+`takt4 --version` prints what it was built with, and the window opens; the UI does not
+show any of this yet.
 
 ### Development console
 
@@ -43,6 +66,8 @@ takt4-cli meter --device 1 --all        # every channel of the device, unresampl
 takt4-cli features in.wav out.npy --compare golden.npy   # feature front end on a file
 takt4-cli beats in.wav                                   # front end + model on a file
 takt4-cli beats --device 1 --channel 7                   # ... and on a live input
+takt4-cli track in.wav --bpm 80-160                      # the whole chain, over a file
+takt4-cli track --device 1 --channel 7 --link --osc 192.168.1.40:7000 --midi-clock "MOTU"
 ```
 
 Channel numbers count from 1, as printed on the interface. On ASIO and CoreAudio the
@@ -64,14 +89,40 @@ percussion-heavy material, `af-non-percussive` for ambient and classical, or a p
 a `.bin` of your own. A run ends with the mean and the worst time one hop took on the
 worker thread, out of the 20 ms of audio it stands for.
 
+`track` runs everything: the front end, the model, the particle filter and the tempo
+state machine, and drives the outputs. It prints a line per beat with the tempo, the
+position in the bar, the meter, whether the tempo is locked and how confident the
+tracker is, and a status line every two seconds in between.
+
+| Option | |
+|---|---|
+| `--bpm LO-HI` | the octave-fold window, default `70-140`. An estimate outside it is halved or doubled into it, which is what stops a house set reading 170. |
+| `--confidence T` | below this the last good tempo is held and the line says so; default 0.15 |
+| `--latency MS` | added to every beat's timestamp and to what the transports are told; negative fires early, which is the useful direction |
+| `--seed N` | the particle filter's seed. The same seed and the same audio give the same beats, every time and on every platform. |
+| `--link` | join the Ableton Link network as tempo master |
+| `--osc HOST:PORT` | send the generic namespace there; repeat for more targets |
+| `--osc-prefix /NAME` | that namespace's prefix, default `/takt4` |
+| `--midi-clock PORT` | 24 PPQN to a MIDI output port, named by any part of its name or by its index. A wrong name lists the ports that are there. |
+
+The OSC namespace is `/takt4/bpm`, `/takt4/beat`, `/takt4/beat/bar`, `/takt4/downbeat`,
+`/takt4/confidence`, `/takt4/locked`, `/takt4/meter` and `/takt4/resync`. The state
+addresses repeat on every beat, so anything that starts late is right again within a
+beat.
+
+The outputs need a live input: a file is worked through as fast as it reads, so its
+beats do not happen in real time and there is no host clock to align a transport to.
+Over a file `track` prints the beats and nothing else.
+
 ### Python tooling
 
 `tools/` holds the build-time Python that produces committed artifacts — the filterbank
 table in `src/core/features/filterbank_table.cpp`, the golden feature files under
-`tests/data/features/`, the weight blobs in `assets/weights/` and the reference
-activations under `tests/data/model/` — by running madmom and PyTorch, the reference
-implementations, at pinned versions. Nothing in it is needed to build, test or run
-takt4, and CI never installs it. It is needed when adding golden excerpts or bumping
+`tests/data/features/`, the weight blobs in `assets/weights/`, the state space in
+`assets/statespace/`, and the reference activations and tracker traces under
+`tests/data/model/` and `tests/data/tracking/` — by running madmom and PyTorch, the
+reference implementations, at pinned versions. Nothing in it is needed to build, test or
+run takt4, and CI never installs it. It is needed when adding golden excerpts or bumping
 the pinned numpy/scipy/madmom:
 
 ```sh
@@ -81,7 +132,13 @@ pip install -r tools/requirements-build.txt
 pip install --no-build-isolation -r tools/requirements.txt
 python tools/make_golden.py path/to/track.flac --auto       # 10 s excerpt + madmom features
 python tools/dump_filterbank.py                             # regenerate the table
+python tools/dump_statespace.py                             # regenerate the state space
+python tools/pf_reference.py                                # regenerate the tracker traces
 ```
+
+`pf_reference.py` also needs a BeatNet+ checkout, because it refuses to write anything
+until this project's restatement of the particle filter has been held against the real
+one.
 
 Two steps because madmom builds from source and its `setup.py` imports numpy and
 Cython. Full-length source tracks belong outside git; `references/` is ignored for
@@ -174,11 +231,14 @@ src/core/dsp/       real FFT (KissFFT)
 src/core/features/  madmom-equivalent feature front end: STFT, filterbank, log, diff
 src/core/io/        WAV and .npy readers/writers for tests and tools, not the audio path
 src/core/model/     BeatNet+ through RTNeural: weight loading, the network, the worker
+src/core/output/    Ableton Link, the OSC encoder and sender, MIDI clock
 src/core/rt/        real-time allocation guard, lock-free SPSC ring
+src/core/tracking/  the state space, the particle filter, the tempo state machine
 src/cli/      takt4-cli, the development console; links takt4_core only
 src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp
-assets/weights/  the three BeatNet+ weight sets, converted (see tools/convert_weights.py)
+assets/weights/    the three BeatNet+ weight sets, converted (tools/convert_weights.py)
+assets/statespace/ madmom's bar-pointer state space, precomputed (tools/dump_statespace.py)
 tests/        Catch2; links takt4_core only
 tests/data/   golden excerpts: audio, madmom's features for it, PyTorch's activations
 tools/        Python that generates committed artifacts from madmom and torch (above)
@@ -202,6 +262,7 @@ GPLv3 — see [LICENSE](LICENSE).
 | [BeatNet+](https://github.com/mjhydri/BeatNet-Plus) weights (`assets/weights/`) | Beat, downbeat and meter detection | **None stated upstream** |
 | [Eigen](https://eigen.tuxfamily.org) (bundled by RTNeural) | RTNeural's math backend | MPL-2.0 |
 | [RtMidi](https://github.com/thestk/rtmidi) | MIDI clock and notes | MIT-style |
+| [madmom](https://github.com/CPJKU/madmom) | Build-time only, never linked or shipped: `tools/` runs it to compute the filterbank table and the state space blob, and to produce the golden features the C++ front end is checked against | 2-clause BSD for its source, which is all that is used. Its *pretrained data and model files* are CC BY-NC-SA 4.0; takt4 loads none of them — every table here is computed from configuration, not copied from a `.npy` or a pickled model. |
 | [nlohmann/json](https://github.com/nlohmann/json) | Settings and presets | MIT |
 | [Slint](https://slint.dev) | User interface | GPLv3 (triple-licensed) |
 | [Skia](https://skia.org) (prebuilt by [rust-skia](https://github.com/rust-skia/rust-skia), pulled in by Slint) | UI rendering | BSD-3-Clause; the archive bundles libpng, zlib, libjpeg-turbo, expat, HarfBuzz, ICU and wuffs under their own permissive licenses |
