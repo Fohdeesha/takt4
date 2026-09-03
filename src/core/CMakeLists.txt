@@ -16,6 +16,7 @@ add_library(takt4_core STATIC
   audio/hop_meter.cpp
   audio/hop_meter.hpp
   audio/hop_processor.hpp
+  audio/host_time.hpp
   audio/host_apis.cpp
   audio/host_apis.hpp
   audio/input_pipeline.cpp
@@ -50,8 +51,16 @@ add_library(takt4_core STATIC
   model/weights.hpp
   output/link_session.cpp
   output/link_session.hpp
+  output/midi_clock.cpp
+  output/midi_clock.hpp
   output/midi_ports.cpp
   output/midi_ports.hpp
+  output/osc_message.cpp
+  output/osc_message.hpp
+  output/osc_publisher.cpp
+  output/osc_publisher.hpp
+  output/osc_sender.cpp
+  output/osc_sender.hpp
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
   rt/spsc_ring.hpp
