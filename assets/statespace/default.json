@@ -1,0 +1,43 @@
+{
+  "name": "default",
+  "format_version": 1,
+  "config": {
+    "fps": 50,
+    "min_bpm": 55.0,
+    "max_bpm": 215.0,
+    "num_tempi": 300,
+    "lambda_beat": 60.0,
+    "lambda_down": 0.1,
+    "min_beats_per_bar": 2,
+    "max_beats_per_bar": 4,
+    "observation_lambda_beat": 56,
+    "observation_lambda_down": 56
+  },
+  "bytes": 39988,
+  "sha256": "06247e70098a90ede020192e21ce41d03a423bdc2dd0e0c648c98553386f5589",
+  "madmom": "0.17.dev0",
+  "numpy": "2.5.2",
+  "beat_states": 1449,
+  "beat_interval_range": [
+    14,
+    55
+  ],
+  "beat_interval_count": 42,
+  "beat_bpm_range": [
+    54.545,
+    214.286
+  ],
+  "beat_transitions_madmom": 2722,
+  "beat_transitions_stored": 1315,
+  "beat_pointer_counts": {
+    "0": 1407,
+    "2": 42
+  },
+  "down_states": 9,
+  "down_intervals": [
+    2,
+    3,
+    4
+  ],
+  "payload_bytes": 39892
+}

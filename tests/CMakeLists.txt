@@ -26,6 +26,7 @@ add_executable(takt4_tests
   output/midi_ports_test.cpp
   rt/alloc_guard_test.cpp
   rt/spsc_ring_test.cpp
+  tracking/state_space_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
@@ -35,11 +36,12 @@ add_executable(takt4_tests
 target_include_directories(takt4_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # The golden feature excerpts (tests/data/features, see the README there) and the
-# committed weight blobs (assets/weights) are read in place from the source tree; the
-# test binary is not relocatable, and need not be.
+# committed blobs (assets/weights, assets/statespace) are read in place from the source
+# tree; the test binary is not relocatable, and need not be.
 target_compile_definitions(takt4_tests PRIVATE
   "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
   "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
+  "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
 )
 
 target_link_libraries(takt4_tests
