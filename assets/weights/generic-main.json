@@ -1,0 +1,15 @@
+{
+  "name": "generic-main",
+  "use_case": "percussion-heavy material",
+  "source": "generic_main_weights.pt",
+  "source_bytes": 3072890,
+  "source_sha256": "5bbae630b4112f3c1193654e3dbc946b850caa06a2a82e10e8de9e48bb673519",
+  "upstream": "https://github.com/mjhydri/BeatNet-Plus",
+  "upstream_commit": "bb90eb0a9065b101a4b4c4cb2b2061950266cb4b",
+  "format_version": 1,
+  "parameters": 767125,
+  "bytes": 3068548,
+  "sha256": "c9f9b107c5965ba7fa374eb1a7c60ceda1cddec933415345df2a7816a14e2fc4",
+  "torch": "2.14.0+cpu",
+  "numpy": "2.5.2"
+}

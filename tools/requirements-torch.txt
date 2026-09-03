@@ -1,0 +1,15 @@
+# PyTorch, for the two tools that need the real BeatNet+ network: convert_weights.py,
+# which turns the published .pt weight sets into the blobs under assets/weights/, and
+# model_reference.py, which records what PyTorch computes so the C++ parity test
+# (HANDOFF §8 Phase 3) never needs Python again.
+#
+# Separate from requirements.txt because it is a ~250 MB install that nothing else in
+# tools/ wants: madmom, the filterbank dump and the golden features do not use torch.
+# Install it alongside the rest, into the same venv:
+#
+#   pip install -r tools/requirements-torch.txt
+#
+# CPU only — the reference is a 500-frame run of a 767 K-parameter model, and a fixed
+# CPU result is what the C++ side has to match. Pinned exactly, like everything else
+# that touches the committed numbers: bumping it means re-running model_reference.py.
+torch==2.14.0
