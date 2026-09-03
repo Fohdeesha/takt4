@@ -1,0 +1,26 @@
+{
+  "source": "02 - Jamie Lidell - Your Sweet Boom.flac",
+  "offset_seconds": 120.0,
+  "offset_source": "auto",
+  "source_duration_seconds": 193.44,
+  "duration_seconds": 10.0,
+  "sample_rate": 22050,
+  "samples": 220500,
+  "frames": 500,
+  "peak": 1.0,
+  "rms_dbfs": -8.9,
+  "clipped_samples": 48,
+  "decoder": "librosa.load (soundfile), resampler soxr_hq",
+  "madmom": "https://github.com/CPJKU/madmom.git @ 27f032e8947204902c675e5e341a3faf5dc86dae",
+  "numpy": "2.5.2",
+  "scipy": "1.18.1",
+  "librosa": "1.0.0",
+  "soundfile": "0.14.0 / libsndfile 1.2.2",
+  "offset_selection": {
+    "score": 0.572,
+    "pulse_clarity": 0.58,
+    "level_dbfs": -9.2,
+    "track_usual_level_dbfs": -8.5,
+    "quietest_second_dbfs": -10.7
+  }
+}

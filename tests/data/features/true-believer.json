@@ -1,0 +1,26 @@
+{
+  "source": "08 - True Believer.flac",
+  "offset_seconds": 61.0,
+  "offset_source": "auto",
+  "source_duration_seconds": 224.693,
+  "duration_seconds": 10.0,
+  "sample_rate": 22050,
+  "samples": 220500,
+  "frames": 500,
+  "peak": 0.996704,
+  "rms_dbfs": -10.76,
+  "clipped_samples": 0,
+  "decoder": "librosa.load (soundfile), resampler soxr_hq",
+  "madmom": "https://github.com/CPJKU/madmom.git @ 27f032e8947204902c675e5e341a3faf5dc86dae",
+  "numpy": "2.5.2",
+  "scipy": "1.18.1",
+  "librosa": "1.0.0",
+  "soundfile": "0.14.0 / libsndfile 1.2.2",
+  "offset_selection": {
+    "score": 0.61,
+    "pulse_clarity": 0.617,
+    "level_dbfs": -10.9,
+    "track_usual_level_dbfs": -11.5,
+    "quietest_second_dbfs": -12.0
+  }
+}
