@@ -21,7 +21,11 @@ TEST_CASE("RTNeural dense layer computes a forward pass", "[deps][rtneural]") {
     dense.setBias(bias.data());
     model.reset();
 
-    const std::array<float, 4> input{1.0f, 2.0f, 3.0f, 4.0f};
+    // ModelT::forward() maps the input pointer as an Eigen::Aligned16 vector (ModelT.h,
+    // RTNeuralEigenAlignment; cmake/deps.cmake sets RTNEURAL_DEFAULT_ALIGNMENT=16), so
+    // the caller's buffer must be 16-byte aligned. Debug builds assert on this ("data is
+    // not aligned", Eigen MapBase.h); Release builds silently load unaligned.
+    alignas(RTNEURAL_DEFAULT_ALIGNMENT) const std::array<float, 4> input{1.0f, 2.0f, 3.0f, 4.0f};
     model.forward(input.data());
 
     const float* out = model.getOutputs();
