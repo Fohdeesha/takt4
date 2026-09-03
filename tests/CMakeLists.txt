@@ -19,6 +19,8 @@ add_executable(takt4_tests
   features/filterbank_test.cpp
   io/npy_file_test.cpp
   io/wav_file_test.cpp
+  model/beat_model_test.cpp
+  model/weights_test.cpp
   output/link_session_test.cpp
   output/midi_ports_test.cpp
   rt/alloc_guard_test.cpp
@@ -31,9 +33,13 @@ add_executable(takt4_tests
 
 target_include_directories(takt4_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# The golden feature excerpts (tests/data/features, see the README there) are read in
-# place from the source tree; the test binary is not relocatable, and need not be.
-target_compile_definitions(takt4_tests PRIVATE "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\"")
+# The golden feature excerpts (tests/data/features, see the README there) and the
+# committed weight blobs (assets/weights) are read in place from the source tree; the
+# test binary is not relocatable, and need not be.
+target_compile_definitions(takt4_tests PRIVATE
+  "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
+  "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
+)
 
 target_link_libraries(takt4_tests
   PRIVATE
