@@ -20,12 +20,14 @@ Requirements:
 
 - CMake 3.28 or newer
 - A C++20 compiler — Visual Studio 2022 or 2026, Apple Clang, or GCC
-- A Rust toolchain, 1.92 or newer, on `PATH` (Slint is built from source through cargo).
-  Only needed when the UI is built; see `TAKT4_BUILD_UI` below.
+- A Rust toolchain, 1.92 or newer, on `PATH` (Slint is built from source through cargo),
+  and `curl` on `PATH` (Slint's Skia renderer is not built from source: its bindings
+  crate downloads a prebuilt Skia archive, 17–26 MB depending on the platform, with
+  `curl` during the build). Only needed when the UI is built; see `TAKT4_BUILD_UI` below.
 - Ninja on macOS and Linux
 - Linux packages, Debian/Ubuntu names: `pkg-config libasound2-dev libjack-jackd2-dev
-  libfontconfig-dev`. Everything else Slint needs on Linux (X11, xcb, xkbcommon,
-  Wayland, EGL/GLX) is loaded at run time.
+  libfontconfig-dev libfreetype-dev`. Everything else Slint needs on Linux (X11, xcb,
+  xkbcommon, Wayland, EGL/GLX) is loaded at run time.
 
 On Linux the binary links `libjack.so.0` directly, so it needs that library at run time
 even when no JACK server is running (without one, JACK devices are simply not offered).
@@ -44,7 +46,9 @@ cd takt4
 ```
 
 Everything else is fetched at configure time from pinned, hash-checked release
-archives; the first configure needs network access.
+archives, so the first configure needs network access. So does the first build of the
+UI: cargo fetches Slint's crate dependencies (checksummed by cargo) and the Skia
+archive described above (which rust-skia's build script does not checksum).
 
 Configure, build and test with the presets for your platform — `windows-msvc`, `macos`
 or `linux`:
@@ -59,6 +63,12 @@ The build tree is `build/<preset>/`; the executable is `build/<preset>/bin/takt4
 (`bin/Release/takt4.exe` with Visual Studio). The `windows-msvc` preset names no
 generator on purpose: CMake picks the newest Visual Studio it knows and finds, x64, so
 the same preset serves a 2022 install and the 2026-only CI image.
+
+The UI is drawn by Slint's Skia renderer: Metal on macOS, OpenGL on Windows and Linux,
+falling back to Skia's software rasteriser when no GPU context can be created. Setting
+`SLINT_BACKEND=winit-skia-software` in the environment forces the software path, and
+`SLINT_DEBUG_PERFORMANCE=refresh_lazy,console` makes takt4 report the surface it is
+using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 ### Options
 
@@ -94,4 +104,5 @@ GPLv3 — see [LICENSE](LICENSE).
 | [RtMidi](https://github.com/thestk/rtmidi) | MIDI clock and notes | MIT-style |
 | [nlohmann/json](https://github.com/nlohmann/json) | Settings and presets | MIT |
 | [Slint](https://slint.dev) | User interface | GPLv3 (triple-licensed) |
+| [Skia](https://skia.org) (prebuilt by [rust-skia](https://github.com/rust-skia/rust-skia), pulled in by Slint) | UI rendering | BSD-3-Clause; the archive bundles libpng, zlib, libjpeg-turbo, expat, HarfBuzz, ICU and wuffs under their own permissive licenses |
 | [Catch2](https://github.com/catchorg/Catch2) | Tests only, not shipped | Boost Software License |
