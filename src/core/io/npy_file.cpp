@@ -66,7 +66,8 @@ bool boolean(std::string_view header, std::size_t pos, const std::string& name) 
     throw std::runtime_error(name + ": .npy header: expected True or False");
 }
 
-std::vector<std::size_t> shapeTuple(std::string_view header, std::size_t pos, const std::string& name) {
+std::vector<std::size_t> shapeTuple(std::string_view header, std::size_t pos,
+                                    const std::string& name) {
     if (pos >= header.size() || header[pos] != '(') {
         throw std::runtime_error(name + ": .npy header: expected a shape tuple");
     }
@@ -101,11 +102,11 @@ std::vector<std::size_t> shapeTuple(std::string_view header, std::size_t pos, co
     return shape;
 }
 
-} // namespace
-
-NpyMatrix readNpyFloat32(const std::filesystem::path& path) {
-    const std::string name = path.string();
-    std::ifstream in(path, std::ios::binary);
+/// Opens the file, reads the header, and leaves the stream on the first data byte.
+/// `wanted` is the numpy dtype string this reader accepts, e.g. "<f4".
+std::vector<std::size_t> openAndParse(const std::filesystem::path& path, std::string_view wanted,
+                                      std::ifstream& in, const std::string& name) {
+    in.open(path, std::ios::binary);
     if (!in) {
         throw std::runtime_error(name + ": cannot open");
     }
@@ -128,9 +129,11 @@ NpyMatrix readNpyFloat32(const std::filesystem::path& path) {
             throw std::runtime_error(name + ": truncated .npy header");
         }
         headerLength = static_cast<std::size_t>(len[0]) | (static_cast<std::size_t>(len[1]) << 8) |
-                       (static_cast<std::size_t>(len[2]) << 16) | (static_cast<std::size_t>(len[3]) << 24);
+                       (static_cast<std::size_t>(len[2]) << 16) |
+                       (static_cast<std::size_t>(len[3]) << 24);
     } else {
-        throw std::runtime_error(name + ": .npy format version " + std::to_string(major) + " is not supported");
+        throw std::runtime_error(name + ": .npy format version " + std::to_string(major) +
+                                 " is not supported");
     }
     std::string header(headerLength, '\0');
     if (!in.read(header.data(), static_cast<std::streamsize>(headerLength))) {
@@ -138,28 +141,39 @@ NpyMatrix readNpyFloat32(const std::filesystem::path& path) {
     }
 
     const std::string descr = quotedString(header, findValue(header, "descr", name), name);
-    if (descr != "<f4") {
-        throw std::runtime_error(name + ": .npy dtype " + descr + " is not supported; only '<f4' is");
+    if (descr != wanted) {
+        throw std::runtime_error(name + ": .npy dtype " + descr + " is not supported here; only '" +
+                                 std::string(wanted) + "' is");
     }
     if (boolean(header, findValue(header, "fortran_order", name), name)) {
         throw std::runtime_error(name + ": .npy arrays in Fortran order are not supported");
     }
-    const std::vector<std::size_t> shape = shapeTuple(header, findValue(header, "shape", name), name);
+    const std::vector<std::size_t> shape =
+        shapeTuple(header, findValue(header, "shape", name), name);
     if (shape.size() != 2) {
-        throw std::runtime_error(name + ": expected a 2-D .npy array, got " + std::to_string(shape.size()) +
-                                 " dimensions");
+        throw std::runtime_error(name + ": expected a 2-D .npy array, got " +
+                                 std::to_string(shape.size()) + " dimensions");
     }
+    return shape;
+}
 
-    NpyMatrix out;
+template <typename T>
+NpyArray<T> readNpy(const std::filesystem::path& path, std::string_view wanted) {
+    const std::string name = path.string();
+    std::ifstream in;
+    const std::vector<std::size_t> shape = openAndParse(path, wanted, in, name);
+
+    NpyArray<T> out;
     out.rows = shape[0];
     out.cols = shape[1];
-    if (out.cols != 0 && out.rows > std::numeric_limits<std::size_t>::max() / out.cols / sizeof(float)) {
+    if (out.cols != 0 &&
+        out.rows > std::numeric_limits<std::size_t>::max() / out.cols / sizeof(T)) {
         throw std::runtime_error(name + ": .npy shape is too large");
     }
     const std::size_t count = out.rows * out.cols;
     out.values.resize(count);
     if (count > 0) {
-        const auto bytes = static_cast<std::streamsize>(count * sizeof(float));
+        const auto bytes = static_cast<std::streamsize>(count * sizeof(T));
         if (!in.read(reinterpret_cast<char*>(out.values.data()), bytes) || in.gcount() != bytes) {
             throw std::runtime_error(name + ": .npy data is shorter than its shape says");
         }
@@ -170,16 +184,27 @@ NpyMatrix readNpyFloat32(const std::filesystem::path& path) {
     return out;
 }
 
+} // namespace
+
+NpyMatrix readNpyFloat32(const std::filesystem::path& path) {
+    return readNpy<float>(path, "<f4");
+}
+
+NpyInt32Matrix readNpyInt32(const std::filesystem::path& path) {
+    return readNpy<std::int32_t>(path, "<i4");
+}
+
 void writeNpyFloat32(const std::filesystem::path& path, std::size_t rows, std::size_t cols,
                      std::span<const float> values) {
     if (values.size() != rows * cols) {
-        throw std::invalid_argument("writeNpyFloat32: " + std::to_string(values.size()) + " values do not fill " +
-                                    std::to_string(rows) + " x " + std::to_string(cols));
+        throw std::invalid_argument("writeNpyFloat32: " + std::to_string(values.size()) +
+                                    " values do not fill " + std::to_string(rows) + " x " +
+                                    std::to_string(cols));
     }
     // The header numpy itself writes, padding included: the dict, spaces up to a
     // 64-byte boundary for the whole preamble, and a newline.
-    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + std::to_string(rows) + ", " +
-                         std::to_string(cols) + "), }";
+    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
+                         std::to_string(rows) + ", " + std::to_string(cols) + "), }";
     const std::size_t preamble = kMagic.size() + 2 + 2; // magic, version, uint16 length
     const std::size_t padding = kAlignment - (preamble + header.size() + 1) % kAlignment;
     header.append(padding, ' ');
@@ -194,7 +219,8 @@ void writeNpyFloat32(const std::filesystem::path& path, std::size_t rows, std::s
         throw std::runtime_error(name + ": cannot create");
     }
     const char version[2] = {1, 0};
-    const char length[2] = {static_cast<char>(header.size() & 0xFF), static_cast<char>(header.size() >> 8)};
+    const char length[2] = {static_cast<char>(header.size() & 0xFF),
+                            static_cast<char>(header.size() >> 8)};
     out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
     out.write(version, 2);
     out.write(length, 2);

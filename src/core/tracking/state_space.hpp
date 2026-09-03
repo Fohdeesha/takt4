@@ -65,6 +65,11 @@ public:
         return state - firstStates_[intervalIndex_[state]];
     }
     bool isBeatState(std::size_t state) const noexcept { return pointers_[state] == 2; }
+    /// The end of an interval: a particle here wraps into some interval's first state
+    /// rather than stepping to the next state.
+    bool isLastState(std::size_t state) const noexcept {
+        return state == lastStates_[intervalIndex_[state]];
+    }
 
 private:
     std::vector<std::uint32_t> intervals_;

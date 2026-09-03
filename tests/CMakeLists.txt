@@ -26,6 +26,7 @@ add_executable(takt4_tests
   output/midi_ports_test.cpp
   rt/alloc_guard_test.cpp
   rt/spsc_ring_test.cpp
+  tracking/particle_filter_test.cpp
   tracking/state_space_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
