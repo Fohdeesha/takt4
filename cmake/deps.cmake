@@ -225,6 +225,18 @@ if(TAKT4_BUILD_UI)
     # BUILD_SHARED_LIBS is OFF at top level; Slint reads it and builds slint_cpp-static.
     set(SLINT_FEATURE_INTERPRETER OFF)
     set(SLINT_STYLE "fluent")
+    # Skia rather than FemtoVG (HANDOFF §2): Metal on macOS, OpenGL elsewhere. Skia itself
+    # is not compiled here: skia-bindings' build script downloads rust-skia's prebuilt
+    # archive for the target (17-26 MB, with curl, not checksummed) on every clean build.
+    set(SLINT_FEATURE_RENDERER_SKIA ON)
+    set(SLINT_FEATURE_RENDERER_FEMTOVG OFF)
+    if(WIN32)
+      # Without this Skia draws on the CPU on Windows: its default surface there is
+      # softbuffer, and Direct3D is only reachable from Slint's Rust API. The feature is
+      # global to the build and would replace Metal on macOS, hence the guard. A GL
+      # context that cannot be created still falls back to the software surface.
+      set(SLINT_FEATURE_RENDERER_SKIA_OPENGL ON)
+    endif()
     FetchContent_MakeAvailable(Slint)
   endblock()
   set(TAKT4_SLINT_VERSION "1.17.1")
@@ -240,14 +252,29 @@ if(TAKT4_BUILD_UI)
   # what Corrosion and CMake link anyway: on Windows, what rustc reports when the cargo
   # command from the cargo-build_slint_cpp build rule is re-run with
   # `--print native-static-libs` appended; on the other two, what the crates in
-  # `cargo tree --target <triple>` declare. Re-check them when bumping Slint.
+  # `cargo tree --target <triple>` declare plus what skia-bindings' build script emits
+  # for the platform (rust-skia's build_support/platform/*.rs). Re-check them when
+  # bumping Slint.
   if(WIN32)
-    # opengl32: glutin's WGL bindings. imm32: winit's IME support, declared through
-    # windows-targets 0.52, which resolves against its bundled windows.0.52.0.lib; of the
-    # DLLs that import library covers, imm32 is the only one outside CMake's default link
-    # set. shlwapi: the webbrowser crate.
+    # Skia's own archives (prebuilt, fetched by skia-bindings' build script) are handed to
+    # cargo as plain `-l skia` on Windows rather than `-l static=skia` (rust-skia PR #354),
+    # so rustc leaves them out of the staticlib. Ask for them as static libraries on the
+    # final rustc invocation instead: cargo passes skia-bindings' link-search path to that
+    # invocation, and rustc bundles static libraries into a staticlib by default. This is
+    # what rust-skia itself does on every other platform. The names are rust-skia's
+    # binaries_config.rs list for the textlayout feature set Slint enables.
+    corrosion_add_target_local_rustflags(slint_cpp
+      -lstatic=skia -lstatic=skia-bindings
+      -lstatic=skparagraph -lstatic=skshaper -lstatic=skunicode_core -lstatic=skunicode_icu
+    )
+    # opengl32: glutin's WGL bindings and Skia's GL backend. imm32: winit's IME support,
+    # declared through windows-targets 0.52, which resolves against its bundled
+    # windows.0.52.0.lib; of the DLLs that import library covers, imm32 is the only one
+    # outside CMake's default link set. shlwapi: the webbrowser crate. usp10, fontsub,
+    # d3d12, dxgi, d3dcompiler: rust-skia's platform/windows.rs list for the gl and d3d
+    # features, minus the libraries CMake links by default (user32 gdi32 ole32 advapi32).
     set_property(TARGET slint_cpp-static APPEND PROPERTY INTERFACE_LINK_LIBRARIES
-      opengl32 imm32 shlwapi
+      opengl32 imm32 shlwapi usp10 fontsub d3d12 dxgi d3dcompiler
     )
     if(MSVC)
       # Slint's headers declare the runtime's entry points __declspec(dllimport) whether or
@@ -276,18 +303,25 @@ if(TAKT4_BUILD_UI)
       "-framework ApplicationServices"
       "-framework Carbon"
       "-framework Accessibility"
+      # Skia's Metal backend (rust-skia platform/macos.rs: Metal, MetalKit, Foundation;
+      # ApplicationServices and OpenGL are already above).
+      "-framework Metal"
+      "-framework MetalKit"
     )
   elseif(LINUX)
-    # System font enumeration goes through libfontconfig. Everything else Slint touches on
-    # Linux (X11, xcb, xkbcommon, Wayland, EGL, GLX) is dlopen'ed at run time.
+    # System font enumeration goes through libfontconfig, and the prebuilt Skia archive
+    # renders glyphs with the system FreeType (rust-skia platform/linux.rs links both).
+    # Everything else Slint touches on Linux (X11, xcb, xkbcommon, Wayland, EGL, GLX) is
+    # dlopen'ed at run time.
     #
     # GLOBAL matters: a subdirectory only sees the imported targets its parent had when
     # add_subdirectory ran, and Slint's directory was created above, before this call.
-    # Fontconfig::Fontconfig is resolved from slint_cpp-static's directory when takt4 is
-    # generated, so without GLOBAL it is "not found" there.
+    # The imported targets are resolved from slint_cpp-static's directory when takt4 is
+    # generated, so without GLOBAL they are "not found" there.
     find_package(Fontconfig REQUIRED GLOBAL)   # libfontconfig-dev
+    find_package(Freetype REQUIRED GLOBAL)     # libfreetype-dev
     set_property(TARGET slint_cpp-static APPEND PROPERTY INTERFACE_LINK_LIBRARIES
-      Fontconfig::Fontconfig
+      Fontconfig::Fontconfig Freetype::Freetype
     )
   endif()
 endif()
