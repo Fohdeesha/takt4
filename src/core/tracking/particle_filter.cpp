@@ -254,7 +254,9 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
     double periodTotal = 0.0;
     for (const std::uint32_t particle : particles_) {
         const std::size_t interval = beat.intervalOf(particle);
-        agreeing += interval == intervalIndex ? 1 : 0;
+        if (interval == intervalIndex) {
+            ++agreeing;
+        }
         const std::size_t distance =
             interval > intervalIndex ? interval - intervalIndex : intervalIndex - interval;
         if (distance <= 1) {

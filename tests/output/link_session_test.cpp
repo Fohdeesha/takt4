@@ -5,8 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
+#include <cstdlib> // std::abs for the integer type microseconds::rep is
 #include <thread>
 
 using Catch::Matchers::WithinAbs;

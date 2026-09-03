@@ -104,7 +104,9 @@ TEST_CASE("a state knows its interval, its phase and whether it is a beat",
         // The one thing the filter asks of the observation model: a state is a beat
         // state exactly when it is the first of its interval.
         CHECK(beat.isBeatState(s) == (beat.phaseOf(s) == 0));
-        beatStates += beat.isBeatState(s) ? 1 : 0;
+        if (beat.isBeatState(s)) {
+            ++beatStates;
+        }
     }
     CHECK(beatStates == beat.numIntervals());
 
