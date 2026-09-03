@@ -241,16 +241,29 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
     frame.gathering = median(particles_);
     const std::size_t intervalIndex = beat.intervalOf(frame.gathering);
     frame.intervalFrames = beat.intervals()[intervalIndex];
-    frame.bpm = model_->bpmOfInterval(intervalIndex);
     frame.phase = beat.statePositions()[frame.gathering];
 
-    // How much of the cloud that produced this median agrees with its tempo. Nothing
-    // upstream reads it; §5.5's confidence gate will.
+    // Two things from one pass over the cloud that produced this median. How much of it
+    // agrees with the median's tempo — nothing upstream reads that, but §5.5's
+    // confidence gate does — and the mean period over the particles on that tempo or
+    // either neighbour, which is the tempo without the state space's integer steps.
     std::size_t agreeing = 0;
+    std::size_t nearby = 0;
+    double periodTotal = 0.0;
     for (const std::uint32_t particle : particles_) {
-        agreeing += beat.intervalOf(particle) == intervalIndex ? 1 : 0;
+        const std::size_t interval = beat.intervalOf(particle);
+        agreeing += interval == intervalIndex ? 1 : 0;
+        const std::size_t distance =
+            interval > intervalIndex ? interval - intervalIndex : intervalIndex - interval;
+        if (distance <= 1) {
+            ++nearby;
+            periodTotal += static_cast<double>(beat.stateIntervals()[particle]);
+        }
     }
     frame.tempoAgreement = static_cast<double>(agreeing) / static_cast<double>(particles_.size());
+    frame.refinedIntervalFrames = nearby > 0 ? periodTotal / static_cast<double>(nearby)
+                                             : static_cast<double>(frame.intervalFrames);
+    frame.bpm = 60.0 / (frame.refinedIntervalFrames * T);
 
     // A beat can only be here if the cloud has gathered at the start of a beat, and only
     // if enough of one has passed since the last beat was called.

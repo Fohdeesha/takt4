@@ -22,10 +22,16 @@ struct TrackedFrame {
     /// The commonest downbeat particle, updated only on frames that could carry a beat.
     std::uint32_t downMax = 0;
 
-    std::uint32_t intervalFrames = 0; ///< the cloud's beat period, in frames
-    double bpm = 0.0;                 ///< the same, as tempo
-    double phase = 0.0;               ///< how far through the beat the cloud is, 0 to 1
-    std::uint32_t beatsPerBar = 0;    ///< the meter the downbeat cloud settled on
+    std::uint32_t intervalFrames = 0; ///< the cloud's beat period, in whole frames
+    /// The same period without the state space's integer quantisation: the mean over the
+    /// particles sitting on the median's tempo or either neighbour of it. madmom's
+    /// intervals are whole frames, so at 130 BPM the nearest two are 130.43 and 125.00
+    /// and there is nothing in between; a real tempo lands between them and the cloud
+    /// straddles both, which is what this reads.
+    double refinedIntervalFrames = 0.0;
+    double bpm = 0.0;              ///< from refinedIntervalFrames, so it is continuous
+    double phase = 0.0;            ///< how far through the beat the cloud is, 0 to 1
+    std::uint32_t beatsPerBar = 0; ///< the meter the downbeat cloud settled on
     /// How much of the cloud agrees with the median's tempo, 0 to 1. Not upstream's —
     /// it publishes no confidence — but the natural one to gate on (§5.5).
     double tempoAgreement = 0.0;

@@ -5,13 +5,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace takt4::tracking {
 
 /// What the tracker is currently saying, whether or not a beat just happened.
 struct TempoState {
-    double bpm = 0.0;              ///< after octave folding, and held while unconfident
-    double rawBpm = 0.0;           ///< what the particle filter's cloud says, unfolded
+    double bpm = 0.0;    ///< after octave folding, and held while unconfident
+    double rawBpm = 0.0; ///< what the particle filter's cloud says, unfolded
+    /// True once `bpm` is coming from the spacing of the beats themselves rather than
+    /// from the particle cloud's tempo interval. See TempoTracker's header.
+    bool refined = false;
     bool locked = false;           ///< the tempo has agreed with itself long enough
     bool holding = false;          ///< confidence is below the gate; bpm is the last good one
     double confidence = 0.0;       ///< 0 to 1; see TempoTracker's header for what it measures
@@ -51,6 +55,16 @@ struct BeatEvent {
 ///     milliseconds so downstream fires early enough to be in time.
 ///   * **Meter.** Taken from the filter's downbeat stage. Nothing here hardcodes 4.
 ///
+/// It also fixes the one number the state space cannot give. madmom's tempo intervals
+/// are whole 20 ms frames, so around 130 BPM the only values that exist are 130.43 and
+/// 125.00 — a 5.4 BPM step, and 14 BPM up at 214. Nothing inside the filter can do
+/// better than the nearer of the two. But the beats it calls are spaced 23, 24, 23, 23
+/// frames apart, and the mean of those over a few bars resolves the tempo to a fraction
+/// of a BPM. So once the tempo is locked, the published value comes from the beat
+/// spacing, and the cloud's interval is used only to decide *which* tempo is being
+/// tracked. On the synthetic excerpt that is the difference between reporting 130.4 and
+/// reporting 128.0, which is what the drum machine actually plays.
+///
 /// Confidence is how much of the beat particle cloud agrees with the tempo its own
 /// median reports, smoothed over about a second. Upstream publishes no confidence at
 /// all; this is the natural one, because it is exactly what falls apart when the tracker
@@ -83,6 +97,18 @@ public:
         /// Added to every beat's timestamp, to compensate for what happens downstream.
         /// Negative fires early, which is the useful direction.
         double latencyOffsetSeconds = 0.0;
+
+        /// How many beat-to-beat gaps the refined tempo is averaged over, and how many of
+        /// them have to survive outlier rejection before it is published at all. Eight
+        /// gaps is about two bars of 4/4.
+        std::size_t refineOverBeats = 8;
+        std::size_t refineNeedsBeats = 4;
+        /// How far a gap may be from the cloud's period and still be counted, and how far
+        /// the refined tempo may be from the locked one before it is disbelieved. The
+        /// first throws out a missed or doubled beat; the second stops a refinement ever
+        /// silently becoming a different tempo.
+        double refineGapTolerance = 0.25;
+        double refineTempoTolerance = 0.10;
     };
 
     explicit TempoTracker(double secondsPerFrame, Options options = {});
@@ -109,17 +135,26 @@ public:
 
 private:
     void updateLock(double folded) noexcept;
+    void rememberBeat(std::uint64_t frameIndex) noexcept;
+    /// The mean beat-to-beat gap in frames, over the gaps within `refineGapTolerance` of
+    /// `cloudIntervalFrames`. Zero when there are not enough of them.
+    double refinedIntervalFrames(double cloudIntervalFrames) const noexcept;
 
     double secondsPerFrame_;
     Options options_;
     TempoState state_;
 
+    double lockedBpm_ = 0.0;   ///< the discrete tempo the lock is on; state_.bpm may refine it
     double candidate_ = 0.0;   ///< the tempo currently being agreed with
     std::size_t agreeing_ = 0; ///< frames it has been agreed with for
     std::size_t disagreeing_ = 0;
     double smoothedConfidence_ = 0.0;
     bool everConfident_ = false;
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
+
+    /// The frames the last few beats were called on, oldest first. Bounded by
+    /// `refineOverBeats + 1`, so this allocates once and never grows.
+    std::vector<std::uint64_t> beatFrames_;
 };
 
 } // namespace takt4::tracking

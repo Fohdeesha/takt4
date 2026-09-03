@@ -54,30 +54,68 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
         throw std::invalid_argument(
             "TempoTracker: the confidence smoother needs at least one frame");
     }
+    if (options.refineNeedsBeats < 2 || options.refineOverBeats < options.refineNeedsBeats) {
+        throw std::invalid_argument(
+            "TempoTracker: refining the tempo needs at least two beat-to-beat gaps, and no "
+            "more required than kept");
+    }
+    beatFrames_.reserve(options_.refineOverBeats + 1);
     reset();
 }
 
 void TempoTracker::reset() noexcept {
     state_ = TempoState{};
+    lockedBpm_ = 0.0;
     candidate_ = 0.0;
     agreeing_ = 0;
     disagreeing_ = 0;
     smoothedConfidence_ = 0.0;
     everConfident_ = false;
     octaveShift_ = 0;
+    beatFrames_.clear();
+}
+
+void TempoTracker::rememberBeat(std::uint64_t frameIndex) noexcept {
+    if (beatFrames_.size() > options_.refineOverBeats) {
+        beatFrames_.erase(beatFrames_.begin());
+    }
+    beatFrames_.push_back(frameIndex);
+}
+
+double TempoTracker::refinedIntervalFrames(double cloudIntervalFrames) const noexcept {
+    if (beatFrames_.size() < options_.refineNeedsBeats + 1 || !(cloudIntervalFrames > 0.0)) {
+        return 0.0;
+    }
+    // A missed beat leaves a gap of twice the period and a spurious one leaves half; both
+    // would wreck a mean, so only gaps near the period the cloud believes are counted.
+    const double low = cloudIntervalFrames * (1.0 - options_.refineGapTolerance);
+    const double high = cloudIntervalFrames * (1.0 + options_.refineGapTolerance);
+    double total = 0.0;
+    std::size_t counted = 0;
+    for (std::size_t i = 1; i < beatFrames_.size(); ++i) {
+        const double gap = static_cast<double>(beatFrames_[i] - beatFrames_[i - 1]);
+        if (gap >= low && gap <= high) {
+            total += gap;
+            ++counted;
+        }
+    }
+    return counted >= options_.refineNeedsBeats ? total / static_cast<double>(counted) : 0.0;
 }
 
 void TempoTracker::setOptions(const Options& options) noexcept {
     options_ = options;
-    // A window that no longer holds the published tempo invalidates the lock; anything
-    // else leaves it alone, so nudging a slider does not drop sync.
+    // A window that no longer holds the locked tempo invalidates the lock; anything else
+    // leaves it alone, so nudging a slider does not drop sync.
     if (state_.locked && options_.octaveFold &&
-        (state_.bpm < options_.minBpm || state_.bpm >= options_.maxBpm)) {
+        (lockedBpm_ < options_.minBpm || lockedBpm_ >= options_.maxBpm)) {
         state_.locked = false;
-        state_.bpm = fold(state_.rawBpm);
-        candidate_ = state_.bpm;
+        lockedBpm_ = fold(state_.rawBpm);
+        state_.bpm = lockedBpm_;
+        state_.refined = false;
+        candidate_ = lockedBpm_;
         agreeing_ = 0;
         disagreeing_ = 0;
+        beatFrames_.clear();
     }
 }
 
@@ -89,20 +127,26 @@ double TempoTracker::fold(double bpm) const noexcept {
 
 void TempoTracker::halve() noexcept {
     --octaveShift_;
-    state_.bpm = fold(state_.rawBpm);
-    candidate_ = state_.bpm;
+    lockedBpm_ = fold(state_.rawBpm);
+    state_.bpm = lockedBpm_;
+    state_.refined = false;
+    candidate_ = lockedBpm_;
+    beatFrames_.clear();
 }
 
 void TempoTracker::redouble() noexcept {
     ++octaveShift_;
-    state_.bpm = fold(state_.rawBpm);
-    candidate_ = state_.bpm;
+    lockedBpm_ = fold(state_.rawBpm);
+    state_.bpm = lockedBpm_;
+    state_.refined = false;
+    candidate_ = lockedBpm_;
+    beatFrames_.clear();
 }
 
 void TempoTracker::updateLock(double folded) noexcept {
     const double tolerance = options_.lockToleranceBpm;
     if (state_.locked) {
-        if (std::abs(folded - state_.bpm) <= tolerance) {
+        if (std::abs(folded - lockedBpm_) <= tolerance) {
             disagreeing_ = 0;
             candidate_ = folded;
             return;
@@ -114,7 +158,7 @@ void TempoTracker::updateLock(double folded) noexcept {
         }
         if (++disagreeing_ >= options_.unlockAfter) {
             state_.locked = false;
-            state_.bpm = candidate_;
+            lockedBpm_ = candidate_;
             agreeing_ = 1;
             disagreeing_ = 0;
         }
@@ -127,7 +171,7 @@ void TempoTracker::updateLock(double folded) noexcept {
         candidate_ = folded;
         agreeing_ = 1;
     }
-    state_.bpm = candidate_;
+    lockedBpm_ = candidate_;
     if (agreeing_ >= options_.lockAfter) {
         state_.locked = true;
         disagreeing_ = 0;
@@ -148,15 +192,40 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         everConfident_ = true;
         updateLock(fold(frame.bpm));
     } else if (!everConfident_) {
-        // Nothing good has been seen yet, so there is nothing to hold: publish the
-        // estimate as it comes and let the gate take over once it has been believed once.
-        state_.bpm = fold(frame.bpm);
+        // Nothing good has been seen yet, so there is nothing to hold: follow the
+        // estimate and let the gate take over once it has been believed once.
+        lockedBpm_ = fold(frame.bpm);
     }
     // Below the gate, state_.bpm keeps whatever it last held (§5.5: "hold the last good
     // tempo, stop emitting new values, and say so").
     state_.holding = !confident && everConfident_;
 
-    if (frame.emitted == TrackedFrame::Emitted::None) {
+    const bool emitted = frame.emitted != TrackedFrame::Emitted::None;
+    if (emitted) {
+        rememberBeat(frame.frameIndex);
+    }
+
+    if (!state_.holding) {
+        state_.bpm = lockedBpm_;
+        state_.refined = false;
+        // Once the tempo is locked, the beats themselves say it more precisely than the
+        // state space's whole-frame intervals ever can. Only believe that when it agrees
+        // with the lock, so a refinement can sharpen the tempo but never change it.
+        if (state_.locked) {
+            const double gaps = refinedIntervalFrames(
+                frame.refinedIntervalFrames > 0.0 ? frame.refinedIntervalFrames
+                                                  : static_cast<double>(frame.intervalFrames));
+            if (gaps > 0.0) {
+                const double refined = fold(60.0 / (gaps * secondsPerFrame_));
+                if (std::abs(refined - lockedBpm_) <= options_.refineTempoTolerance * lockedBpm_) {
+                    state_.bpm = refined;
+                    state_.refined = true;
+                }
+            }
+        }
+    }
+
+    if (!emitted) {
         return std::nullopt;
     }
 
