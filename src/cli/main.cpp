@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -107,10 +108,13 @@ void printUsage(std::ostream& out) {
         << "      The whole chain: features, model, particle filter, tempo state machine\n"
         << "      and the output transports. Prints a line per beat with the tempo, the\n"
         << "      bar position and the meter, and a status line while it waits.\n"
-        << "      --bpm LO-HI     the octave-fold window, default 70-140\n"
+        << "      --bpm LO-HI     the octave-fold window, default 70-140; \"off\" leaves\n"
+        << "                      the filter's own tempo alone, as an evaluation wants\n"
         << "      --latency MS    added to every beat's timestamp; negative fires early\n"
         << "      --confidence T  hold the last tempo below this, default 0.15\n"
         << "      --seed N        the particle filter's seed, default 1\n"
+        << "      --out FILE      write every beat as <seconds> TAB <beat in bar>, the\n"
+        << "                      format the beat-tracking datasets annotate in\n"
         << "      --link          join the Ableton Link network as tempo master\n"
         << "      --osc H:P       send the generic namespace there; repeat for more\n"
         << "      --osc-prefix P  that namespace's prefix, default /takt4\n"
@@ -687,6 +691,7 @@ struct TrackArgs {
     takt4::tracking::TempoTracker::Options tempo;
     std::uint64_t seed = 1;
     bool link = false;
+    std::optional<std::filesystem::path> beatsOut;
     std::string oscPrefix = "/takt4";
     std::vector<std::pair<std::string, std::uint16_t>> oscTargets;
     std::optional<std::string> midiClockPort;
@@ -720,9 +725,16 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             return args[++i];
         };
         if (arg == "--bpm") {
-            const auto range = parseRange(value(), arg);
-            out.tempo.minBpm = range.first;
-            out.tempo.maxBpm = range.second;
+            const std::string_view range = value();
+            if (range == "off") {
+                // What the published beat trackers are measured without; see
+                // tools/evaluate.py.
+                out.tempo.octaveFold = false;
+            } else {
+                const auto parsed = parseRange(range, arg);
+                out.tempo.minBpm = parsed.first;
+                out.tempo.maxBpm = parsed.second;
+            }
         } else if (arg == "--latency") {
             out.tempo.latencyOffsetSeconds = parseDouble(value(), arg) / 1000.0;
         } else if (arg == "--confidence") {
@@ -731,6 +743,8 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             out.seed = static_cast<std::uint64_t>(parseInt(value(), arg));
         } else if (arg == "--link") {
             out.link = true;
+        } else if (arg == "--out") {
+            out.beatsOut = std::filesystem::path(value());
         } else if (arg == "--osc") {
             const std::string_view target = value();
             // The last colon separates the port, so a bare IPv6 address is still usable.
@@ -850,6 +864,16 @@ public:
         }
     }
 
+    /// Writes every beat as "<seconds>\t<beat in bar>", the format the beat-tracking
+    /// datasets annotate in, so an estimate and a reference are the same kind of file.
+    void writeBeatsTo(const std::filesystem::path& path) {
+        beatsOut_.open(path, std::ios::trunc);
+        if (!beatsOut_) {
+            throw std::runtime_error(path.string() + ": cannot create");
+        }
+        beatsOut_ << std::fixed << std::setprecision(6);
+    }
+
     void feed(const takt4::model::FrameActivation& activation, double now) {
         const takt4::tracking::TrackedFrame frame =
             filter_.process(activation.beat, activation.downbeat);
@@ -861,6 +885,9 @@ public:
         ++beats_;
         downbeats_ += event->downbeat ? 1 : 0;
         std::cout << beatLine(*event, tempo_.state()) << '\n';
+        if (beatsOut_.is_open()) {
+            beatsOut_ << event->time << '\t' << event->beatInBar << '\n';
+        }
 
         if (osc_) {
             osc_->publishBeat(*event);
@@ -909,6 +936,7 @@ private:
     std::unique_ptr<takt4::output::OscPublisher> osc_;
     std::unique_ptr<takt4::output::MidiOutput> midiPort_;
     std::unique_ptr<takt4::output::MidiClock> midi_;
+    std::ofstream beatsOut_;
     double lastLinkBpm_ = -1.0;
     std::uint64_t frames_ = 0;
     std::uint64_t beats_ = 0;
@@ -939,6 +967,9 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
 
     auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
     Chain chain(model, offline);
+    if (args.beatsOut) {
+        chain.writeBeatsTo(*args.beatsOut);
+    }
     std::cout << in.string() << ": " << hops << " hops, weights "
               << weights.path().filename().string() << ", fold " << fixed1(args.tempo.minBpm) << "-"
               << fixed1(args.tempo.maxBpm) << " BPM, seed " << args.seed << '\n';
@@ -980,6 +1011,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     options.forceSoftwareSlice = args.beats.stream.software;
     takt4::audio::InputStream stream(session, device, selection, *engine, options);
     Chain chain(model, args);
+    if (args.beatsOut) {
+        chain.writeBeatsTo(*args.beatsOut);
+    }
     // HANDOFF §4.3: the audio thread stamps each hop through Link's regression, so a
     // beat carries the host time of the audio it was found in rather than of the moment
     // this loop happened to notice it.
