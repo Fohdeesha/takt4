@@ -1,0 +1,161 @@
+{
+  "seed": 1,
+  "rng": "xoshiro256++ seeded by splitmix64",
+  "state_space": "default.bin",
+  "state_space_sha256": "06247e70098a90ede020192e21ce41d03a423bdc2dd0e0c648c98553386f5589",
+  "input": "tests/data/model/generic/<name>.npy, columns 3 and 4",
+  "columns": "0 gathering, 1 down_max, 2 emitted (0 none, 1 downbeat, 2 beat), 3 beat interval in frames",
+  "particle_size": 1500,
+  "down_particle_size": 250,
+  "numpy": "2.5.2",
+  "agreement_with_upstream": {
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "tolerance_seconds": 0.07,
+    "margin": 0.05,
+    "upstream_vs_itself": {
+      "beat_f1": 0.9015,
+      "downbeat_f1": 0.742,
+      "same_tempo": 0.6594
+    },
+    "restatement_vs_upstream": {
+      "beat_f1": 0.9002,
+      "downbeat_f1": 0.7373,
+      "same_tempo": 0.6544
+    }
+  },
+  "excerpts": {
+    "big-brown-beaver": {
+      "frames": 500,
+      "sha256": "77c8aa795eff53025f5bcc26eafebd1805b0b93a1cf37adefe33916658ef456b",
+      "beats": 22,
+      "downbeats": 8,
+      "median_interval": 23
+    },
+    "complicated-geometry": {
+      "frames": 500,
+      "sha256": "eaa5ee7920eaced230ba3cbc1e672801715b6abebec6f19f23a449fed02b148d",
+      "beats": 23,
+      "downbeats": 6,
+      "median_interval": 18
+    },
+    "good-times": {
+      "frames": 500,
+      "sha256": "bf8fe8927f7d36af366a2e6263e952d6c0c20569df32f88977b0af6d6d75bc51",
+      "beats": 22,
+      "downbeats": 7,
+      "median_interval": 22
+    },
+    "hell-of-a-ride": {
+      "frames": 500,
+      "sha256": "632127c464e59186261f6196707a5383eda47bd003c3c148a8e3588573d7e5ab",
+      "beats": 15,
+      "downbeats": 5,
+      "median_interval": 16
+    },
+    "in-yer-face": {
+      "frames": 500,
+      "sha256": "519e3deb0f47af06625bf9f07cc090ce4396b744d0fa2a07bbcfe22fa4264b1f",
+      "beats": 20,
+      "downbeats": 6,
+      "median_interval": 24
+    },
+    "jack-yourself": {
+      "frames": 500,
+      "sha256": "2bd6998fc3be46507c8606d960772de34b0338afbbf2026f191e3ce13642abf6",
+      "beats": 27,
+      "downbeats": 13,
+      "median_interval": 15
+    },
+    "keman-rhythm": {
+      "frames": 500,
+      "sha256": "9da4ac90fdb28d2e8e629f559df8f7adeaf30cf9f0fe9301dc34a843215e1a74",
+      "beats": 26,
+      "downbeats": 8,
+      "median_interval": 14
+    },
+    "model-2029": {
+      "frames": 500,
+      "sha256": "a65b0758a1b5f40c687bd060b98fe1ecec7846aef6752fa94eaa5f37665ec577",
+      "beats": 22,
+      "downbeats": 9,
+      "median_interval": 18
+    },
+    "outside-plume": {
+      "frames": 500,
+      "sha256": "8bae501cfc5eb47985e4255626567691e1cddd47a172da491eed98e13e8a3f25",
+      "beats": 33,
+      "downbeats": 7,
+      "median_interval": 16
+    },
+    "pirates": {
+      "frames": 500,
+      "sha256": "bfdfc6c8d56af638cbee6ee86d21033e5553c640aebb2ec34330bdef024be7b9",
+      "beats": 18,
+      "downbeats": 5,
+      "median_interval": 22
+    },
+    "rale": {
+      "frames": 500,
+      "sha256": "b1aa9878c5a933a520abf57df89c897f3bc8e3f3e9a7a8dcd5187c7a119d9392",
+      "beats": 19,
+      "downbeats": 5,
+      "median_interval": 27
+    },
+    "synthetic": {
+      "frames": 500,
+      "sha256": "4b4e7f7b81b4e93bebca0f6ffc117600168c3d249bf1823d98f05e8c99cd9374",
+      "beats": 21,
+      "downbeats": 5,
+      "median_interval": 23
+    },
+    "the-galaxist": {
+      "frames": 500,
+      "sha256": "284c20b63ed25dfb6a01d82fe164c84286092f02a9fb253af2283a6ad7e14ee1",
+      "beats": 25,
+      "downbeats": 7,
+      "median_interval": 22
+    },
+    "trigger-finger": {
+      "frames": 500,
+      "sha256": "f7c33c0c7946fad9ec0d9f2d2d938d551617e2286e51de6383173655370cb58f",
+      "beats": 33,
+      "downbeats": 10,
+      "median_interval": 17
+    },
+    "true-believer": {
+      "frames": 500,
+      "sha256": "0c37b05e04b056b9255224fed547eb865b52a8d2193834c2634d1f334c59ce30",
+      "beats": 24,
+      "downbeats": 8,
+      "median_interval": 15
+    },
+    "vic-acid": {
+      "frames": 500,
+      "sha256": "2ed8935de42dd12234868e072a054fa29457f48e7b949b4437babf4d992a622d",
+      "beats": 28,
+      "downbeats": 9,
+      "median_interval": 18
+    },
+    "winter-now": {
+      "frames": 500,
+      "sha256": "3baa52b9494ad49552387be2956330ce608cdc91bf90cf6ae3c1e97e72b5874f",
+      "beats": 26,
+      "downbeats": 8,
+      "median_interval": 16
+    },
+    "your-sweet-boom": {
+      "frames": 500,
+      "sha256": "56fd3ae6864c04808043f7edcc71e54a3e3c117167bd3b3d646257e6115a91b5",
+      "beats": 17,
+      "downbeats": 5,
+      "median_interval": 14
+    }
+  }
+}

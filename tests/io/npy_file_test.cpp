@@ -83,8 +83,8 @@ TEST_CASE("npy round trip", "[io]") {
         CHECK(bytes.substr(0, 6) == "\x93NUMPY");
         CHECK(bytes[6] == 1);
         CHECK(bytes[7] == 0);
-        const auto headerLength = static_cast<std::size_t>(static_cast<unsigned char>(bytes[8]) |
-                                                           (static_cast<unsigned char>(bytes[9]) << 8));
+        const auto headerLength = static_cast<std::size_t>(
+            static_cast<unsigned char>(bytes[8]) | (static_cast<unsigned char>(bytes[9]) << 8));
         CHECK(headerLength == 118);
         const std::string header = bytes.substr(10, headerLength);
         const std::string dict = "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 3), }";
@@ -116,18 +116,21 @@ TEST_CASE("readNpyFloat32() accepts the header variants numpy produces", "[io]")
     const std::string data = floatBytes({1.0f, 2.0f, 3.0f, 4.0f});
 
     SECTION("version 2.0, four-byte header length") {
-        spit(dir.file("v2.npy"), npyFile(2, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 2), }", data));
+        spit(dir.file("v2.npy"),
+             npyFile(2, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 2), }", data));
         const NpyMatrix m = readNpyFloat32(dir.file("v2.npy"));
         CHECK(m.rows == 2);
         CHECK(m.cols == 2);
         CHECK(m.at(1, 1) == 4.0f);
     }
     SECTION("version 3.0") {
-        spit(dir.file("v3.npy"), npyFile(3, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 4), }", data));
+        spit(dir.file("v3.npy"),
+             npyFile(3, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 4), }", data));
         CHECK(readNpyFloat32(dir.file("v3.npy")).cols == 4);
     }
     SECTION("double quotes, other key order, no padding, no trailing comma") {
-        spit(dir.file("q.npy"), npyFile(1, "{\"shape\": (4, 1), \"fortran_order\": False, \"descr\": \"<f4\"}", data));
+        spit(dir.file("q.npy"),
+             npyFile(1, "{\"shape\": (4, 1), \"fortran_order\": False, \"descr\": \"<f4\"}", data));
         const NpyMatrix m = readNpyFloat32(dir.file("q.npy"));
         CHECK(m.rows == 4);
         CHECK(m.cols == 1);
@@ -137,7 +140,8 @@ TEST_CASE("readNpyFloat32() accepts the header variants numpy produces", "[io]")
 TEST_CASE("readNpyFloat32() refuses what it cannot read, and says why", "[io]") {
     takt4::test::TempDir dir;
     const std::string data = floatBytes({1.0f, 2.0f, 3.0f, 4.0f});
-    const auto check = [&](const std::string& name, const std::string& file, const std::string& message) {
+    const auto check = [&](const std::string& name, const std::string& file,
+                           const std::string& message) {
         spit(dir.file(name), file);
         CHECK_THROWS_WITH(readNpyFloat32(dir.file(name)), ContainsSubstring(message));
     };
@@ -145,25 +149,64 @@ TEST_CASE("readNpyFloat32() refuses what it cannot read, and says why", "[io]") 
     check("magic.npy", "NUMPY\x93" + std::string(64, ' '), "not a .npy file");
     check("v4.npy", npyFile(4, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 2), }", data),
           "version 4 is not supported");
-    check("f8.npy", npyFile(1, "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 2), }", data), "<f8");
-    check("big-endian.npy", npyFile(1, "{'descr': '>f4', 'fortran_order': False, 'shape': (2, 2), }", data), ">f4");
-    check("fortran.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': True, 'shape': (2, 2), }", data),
+    check("f8.npy", npyFile(1, "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 2), }", data),
+          "<f8");
+    check("big-endian.npy",
+          npyFile(1, "{'descr': '>f4', 'fortran_order': False, 'shape': (2, 2), }", data), ">f4");
+    check("fortran.npy",
+          npyFile(1, "{'descr': '<f4', 'fortran_order': True, 'shape': (2, 2), }", data),
           "Fortran order");
-    check("1d.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (4,), }", data), "expected a 2-D");
-    check("3d.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 2, 2), }", data),
+    check("1d.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (4,), }", data),
           "expected a 2-D");
-    check("short.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 3), }", data),
+    check("3d.npy",
+          npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 2, 2), }", data),
+          "expected a 2-D");
+    check("short.npy",
+          npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 3), }", data),
           "shorter than its shape says");
-    check("long.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 3), }", data),
+    check("long.npy",
+          npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 3), }", data),
           "longer than its shape says");
-    check("noshape.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False}", data), "has no 'shape'");
-    check("badshape.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, x), }", data),
+    check("noshape.npy", npyFile(1, "{'descr': '<f4', 'fortran_order': False}", data),
+          "has no 'shape'");
+    check("badshape.npy",
+          npyFile(1, "{'descr': '<f4', 'fortran_order': False, 'shape': (2, x), }", data),
           "malformed shape");
     CHECK_THROWS_WITH(readNpyFloat32(dir.file("absent.npy")), ContainsSubstring("cannot open"));
 }
 
+TEST_CASE("readNpyInt32() reads the tracker's reference traces", "[io]") {
+    takt4::test::TempDir dir;
+    const auto intBytes = [](std::initializer_list<std::int32_t> values) {
+        std::string out;
+        for (const std::int32_t v : values) {
+            char bytes[sizeof v];
+            std::memcpy(bytes, &v, sizeof v);
+            out.append(bytes, sizeof v);
+        }
+        return out;
+    };
+    const std::string data = intBytes({1449, -1, 0, 2147483647});
+    spit(dir.file("i4.npy"),
+         npyFile(1, "{'descr': '<i4', 'fortran_order': False, 'shape': (2, 2), }", data));
+    const takt4::io::NpyInt32Matrix m = takt4::io::readNpyInt32(dir.file("i4.npy"));
+    CHECK(m.rows == 2);
+    CHECK(m.cols == 2);
+    CHECK(m.at(0, 0) == 1449);
+    CHECK(m.at(0, 1) == -1);
+    CHECK(m.at(1, 1) == 2147483647);
+
+    // The two readers do not accept each other's files; a dtype mix-up would otherwise
+    // reinterpret every value silently.
+    CHECK_THROWS_WITH(readNpyFloat32(dir.file("i4.npy")), ContainsSubstring("<i4"));
+    const std::vector<float> square = {1.0f, 2.0f, 3.0f, 4.0f};
+    writeNpyFloat32(dir.file("f4.npy"), 2, 2, square);
+    CHECK_THROWS_WITH(takt4::io::readNpyInt32(dir.file("f4.npy")), ContainsSubstring("<f4"));
+}
+
 TEST_CASE("the golden synthetic features read as numpy wrote them", "[io]") {
-    const std::filesystem::path path = std::filesystem::path(TAKT4_TEST_DATA_DIR) / "features" / "synthetic.npy";
+    const std::filesystem::path path =
+        std::filesystem::path(TAKT4_TEST_DATA_DIR) / "features" / "synthetic.npy";
     const NpyMatrix m = readNpyFloat32(path);
     CHECK(m.rows == 500); // ten seconds at 50 frames per second
     CHECK(m.cols == 288);
@@ -177,6 +220,6 @@ TEST_CASE("the golden synthetic features read as numpy wrote them", "[io]") {
         negative += v < 0.0f ? 1 : 0;
         positive += v > 0.0f ? 1 : 0;
     }
-    CHECK(negative == 0); // log10(1 + x) of a magnitude, and clipped differences
+    CHECK(negative == 0);      // log10(1 + x) of a magnitude, and clipped differences
     CHECK(positive == 102395); // numpy: (m > 0).sum()
 }

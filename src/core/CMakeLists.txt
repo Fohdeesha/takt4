@@ -55,6 +55,9 @@ add_library(takt4_core STATIC
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
   rt/spsc_ring.hpp
+  tracking/particle_filter.cpp
+  tracking/particle_filter.hpp
+  tracking/random.hpp
   tracking/state_space.cpp
   tracking/state_space.hpp
 )
