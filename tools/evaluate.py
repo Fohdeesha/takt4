@@ -50,6 +50,14 @@ AUDIO_SUFFIXES = (".wav", ".flac", ".mp3", ".ogg", ".m4a", ".au")
 ANNOTATION_SUFFIXES = (".beats", ".txt", ".beats.txt", ".csv", ".onsets")
 SAMPLE_RATE = 22050
 
+#: What BeatNet+ was trained on, from its own README's dataset table — Ballroom 699,
+#: Hainsworth 220, Rock Corpus 200, MUSDB18 150, URSing 65, RWC — and HANDOFF §A.2. A
+#: score on any of these says the port reproduces what the model can do; it says nothing
+#: about how the model generalises, and it cannot be compared with §A.1's figures, which
+#: are GTZAN and GTZAN alone ("test-only and never seen in training").
+TRAINING_SETS = ("ballroom", "hainsworth", "rock_corpus", "rockcorpus", "musdb", "ursing",
+                 "rwc")
+
 
 def find_cli(given):
     """The takt4-cli to measure. An unoptimised build would be a different tracker only
@@ -73,8 +81,10 @@ def find_cli(given):
 
 
 def read_annotation(path):
-    """(times, beat numbers). The numbers are zeros when the file has only one column."""
-    times, numbers = [], []
+    """(times, beat numbers, tempi). The numbers are zeros when the file has only one
+    column, and the tempi are NaN unless there is a third — which only takt4's own
+    `--out` files carry, holding what the tempo state machine was publishing."""
+    times, numbers, tempi = [], [], []
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip().replace(",", " ")
         if not line or line.startswith("#"):
@@ -85,8 +95,44 @@ def read_annotation(path):
         except ValueError:
             continue  # a header line, or something that is not an annotation
         numbers.append(int(float(parts[1])) if len(parts) > 1 else 0)
+        tempi.append(float(parts[2]) if len(parts) > 2 else float("nan"))
     order = np.argsort(times)
-    return np.asarray(times, dtype=float)[order], np.asarray(numbers, dtype=int)[order]
+    return (np.asarray(times, dtype=float)[order], np.asarray(numbers, dtype=int)[order],
+            np.asarray(tempi, dtype=float)[order])
+
+
+def tempo_of(times):
+    """A reference tempo from beat times: 60 over the median gap.
+
+    Ballroom carries no tempo annotation of its own, but its beats are annotated, and
+    the median inter-beat gap is what a tempo annotation would be. The median rather
+    than the mean so that one missing beat in an annotation does not move it.
+    """
+    if len(times) < 3:
+        return float("nan")
+    gaps = np.diff(times)
+    gaps = gaps[gaps > 0]
+    return 60.0 / float(np.median(gaps)) if len(gaps) else float("nan")
+
+
+def tempo_accuracy(reference, estimate, tolerance=0.04):
+    """MIREX's two tempo measures, as a pair of 0/1 scores.
+
+    Accuracy 1 is "within `tolerance` of the reference". Accuracy 2 also accepts the
+    octave and triple relations, which is the standard admission that half or double a
+    tempo is the same tempo to a listener. The difference between the two is exactly
+    what HANDOFF §5.5's octave fold exists to close — and note that no fold can move a
+    beat, so this is the only measure a fold can appear in at all.
+    """
+    if not (reference > 0.0) or not (estimate > 0.0):
+        return float("nan"), float("nan")
+    first = 1.0 if abs(estimate - reference) <= tolerance * reference else 0.0
+    second = 0.0
+    for ratio in (1.0, 2.0, 0.5, 3.0, 1.0 / 3.0):
+        if abs(estimate - reference * ratio) <= tolerance * reference * ratio:
+            second = 1.0
+            break
+    return first, second
 
 
 def index_annotations(directory):
@@ -128,10 +174,10 @@ def track(cli, audio, options, scratch):
     if result.returncode != 0:
         raise RuntimeError(f"{audio.name}: takt4-cli exited {result.returncode}: "
                            f"{result.stderr.strip() or result.stdout.strip()[:200]}")
-    times, numbers = read_annotation(beats)
+    times, numbers, tempi = read_annotation(beats)
     wav.unlink(missing_ok=True)
     beats.unlink(missing_ok=True)
-    return times, numbers, len(samples) / SAMPLE_RATE
+    return times, numbers, tempi, len(samples) / SAMPLE_RATE
 
 
 def score(reference_times, reference_numbers, estimate_times, estimate_numbers):
@@ -156,11 +202,25 @@ def score(reference_times, reference_numbers, estimate_times, estimate_numbers):
 
 def evaluate_one(cli, audio, annotation, options):
     with tempfile.TemporaryDirectory(prefix="takt4-eval-") as scratch:
-        estimate_times, estimate_numbers, seconds = track(cli, audio, options, Path(scratch))
-    reference_times, reference_numbers = read_annotation(annotation)
+        estimate_times, estimate_numbers, estimate_tempi, seconds = track(cli, audio, options,
+                                                                          Path(scratch))
+    reference_times, reference_numbers, _ = read_annotation(annotation)
     if len(reference_times) < 2:
         raise RuntimeError(f"{annotation.name}: fewer than two annotated beats")
     result = score(reference_times, reference_numbers, estimate_times, estimate_numbers)
+
+    # Tempo, which the beat metrics above cannot see. The published tempo is taken as the
+    # median over the beats of the run rather than its last value, so a run that settles
+    # is not judged on whatever it happened to be saying when the file ended.
+    reference_tempo = tempo_of(reference_times)
+    published = estimate_tempi[np.isfinite(estimate_tempi)]
+    estimate_tempo = float(np.median(published)) if len(published) else float("nan")
+    first, second = tempo_accuracy(reference_tempo, estimate_tempo)
+    if np.isfinite(first):
+        result["Tempo accuracy 1"] = first
+        result["Tempo accuracy 2"] = second
+    result["_reference_tempo"] = reference_tempo
+    result["_published_tempo"] = estimate_tempo
     result["_seconds"] = seconds
     result["_reference_beats"] = int(len(reference_times))
     result["_estimated_beats"] = int(len(estimate_times))
@@ -197,12 +257,17 @@ def main():
 
     pairs = []
     unmatched = []
+    groups = {}
     for audio in audio_files:
         annotation = annotations.get(audio.stem.lower())
         if annotation is None:
             unmatched.append(audio.name)
         else:
             pairs.append((audio, annotation))
+            # Ballroom and GTZAN both file their audio by genre, and per-genre scores are
+            # how their results are normally read: a mean over the whole set hides which
+            # material the tracker cannot follow.
+            groups[audio.stem] = audio.parent.name
     if options.limit:
         pairs = pairs[: options.limit]
     if not pairs:
@@ -244,14 +309,51 @@ def main():
         print(f"{metric:<26} {summary[metric]['mean']:>8.4f} "
               f"{summary[metric]['median']:>8.4f}")
 
+    # Per genre, where the layout files audio that way. The mean over a whole set says
+    # whether the tracker works; this says what it cannot follow.
+    per_group = {}
+    named = {groups[name] for name in results if name in groups}
+    # "F-measure" is the beat one; mir_eval names the other "Downbeat F-measure".
+    shown = [m for m in metrics if m.endswith("F-measure")]
+    labels = {"F-measure": "beat F1", "Downbeat F-measure": "downbeat F1"}
+    if len(named) > 1:
+        headline = "F-measure"
+        print(f"\n{'':<20} {'files':>5} " + " ".join(f"{labels[m]:>12}" for m in shown))
+        for group in sorted(named):
+            members = [scores for name, scores in results.items() if groups.get(name) == group]
+            per_group[group] = {"files": len(members)}
+            row = f"{group:<20} {len(members):>5} "
+            for metric in shown:
+                values = [s[metric] for s in members if metric in s]
+                if values:
+                    per_group[group][metric] = statistics.fmean(values)
+                    row += f"{statistics.fmean(values):>12.4f} "
+            print(row)
+        worst = min(per_group, key=lambda g: per_group[g].get(headline, 1.0))
+        best = max(per_group, key=lambda g: per_group[g].get(headline, 0.0))
+        print(f"\nbeat F1: best {best} {per_group[best].get(headline, float('nan')):.4f}, "
+              f"worst {worst} {per_group[worst].get(headline, float('nan')):.4f}")
+
     audio_seconds = sum(scores["_seconds"] for scores in results.values())
     print(f"\n{len(results)} files, {audio_seconds / 60:.1f} minutes of audio"
           + (f", {len(failures)} failed" if failures else ""))
     for name, message in list(failures.items())[:5]:
         print(f"  failed: {name}: {message}")
+    # The reference figures, and — more important — whether this dataset can be held
+    # against them at all.
+    trained_on = [name for name in TRAINING_SETS
+                  if name in str(options.dataset).lower().replace("-", "_")]
     print("\nHANDOFF §A.1 for reference: BeatNet+ 80.62 beat / 56.51 downbeat F-measure "
-          "on GTZAN,\nat the same 70 ms tolerance. A different dataset is a different "
-          "number; only GTZAN\ncompares directly.")
+          "on GTZAN,\nat the same 70 ms tolerance.")
+    if trained_on:
+        print(f"\n  !! This dataset ({trained_on[0]}) is one BeatNet+ was TRAINED on, per its own\n"
+              "     README's dataset table and HANDOFF §A.2. The score above therefore says\n"
+              "     that this port reproduces what the model can do — a real end-to-end\n"
+              "     check, over hours of audio — and says nothing about how it generalises.\n"
+              "     It must not be compared with the figures above: those are GTZAN, which\n"
+              "     §A.2 records as test-only and never seen in training.")
+    else:
+        print("     A different dataset is a different number; only GTZAN compares directly.")
 
     if options.report:
         options.report.write_text(json.dumps({
@@ -263,10 +365,13 @@ def main():
             "confidence_threshold": options.confidence,
             "seed": options.seed,
             "platform": platform.platform(),
+            "beatnet_plus_trained_on_this": trained_on,
             "files": len(results),
             "unmatched": unmatched,
             "failures": failures,
             "summary": summary,
+            "per_group": per_group,
+            "groups": groups,
             "per_file": results,
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         print(f"\nwrote {options.report}")

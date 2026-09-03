@@ -50,6 +50,14 @@ detected meter as the quantum, timed through Link's own regression on the audio 
 sample counter), a generic OSC namespace on any number of targets, and MIDI beat clock
 at 24 PPQN.
 
+Measured on the 698-clip Ballroom set — 6.1 hours, scored with mir_eval at its 70 ms
+tolerance — the whole chain gets **0.894 beat and 0.858 downbeat F-measure**. Ballroom is
+a set BeatNet+ was *trained* on, so that says the port reproduces what the model can do
+and nothing about how the model generalises; it is not comparable to BeatNet+'s published
+GTZAN figures. [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/) has the
+numbers, the per-genre breakdown, what the octave fold costs as well as buys, and why the
+worst cases are BeatNet+'s behaviour rather than this port's.
+
 `takt4 --version` prints what it was built with, and the window opens; the UI does not
 show any of this yet.
 
@@ -140,17 +148,22 @@ python tools/pf_reference.py                                # regenerate the tra
 until this project's restatement of the particle filter has been held against the real
 one.
 
-`tools/evaluate.py` is the odd one out: it produces nothing committed. It measures beat
-and downbeat F-measure against an annotated dataset by running every file through
-`takt4-cli track` and scoring with mir_eval, so the number is the shipped C++ scored by
-the reference implementation the published figures come from. No dataset is vendored —
-they are large and their licences are their own — and the layouts of Ballroom, SMC and
-GTZAN work as they come:
+`tools/evaluate.py` measures beat and downbeat F-measure, and tempo accuracy, against an
+annotated dataset — by running every file through `takt4-cli track` and scoring with
+mir_eval, so the number is the shipped C++ scored by the reference implementation the
+published figures come from. No dataset is vendored — they are large and their licences
+are their own — and the layouts of Ballroom, SMC and GTZAN work as they come:
 
 ```sh
 pip install -r tools/requirements-eval.txt
 python tools/evaluate.py path/to/audio --annotations path/to/annotations --report eval.json
 ```
+
+It warns when the dataset it was pointed at is one BeatNet+ was trained on, because a
+score on those cannot be compared with the published ones. The trimmed reports of the
+runs behind the numbers above are committed in
+[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/), which also says
+exactly where to get the Ballroom audio and annotations.
 
 Two steps because madmom builds from source and its `setup.py` imports numpy and
 Cython. Full-length source tracks belong outside git; `references/` is ignored for

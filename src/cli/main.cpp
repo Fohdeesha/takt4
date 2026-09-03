@@ -113,8 +113,9 @@ void printUsage(std::ostream& out) {
         << "      --latency MS    added to every beat's timestamp; negative fires early\n"
         << "      --confidence T  hold the last tempo below this, default 0.15\n"
         << "      --seed N        the particle filter's seed, default 1\n"
-        << "      --out FILE      write every beat as <seconds> TAB <beat in bar>, the\n"
-        << "                      format the beat-tracking datasets annotate in\n"
+        << "      --out FILE      write every beat as <seconds> TAB <beat in bar> TAB\n"
+        << "                      <BPM>; the first two columns are the format the\n"
+        << "                      beat-tracking datasets annotate in\n"
         << "      --link          join the Ableton Link network as tempo master\n"
         << "      --osc H:P       send the generic namespace there; repeat for more\n"
         << "      --osc-prefix P  that namespace's prefix, default /takt4\n"
@@ -864,8 +865,12 @@ public:
         }
     }
 
-    /// Writes every beat as "<seconds>\t<beat in bar>", the format the beat-tracking
-    /// datasets annotate in, so an estimate and a reference are the same kind of file.
+    /// Writes every beat as "<seconds>\t<beat in bar>\t<BPM>". The first two columns are
+    /// the format the beat-tracking datasets annotate in, so an estimate and a reference
+    /// are the same kind of file and the same reader handles both; the third is what the
+    /// tempo state machine was publishing at that beat, which is the only thing §5.5's
+    /// octave fold can move. A fold cannot change a beat time, so it cannot show up in
+    /// beat F-measure — the tempo column is where its effect is visible at all.
     void writeBeatsTo(const std::filesystem::path& path) {
         beatsOut_.open(path, std::ios::trunc);
         if (!beatsOut_) {
@@ -888,7 +893,7 @@ public:
         }
         std::cout << beatLine(*event, tempo_.state()) << '\n';
         if (beatsOut_.is_open()) {
-            beatsOut_ << event->time << '\t' << event->beatInBar << '\n';
+            beatsOut_ << event->time << '\t' << event->beatInBar << '\t' << event->bpm << '\n';
         }
 
         if (osc_) {
