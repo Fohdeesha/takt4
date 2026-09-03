@@ -32,7 +32,7 @@ namespace {
 constexpr int kChannels = 18;
 constexpr double kDeviceRate = 48000.0;
 constexpr double kToneHz = 440.0;
-constexpr float kToneAmplitude = 0.5f;
+constexpr double kToneAmplitude = 0.5;
 constexpr int kToneChannel = 6; // "input 7"
 
 InputDevice device(HostApiKind kind) {
@@ -56,7 +56,7 @@ std::vector<float> interfaceBlock(std::size_t frames) {
         const double t = static_cast<double>(i) / kDeviceRate;
         float* frame = out.data() + i * kChannels;
         frame[kToneChannel - 1] = dist(rng);
-        frame[kToneChannel] = kToneAmplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * kToneHz * t));
+        frame[kToneChannel] = static_cast<float>(kToneAmplitude * std::sin(2.0 * std::numbers::pi * kToneHz * t));
         frame[kToneChannel + 1] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 3000.0 * t));
     }
     return out;
