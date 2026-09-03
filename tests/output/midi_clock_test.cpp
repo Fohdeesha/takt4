@@ -30,7 +30,9 @@ public:
     std::size_t count(unsigned char status) const {
         std::size_t found = 0;
         for (const unsigned char byte : bytes) {
-            found += byte == status ? 1 : 0;
+            if (byte == status) {
+                ++found;
+            }
         }
         return found;
     }

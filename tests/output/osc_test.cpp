@@ -73,7 +73,8 @@ public:
 #else
         timeval timeout{};
         timeout.tv_usec = 500000;
-        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                     static_cast<socklen_t>(sizeof timeout));
 #endif
     }
 

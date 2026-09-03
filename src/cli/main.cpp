@@ -883,7 +883,9 @@ public:
             return;
         }
         ++beats_;
-        downbeats_ += event->downbeat ? 1 : 0;
+        if (event->downbeat) {
+            ++downbeats_;
+        }
         std::cout << beatLine(*event, tempo_.state()) << '\n';
         if (beatsOut_.is_open()) {
             beatsOut_ << event->time << '\t' << event->beatInBar << '\n';

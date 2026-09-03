@@ -131,7 +131,9 @@ TEST_CASE("the filter reproduces the reference trace frame for frame",
             REQUIRE(static_cast<std::int32_t>(got.downMax) == reference.at(f, 1));
             REQUIRE(static_cast<std::int32_t>(got.emitted) == reference.at(f, 2));
             REQUIRE(static_cast<std::int32_t>(got.intervalFrames) == reference.at(f, 3));
-            beats += got.emitted != TrackedFrame::Emitted::None ? 1 : 0;
+            if (got.emitted != TrackedFrame::Emitted::None) {
+                ++beats;
+            }
         }
         frames += activations.rows;
     }

@@ -252,7 +252,8 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
             frame.refinedIntervalFrames = 23.0;
             frame.emitted = TrackedFrame::Emitted::Beat;
             (void)tracker.process(frame);
-            at += beat == 5 ? 47 : 23; // one gap of two beats among ordinary ones
+            // One gap of two beats among ordinary ones.
+            at += beat == 5 ? std::uint64_t{47} : std::uint64_t{23};
         }
         CHECK(tracker.state().refined);
         CHECK(tracker.state().bpm == Approx(bpmOf(23)).margin(0.5));
@@ -400,7 +401,9 @@ TEST_CASE("the chain tracks the synthetic excerpt's tempo and locks", "[tracking
 
     std::size_t downbeats = 0;
     for (const BeatEvent& event : beats) {
-        downbeats += event.downbeat ? 1 : 0;
+        if (event.downbeat) {
+            ++downbeats;
+        }
         CHECK(event.beatInBar <= event.beatsPerBar);
     }
     CHECK(downbeats > 2);
