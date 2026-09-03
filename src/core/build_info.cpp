@@ -40,6 +40,7 @@ BuildInfo buildInfo() {
     info.kohlhoffAsio = kohlhoffAsioVersion();
     info.rtmidi = RtMidi::getVersion();
     info.rtneuralRevision = TAKT4_RTNEURAL_REV;
+    info.kissfft = TAKT4_KISSFFT_VERSION;
     info.nlohmannJson = nlohmannJsonVersion();
     info.slint = TAKT4_SLINT_VERSION;
     return info;
@@ -55,6 +56,7 @@ std::string describe(const BuildInfo& info) {
         << "  Ableton Link:  " << info.link << " (asio " << info.kohlhoffAsio << ")\n"
         << "  RtMidi:        " << info.rtmidi << '\n'
         << "  RTNeural:      " << info.rtneuralRevision << '\n'
+        << "  KissFFT:       " << info.kissfft << '\n'
         << "  nlohmann/json: " << info.nlohmannJson << '\n'
         << "  Slint:         " << (info.slint.empty() ? "not built" : info.slint) << '\n';
     return out.str();
