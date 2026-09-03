@@ -569,8 +569,9 @@ int runBeatsFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
         }
     }
     std::cout << engine->framesEmitted() << " frames, strongest beat probability "
-              << fixed1(loudest * 100.0) << "%, worst hop " << fixed1(engine->worstHopMicros())
-              << " us of 20000 us of audio\n";
+              << fixed1(loudest * 100.0) << "%, hop " << fixed1(engine->meanHopMicros())
+              << " us mean / " << fixed1(engine->worstHopMicros())
+              << " us worst, of 20000 us of audio\n";
     return 0;
 }
 

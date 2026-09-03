@@ -1,6 +1,6 @@
-#include "core/model/dimensions.hpp"
 #include "core/model/weights.hpp"
 
+#include "core/model/dimensions.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_test_macros.hpp>

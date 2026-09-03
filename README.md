@@ -23,8 +23,9 @@ stacked LSTMs and a softmax over beat / downbeat / non-beat, 50 times a second, 
 RTNeural. All three published weight sets are converted into `assets/weights/` and
 checked against PyTorch on the same eighteen excerpts (`tests/data/model/`), where the
 largest difference in the probabilities is 3.6e-6. Live, the audio callback only hands
-hops to a lock-free ring and a worker thread runs the front end and the model; the worst
-a hop has taken there is 0.24 ms of the 20 ms it represents.
+hops to a lock-free ring and a worker thread runs the front end and the model; over
+those excerpts the worker averages 0.086 ms per hop and has never taken more than
+0.31 ms, out of the 20 ms of audio each hop stands for.
 
 Nothing turns those probabilities into beats yet — that is the particle filter, next.
 `takt4 --version` prints what it was built with, and the window opens.
@@ -60,8 +61,8 @@ golden excerpts (see [tests/data/features/README.md](tests/data/features/README.
 20 ms frame, either over a file or from a live input — the device options are the
 meter's. `--weights` picks the weight set: `generic` (the default), `generic-main` for
 percussion-heavy material, `af-non-percussive` for ambient and classical, or a path to
-a `.bin` of your own. A run ends with the worst time one hop took on the worker thread,
-out of the 20 ms of audio it stands for.
+a `.bin` of your own. A run ends with the mean and the worst time one hop took on the
+worker thread, out of the 20 ms of audio it stands for.
 
 ### Python tooling
 
