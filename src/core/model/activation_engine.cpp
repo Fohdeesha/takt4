@@ -39,6 +39,8 @@ void ActivationEngine::start() {
     framesDropped_.store(0, std::memory_order_relaxed);
     worstHopMicros_.store(0.0, std::memory_order_relaxed);
     worstModelMicros_.store(0.0, std::memory_order_relaxed);
+    totalHopMicros_.store(0.0, std::memory_order_relaxed);
+    hopsWorked_.store(0, std::memory_order_relaxed);
 
     running_.store(true, std::memory_order_release);
     worker_ = std::thread([this] { run(); });
@@ -102,7 +104,18 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
             framesDropped_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    recordWorst(worstHopMicros_, microsSince(hopStart));
+    const double micros = microsSince(hopStart);
+    recordWorst(worstHopMicros_, micros);
+    // Only the worker writes these, so a plain load-add-store is enough.
+    totalHopMicros_.store(totalHopMicros_.load(std::memory_order_relaxed) + micros,
+                          std::memory_order_relaxed);
+    hopsWorked_.fetch_add(1, std::memory_order_relaxed);
+}
+
+double ActivationEngine::meanHopMicros() const noexcept {
+    const std::uint64_t worked = hopsWorked_.load(std::memory_order_relaxed);
+    return worked == 0 ? 0.0
+                       : totalHopMicros_.load(std::memory_order_relaxed) / static_cast<double>(worked);
 }
 
 void ActivationEngine::recordWorst(std::atomic<double>& worst, double micros) noexcept {

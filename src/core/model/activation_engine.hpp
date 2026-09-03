@@ -100,6 +100,9 @@ public:
         return worstModelMicros_.load(std::memory_order_relaxed);
     }
 
+    /// The same, averaged over every hop the worker has taken. Zero before the first.
+    double meanHopMicros() const noexcept;
+
     /// Runs one queued hop on the calling thread, for tests and offline use; returns
     /// false when the queue is empty. Only valid while the worker is not running.
     bool step() noexcept;
@@ -127,6 +130,8 @@ private:
     std::atomic<std::uint64_t> framesDropped_{0};
     std::atomic<double> worstHopMicros_{0.0};
     std::atomic<double> worstModelMicros_{0.0};
+    std::atomic<double> totalHopMicros_{0.0};
+    std::atomic<std::uint64_t> hopsWorked_{0};
 };
 
 } // namespace takt4::model

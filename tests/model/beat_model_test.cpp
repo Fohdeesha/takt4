@@ -1,5 +1,6 @@
-#include "core/io/npy_file.hpp"
 #include "core/model/beat_model.hpp"
+
+#include "core/io/npy_file.hpp"
 #include "core/model/dimensions.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"

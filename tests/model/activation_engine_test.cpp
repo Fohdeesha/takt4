@@ -1,6 +1,7 @@
+#include "core/model/activation_engine.hpp"
+
 #include "core/audio/rates.hpp"
 #include "core/io/wav_file.hpp"
-#include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
 
