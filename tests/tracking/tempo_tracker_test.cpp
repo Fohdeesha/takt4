@@ -24,23 +24,31 @@ namespace {
 
 constexpr double kFramePeriod = 0.02; // 50 Hz, as the whole pipeline runs at
 
+/// The tempo of a beat period of `intervalFrames` whole frames. Those are the only
+/// tempi madmom's state space holds, so they are the only ones the filter can report:
+/// 23 frames is 130.43 BPM, the nearest it gets to a track playing 128.
+constexpr double bpmOf(std::uint32_t intervalFrames) {
+    return 60.0 / (static_cast<double>(intervalFrames) * kFramePeriod);
+}
+
 /// A frame as the particle filter would report it, with nothing emitted.
-TrackedFrame frameAt(std::uint64_t index, double bpm, double agreement,
+TrackedFrame frameAt(std::uint64_t index, std::uint32_t intervalFrames, double agreement,
                      std::uint32_t beatsPerBar = 4) {
     TrackedFrame frame;
     frame.frameIndex = index;
-    frame.bpm = bpm;
+    frame.intervalFrames = intervalFrames;
+    frame.refinedIntervalFrames = static_cast<double>(intervalFrames);
+    frame.bpm = bpmOf(intervalFrames);
     frame.tempoAgreement = agreement;
     frame.beatsPerBar = beatsPerBar;
-    frame.intervalFrames = static_cast<std::uint32_t>(60.0 / (bpm * kFramePeriod) + 0.5);
     return frame;
 }
 
-/// Runs `count` frames at one tempo, returning the last state.
-void settle(TempoTracker& tracker, std::uint64_t& index, double bpm, double agreement,
-            std::size_t count) {
+/// Runs `count` frames at one tempo.
+void settle(TempoTracker& tracker, std::uint64_t& index, std::uint32_t intervalFrames,
+            double agreement, std::size_t count) {
     for (std::size_t i = 0; i < count; ++i) {
-        (void)tracker.process(frameAt(index++, bpm, agreement));
+        (void)tracker.process(frameAt(index++, intervalFrames, agreement));
     }
 }
 
@@ -55,7 +63,7 @@ TEST_CASE("the octave fold pulls an estimate into the operator's range", "[track
     CHECK(tracker.fold(128.0) == Approx(128.0));
     CHECK(tracker.fold(70.0) == Approx(70.0));
     CHECK(tracker.fold(170.0) == Approx(85.0)); // the failure this exists to stop
-    CHECK(tracker.fold(200.0) == Approx(100.0));
+    CHECK(tracker.fold(200.0) == Approx(bpmOf(30)));
     CHECK(tracker.fold(60.0) == Approx(120.0));
     CHECK(tracker.fold(55.0) == Approx(110.0));
     // 140 is the exclusive end, so it folds down rather than staying put.
@@ -89,33 +97,33 @@ TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same 
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
 
-    settle(tracker, index, 128.0, 0.8, 24);
+    settle(tracker, index, 23, 0.8, 24);
     CHECK_FALSE(tracker.state().locked);
-    CHECK(tracker.state().bpm == Approx(128.0));
-    settle(tracker, index, 128.0, 0.8, 1);
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+    settle(tracker, index, 23, 0.8, 1);
     CHECK(tracker.state().locked);
 
     SECTION("one frame of disagreement does not unlock it") {
-        settle(tracker, index, 96.0, 0.8, 1);
+        settle(tracker, index, 31, 0.8, 1);
         CHECK(tracker.state().locked);
-        CHECK(tracker.state().bpm == Approx(128.0)); // still publishing the locked tempo
-        settle(tracker, index, 128.0, 0.8, 1);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23))); // still publishing the locked tempo
+        settle(tracker, index, 23, 0.8, 1);
         CHECK(tracker.state().locked);
         // The disagreement counter has to have been cleared, or a stray frame every
         // other frame would eventually unlock it.
-        settle(tracker, index, 96.0, 0.8, 74);
+        settle(tracker, index, 31, 0.8, 74);
         CHECK(tracker.state().locked);
     }
 
     SECTION("sustained disagreement unlocks it and takes the new tempo") {
-        settle(tracker, index, 96.0, 0.8, 74);
+        settle(tracker, index, 31, 0.8, 74);
         CHECK(tracker.state().locked);
-        CHECK(tracker.state().bpm == Approx(128.0));
-        settle(tracker, index, 96.0, 0.8, 1);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        settle(tracker, index, 31, 0.8, 1);
         CHECK_FALSE(tracker.state().locked);
-        CHECK(tracker.state().bpm == Approx(96.0));
+        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
         // ...and locks again once the new tempo has agreed with itself long enough.
-        settle(tracker, index, 96.0, 0.8, 24);
+        settle(tracker, index, 31, 0.8, 24);
         CHECK(tracker.state().locked);
     }
 }
@@ -129,33 +137,33 @@ TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][t
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
 
-    settle(tracker, index, 128.0, 0.9, 40);
+    settle(tracker, index, 23, 0.9, 40);
     REQUIRE(tracker.state().locked);
     REQUIRE_FALSE(tracker.state().holding);
     CHECK(tracker.state().confidence > 0.4);
 
     // The cloud falls apart and the filter starts reporting nonsense. Nothing new may be
     // published: HANDOFF §5.5, "silence beats wrong".
-    settle(tracker, index, 71.0, 0.02, 40);
+    settle(tracker, index, 42, 0.02, 40);
     CHECK(tracker.state().holding);
-    CHECK(tracker.state().bpm == Approx(128.0));
-    CHECK(tracker.state().rawBpm == Approx(71.0)); // what the filter says is still visible
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+    CHECK(tracker.state().rawBpm == Approx(bpmOf(42))); // what the filter says is still visible
     CHECK(tracker.state().confidence < 0.4);
 
     // Confidence returns at the new tempo. The gate lifts within a few frames, but the
     // lock still has to run its hysteresis window out before the number moves.
-    settle(tracker, index, 71.0, 0.9, 10);
+    settle(tracker, index, 42, 0.9, 10);
     CHECK_FALSE(tracker.state().holding);
-    CHECK(tracker.state().bpm == Approx(128.0));
-    settle(tracker, index, 71.0, 0.9, 30);
-    CHECK(tracker.state().bpm == Approx(71.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+    settle(tracker, index, 42, 0.9, 30);
+    CHECK(tracker.state().bpm == Approx(bpmOf(42)));
 
     SECTION("before anything has been believed once, there is nothing to hold") {
         TempoTracker fresh(kFramePeriod, options);
         std::uint64_t at = 0;
-        settle(fresh, at, 100.0, 0.0, 5);
+        settle(fresh, at, 30, 0.0, 5);
         CHECK_FALSE(fresh.state().holding);
-        CHECK(fresh.state().bpm == Approx(100.0));
+        CHECK(fresh.state().bpm == Approx(bpmOf(30)));
     }
 }
 
@@ -163,7 +171,7 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
     TempoTracker tracker(kFramePeriod);
     std::uint64_t index = 0;
     const auto beat = [&](TrackedFrame::Emitted kind, std::uint32_t beatsPerBar) {
-        TrackedFrame frame = frameAt(index++, 128.0, 0.9, beatsPerBar);
+        TrackedFrame frame = frameAt(index++, 23, 0.9, beatsPerBar);
         frame.emitted = kind;
         return tracker.process(frame);
     };
@@ -197,7 +205,7 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
     }
 
     SECTION("a frame with nothing emitted is not a beat") {
-        CHECK_FALSE(tracker.process(frameAt(index++, 128.0, 0.9)).has_value());
+        CHECK_FALSE(tracker.process(frameAt(index++, 23, 0.9)).has_value());
     }
 }
 
@@ -219,9 +227,9 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
     for (int beat = 0; beat < 40; ++beat) {
         const auto at = static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
         while (next < at) {
-            (void)tracker.process(frameAt(next++, 130.4347826, 0.9));
+            (void)tracker.process(frameAt(next++, 23, 0.9));
         }
-        TrackedFrame frame = frameAt(next++, 130.4347826, 0.9);
+        TrackedFrame frame = frameAt(next++, 23, 0.9);
         frame.refinedIntervalFrames = 23.0; // the cloud sits on one interval, as it does
         frame.emitted =
             beat % 4 == 0 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
@@ -240,14 +248,14 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
         // down by an eighth.
         std::uint64_t at = next + 200;
         for (int beat = 0; beat < 12; ++beat) {
-            TrackedFrame frame = frameAt(at, 130.4347826, 0.9);
+            TrackedFrame frame = frameAt(at, 23, 0.9);
             frame.refinedIntervalFrames = 23.0;
             frame.emitted = TrackedFrame::Emitted::Beat;
             (void)tracker.process(frame);
             at += beat == 5 ? 47 : 23; // one gap of two beats among ordinary ones
         }
         CHECK(tracker.state().refined);
-        CHECK(tracker.state().bpm == Approx(130.43).margin(0.5));
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)).margin(0.5));
     }
 
     SECTION("a refinement that disagrees with the lock is not believed") {
@@ -258,16 +266,16 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
         for (int beat = 0; beat < 40; ++beat) {
             const auto on = static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
             while (at < on) {
-                (void)strict.process(frameAt(at++, 130.4347826, 0.9));
+                (void)strict.process(frameAt(at++, 23, 0.9));
             }
-            TrackedFrame frame = frameAt(at++, 130.4347826, 0.9);
+            TrackedFrame frame = frameAt(at++, 23, 0.9);
             frame.refinedIntervalFrames = 23.0;
             frame.emitted = TrackedFrame::Emitted::Beat;
             (void)strict.process(frame);
         }
         REQUIRE(strict.state().locked);
         CHECK_FALSE(strict.state().refined);
-        CHECK(strict.state().bpm == Approx(130.4347826));
+        CHECK(strict.state().bpm == Approx(bpmOf(23)));
     }
 }
 
@@ -276,7 +284,7 @@ TEST_CASE("the latency offset moves the timestamp and nothing else", "[tracking]
     options.latencyOffsetSeconds = -0.030; // fire 30 ms early
     TempoTracker tracker(kFramePeriod, options);
 
-    TrackedFrame frame = frameAt(500, 128.0, 0.9);
+    TrackedFrame frame = frameAt(500, 23, 0.9);
     frame.emitted = TrackedFrame::Emitted::Downbeat;
     const std::optional<BeatEvent> event = tracker.process(frame);
     REQUIRE(event.has_value());
@@ -292,18 +300,18 @@ TEST_CASE("the manual octave shift moves the published tempo and keeps the lock"
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
 
-    settle(tracker, index, 128.0, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 20);
     REQUIRE(tracker.state().locked);
     tracker.halve();
-    CHECK(tracker.state().bpm == Approx(64.0));
-    settle(tracker, index, 128.0, 0.9, 20);
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    settle(tracker, index, 23, 0.9, 20);
     CHECK(tracker.state().locked);
-    CHECK(tracker.state().bpm == Approx(64.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
 
     tracker.redouble();
-    CHECK(tracker.state().bpm == Approx(128.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
     tracker.redouble();
-    CHECK(tracker.state().bpm == Approx(256.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) * 2.0));
 }
 
 TEST_CASE("changing the fold window only drops the lock when it has to", "[tracking][tempo]") {
@@ -314,19 +322,19 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 128.0, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 20);
     REQUIRE(tracker.state().locked);
 
-    options.maxBpm = 160.0; // 128 still fits
+    options.maxBpm = 160.0; // 130.43 still fits
     tracker.setOptions(options);
     CHECK(tracker.state().locked);
-    CHECK(tracker.state().bpm == Approx(128.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
 
     options.minBpm = 60.0;
-    options.maxBpm = 120.0; // 128 does not
+    options.maxBpm = 120.0; // 130.43 does not
     tracker.setOptions(options);
     CHECK_FALSE(tracker.state().locked);
-    CHECK(tracker.state().bpm == Approx(64.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
 }
 
 TEST_CASE("nonsensical options are refused rather than tracked with", "[tracking][tempo]") {

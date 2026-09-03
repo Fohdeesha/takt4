@@ -23,7 +23,9 @@ add_executable(takt4_tests
   model/beat_model_test.cpp
   model/weights_test.cpp
   output/link_session_test.cpp
+  output/midi_clock_test.cpp
   output/midi_ports_test.cpp
+  output/osc_test.cpp
   rt/alloc_guard_test.cpp
   rt/spsc_ring_test.cpp
   tracking/particle_filter_test.cpp

@@ -56,6 +56,12 @@ void ActivationEngine::stop() noexcept {
 void ActivationEngine::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
     QueuedHop queued;
     queued.index = hopIndex;
+    // HANDOFF §4.3: the sample counter goes in here, on the audio thread, and Link's
+    // regression turns it into a host time. Nothing else on this thread reads a clock.
+    if (hostTime_ != nullptr) {
+        queued.hostMicros = hostTime_->hostMicrosForSample(static_cast<double>(hopIndex) *
+                                                           static_cast<double>(audio::kHopSize));
+    }
     std::copy_n(hop, audio::kHopSize, queued.samples.begin());
     if (hops_.tryPush(queued)) {
         hopsQueued_.fetch_add(1, std::memory_order_relaxed);
@@ -96,8 +102,18 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         const BeatModel::Activation activation = model_.process(extractor_.frame());
         recordWorst(worstModelMicros_, microsSince(modelStart));
 
-        const FrameActivation out{extractor_.frameIndex(), hop.index, activation.beat(),
-                                  activation.downbeat(), activation.nonBeat()};
+        // The hop's stamp is the host time of its first sample; the frame is centred on
+        // sample kHopSize · frameIndex, which is that many hops earlier. The regression
+        // behind the stamp is linear, so this is the same answer it would have given.
+        const std::uint64_t frameIndex = extractor_.frameIndex();
+        const std::int64_t hostMicros =
+            hop.hostMicros == 0
+                ? 0
+                : hop.hostMicros - static_cast<std::int64_t>(hop.index - frameIndex) *
+                                       static_cast<std::int64_t>(audio::kHopMicros);
+        const FrameActivation out{
+            frameIndex,          hop.index, hostMicros, activation.beat(), activation.downbeat(),
+            activation.nonBeat()};
         if (activations_.tryPush(out)) {
             framesEmitted_.fetch_add(1, std::memory_order_relaxed);
         } else {
@@ -114,8 +130,9 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
 
 double ActivationEngine::meanHopMicros() const noexcept {
     const std::uint64_t worked = hopsWorked_.load(std::memory_order_relaxed);
-    return worked == 0 ? 0.0
-                       : totalHopMicros_.load(std::memory_order_relaxed) / static_cast<double>(worked);
+    return worked == 0
+               ? 0.0
+               : totalHopMicros_.load(std::memory_order_relaxed) / static_cast<double>(worked);
 }
 
 void ActivationEngine::recordWorst(std::atomic<double>& worst, double micros) noexcept {

@@ -15,4 +15,9 @@ inline constexpr std::size_t kHopSize = 441;
 /// Hops per second at the internal rate.
 inline constexpr double kHopRate = kInternalSampleRate / static_cast<double>(kHopSize);
 
+/// One hop in microseconds — exactly 20000, since 441 samples at 22050 Hz is 20 ms.
+inline constexpr std::size_t kHopMicros = 20000;
+static_assert(kHopSize * 1000000 == kHopMicros * static_cast<std::size_t>(kInternalSampleRate),
+              "the hop is a whole number of microseconds");
+
 } // namespace takt4::audio

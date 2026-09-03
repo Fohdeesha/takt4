@@ -187,14 +187,23 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     state_.rawBpm = frame.bpm;
     state_.beatsPerBar = frame.beatsPerBar;
 
+    // The lock is decided on the state space's own whole-frame interval, never on the
+    // refined tempo. The refinement moves by tenths of a BPM from one frame to the next,
+    // which is finer than the lock tolerance, so locking against it would break the lock
+    // on every other frame — the discrete value is what says *which* tempo is being
+    // tracked, and that is the only question the lock asks.
+    const double discrete =
+        frame.intervalFrames > 0
+            ? 60.0 / (static_cast<double>(frame.intervalFrames) * secondsPerFrame_)
+            : frame.bpm;
     const bool confident = smoothedConfidence_ >= options_.confidenceThreshold;
     if (confident) {
         everConfident_ = true;
-        updateLock(fold(frame.bpm));
+        updateLock(fold(discrete));
     } else if (!everConfident_) {
         // Nothing good has been seen yet, so there is nothing to hold: follow the
         // estimate and let the gate take over once it has been believed once.
-        lockedBpm_ = fold(frame.bpm);
+        lockedBpm_ = fold(discrete);
     }
     // Below the gate, state_.bpm keeps whatever it last held (§5.5: "hold the last good
     // tempo, stop emitting new values, and say so").

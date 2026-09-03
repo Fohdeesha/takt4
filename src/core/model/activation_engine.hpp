@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/audio/hop_processor.hpp"
+#include "core/audio/host_time.hpp"
 #include "core/audio/rates.hpp"
 #include "core/features/feature_extractor.hpp"
 #include "core/model/beat_model.hpp"
@@ -20,6 +21,10 @@ namespace takt4::model {
 struct FrameActivation {
     std::uint64_t frameIndex = 0; ///< madmom's frame number: centred on sample 441 · k
     std::uint64_t hopIndex = 0;   ///< the hop whose arrival completed the frame
+    /// When the audio this frame is centred on reached the machine, on the host clock
+    /// the output transports use (HANDOFF §4.3). Zero when no HostTimeSource is
+    /// installed, which is the case offline and in every test that does not need it.
+    std::int64_t hostMicros = 0;
     float beat = 0.0f;
     float downbeat = 0.0f;
     float nonBeat = 0.0f;
@@ -57,6 +62,12 @@ public:
 
     ActivationEngine(const ActivationEngine&) = delete;
     ActivationEngine& operator=(const ActivationEngine&) = delete;
+
+    /// Installs the clock that stamps each activation with the host time of the audio it
+    /// was made from (HANDOFF §4.3). It is called from the audio thread, once per hop,
+    /// and must outlive the stream. Null — the default — leaves `hostMicros` at zero,
+    /// which is what offline runs and most tests want. Set before start().
+    void setHostTimeSource(audio::HostTimeSource* source) noexcept { hostTime_ = source; }
 
     /// Clears both queues, resets the front end and the model's LSTM state, and starts
     /// the worker. Call before the stream is started, never while it is running.
@@ -110,6 +121,7 @@ public:
 private:
     struct QueuedHop {
         std::uint64_t index = 0;
+        std::int64_t hostMicros = 0; ///< of the hop's first sample; 0 with no source
         std::array<float, audio::kHopSize> samples{};
     };
 
@@ -119,6 +131,7 @@ private:
 
     features::FeatureExtractor extractor_;
     BeatModel model_;
+    audio::HostTimeSource* hostTime_ = nullptr;
     rt::SpscRing<QueuedHop, kHopQueueCapacity> hops_;
     rt::SpscRing<FrameActivation, kActivationQueueCapacity> activations_;
 
