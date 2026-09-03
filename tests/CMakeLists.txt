@@ -22,6 +22,7 @@ add_executable(takt4_tests
   model/activation_engine_test.cpp
   model/beat_model_test.cpp
   model/weights_test.cpp
+  output/link_peers_test.cpp
   output/link_session_test.cpp
   output/midi_clock_test.cpp
   output/midi_ports_test.cpp
