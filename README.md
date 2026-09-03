@@ -10,9 +10,29 @@ generative visuals. Windows, macOS and Linux.
 
 ## Status
 
-Early. The build system, dependencies and CI are in place; the application does not
-track anything yet. `takt4 --version` prints what it was built with, and the window
-opens.
+Early. The build system, dependencies and CI are in place, and the audio path exists:
+one channel (or a summed pair) of any input device is opened, resampled to the engine's
+22050 Hz and cut into 20 ms hops. Nothing is tracked yet. `takt4 --version` prints what
+it was built with, and the window opens.
+
+### Development console
+
+`takt4-cli` is built alongside the application (in `bin/` next to it) but never
+packaged. It exercises the engine without the UI:
+
+```sh
+takt4-cli devices                       # host APIs, then every input device and its channels
+takt4-cli meter --device 1 --channel 7  # open input 7 of device 1, print RMS/peak at 10 Hz
+takt4-cli meter --device 1 --channels 7,8
+takt4-cli meter --device 1 --all        # every channel of the device, unresampled
+```
+
+Channel numbers count from 1, as printed on the interface. On ASIO and CoreAudio the
+selected channel is opened natively (the stream carries only that channel); elsewhere,
+or with `--software`, the whole device is opened and the channel is sliced out in
+software. `--rate HZ` overrides the device's default rate and `--seconds S` stops
+without Ctrl-C. Debug builds carry a real-time allocation guard that aborts on any heap
+use from the audio callback; `meter` reports whether it is on.
 
 ## Building
 
@@ -74,7 +94,7 @@ using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 | Option | Default | Effect |
 |---|---|---|
-| `TAKT4_BUILD_UI` | `ON` | Build the Slint UI and the `takt4` executable. `OFF` builds the engine library and tests only, needs no Rust toolchain, and never fetches Slint. The `linux-core` preset sets this. |
+| `TAKT4_BUILD_UI` | `ON` | Build the Slint UI and the `takt4` executable. `OFF` builds the engine library, `takt4-cli` and the tests only, needs no Rust toolchain, and never fetches Slint. The `linux-core` preset sets this. |
 | `TAKT4_BUILD_TESTS` | `ON` when top-level | Build the Catch2 test suite. |
 | `TAKT4_WARNINGS_AS_ERRORS` | `ON` | `/WX` or `-Werror` for takt4's own sources. Third-party code is compiled as system headers and is never subject to these flags. |
 
@@ -82,6 +102,9 @@ using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 ```
 src/core/     the engine — no UI dependency, must always build without Slint
+src/core/audio/   devices, channel picking, resampling, hop accumulation
+src/core/rt/      real-time allocation guard, lock-free SPSC ring
+src/cli/      takt4-cli, the development console; links takt4_core only
 src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp
 tests/        Catch2; links takt4_core only
@@ -96,6 +119,7 @@ GPLv3 — see [LICENSE](LICENSE).
 | Component | Used for | License |
 |---|---|---|
 | [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |
+| [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | Resampling the input to 22050 Hz | MIT |
 | [Ableton Link](https://github.com/Ableton/link) | Tempo sync | GPLv2 or later |
 | [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
 | [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |
