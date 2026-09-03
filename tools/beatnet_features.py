@@ -19,6 +19,10 @@ What the chain does, for a mono float signal at 22050 Hz:
 - the positive first difference to the previous frame (diff_ratio 0.5 works out to a
   lag of one frame for this window and hop), zero for the first frame;
 - the log bands and the differences stacked side by side: 288 values per frame.
+
+One deliberate difference: LOG_SPECT.process_audio ends with ``feats.T``, handing torch
+(288, frames). Nothing here transposes, so a run is (frames, 288) — the order the C++
+side produces and the goldens are stored in. The numbers are the same numbers.
 """
 
 import numpy as np
