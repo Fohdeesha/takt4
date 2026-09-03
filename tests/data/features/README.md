@@ -14,10 +14,10 @@ Each excerpt is three files with one base name:
 
 `tests/features/feature_extractor_test.cpp` runs every `.wav` here through
 `FeatureExtractor` and asserts the largest absolute difference to the `.npy` is at most
-1e-5. The differences actually seen are three orders of magnitude smaller than that, and
-are floating-point noise rather than disagreement: across every excerpt, **no filterbank
-value differs by more than one float32 ulp** (2.384e-7 at the magnitudes involved, and
-around 55 % of all values are bit-identical), and their first differences — one
+1e-5. The differences actually seen are a factor of 36 below that, and are floating-point
+noise rather than disagreement: across every excerpt, **no filterbank value differs by
+more than one float32 ulp** (2.384e-7 at the magnitudes involved; 44 % to 62 % of all
+values, depending on the excerpt, are bit-identical), and their first differences — one
 subtraction further on, so up to two ulps by construction — are within 1.2 ulp,
 2.794e-7 at worst.
 
