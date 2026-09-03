@@ -41,6 +41,8 @@ add_library(takt4_core STATIC
   io/npy_file.hpp
   io/wav_file.cpp
   io/wav_file.hpp
+  model/activation_engine.cpp
+  model/activation_engine.hpp
   model/beat_model.cpp
   model/beat_model.hpp
   model/dimensions.hpp

@@ -16,8 +16,18 @@ one channel (or a summed pair) of any input device is opened, resampled to the e
 madmom's log-filterbank spectrogram and its positive differences, 288 values per hop —
 is implemented in C++ and verified against madmom itself on eighteen excerpts under
 `tests/data/features/`: no filterbank value anywhere differs by more than one float32
-ulp. Nothing is tracked yet. `takt4 --version` prints what it was built with, and the
-window opens.
+ulp.
+
+The BeatNet+ neural network runs on top of that: convolution block, a dense layer, four
+stacked LSTMs and a softmax over beat / downbeat / non-beat, 50 times a second, through
+RTNeural. All three published weight sets are converted into `assets/weights/` and
+checked against PyTorch on the same eighteen excerpts (`tests/data/model/`), where the
+largest difference in the probabilities is 3.6e-6. Live, the audio callback only hands
+hops to a lock-free ring and a worker thread runs the front end and the model; the worst
+a hop has taken there is 0.24 ms of the 20 ms it represents.
+
+Nothing turns those probabilities into beats yet — that is the particle filter, next.
+`takt4 --version` prints what it was built with, and the window opens.
 
 ### Development console
 
@@ -30,6 +40,8 @@ takt4-cli meter --device 1 --channel 7  # open input 7 of device 1, print RMS/pe
 takt4-cli meter --device 1 --channels 7,8
 takt4-cli meter --device 1 --all        # every channel of the device, unresampled
 takt4-cli features in.wav out.npy --compare golden.npy   # feature front end on a file
+takt4-cli beats in.wav                                   # front end + model on a file
+takt4-cli beats --device 1 --channel 7                   # ... and on a live input
 ```
 
 Channel numbers count from 1, as printed on the interface. On ASIO and CoreAudio the
@@ -44,13 +56,22 @@ result as a numpy `.npy` file; with `--compare` it reports the largest differenc
 reference file and fails above 1e-5, the same check the test suite makes against the
 golden excerpts (see [tests/data/features/README.md](tests/data/features/README.md)).
 
+`beats` adds the neural network and prints P(beat), P(downbeat) and P(non-beat) per
+20 ms frame, either over a file or from a live input — the device options are the
+meter's. `--weights` picks the weight set: `generic` (the default), `generic-main` for
+percussion-heavy material, `af-non-percussive` for ambient and classical, or a path to
+a `.bin` of your own. A run ends with the worst time one hop took on the worker thread,
+out of the 20 ms of audio it stands for.
+
 ### Python tooling
 
 `tools/` holds the build-time Python that produces committed artifacts — the filterbank
-table in `src/core/features/filterbank_table.cpp` and the golden feature files under
-`tests/data/features/` — by running madmom, the reference implementation, at a pinned
-commit. Nothing in it is needed to build, test or run takt4, and CI never installs it.
-It is needed when adding golden excerpts or bumping the pinned numpy/scipy/madmom:
+table in `src/core/features/filterbank_table.cpp`, the golden feature files under
+`tests/data/features/`, the weight blobs in `assets/weights/` and the reference
+activations under `tests/data/model/` — by running madmom and PyTorch, the reference
+implementations, at pinned versions. Nothing in it is needed to build, test or run
+takt4, and CI never installs it. It is needed when adding golden excerpts or bumping
+the pinned numpy/scipy/madmom:
 
 ```sh
 python -m venv .venv
@@ -64,6 +85,16 @@ python tools/dump_filterbank.py                             # regenerate the tab
 Two steps because madmom builds from source and its `setup.py` imports numpy and
 Cython. Full-length source tracks belong outside git; `references/` is ignored for
 that purpose.
+
+The two tools that need PyTorch are separate, because it is a 250 MB install nothing
+else here wants, and they also need BeatNet+'s published weight files, which are not
+vendored (see [tests/data/model/README.md](tests/data/model/README.md)):
+
+```sh
+pip install -r tools/requirements-torch.txt
+python tools/convert_weights.py references/beatnet-plus/src/BeatNetPlus/models
+python tools/model_reference.py
+```
 
 ## Building
 
@@ -141,13 +172,15 @@ src/core/audio/     devices, channel picking, resampling, hop accumulation
 src/core/dsp/       real FFT (KissFFT)
 src/core/features/  madmom-equivalent feature front end: STFT, filterbank, log, diff
 src/core/io/        WAV and .npy readers/writers for tests and tools, not the audio path
+src/core/model/     BeatNet+ through RTNeural: weight loading, the network, the worker
 src/core/rt/        real-time allocation guard, lock-free SPSC ring
 src/cli/      takt4-cli, the development console; links takt4_core only
 src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp
+assets/weights/  the three BeatNet+ weight sets, converted (see tools/convert_weights.py)
 tests/        Catch2; links takt4_core only
-tests/data/   golden excerpts: audio plus madmom's features for it
-tools/        Python that generates committed artifacts from madmom (see above)
+tests/data/   golden excerpts: audio, madmom's features for it, PyTorch's activations
+tools/        Python that generates committed artifacts from madmom and torch (above)
 third_party/  PortAudio, Ableton Link (+ Kohlhoff asio), Steinberg ASIO SDK
 cmake/        dependency wiring, warning flags, ASIO SDK handling, the MSVC alloca shim
 ```
@@ -165,6 +198,7 @@ GPLv3 — see [LICENSE](LICENSE).
 | [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
 | [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |
 | [RTNeural](https://github.com/jatinchowdhury18/RTNeural) | Neural inference | BSD-3-Clause |
+| [BeatNet+](https://github.com/mjhydri/BeatNet-Plus) weights (`assets/weights/`) | Beat, downbeat and meter detection | **None stated upstream** |
 | [Eigen](https://eigen.tuxfamily.org) (bundled by RTNeural) | RTNeural's math backend | MPL-2.0 |
 | [RtMidi](https://github.com/thestk/rtmidi) | MIDI clock and notes | MIT-style |
 | [nlohmann/json](https://github.com/nlohmann/json) | Settings and presets | MIT |
