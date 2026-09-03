@@ -1,0 +1,212 @@
+{
+  "weights": "generic",
+  "use_case": "general-purpose, any level of percussion",
+  "source": "generic_weights.pt",
+  "source_sha256": "ed52f90e27ff9b5ef3c63f59c6d4b37366f60a21a48ea1d46d7c3e18d6f1977e",
+  "upstream_commit": "bb90eb0a9065b101a4b4c4cb2b2061950266cb4b",
+  "input": "tests/data/features/<name>.npy, madmom's features for the same excerpt",
+  "columns": "0..2 logits (beat, downbeat, non-beat), 3..5 softmax of them",
+  "worst_streaming_vs_sequence": 7.272e-06,
+  "torch": "2.14.0+cpu",
+  "numpy": "2.5.2",
+  "excerpts": {
+    "big-brown-beaver": {
+      "frames": 500,
+      "sha256": "f4fc2e0fa39984059a73392d508df10dc6ea7f94774b8c9bb02df4d8d04ac202",
+      "logit_range": [
+        -4.8666,
+        6.9461
+      ],
+      "max_beat_probability": 0.9749,
+      "max_downbeat_probability": 0.9852,
+      "streaming_vs_sequence": 4.292e-06
+    },
+    "complicated-geometry": {
+      "frames": 500,
+      "sha256": "d2f6c570c40e2b03d4db6d7b607d49dc57716ad139a8395047c019992275c844",
+      "logit_range": [
+        -4.471,
+        6.0825
+      ],
+      "max_beat_probability": 0.963,
+      "max_downbeat_probability": 0.9893,
+      "streaming_vs_sequence": 6.914e-06
+    },
+    "good-times": {
+      "frames": 500,
+      "sha256": "5c868ab7d90efedeb21c414d7b6badca415d7dc424762cf33030c571119486f1",
+      "logit_range": [
+        -5.083,
+        7.101
+      ],
+      "max_beat_probability": 0.9831,
+      "max_downbeat_probability": 0.9968,
+      "streaming_vs_sequence": 2.861e-06
+    },
+    "hell-of-a-ride": {
+      "frames": 500,
+      "sha256": "5bdc3f71c8e4167932bc5c80d97698c8808f6d3be36cbd19b891a44ca9b9dcfa",
+      "logit_range": [
+        -5.1686,
+        5.9375
+      ],
+      "max_beat_probability": 0.9464,
+      "max_downbeat_probability": 0.992,
+      "streaming_vs_sequence": 2.861e-06
+    },
+    "in-yer-face": {
+      "frames": 500,
+      "sha256": "a065891b748a71705d1c840c3b4b6f23c587e16c0eada089808f61636b534265",
+      "logit_range": [
+        -6.3518,
+        6.7704
+      ],
+      "max_beat_probability": 0.9794,
+      "max_downbeat_probability": 0.9957,
+      "streaming_vs_sequence": 2.384e-06
+    },
+    "jack-yourself": {
+      "frames": 500,
+      "sha256": "c4c3eb16fcab987a35da1a616aa85e727b3fdc9095c53d09077ff54629280b4e",
+      "logit_range": [
+        -3.3902,
+        4.8783
+      ],
+      "max_beat_probability": 0.9632,
+      "max_downbeat_probability": 0.9697,
+      "streaming_vs_sequence": 4.292e-06
+    },
+    "keman-rhythm": {
+      "frames": 500,
+      "sha256": "0d4b4b5897f589fb3efb18f95664fb402dfedcd0e30134252287db5973636c85",
+      "logit_range": [
+        -4.8519,
+        5.5008
+      ],
+      "max_beat_probability": 0.9895,
+      "max_downbeat_probability": 0.994,
+      "streaming_vs_sequence": 2.98e-06
+    },
+    "model-2029": {
+      "frames": 500,
+      "sha256": "920af25cfd614f1e2f8f5f8c46e4fd04aa2b276f24e1149f5c051bbcd56dee19",
+      "logit_range": [
+        -3.7598,
+        5.1581
+      ],
+      "max_beat_probability": 0.9336,
+      "max_downbeat_probability": 0.9438,
+      "streaming_vs_sequence": 4.47e-06
+    },
+    "outside-plume": {
+      "frames": 500,
+      "sha256": "9def79dbff20558deffad6af399a46fe3b5d7f10882122cc50800348723ac993",
+      "logit_range": [
+        -3.5666,
+        3.8953
+      ],
+      "max_beat_probability": 0.9371,
+      "max_downbeat_probability": 0.9681,
+      "streaming_vs_sequence": 7.272e-06
+    },
+    "pirates": {
+      "frames": 500,
+      "sha256": "3662af5b5345e5f9409052167fe3d6612968a8959c3003dd2e9b57d66c6cea5a",
+      "logit_range": [
+        -6.803,
+        6.7991
+      ],
+      "max_beat_probability": 0.999,
+      "max_downbeat_probability": 0.9991,
+      "streaming_vs_sequence": 3.815e-06
+    },
+    "rale": {
+      "frames": 500,
+      "sha256": "c153bd0d99606c5edf3e7be3df7741e227db9367719195566c49a5e3bf8a4b3a",
+      "logit_range": [
+        -4.9906,
+        5.4954
+      ],
+      "max_beat_probability": 0.9762,
+      "max_downbeat_probability": 0.993,
+      "streaming_vs_sequence": 3.219e-06
+    },
+    "synthetic": {
+      "frames": 500,
+      "sha256": "8653e295e4f4052716b2f44112187a39616f3aa27eb77642e79a1e67ae527119",
+      "logit_range": [
+        -4.1867,
+        5.9219
+      ],
+      "max_beat_probability": 0.9666,
+      "max_downbeat_probability": 0.9841,
+      "streaming_vs_sequence": 2.831e-06
+    },
+    "the-galaxist": {
+      "frames": 500,
+      "sha256": "fc31e3612cd76f8449a6d41b746a05d76d3f7d56d466301e9dc5a8b5cbee59a7",
+      "logit_range": [
+        -3.6124,
+        4.9418
+      ],
+      "max_beat_probability": 0.9074,
+      "max_downbeat_probability": 0.9941,
+      "streaming_vs_sequence": 3.457e-06
+    },
+    "trigger-finger": {
+      "frames": 500,
+      "sha256": "fb2dfd25b46d40ab8b0460d56e2fc8ff53308bc981bd23cb799a346f0ed38aaf",
+      "logit_range": [
+        -3.1926,
+        3.6654
+      ],
+      "max_beat_probability": 0.8915,
+      "max_downbeat_probability": 0.984,
+      "streaming_vs_sequence": 3.576e-06
+    },
+    "true-believer": {
+      "frames": 500,
+      "sha256": "56f99244563f28673582f4b0b717f6a6893fc60533b1466ecb39e7c0053d71d4",
+      "logit_range": [
+        -3.84,
+        4.7628
+      ],
+      "max_beat_probability": 0.9468,
+      "max_downbeat_probability": 0.9633,
+      "streaming_vs_sequence": 2.623e-06
+    },
+    "vic-acid": {
+      "frames": 500,
+      "sha256": "26e47f30635cca9512d4c005f963e58418b9baa8917677bee0b92209deec3a64",
+      "logit_range": [
+        -4.2835,
+        5.7599
+      ],
+      "max_beat_probability": 0.9754,
+      "max_downbeat_probability": 0.9928,
+      "streaming_vs_sequence": 2.28e-06
+    },
+    "winter-now": {
+      "frames": 500,
+      "sha256": "cbf06d95be9bc02533abe707397dbb434b021cf8554b614d7f6d066a053f2bec",
+      "logit_range": [
+        -4.4811,
+        6.5864
+      ],
+      "max_beat_probability": 0.9233,
+      "max_downbeat_probability": 0.9895,
+      "streaming_vs_sequence": 2.623e-06
+    },
+    "your-sweet-boom": {
+      "frames": 500,
+      "sha256": "ff709888f427a227c6bde2397b60cb403d88132bab31498d8f2a653f7af8a43f",
+      "logit_range": [
+        -5.3812,
+        6.1518
+      ],
+      "max_beat_probability": 0.9877,
+      "max_downbeat_probability": 0.9956,
+      "streaming_vs_sequence": 3.099e-06
+    }
+  }
+}

@@ -11,3 +11,6 @@ third_party/asiosdk/** -text
 # Golden test data (tests/data): audio excerpts and the numpy matrices computed from them.
 *.wav binary
 *.npy binary
+
+# Converted model weights (assets/weights), written by tools/convert_weights.py.
+*.bin binary

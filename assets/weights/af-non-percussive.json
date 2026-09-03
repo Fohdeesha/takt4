@@ -1,0 +1,15 @@
+{
+  "name": "af-non-percussive",
+  "use_case": "non-percussive, ambient, classical",
+  "source": "af_non_percussive_weights.pt",
+  "source_bytes": 3073019,
+  "source_sha256": "15fe9c1ec8f2fca75dd3cecac72a3fbf57c9004e8726a786876ad5e269f4895f",
+  "upstream": "https://github.com/mjhydri/BeatNet-Plus",
+  "upstream_commit": "bb90eb0a9065b101a4b4c4cb2b2061950266cb4b",
+  "format_version": 1,
+  "parameters": 767125,
+  "bytes": 3068548,
+  "sha256": "412efa28832bcce80f753fb763d29d3ab34c8791c1800d1823eb3ef784c1d3bb",
+  "torch": "2.14.0+cpu",
+  "numpy": "2.5.2"
+}
