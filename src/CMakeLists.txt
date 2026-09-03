@@ -5,10 +5,14 @@ add_subdirectory(core)
 # Debug so a real-time violation found on the bench aborts rather than hides.
 add_executable(takt4-cli cli/main.cpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
-# `beats` needs a weight set, and the console is a bench tool that is never packaged
-# and never relocated, so it defaults to the ones in the source tree. The application
-# will resolve them next to itself instead, when Phase 7 gives it an installer.
-target_compile_definitions(takt4-cli PRIVATE "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\"")
+# `beats` needs a weight set and `track` a state space, and the console is a bench tool
+# that is never packaged and never relocated, so it defaults to the ones in the source
+# tree. The application will resolve them next to itself instead, when Phase 7 gives it
+# an installer.
+target_compile_definitions(takt4-cli PRIVATE
+  "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
+  "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+)
 takt4_enable_rt_guard(takt4-cli DEBUG_ONLY)
 
 if(TAKT4_BUILD_UI)

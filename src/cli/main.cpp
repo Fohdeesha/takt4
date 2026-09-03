@@ -19,6 +19,9 @@
 #include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/alloc_guard.hpp"
+#include "core/tracking/particle_filter.hpp"
+#include "core/tracking/state_space.hpp"
+#include "core/tracking/tempo_tracker.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -90,13 +93,26 @@ void printUsage(std::ostream& out) {
         << "                      path to a .bin from tools/convert_weights.py\n"
         << "      The other options are the meter's, and mean the same.\n"
         << "\n"
+        << "  takt4-cli track (IN.wav | --device N (--channel C | --channels A,B))\n"
+        << "                  [--weights SET|PATH] [--bpm LO-HI] [--latency MS]\n"
+        << "                  [--confidence T] [--seed N] [--software] [--rate HZ]\n"
+        << "                  [--seconds S]\n"
+        << "      The whole chain: features, model, particle filter and tempo state\n"
+        << "      machine. Prints a line per beat with the tempo, the bar position and\n"
+        << "      the meter, and a status line while it waits.\n"
+        << "      --bpm LO-HI     the octave-fold window, default 70-140\n"
+        << "      --latency MS    added to every beat's timestamp; negative fires early\n"
+        << "      --confidence T  hold the last tempo below this, default 0.15\n"
+        << "      --seed N        the particle filter's seed, default 1\n"
+        << "      The other options are the meter's and `beats`', and mean the same.\n"
+        << "\n"
         << "  takt4-cli --version\n";
 }
 
 struct MeterArgs {
     int device = -1;
-    std::optional<int> channel;                // 0-based
-    std::optional<std::pair<int, int>> pair;   // 0-based
+    std::optional<int> channel;              // 0-based
+    std::optional<std::pair<int, int>> pair; // 0-based
     bool all = false;
     bool software = false;
     double rate = 0.0;
@@ -220,7 +236,8 @@ int runDevices() {
     // audio hardware (a CI runner) still shows them.
     std::cout << "host APIs:";
     for (const auto& api : takt4::audio::listHostApis()) {
-        std::cout << "  " << api.name << " (" << api.deviceCount << (api.deviceCount == 1 ? " device)" : " devices)");
+        std::cout << "  " << api.name << " (" << api.deviceCount
+                  << (api.deviceCount == 1 ? " device)" : " devices)");
     }
     std::cout << '\n';
     const auto devices = takt4::audio::listInputDevices(session);
@@ -229,17 +246,20 @@ int runDevices() {
         return 0;
     }
     for (const auto& device : devices) {
-        std::cout << std::setw(3) << device.index << "  " << device.hostApiName << " / " << device.name
-                  << "  (" << device.maxInputChannels << " in @ " << device.defaultSampleRate << " Hz"
+        std::cout << std::setw(3) << device.index << "  " << device.hostApiName << " / "
+                  << device.name << "  (" << device.maxInputChannels << " in @ "
+                  << device.defaultSampleRate << " Hz"
                   << ", latency " << fixed1(device.defaultLowInputLatency * 1000.0) << "-"
                   << fixed1(device.defaultHighInputLatency * 1000.0) << " ms"
                   << (device.isDefaultInput ? ", default" : "")
                   << (device.isLoopback ? ", loopback" : "")
-                  << (takt4::audio::hasNativeChannelSelection(device.hostApi) ? ", native channel selection"
-                                                                              : "")
+                  << (takt4::audio::hasNativeChannelSelection(device.hostApi)
+                          ? ", native channel selection"
+                          : "")
                   << ")\n";
         for (std::size_t c = 0; c < device.channelNames.size(); ++c) {
-            std::cout << "       " << std::setw(2) << c + 1 << ": " << device.channelNames[c] << '\n';
+            std::cout << "       " << std::setw(2) << c + 1 << ": " << device.channelNames[c]
+                      << '\n';
         }
     }
     return 0;
@@ -250,27 +270,31 @@ bool shouldStop(std::chrono::steady_clock::time_point start, double seconds) {
         return true;
     }
     if (seconds > 0.0) {
-        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        const auto elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         return elapsed >= seconds;
     }
     return false;
 }
 
-int runMeterAll(const takt4::audio::PortAudioSession& session, const takt4::audio::InputDevice& device,
-                const MeterArgs& args) {
+int runMeterAll(const takt4::audio::PortAudioSession& session,
+                const takt4::audio::InputDevice& device, const MeterArgs& args) {
     takt4::audio::ChannelMeter meter(session, device, args.rate);
     std::cout << "metering all " << meter.channelCount() << " channels of " << device.name << " @ "
               << meter.sampleRate() << " Hz (software slice, no resampling)\n";
     meter.start();
 
-    std::vector<takt4::audio::ChannelMeter::Level> levels(static_cast<std::size_t>(meter.channelCount()));
+    std::vector<takt4::audio::ChannelMeter::Level> levels(
+        static_cast<std::size_t>(meter.channelCount()));
     const auto start = std::chrono::steady_clock::now();
     while (!shouldStop(start, args.seconds)) {
         std::this_thread::sleep_for(100ms);
         meter.read(levels);
         const auto counters = meter.counters();
         std::ostringstream line;
-        line << fixed1(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), 6)
+        line << fixed1(
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                    6)
              << "s";
         for (std::size_t c = 0; c < levels.size(); ++c) {
             line << "  " << c + 1 << ":" << formatDb(levels[c].rms);
@@ -308,10 +332,12 @@ int runMeterPicked(const takt4::audio::PortAudioSession& session,
     if (stream.reportedSampleRate() != stream.sampleRate()) {
         std::cout << " (host reports " << stream.reportedSampleRate() << " Hz)";
     }
-    std::cout << " -> " << takt4::audio::kInternalSampleRate << " Hz, hop " << takt4::audio::kHopSize
-              << " samples\n"
-              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0) << " ms input buffer + "
-              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) / stream.sampleRate())
+    std::cout << " -> " << takt4::audio::kInternalSampleRate << " Hz, hop "
+              << takt4::audio::kHopSize << " samples\n"
+              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0)
+              << " ms input buffer + "
+              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) /
+                        stream.sampleRate())
               << " ms resampler (" << stream.resamplerDelayFrames() << " frames, r8brain "
               << takt4::audio::Resampler::libraryVersion() << ")\n"
               << "rt guard:  " << (takt4::rt::allocationGuardEnabled() ? "on" : "off") << '\n';
@@ -338,21 +364,21 @@ int runMeterPicked(const takt4::audio::PortAudioSession& session,
 
         const auto counters = stream.counters();
         std::ostringstream line;
-        line << fixed1(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), 6)
+        line << fixed1(
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                    6)
              << "s"
              << "  rms " << formatDb(rms) << " dBFS  peak " << formatDb(peak) << " dBFS"
              << "  hops " << hops << " (#" << lastHop << ")"
-             << "  frames " << counters.framesIn
-             << "  callbacks " << counters.callbacks
-             << "  overflows " << counters.inputOverflows
-             << "  dropped " << hopMeter.dropped();
+             << "  frames " << counters.framesIn << "  callbacks " << counters.callbacks
+             << "  overflows " << counters.inputOverflows << "  dropped " << hopMeter.dropped();
         std::cout << line.str() << '\n' << std::flush;
     }
     stream.stop();
 
     const auto counters = stream.counters();
-    std::cout << "stopped after " << counters.framesIn << " frames, " << counters.hopsOut << " hops, "
-              << counters.inputOverflows << " input overflows";
+    std::cout << "stopped after " << counters.framesIn << " frames, " << counters.hopsOut
+              << " hops, " << counters.inputOverflows << " input overflows";
     if (takt4::rt::allocationGuardEnabled()) {
         std::cout << ", " << takt4::rt::violationCount() << " rt violations";
     }
@@ -400,13 +426,15 @@ int runFeatures(const std::vector<std::string_view>& args) {
 
     const takt4::io::WavData audio = takt4::io::readWavFile(in);
     if (audio.channels != 1) {
-        throw std::invalid_argument(in.string() + ": expected mono, got " + std::to_string(audio.channels) +
+        throw std::invalid_argument(in.string() + ": expected mono, got " +
+                                    std::to_string(audio.channels) +
                                     " channels (tools/make_golden.py writes what this reads)");
     }
     if (static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
-        throw std::invalid_argument(in.string() + ": expected " +
-                                    std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) +
-                                    " Hz, got " + std::to_string(audio.sampleRate));
+        throw std::invalid_argument(
+            in.string() + ": expected " +
+            std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) + " Hz, got " +
+            std::to_string(audio.sampleRate));
     }
 
     using takt4::audio::kHopSize;
@@ -424,14 +452,15 @@ int runFeatures(const std::vector<std::string_view>& args) {
         }
     };
     for (std::size_t h = 0; h < hops; ++h) {
-        collect(extractor.pushHop(std::span<const float, kHopSize>(padded.data() + h * kHopSize, kHopSize)));
+        collect(extractor.pushHop(
+            std::span<const float, kHopSize>(padded.data() + h * kHopSize, kHopSize)));
     }
     collect(extractor.flush());
     const std::size_t frames = matrix.size() / kFeatureDim;
 
     takt4::io::writeNpyFloat32(out, frames, kFeatureDim, matrix);
-    std::cout << in.string() << ": " << audio.samples.size() << " samples, " << hops << " hops -> " << frames
-              << " frames x " << kFeatureDim << " written to " << out.string() << '\n';
+    std::cout << in.string() << ": " << audio.samples.size() << " samples, " << hops << " hops -> "
+              << frames << " frames x " << kFeatureDim << " written to " << out.string() << '\n';
 
     if (!golden) {
         return 0;
@@ -448,8 +477,8 @@ int runFeatures(const std::vector<std::string_view>& args) {
     std::size_t worstColumn = 0;
     for (std::size_t f = 0; f < frames; ++f) {
         for (std::size_t c = 0; c < kFeatureDim; ++c) {
-            const double diff =
-                std::abs(static_cast<double>(matrix[f * kFeatureDim + c]) - static_cast<double>(reference.at(f, c)));
+            const double diff = std::abs(static_cast<double>(matrix[f * kFeatureDim + c]) -
+                                         static_cast<double>(reference.at(f, c)));
             if (diff > worst) {
                 worst = diff;
                 worstFrame = f;
@@ -458,9 +487,9 @@ int runFeatures(const std::vector<std::string_view>& args) {
         }
     }
     std::ostringstream line;
-    line << std::scientific << std::setprecision(3) << "largest difference to " << golden->string() << ": " << worst
-         << " at frame " << worstFrame << ", column " << worstColumn << " (tolerance " << kTolerance
-         << "): " << (worst <= kTolerance ? "PASS" : "FAIL");
+    line << std::scientific << std::setprecision(3) << "largest difference to " << golden->string()
+         << ": " << worst << " at frame " << worstFrame << ", column " << worstColumn
+         << " (tolerance " << kTolerance << "): " << (worst <= kTolerance ? "PASS" : "FAIL");
     std::cout << line.str() << '\n';
     return worst <= kTolerance ? 0 : 1;
 }
@@ -638,6 +667,240 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
     return 0;
 }
 
+// HANDOFF §8 Phase 4: the console binary tracks tempo, downbeat and meter.
+struct TrackArgs {
+    BeatsArgs beats;
+    takt4::tracking::TempoTracker::Options tempo;
+    std::uint64_t seed = 1;
+};
+
+std::pair<double, double> parseRange(std::string_view text, std::string_view what) {
+    const std::size_t dash = text.find('-', 1);
+    if (dash == std::string_view::npos) {
+        throw std::invalid_argument(std::string(what) + " expects LO-HI");
+    }
+    const double low = parseDouble(text.substr(0, dash), what);
+    const double high = parseDouble(text.substr(dash + 1), what);
+    if (!(low > 0.0) || !(high > low)) {
+        throw std::invalid_argument(std::string(what) +
+                                    ": LO-HI must be an ascending positive range");
+    }
+    return {low, high};
+}
+
+TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
+    TrackArgs out;
+    std::vector<std::string_view> forwarded;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        auto value = [&]() -> std::string_view {
+            if (i + 1 >= args.size()) {
+                throw std::invalid_argument(std::string(arg) + " needs a value");
+            }
+            return args[++i];
+        };
+        if (arg == "--bpm") {
+            const auto range = parseRange(value(), arg);
+            out.tempo.minBpm = range.first;
+            out.tempo.maxBpm = range.second;
+        } else if (arg == "--latency") {
+            out.tempo.latencyOffsetSeconds = parseDouble(value(), arg) / 1000.0;
+        } else if (arg == "--confidence") {
+            out.tempo.confidenceThreshold = parseDouble(value(), arg);
+        } else if (arg == "--seed") {
+            out.seed = static_cast<std::uint64_t>(parseInt(value(), arg));
+        } else {
+            forwarded.push_back(arg);
+            if ((arg == "--device" || arg == "--channel" || arg == "--channels" ||
+                 arg == "--rate" || arg == "--seconds" || arg == "--weights") &&
+                i + 1 < args.size()) {
+                forwarded.push_back(args[++i]);
+            }
+        }
+    }
+    out.beats = parseBeatsArgs(forwarded);
+    return out;
+}
+
+std::filesystem::path stateSpacePath() {
+    return std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin";
+}
+
+std::string beatLine(const takt4::tracking::BeatEvent& event,
+                     const takt4::tracking::TempoState& state) {
+    std::ostringstream line;
+    line << fixed1(event.time, 8) << "s  " << (event.downbeat ? "DOWNBEAT" : "beat    ") << "  ";
+    if (event.beatsPerBar > 0 && event.beatInBar > 0) {
+        for (std::uint32_t b = 1; b <= event.beatsPerBar; ++b) {
+            line << (b == event.beatInBar ? '#' : '.');
+        }
+        line << "  " << event.beatInBar << "/" << event.beatsPerBar;
+    } else {
+        line << "?    ";
+    }
+    std::ostringstream bpm;
+    bpm << std::fixed << std::setprecision(2) << std::setw(7) << event.bpm;
+    line << "  " << bpm.str() << " BPM  " << (event.locked ? "LOCKED  " : "hunting ") << "conf "
+         << formatProbability(static_cast<float>(event.confidence));
+    if (state.holding) {
+        line << "  (holding)";
+    }
+    return line.str();
+}
+
+/// The chain from activations onwards, shared by the file and the live paths.
+class Chain {
+public:
+    Chain(const takt4::tracking::StateSpaceModel& model, const TrackArgs& args)
+        : filter_(model, takt4::tracking::ParticleFilter::Options{1500, 250, args.seed}),
+          tempo_(model.secondsPerFrame(), args.tempo) {}
+
+    void feed(const takt4::model::FrameActivation& activation) {
+        const takt4::tracking::TrackedFrame frame =
+            filter_.process(activation.beat, activation.downbeat);
+        ++frames_;
+        if (const std::optional<takt4::tracking::BeatEvent> event = tempo_.process(frame)) {
+            ++beats_;
+            downbeats_ += event->downbeat ? 1 : 0;
+            std::cout << beatLine(*event, tempo_.state()) << '\n';
+        }
+    }
+
+    const takt4::tracking::TempoState& state() const { return tempo_.state(); }
+    std::uint64_t frames() const { return frames_; }
+    std::uint64_t beats() const { return beats_; }
+    std::uint64_t downbeats() const { return downbeats_; }
+
+private:
+    takt4::tracking::ParticleFilter filter_;
+    takt4::tracking::TempoTracker tempo_;
+    std::uint64_t frames_ = 0;
+    std::uint64_t beats_ = 0;
+    std::uint64_t downbeats_ = 0;
+};
+
+int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeights& weights,
+                 const takt4::tracking::StateSpaceModel& model, const TrackArgs& args) {
+    const takt4::io::WavData audio = takt4::io::readWavFile(in);
+    if (audio.channels != 1 ||
+        static_cast<double>(audio.sampleRate) != takt4::audio::kInternalSampleRate) {
+        throw std::invalid_argument(
+            in.string() + ": expected mono at " +
+            std::to_string(static_cast<int>(takt4::audio::kInternalSampleRate)) + " Hz");
+    }
+    using takt4::audio::kHopSize;
+    const std::size_t hops = (audio.samples.size() + kHopSize - 1) / kHopSize;
+    std::vector<float> padded(hops * kHopSize, 0.0f);
+    std::copy(audio.samples.begin(), audio.samples.end(), padded.begin());
+
+    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
+    Chain chain(model, args);
+    std::cout << in.string() << ": " << hops << " hops, weights "
+              << weights.path().filename().string() << ", fold " << fixed1(args.tempo.minBpm) << "-"
+              << fixed1(args.tempo.maxBpm) << " BPM, seed " << args.seed << '\n';
+
+    takt4::model::FrameActivation activation;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(padded.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->pop(activation)) {
+            chain.feed(activation);
+        }
+    }
+    std::cout << chain.frames() << " frames, " << chain.beats() << " beats (" << chain.downbeats()
+              << " downbeats), ending at " << fixed1(chain.state().bpm) << " BPM in "
+              << chain.state().beatsPerBar << "/4, "
+              << (chain.state().locked ? "locked" : "not locked") << '\n';
+    return 0;
+}
+
+int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weights,
+                   const takt4::tracking::StateSpaceModel& model) {
+    const takt4::audio::PortAudioSession session;
+    const auto devices = takt4::audio::listInputDevices(session);
+    const auto& device = findDevice(devices, args.beats.stream.device);
+    const takt4::audio::ChannelSelection selection =
+        args.beats.stream.channel
+            ? takt4::audio::ChannelSelection::single(*args.beats.stream.channel)
+            : takt4::audio::ChannelSelection::pair(args.beats.stream.pair->first,
+                                                   args.beats.stream.pair->second);
+
+    auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
+    takt4::audio::InputStreamOptions options;
+    options.sampleRate = args.beats.stream.rate;
+    options.forceSoftwareSlice = args.beats.stream.software;
+    takt4::audio::InputStream stream(session, device, selection, *engine, options);
+    Chain chain(model, args);
+
+    std::cout << "device:    " << device.hostApiName << " / " << device.name << '\n'
+              << "channel:   " << selection.channels[0] + 1;
+    if (selection.count == 2) {
+        std::cout << " + " << selection.channels[1] + 1 << " summed";
+    }
+    std::cout << " (" << takt4::audio::toString(stream.picker().mode()) << " pick)\n"
+              << "weights:   " << weights.path().filename().string() << '\n'
+              << "tracker:   " << model.path().filename().string() << ", fold "
+              << fixed1(args.tempo.minBpm) << "-" << fixed1(args.tempo.maxBpm)
+              << " BPM, confidence gate " << fixed1(args.tempo.confidenceThreshold * 100.0)
+              << "%, latency offset " << fixed1(args.tempo.latencyOffsetSeconds * 1000.0) << " ms\n"
+              << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0)
+              << " ms input buffer + "
+              << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) /
+                        stream.sampleRate())
+              << " ms resampler + 40.0 ms centred framing\n";
+
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
+    engine->start();
+    stream.start();
+
+    const auto start = std::chrono::steady_clock::now();
+    auto lastStatus = start;
+    takt4::model::FrameActivation activation;
+    while (!shouldStop(start, args.beats.stream.seconds)) {
+        std::this_thread::sleep_for(10ms);
+        while (engine->pop(activation)) {
+            chain.feed(activation);
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastStatus >= 2s) {
+            lastStatus = now;
+            const auto& state = chain.state();
+            std::cout << "         "
+                      << fixed1(std::chrono::duration<double>(now - start).count(), 8)
+                      << "s  ..        " << fixed1(state.bpm, 12) << " BPM  "
+                      << (state.locked ? "LOCKED  " : "hunting ") << "conf "
+                      << formatProbability(static_cast<float>(state.confidence))
+                      << (state.holding ? "  (holding)" : "") << '\n';
+        }
+        std::cout << std::flush;
+    }
+    stream.stop();
+    engine->stop();
+    while (engine->pop(activation)) {
+        chain.feed(activation);
+    }
+
+    const auto counters = stream.counters();
+    std::cout << "stopped after " << counters.hopsOut << " hops, " << chain.frames() << " frames, "
+              << chain.beats() << " beats (" << chain.downbeats() << " downbeats), "
+              << counters.inputOverflows << " input overflows, " << engine->hopsDropped()
+              << " hops dropped\n";
+    return 0;
+}
+
+int runTrack(const std::vector<std::string_view>& args) {
+    const TrackArgs parsed = parseTrackArgs(args);
+    const takt4::model::ModelWeights weights =
+        takt4::model::ModelWeights::fromFile(resolveWeights(parsed.beats.weights));
+    const takt4::tracking::StateSpaceModel model =
+        takt4::tracking::StateSpaceModel::fromFile(stateSpacePath());
+    if (parsed.beats.file) {
+        return runTrackFile(*parsed.beats.file, weights, model, parsed);
+    }
+    return runTrackDevice(parsed, weights, model);
+}
+
 int runBeats(const std::vector<std::string_view>& args) {
     const BeatsArgs parsed = parseBeatsArgs(args);
     const takt4::model::ModelWeights weights =
@@ -675,6 +938,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "beats") {
             return runBeats({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "track") {
+            return runTrack({args.begin() + 1, args.end()});
         }
         std::cerr << "takt4-cli: unknown command: " << args[0] << "\n\n";
         printUsage(std::cerr);
