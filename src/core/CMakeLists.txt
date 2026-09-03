@@ -30,6 +30,8 @@ add_library(takt4_core STATIC
   audio/resampler.hpp
   audio/stream_setup.cpp
   audio/stream_setup.hpp
+  engine/beat_engine.cpp
+  engine/beat_engine.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   features/dimensions.hpp
@@ -63,6 +65,7 @@ add_library(takt4_core STATIC
   output/osc_sender.hpp
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
+  rt/published.hpp
   rt/spsc_ring.hpp
   tracking/particle_filter.cpp
   tracking/particle_filter.hpp
