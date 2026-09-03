@@ -201,6 +201,76 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
     }
 }
 
+// madmom's tempo intervals are whole 20 ms frames, so nothing inside the filter can
+// report a tempo between 130.43 BPM (23 frames) and 125.00 (24). The beats it calls are
+// spaced 23, 24, 23, 23 frames apart, and their mean is not so limited.
+TEST_CASE("the published tempo comes from the beat spacing once locked", "[tracking][tempo]") {
+    TempoTracker::Options options;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+
+    // 128 BPM is a beat every 23.4375 frames. Lay beats on the nearest whole frame, the
+    // way the tracker can only ever call them, and report the cloud's nearest interval.
+    constexpr double kTrue = 128.0;
+    const double period = 60.0 / (kTrue * kFramePeriod);
+    std::uint64_t next = 0;
+    std::optional<BeatEvent> last;
+    for (int beat = 0; beat < 40; ++beat) {
+        const auto at = static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
+        while (next < at) {
+            (void)tracker.process(frameAt(next++, 130.4347826, 0.9));
+        }
+        TrackedFrame frame = frameAt(next++, 130.4347826, 0.9);
+        frame.refinedIntervalFrames = 23.0; // the cloud sits on one interval, as it does
+        frame.emitted =
+            beat % 4 == 0 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
+        last = tracker.process(frame);
+    }
+    REQUIRE(last.has_value());
+    REQUIRE(tracker.state().locked);
+    CHECK(tracker.state().refined);
+    // Without the refinement this would read 130.43, a 2.4 BPM error that no amount of
+    // averaging inside the filter could remove.
+    CHECK(tracker.state().bpm == Approx(128.0).margin(1.0));
+    CHECK(last->bpm == tracker.state().bpm);
+
+    SECTION("a missed beat is thrown out rather than halving the tempo") {
+        // Skip one beat: the gap doubles, and a mean over the gaps would drag the tempo
+        // down by an eighth.
+        std::uint64_t at = next + 200;
+        for (int beat = 0; beat < 12; ++beat) {
+            TrackedFrame frame = frameAt(at, 130.4347826, 0.9);
+            frame.refinedIntervalFrames = 23.0;
+            frame.emitted = TrackedFrame::Emitted::Beat;
+            (void)tracker.process(frame);
+            at += beat == 5 ? 47 : 23; // one gap of two beats among ordinary ones
+        }
+        CHECK(tracker.state().refined);
+        CHECK(tracker.state().bpm == Approx(130.43).margin(0.5));
+    }
+
+    SECTION("a refinement that disagrees with the lock is not believed") {
+        TempoTracker::Options wide = options;
+        wide.refineTempoTolerance = 0.001; // nothing can agree this closely
+        TempoTracker strict(kFramePeriod, wide);
+        std::uint64_t at = 0;
+        for (int beat = 0; beat < 40; ++beat) {
+            const auto on = static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
+            while (at < on) {
+                (void)strict.process(frameAt(at++, 130.4347826, 0.9));
+            }
+            TrackedFrame frame = frameAt(at++, 130.4347826, 0.9);
+            frame.refinedIntervalFrames = 23.0;
+            frame.emitted = TrackedFrame::Emitted::Beat;
+            (void)strict.process(frame);
+        }
+        REQUIRE(strict.state().locked);
+        CHECK_FALSE(strict.state().refined);
+        CHECK(strict.state().bpm == Approx(130.4347826));
+    }
+}
+
 TEST_CASE("the latency offset moves the timestamp and nothing else", "[tracking][tempo]") {
     TempoTracker::Options options;
     options.latencyOffsetSeconds = -0.030; // fire 30 ms early
@@ -276,6 +346,15 @@ TEST_CASE("nonsensical options are refused rather than tracked with", "[tracking
     bad = options;
     bad.confidenceSmoothing = 0.0;
     CHECK_THROWS_AS(TempoTracker(kFramePeriod, bad), std::invalid_argument);
+
+    bad = options;
+    bad.refineNeedsBeats = 1;
+    CHECK_THROWS_AS(TempoTracker(kFramePeriod, bad), std::invalid_argument);
+
+    bad = options;
+    bad.refineOverBeats = 2;
+    bad.refineNeedsBeats = 4;
+    CHECK_THROWS_AS(TempoTracker(kFramePeriod, bad), std::invalid_argument);
 }
 
 // End to end over real material: the golden synthetic excerpt is a drum machine at
@@ -303,7 +382,10 @@ TEST_CASE("the chain tracks the synthetic excerpt's tempo and locks", "[tracking
     REQUIRE(beats.size() > 15);
     CHECK(tracker.state().locked);
     CHECK_FALSE(tracker.state().holding);
-    CHECK(tracker.state().bpm == Approx(128.0).margin(4.0));
+    // The cloud can only say 130.43 here; refining from the beat spacing gets it to the
+    // 128 BPM the drum machine actually plays.
+    CHECK(tracker.state().refined);
+    CHECK(tracker.state().bpm == Approx(128.0).margin(1.0));
     CHECK(tracker.state().beatsPerBar >= 2);
     CHECK(tracker.state().beatsPerBar <= 4);
     CHECK(tracker.state().bars > 2);
