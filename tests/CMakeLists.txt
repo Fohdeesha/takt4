@@ -6,6 +6,7 @@
 
 add_executable(takt4_tests
   build_info_test.cpp
+  audio/devices_test.cpp
   audio/host_apis_test.cpp
   output/link_session_test.cpp
   output/midi_ports_test.cpp

@@ -6,6 +6,8 @@ configure_file(build_config.hpp.in "${PROJECT_BINARY_DIR}/generated/core/build_c
 add_library(takt4_core STATIC
   build_info.cpp
   build_info.hpp
+  audio/devices.cpp
+  audio/devices.hpp
   audio/host_apis.cpp
   audio/host_apis.hpp
   audio/portaudio_session.cpp
