@@ -20,6 +20,7 @@ add_executable(takt4_tests
   rt/spsc_ring_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
+  support/crt_dialogs.cpp
 )
 
 target_link_libraries(takt4_tests
