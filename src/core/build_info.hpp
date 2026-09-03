@@ -10,6 +10,7 @@ struct BuildInfo {
     std::string platform;
     std::string compiler;
     std::string portaudio;
+    std::string r8brain;
     std::string link;
     std::string kohlhoffAsio; // the networking asio bundled with Link, not Steinberg's
     std::string rtmidi;

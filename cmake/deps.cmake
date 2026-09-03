@@ -41,8 +41,22 @@ function(takt4_require_definitions target property)
   endforeach()
 endfunction()
 
+# The opposite: fails if any of the given definitions is in <target>'s <property>, for
+# backends that were switched off on purpose and must not creep back in.
+function(takt4_forbid_definitions target property)
+  get_target_property(defs ${target} ${property})
+  foreach(def IN LISTS ARGN)
+    if(def IN_LIST defs)
+      message(FATAL_ERROR "${target} was configured with ${def}, a backend takt4 leaves out on purpose.")
+    endif()
+  endforeach()
+endfunction()
+
 # ---------------------------------------------------------------------------------------
-# PortAudio (submodule). Static. On Windows, ASIO is enabled through the vendored SDK.
+# PortAudio (submodule). Static. On Windows the host APIs are ASIO (through the vendored
+# SDK) and WASAPI, the two HANDOFF §5.1 picks channels on; MME, DirectSound and WDM-KS
+# would only list every interface three more times, and WDM-KS enumeration is what makes
+# Pa_Initialize slow.
 # On Linux the host APIs are ALSA and JACK, and nothing else: left to itself, PortAudio
 # switches PulseAudio and sndio on or off depending on which -dev packages happen to be
 # installed. JACK is linked directly (libjack.so.0, or PipeWire's replacement for it),
@@ -59,6 +73,11 @@ block()
       message(FATAL_ERROR "ASIO::host was not defined; PortAudio would fetch the SDK itself")
     endif()
     set(PA_USE_ASIO ON)
+    set(PA_USE_WASAPI ON)
+    set(PA_USE_WMME OFF)
+    set(PA_USE_DS OFF)
+    set(PA_USE_WDMKS OFF)
+    set(PA_USE_WDMKS_DEVICE_INFO OFF)   # only WMME and DirectSound use it
   endif()
   if(LINUX)
     find_package(ALSA REQUIRED)   # libasound2-dev; used by PortAudio and RtMidi
@@ -77,6 +96,7 @@ endblock()
 
 if(WIN32)
   takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_ASIO=1 PA_USE_WASAPI=1)
+  takt4_forbid_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_WMME=1 PA_USE_DS=1 PA_USE_WDMKS=1)
 elseif(APPLE)
   takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_COREAUDIO=1)
 elseif(LINUX)
@@ -186,6 +206,23 @@ block()
   set(JSON_Install OFF)
   FetchContent_MakeAvailable(nlohmann_json)
 endblock()
+
+# ---------------------------------------------------------------------------------------
+# r8brain-free-src 7.5 (header-only since 7.0; the default Ooura FFT needs no extra
+# source file). The archive carries no CMake project, so this declares the target.
+# Its version string is read from the header (R8B_VERSION) rather than pinned here.
+# ---------------------------------------------------------------------------------------
+FetchContent_Declare(r8brain
+  URL "https://github.com/avaneev/r8brain-free-src/archive/refs/tags/7.5.tar.gz"
+  URL_HASH SHA256=d3350b3045139e2928fdef3eab7c0755dcc69997af4a8957aea890a8a87d2043
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(r8brain)
+if(NOT EXISTS "${r8brain_SOURCE_DIR}/CDSPResampler.h")
+  message(FATAL_ERROR "r8brain archive layout changed: CDSPResampler.h not found in ${r8brain_SOURCE_DIR}")
+endif()
+add_library(r8brain INTERFACE)
+target_include_directories(r8brain SYSTEM INTERFACE "${r8brain_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------------------
 # Catch2 v3 (tests only).

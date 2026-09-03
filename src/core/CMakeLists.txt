@@ -6,16 +6,36 @@ configure_file(build_config.hpp.in "${PROJECT_BINARY_DIR}/generated/core/build_c
 add_library(takt4_core STATIC
   build_info.cpp
   build_info.hpp
+  audio/channel_meter.cpp
+  audio/channel_meter.hpp
+  audio/channel_picker.cpp
+  audio/channel_picker.hpp
   audio/devices.cpp
   audio/devices.hpp
+  audio/hop_accumulator.hpp
+  audio/hop_meter.cpp
+  audio/hop_meter.hpp
+  audio/hop_processor.hpp
   audio/host_apis.cpp
   audio/host_apis.hpp
+  audio/input_pipeline.cpp
+  audio/input_pipeline.hpp
+  audio/input_stream.cpp
+  audio/input_stream.hpp
   audio/portaudio_session.cpp
   audio/portaudio_session.hpp
+  audio/rates.hpp
+  audio/resampler.cpp
+  audio/resampler.hpp
+  audio/stream_setup.cpp
+  audio/stream_setup.hpp
   output/link_session.cpp
   output/link_session.hpp
   output/midi_ports.cpp
   output/midi_ports.hpp
+  rt/alloc_guard.cpp
+  rt/alloc_guard.hpp
+  rt/spsc_ring.hpp
 )
 add_library(takt4::core ALIAS takt4_core)
 
@@ -28,6 +48,7 @@ target_include_directories(takt4_core
 target_link_libraries(takt4_core
   PRIVATE
     portaudio
+    r8brain
     Ableton::Link
     rtmidi
     nlohmann_json::nlohmann_json
@@ -42,3 +63,25 @@ if(WIN32)
       WIN32_LEAN_AND_MEAN
   )
 endif()
+
+# The real-time allocation guard (HANDOFF §7.6): rt/alloc_guard_new.cpp replaces the
+# global operator new/delete. A replacement has to be compiled into the executable
+# itself — one sitting in a static library is not guaranteed to be pulled in — so it
+# travels as an INTERFACE source, and takt4_enable_rt_guard() adds it to a target
+# together with the TAKT4_RT_ALLOC_GUARD definition that switches it on.
+add_library(takt4_rt_guard INTERFACE)
+add_library(takt4::rt_guard ALIAS takt4_rt_guard)
+target_sources(takt4_rt_guard INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/rt/alloc_guard_new.cpp")
+target_link_libraries(takt4_rt_guard INTERFACE takt4::core)
+
+# takt4_enable_rt_guard(<executable target> ALWAYS|DEBUG_ONLY)
+function(takt4_enable_rt_guard target when)
+  target_link_libraries(${target} PRIVATE takt4::rt_guard)
+  if(when STREQUAL "ALWAYS")
+    target_compile_definitions(${target} PRIVATE TAKT4_RT_ALLOC_GUARD=1)
+  elseif(when STREQUAL "DEBUG_ONLY")
+    target_compile_definitions(${target} PRIVATE "TAKT4_RT_ALLOC_GUARD=$<IF:$<CONFIG:Debug>,1,0>")
+  else()
+    message(FATAL_ERROR "takt4_enable_rt_guard: expected ALWAYS or DEBUG_ONLY, got '${when}'")
+  endif()
+endfunction()

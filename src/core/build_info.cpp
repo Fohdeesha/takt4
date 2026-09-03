@@ -1,5 +1,6 @@
 #include "core/build_info.hpp"
 
+#include "core/audio/resampler.hpp"
 #include "core/build_config.hpp"
 
 #include <RtMidi.h>
@@ -34,6 +35,7 @@ BuildInfo buildInfo() {
     info.platform = TAKT4_PLATFORM;
     info.compiler = TAKT4_COMPILER;
     info.portaudio = Pa_GetVersionInfo()->versionText;
+    info.r8brain = audio::Resampler::libraryVersion();
     info.link = TAKT4_LINK_VERSION;
     info.kohlhoffAsio = kohlhoffAsioVersion();
     info.rtmidi = RtMidi::getVersion();
@@ -49,6 +51,7 @@ std::string describe(const BuildInfo& info) {
         << "  platform:      " << info.platform << '\n'
         << "  compiler:      " << info.compiler << '\n'
         << "  PortAudio:     " << info.portaudio << '\n'
+        << "  r8brain-free:  " << info.r8brain << '\n'
         << "  Ableton Link:  " << info.link << " (asio " << info.kohlhoffAsio << ")\n"
         << "  RtMidi:        " << info.rtmidi << '\n'
         << "  RTNeural:      " << info.rtneuralRevision << '\n'

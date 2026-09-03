@@ -14,6 +14,7 @@ TEST_CASE("build info reports every dependency", "[build_info]") {
     CHECK_FALSE(info.platform.empty());
     CHECK_FALSE(info.compiler.empty());
     CHECK_THAT(info.portaudio, ContainsSubstring("PortAudio V19"));
+    CHECK(info.r8brain == "7.5"); // pinned in cmake/deps.cmake; the header's R8B_VERSION must agree
     CHECK(info.rtmidi == "6.0.0");
     CHECK(info.nlohmannJson == "3.12.0");
     CHECK(info.rtneuralRevision.size() == 40);
@@ -30,6 +31,7 @@ TEST_CASE("describe() renders one line per component", "[build_info]") {
 
     CHECK_THAT(text, ContainsSubstring("takt4 "));
     CHECK_THAT(text, ContainsSubstring("PortAudio:"));
+    CHECK_THAT(text, ContainsSubstring("r8brain-free:"));
     CHECK_THAT(text, ContainsSubstring("Ableton Link:"));
     CHECK_THAT(text, ContainsSubstring("RtMidi:"));
     CHECK_THAT(text, ContainsSubstring("RTNeural:"));

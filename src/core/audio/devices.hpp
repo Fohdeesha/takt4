@@ -7,9 +7,9 @@ namespace takt4::audio {
 
 class PortAudioSession;
 
-/// The host APIs takt4 knows how to pick channels on (HANDOFF §5.1). Anything else
-/// PortAudio exposes (MME, DirectSound and WDM-KS on a default Windows build) is Other
-/// and gets the software slice.
+/// The host APIs takt4 knows how to pick channels on (HANDOFF §5.1). PortAudio is built
+/// with these and nothing else (cmake/deps.cmake); Other exists so an unexpected one
+/// still gets the software slice rather than being dropped.
 enum class HostApiKind {
     Other,
     Asio,      // Windows; native channel selectors
