@@ -32,6 +32,8 @@ add_library(takt4_core STATIC
   audio/stream_setup.hpp
   engine/beat_engine.cpp
   engine/beat_engine.hpp
+  engine/control.cpp
+  engine/control.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   features/dimensions.hpp
@@ -72,6 +74,8 @@ add_library(takt4_core STATIC
   tracking/random.hpp
   tracking/state_space.cpp
   tracking/state_space.hpp
+  tracking/tap_tempo.cpp
+  tracking/tap_tempo.hpp
   tracking/tempo_tracker.cpp
   tracking/tempo_tracker.hpp
 )

@@ -74,6 +74,11 @@ void TempoTracker::reset() noexcept {
     smoothedConfidence_ = 0.0;
     everConfident_ = false;
     octaveShift_ = 0;
+    filterBeatInBar_ = 0;
+    barOffset_ = 0;
+    snapPending_ = false;
+    snapAwaitingFilter_ = false;
+    sinceSnap_ = 0;
     beatFrames_.clear();
 }
 
@@ -143,6 +148,95 @@ void TempoTracker::redouble() noexcept {
     state_.refined = false;
     candidate_ = lockedBpm_;
     beatFrames_.clear();
+}
+
+void TempoTracker::seedTempo(double bpm) noexcept {
+    if (!(bpm > 0.0)) {
+        return;
+    }
+    // An octave centred on the tap, so a tap 5 % out — which every human tap is — still
+    // lands the tempo it meant squarely inside, and its neighbours squarely outside.
+    const double half = std::sqrt(2.0);
+    const double before = state_.bpm;
+    options_.minBpm = bpm / half;
+    options_.maxBpm = bpm * half;
+    options_.octaveFold = true;
+    octaveShift_ = 0;
+
+    lockedBpm_ = fold(state_.rawBpm);
+    state_.bpm = lockedBpm_;
+    state_.refined = false;
+    candidate_ = lockedBpm_;
+    if (std::abs(state_.bpm - before) > options_.lockToleranceBpm) {
+        // The tap really did move the tempo, so what was locked is no longer what is
+        // published and the hunt starts again. A tap that agrees keeps the lock, as
+        // nudging the window by hand does.
+        state_.locked = false;
+        agreeing_ = 0;
+        disagreeing_ = 0;
+        beatFrames_.clear();
+    }
+}
+
+void TempoTracker::snapDownbeat() noexcept {
+    snapPending_ = true;
+}
+
+void TempoTracker::advanceBar(bool filterCalledDownbeat) noexcept {
+    const std::uint32_t meter = state_.beatsPerBar;
+
+    // Where the filter says we are, on its own terms and untouched by any snap.
+    if (filterCalledDownbeat) {
+        filterBeatInBar_ = 1;
+    } else if (filterBeatInBar_ != 0 && meter > 0) {
+        filterBeatInBar_ = filterBeatInBar_ % meter + 1;
+    }
+
+    const bool haveFilterBar = filterBeatInBar_ != 0;
+
+    if (snapPending_) {
+        snapPending_ = false;
+        snapAwaitingFilter_ = !(haveFilterBar && meter > 0);
+        if (snapAwaitingFilter_) {
+            // Nothing to rotate yet. Count from here, and turn the count into an offset
+            // the moment the filter first has an opinion.
+            sinceSnap_ = 0;
+        } else {
+            // Rotate so this beat comes out as 1. Reducing the position first keeps this
+            // right through a meter change that leaves the filter past the end of a bar.
+            barOffset_ = (meter - (filterBeatInBar_ - 1) % meter) % meter;
+        }
+    } else if (snapAwaitingFilter_ && meter > 0) {
+        sinceSnap_ = (sinceSnap_ + 1) % meter;
+        if (haveFilterBar) {
+            // The filter has just called its first downbeat, so filterBeatInBar_ is 1 and
+            // the offset that keeps the operator's count going is the count itself.
+            barOffset_ = sinceSnap_;
+            snapAwaitingFilter_ = false;
+        }
+    }
+
+    if (haveFilterBar) {
+        // Without a meter there is nothing to rotate within, so the filter's own position
+        // stands — which for the only case that reaches here, a downbeat, is beat 1.
+        state_.beatInBar =
+            meter > 0 ? (filterBeatInBar_ - 1 + barOffset_) % meter + 1 : filterBeatInBar_;
+    } else if (snapAwaitingFilter_) {
+        // Between the snap and the filter's first downbeat the operator is the only one
+        // who knows where the bar is, and they said it starts here.
+        state_.beatInBar = sinceSnap_ + 1;
+    } else {
+        // A beat before anything has an opinion on the bar: say so with 0 rather than
+        // guessing 1.
+        state_.beatInBar = 0;
+    }
+    // A bar starts where the published one does, which without a snap is where the
+    // filter's does. Without a meter the position cannot advance, so beat 1 would repeat
+    // on every beat and count a bar each time: there, only the filter calling a downbeat
+    // is a new bar.
+    if (state_.beatInBar == 1 && (meter > 0 || filterCalledDownbeat)) {
+        ++state_.bars;
+    }
 }
 
 void TempoTracker::updateLock(double folded) noexcept {
@@ -240,24 +334,17 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         return std::nullopt;
     }
 
-    const bool downbeat = frame.emitted == TrackedFrame::Emitted::Downbeat;
-    if (downbeat) {
-        state_.beatInBar = 1;
-        ++state_.bars;
-    } else if (state_.beatInBar == 0) {
-        // A beat before any downbeat has been called: the bar phase is not known yet, so
-        // say so with 0 rather than guessing 1.
-        state_.beatInBar = 0;
-    } else if (state_.beatsPerBar > 0) {
-        state_.beatInBar = state_.beatInBar % state_.beatsPerBar + 1;
-    }
+    const bool snapped = snapPending_;
+    advanceBar(frame.emitted == TrackedFrame::Emitted::Downbeat);
     ++state_.beats;
 
     BeatEvent event;
     event.frameIndex = frame.frameIndex;
     event.time =
         static_cast<double>(frame.frameIndex) * secondsPerFrame_ + options_.latencyOffsetSeconds;
-    event.downbeat = downbeat;
+    // What the operator sees as the downbeat, which without a snap is the filter's.
+    event.downbeat = state_.beatInBar == 1;
+    event.snapped = snapped;
     event.beatInBar = state_.beatInBar;
     event.beatsPerBar = state_.beatsPerBar;
     event.bpm = state_.bpm;
