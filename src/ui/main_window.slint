@@ -1,20 +1,437 @@
-// Phase 0 placeholder: proves the .slint -> C++ pipeline. The real interface is Phase 6.
+// The main window — HANDOFF §5.9, the read-only half.
+//
+// §5.9 sketches one window: device and channel pickers along the top, the BPM readout
+// and lock state in the middle, a bar indicator that draws however many beats the
+// tracker reports, and along the bottom the two things the handoff says carry this UI —
+// the scrolling activation trace and the input meter. All of that is here.
+//
+// What is deliberately not here yet: the ÷2, ×2, TAP and downbeat controls, the outputs
+// row and the trigger cards. Every one of those *sends* something, and this window only
+// reads. They are the next step and they all go through engine::BeatEngine::post().
+//
+// Nothing in this file assumes a meter of four. `beats-per-bar` comes from the particle
+// filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
+
+import { Button, ComboBox, Palette } from "std-widgets.slint";
+
+/// One 50 Hz frame of the activation trace. The network's two probabilities, and
+/// whether the tracker actually called a beat on this frame — which is the difference
+/// between "the model saw something" and "the filter agreed", and the whole reason the
+/// trace is diagnostic rather than decorative.
+export struct TracePoint {
+  beat: float,
+  downbeat: float,
+  called: bool,
+}
+
+// A dark window, whatever the desktop is set to. This is read across a booth, and the
+// std-widgets are pinned to the same scheme so the pickers do not come up white.
+global Theme {
+  out property <color> background: #121316;
+  out property <color> panel: #191b1f;
+  out property <color> line: #2b2f36;
+  out property <color> text: #e9ebee;
+  out property <color> dim: #878d97;
+  out property <color> accent: #60cdff;   // fluent's own dark accent, so the pickers agree
+  out property <color> locked: #4ade80;
+  out property <color> holding: #fbbf24;
+  out property <color> trace: #3f596b;
+}
+
+/// A horizontal level bar with a label and a reading beside it.
+component Bar inherits HorizontalLayout {
+  in property <string> label;
+  in property <float> value;      // 0 to 1
+  in property <string> reading;
+  in property <color> fill: Theme.accent;
+
+  spacing: 10px;
+
+  Text {
+    text: root.label;
+    color: Theme.dim;
+    font-size: 12px;
+    width: 74px;
+    vertical-alignment: center;
+  }
+
+  Rectangle {
+    background: Theme.panel;
+    border-radius: 3px;
+    vertical-stretch: 0;
+    height: 10px;
+    y: (parent.height - self.height) / 2;
+    clip: true;
+
+    Rectangle {
+      x: 0;
+      width: parent.width * clamp(root.value, 0.0, 1.0);
+      height: 100%;
+      background: root.fill;
+      border-radius: 3px;
+    }
+  }
+
+  Text {
+    text: root.reading;
+    color: Theme.text;
+    font-size: 12px;
+    font-family: "Consolas";
+    width: 76px;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+  }
+}
 
 export component MainWindow inherits Window {
-    title: "takt4";
-    preferred-width: 480px;
-    preferred-height: 200px;
+  title: "takt4";
+  preferred-width: 900px;
+  preferred-height: 520px;
+  min-width: 720px;
+  min-height: 440px;
+  background: Theme.background;
+  init => {
+    Palette.color-scheme = ColorScheme.dark;
+  }
 
-    in property <string> status-text;
+  // --- the input, chosen ---------------------------------------------------------
+  in property <[string]> devices;
+  in property <[string]> channels;
+  in-out property <int> device-index;
+  in-out property <int> channel-index;
+  in property <bool> running;
 
-    VerticalLayout {
-        padding: 24px;
-        alignment: center;
+  // --- what the tracker says -----------------------------------------------------
+  in property <float> bpm;
+  in property <bool> locked;
+  in property <bool> holding;
+  in property <bool> refined;
+  in property <float> confidence;
+  in property <int> beats-per-bar;
+  in property <int> beat-in-bar;
+  in property <int> bars;
+
+  // --- §5.5's octave fold, made visible (§7 deviation 4) --------------------------
+  in property <bool> fold-on;
+  in property <float> fold-min;
+  in property <float> fold-max;
+  in property <float> raw-bpm;
+
+  // --- the two displays that carry the window ------------------------------------
+  in property <[TracePoint]> trace;
+  in property <float> input-level;   // 0 to 1, mapped from dBFS by the caller
+  in property <float> input-peak;
+  in property <string> input-reading;
+
+  in property <string> status;
+  in property <bool> status-is-error;
+
+  callback device-picked(int);
+  callback channel-picked(int);
+  callback toggle-run();
+
+  VerticalLayout {
+    padding: 0;
+    spacing: 0;
+
+    // --- top bar: what we are listening to --------------------------------------
+    Rectangle {
+      background: Theme.panel;
+      vertical-stretch: 0;
+
+      HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 10px;
+
+        ComboBox {
+          model: root.devices;
+          current-index <=> root.device-index;
+          enabled: !root.running;
+          horizontal-stretch: 2;
+          selected => {
+            root.device-picked(self.current-index);
+          }
+        }
+
+        ComboBox {
+          model: root.channels;
+          current-index <=> root.channel-index;
+          enabled: !root.running;
+          horizontal-stretch: 1;
+          selected => {
+            root.channel-picked(self.current-index);
+          }
+        }
+
+        Button {
+          text: root.running ? "Stop" : "Start";
+          primary: !root.running;
+          enabled: root.devices.length > 0;
+          min-width: 96px;
+          clicked => {
+            root.toggle-run();
+          }
+        }
+      }
+    }
+
+    Rectangle {
+      height: 1px;
+      background: Theme.line;
+      vertical-stretch: 0;
+    }
+
+    // --- the readouts ------------------------------------------------------------
+    HorizontalLayout {
+      padding: 24px;
+      spacing: 24px;
+      vertical-stretch: 1;
+
+      // tempo, and the bar
+      VerticalLayout {
+        spacing: 4px;
+        horizontal-stretch: 1;
+
+        HorizontalLayout {
+          spacing: 8px;
+          alignment: start;
+          vertical-stretch: 0;
+
+          Text {
+            // Two decimals: the refined tempo resolves to a fraction of a BPM,
+            // and rounding it to a whole number would throw that away.
+            text: root.bpm > 0 ? round(root.bpm * 100) / 100 : "--";
+            color: Theme.text;
+            font-size: 64px;
+            font-weight: 300;
+            font-family: "Consolas";
+          }
+
+          Text {
+            text: "BPM";
+            color: Theme.dim;
+            font-size: 14px;
+            y: parent.height - self.height - 14px;
+          }
+        }
 
         Text {
-            text: root.status-text;
-            font-size: 20px;
-            horizontal-alignment: center;
+          // Where the number comes from. Before the lock it is the particle
+          // cloud's tempo interval, which steps in whole 20 ms frames — 5.4 BPM
+          // apart at 130. After it, the spacing of the beats themselves.
+          text: root.bpm <= 0 ? ""
+            : root.refined ? "from beat spacing"
+            : "from the filter's tempo interval";
+          color: Theme.dim;
+          font-size: 11px;
+          vertical-stretch: 0;
         }
+
+        Rectangle { height: 12px; vertical-stretch: 0; }
+
+        // The bar indicator. However many beats the tracker reports — three,
+        // four, five, seven. §5.5: nothing here hardcodes four.
+        HorizontalLayout {
+          spacing: 10px;
+          alignment: start;
+          vertical-stretch: 0;
+          height: 20px;
+
+          for beat in root.beats-per-bar : Rectangle {
+            width: 16px;
+            height: 16px;
+            y: 2px;
+            border-radius: 8px;
+            border-width: 2px;
+            border-color: beat == 0 ? Theme.text : Theme.dim;
+            background: beat + 1 == root.beat-in-bar
+              ? (beat == 0 ? Theme.text : Theme.accent)
+              : transparent;
+          }
+
+          Rectangle { width: 8px; }
+
+          Text {
+            text: root.beats-per-bar > 0 ? root.beats-per-bar + "/4" : "--";
+            color: Theme.dim;
+            font-size: 14px;
+            font-family: "Consolas";
+            vertical-alignment: center;
+          }
+
+          Text {
+            text: root.bars > 0 ? "bar " + root.bars : "";
+            color: Theme.dim;
+            font-size: 12px;
+            vertical-alignment: center;
+          }
+        }
+      }
+
+      // lock, confidence, and the fold window
+      VerticalLayout {
+        spacing: 10px;
+        horizontal-stretch: 1;
+        alignment: start;
+
+        HorizontalLayout {
+          spacing: 8px;
+          alignment: end;
+          vertical-stretch: 0;
+
+          Rectangle {
+            width: 10px;
+            height: 10px;
+            y: 6px;
+            border-radius: 5px;
+            background: !root.running ? Theme.line
+              : root.holding ? Theme.holding
+              : root.locked ? Theme.locked
+              : Theme.dim;
+          }
+
+          Text {
+            text: !root.running ? "STOPPED"
+              : root.holding ? "HOLDING"
+              : root.locked ? "LOCKED"
+              : "HUNTING";
+            color: !root.running ? Theme.dim
+              : root.holding ? Theme.holding
+              : root.locked ? Theme.locked
+              : Theme.dim;
+            font-size: 18px;
+            letter-spacing: 2px;
+          }
+        }
+
+        Bar {
+          label: "confidence";
+          value: root.confidence;
+          reading: round(root.confidence * 100) / 100;
+          // §5.5's confidence gate: below it the tempo above is the last good
+          // one being held, not a fresh reading, and the colour says so.
+          fill: root.holding ? Theme.holding : Theme.accent;
+        }
+
+        Rectangle { height: 4px; vertical-stretch: 0; }
+
+        // §7 deviation 4: the fold window is measured to help inside it and to
+        // fail hard outside it, so an operator has to be able to see it and see
+        // what it did to the number above.
+        Text {
+          text: !root.fold-on ? "octave fold off"
+            : "octave fold " + round(root.fold-min) + "-" + round(root.fold-max) + " BPM";
+          color: Theme.dim;
+          font-size: 12px;
+          horizontal-alignment: right;
+          vertical-stretch: 0;
+        }
+
+        Text {
+          // Only worth saying when folding actually moved the number, which is
+          // exactly when an operator would otherwise mistrust the readout.
+          text: (root.fold-on && root.raw-bpm > 0 && abs(root.raw-bpm - root.bpm) > 0.5)
+            ? "folded from " + round(root.raw-bpm * 10) / 10 + " BPM"
+            : "";
+          color: Theme.holding;
+          font-size: 12px;
+          horizontal-alignment: right;
+          vertical-stretch: 0;
+        }
+      }
     }
+
+    // --- the activation trace ------------------------------------------------------
+    VerticalLayout {
+      padding-left: 24px;
+      padding-right: 24px;
+      padding-bottom: 8px;
+      spacing: 8px;
+      vertical-stretch: 0;
+
+      HorizontalLayout {
+        spacing: 10px;
+        vertical-stretch: 0;
+
+        Text {
+          text: "activation";
+          color: Theme.dim;
+          font-size: 12px;
+          width: 74px;
+          vertical-alignment: center;
+        }
+
+        Rectangle {
+          background: Theme.panel;
+          border-radius: 3px;
+          height: 88px;
+          clip: true;
+
+          // One column per 50 Hz frame, oldest at the left. One repeater, not two,
+          // so the model is tracked once however many marks a column carries.
+          for point[i] in root.trace : Rectangle {
+            width: parent.width / root.trace.length;
+            x: i * self.width;
+            height: 100%;
+            y: 0;
+
+            // P(beat), from the bottom — and in the lock colour on the frames the
+            // filter actually called a beat, which is the difference between the
+            // network seeing something and the filter agreeing.
+            Rectangle {
+              width: 100%;
+              height: parent.height * clamp(point.beat, 0.0, 1.0);
+              y: parent.height - self.height;
+              background: point.called ? Theme.locked : Theme.trace;
+            }
+
+            // P(downbeat), as a mark at its own height. This is the weakest signal
+            // in the whole chain — 56.51 F1 in §A.1, the reason §5.5 calls a manual
+            // downbeat non-negotiable — so it is worth being able to watch it.
+            Rectangle {
+              width: 100%;
+              height: 2px;
+              y: (parent.height - 2px) * (1.0 - clamp(point.downbeat, 0.0, 1.0));
+              background: point.downbeat > 0.02 ? Theme.accent.with-alpha(0.7) : transparent;
+            }
+          }
+        }
+      }
+
+      Bar {
+        label: "input";
+        value: root.input-level;
+        reading: root.input-reading;
+        // Peaking is the one thing an input meter must not be quiet about.
+        fill: root.input-peak >= 0.99 ? Theme.holding : Theme.accent;
+      }
+    }
+
+    Rectangle {
+      height: 1px;
+      background: Theme.line;
+      vertical-stretch: 0;
+    }
+
+    // --- the status line ------------------------------------------------------------
+    Rectangle {
+      background: Theme.panel;
+      vertical-stretch: 0;
+      height: 34px;
+
+      Text {
+        x: 16px;
+        width: parent.width - 32px;
+        height: 100%;
+        text: root.status;
+        color: root.status-is-error ? Theme.holding : Theme.dim;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+      }
+    }
+  }
 }

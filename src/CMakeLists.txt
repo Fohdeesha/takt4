@@ -21,4 +21,12 @@ if(TAKT4_BUILD_UI)
   add_executable(takt4 main.cpp)
   target_link_libraries(takt4 PRIVATE takt4::ui takt4::core takt4::warnings)
   takt4_enable_rt_guard(takt4 DEBUG_ONLY)
+
+  # The same weight set and state space the console reads, from the same place in the
+  # source tree, for the same reason: there is no installer yet. Phase 7 replaces this
+  # with paths resolved next to the executable — see HANDOFF §8 Phase 7.
+  target_compile_definitions(takt4_ui PRIVATE
+    "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
+    "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+  )
 endif()

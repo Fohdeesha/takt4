@@ -13,6 +13,8 @@ add_library(takt4_core STATIC
   audio/devices.cpp
   audio/devices.hpp
   audio/hop_accumulator.hpp
+  audio/hop_fanout.cpp
+  audio/hop_fanout.hpp
   audio/hop_meter.cpp
   audio/hop_meter.hpp
   audio/hop_processor.hpp
@@ -34,6 +36,8 @@ add_library(takt4_core STATIC
   engine/beat_engine.hpp
   engine/control.cpp
   engine/control.hpp
+  engine/live_tracker.cpp
+  engine/live_tracker.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   features/dimensions.hpp
