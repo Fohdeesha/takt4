@@ -35,6 +35,10 @@ struct BeatEvent {
     double bpm = 0.0;
     bool locked = false;
     double confidence = 0.0;
+    /// True on the one beat an operator's downbeat snap landed on. §5.6 reserves Link's
+    /// `forceBeatAtTime` for exactly this beat — a `requestBeatAtTime` would be moved to
+    /// where the session's phase already matches, which is the phase being corrected.
+    bool snapped = false;
 };
 
 /// HANDOFF §5.5, the layer between the particle filter and the outputs.
@@ -135,12 +139,52 @@ public:
     void halve() noexcept;
     void redouble() noexcept;
 
+    /// §5.5's tap tempo, as a *seed*: the operator has said which tempo they mean, so the
+    /// octave-fold window moves to an octave centred on it and any manual ×2 / ÷2 is
+    /// cleared. `tracking::TapTempo` turns the taps themselves into this number.
+    ///
+    /// This is the half of §5.5's "seeds or overrides the tracker" that costs nothing and
+    /// is unambiguously right. It is what fixes the failure §7 deviation 4 measured: a
+    /// Quickstep at 204 BPM under a 70-140 window is folded to 102 and there is no way
+    /// for the operator to say otherwise. Tapping it moves the window to 144-288 and the
+    /// tracker publishes 204 from the very next frame.
+    ///
+    /// Moving the window rather than adding an octave shift is deliberate: the window is
+    /// a setting the UI shows, so afterwards the readout and the setting agree on why the
+    /// tempo is what it is. §8's Phase 5 asks for exactly that visibility.
+    ///
+    /// **Overriding** — free-running from the tap and ignoring the audio — is the other
+    /// half of §5.5's sentence and is not here. It is a mode, not a setting: it needs its
+    /// own beat generator, its own answer for downbeats and confidence, and a UI that
+    /// says the tracker is not tracking. Nothing else can be built on top of a half of it.
+    ///
+    /// The lock is kept if the published tempo did not really move, as when changing the
+    /// window by hand — a tap confirming what is already tracked must not cost sync.
+    void seedTempo(double bpm) noexcept;
+
+    /// §5.5's manual downbeat: the next beat called starts the bar, and every bar after
+    /// it is counted from there.
+    ///
+    /// The rotation this sets up is **kept** until the next snap or a reset, rather than
+    /// being given back on the filter's next downbeat call. §5.5 asks for this because
+    /// "the best online downbeat tracker in the world scores 56% F1" — an operator taps
+    /// precisely because the filter has the bar wrong, and a correction the filter undoes
+    /// one bar later would not be a correction. What is handed back is the beat and tempo
+    /// tracking, which never stopped; only the bar anchor is now the operator's.
+    ///
+    /// Beat times are untouched: this moves which beat is called number 1, never when a
+    /// beat happens.
+    void snapDownbeat() noexcept;
+
     /// The octave fold on its own, for tests and for the UI to preview.
     double fold(double bpm) const noexcept;
 
 private:
     void updateLock(double folded) noexcept;
     void rememberBeat(std::uint64_t frameIndex) noexcept;
+    /// Advances the filter's own bar position and turns it into the published one,
+    /// applying whatever a snap has rotated the bar by. Called once per emitted beat.
+    void advanceBar(bool filterCalledDownbeat) noexcept;
     /// The mean beat-to-beat gap in frames, over the gaps within `refineGapTolerance` of
     /// `cloudIntervalFrames`. Zero when there are not enough of them.
     double refinedIntervalFrames(double cloudIntervalFrames) const noexcept;
@@ -156,6 +200,18 @@ private:
     double smoothedConfidence_ = 0.0;
     bool everConfident_ = false;
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
+
+    /// The bar, in two parts: where the filter thinks we are, and how far the operator
+    /// has rotated that. `state_.beatInBar` is the second applied to the first, so with
+    /// no snap the published bar is the filter's, beat for beat.
+    std::uint32_t filterBeatInBar_ = 0; ///< 1 on the filter's downbeat; 0 until it calls one
+    std::uint32_t barOffset_ = 0;       ///< beats added to the filter's position
+    bool snapPending_ = false;          ///< a snap waiting for the next beat to land on
+    /// A snap that arrived before the filter had ever called a downbeat has nothing to
+    /// rotate yet, so the bar runs from the snap itself until the filter does — and
+    /// `sinceSnap_` is what turns that into an offset when it finally happens.
+    bool snapAwaitingFilter_ = false;
+    std::uint32_t sinceSnap_ = 0;
 
     /// The frames the last few beats were called on, oldest first. Bounded by
     /// `refineOverBeats + 1`, so this allocates once and never grows.

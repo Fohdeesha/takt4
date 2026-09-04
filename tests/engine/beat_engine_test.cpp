@@ -1,10 +1,12 @@
 #include "core/engine/beat_engine.hpp"
 
 #include "core/audio/rates.hpp"
+#include "core/engine/control.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -23,6 +25,7 @@
 using Catch::Approx;
 using takt4::audio::kHopSize;
 using takt4::engine::BeatEngine;
+using takt4::engine::Command;
 using takt4::engine::EngineBeat;
 using takt4::engine::EngineFrame;
 using takt4::model::ModelWeights;
@@ -277,6 +280,264 @@ TEST_CASE("a consumer that never drains loses frames instead of blocking", "[eng
     CHECK(engine->framesTracked() == BeatEngine::kFrameQueueCapacity);
     // ...and the published state is still current, because it is not on the ring.
     CHECK(engine->state().beats > 0);
+}
+
+TEST_CASE("a command posted while stopped applies to the run that follows", "[engine]") {
+    // A settings screen is used before the stream is started, and what it set has to
+    // survive start()'s reset. The reset clears tracking state, never options.
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    REQUIRE(engine->tempo().options().minBpm == Approx(70.0));
+
+    takt4::tracking::TempoTracker::Options options = engine->tempo().options();
+    options.minBpm = 100.0;
+    options.maxBpm = 200.0;
+    options.latencyOffsetSeconds = -0.03;
+    CHECK(engine->post(Command::setTempoOptions(options)));
+    // Not before something drains the queue, though.
+    CHECK(engine->tempo().options().minBpm == Approx(70.0));
+
+    engine->start();
+    engine->stop();
+    CHECK(engine->tempo().options().minBpm == Approx(100.0));
+    CHECK(engine->tempo().options().maxBpm == Approx(200.0));
+    CHECK(engine->tempo().options().latencyOffsetSeconds == Approx(-0.03));
+    CHECK(engine->tempo().fold(400.0) == Approx(100.0));
+    CHECK(engine->commandsDropped() == 0);
+}
+
+// Test names stay ASCII: ctest passes each one back to the binary as a command-line
+// argument, and a non-ASCII name comes through the console codepage mangled, so nothing
+// matches and the test fails without ever running. "÷2" cost exactly that.
+TEST_CASE("halving and doubling reach a tracking engine without dropping the lock",
+          "[engine]") {
+    // §5.5's octave buttons. The point of the queue is that this costs nothing: the
+    // filter is not reseeded, the lock is not given up, and no audio is missed.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+
+    std::size_t h = 0;
+    for (; h < hops && !engine->state().locked; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().locked);
+    REQUIRE(h < hops);
+    const std::uint64_t beatsBefore = engine->state().beats;
+    const double raw = engine->state().rawBpm;
+    CHECK(engine->state().bpm == Approx(128.0).margin(4.0));
+
+    // Nothing is pending, so this step tracks no frame at all — it only applies the
+    // command, which is how a button pressed during a silence still does something.
+    REQUIRE(engine->post(Command::halve()));
+    CHECK(engine->step() == 0);
+    CHECK(engine->state().bpm == Approx(raw / 2.0).margin(0.01));
+    CHECK(engine->state().locked);
+    CHECK(engine->state().beats == beatsBefore);
+
+    // And it stays there: the shift outlives the frames that follow it, so the operator
+    // does not have to hold the button down.
+    for (; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    CHECK(engine->state().bpm == Approx(64.0).margin(3.0));
+    CHECK(engine->state().locked);
+
+    // ×2 undoes it, back to the octave the tracker chose for itself.
+    REQUIRE(engine->post(Command::redouble()));
+    CHECK(engine->step() == 0);
+    CHECK(engine->state().bpm == Approx(128.0).margin(4.0));
+    CHECK(engine->state().locked);
+    CHECK(engine->commandsDropped() == 0);
+}
+
+TEST_CASE("the settings a caller reads back follow the ones a tap moved", "[engine]") {
+    // A caller that kept the options it last posted, rather than reading these, would
+    // hold a window from before the tap — and the next settings change it sent would
+    // quietly put the tracker back on the octave the operator had just corrected.
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    REQUIRE(engine->tempoOptions().minBpm == Approx(70.0));
+    REQUIRE(engine->tempoOptions().maxBpm == Approx(140.0));
+
+    REQUIRE(engine->post(Command::seedTempo(200.0)));
+    CHECK(engine->step() == 0);
+    const takt4::tracking::TempoTracker::Options seeded = engine->tempoOptions();
+    CHECK(seeded.minBpm > 140.0);
+    CHECK(seeded.maxBpm > seeded.minBpm);
+    CHECK(seeded.minBpm < 200.0);
+    CHECK(seeded.maxBpm > 200.0);
+    CHECK(seeded.octaveFold);
+
+    // Editing what was read back and posting it changes only what was edited.
+    takt4::tracking::TempoTracker::Options edited = seeded;
+    edited.latencyOffsetSeconds = -0.02;
+    REQUIRE(engine->post(Command::setTempoOptions(edited)));
+    CHECK(engine->step() == 0);
+    CHECK(engine->tempoOptions().latencyOffsetSeconds == Approx(-0.02));
+    CHECK(engine->tempoOptions().minBpm == Approx(seeded.minBpm));
+    CHECK(engine->tempoOptions().maxBpm == Approx(seeded.maxBpm));
+}
+
+TEST_CASE("tapping a tempo out on a clock moves what the engine publishes", "[engine]") {
+    // The whole of what the console's space key does, minus the keypress: taps counted on
+    // the thread they arrive on, the tempo they work out posted as a command, the tracker
+    // moved onto the operator's octave. Nothing about a wall clock reaches the engine.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+
+    std::size_t h = 0;
+    for (; h < hops && !engine->state().locked; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().locked);
+    REQUIRE(engine->state().bpm == Approx(128.0).margin(4.0));
+
+    // Four taps at half time, as an operator hearing 64 would give them — imperfectly.
+    takt4::tracking::TapTempo taps;
+    const double period = 60.0 / 64.0;
+    const double wobble[] = {0.0, 0.011, -0.008, 0.006};
+    std::optional<double> tapped;
+    for (int n = 0; n < 4; ++n) {
+        tapped = taps.tap(100.0 + static_cast<double>(n) * period + wobble[n]);
+    }
+    REQUIRE(tapped.has_value());
+    CHECK(*tapped == Approx(64.0).margin(1.0));
+
+    REQUIRE(engine->post(Command::seedTempo(*tapped)));
+    CHECK(engine->step() == 0);
+    CHECK(engine->state().bpm == Approx(64.0).margin(2.0));
+
+    for (; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    CHECK(engine->state().bpm == Approx(64.0).margin(2.0));
+    CHECK(engine->state().locked);
+}
+
+TEST_CASE("a tapped tempo reaches the tracker and moves the window", "[engine]") {
+    // The other end of tracking::TapTempo: taps are counted wherever they arrive and only
+    // the tempo travels, so nothing about a wall clock reaches the inference thread.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+
+    std::size_t h = 0;
+    for (; h < hops && !engine->state().locked; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().locked);
+    REQUIRE(engine->state().bpm == Approx(128.0).margin(4.0));
+
+    // An operator who hears the half-time and taps it. The window follows the tap, so
+    // the readout and the setting agree on why the tempo is what it is.
+    REQUIRE(engine->post(Command::seedTempo(64.0)));
+    CHECK(engine->step() == 0);
+    CHECK(engine->state().bpm == Approx(64.0).margin(2.0));
+    CHECK(engine->tempo().options().minBpm < 64.0);
+    CHECK(engine->tempo().options().maxBpm > 64.0);
+
+    for (; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    CHECK(engine->state().bpm == Approx(64.0).margin(2.0));
+    CHECK(engine->state().locked);
+    CHECK(engine->commandsDropped() == 0);
+}
+
+TEST_CASE("a manual downbeat reaches the tracker and moves the bar", "[engine]") {
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+
+    // Far enough in that the filter has settled on a bar of its own to disagree with.
+    std::size_t h = 0;
+    for (; h < hops && engine->state().bars < 2; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    REQUIRE(h < hops);
+    EngineBeat beat;
+    while (engine->popBeat(beat)) {
+    }
+
+    REQUIRE(engine->post(Command::snapDownbeat()));
+    std::optional<EngineBeat> snapped;
+    for (; h < hops && !snapped; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popBeat(beat)) {
+            if (!snapped) {
+                snapped = beat;
+            }
+        }
+    }
+    REQUIRE(snapped.has_value());
+
+    // The very next beat, whichever of the bar the filter thought it was.
+    CHECK(snapped->event.snapped);
+    CHECK(snapped->event.downbeat);
+    CHECK(snapped->event.beatInBar == 1);
+    CHECK(snapped->state.beatInBar == 1);
+
+    // The bar then runs from there, and the filter's own downbeats do not take it back.
+    std::vector<EngineBeat> after;
+    for (; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popBeat(beat)) {
+            after.push_back(beat);
+        }
+    }
+    REQUIRE(after.size() > 4);
+    std::uint32_t expected = snapped->event.beatInBar;
+    for (const EngineBeat& next : after) {
+        expected = expected % next.event.beatsPerBar + 1;
+        INFO("beat at frame " << next.event.frameIndex);
+        CHECK(next.event.beatInBar == expected);
+        CHECK_FALSE(next.event.snapped);
+    }
+    CHECK(engine->commandsDropped() == 0);
+}
+
+TEST_CASE("a command crosses from another thread into the inference thread", "[engine]") {
+    // The same ÷2, posted from the thread feeding audio while the engine's own threads
+    // are running — which is what a UI button, an inbound OSC message (§5.7) or a
+    // keyboard shortcut actually is.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    engine->start();
+
+    bool posted = false;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        while (engine->activations().hopsPending() >
+               takt4::model::ActivationEngine::kHopQueueCapacity / 2) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EngineFrame frame;
+        while (engine->popFrame(frame)) {
+        }
+        EngineBeat beat;
+        while (engine->popBeat(beat)) {
+        }
+        if (!posted && engine->state().locked) {
+            REQUIRE(engine->post(Command::halve()));
+            posted = true;
+        }
+    }
+    engine->stop();
+
+    REQUIRE(posted);
+    CHECK(engine->state().bpm == Approx(64.0).margin(4.0));
+    CHECK(engine->state().locked);
+    CHECK(engine->commandsDropped() == 0);
 }
 
 TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {

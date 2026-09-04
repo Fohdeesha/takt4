@@ -7,6 +7,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -207,11 +208,133 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
     SECTION("a frame with nothing emitted is not a beat") {
         CHECK_FALSE(tracker.process(frameAt(index++, 23, 0.9)).has_value());
     }
+
+    SECTION("without a meter there is nothing to count within") {
+        // The filter always reports one — it reads a meter straight out of the downbeat
+        // state space, whose intervals are 2, 3 and 4 — but the bar arithmetic must not
+        // depend on that being true, because it divides by it.
+        TempoTracker bare(kFramePeriod);
+        std::uint64_t at = 0;
+        const auto unmetered = [&](TrackedFrame::Emitted kind) {
+            TrackedFrame frame = frameAt(at++, 23, 0.9, 0);
+            frame.emitted = kind;
+            return bare.process(frame);
+        };
+        CHECK(unmetered(TrackedFrame::Emitted::Beat)->beatInBar == 0);
+        CHECK(unmetered(TrackedFrame::Emitted::Downbeat)->beatInBar == 1);
+        CHECK(unmetered(TrackedFrame::Emitted::Beat)->beatInBar == 1);
+        CHECK(bare.state().bars == 1);
+    }
 }
 
 // madmom's tempo intervals are whole 20 ms frames, so nothing inside the filter can
 // report a tempo between 130.43 BPM (23 frames) and 125.00 (24). The beats it calls are
 // spaced 23, 24, 23, 23 frames apart, and their mean is not so limited.
+TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking][tempo]") {
+    // §5.5's manual downbeat, the one it calls non-negotiable: "the best online downbeat
+    // tracker in the world scores 56% F1, and being two beats out is worse than one tap".
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+    const auto beat = [&](TrackedFrame::Emitted kind) {
+        TrackedFrame frame = frameAt(index++, 23, 0.9, 4);
+        frame.emitted = kind;
+        return tracker.process(frame);
+    };
+
+    // Settle into the filter's own bar: 1, 2, 3, 4.
+    (void)beat(TrackedFrame::Emitted::Downbeat);
+    (void)beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(tracker.state().beatInBar == 2);
+    const std::uint64_t barsBefore = tracker.state().bars;
+
+    // The operator says the bar starts on the next beat — which the filter calls its
+    // third.
+    tracker.snapDownbeat();
+    std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 1);
+    CHECK(event->downbeat);
+    CHECK(event->snapped);
+    CHECK(tracker.state().bars == barsBefore + 1);
+
+    // Only that one beat is marked snapped; the rest are ordinary.
+    event = beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 2);
+    CHECK_FALSE(event->snapped);
+
+    // And the filter's own downbeat, two beats later, no longer starts a bar: the
+    // rotation is kept, or a correction the filter undid a bar later would be no
+    // correction at all.
+    event = beat(TrackedFrame::Emitted::Downbeat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 3);
+    CHECK_FALSE(event->downbeat);
+    for (const std::uint32_t expected : {4u, 1u, 2u, 3u, 4u, 1u}) {
+        event = beat(expected == 3 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        INFO("expected beat " << expected << " of the bar");
+        CHECK(event->beatInBar == expected);
+        CHECK(event->downbeat == (expected == 1));
+    }
+
+    SECTION("a second snap moves it again") {
+        tracker.snapDownbeat();
+        event = beat(TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        CHECK(event->beatInBar == 1);
+        CHECK(event->snapped);
+    }
+
+    SECTION("a reset gives the bar back to the filter") {
+        tracker.reset();
+        CHECK(tracker.state().bars == 0);
+        (void)beat(TrackedFrame::Emitted::Downbeat);
+        CHECK(tracker.state().beatInBar == 1);
+    }
+}
+
+TEST_CASE("a manual downbeat before the filter has found one still starts the bar",
+          "[tracking][tempo]") {
+    // The operator hits the button as the track drops, seconds before the downbeat stage
+    // has settled on anything. There is no filter bar phase to rotate yet, so the bar
+    // runs from the tap — and joins up with the filter's when it finally calls one.
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+    const auto beat = [&](TrackedFrame::Emitted kind) {
+        TrackedFrame frame = frameAt(index++, 23, 0.9, 4);
+        frame.emitted = kind;
+        return tracker.process(frame);
+    };
+
+    tracker.snapDownbeat();
+    std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 1);
+    CHECK(event->downbeat);
+    CHECK(event->snapped);
+
+    for (const std::uint32_t expected : {2u, 3u}) {
+        event = beat(TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        CHECK(event->beatInBar == expected);
+    }
+
+    // The filter calls its first downbeat here. The operator's count wins: this is beat 4.
+    event = beat(TrackedFrame::Emitted::Downbeat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 4);
+    CHECK_FALSE(event->downbeat);
+
+    for (const std::uint32_t expected : {1u, 2u, 3u, 4u}) {
+        event = beat(TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        INFO("expected beat " << expected << " of the bar");
+        CHECK(event->beatInBar == expected);
+    }
+    CHECK(tracker.state().bars == 2);
+}
+
 TEST_CASE("the published tempo comes from the beat spacing once locked", "[tracking][tempo]") {
     TempoTracker::Options options;
     options.lockAfter = 5;
@@ -313,6 +436,61 @@ TEST_CASE("the manual octave shift moves the published tempo and keeps the lock"
     CHECK(tracker.state().bpm == Approx(bpmOf(23)));
     tracker.redouble();
     CHECK(tracker.state().bpm == Approx(bpmOf(23) * 2.0));
+}
+
+TEST_CASE("a tapped tempo moves the fold window onto the octave the operator meant",
+          "[tracking][tempo]") {
+    // The failure §7 deviation 4 measured: under a 70-140 window a Quickstep at 204 BPM
+    // is folded to 102 and the operator has no way to say otherwise. Quickstep's
+    // octave-tolerant tempo accuracy on Ballroom is 1.000 and its exact accuracy 0.000
+    // for exactly this reason. Tapping it is the way out.
+    TempoTracker::Options options;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    // 14 frames a beat is 214.3 BPM, the fastest the state space holds; folded, 107.1.
+    settle(tracker, index, 14, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(14) / 2.0));
+    CHECK(tracker.state().rawBpm == Approx(bpmOf(14)));
+
+    tracker.seedTempo(bpmOf(14));
+    CHECK(tracker.state().bpm == Approx(bpmOf(14)));
+    CHECK(tracker.options().minBpm == Approx(bpmOf(14) / std::sqrt(2.0)));
+    CHECK(tracker.options().maxBpm == Approx(bpmOf(14) * std::sqrt(2.0)));
+    CHECK(tracker.options().octaveFold);
+    // The published tempo really moved, so the lock is given up and hunted again.
+    CHECK_FALSE(tracker.state().locked);
+    settle(tracker, index, 14, 0.9, 10);
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(14)));
+
+    SECTION("a tap that agrees with what is tracked costs nothing") {
+        const double bpm = tracker.state().bpm;
+        tracker.seedTempo(bpm * 1.002); // as close as a human tap ever gets
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpm));
+    }
+
+    SECTION("a tap clears a manual octave shift, so the two cannot fight") {
+        tracker.halve();
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(14) / 2.0));
+        tracker.seedTempo(bpmOf(14));
+        CHECK(tracker.state().bpm == Approx(bpmOf(14)));
+    }
+
+    SECTION("a tap of nothing is ignored rather than folding into an empty window") {
+        const double bpm = tracker.state().bpm;
+        const double low = tracker.options().minBpm;
+        tracker.seedTempo(0.0);
+        tracker.seedTempo(-120.0);
+        CHECK(tracker.state().bpm == Approx(bpm));
+        CHECK(tracker.options().minBpm == Approx(low));
+    }
 }
 
 TEST_CASE("changing the fold window only drops the lock when it has to", "[tracking][tempo]") {

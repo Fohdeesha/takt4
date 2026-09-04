@@ -2,6 +2,7 @@
 
 #include "core/audio/hop_processor.hpp"
 #include "core/audio/host_time.hpp"
+#include "core/engine/control.hpp"
 #include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/published.hpp"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <vector>
 
 namespace takt4::engine {
 
@@ -115,12 +117,31 @@ public:
     /// a status line or a UI that redraws on its own clock.
     tracking::TempoState state() const noexcept { return state_.load(); }
 
+    /// The tracker's settings as they now stand, safely, from any thread.
+    ///
+    /// A caller that only ever posted them could keep its own copy — but a tap moves the
+    /// octave-fold window (see `TempoTracker::seedTempo`), so a copy that is never
+    /// refreshed goes stale and the next settings change posted from it would quietly
+    /// undo the tap. Edit from this, not from what you last sent. Note that a command
+    /// posted moments ago may not have been applied yet; this is what the tracker has,
+    /// not what it is about to have.
+    tracking::TempoTracker::Options tempoOptions() const noexcept { return options_.load(); }
+
     /// Runs whatever the model worker has ready, on the calling thread, for tests and
     /// offline use. Returns how many frames were tracked. Only valid while stopped.
     std::size_t step() noexcept;
 
-    /// The tempo state machine, for the options a UI changes live (§5.5's sliders).
-    /// Only safe while stopped, or from the inference thread itself.
+    /// **The way in.** Any thread but the audio one, running or stopped: a UI button, an
+    /// inbound OSC message (§5.7), a keyboard shortcut. The inference thread applies it
+    /// before the next frame it tracks, so nothing here disturbs the lock or the filter.
+    ///
+    /// False when the queue is full; see ControlQueue for when that can happen.
+    bool post(const Command& command) { return controls_.post(command); }
+    std::uint64_t commandsDropped() const { return controls_.dropped(); }
+
+    /// The tempo state machine, for reading its settings. Changing them on a running
+    /// engine is `post(Command::setTempoOptions(...))`'s job — this reference is only
+    /// safe to write through while stopped, or from the inference thread itself.
     tracking::TempoTracker& tempo() noexcept { return tempo_; }
     const tracking::TempoTracker& tempo() const noexcept { return tempo_; }
     const model::ActivationEngine& activations() const noexcept { return *activations_; }
@@ -149,6 +170,9 @@ private:
     void run() noexcept;
     /// One activation through the filter and the tempo machine. On the inference thread.
     void track(const model::FrameActivation& activation) noexcept;
+    /// Everything posted since the last frame, in order. On the inference thread, or on
+    /// the caller's while the engine is stopped — never on both at once.
+    void applyCommands() noexcept;
 
     const tracking::StateSpaceModel* model_;
     // On the heap: ActivationEngine carries 130 KB of rings and the network's weights.
@@ -159,6 +183,11 @@ private:
     rt::SpscRing<EngineFrame, kFrameQueueCapacity> frames_;
     rt::SpscRing<EngineBeat, kBeatQueueCapacity> beats_;
     rt::Published<tracking::TempoState> state_;
+    rt::Published<tracking::TempoTracker::Options> options_;
+
+    ControlQueue controls_;
+    /// Drained into, and reused, so applying commands allocates nothing after the first.
+    std::vector<Command> commands_;
 
     std::thread worker_;
     std::atomic<bool> running_{false};

@@ -24,6 +24,7 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
     : model_(&model), activations_(std::make_unique<model::ActivationEngine>(weights)),
       filter_(model, options.filter), tempo_(model.secondsPerFrame(), options.tempo) {
     state_.publish(tempo_.state());
+    options_.publish(tempo_.options());
 }
 
 BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::StateSpaceModel& model)
@@ -48,6 +49,10 @@ void BeatEngine::start() {
     }
     filter_.reset();
     tempo_.reset();
+    // Anything posted while the engine was stopped applies to the run about to start, not
+    // to the one that ended: a latency offset set on a settings screen has to survive the
+    // operator then pressing start. The reset above clears tracking state, never options.
+    applyCommands();
     state_.publish(tempo_.state());
     framesTracked_.store(0, std::memory_order_relaxed);
     framesDropped_.store(0, std::memory_order_relaxed);
@@ -79,6 +84,7 @@ void BeatEngine::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
 }
 
 std::size_t BeatEngine::step() noexcept {
+    applyCommands();
     // Both halves, in order: the model worker's queued hops through the network, then
     // the activations that produced through the filter. Only valid while stopped —
     // ActivationEngine::step() and its worker are the same consumer.
@@ -96,12 +102,48 @@ std::size_t BeatEngine::step() noexcept {
 void BeatEngine::run() noexcept {
     model::FrameActivation activation;
     while (running_.load(std::memory_order_acquire)) {
+        // Every time round, not only when a frame is waiting: a ÷2 pressed during a
+        // silence must not sit in the queue until the music starts again. The cost of an
+        // uncontended mutex 500 times a second is nothing.
+        applyCommands();
         if (activations_->pop(activation)) {
             track(activation);
         } else {
             std::this_thread::sleep_for(kIdleSleep);
         }
     }
+}
+
+void BeatEngine::applyCommands() noexcept {
+    controls_.drain(commands_);
+    if (commands_.empty()) {
+        return;
+    }
+    for (const Command& command : commands_) {
+        switch (command.kind) {
+        case Command::Kind::SetTempoOptions:
+            tempo_.setOptions(command.tempo);
+            break;
+        case Command::Kind::Halve:
+            tempo_.halve();
+            break;
+        case Command::Kind::Redouble:
+            tempo_.redouble();
+            break;
+        case Command::Kind::SnapDownbeat:
+            tempo_.snapDownbeat();
+            break;
+        case Command::Kind::SeedTempo:
+            tempo_.seedTempo(command.bpm);
+            break;
+        }
+    }
+    // A command changes what the tracker is saying, and a reader of state() may not be
+    // draining frames at all — so publish rather than wait for the next frame to do it.
+    // The settings go with it: this is the only place they ever change, and a caller has
+    // to be able to see a window a tap moved.
+    state_.publish(tempo_.state());
+    options_.publish(tempo_.options());
 }
 
 void BeatEngine::track(const model::FrameActivation& activation) noexcept {

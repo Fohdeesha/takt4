@@ -16,6 +16,7 @@ add_executable(takt4_tests
   audio/resampler_test.cpp
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
+  engine/control_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   io/npy_file_test.cpp
@@ -33,6 +34,7 @@ add_executable(takt4_tests
   rt/spsc_ring_test.cpp
   tracking/particle_filter_test.cpp
   tracking/state_space_test.cpp
+  tracking/tap_tempo_test.cpp
   tracking/tempo_tracker_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
