@@ -1259,6 +1259,12 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             break;
         case '[':
         case ']': {
+            // A relative nudge reads what is there and adds to it, so two presses landing
+            // in the same 1 ms round would both read the same value and the queue would
+            // keep only the second — one step of five milliseconds lost, and visible in
+            // the line below, which prints the same number twice. Key repeat is 33 ms
+            // apart, so it takes a deliberate double-tap. A UI with a real slider sends an
+            // absolute value and does not have the question.
             takt4::tracking::TempoTracker::Options live = engine->tempoOptions();
             live.latencyOffsetSeconds += key == '[' ? -0.005 : 0.005;
             (void)engine->post(Command::setTempoOptions(live));
