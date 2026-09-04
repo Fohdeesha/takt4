@@ -45,6 +45,12 @@ beat, and the meter taken from the filter rather than assumed. Tempo is refined 
 spacing of the beats themselves, because the state space's whole-frame intervals are 5
 BPM apart at 130 and nothing inside the filter can do better.
 
+The operator's controls reach all of that while it runs, through a queue the tracking
+thread drains between frames: a tap says which tempo was meant and moves the fold window
+onto it, a downbeat snap says where the bar starts and keeps it there, and ×2, ÷2 and
+the settings take effect without reseeding the filter or giving up the lock. Nothing has
+to be stopped and restarted to change anything.
+
 The three transports are driven from it: Ableton Link (tempo, and phase with the
 detected meter as the quantum, timed through Link's own regression on the audio thread's
 sample counter), a generic OSC namespace on any number of targets, and MIDI beat clock
@@ -121,6 +127,22 @@ beat.
 The outputs need a live input: a file is worked through as fast as it reads, so its
 beats do not happen in real time and there is no host clock to align a transport to.
 Over a file `track` prints the beats and nothing else.
+
+On a live input the manual controls are on the keyboard, which is where they live until
+there is an interface. None of them stops the tracker or reseeds the filter.
+
+| Key | |
+|---|---|
+| `space` | tap the tempo. Three taps are enough; the fold window moves onto what you tapped, so the readout and the setting agree on why the tempo is what it is. |
+| `d` | downbeat now — the next beat starts the bar, and goes on starting it. With `--link`, that beat is placed with `forceBeatAtTime`, so peers move too. |
+| `h` / `x` | halve and double the published tempo, keeping the lock. |
+| `[` / `]` | move the latency offset by 5 ms, on the beat timestamps and the transports alike. |
+| `f` | turn the octave fold off and on. |
+| `q` | stop. |
+
+The keys need a console. MinTTY, which Git Bash uses, connects stdin as a pipe rather
+than as one, so they are unavailable there and the banner says so on startup; `cmd`,
+PowerShell and Windows Terminal all give a real console, as does any POSIX terminal.
 
 ### Python tooling
 

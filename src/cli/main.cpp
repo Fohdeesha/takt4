@@ -13,6 +13,7 @@
 #include "core/audio/resampler.hpp"
 #include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/engine/control.hpp"
 #include "core/features/dimensions.hpp"
 #include "core/features/feature_extractor.hpp"
 #include "core/io/npy_file.hpp"
@@ -25,6 +26,7 @@
 #include "core/rt/alloc_guard.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <algorithm>
@@ -51,10 +53,14 @@
 #include <vector>
 
 #if defined(_WIN32)
+#include <conio.h>
 #include <windows.h>
 // timeapi.h must follow windows.h.
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
+#else
+#include <termios.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -123,6 +129,11 @@ void printUsage(std::ostream& out) {
         << "      --midi-clock P  send 24 PPQN to the MIDI output port named P (a\n"
         << "                      substring of its name, or its index)\n"
         << "      The outputs need a live input; over a file only the beats are printed.\n"
+        << "      On a live input the manual controls are on the keyboard: space taps the\n"
+        << "      tempo, d snaps the downbeat to the next beat, h and x halve and double\n"
+        << "      it, [ and ] move the latency offset, f turns the octave fold off and\n"
+        << "      on, q stops. These need a console: MinTTY, which Git Bash uses, is not\n"
+        << "      one, and the banner says so when the keys are unavailable.\n"
         << "      The other options are the meter's and `beats`', and mean the same.\n"
         << "\n"
         << "  takt4-cli --version\n";
@@ -805,6 +816,111 @@ std::string beatLine(const takt4::tracking::BeatEvent& event,
     return line.str();
 }
 
+/// Single keys from the terminal, without waiting for one.
+///
+/// §5.5's manual controls — tap, the octave shift, the downbeat snap, the latency slider
+/// — need somewhere to be pressed before there is a UI, and `BeatEngine`'s control queue
+/// needs a producer that is not a test. This is both, and it is the shape a UI's input
+/// handling takes too: read a key, post a command, never touch the tracker.
+///
+/// It does nothing at all unless stdin is something keys can actually come from. CI runs
+/// this binary without a console, and a redirected stdin must never be left in a mode
+/// nobody puts back.
+class KeyReader {
+public:
+    KeyReader() {
+#if defined(_WIN32)
+        // Not `_isatty`: that is true of any character device, and NUL is one — measured,
+        // a run with stdin redirected from /dev/null was called interactive. Only a real
+        // console input handle has a console mode, and a console input handle is the only
+        // thing _kbhit reads from anyway.
+        DWORD mode = 0;
+        const HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+        interactive_ =
+            in != nullptr && in != INVALID_HANDLE_VALUE && GetConsoleMode(in, &mode) != 0;
+#else
+        interactive_ = isatty(STDIN_FILENO) != 0;
+        if (!interactive_) {
+            return;
+        }
+        if (tcgetattr(STDIN_FILENO, &saved_) != 0) {
+            interactive_ = false;
+            return;
+        }
+        struct termios raw = saved_;
+        // Keys as they are pressed rather than lines, and not echoed back in among the
+        // beats. ISIG is left alone, so Ctrl+C still reaches the signal handler.
+        raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
+        // VMIN 0 with VTIME 0 is what makes read() return at once with whatever is there,
+        // rather than blocking the loop that has a MIDI clock to tick.
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
+            interactive_ = false;
+            return;
+        }
+        restore_ = true;
+#endif
+    }
+
+    ~KeyReader() {
+#if !defined(_WIN32)
+        if (restore_) {
+            (void)tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
+        }
+#endif
+    }
+
+    KeyReader(const KeyReader&) = delete;
+    KeyReader& operator=(const KeyReader&) = delete;
+
+    bool interactive() const noexcept { return interactive_; }
+
+    /// The next key waiting, or 0 when none is.
+    int poll() noexcept {
+        if (!interactive_) {
+            return 0;
+        }
+#if defined(_WIN32)
+        if (_kbhit() == 0) {
+            return 0;
+        }
+        const int key = _getch();
+        // An arrow or function key arrives as a 0 or 0xE0 prefix and then its scan code.
+        // Both bytes are already buffered; leaving the second would hand back a scan code
+        // that collides with a letter on the next poll.
+        if (key == 0 || key == 0xE0) {
+            (void)_getch();
+            return 0;
+        }
+        return key;
+#else
+        char pressed = 0;
+        return read(STDIN_FILENO, &pressed, 1) == 1 ? static_cast<unsigned char>(pressed) : 0;
+#endif
+    }
+
+private:
+    bool interactive_ = false;
+#if !defined(_WIN32)
+    struct termios saved_{};
+    bool restore_ = false;
+#endif
+};
+
+void printKeys(std::ostream& out, bool available) {
+    if (!available) {
+        // Worth saying rather than silently doing nothing. On Windows this is most often
+        // a terminal that is not a console: MinTTY, which Git Bash uses, connects stdin
+        // as a pipe, and _kbhit only ever reads a console input buffer. cmd, PowerShell
+        // and Windows Terminal all give a real one.
+        out << "keys:      not available — stdin is not a console\n";
+        return;
+    }
+    out << "keys:      space tap tempo · d downbeat now · h /2 · x *2\n"
+        << "           [ ] latency offset -/+ 5 ms · f octave fold on/off · q quit\n";
+}
+
 /// The transports, and the printing. The tracking is engine::BeatEngine's now.
 ///
 /// Everything a transport is given comes from one beat: Link gets the host time the
@@ -912,6 +1028,13 @@ public:
     std::uint64_t beats() const { return beats_; }
     std::uint64_t downbeats() const { return downbeats_; }
 
+    /// Follows §5.5's latency offset when it is moved live. The tracker applies it to
+    /// `event.time`; this is the same number applied to the host times the transports
+    /// fire on, and the two must not be allowed to drift apart.
+    void setLatencySeconds(double seconds) {
+        latencyMicros_ = static_cast<std::int64_t>(seconds * 1e6);
+    }
+
 private:
     void publishToLink(const takt4::tracking::BeatEvent& event, std::int64_t hostMicros) {
         // Without a host time source — the offline path — there is nothing meaningful to
@@ -928,8 +1051,17 @@ private:
         // The beat number is the bar position, so peers line up on our downbeat; before
         // the first downbeat the bar phase is unknown and only the tempo is published.
         if (event.beatInBar > 0 && event.beatsPerBar > 0) {
-            link_->requestBeat(static_cast<double>(event.beatInBar - 1), at,
-                               static_cast<double>(event.beatsPerBar));
+            const double beat = static_cast<double>(event.beatInBar - 1);
+            const double quantum = static_cast<double>(event.beatsPerBar);
+            if (event.snapped) {
+                // §5.6 reserves forceBeatAtTime for exactly this beat. A requestBeat here
+                // would be moved to the next time the session's phase already matches —
+                // which is the phase the operator just said was wrong — so the snap would
+                // move takt4's own bar and leave every peer where it was.
+                link_->forceBeat(beat, at, quantum);
+            } else {
+                link_->requestBeat(beat, at, quantum);
+            }
         }
     }
 
@@ -1085,12 +1217,76 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     }
     std::cout << '\n';
 
+    // §5.5's manual controls. Settings are changed by reading what the engine has,
+    // editing that, and posting it back — never by editing a copy kept since startup,
+    // because a tap moves the octave-fold window and a stale copy would undo it on the
+    // next key. A UI does the same thing on its redraw timer.
+    takt4::tracking::TapTempo taps;
+    KeyReader keys;
+    printKeys(std::cout, keys.interactive());
+
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
     engine->start();
     stream.start();
 
     const auto start = std::chrono::steady_clock::now();
+
+    using takt4::engine::Command;
+    const auto onKey = [&](int key, double elapsed) {
+        switch (key) {
+        case ' ': {
+            const std::optional<double> tapped = taps.tap(elapsed);
+            if (tapped) {
+                (void)engine->post(Command::seedTempo(*tapped));
+                std::cout << "  tap: " << fixed1(*tapped) << " BPM, fold window follows it\n";
+            } else {
+                std::cout << "  tap " << taps.taps() << " of " << taps.options().needTaps << "\n";
+            }
+            break;
+        }
+        case 'd':
+            (void)engine->post(Command::snapDownbeat());
+            std::cout << "  downbeat: the next beat starts the bar\n";
+            break;
+        case 'h':
+            (void)engine->post(Command::halve());
+            std::cout << "  /2\n";
+            break;
+        case 'x':
+            (void)engine->post(Command::redouble());
+            std::cout << "  *2\n";
+            break;
+        case '[':
+        case ']': {
+            takt4::tracking::TempoTracker::Options live = engine->tempoOptions();
+            live.latencyOffsetSeconds += key == '[' ? -0.005 : 0.005;
+            (void)engine->post(Command::setTempoOptions(live));
+            transports.setLatencySeconds(live.latencyOffsetSeconds);
+            std::cout << "  latency offset " << fixed1(live.latencyOffsetSeconds * 1000.0)
+                      << " ms\n";
+            break;
+        }
+        case 'f': {
+            takt4::tracking::TempoTracker::Options live = engine->tempoOptions();
+            live.octaveFold = !live.octaveFold;
+            (void)engine->post(Command::setTempoOptions(live));
+            std::cout << "  octave fold " << (live.octaveFold ? "on" : "off") << ", window "
+                      << fixed1(live.minBpm) << "-" << fixed1(live.maxBpm) << " BPM\n";
+            break;
+        }
+        case '?':
+            printKeys(std::cout, true);
+            break;
+        case 'q':
+        case 3: // Ctrl+C, which _getch() hands over as a character rather than a signal
+            g_interrupted.store(true);
+            break;
+        default:
+            break;
+        }
+    };
+
     transports.startOutputs(0.0);
     auto lastStatus = start;
     // A MIDI clock tick is 19 ms apart at 130 BPM, so the loop has to come round faster
@@ -1103,6 +1299,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         std::this_thread::sleep_for(period);
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        for (int key = keys.poll(); key != 0; key = keys.poll()) {
+            onKey(key, elapsed);
+        }
         (void)drain(*engine, transports, elapsed);
         const auto now = std::chrono::steady_clock::now();
         if (now - lastStatus >= 2s) {
