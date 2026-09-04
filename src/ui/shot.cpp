@@ -21,6 +21,7 @@
 #include "core/model/weights.hpp"
 #include "core/tracking/state_space.hpp"
 #include "ui/app.hpp"
+#include "ui/headless.hpp"
 #include "ui/window_state.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -43,41 +44,6 @@
 
 namespace takt4::ui {
 namespace {
-
-/// A window that is never shown: it reports a fixed size and owns the software renderer.
-class ShotWindow final : public slint::platform::WindowAdapter {
-public:
-    explicit ShotWindow(slint::PhysicalSize size)
-        : size_(size), renderer_(slint::platform::SoftwareRenderer::RepaintBufferType::NewBuffer) {}
-
-    slint::platform::AbstractRenderer& renderer() override { return renderer_; }
-    slint::PhysicalSize size() override { return size_; }
-
-    slint::platform::SoftwareRenderer& software() noexcept { return renderer_; }
-
-private:
-    slint::PhysicalSize size_;
-    slint::platform::SoftwareRenderer renderer_;
-};
-
-/// The platform the runtime is given instead of winit. It never runs an event loop —
-/// `render()` is called directly — which is what makes this work with no display.
-class ShotPlatform final : public slint::platform::Platform {
-public:
-    explicit ShotPlatform(slint::PhysicalSize size) : size_(size) {}
-
-    std::unique_ptr<slint::platform::WindowAdapter> create_window_adapter() override {
-        auto adapter = std::make_unique<ShotWindow>(size_);
-        window = adapter.get();
-        return adapter;
-    }
-
-    /// Owned by the runtime once handed over; valid for as long as the window is.
-    ShotWindow* window = nullptr;
-
-private:
-    slint::PhysicalSize size_;
-};
 
 /// 24-bit BMP, bottom-up, rows padded to four bytes. A BMP because it needs no library
 /// and every tool reads one; converting to PNG afterwards is a one-liner anywhere.
@@ -245,9 +211,7 @@ int renderShot(const std::filesystem::path& out, int width, int height) {
     const auto w = static_cast<std::uint32_t>(width);
     const auto h = static_cast<std::uint32_t>(height);
 
-    auto platform = std::make_unique<ShotPlatform>(slint::PhysicalSize({w, h}));
-    ShotPlatform* shot = platform.get();
-    slint::platform::set_platform(std::move(platform));
+    HeadlessWindow* const* rendered = installHeadlessPlatform(w, h);
 
     auto window = MainWindow::create();
     fillPickers(*window);
@@ -267,13 +231,13 @@ int renderShot(const std::filesystem::path& out, int width, int height) {
     window->window().dispatch_resize_event(
         slint::LogicalSize({static_cast<float>(width), static_cast<float>(height)}));
 
-    if (shot->window == nullptr) {
+    if (*rendered == nullptr) {
         std::cerr << "takt4-shot: the platform was never asked for a window\n";
         return 1;
     }
     std::vector<slint::Rgb8Pixel> pixels(static_cast<std::size_t>(width) *
                                          static_cast<std::size_t>(height));
-    shot->window->software().render(pixels, static_cast<std::size_t>(width));
+    (*rendered)->software().render(pixels, static_cast<std::size_t>(width));
     writeBmp(out, pixels, width, height);
 
     std::cout << "takt4-shot: " << width << " x " << height << " written to " << out.string()

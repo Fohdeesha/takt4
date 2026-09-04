@@ -70,3 +70,38 @@ takt4_enable_rt_guard(takt4_tests ALWAYS)
 
 include(Catch)
 catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST)
+
+# ---------------------------------------------------------------------------------------
+# takt4_ui_tests — the window, under Slint's testing backend.
+#
+# A second binary rather than more files in the first, so that takt4_tests keeps meaning
+# "the engine stands up with no Slint anywhere near it" (HANDOFF §4.2). This one drives
+# the real component: it presses the real button, steps the real redraw timer and reads
+# the real properties back. slint::testing::init() gives it a backend whose windows never
+# reach a screen, which is what makes it runnable on a machine with no display — see
+# tests/ui/main.cpp.
+# ---------------------------------------------------------------------------------------
+if(TAKT4_BUILD_UI)
+  add_executable(takt4_ui_tests
+    ui/main.cpp
+    ui/window_test.cpp
+    support/crt_dialogs.cpp
+  )
+
+  target_include_directories(takt4_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  target_compile_definitions(takt4_ui_tests PRIVATE
+    "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
+    "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+  )
+
+  target_link_libraries(takt4_ui_tests
+    PRIVATE
+      takt4::ui
+      takt4::core
+      Catch2::Catch2
+      takt4::warnings
+  )
+
+  catch_discover_tests(takt4_ui_tests DISCOVERY_MODE PRE_TEST)
+endif()

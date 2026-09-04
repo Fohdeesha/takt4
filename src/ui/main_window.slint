@@ -94,37 +94,42 @@ export component MainWindow inherits Window {
     Palette.color-scheme = ColorScheme.dark;
   }
 
+  // Everything below is written by the C++ side and read by nothing else — `in` would
+  // say that better. They are `in-out` because Slint generates a getter only for those,
+  // and without one `takt4_ui_tests` could set a property but never check what the
+  // window made of it. Nothing in this file writes to them.
+  //
   // --- the input, chosen ---------------------------------------------------------
-  in property <[string]> devices;
-  in property <[string]> channels;
+  in-out property <[string]> devices;
+  in-out property <[string]> channels;
   in-out property <int> device-index;
   in-out property <int> channel-index;
-  in property <bool> running;
+  in-out property <bool> running;
 
   // --- what the tracker says -----------------------------------------------------
-  in property <float> bpm;
-  in property <bool> locked;
-  in property <bool> holding;
-  in property <bool> refined;
-  in property <float> confidence;
-  in property <int> beats-per-bar;
-  in property <int> beat-in-bar;
-  in property <int> bars;
+  in-out property <float> bpm;
+  in-out property <bool> locked;
+  in-out property <bool> holding;
+  in-out property <bool> refined;
+  in-out property <float> confidence;
+  in-out property <int> beats-per-bar;
+  in-out property <int> beat-in-bar;
+  in-out property <int> bars;
 
   // --- §5.5's octave fold, made visible (§7 deviation 4) --------------------------
-  in property <bool> fold-on;
-  in property <float> fold-min;
-  in property <float> fold-max;
-  in property <float> raw-bpm;
+  in-out property <bool> fold-on;
+  in-out property <float> fold-min;
+  in-out property <float> fold-max;
+  in-out property <float> raw-bpm;
 
   // --- the two displays that carry the window ------------------------------------
-  in property <[TracePoint]> trace;
-  in property <float> input-level;   // 0 to 1, mapped from dBFS by the caller
-  in property <float> input-peak;
-  in property <string> input-reading;
+  in-out property <[TracePoint]> trace;
+  in-out property <float> input-level;   // 0 to 1, mapped from dBFS by the caller
+  in-out property <float> input-peak;
+  in-out property <string> input-reading;
 
-  in property <string> status;
-  in property <bool> status-is-error;
+  in-out property <string> status;
+  in-out property <bool> status-is-error;
 
   callback device-picked(int);
   callback channel-picked(int);
@@ -146,7 +151,10 @@ export component MainWindow inherits Window {
         padding-bottom: 12px;
         spacing: 10px;
 
-        ComboBox {
+        // Named so `takt4_ui_tests` can find them: Slint's testing backend addresses
+        // elements as "MainWindow::<id>", and a test that clicks the real button is what
+        // proves the callback below is wired to the controller at all.
+        device-picker := ComboBox {
           model: root.devices;
           current-index <=> root.device-index;
           enabled: !root.running;
@@ -156,7 +164,7 @@ export component MainWindow inherits Window {
           }
         }
 
-        ComboBox {
+        channel-picker := ComboBox {
           model: root.channels;
           current-index <=> root.channel-index;
           enabled: !root.running;
@@ -166,7 +174,7 @@ export component MainWindow inherits Window {
           }
         }
 
-        Button {
+        run-button := Button {
           text: root.running ? "Stop" : "Start";
           primary: !root.running;
           enabled: root.devices.length > 0;

@@ -26,7 +26,11 @@ target_link_libraries(takt4_ui_slint PUBLIC Slint::Slint)
 add_library(takt4_ui STATIC
   app.cpp
   app.hpp
+  headless.cpp
+  headless.hpp
   shot.cpp
+  window_controller.cpp
+  window_controller.hpp
   window_state.cpp
   window_state.hpp
 )
@@ -34,10 +38,13 @@ add_library(takt4::ui ALIAS takt4_ui)
 
 target_include_directories(takt4_ui PUBLIC "${PROJECT_SOURCE_DIR}/src")
 
+# takt4_ui_slint is PUBLIC because window_controller.hpp — a header consumers include —
+# includes the generated main_window.h. It arrives as a system include (SYSTEM ON above),
+# so our warning flags still do not apply to generated code in a consumer either.
 target_link_libraries(takt4_ui
   PUBLIC
     takt4::core
-  PRIVATE
     takt4_ui_slint
+  PRIVATE
     takt4::warnings
 )

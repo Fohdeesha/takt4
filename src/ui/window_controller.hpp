@@ -1,0 +1,104 @@
+#pragma once
+
+#include "core/audio/devices.hpp"
+#include "core/engine/live_tracker.hpp"
+#include "ui/window_state.hpp"
+
+#include "main_window.h" // generated from main_window.slint
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace takt4::ui {
+
+/// Everything the window needs that is not the window: the tracker behind it, the model
+/// behind its trace, and the one timer that drains the engine's rings.
+///
+/// Nothing here is ever reached from the audio thread, which is the whole of HANDOFF
+/// §7.5's rule. The engine writes into lock-free rings from its own threads; this reads
+/// them on the UI thread, on a timer, and touches a Slint property nowhere else.
+///
+/// It is a header of its own rather than a class hidden in `app.cpp` so that
+/// `takt4_ui_tests` can drive it under Slint's testing backend: press the real button,
+/// step the real redraw, and read the real properties back. Without that, the wiring
+/// between a click and the tracker could only be checked by a person at the machine.
+class WindowController {
+public:
+    /// How often the window drains the engine's rings and redraws. §7.5: "Push audio-side
+    /// results through a lock-free ring and drain on a UI timer — do not queue one closure
+    /// per audio callback." 30 Hz is slower than the 50 Hz the frames arrive at, so every
+    /// tick finds one or two waiting and none is ever missed; the ring holds ten seconds
+    /// of them, so even a stalled event loop loses nothing.
+    static constexpr std::chrono::milliseconds kRedrawInterval{33};
+
+    /// How far the peak indicator falls back each tick — slow enough that a moment of
+    /// clipping is still on screen when the operator looks up.
+    static constexpr float kPeakDecay = 0.88f;
+
+    /// The tracker must outlive this. Builds the window, fills the pickers from the
+    /// tracker's device list, and starts the redraw timer.
+    explicit WindowController(engine::LiveTracker& tracker);
+
+    WindowController(const WindowController&) = delete;
+    WindowController& operator=(const WindowController&) = delete;
+
+    /// Shows the window and runs Slint's event loop until it is closed.
+    void run();
+
+    /// The window itself, for reading properties back.
+    MainWindow& window() { return *window_; }
+    const slint::ComponentHandle<MainWindow>& handle() const { return window_; }
+
+    /// One round of draining and redrawing — what the timer calls. Public so a test can
+    /// step it without waiting on a wall clock, and so that the timer path and the work
+    /// it does can be checked separately.
+    void tick();
+
+    /// What the window's callbacks do, reachable directly as well as through a click.
+    void pickDevice(int index);
+    void pickChannel(int index) { channel_ = index; }
+    void toggleRun();
+
+    const std::vector<audio::InputDevice>& devices() const noexcept { return devices_; }
+    /// Index into `devices()`, or -1 when the machine has none.
+    int deviceIndex() const noexcept { return device_; }
+    /// 0-based channel of the selected device.
+    int channelIndex() const noexcept { return channel_; }
+    bool statusIsError() const noexcept { return statusIsError_; }
+
+    /// Times `tick()` has been entered, however it was reached. What a test watches to
+    /// tell "the redraw timer is running" from "the redraw does the right thing" — two
+    /// separate claims that a window either meets or silently does not.
+    std::uint64_t ticks() const noexcept { return ticks_; }
+
+private:
+    void refreshDevices();
+    void publishStopped();
+    void publishOpenStream();
+    void publishOptions();
+    void publishTrace();
+    void publishState();
+    void publishLevels();
+    void setStatus(const std::string& text, bool error);
+
+    engine::LiveTracker& tracker_;
+    slint::ComponentHandle<MainWindow> window_;
+    slint::Timer timer_;
+
+    std::vector<audio::InputDevice> devices_;
+    int device_ = -1;
+    int channel_ = 0;
+
+    /// The trace as a plain buffer, oldest first, mirrored into the model each tick.
+    std::vector<TracePoint> trace_;
+    std::shared_ptr<slint::VectorModel<TracePoint>> traceModel_;
+    float peak_ = 0.0f;
+    bool statusIsError_ = false;
+    std::uint64_t ticks_ = 0;
+};
+
+} // namespace takt4::ui
