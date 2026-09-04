@@ -22,11 +22,19 @@ if(TAKT4_BUILD_UI)
   target_link_libraries(takt4 PRIVATE takt4::ui takt4::core takt4::warnings)
   takt4_enable_rt_guard(takt4 DEBUG_ONLY)
 
+  # takt4-shot: renders the window to an image with no display involved (src/ui/shot.cpp).
+  # A bench tool like takt4-cli, never packaged.
+  add_executable(takt4-shot shot_main.cpp)
+  target_link_libraries(takt4-shot PRIVATE takt4::ui takt4::core takt4::warnings)
+
   # The same weight set and state space the console reads, from the same place in the
   # source tree, for the same reason: there is no installer yet. Phase 7 replaces this
   # with paths resolved next to the executable — see HANDOFF §8 Phase 7.
+  # TAKT4_TEST_DATA_DIR is takt4-shot's: it fills the readouts by running the tracker over
+  # the committed synthetic excerpt, so the picture holds numbers the engine really made.
   target_compile_definitions(takt4_ui PRIVATE
     "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
     "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+    "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
   )
 endif()

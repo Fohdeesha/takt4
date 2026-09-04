@@ -185,15 +185,20 @@ export component MainWindow inherits Window {
     }
 
     // --- the readouts ------------------------------------------------------------
+    // The readouts take the height they need; the trace below gets the rest, because
+    // it is the one thing here that is worth more when it is bigger.
     HorizontalLayout {
       padding: 24px;
       spacing: 24px;
-      vertical-stretch: 1;
+      vertical-stretch: 0;
 
-      // tempo, and the bar
+      // tempo, and the bar. Centred rather than stretched: a VerticalLayout's
+      // default alignment spreads the leftover height *between* children that
+      // cannot stretch, which pushed these forty pixels apart.
       VerticalLayout {
         spacing: 4px;
         horizontal-stretch: 1;
+        alignment: center;
 
         HorizontalLayout {
           spacing: 8px;
@@ -211,10 +216,13 @@ export component MainWindow inherits Window {
           }
 
           Text {
+            // Sat on the baseline of the number beside it. A layout owns its
+            // children's y, so this is vertical-alignment and not a y binding —
+            // that one was silently ignored and left the label up in the air.
             text: "BPM";
             color: Theme.dim;
             font-size: 14px;
-            y: parent.height - self.height - 14px;
+            vertical-alignment: bottom;
           }
         }
 
@@ -243,7 +251,6 @@ export component MainWindow inherits Window {
           for beat in root.beats-per-bar : Rectangle {
             width: 16px;
             height: 16px;
-            y: 2px;
             border-radius: 8px;
             border-width: 2px;
             border-color: beat == 0 ? Theme.text : Theme.dim;
@@ -275,7 +282,7 @@ export component MainWindow inherits Window {
       VerticalLayout {
         spacing: 10px;
         horizontal-stretch: 1;
-        alignment: start;
+        alignment: center;
 
         HorizontalLayout {
           spacing: 8px;
@@ -331,9 +338,16 @@ export component MainWindow inherits Window {
         }
 
         Text {
-          // Only worth saying when folding actually moved the number, which is
-          // exactly when an operator would otherwise mistrust the readout.
-          text: (root.fold-on && root.raw-bpm > 0 && abs(root.raw-bpm - root.bpm) > 0.5)
+          // Only when folding actually moved the number, which is exactly when an
+          // operator would otherwise mistrust the readout.
+          //
+          // The test is the *ratio*, not the difference. A fold is a halving or a
+          // doubling, so it leaves the two numbers a factor of two apart; a plain
+          // difference also catches the tenth-of-a-BPM gap between the cloud's
+          // tempo interval and the refined tempo (§6: 5.4 BPM apart at 130), which
+          // is not a fold and must not be announced as one.
+          text: (root.fold-on && root.raw-bpm > 0 && root.bpm > 0
+                 && (root.raw-bpm > root.bpm * 1.5 || root.raw-bpm < root.bpm * 0.67))
             ? "folded from " + round(root.raw-bpm * 10) / 10 + " BPM"
             : "";
           color: Theme.holding;
@@ -350,11 +364,11 @@ export component MainWindow inherits Window {
       padding-right: 24px;
       padding-bottom: 8px;
       spacing: 8px;
-      vertical-stretch: 0;
+      vertical-stretch: 1;
 
       HorizontalLayout {
         spacing: 10px;
-        vertical-stretch: 0;
+        vertical-stretch: 1;
 
         Text {
           text: "activation";
@@ -367,7 +381,7 @@ export component MainWindow inherits Window {
         Rectangle {
           background: Theme.panel;
           border-radius: 3px;
-          height: 88px;
+          min-height: 88px;
           clip: true;
 
           // One column per 50 Hz frame, oldest at the left. One repeater, not two,

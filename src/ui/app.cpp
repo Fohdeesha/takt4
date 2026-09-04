@@ -10,6 +10,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "ui/window_state.hpp"
 
 #include "main_window.h" // generated from main_window.slint
 
@@ -18,10 +19,8 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
-#include <iomanip>
 #include <iostream>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -31,19 +30,12 @@ namespace {
 
 using namespace std::chrono_literals;
 
-/// Frames of activation the trace holds: four seconds at the 50 Hz frame rate, which is
-/// two bars at 120 BPM — long enough to see the pattern the network is responding to.
-constexpr std::size_t kTraceLength = 200;
-
 /// How often the window drains the engine's rings and redraws. HANDOFF §7.5: "Push
 /// audio-side results through a lock-free ring and drain on a UI timer — do not queue one
 /// closure per audio callback." 30 Hz is slower than the 50 Hz the frames arrive at, so
 /// every tick finds one or two waiting and none is ever missed; the ring holds ten
 /// seconds of them, so even a stalled event loop loses nothing.
 constexpr auto kRedrawInterval = 33ms;
-
-/// The bottom of the input meter. Quieter than this is not a level anyone is setting.
-constexpr float kMeterFloorDb = -60.0f;
 
 /// How far the peak indicator falls back each tick — slow enough that a moment of
 /// clipping is still on screen when the operator looks up.
@@ -57,37 +49,8 @@ std::filesystem::path stateSpacePath() {
     return std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin";
 }
 
-std::string fixed(double value, int places) {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(places) << value;
-    return out.str();
-}
-
 slint::SharedString shared(const std::string& text) {
     return slint::SharedString(text);
-}
-
-/// What the device picker shows. The host API leads, because on Windows one interface
-/// appears under both ASIO and WASAPI and the two are not interchangeable (§5.1): only
-/// the ASIO entry picks channels natively, and only the WASAPI one offers loopback.
-std::string describeDevice(const audio::InputDevice& device) {
-    std::string text = device.hostApiName + " / " + device.name + "  (" +
-                       std::to_string(device.maxInputChannels) + " in";
-    if (device.isLoopback) {
-        text += ", loopback";
-    }
-    return text + ")";
-}
-
-/// What the channel picker shows, numbered from 1 as it is printed on the interface.
-/// ASIO and CoreAudio hand over the driver's own names for them; nothing else does.
-std::string describeChannel(const audio::InputDevice& device, int channel) {
-    const std::string number = std::to_string(channel + 1);
-    const auto index = static_cast<std::size_t>(channel);
-    if (index < device.channelNames.size() && !device.channelNames[index].empty()) {
-        return "In " + number + " — " + device.channelNames[index];
-    }
-    return "In " + number;
 }
 
 /// Everything the window needs that is not the window: the tracker behind it, the model
@@ -206,22 +169,9 @@ private:
         publishOpenStream();
     }
 
-    /// Everything the readouts say while nothing is running, so a stopped window does not
-    /// leave the last set's tempo sitting there looking live.
     void publishStopped() {
         window_->set_running(false);
-        window_->set_bpm(0.0f);
-        window_->set_raw_bpm(0.0f);
-        window_->set_locked(false);
-        window_->set_holding(false);
-        window_->set_refined(false);
-        window_->set_confidence(0.0f);
-        window_->set_beats_per_bar(0);
-        window_->set_beat_in_bar(0);
-        window_->set_bars(0);
-        window_->set_input_level(0.0f);
-        window_->set_input_peak(0.0f);
-        window_->set_input_reading(shared(""));
+        publishIdleReadouts(*window_);
         publishOptions();
         if (!devices_.empty() && !statusIsError_) {
             setStatus("takt4 " + buildInfo().version + " — pick an input and press Start.", false);
@@ -251,12 +201,7 @@ private:
     /// §5.5's settings as the tracker actually holds them. Read from the engine every
     /// time and never from a copy: a tap moves the fold window underneath anyone keeping
     /// one (§7 deviation 8), and this window exists to show that window honestly.
-    void publishOptions() {
-        const tracking::TempoTracker::Options options = tracker_.engine().tempoOptions();
-        window_->set_fold_on(options.octaveFold);
-        window_->set_fold_min(static_cast<float>(options.minBpm));
-        window_->set_fold_max(static_cast<float>(options.maxBpm));
-    }
+    void publishOptions() { publishTempoOptions(*window_, tracker_.engine().tempoOptions()); }
 
     void setStatus(const std::string& text, bool error) {
         statusIsError_ = error;
@@ -273,12 +218,8 @@ private:
         bool moved = false;
         engine::EngineFrame frame;
         while (tracker_.engine().popFrame(frame)) {
-            TracePoint point;
-            point.beat = frame.activation.beat;
-            point.downbeat = frame.activation.downbeat;
-            point.called = frame.beat;
             std::rotate(trace_.begin(), trace_.begin() + 1, trace_.end());
-            trace_.back() = point;
+            trace_.back() = tracePoint(frame);
             moved = true;
         }
         if (moved) {
@@ -305,16 +246,7 @@ private:
     }
 
     void publishState() {
-        const tracking::TempoState state = tracker_.engine().state();
-        window_->set_bpm(static_cast<float>(state.bpm));
-        window_->set_raw_bpm(static_cast<float>(state.rawBpm));
-        window_->set_locked(state.locked);
-        window_->set_holding(state.holding);
-        window_->set_refined(state.refined);
-        window_->set_confidence(static_cast<float>(state.confidence));
-        window_->set_beats_per_bar(static_cast<int>(state.beatsPerBar));
-        window_->set_beat_in_bar(static_cast<int>(state.beatInBar));
-        window_->set_bars(static_cast<int>(state.bars));
+        publishTempoState(*window_, tracker_.engine().state());
         publishOptions();
     }
 
@@ -327,14 +259,13 @@ private:
             peak = std::max(peak, level.peak);
         }
         peak_ = std::max(peak, peak_ * kPeakDecay);
-        window_->set_input_peak(peak_);
         if (loudest < 0.0f) {
-            return; // leave the reading where it was rather than flashing to silence
+            // Nothing arrived this tick: let the peak fall, leave the reading where it
+            // was rather than flashing to silence.
+            window_->set_input_peak(peak_);
+            return;
         }
-        const float db = audio::toDbfs(loudest);
-        window_->set_input_level(std::clamp((db - kMeterFloorDb) / -kMeterFloorDb, 0.0f, 1.0f));
-        window_->set_input_reading(
-            shared(db <= kMeterFloorDb ? "-inf dB" : fixed(static_cast<double>(db), 1) + " dB"));
+        publishInput(*window_, loudest, peak_);
     }
 
     engine::LiveTracker& tracker_;

@@ -26,6 +26,9 @@ target_link_libraries(takt4_ui_slint PUBLIC Slint::Slint)
 add_library(takt4_ui STATIC
   app.cpp
   app.hpp
+  shot.cpp
+  window_state.cpp
+  window_state.hpp
 )
 add_library(takt4::ui ALIAS takt4_ui)
 
