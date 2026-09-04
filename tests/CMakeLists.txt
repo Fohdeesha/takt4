@@ -9,6 +9,7 @@ add_executable(takt4_tests
   audio/channel_picker_test.cpp
   audio/devices_test.cpp
   audio/hop_accumulator_test.cpp
+  audio/hop_fanout_test.cpp
   audio/hop_meter_test.cpp
   audio/host_apis_test.cpp
   audio/input_pipeline_test.cpp
@@ -17,6 +18,7 @@ add_executable(takt4_tests
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
   engine/control_test.cpp
+  engine/live_tracker_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   io/npy_file_test.cpp
