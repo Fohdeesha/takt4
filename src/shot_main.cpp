@@ -16,9 +16,11 @@ void printUsage(std::ostream& out) {
     out << "takt4-shot " << takt4::buildInfo().version
         << " — render the main window to a BMP\n"
            "\n"
-           "  takt4-shot OUT.bmp [--size WxH]\n"
+           "  takt4-shot OUT.bmp [--size WxH] [--stopped]\n"
            "\n"
-           "  --size WxH      the window size to render, default 900x520\n"
+           "  --size WxH      the window size to render, default 900x640\n"
+           "  --stopped       draw the idle window — blank readouts and the manual\n"
+           "                  controls disabled — instead of a tracker running\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
@@ -30,8 +32,9 @@ void printUsage(std::ostream& out) {
 
 int main(int argc, char** argv) {
     std::filesystem::path out;
-    int width = 900;
-    int height = 520;
+    takt4::ui::ShotOptions options;
+    int width = options.width;
+    int height = options.height;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -39,7 +42,9 @@ int main(int argc, char** argv) {
             printUsage(std::cout);
             return 0;
         }
-        if (arg == "--size") {
+        if (arg == "--stopped") {
+            options.running = false;
+        } else if (arg == "--size") {
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --size needs WxH\n";
                 return 2;
@@ -74,8 +79,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    options.width = width;
+    options.height = height;
     try {
-        return takt4::ui::renderShot(out, width, height);
+        return takt4::ui::renderShot(out, options);
     } catch (const std::exception& e) {
         std::cerr << "takt4-shot: " << e.what() << '\n';
         return 1;

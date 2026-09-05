@@ -18,7 +18,7 @@
 // Nothing in this file assumes a meter of four. `beats-per-bar` comes from the particle
 // filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
 
-import { Button, CheckBox, ComboBox, Palette, Slider } from "std-widgets.slint";
+import { CheckBox, ComboBox, Palette, Slider } from "std-widgets.slint";
 
 /// One 50 Hz frame of the activation trace. The network's two probabilities, and
 /// whether the tracker actually called a beat on this frame — which is the difference
@@ -42,6 +42,77 @@ global Theme {
   out property <color> locked: #4ade80;
   out property <color> holding: #fbbf24;
   out property <color> trace: #3f596b;
+
+  // The pressable controls. Lighter than the panel they sit on, so a button reads as a
+  // button, and their labels are plain white rather than the body text's off-white —
+  // these are hit in a dark room, at a glance, while something else is going on.
+  out property <color> control: #2b313a;
+  out property <color> controlEdge: #4a525f;
+  out property <color> controlPrimary: #17567a;
+  out property <color> label: #ffffff;
+  // A disabled button keeps its shape: it sits between the panel and an active control
+  // rather than sinking into the background, because on a freshly opened window every
+  // one of these is disabled and a row of holes is not what the app should look like.
+  out property <color> controlOff: #21252b;
+}
+
+/// A button, built here rather than taken from std-widgets.
+///
+/// `Button` exposes `text`, `icon`, `primary`, `enabled` and `checkable` — and no
+/// `font-size` or `font-weight`. Its label therefore comes out at the widget set's own
+/// size in the widget set's own foreground colour, which on this dark panel is grey on
+/// grey and too small to read at a glance. These are the controls an operator hits in a
+/// booth, mid-set, while looking at something else, so the type is 17px, bold, and plain
+/// white. It also settles `÷2`: at the std size the dots of U+00F7 all but vanish and the
+/// glyph reads as `+`.
+///
+/// What is given up is the Fluent look and its focus ring. The pickers and sliders are
+/// still std widgets, so the window keeps that vocabulary everywhere it does not cost
+/// legibility.
+component Press inherits Rectangle {
+  in property <string> text;
+  in property <bool> enabled: true;
+  /// The one action in a row that should be reached for first.
+  in property <bool> primary;
+  callback clicked;
+
+  private property <color> face: root.primary ? Theme.controlPrimary : Theme.control;
+
+  min-height: 40px;
+  horizontal-stretch: 0;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: !root.enabled ? Theme.line
+    : root.primary ? Theme.accent
+    : touch.has-hover ? Theme.accent
+    : Theme.controlEdge;
+  background: !root.enabled ? Theme.controlOff
+    : touch.pressed ? root.face.darker(0.3)
+    : touch.has-hover ? root.face.brighter(0.25)
+    : root.face;
+
+  HorizontalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+
+    Text {
+      text: root.text;
+      // Plain white, not Theme.text: this is the one thing in the window that has to
+      // survive being glanced at rather than read.
+      color: root.enabled ? Theme.label : Theme.dim;
+      font-size: 17px;
+      font-weight: 700;
+      horizontal-alignment: center;
+      vertical-alignment: center;
+    }
+  }
+
+  touch := TouchArea {
+    enabled: root.enabled;
+    clicked => {
+      root.clicked();
+    }
+  }
 }
 
 /// A horizontal level bar with a label and a reading beside it.
@@ -263,11 +334,11 @@ export component MainWindow inherits Window {
           }
         }
 
-        run-button := Button {
-          text: root.running ? "Stop" : "Start";
+        run-button := Press {
+          text: root.running ? "STOP" : "START";
           primary: !root.running;
           enabled: root.devices.length > 0;
-          min-width: 96px;
+          min-width: 116px;
           clicked => {
             root.toggle-run();
           }
@@ -479,19 +550,19 @@ export component MainWindow inherits Window {
           alignment: start;
           vertical-stretch: 0;
 
-          Button {
+          Press {
             text: "÷2";
             enabled: root.running;
-            min-width: 60px;
+            min-width: 72px;
             clicked => {
               root.halve();
             }
           }
 
-          Button {
+          Press {
             text: "×2";
             enabled: root.running;
-            min-width: 60px;
+            min-width: 72px;
             clicked => {
               root.redouble();
             }
@@ -499,10 +570,10 @@ export component MainWindow inherits Window {
 
           // Counts the operator in: three taps before there is a tempo, and a press
           // that registered has to look different from one that did not.
-          Button {
+          Press {
             text: root.tap-count > 0 ? "TAP  " + root.tap-count + "/" + root.tap-needs : "TAP";
             enabled: root.running;
-            min-width: 104px;
+            min-width: 128px;
             clicked => {
               root.tap();
             }
@@ -513,11 +584,11 @@ export component MainWindow inherits Window {
           // §5.5: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable — the best
           // online downbeat tracker in the world scores 56% F1, and being two beats out
           // is worse than one tap." So it is the widest thing in the row.
-          Button {
+          Press {
             text: "DOWNBEAT";
             primary: root.running;
             enabled: root.running;
-            min-width: 176px;
+            min-width: 196px;
             clicked => {
               root.snap-downbeat();
             }

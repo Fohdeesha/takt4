@@ -12,14 +12,18 @@
 //
 // The readouts are filled by running the tracker over the committed synthetic excerpt, so
 // the picture shows numbers the engine actually produced rather than invented ones.
+// `--stopped` renders the other state worth looking at: the idle window, which is what the
+// app is the moment it opens and the only place the disabled controls can be seen.
 
 #include "core/audio/devices.hpp"
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/rates.hpp"
+#include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/tracking/tempo_tracker.hpp"
 #include "ui/app.hpp"
 #include "ui/headless.hpp"
 #include "ui/window_state.hpp"
@@ -203,11 +207,13 @@ void fillPickers(MainWindow& window) {
 
 } // namespace
 
-int renderShot(const std::filesystem::path& out, int width, int height) {
-    if (width < 200 || height < 200) {
+int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
+    if (options.width < 200 || options.height < 200) {
         std::cerr << "takt4-shot: the window is at least 200 x 200\n";
         return 2;
     }
+    const int width = options.width;
+    const int height = options.height;
     const auto w = static_cast<std::uint32_t>(width);
     const auto h = static_cast<std::uint32_t>(height);
 
@@ -215,17 +221,27 @@ int renderShot(const std::filesystem::path& out, int width, int height) {
 
     auto window = MainWindow::create();
     publishControlLimits(*window);
-    // The controls are drawn as they look with a tracker running, which is the state
-    // worth looking at: everything §5.5 calls manual is live only then.
     window->set_tap_needs(3);
     fillPickers(*window);
     auto traceModel =
         std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength));
     window->set_trace(traceModel);
-    fillFromSyntheticRun(*window, traceModel);
-    window->set_status(
-        slint::SharedString("In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
-                            "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
+    if (options.running) {
+        fillFromSyntheticRun(*window, traceModel);
+        window->set_status(slint::SharedString(
+            "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
+            "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
+    } else {
+        // What the app looks like the moment it opens: no tempo, an empty trace, and
+        // every one of §5.5's manual controls disabled because there is nothing yet for
+        // them to correct.
+        publishIdleReadouts(*window);
+        publishTempoOptions(*window, tracking::TempoTracker::Options{});
+        window->set_running(false);
+        window->set_status(slint::SharedString("takt4 " + buildInfo().version +
+                                               " — pick an input and press "
+                                               "Start."));
+    }
     window->set_status_is_error(false);
 
     // show() creates the adapter; the two dispatches give the scene its scale and size,
