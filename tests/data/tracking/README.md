@@ -20,7 +20,18 @@ The four columns are the filter's state, not just its output:
 | 3 | the beat interval the median sits in, in frames — 60 / (interval × 0.02) is the tempo |
 
 Columns 0 and 1 summarise both particle clouds, so the test fails on the first frame
-that diverges rather than only when a beat moves. The input is
+that diverges rather than only when a beat moves.
+
+**The published meter is deliberately not among them**, and a change to the downbeat stage
+should check this list before assuming it has broken the gate. `ParticleFilter::meterOf`
+reads the whole downbeat cloud's mass — with a memory and an incumbent's margin, neither of
+them upstream's — and feeds `beatsPerBar` only. `down_max` is untouched by it, which
+matters because `down_max` is what decides `isBeatState` and therefore whether a beat goes
+out as a downbeat: columns 1 and 2. So the meter has been reworked twice now, on
+2026-09-05, without this gate moving a bit, and `tools/pf_reference.py` has never needed to
+compute a meter at all. That separation is cheap to keep and expensive to re-derive.
+
+The input is
 `tests/data/model/generic/<name>.npy` columns 3 and 4 — the softmax probabilities for
 beat and downbeat that Phase 3 recorded — so a regression in the model fails the Phase 3
 test rather than muddying this one.

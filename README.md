@@ -57,7 +57,7 @@ sample counter), a generic OSC namespace on any number of targets, and MIDI beat
 at 24 PPQN.
 
 Measured on the 698-clip Ballroom set — 6.1 hours, scored with mir_eval at its 70 ms
-tolerance — the whole chain gets **0.894 beat and 0.858 downbeat F-measure**. Ballroom is
+tolerance — the whole chain gets **0.894 beat and 0.850 downbeat F-measure**. Ballroom is
 a set BeatNet+ was *trained* on, so that says the port reproduces what the model can do
 and nothing about how the model generalises; it is not comparable to BeatNet+'s published
 GTZAN figures. [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/) has the
