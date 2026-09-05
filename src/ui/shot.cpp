@@ -22,6 +22,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
+#include "core/output/midi_ports.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/app.hpp"
@@ -223,11 +224,29 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     publishControlLimits(*window);
     window->set_tap_needs(3);
     fillPickers(*window);
+
+    // The machine's real MIDI outputs, as the window offers them; the empty first entry
+    // is "none", exactly as WindowController builds it.
+    auto midiPorts = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    midiPorts->push_back(slint::SharedString(""));
+    for (const std::string& port : output::listMidiOutputPorts()) {
+        midiPorts->push_back(slint::SharedString(port));
+    }
+    window->set_midi_ports(midiPorts);
     auto traceModel =
         std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength));
     window->set_trace(traceModel);
     if (options.running) {
         fillFromSyntheticRun(*window, traceModel);
+        // §5.9's own example row, so the picture shows what a configured rig looks like
+        // rather than an empty one. There is no output thread behind a shot, so these are
+        // illustrative in the way the status line below already is; the beat count is the
+        // excerpt's real 21.
+        window->set_link_on(true);
+        window->set_link_peers(2);
+        window->set_osc_on(true);
+        window->set_osc_targets(slint::SharedString("192.168.1.40:7000"));
+        window->set_beats_sent(21);
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));

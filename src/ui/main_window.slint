@@ -18,7 +18,7 @@
 // Nothing in this file assumes a meter of four. `beats-per-bar` comes from the particle
 // filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
 
-import { CheckBox, ComboBox, Palette, Slider } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit, Palette, Slider } from "std-widgets.slint";
 
 /// One 50 Hz frame of the activation trace. The network's two probabilities, and
 /// whether the tracker actually called a beat on this frame — which is the difference
@@ -277,6 +277,19 @@ export component MainWindow inherits Window {
   in-out property <float> input-peak;
   in-out property <string> input-reading;
 
+  // --- §5.9's OUTPUTS row --------------------------------------------------------
+  // What is being sent, and what it is being sent to. `*-on` is what the operator
+  // asked for; `link-peers` and `beats-sent` are what actually happened, which is the
+  // difference between a tick box and a working rig.
+  in-out property <bool> link-on;
+  in-out property <int> link-peers;
+  in-out property <bool> osc-on;
+  in-out property <string> osc-targets;   // one host:port per line
+  in-out property <bool> midi-on;
+  in-out property <string> midi-port;
+  in-out property <[string]> midi-ports;
+  in-out property <int> beats-sent;
+
   in-out property <string> status;
   in-out property <bool> status-is-error;
 
@@ -294,6 +307,10 @@ export component MainWindow inherits Window {
   callback fold-min-changed(float);
   callback fold-max-changed(float);
   callback latency-changed(float);
+
+  callback link-toggled(bool);
+  callback osc-targets-edited(string);
+  callback midi-port-picked(string);
 
   VerticalLayout {
     padding: 0;
@@ -754,6 +771,113 @@ export component MainWindow inherits Window {
         reading: root.input-reading;
         // Peaking is the one thing an input meter must not be quiet about.
         fill: root.input-peak >= 0.99 ? Theme.holding : Theme.accent;
+      }
+    }
+
+    Rectangle {
+      height: 1px;
+      background: Theme.line;
+      vertical-stretch: 0;
+    }
+
+    // --- §5.9's OUTPUTS row ---------------------------------------------------------
+    // "Link ✓ · OSC 192.168.1.40:7000 ✓ · MIDI clock ✓", and settable rather than only
+    // shown: Phase 5's exit is a new user going from launch to synced output without a
+    // text editor or a restart, so this is where that happens.
+    //
+    // The tick and the reading are deliberately different things. A box says what the
+    // operator asked for; the peer count and the beat counter say what is actually
+    // happening, and an output that is on with nothing at the other end is exactly the
+    // failure somebody needs to see at a gig.
+    Rectangle {
+      background: Theme.panel;
+      vertical-stretch: 0;
+
+      HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 10px;
+
+        Text {
+          text: "outputs";
+          color: Theme.dim;
+          font-size: 12px;
+          width: 74px;
+          vertical-alignment: center;
+        }
+
+        CheckBox {
+          text: "Link";
+          checked <=> root.link-on;
+          width: 74px;
+          toggled => {
+            root.link-toggled(self.checked);
+          }
+        }
+
+        Text {
+          // Peers are the whole point of Link, and "on with nobody there" is the state
+          // worth being able to see.
+          text: !root.link-on ? ""
+            : root.link-peers == 0 ? "no peers"
+            : root.link-peers == 1 ? "1 peer"
+            : root.link-peers + " peers";
+          color: root.link-peers > 0 ? Theme.locked : Theme.dim;
+          font-size: 12px;
+          width: 72px;
+          vertical-alignment: center;
+        }
+
+        Text {
+          text: "OSC";
+          color: root.osc-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 32px;
+          vertical-alignment: center;
+        }
+
+        osc-field := LineEdit {
+          text <=> root.osc-targets;
+          placeholder-text: "host:port — Enter to apply";
+          font-size: 12px;
+          horizontal-stretch: 1;
+          // `accepted`, not `edited`: `edited` fires on every keystroke, and each one
+          // would tear the sockets down and build them again halfway through an address.
+          accepted(text) => {
+            root.osc-targets-edited(text);
+          }
+        }
+
+        Text {
+          text: "MIDI clock";
+          color: root.midi-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 72px;
+          vertical-alignment: center;
+        }
+
+        midi-picker := ComboBox {
+          model: root.midi-ports;
+          current-value <=> root.midi-port;
+          horizontal-stretch: 1;
+          selected => {
+            root.midi-port-picked(self.current-value);
+          }
+        }
+
+        Text {
+          // What has actually gone out. Nothing else on screen distinguishes a transport
+          // that is configured from one that is working.
+          text: root.beats-sent > 0 ? root.beats-sent + " beats sent" : "";
+          color: Theme.dim;
+          font-size: 12px;
+          font-family: "Consolas";
+          width: 104px;
+          horizontal-alignment: right;
+          vertical-alignment: center;
+        }
       }
     }
 

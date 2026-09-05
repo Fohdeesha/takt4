@@ -1,12 +1,13 @@
-#include "core/engine/live_tracker.hpp"
-
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/hop_meter.hpp"
+#include "core/audio/host_time.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/engine/live_tracker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -155,5 +156,67 @@ TEST_CASE("LiveTracker feeds the engine and the meter from one stream", "[audio]
     tracker.start(*device, ChannelSelection::single(channel));
     CHECK(tracker.running());
     CHECK(tracker.engine().framesTracked() < firstRun);
+    tracker.stop();
+}
+
+namespace {
+
+/// A host time source with no Link behind it: a straight line, and counters for what the
+/// tracker did with it. `audio::HostTimeSource` exists so that a test can be exactly this.
+class FakeHostTime final : public takt4::audio::HostTimeSource {
+public:
+    std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
+        stamps_.fetch_add(1, std::memory_order_relaxed);
+        return static_cast<std::int64_t>(sampleTime * 45.35);
+    }
+    void resetHostTimeFilter() noexcept override {
+        resets_.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::uint64_t stamps() const { return stamps_.load(std::memory_order_relaxed); }
+    std::uint64_t resets() const { return resets_.load(std::memory_order_relaxed); }
+
+private:
+    std::atomic<std::uint64_t> stamps_{0};
+    std::atomic<std::uint64_t> resets_{0};
+};
+
+} // namespace
+
+TEST_CASE("LiveTracker holds a host time source without installing it yet", "[audio]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    CHECK(tracker.hostTimeSource() == nullptr);
+
+    FakeHostTime clock;
+    tracker.setHostTimeSource(&clock);
+    CHECK(tracker.hostTimeSource() == &clock);
+    // Nothing is running, so nothing has asked it for anything.
+    CHECK(clock.stamps() == 0);
+    CHECK(clock.resets() == 0);
+}
+
+TEST_CASE("LiveTracker installs the host time source around a run", "[audio][hardware]") {
+    // HANDOFF §4.3: the stamp is taken on the audio thread, so the clock has to be in
+    // place before the stream is opened — which is why the tracker does it rather than
+    // leaving the ordering to a caller to remember. And a restarted stream counts samples
+    // from zero again, so a regression fitted to the last run has to be forgotten with it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    FakeHostTime clock;
+    tracker.setHostTimeSource(&clock);
+
+    tracker.start(*device, ChannelSelection::single(0));
+    CHECK(clock.resets() == 1); // forgotten before the stream, not after
+    std::this_thread::sleep_for(std::chrono::milliseconds{250});
+    tracker.stop();
+
+    INFO(clock.stamps() << " hops stamped");
+    CHECK(clock.stamps() > 0); // the audio thread really used it
+
+    // A second run forgets the first one's sample clock.
+    tracker.start(*device, ChannelSelection::single(0));
+    CHECK(clock.resets() == 2);
     tracker.stop();
 }

@@ -43,6 +43,13 @@ void LiveTracker::start(const audio::InputDevice& device,
     // driver that will not give up the interface (PortAudioError, HANDOFF R2).
     auto stream =
         std::make_unique<audio::InputStream>(session_, device, selection, fanout_, options_.stream);
+    // §4.3's stamp is taken on the audio thread, so the clock has to be in place before
+    // there is one. A restarted stream begins its sample counter again, and the filter's
+    // regression is fitted to the old one, so it is forgotten with the run it belonged to.
+    if (hostTime_ != nullptr) {
+        hostTime_->resetHostTimeFilter();
+    }
+    engine_->setHostTimeSource(hostTime_);
     // Before the stream, so the workers are draining by the time the first hop lands.
     engine_->start();
     try {

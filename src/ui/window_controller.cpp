@@ -8,12 +8,17 @@
 #include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
+#include "core/output/midi_ports.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <optional>
+#include <sstream>
 #include <tuple>
+#include <utility>
 
 namespace takt4::ui {
 namespace {
@@ -40,7 +45,16 @@ bool sameSettings(const Options& a, const Options& b) noexcept {
 WindowController::WindowController(engine::LiveTracker& tracker)
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
-          std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))) {
+          std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
+      // Nothing switched on: an app that has not been configured sends nothing, and every
+      // output is a box the operator ticks.
+      runner_(tracker.engine(), output::Transports::Config{}) {
+    // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
+    // stream is opened. Handing it to the tracker rather than to the engine is what makes
+    // that ordering `LiveTracker::start`'s business instead of this class's.
+    tracker_.setHostTimeSource(&runner_.hostTimeClock());
+    midiPorts_ = output::listMidiOutputPorts();
+
     window_->set_trace(traceModel_);
 
     window_->on_device_picked([this](int index) { pickDevice(index); });
@@ -56,10 +70,27 @@ WindowController::WindowController(engine::LiveTracker& tracker)
     window_->on_fold_max_changed([this](float bpm) { setFoldMax(static_cast<double>(bpm)); });
     window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
 
+    window_->on_link_toggled([this](bool on) { setLinkEnabled(on); });
+    window_->on_osc_targets_edited(
+        [this](const slint::SharedString& text) { setOscTargets(std::string(text)); });
+    window_->on_midi_port_picked(
+        [this](const slint::SharedString& name) { setMidiPort(std::string(name)); });
+
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
+
+    auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    // An empty first entry is "none", so turning MIDI clock off is a choice in the same
+    // list rather than a second control.
+    ports->push_back(shared(""));
+    for (const std::string& port : midiPorts_) {
+        ports->push_back(shared(port));
+    }
+    window_->set_midi_ports(ports);
+
     refreshDevices();
     publishStopped();
+    publishOutputs();
 
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
@@ -122,7 +153,10 @@ void WindowController::pickDevice(int index) {
 
 void WindowController::toggleRun() {
     if (tracker_.running()) {
+        // The tracker first: it tracks the hops still in flight on the way down, and those
+        // can call a last beat that the runner should still send.
         tracker_.stop();
+        runner_.stop();
         publishStopped();
         return;
     }
@@ -151,8 +185,69 @@ void WindowController::toggleRun() {
     std::fill(trace_.begin(), trace_.end(), TracePoint{});
     publishTrace();
     peak_ = 0.0f;
+    // After the tracker, so nothing is sent for a run that failed to open.
+    runner_.start();
     window_->set_running(true);
     publishOpenStream();
+}
+
+void WindowController::setLinkEnabled(bool on) {
+    runner_.post(output::OutputCommand::linkEnabled(on));
+    publishOutputs();
+}
+
+void WindowController::setOscTargets(const std::string& text) {
+    // One host:port per line or per comma — the window offers a single line, so a comma
+    // is how more than one fits in it. A part that will not parse is named on the status
+    // line and the rest are still applied: an operator halfway through typing an address
+    // must not lose the ones that already worked.
+    std::string separated = text;
+    std::replace(separated.begin(), separated.end(), ',', '\n');
+    std::vector<output::Transports::OscTarget> targets;
+    std::string bad;
+    std::istringstream lines(separated);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const std::size_t begin = line.find_first_not_of(" \t\r");
+        if (begin == std::string::npos) {
+            continue;
+        }
+        const std::size_t end = line.find_last_not_of(" \t\r");
+        const std::string trimmed = line.substr(begin, end - begin + 1);
+        const std::size_t colon = trimmed.rfind(':');
+        int port = 0;
+        if (colon != std::string::npos && colon + 1 < trimmed.size()) {
+            const std::string digits = trimmed.substr(colon + 1);
+            port = std::all_of(digits.begin(), digits.end(),
+                               [](unsigned char c) { return std::isdigit(c) != 0; })
+                       ? std::atoi(digits.c_str())
+                       : 0;
+        }
+        if (colon == std::string::npos || colon == 0 || port <= 0 || port > 65535) {
+            if (bad.empty()) {
+                bad = trimmed;
+            }
+            continue;
+        }
+        targets.emplace_back(trimmed.substr(0, colon), static_cast<std::uint16_t>(port));
+    }
+    runner_.post(output::OutputCommand::oscTargets(std::move(targets)));
+    if (!bad.empty()) {
+        setStatus("OSC: \"" + bad + "\" is not host:port, so it was left out.", true);
+    } else if (statusIsError_) {
+        setStatus("Pick an input and press Start.", false);
+    }
+    publishOutputs();
+}
+
+void WindowController::setMidiPort(const std::string& name) {
+    runner_.post(output::OutputCommand::midiClockPort(
+        name.empty() ? std::optional<std::string>{} : std::optional<std::string>{name}));
+    const std::string error = runner_.lastError();
+    if (!error.empty()) {
+        setStatus("MIDI clock: " + error, true);
+    }
+    publishOutputs();
 }
 
 double WindowController::nowSeconds() const {
@@ -244,6 +339,26 @@ void WindowController::publishTaps() {
     window_->set_tap_count(static_cast<int>(taps_.taps()));
 }
 
+void WindowController::publishOutputs() {
+    const output::Transports& transports = runner_.transports();
+    window_->set_link_on(transports.linkEnabled());
+    window_->set_link_peers(static_cast<int>(transports.link().numPeers()));
+
+    std::string osc;
+    for (const auto& [host, port] : transports.oscTargets()) {
+        if (!osc.empty()) {
+            osc += '\n';
+        }
+        osc += host + ":" + std::to_string(port);
+    }
+    window_->set_osc_targets(shared(osc));
+    window_->set_osc_on(!transports.oscTargets().empty());
+
+    window_->set_midi_port(shared(transports.midiClockPort().value_or(std::string{})));
+    window_->set_midi_on(transports.midiClock() != nullptr);
+    window_->set_beats_sent(static_cast<int>(transports.beats()));
+}
+
 void WindowController::publishStopped() {
     window_->set_running(false);
     // A set of taps does not span a stop, and the button must not go on counting.
@@ -322,17 +437,9 @@ void WindowController::tick() {
         publishTrace();
     }
 
-    // The beats are drained and dropped. This window says nothing a beat carries that the
-    // published state does not already have — but a ring nobody drains fills up, and the
-    // engine would rightly start counting beats lost.
-    //
-    // **This loop goes when the window gains an `output::OutputRunner`.** That ring is
-    // single-consumer by `rt::SpscRing`'s contract, and the runner is its consumer: two
-    // of them would each take half the beats, which is worse than either taking none.
-    // `takt4-cli track` already hands it over; this is the last place that has not.
-    engine::EngineBeat beat;
-    while (tracker_.engine().popBeat(beat)) {
-    }
+    // The beats are not drained here: `runner_` is the single consumer of that ring, and
+    // two of them would each take half of them. The frame ring above is a different ring
+    // with a different consumer, which is this.
 
     // A set of taps that has gone quiet is over: `TapTempo` starts a fresh set on the next
     // tap anyway, and until then the button should not claim to be counting one.
@@ -343,6 +450,9 @@ void WindowController::tick() {
 
     publishState();
     publishLevels();
+    // Peers come and go, and the beat counter is the only thing on screen that says a
+    // transport is really doing something.
+    publishOutputs();
 }
 
 void WindowController::publishTrace() {

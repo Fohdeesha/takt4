@@ -545,3 +545,109 @@ TEST_CASE("the controls drive a tracker that is really running", "[ui][hardware]
     CHECK_THAT(controller.window().get_fold_min(), WithinAbs(90.0, 1e-4));
     CHECK_THAT(controller.window().get_latency_ms(), WithinAbs(-30.0, 1e-4));
 }
+
+// ---------------------------------------------------------------------------------------
+// §5.9's outputs row. The window owns §4.2's output thread now, so these check the path
+// from a control to the transports — and that the window stopped draining the beat ring,
+// which is the runner's to consume.
+// ---------------------------------------------------------------------------------------
+
+TEST_CASE("the window comes up sending nothing", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    CHECK_FALSE(controller.outputs().transports().linkEnabled());
+    CHECK(controller.outputs().transports().osc().targetCount() == 0);
+    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    CHECK_FALSE(controller.window().get_link_on());
+    CHECK_FALSE(controller.window().get_osc_on());
+    CHECK_FALSE(controller.window().get_midi_on());
+
+    // The picker always offers "none" first, so switching MIDI off is a choice in the
+    // same list rather than a second control.
+    const auto ports = controller.window().get_midi_ports();
+    REQUIRE(ports);
+    REQUIRE(ports->row_count() == controller.midiPorts().size() + 1);
+    CHECK(std::string(*ports->row_data(0)).empty());
+}
+
+TEST_CASE("the Link tick reaches the transports and shows its peers", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.window().invoke_link_toggled(true);
+    CHECK(controller.outputs().transports().linkEnabled());
+    CHECK(controller.window().get_link_on());
+    // Switched on while stopped says what to do, not to do it now: nothing is in front of
+    // peers until the tracker runs.
+    CHECK_FALSE(controller.outputs().transports().link().enabled());
+    CHECK(controller.window().get_link_peers() == 0);
+
+    controller.window().invoke_link_toggled(false);
+    CHECK_FALSE(controller.outputs().transports().linkEnabled());
+}
+
+TEST_CASE("OSC targets are parsed, and a bad one does not lose the good ones", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:7000"));
+    CHECK(controller.outputs().transports().osc().targetCount() == 1);
+    CHECK(controller.window().get_osc_on());
+
+    // A single line holds more than one, separated by commas, because the window offers
+    // one line.
+    controller.window().invoke_osc_targets_edited(
+        slint::SharedString("127.0.0.1:7000, 127.0.0.1:7001"));
+    CHECK(controller.outputs().transports().osc().targetCount() == 2);
+
+    // Halfway through typing an address, the ones that already worked must survive.
+    controller.window().invoke_osc_targets_edited(
+        slint::SharedString("127.0.0.1:7000, 127.0.0.1:"));
+    CHECK(controller.outputs().transports().osc().targetCount() == 1);
+    CHECK(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("host:port") != std::string::npos);
+
+    // A port outside the range is not a port.
+    controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:99999"));
+    CHECK(controller.outputs().transports().osc().targetCount() == 0);
+
+    controller.window().invoke_osc_targets_edited(slint::SharedString(""));
+    CHECK(controller.outputs().transports().osc().targetCount() == 0);
+    CHECK_FALSE(controller.window().get_osc_on());
+}
+
+TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.window().invoke_midi_port_picked(slint::SharedString("takt4 test - no such port"));
+    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    CHECK(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
+    CHECK_FALSE(controller.window().get_midi_on());
+}
+
+TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware]") {
+    // `rt::SpscRing` allows one consumer. The window used to drain beats and throw them
+    // away; if it still did, it and the runner would take half each and the transports
+    // would send every other beat. Nothing dropped is what says exactly one is draining.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    REQUIRE(controller.outputs().running());
+
+    pumpTimers(std::chrono::milliseconds(400));
+    controller.toggleRun();
+
+    CHECK_FALSE(controller.outputs().running());
+    CHECK(tracker.engine().beatsDropped() == 0);
+    CHECK(controller.outputs().errors() == 0);
+    // Whatever the tracker called on silence, the transports were given all of it.
+    CHECK(controller.outputs().transports().beats() == tracker.engine().beatsCalled());
+}

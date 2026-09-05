@@ -27,6 +27,14 @@ public:
     /// source promises to call it from exactly one thread.
     virtual std::int64_t hostMicrosForSample(double sampleTime) noexcept = 0;
 
+    /// Forgets whatever was learned from the sample clock so far.
+    ///
+    /// A restarted stream counts from zero again, and a regression fitted to the previous
+    /// run maps that to a time long past — so whoever opens a stream calls this first.
+    /// `engine::LiveTracker::start` does. The default does nothing, for a source with no
+    /// state to forget.
+    virtual void resetHostTimeFilter() noexcept {}
+
 protected:
     HostTimeSource() = default;
     HostTimeSource(const HostTimeSource&) = default;

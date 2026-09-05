@@ -2,6 +2,7 @@
 
 #include "core/audio/devices.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/output/output_runner.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/window_state.hpp"
@@ -50,6 +51,10 @@ public:
 
     /// The tracker must outlive this. Builds the window, fills the pickers from the
     /// tracker's device list, and starts the redraw timer.
+    ///
+    /// It also builds §4.2's output thread and hands the tracker Link's clock, which is
+    /// why nothing outside has to know the ordering §4.3 needs: `LiveTracker::start`
+    /// installs the clock before it opens the stream.
     explicit WindowController(engine::LiveTracker& tracker);
 
     WindowController(const WindowController&) = delete;
@@ -101,6 +106,21 @@ public:
     /// Taps counted so far in the set being tapped in, for the button's own label.
     std::size_t taps() const noexcept { return taps_.taps(); }
 
+    /// §5.9's outputs row. Each posts on the output thread's queue and returns; the change
+    /// is applied before its next round, or immediately while it is stopped.
+    void setLinkEnabled(bool on);
+    /// One `host:port` per line, blank lines ignored. A line that is not `host:port` is
+    /// reported on the status line and the rest are still applied — an operator halfway
+    /// through typing an address must not lose the ones that already worked.
+    void setOscTargets(const std::string& text);
+    /// The MIDI output port to send 24 PPQN to, or empty for none.
+    void setMidiPort(const std::string& name);
+
+    /// What is being sent, for the row that draws it.
+    const output::OutputRunner& outputs() const noexcept { return runner_; }
+    /// Every MIDI output port on the machine, as offered in the picker.
+    const std::vector<std::string>& midiPorts() const noexcept { return midiPorts_; }
+
     const std::vector<audio::InputDevice>& devices() const noexcept { return devices_; }
     /// Index into `devices()`, or -1 when the machine has none.
     int deviceIndex() const noexcept { return device_; }
@@ -122,6 +142,7 @@ private:
     void publishState();
     void publishLevels();
     void publishTaps();
+    void publishOutputs();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
     void setStatus(const std::string& text, bool error);
@@ -130,6 +151,7 @@ private:
     double nowSeconds() const;
 
     engine::LiveTracker& tracker_;
+    std::vector<std::string> midiPorts_;
     slint::ComponentHandle<MainWindow> window_;
     slint::Timer timer_;
 
@@ -157,6 +179,15 @@ private:
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
+
+    /// §4.2's output thread, and the single consumer of the engine's beat ring — which is
+    /// why `tick()` no longer drains it.
+    ///
+    /// **Last, so that it is destroyed first.** Its destructor joins the thread, and that
+    /// has to happen before anything the thread could still be touching goes away. Nothing
+    /// it holds today reaches back into this class, but a beat observer is the obvious next
+    /// thing to give it, and by then the ordering would be a bug rather than a choice.
+    output::OutputRunner runner_;
 };
 
 } // namespace takt4::ui

@@ -50,7 +50,7 @@ public:
     /// **Audio thread.** HANDOFF §4.3's regression; see HostTimeSource.
     std::int64_t hostMicrosForSample(double sampleTime) noexcept override;
     /// Forgets the regression, for a stream that has been restarted.
-    void resetHostTimeFilter() noexcept;
+    void resetHostTimeFilter() noexcept override;
 
     /// Publishes the tracker's tempo, effective at `at`.
     void setTempo(double bpm, std::chrono::microseconds at);

@@ -62,6 +62,17 @@ public:
     LiveTracker(const LiveTracker&) = delete;
     LiveTracker& operator=(const LiveTracker&) = delete;
 
+    /// The clock that stamps each hop with the host time its audio arrived at (§4.3), or
+    /// null for none. Ableton Link is the one that exists; `output::OutputRunner` hands
+    /// its session over as `hostTimeClock()`.
+    ///
+    /// Set it once, on a tracker that is stopped, and leave it: `start()` installs it
+    /// before the stream is opened and `stop()` clears it afterwards, which is the
+    /// ordering §4.3 requires and the reason this is here rather than left to a caller
+    /// to remember. It must outlive every run it is set for.
+    void setHostTimeSource(audio::HostTimeSource* source) noexcept { hostTime_ = source; }
+    audio::HostTimeSource* hostTimeSource() const noexcept { return hostTime_; }
+
     /// Every input device PortAudio can see, freshly enumerated each call — a device list
     /// goes stale the moment somebody plugs something in. The indices in it are only
     /// meaningful while this object lives.
@@ -112,6 +123,8 @@ private:
     audio::HopMeter meter_;
     /// The tracker first: a late meter is a late meter, a late tracker is a dropout.
     audio::HopFanout fanout_;
+    /// Not owned, and null unless a caller supplied one. See `setHostTimeSource`.
+    audio::HostTimeSource* hostTime_ = nullptr;
     /// Declared after everything it points at, so it is destroyed before them.
     std::unique_ptr<audio::InputStream> stream_;
     std::optional<Running> current_;
