@@ -18,9 +18,9 @@ add_library(takt4_core STATIC
   audio/hop_meter.cpp
   audio/hop_meter.hpp
   audio/hop_processor.hpp
-  audio/host_time.hpp
   audio/host_apis.cpp
   audio/host_apis.hpp
+  audio/host_time.hpp
   audio/input_pipeline.cpp
   audio/input_pipeline.hpp
   audio/input_stream.cpp
@@ -32,17 +32,20 @@ add_library(takt4_core STATIC
   audio/resampler.hpp
   audio/stream_setup.cpp
   audio/stream_setup.hpp
+  control/osc_control.cpp
+  control/osc_control.hpp
+  control/osc_parse.cpp
+  control/osc_parse.hpp
+  control/osc_receiver.cpp
+  control/osc_receiver.hpp
+  dsp/real_fft.cpp
+  dsp/real_fft.hpp
   engine/beat_engine.cpp
   engine/beat_engine.hpp
   engine/control.cpp
   engine/control.hpp
   engine/live_tracker.cpp
   engine/live_tracker.hpp
-  control/osc_parse.cpp
-  control/osc_parse.hpp
-  dsp/real_fft.cpp
-  dsp/real_fft.hpp
-  net/udp.hpp
   features/dimensions.hpp
   features/feature_extractor.cpp
   features/feature_extractor.hpp
@@ -60,6 +63,7 @@ add_library(takt4_core STATIC
   model/dimensions.hpp
   model/weights.cpp
   model/weights.hpp
+  net/udp.hpp
   output/link_session.cpp
   output/link_session.hpp
   output/midi_clock.cpp
@@ -78,10 +82,10 @@ add_library(takt4_core STATIC
   output/transports.hpp
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
-  settings/settings.cpp
-  settings/settings.hpp
   rt/published.hpp
   rt/spsc_ring.hpp
+  settings/settings.cpp
+  settings/settings.hpp
   tracking/particle_filter.cpp
   tracking/particle_filter.hpp
   tracking/random.hpp

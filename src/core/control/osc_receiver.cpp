@@ -1,0 +1,98 @@
+#include "core/control/osc_receiver.hpp"
+
+#include "core/net/udp.hpp"
+
+#include <array>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+
+namespace takt4::control {
+namespace {
+
+using net::closeSocket;
+using net::describe;
+using net::kInvalidSocket;
+using net::lastSocketError;
+using net::Socket;
+using net::WinsockGuard;
+
+} // namespace
+
+struct OscReceiver::Impl {
+    WinsockGuard winsock;
+    Socket socket = kInvalidSocket;
+    std::array<std::byte, kMaxDatagram> buffer{};
+
+    ~Impl() {
+        if (socket != kInvalidSocket) {
+            closeSocket(socket);
+        }
+    }
+};
+
+OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
+    auto impl = std::make_unique<Impl>();
+
+    // IPv4 only, deliberately. A dual-stack socket would need per-platform handling of
+    // IPV6_V6ONLY, and every control surface §5.7 names speaks IPv4.
+    impl->socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (impl->socket == kInvalidSocket) {
+        throw std::runtime_error("OSC control: cannot open a socket (" +
+                                 std::to_string(lastSocketError()) + ")");
+    }
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = ::htons(port);
+    address.sin_addr.s_addr = ::htonl(localOnly ? INADDR_LOOPBACK : INADDR_ANY);
+    if (::bind(impl->socket, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
+        const int error = lastSocketError();
+        throw std::runtime_error("OSC control: cannot listen on port " + std::to_string(port) +
+                                 " (" + std::to_string(error) +
+                                 "); something else is probably using it");
+    }
+
+    impl_ = std::move(impl);
+}
+
+OscReceiver::~OscReceiver() = default;
+
+std::span<const std::byte> OscReceiver::receive(std::chrono::milliseconds timeout) noexcept {
+    if (!impl_ || impl_->socket == kInvalidSocket) {
+        return {};
+    }
+
+    // select rather than SO_RCVTIMEO: the timeout means the same thing on every platform
+    // here, and a socket closed under a waiting thread wakes it either way.
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(impl_->socket, &readable);
+    timeval wait{};
+    wait.tv_sec = static_cast<decltype(wait.tv_sec)>(timeout.count() / 1000);
+    wait.tv_usec = static_cast<decltype(wait.tv_usec)>((timeout.count() % 1000) * 1000);
+
+#if defined(_WIN32)
+    const int ready = ::select(0, &readable, nullptr, nullptr, &wait);
+#else
+    const int ready = ::select(impl_->socket + 1, &readable, nullptr, nullptr, &wait);
+#endif
+    if (ready <= 0) {
+        return {};
+    }
+
+    sockaddr_storage from{};
+    socklen_t fromLength = sizeof from;
+    const auto received = ::recvfrom(impl_->socket, reinterpret_cast<char*>(impl_->buffer.data()),
+                                     static_cast<int>(impl_->buffer.size()), 0,
+                                     reinterpret_cast<sockaddr*>(&from), &fromLength);
+    if (received <= 0) {
+        return {};
+    }
+
+    lastSender_ = describe(reinterpret_cast<const sockaddr*>(&from), fromLength);
+    ++datagrams_;
+    return std::span<const std::byte>(impl_->buffer.data(), static_cast<std::size_t>(received));
+}
+
+} // namespace takt4::control
