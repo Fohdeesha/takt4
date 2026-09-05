@@ -32,6 +32,12 @@ add_library(takt4_core STATIC
   audio/resampler.hpp
   audio/stream_setup.cpp
   audio/stream_setup.hpp
+  control/control_action.cpp
+  control/control_action.hpp
+  control/midi_binding.cpp
+  control/midi_binding.hpp
+  control/midi_control.cpp
+  control/midi_control.hpp
   control/osc_control.cpp
   control/osc_control.hpp
   control/osc_parse.cpp

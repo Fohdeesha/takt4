@@ -31,6 +31,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.machine.hostApiName = "ASIO";
     in.machine.channel = 6;
     in.machine.midiClockPort = "Microsoft GS Wavetable Synth 0";
+    in.machine.midiControlPort = "MOTU Pro Audio Midi In 1";
+    in.machine.midiBindings = {"note 36 ch 10 -> tap", "cc 64 ch 1 -> lock"};
     in.preset.tempo.minBpm = 88.0;
     in.preset.tempo.maxBpm = 176.0;
     in.preset.tempo.octaveFold = false;
@@ -45,6 +47,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.machine.hostApiName == in.machine.hostApiName);
     CHECK(out.machine.channel == 6);
     CHECK(out.machine.midiClockPort == in.machine.midiClockPort);
+    CHECK(out.machine.midiControlPort == in.machine.midiControlPort);
+    CHECK(out.machine.midiBindings == in.machine.midiBindings);
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(88.0, 1e-9));
     CHECK_THAT(out.preset.tempo.maxBpm, WithinAbs(176.0, 1e-9));
     CHECK_FALSE(out.preset.tempo.octaveFold);
@@ -69,6 +73,11 @@ TEST_CASE("the two layers stay apart in the file", "[settings]") {
     // Nothing device-shaped inside the portable half.
     CHECK(text.find("deviceName", preset) == std::string::npos);
     CHECK(text.find("midiClockPort", preset) == std::string::npos);
+    // Nor the control surface: "note 36 is tap" is a fact about the box of buttons on
+    // this desk, and carrying it to a machine with a different controller is worse than
+    // carrying nothing.
+    CHECK(text.find("midiControlPort", preset) == std::string::npos);
+    CHECK(text.find("midiBindings", preset) == std::string::npos);
     CHECK(text.find("version") != std::string::npos);
 }
 

@@ -138,6 +138,11 @@ std::string toJson(const Settings& settings) {
         targets.push_back(json{{"host", host}, {"port", port}});
     }
 
+    json bindings = json::array();
+    for (const std::string& binding : settings.machine.midiBindings) {
+        bindings.push_back(binding);
+    }
+
     const json document{
         {"version", kFormatVersion},
         {"machine",
@@ -146,6 +151,8 @@ std::string toJson(const Settings& settings) {
              {"hostApiName", settings.machine.hostApiName},
              {"channel", settings.machine.channel},
              {"midiClockPort", settings.machine.midiClockPort},
+             {"midiControlPort", settings.machine.midiControlPort},
+             {"midiBindings", bindings},
          }},
         {"preset",
          json{
@@ -171,8 +178,22 @@ Settings fromJson(std::string_view text) {
         read(machine, "hostApiName", settings.machine.hostApiName);
         read(machine, "channel", settings.machine.channel);
         read(machine, "midiClockPort", settings.machine.midiClockPort);
+        read(machine, "midiControlPort", settings.machine.midiControlPort);
         if (settings.machine.channel < 0) {
             settings.machine.channel = 0;
+        }
+        if (machine.is_object() && machine.contains("midiBindings") &&
+            machine.at("midiBindings").is_array()) {
+            for (const json& binding : machine.at("midiBindings")) {
+                // Kept as the text it was written as. Whether it *parses* is
+                // `control::parseMidiBinding`'s question and is asked where the table is
+                // built — settings does not depend on control, and a line this cannot
+                // read is better preserved than silently dropped from the file on the
+                // next save.
+                if (binding.is_string()) {
+                    settings.machine.midiBindings.push_back(binding.get<std::string>());
+                }
+            }
         }
     }
 

@@ -15,6 +15,8 @@ add_executable(takt4_tests
   audio/input_pipeline_test.cpp
   audio/input_stream_test.cpp
   audio/resampler_test.cpp
+  control/midi_binding_test.cpp
+  control/midi_control_test.cpp
   control/osc_control_test.cpp
   control/osc_parse_test.cpp
   dsp/real_fft_test.cpp
