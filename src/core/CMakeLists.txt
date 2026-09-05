@@ -86,6 +86,8 @@ add_library(takt4_core STATIC
   output/osc_sender.hpp
   output/output_runner.cpp
   output/output_runner.hpp
+  output/rule_sink.cpp
+  output/rule_sink.hpp
   output/transports.cpp
   output/transports.hpp
   rt/alloc_guard.cpp

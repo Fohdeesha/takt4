@@ -56,9 +56,26 @@ void OscPublisher::clearTargets() noexcept {
     lastMeter_ = 0;
 }
 
-void OscPublisher::sendInt(std::string_view address, std::int32_t value) {
+void OscPublisher::sendAddress(std::string_view address) {
     OscMessage message(address);
-    message.addInt(value);
+    sendPacket(message);
+}
+
+void OscPublisher::sendAddress(std::string_view address, std::int32_t value) {
+    sendInt(address, value);
+}
+
+void OscPublisher::sendAddress(std::string_view address, float value) {
+    sendFloat(address, value);
+}
+
+void OscPublisher::sendAddress(std::string_view address, std::string_view value) {
+    OscMessage message(address);
+    message.addString(value);
+    sendPacket(message);
+}
+
+void OscPublisher::sendPacket(OscMessage& message) {
     const auto packet = message.packet();
     for (const auto& target : targets_) {
         if (target->send(packet)) {
@@ -69,17 +86,16 @@ void OscPublisher::sendInt(std::string_view address, std::int32_t value) {
     }
 }
 
+void OscPublisher::sendInt(std::string_view address, std::int32_t value) {
+    OscMessage message(address);
+    message.addInt(value);
+    sendPacket(message);
+}
+
 void OscPublisher::sendFloat(std::string_view address, float value) {
     OscMessage message(address);
     message.addFloat(value);
-    const auto packet = message.packet();
-    for (const auto& target : targets_) {
-        if (target->send(packet)) {
-            ++sent_;
-        } else {
-            ++failed_;
-        }
-    }
+    sendPacket(message);
 }
 
 void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,

@@ -37,6 +37,7 @@ add_executable(takt4_tests
   output/midi_ports_test.cpp
   output/osc_test.cpp
   output/output_runner_test.cpp
+  output/rule_sink_test.cpp
   output/transports_test.cpp
   rt/alloc_guard_test.cpp
   settings/settings_test.cpp
@@ -53,6 +54,7 @@ add_executable(takt4_tests
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
+  support/loopback_receiver.hpp
   support/temp_dir.hpp
 )
 

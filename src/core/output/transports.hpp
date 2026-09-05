@@ -60,9 +60,11 @@ public:
     /// Always there, switched on or not.
     LinkSession& link() const noexcept { return *link_; }
     OscPublisher& osc() const noexcept { return *osc_; }
-    /// Null unless a MIDI port is open.
+    /// Null unless a MIDI port is open. Non-const like `link()` and `osc()` above, and for
+    /// the same reason: these belong to whichever thread owns the transports, and Phase 6's
+    /// rules send notes and CCs down this one.
     MidiClock* midiClock() const noexcept { return midi_.get(); }
-    const MidiOutput* midiPort() const noexcept { return midiPort_.get(); }
+    MidiOutput* midiPort() const noexcept { return midiPort_.get(); }
 
     /// Whether anything is actually being sent. With nothing on, `publish` and `advance`
     /// still count beats and cost nothing else, which is what makes an app that has not
