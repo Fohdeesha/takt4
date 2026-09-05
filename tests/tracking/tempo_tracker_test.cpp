@@ -1,8 +1,7 @@
-#include "core/tracking/tempo_tracker.hpp"
-
 #include "core/io/npy_file.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/tracking/tempo_tracker.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -127,6 +126,153 @@ TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same 
         settle(tracker, index, 31, 0.8, 24);
         CHECK(tracker.state().locked);
     }
+}
+
+TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
+    TempoTracker::Options options;
+    options.lockAfter = 25;
+    options.unlockAfter = 75;
+    options.confidenceThreshold = 0.15;
+    options.confidenceSmoothing = 5.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    settle(tracker, index, 23, 0.8, 25);
+    REQUIRE(tracker.state().locked);
+    REQUIRE_FALSE(tracker.state().pinned);
+
+    SECTION("it survives the disagreement that would otherwise unlock it") {
+        tracker.setLockPinned(true);
+        CHECK(tracker.state().pinned);
+        CHECK(tracker.lockPinned());
+
+        settle(tracker, index, 31, 0.8, options.unlockAfter);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        // Not merely slower to give up: four times the window and it still has not.
+        settle(tracker, index, 31, 0.8, options.unlockAfter * 3);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+
+        // The same frames, the same count, on a tracker nobody pinned — without this the
+        // check above would pass just as well if the disagreement never arrived.
+        TempoTracker loose(kFramePeriod, options);
+        std::uint64_t at = 0;
+        settle(loose, at, 23, 0.8, 25);
+        REQUIRE(loose.state().locked);
+        settle(loose, at, 31, 0.8, options.unlockAfter);
+        CHECK_FALSE(loose.state().locked);
+        CHECK(loose.state().bpm == Approx(bpmOf(31)));
+    }
+
+    SECTION("releasing it hands the tempo straight back") {
+        tracker.setLockPinned(true);
+        settle(tracker, index, 31, 0.8, 200);
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(23)));
+
+        tracker.setLockPinned(false);
+        CHECK_FALSE(tracker.state().pinned);
+        CHECK_FALSE(tracker.state().locked);
+
+        // From what is playing now rather than from what was pinned, and on the very next
+        // frame: an operator letting go is saying "look again", not "look again slowly".
+        settle(tracker, index, 31, 0.8, 1);
+        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
+        settle(tracker, index, 31, 0.8, options.lockAfter - 1);
+        CHECK(tracker.state().locked);
+    }
+
+    SECTION("one release is enough however many times it was pinned") {
+        tracker.setLockPinned(true);
+        tracker.setLockPinned(true); // a control surface may resend its state at will
+        settle(tracker, index, 31, 0.8, 200);
+        REQUIRE(tracker.state().locked);
+
+        tracker.setLockPinned(false);
+        CHECK_FALSE(tracker.state().locked);
+        CHECK_FALSE(tracker.lockPinned());
+    }
+
+    SECTION("a reset lets go of it") {
+        tracker.setLockPinned(true);
+        tracker.reset();
+        CHECK_FALSE(tracker.lockPinned());
+        CHECK_FALSE(tracker.state().pinned);
+        CHECK_FALSE(tracker.state().locked);
+    }
+
+    SECTION("pinning locks to whatever is showing") {
+        TempoTracker mid(kFramePeriod, options);
+        std::uint64_t at = 0;
+        settle(mid, at, 31, 0.8, 5); // nowhere near lockAfter
+        REQUIRE_FALSE(mid.state().locked);
+        const double showing = mid.state().bpm;
+        REQUIRE(showing == Approx(bpmOf(31)));
+
+        mid.setLockPinned(true);
+        CHECK(mid.state().locked);
+        CHECK(mid.state().bpm == Approx(showing));
+    }
+
+    SECTION("a pin set before anything is tracked does not invent a lock") {
+        TempoTracker fresh(kFramePeriod, options);
+        fresh.setLockPinned(true);
+        CHECK(fresh.state().pinned);
+        CHECK_FALSE(fresh.state().locked); // there is no flag to hold up yet
+        CHECK(fresh.state().bpm == 0.0);
+
+        // Acquisition is untouched by the pin: it takes exactly as long as it always does.
+        std::uint64_t at = 0;
+        settle(fresh, at, 23, 0.8, options.lockAfter - 1);
+        CHECK_FALSE(fresh.state().locked);
+        settle(fresh, at, 23, 0.8, 1);
+        CHECK(fresh.state().locked);
+
+        // And now it holds, which is what remembering it was for.
+        settle(fresh, at, 31, 0.8, options.unlockAfter * 2);
+        CHECK(fresh.state().locked);
+        CHECK(fresh.state().bpm == Approx(bpmOf(23)));
+    }
+}
+
+TEST_CASE("a pinned lock goes on refining the tempo from the beats", "[tracking][tempo]") {
+    // What the pin is actually holding on to. Locked, the published tempo comes from the
+    // spacing of the beats and resolves to a fraction of a BPM; unlocked, it falls back to
+    // the state space's whole-frame intervals, which here offer 130.43 and 125.00 and
+    // nothing between. A pin that kept the word lit and quietly stopped the refinement
+    // would have held on to the wrong half of it.
+    TempoTracker::Options options;
+    options.lockAfter = 5;
+    options.unlockAfter = 75;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+
+    constexpr double kTrue = 128.0; // what the drum machine plays; no whole frame holds it
+    const double period = 60.0 / (kTrue * kFramePeriod);
+    std::uint64_t at = 0;
+    const auto feedBeats = [&](int from, int count) {
+        for (int beat = from; beat < from + count; ++beat) {
+            const auto on = static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
+            while (at < on) {
+                (void)tracker.process(frameAt(at++, 23, 0.9));
+            }
+            TrackedFrame frame = frameAt(at++, 23, 0.9);
+            frame.emitted = TrackedFrame::Emitted::Beat;
+            (void)tracker.process(frame);
+        }
+    };
+
+    feedBeats(0, 40);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().refined);
+    REQUIRE(tracker.state().bpm == Approx(kTrue).margin(1.0));
+
+    tracker.setLockPinned(true);
+    feedBeats(40, 20);
+    CHECK(tracker.state().refined);
+    CHECK(tracker.state().bpm == Approx(kTrue).margin(1.0));
+    // Which is to say it is still the refined number and not the cloud's own, 2.4 BPM out.
+    CHECK(tracker.state().bpm != Approx(bpmOf(23)));
 }
 
 TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][tempo]") {
