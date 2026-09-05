@@ -28,9 +28,10 @@ public:
     /// parser rather than reassembled.
     static constexpr std::size_t kMaxDatagram = 2048;
 
-    /// Binds `port`. Throws `std::runtime_error` when the port is already taken, which is
-    /// the failure an operator has to be told about: a control surface that silently does
-    /// nothing is worse than one that will not start.
+    /// Binds `port`, or any free one when it is 0 — `port()` then says which. Throws
+    /// `std::runtime_error` when the port is already taken, which is the failure an
+    /// operator has to be told about: a control surface that silently does nothing is
+    /// worse than one that will not start.
     OscReceiver(std::uint16_t port, bool localOnly);
     ~OscReceiver();
 
