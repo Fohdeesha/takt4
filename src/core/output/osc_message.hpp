@@ -8,6 +8,16 @@
 
 namespace takt4::output {
 
+/// What OSC 1.0 allows in an address pattern: it begins with '/', and holds no space, no
+/// control character, nothing outside printable ASCII, and none of the reserved characters
+/// `# * , ? [ ] { }`.
+///
+/// Out here rather than inside `OscMessage` because Phase 6's rules build addresses from
+/// templates and have to know whether what they built can be sent — and "what OSC allows"
+/// must have exactly one statement in this codebase, or the two will drift and a rule will
+/// happily assemble an address the encoder then refuses.
+bool addressIsLegal(std::string_view address) noexcept;
+
 /// One OSC 1.0 message, built into a fixed buffer.
 ///
 /// HANDOFF §6 lists the OSC encoder as ours rather than a dependency, and this is why it

@@ -105,6 +105,10 @@ add_library(takt4_core STATIC
   trigger/context.hpp
   trigger/generator.cpp
   trigger/generator.hpp
+  trigger/rule.cpp
+  trigger/rule.hpp
+  trigger/trigger_engine.cpp
+  trigger/trigger_engine.hpp
   trigger/value.cpp
   trigger/value.hpp
 )
