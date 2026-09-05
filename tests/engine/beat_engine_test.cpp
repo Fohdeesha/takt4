@@ -59,6 +59,70 @@ std::unique_ptr<BeatEngine> makeEngine(BeatEngine::Options options = {}) {
 
 } // namespace
 
+TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
+    // The user's report, 2026-09-05: *"the time signature detected constantly changes and
+    // jumps almost every single beat/bar on any song I test, so it's impossible to set the
+    // downbeat consistently"*. Measured over these eighteen real-music excerpts it was
+    // **166 changes**, up to 1.8 a second — the meter was the bar length of whichever
+    // single downbeat particle happened to be commonest that frame, so a cloud split
+    // between three and four to the bar crossed over whenever one particle moved.
+    //
+    // `ParticleFilter::meterOf` now reads the cloud's mass and remembers it. This holds
+    // that to a number, because "steadier" is not a claim a comment can keep: without it
+    // the next change to the downbeat stage could quietly put the flicker back and every
+    // other test would still pass.
+    static constexpr const char* kExcerpts[] = {"big-brown-beaver.wav",
+                                                "complicated-geometry.wav",
+                                                "good-times.wav",
+                                                "hell-of-a-ride.wav",
+                                                "in-yer-face.wav",
+                                                "jack-yourself.wav",
+                                                "keman-rhythm.wav",
+                                                "model-2029.wav",
+                                                "outside-plume.wav",
+                                                "pirates.wav",
+                                                "rale.wav",
+                                                "synthetic.wav",
+                                                "the-galaxist.wav",
+                                                "trigger-finger.wav",
+                                                "true-believer.wav",
+                                                "vic-acid.wav",
+                                                "winter-now.wav",
+                                                "your-sweet-boom.wav"};
+
+    std::size_t total = 0;
+    for (const char* name : kExcerpts) {
+        auto engine = makeEngine();
+        const std::vector<float> samples = excerpt(name);
+        const std::size_t hops = samples.size() / kHopSize;
+        std::size_t frames = 0;
+        std::size_t changes = 0;
+        std::uint32_t last = 0;
+        EngineFrame frame;
+        for (std::size_t hop = 0; hop < hops; ++hop) {
+            engine->processHop(samples.data() + hop * kHopSize, hop);
+            (void)engine->step();
+            while (engine->popFrame(frame)) {
+                ++frames;
+                if (frames > 1 && frame.state.beatsPerBar != last) {
+                    ++changes;
+                }
+                last = frame.state.beatsPerBar;
+            }
+        }
+        INFO(name << ": " << changes << " changes over " << frames << " frames, settled on "
+                  << last);
+        // No single excerpt may go back to flickering, however good the total looks.
+        CHECK(changes <= 12);
+        total += changes;
+    }
+
+    // 47 as measured; the ceiling leaves room for a platform's floating-point to land a
+    // tie differently without leaving room for the old behaviour, which was 166.
+    INFO("total meter changes across " << std::size(kExcerpts) << " excerpts: " << total);
+    CHECK(total <= 70);
+}
+
 TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
     // §5.5's non-negotiable control, through the whole chain rather than through synthetic
     // frames: real activations, the real particle filter, the real meter it reports.

@@ -25,6 +25,31 @@ constexpr std::size_t kInjectPhases = 4;     ///< ...starting at a random one of
 constexpr double kGatherSeconds = 0.07;      ///< how near the beat the cloud has to be
 constexpr double kMinimumBeatFraction = 0.4; ///< of a beat period, between emissions
 
+/// **Not upstream's, and not part of any gate** — see `meterOf`.
+///
+/// How much of the meter evidence survives each time the downbeat stage runs, which is
+/// about once a beat. 0.95 averages over roughly twenty beats.
+///
+/// Chosen by measuring both things it trades off, over the eighteen excerpts in
+/// `tests/data/features` and the 698 Ballroom clips:
+///
+/// | memory | meter changes | downbeat F-measure |
+/// |---|---|---|
+/// | mode, as upstream reads it | 166 | 0.8575 |
+/// | mass, no memory | 167 | 0.8579 |
+/// | 0.8 | 71 | 0.8504 |
+/// | 0.9 | 57 | 0.8519 |
+/// | **0.95** | **47** | **0.8535** |
+/// | 0.98 | 41 | 0.8531 |
+///
+/// Accuracy plateaus around 0.853 while steadiness keeps improving, so the choice past
+/// 0.9 is not about the F-measure. It is about the one cost Ballroom cannot show: every
+/// clip in it holds one meter throughout, so nothing there is worse for a memory that
+/// takes longer to *follow a genuine change*. 0.95 is about ten seconds at 120 BPM, which
+/// an operator changing tracks will wait through; 0.98 is twenty-five, which they will
+/// not, and it buys six fewer changes and no accuracy.
+constexpr double kMeterMemory = 0.95;
+
 /// How many particles an injection can add, over every phase it might start at.
 constexpr std::size_t injectionSize(std::size_t intervals, std::size_t stride) {
     return (intervals + stride - 1) / stride;
@@ -60,6 +85,7 @@ ParticleFilter::ParticleFilter(const StateSpaceModel& model, Options options)
     sorted_.resize(working);
     cumulative_.resize(working);
     counts_.resize(std::max(beat.numStates(), down.numStates()));
+    meterScores_.assign(down.numIntervals(), 0.0);
     dropped_.reserve(maxInjection());
 
     // Only the beat states' weights change from frame to frame; the rest sit at the
@@ -95,7 +121,9 @@ void ParticleFilter::reset() noexcept {
     }
     std::sort(downParticles_.begin(), downParticles_.end());
 
+    std::fill(meterScores_.begin(), meterScores_.end(), 0.0);
     downMax_ = mode(downParticles_, model_->downbeat().numStates());
+    meterNow_ = meterOf(downParticles_);
     counter_ = 0;
     lastEmitTime_ = 0.0;
     lastEmitted_ = TrackedFrame::Emitted::None;
@@ -223,6 +251,62 @@ std::uint32_t ParticleFilter::mode(const std::vector<std::uint32_t>& particles,
     return at;
 }
 
+std::uint32_t ParticleFilter::meterOf(const std::vector<std::uint32_t>& particles) noexcept {
+    const StateSpace& down = model_->downbeat();
+
+    // The meter the *whole cloud* is on, rather than the meter of the single commonest
+    // particle.
+    //
+    // `downMax_` is one state, and the downbeat space holds a state per (position in bar,
+    // meter) pair. When the cloud is genuinely split — a passage that could be three or
+    // four to the bar, which is most of a bar's worth of every phrase — the mode sits in
+    // whichever hypothesis is ahead by a single particle, and crosses back the moment one
+    // particle moves. Measured over the eighteen excerpts in `tests/data/features`, the
+    // meter read off it changed up to **1.8 times a second**: a bar indicator nobody can
+    // read, and a downbeat snap nobody can aim, because the rotation it sets up is
+    // computed against a meter that has already moved.
+    //
+    // Summing the mass on each meter answers the question actually being asked — "how many
+    // beats to the bar does the cloud believe?" — and 250 particles' worth of evidence
+    // does not cross over because one of them moved.
+    //
+    // **This deliberately does not touch `downMax_`.** That one decides `isBeatState`, and
+    // so decides whether a beat is emitted as a downbeat; it is column 1 of the Phase 4
+    // parity gate and the emit decision is column 2. Both stay exactly as they were, which
+    // is why that gate still passes bit for bit. Only the meter — which the gate does not
+    // carry — is derived differently.
+    // Mass alone is a better estimate but not a steadier one: a particle redraws its meter
+    // from `meterTransitions` whenever it wraps, so the cloud genuinely migrates every
+    // beat and the argmax still crosses over about every other one. So the mass is
+    // *remembered* — each meter's evidence decays by `kMeterMemory` and this beat's is
+    // added, which averages over roughly five beats.
+    //
+    // The decay goes here, on the evidence, and not downstream on the answer. Smoothing
+    // the published meter in `TempoTracker` was tried first and measurably lost downbeat
+    // F-measure (0.8575 -> 0.8340 at a two-second hold, 0.8143 at half a second), because
+    // the meter and the filter's own downbeat *calls* come from this one cloud: delaying
+    // one desynchronises it from the other, and a lagged meter is worse than a jumpy one.
+    // Averaging the evidence keeps them the same estimate.
+    for (double& score : meterScores_) {
+        score *= kMeterMemory;
+    }
+    for (const std::uint32_t particle : particles) {
+        meterScores_[down.intervalOf(particle)] += 1.0;
+    }
+
+    // The first interval holding the largest score, as `mode` above breaks its ties: an
+    // arbitrary but fixed rule, so the filter stays deterministic.
+    double best = -1.0;
+    std::size_t at = 0;
+    for (std::size_t interval = 0; interval < meterScores_.size(); ++interval) {
+        if (meterScores_[interval] > best) {
+            best = meterScores_[interval];
+            at = interval;
+        }
+    }
+    return down.intervals()[at];
+}
+
 TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivation) noexcept {
     const StateSpace& beat = model_->beat();
     const StateSpace& down = model_->downbeat();
@@ -292,6 +376,11 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
             dropAtRandom(downParticles_, injected);
         }
         downMax_ = mode(downParticles_, model_->downbeat().numStates());
+        // Beside `downMax_`, and for the same reason it lives here: both read the downbeat
+        // cloud, and the cloud only moves on the frames this block runs — about one in
+        // twenty-three. Decaying the meter evidence out here rather than once per frame is
+        // what makes `kMeterMemory` mean "about five beats" instead of a tenth of a second.
+        meterNow_ = meterOf(downParticles_);
 
         if (down.isBeatState(downMax_) && lastEmitted_ != TrackedFrame::Emitted::Downbeat &&
             downProbability > kEmitThreshold) {
@@ -327,7 +416,7 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
     }
 
     frame.downMax = downMax_;
-    frame.beatsPerBar = down.intervals()[down.intervalOf(downMax_)];
+    frame.beatsPerBar = meterNow_;
     ++counter_;
     return frame;
 }

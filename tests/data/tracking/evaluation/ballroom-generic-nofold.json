@@ -11,52 +11,52 @@
   "octave_fold": "off",
   "per_group": {
     "ChaChaCha": {
-      "Downbeat F-measure": 0.8648903284677503,
+      "Downbeat F-measure": 0.8510540476749479,
       "F-measure": 0.879314544826054,
       "files": 111
     },
     "Jive": {
-      "Downbeat F-measure": 0.8943861752233916,
+      "Downbeat F-measure": 0.8889911245649028,
       "F-measure": 0.9006354230261896,
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.8629980056886049,
+      "Downbeat F-measure": 0.863944958643862,
       "F-measure": 0.900076741251733,
       "files": 82
     },
     "Rumba-American": {
-      "Downbeat F-measure": 0.9081905671967784,
+      "Downbeat F-measure": 0.8943496436822355,
       "F-measure": 0.9353204252712738,
       "files": 7
     },
     "Rumba-International": {
-      "Downbeat F-measure": 0.8260170381032186,
+      "Downbeat F-measure": 0.8213798114630306,
       "F-measure": 0.8977759695620909,
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.7217248516746262,
+      "Downbeat F-measure": 0.7236975531759486,
       "F-measure": 0.8364203739646208,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.7098310985540087,
+      "Downbeat F-measure": 0.7071614747188004,
       "F-measure": 0.7963872080795893,
       "files": 86
     },
     "Tango": {
-      "Downbeat F-measure": 0.9481403907506555,
+      "Downbeat F-measure": 0.9427959557859142,
       "F-measure": 0.9611485321535822,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9421933324625759,
+      "Downbeat F-measure": 0.9402624521059959,
       "F-measure": 0.9608429919928321,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.8810636842061043,
+      "Downbeat F-measure": 0.8819157175482562,
       "F-measure": 0.9024326776212659,
       "files": 110
     }
@@ -96,8 +96,8 @@
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.8574930521108253,
-      "median": 0.9039938556067588
+      "mean": 0.8535426944593719,
+      "median": 0.9
     },
     "F-measure": {
       "files": 698,
