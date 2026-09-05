@@ -18,6 +18,22 @@ inline constexpr std::size_t kTraceLength = 200;
 /// The bottom of the input meter. Quieter than this is not a level anyone is setting.
 inline constexpr float kMeterFloorDb = -60.0f;
 
+/// How far the octave-fold sliders reach, and the least the two of them may be apart.
+///
+/// Wider than the state space's own 54.5-214.3 BPM on purpose: the window is what a
+/// tempo is folded *into*, not what the filter can track, so a house set watched at
+/// half time is a window of 60-90 over material the filter is following at 140.
+/// `foldInto` returns the tempo unfolded when the window is inverted — a fold that
+/// silently stops working — so the two never cross, here or in the markup.
+inline constexpr double kFoldFloorBpm = 40.0;
+inline constexpr double kFoldCeilingBpm = 220.0;
+inline constexpr double kFoldLeastSpanBpm = 5.0;
+
+/// §5.5's latency offset, in milliseconds either side of zero. Beyond half a beat the
+/// control stops meaning anything — it is the next beat — and half a beat at 120 BPM is
+/// 250 ms, so that is the end of the slider.
+inline constexpr double kLatencyLimitMs = 250.0;
+
 /// Turning engine values into window properties, in one place.
 ///
 /// The live window and `takt4-shot` both fill the same markup, and a property added to
@@ -34,6 +50,11 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state);
 /// §5.5's settings. Read these from `BeatEngine::tempoOptions()` every time and never
 /// from a copy: a tap moves the octave-fold window (§7 deviation 8).
 void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options);
+
+/// How far the settings above can be dragged, from the constants the caller also clamps
+/// against — so a slider cannot offer a value the controller would refuse. Once, at
+/// startup; nothing moves them afterwards.
+void publishControlLimits(MainWindow& window);
 
 /// Everything the readouts say while nothing is running, so a stopped window does not
 /// leave the last set's tempo sitting there looking live.

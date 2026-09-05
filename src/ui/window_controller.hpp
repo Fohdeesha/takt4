@@ -2,6 +2,8 @@
 
 #include "core/audio/devices.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/tracking/tap_tempo.hpp"
+#include "core/tracking/tempo_tracker.hpp"
 #include "ui/window_state.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -10,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +42,12 @@ public:
     /// clipping is still on screen when the operator looks up.
     static constexpr float kPeakDecay = 0.88f;
 
+    /// Redraws a posted settings change is given to appear on the engine before the
+    /// window goes back to showing what the engine actually has. See `postOptions`.
+    /// Three redraws is about a tenth of a second, where the engine needs about two
+    /// milliseconds — so this is a backstop, not a timing assumption.
+    static constexpr int kSettleRedraws = 3;
+
     /// The tracker must outlive this. Builds the window, fills the pickers from the
     /// tracker's device list, and starts the redraw timer.
     explicit WindowController(engine::LiveTracker& tracker);
@@ -63,6 +72,35 @@ public:
     void pickChannel(int index) { channel_ = index; }
     void toggleRun();
 
+    /// §5.5's manual controls. Each one posts on the engine's control queue and returns;
+    /// the inference thread applies it before the next frame it tracks, so none of them
+    /// blocks a redraw and none of them touches the tracker from this thread.
+    void halve();
+    void redouble();
+    void snapDownbeat();
+
+    /// One tap. The no-argument form reads this object's steady clock; the other takes
+    /// the time, which is how `tracking::TapTempo` is built to be driven and what lets a
+    /// test tap out a tempo without spending it in real time.
+    void tap();
+    void tap(double seconds);
+
+    /// §5.5's settings. Clamped to what the sliders offer, then posted whole — a slider
+    /// sends an absolute value, so two arriving in one round cannot lose a step the way
+    /// a relative nudge can.
+    void setFoldEnabled(bool on);
+    void setFoldMin(double bpm);
+    void setFoldMax(double bpm);
+    void setLatencyMs(double milliseconds);
+
+    /// The settings as the engine has them — or as it is about to, when a change posted
+    /// moments ago has not been applied yet. This is what the window is showing, and it
+    /// is what an edit starts from, so that two quick drags do not undo each other.
+    tracking::TempoTracker::Options settings() const;
+
+    /// Taps counted so far in the set being tapped in, for the button's own label.
+    std::size_t taps() const noexcept { return taps_.taps(); }
+
     const std::vector<audio::InputDevice>& devices() const noexcept { return devices_; }
     /// Index into `devices()`, or -1 when the machine has none.
     int deviceIndex() const noexcept { return device_; }
@@ -83,7 +121,13 @@ private:
     void publishTrace();
     void publishState();
     void publishLevels();
+    void publishTaps();
+    /// Sends a whole `Options` and remembers it until the engine is seen to have it.
+    void postOptions(const tracking::TempoTracker::Options& options);
     void setStatus(const std::string& text, bool error);
+    /// Seconds since this controller was built, on a steady clock. Only differences are
+    /// used, which is all `tracking::TapTempo` asks of it.
+    double nowSeconds() const;
 
     engine::LiveTracker& tracker_;
     slint::ComponentHandle<MainWindow> window_;
@@ -92,6 +136,20 @@ private:
     std::vector<audio::InputDevice> devices_;
     int device_ = -1;
     int channel_ = 0;
+
+    tracking::TapTempo taps_;
+    /// When the last tap landed, so a set that has gone quiet stops claiming to be
+    /// counting. `TapTempo` only notices its own timeout on the *next* tap.
+    double lastTapSeconds_ = 0.0;
+    const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+
+    /// The settings last posted, until the engine is seen to have them or `kSettleRedraws`
+    /// have passed. While one is in flight the window shows it rather than what the engine
+    /// still has: a redraw landing in the couple of milliseconds before the inference
+    /// thread applies a change would otherwise snap the slider back out from under the
+    /// operator's finger.
+    std::optional<tracking::TempoTracker::Options> posted_;
+    int settling_ = 0;
 
     /// The trace as a plain buffer, oldest first, mirrored into the model each tick.
     std::vector<TracePoint> trace_;

@@ -1,17 +1,18 @@
-#include "ui/window_controller.hpp"
-
 #include "core/audio/devices.hpp"
+#include "core/audio/rates.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/io/wav_file.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
-
-#include <slint-platform.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <slint-platform.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -24,6 +25,7 @@ using Catch::Matchers::WithinAbs;
 using takt4::audio::InputDevice;
 using takt4::engine::LiveTracker;
 using takt4::tracking::TempoState;
+using Options = takt4::tracking::TempoTracker::Options;
 using takt4::ui::WindowController;
 
 namespace {
@@ -31,6 +33,57 @@ namespace {
 const std::filesystem::path kWeights = std::filesystem::path(TAKT4_WEIGHTS_DIR) / "generic.bin";
 const std::filesystem::path kStateSpace =
     std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin";
+
+/// Feeds the committed synthetic excerpt into a tracker's engine on this thread, keeping
+/// its place between calls so a test can track for a while, press something, and carry on
+/// from where it left off.
+///
+/// No audio device and no worker threads: `BeatEngine::step()` is the offline half of the
+/// same code path the inference thread takes, so what the window sees here is what it
+/// would see live — deterministically, and on a machine with nothing plugged in.
+/// `takt4-cli track tests/data/features/synthetic.wav` prints the same run.
+class SyntheticRun {
+public:
+    explicit SyntheticRun(LiveTracker& tracker) : tracker_(tracker) {}
+
+    /// Feeds hops until `enough` says to stop. False if the audio ran out first.
+    template <typename Predicate>
+    bool until(Predicate enough) {
+        while (!enough()) {
+            if (hop_ >= hops()) {
+                return false;
+            }
+            tracker_.engine().processHop(samples().data() + hop_ * takt4::audio::kHopSize, hop_);
+            ++hop_;
+            (void)tracker_.engine().step();
+        }
+        return true;
+    }
+
+    /// Tracks until the tempo locks, which this excerpt does in about three seconds.
+    bool untilLocked() {
+        return until([this] { return tracker_.engine().state().locked; });
+    }
+
+    /// Applies whatever the window has just posted, without feeding any more audio — so a
+    /// command's effect is seen on its own, with nothing tracked over the top of it. Only
+    /// valid while the engine is stopped, which it is: nothing here opens a device.
+    void applyPosted() { (void)tracker_.engine().step(); }
+
+private:
+    static const std::vector<float>& samples() {
+        static const std::vector<float> loaded = [] {
+            const takt4::io::WavData audio = takt4::io::readWavFile(
+                std::filesystem::path(TAKT4_TEST_DATA_DIR) / "features" / "synthetic.wav");
+            return audio.samples;
+        }();
+        return loaded;
+    }
+    static std::size_t hops() { return samples().size() / takt4::audio::kHopSize; }
+
+    LiveTracker& tracker_;
+    std::size_t hop_ = 0;
+};
 
 /// The same ranking the window itself uses, so a test picks what the window picked.
 std::optional<InputDevice> bestInputDevice(const LiveTracker& tracker) {
@@ -296,4 +349,199 @@ TEST_CASE("the trace scrolls while the tracker is running", "[ui][hardware]") {
     if (frames < takt4::ui::kTraceLength) {
         CHECK(trace->row_data(0)->beat == 0.0f);
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// §5.5's manual controls. Every one of these drives the window's own callback and then
+// checks the *tracker*, so what is under test is the whole path from a press to the engine
+// — not that a handler was called. What each command then means is covered by
+// tests/engine and tests/tracking; these are about the wiring, and about the settings
+// round trip the window adds on top of it.
+// ---------------------------------------------------------------------------------------
+
+TEST_CASE("halving and doubling move the published tempo by an octave", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+
+    // The excerpt tracks at about 128, inside the default 70-140 window, so folding leaves
+    // it alone and an octave shift is exactly a halving of what the cloud reports.
+    const double raw = tracker.engine().state().rawBpm;
+    const Options fold = tracker.engine().tempoOptions();
+    REQUIRE(raw >= fold.minBpm);
+    REQUIRE(raw < fold.maxBpm);
+
+    controller.window().invoke_halve();
+    run.applyPosted();
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw / 2.0, 1e-6));
+
+    controller.window().invoke_redouble();
+    run.applyPosted();
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw, 1e-6));
+}
+
+TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+
+    // The times are passed rather than read from a clock, which is how tracking::TapTempo
+    // is built to be driven — so three taps half a second apart cost no wall-clock time
+    // and mean exactly 120 BPM.
+    REQUIRE(controller.taps() == 0);
+    controller.tap(0.0);
+    controller.tap(0.5);
+    CHECK(controller.window().get_tap_count() == 2);       // counting the operator in
+    CHECK(tracker.engine().tempoOptions().minBpm == 70.0); // nothing sent before three
+    controller.tap(1.0);
+    run.applyPosted();
+
+    // §7's locked decision: a tap *seeds*. The window moves onto an octave centred on the
+    // tapped tempo — 120/sqrt(2) to 120*sqrt(2) — and the tracker keeps tracking.
+    const Options options = tracker.engine().tempoOptions();
+    CHECK(options.octaveFold);
+    CHECK_THAT(options.minBpm, WithinAbs(84.853, 0.05));
+    CHECK_THAT(options.maxBpm, WithinAbs(169.706, 0.05));
+
+    // And the button reaches all of that: this is the callback the markup is bound to.
+    controller.window().invoke_tap();
+    CHECK(controller.taps() > 0);
+}
+
+TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+
+    // Far enough in that the filter has settled on a bar of its own to disagree with.
+    REQUIRE(run.until([&tracker] { return tracker.engine().state().bars >= 2; }));
+    takt4::engine::EngineBeat beat;
+    while (tracker.engine().popBeat(beat)) {
+    }
+
+    controller.window().invoke_snap_downbeat();
+
+    // The next beat the tracker calls is the one the snap landed on. What that then does
+    // to the bar afterwards is tests/engine/beat_engine_test.cpp's business.
+    std::optional<takt4::engine::EngineBeat> next;
+    REQUIRE(run.until([&] {
+        while (tracker.engine().popBeat(beat)) {
+            if (!next) {
+                next = beat;
+            }
+        }
+        return next.has_value();
+    }));
+    REQUIRE(next);
+    CHECK(next->event.snapped);
+    CHECK(next->event.downbeat);
+    CHECK(next->event.beatInBar == 1);
+}
+
+TEST_CASE("the settings sliders send whole options, clamped to what they offer", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+
+    controller.window().invoke_latency_changed(-20.0f);
+    run.applyPosted();
+    CHECK_THAT(tracker.engine().tempoOptions().latencyOffsetSeconds, WithinAbs(-0.020, 1e-9));
+
+    // Past the end of its own slider — which the markup cannot produce, but a test can and
+    // §5.7's inbound OSC will be able to.
+    controller.window().invoke_latency_changed(-9999.0f);
+    run.applyPosted();
+    CHECK_THAT(tracker.engine().tempoOptions().latencyOffsetSeconds,
+               WithinAbs(-takt4::ui::kLatencyLimitMs / 1000.0, 1e-9));
+
+    controller.window().invoke_fold_on_changed(false);
+    run.applyPosted();
+    CHECK_FALSE(tracker.engine().tempoOptions().octaveFold);
+    controller.window().invoke_fold_on_changed(true);
+    run.applyPosted();
+    CHECK(tracker.engine().tempoOptions().octaveFold);
+
+    // The two ends cannot cross. `foldInto` returns the tempo unfolded when the window is
+    // inverted, so an inverted window would look like the fold quietly not working.
+    controller.window().invoke_fold_min_changed(300.0f);
+    controller.window().invoke_fold_max_changed(10.0f);
+    run.applyPosted();
+    const Options options = tracker.engine().tempoOptions();
+    INFO("fold window " << options.minBpm << " to " << options.maxBpm);
+    CHECK(options.minBpm >= takt4::ui::kFoldFloorBpm);
+    CHECK(options.maxBpm <= takt4::ui::kFoldCeilingBpm);
+    CHECK(options.maxBpm - options.minBpm >= takt4::ui::kFoldLeastSpanBpm);
+}
+
+TEST_CASE("two settings changes in a row do not undo each other", "[ui]") {
+    // The engine applies a posted command on its own thread, which has not run yet here —
+    // exactly as it would not have two milliseconds after a drag. An edit that started
+    // from `tempoOptions()` alone would read the fold window from before the first change
+    // and send it back, silently losing it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(tracker.engine().tempoOptions().minBpm == 70.0);
+    REQUIRE(tracker.engine().tempoOptions().maxBpm == 140.0);
+
+    controller.window().invoke_fold_min_changed(90.0f);
+    controller.window().invoke_fold_max_changed(180.0f);
+    run.applyPosted();
+
+    const Options options = tracker.engine().tempoOptions();
+    CHECK_THAT(options.minBpm, WithinAbs(90.0, 1e-6));
+    CHECK_THAT(options.maxBpm, WithinAbs(180.0, 1e-6));
+}
+
+TEST_CASE("a setting shows on the window before the engine has taken it", "[ui]") {
+    // The other half of the same problem: the redraw timer reads the engine back 30 times
+    // a second, and a change that has been sent but not applied must not be snapped out
+    // from under the operator's finger.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.window().invoke_fold_min_changed(90.0f);
+    controller.window().invoke_latency_changed(-30.0f);
+
+    // Nothing has drained the queue, so the engine still has the old settings...
+    CHECK(tracker.engine().tempoOptions().minBpm == 70.0);
+    CHECK(tracker.engine().tempoOptions().latencyOffsetSeconds == 0.0);
+    // ...and the window shows what was sent, which is what the operator did.
+    CHECK_THAT(controller.window().get_fold_min(), WithinAbs(90.0, 1e-4));
+    CHECK_THAT(controller.window().get_latency_ms(), WithinAbs(-30.0, 1e-4));
+    CHECK_THAT(controller.settings().minBpm, WithinAbs(90.0, 1e-6));
+}
+
+TEST_CASE("the controls drive a tracker that is really running", "[ui][hardware]") {
+    // The same wiring against the live path — an open device, the engine's own inference
+    // thread applying the commands, and the redraw timer reading them back — so that
+    // nothing in the offline tests above is passing only because one thread did it all.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+
+    controller.window().invoke_latency_changed(-30.0f);
+    controller.window().invoke_fold_min_changed(90.0f);
+    controller.window().invoke_snap_downbeat();
+    controller.window().invoke_halve();
+
+    // Long enough for the inference thread to have applied all four and for several
+    // redraws to have read them back.
+    pumpTimers(std::chrono::milliseconds(250));
+    controller.toggleRun();
+
+    const Options options = tracker.engine().tempoOptions();
+    CHECK_THAT(options.latencyOffsetSeconds, WithinAbs(-0.030, 1e-9));
+    CHECK_THAT(options.minBpm, WithinAbs(90.0, 1e-6));
+    CHECK(tracker.engine().commandsDropped() == 0);
+
+    // The redraws left the window agreeing with the engine rather than fighting it.
+    CHECK_THAT(controller.window().get_fold_min(), WithinAbs(90.0, 1e-4));
+    CHECK_THAT(controller.window().get_latency_ms(), WithinAbs(-30.0, 1e-4));
 }

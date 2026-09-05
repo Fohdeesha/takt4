@@ -7,16 +7,32 @@
 #include "core/audio/rates.hpp"
 #include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/engine/control.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
+#include <optional>
 #include <tuple>
 
 namespace takt4::ui {
 namespace {
 
+using Options = tracking::TempoTracker::Options;
+
 slint::SharedString shared(const std::string& text) {
     return slint::SharedString(text);
+}
+
+/// Whether the engine has taken the settings the window sent it.
+///
+/// Only the four fields the window can change. Comparing the rest would leave a control
+/// frozen over a difference this window did not cause and cannot fix — and exact equality
+/// is the right test for all four, because what comes back is the value that was posted,
+/// stored and read back, never a number arrived at by arithmetic.
+bool sameSettings(const Options& a, const Options& b) noexcept {
+    return a.octaveFold == b.octaveFold && a.minBpm == b.minBpm && a.maxBpm == b.maxBpm &&
+           a.latencyOffsetSeconds == b.latencyOffsetSeconds;
 }
 
 } // namespace
@@ -31,6 +47,17 @@ WindowController::WindowController(engine::LiveTracker& tracker)
     window_->on_channel_picked([this](int index) { pickChannel(index); });
     window_->on_toggle_run([this] { toggleRun(); });
 
+    window_->on_halve([this] { halve(); });
+    window_->on_redouble([this] { redouble(); });
+    window_->on_tap([this] { tap(); });
+    window_->on_snap_downbeat([this] { snapDownbeat(); });
+    window_->on_fold_on_changed([this](bool on) { setFoldEnabled(on); });
+    window_->on_fold_min_changed([this](float bpm) { setFoldMin(static_cast<double>(bpm)); });
+    window_->on_fold_max_changed([this](float bpm) { setFoldMax(static_cast<double>(bpm)); });
+    window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
+
+    publishControlLimits(*window_);
+    window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
     refreshDevices();
     publishStopped();
 
@@ -128,8 +155,100 @@ void WindowController::toggleRun() {
     publishOpenStream();
 }
 
+double WindowController::nowSeconds() const {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+}
+
+void WindowController::halve() {
+    (void)tracker_.engine().post(engine::Command::halve());
+}
+
+void WindowController::redouble() {
+    (void)tracker_.engine().post(engine::Command::redouble());
+}
+
+void WindowController::snapDownbeat() {
+    (void)tracker_.engine().post(engine::Command::snapDownbeat());
+}
+
+void WindowController::tap() {
+    tap(nowSeconds());
+}
+
+void WindowController::tap(double seconds) {
+    const std::optional<double> tapped = taps_.tap(seconds);
+    lastTapSeconds_ = seconds;
+    if (tapped) {
+        // A seed, not an override: the fold window moves onto the tapped octave and the
+        // tracker keeps tracking (§7's locked decisions). It moves `minBpm`/`maxBpm` under
+        // this window, which is why nothing here holds a copy of them — and why a settings
+        // change in flight is dropped, since the tap has just superseded it.
+        (void)tracker_.engine().post(engine::Command::seedTempo(*tapped));
+        posted_.reset();
+    }
+    publishTaps();
+}
+
+void WindowController::setFoldEnabled(bool on) {
+    Options options = settings();
+    options.octaveFold = on;
+    postOptions(options);
+}
+
+void WindowController::setFoldMin(double bpm) {
+    Options options = settings();
+    // Clamped against the other end rather than against the constant alone, so the two
+    // cannot cross however the value arrived — a slider is bounded by its own markup, but
+    // this is also the way in for a test and, later, for an inbound OSC message (§5.7).
+    options.minBpm =
+        std::clamp(bpm, kFoldFloorBpm, std::max(kFoldFloorBpm, options.maxBpm - kFoldLeastSpanBpm));
+    postOptions(options);
+}
+
+void WindowController::setFoldMax(double bpm) {
+    Options options = settings();
+    options.maxBpm = std::clamp(bpm, std::min(kFoldCeilingBpm, options.minBpm + kFoldLeastSpanBpm),
+                                kFoldCeilingBpm);
+    postOptions(options);
+}
+
+void WindowController::setLatencyMs(double milliseconds) {
+    Options options = settings();
+    options.latencyOffsetSeconds =
+        std::clamp(milliseconds, -kLatencyLimitMs, kLatencyLimitMs) / 1000.0;
+    postOptions(options);
+}
+
+tracking::TempoTracker::Options WindowController::settings() const {
+    // §7 deviation 8 says to edit from what the engine has and never from a copy kept
+    // since startup, because a tap moves the fold window underneath one. `posted_` is not
+    // that copy: it is a change made moments ago and not yet applied, it is cleared the
+    // moment the engine is seen to have it or a tap supersedes it, and editing from it is
+    // what stops two quick drags from undoing each other.
+    return posted_ ? *posted_ : tracker_.engine().tempoOptions();
+}
+
+void WindowController::postOptions(const Options& options) {
+    if (!tracker_.engine().post(engine::Command::setTempoOptions(options))) {
+        // The queue is full, which takes 3200 posts a second. Nothing was sent, so
+        // nothing is in flight and the window goes back to telling the truth.
+        posted_.reset();
+        return;
+    }
+    posted_ = options;
+    settling_ = 0;
+    publishTempoOptions(*window_, options);
+}
+
+void WindowController::publishTaps() {
+    window_->set_tap_count(static_cast<int>(taps_.taps()));
+}
+
 void WindowController::publishStopped() {
     window_->set_running(false);
+    // A set of taps does not span a stop, and the button must not go on counting.
+    taps_.reset();
+    publishTaps();
     publishIdleReadouts(*window_);
     publishOptions();
     if (!devices_.empty() && !statusIsError_) {
@@ -155,7 +274,28 @@ void WindowController::publishOpenStream() {
 }
 
 void WindowController::publishOptions() {
-    publishTempoOptions(*window_, tracker_.engine().tempoOptions());
+    const Options live = tracker_.engine().tempoOptions();
+    if (posted_) {
+        if (!sameSettings(live, *posted_)) {
+            // A change is in flight. Leave the controls showing it: the inference thread
+            // applies a posted command within about two milliseconds, but a redraw landing
+            // inside that window would read the old value back and snap the slider out
+            // from under the operator's finger.
+            //
+            // The deadline only runs while the engine does, because only then is anything
+            // draining the queue. A change made to a stopped tracker waits there until the
+            // next start — `BeatEngine::start` applies it before its first frame — so
+            // showing it rather than counting it out is the window telling the truth.
+            if (!tracker_.running() || ++settling_ <= kSettleRedraws) {
+                return;
+            }
+        }
+        // Either the engine has it, or it never took it — a `SetTempoOptions` superseded
+        // by a tap, say. Both end the same way: the window stops showing what it sent and
+        // goes back to showing what the tracker has.
+        posted_.reset();
+    }
+    publishTempoOptions(*window_, live);
 }
 
 void WindowController::setStatus(const std::string& text, bool error) {
@@ -189,6 +329,13 @@ void WindowController::tick() {
     // (§8 item 2).
     engine::EngineBeat beat;
     while (tracker_.engine().popBeat(beat)) {
+    }
+
+    // A set of taps that has gone quiet is over: `TapTempo` starts a fresh set on the next
+    // tap anyway, and until then the button should not claim to be counting one.
+    if (taps_.taps() > 0 && nowSeconds() - lastTapSeconds_ > taps_.options().timeoutSeconds) {
+        taps_.reset();
+        publishTaps();
     }
 
     publishState();
