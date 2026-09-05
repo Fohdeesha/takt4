@@ -1,5 +1,7 @@
 #include "core/output/osc_sender.hpp"
 
+#include "core/net/udp.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -11,89 +13,15 @@
 #include <string_view>
 #include <utility>
 
-#if defined(_WIN32)
-#include <winsock2.h>
-// ws2tcpip.h must follow winsock2.h.
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <cerrno>
-#endif
-
 namespace takt4::output {
-
 namespace {
 
-#if defined(_WIN32)
-using Socket = SOCKET;
-constexpr Socket kInvalidSocket = INVALID_SOCKET;
-
-void closeSocket(Socket socket) noexcept {
-    ::closesocket(socket);
-}
-
-/// Winsock has to be started before any socket call and stopped after the last one.
-/// Every sender holds one of these, so the library is up exactly while one exists.
-class WinsockGuard {
-public:
-    WinsockGuard() {
-        if (count_.fetch_add(1, std::memory_order_acq_rel) == 0) {
-            WSADATA data{};
-            const int error = ::WSAStartup(MAKEWORD(2, 2), &data);
-            if (error != 0) {
-                count_.fetch_sub(1, std::memory_order_acq_rel);
-                throw std::runtime_error("WSAStartup failed with " + std::to_string(error));
-            }
-        }
-    }
-    ~WinsockGuard() {
-        if (count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            ::WSACleanup();
-        }
-    }
-    WinsockGuard(const WinsockGuard&) : WinsockGuard() {}
-    WinsockGuard& operator=(const WinsockGuard&) = delete;
-
-private:
-    static std::atomic<int> count_;
-};
-
-std::atomic<int> WinsockGuard::count_{0};
-
-int lastSocketError() noexcept {
-    return ::WSAGetLastError();
-}
-#else
-using Socket = int;
-constexpr Socket kInvalidSocket = -1;
-
-void closeSocket(Socket socket) noexcept {
-    ::close(socket);
-}
-
-struct WinsockGuard {};
-
-int lastSocketError() noexcept {
-    return errno;
-}
-#endif
-
-std::string describe(const sockaddr* address, socklen_t length) {
-    char host[NI_MAXHOST] = {};
-    char service[NI_MAXSERV] = {};
-    if (::getnameinfo(address, length, host, sizeof host, service, sizeof service,
-                      NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
-        return "?";
-    }
-    return std::string(host) + ":" + service;
-}
+using takt4::net::closeSocket;
+using takt4::net::describe;
+using takt4::net::kInvalidSocket;
+using takt4::net::lastSocketError;
+using takt4::net::Socket;
+using takt4::net::WinsockGuard;
 
 } // namespace
 
