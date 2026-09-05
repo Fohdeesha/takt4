@@ -188,6 +188,7 @@ private:
     void publishTaps();
     void publishOutputs();
     void publishControl();
+    void publishSnap();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
     void setStatus(const std::string& text, bool error);
@@ -231,6 +232,12 @@ private:
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
+
+    /// The tracker's beat count when a downbeat snap was posted, while one is still in
+    /// flight. §5.5's snap lands on the *next* beat called, so the count moving is what
+    /// says it has arrived — and until then the DOWNBEAT button stays lit, because a
+    /// control that does nothing visible for the best part of a second reads as broken.
+    std::optional<std::uint64_t> snapAwaitingBeat_;
 
     /// §5.7's control input. Which action LEARN would bind, as an index into
     /// `control::kControlActions`; the table itself lives in `control_`.

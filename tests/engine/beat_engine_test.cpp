@@ -1,6 +1,5 @@
-#include "core/engine/beat_engine.hpp"
-
 #include "core/audio/rates.hpp"
+#include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -59,6 +58,63 @@ std::unique_ptr<BeatEngine> makeEngine(BeatEngine::Options options = {}) {
 }
 
 } // namespace
+
+TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
+    // §5.5's non-negotiable control, through the whole chain rather than through synthetic
+    // frames: real activations, the real particle filter, the real meter it reports.
+    //
+    // tests/tracking covers the bar arithmetic by handing `TempoTracker` frames that emit a
+    // beat every time at a fixed 4/4. That is the right way to test the arithmetic and the
+    // wrong way to believe the feature works: the real filter emits on perhaps one frame in
+    // twenty-three, calls its own downbeats, and changes its mind about the meter early on.
+    // This is what an operator's press actually does.
+    auto engine = makeEngine();
+    const std::vector<float> samples = excerpt("synthetic.wav");
+    const std::size_t hops = samples.size() / kHopSize;
+
+    std::vector<std::uint32_t> positions; // beat-in-bar, one per beat called
+    std::size_t snapAt = 0;               // how many beats had been called when it was posted
+    bool posted = false;
+    bool sawSnapped = false;
+    EngineBeat beat;
+
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+        (void)engine->step();
+        while (engine->popBeat(beat)) {
+            positions.push_back(beat.event.beatInBar);
+            if (beat.event.snapped) {
+                sawSnapped = true;
+                // Exactly one beat carries it, and it is the first after the post.
+                CHECK(positions.size() == snapAt + 1);
+                CHECK(beat.event.beatInBar == 1);
+                CHECK(beat.event.downbeat);
+            }
+            // Post once the bar is genuinely running and the *next* beat would not have
+            // been beat 1 anyway — otherwise the check below proves nothing.
+            const bool settled = beat.event.beatsPerBar >= 2 && beat.event.beatInBar >= 1;
+            if (!posted && settled && positions.size() >= 8 &&
+                beat.event.beatInBar != beat.event.beatsPerBar) {
+                snapAt = positions.size();
+                (void)engine->post(Command::snapDownbeat());
+                posted = true;
+            }
+        }
+    }
+
+    REQUIRE(posted);
+    REQUIRE(sawSnapped);
+    REQUIRE(positions.size() > snapAt + 3);
+
+    // The beat before the press was not the end of a bar, so without the snap the next one
+    // would have counted on rather than restarting. That difference is the whole feature.
+    CHECK(positions[snapAt - 1] + 1 != 1u);
+    CHECK(positions[snapAt] == 1);
+    // ...and the operator's bar keeps running from there rather than being handed back.
+    CHECK(positions[snapAt + 1] == 2);
+    CHECK(positions[snapAt + 2] == 3);
+    CHECK(engine->commandsDropped() == 0);
+}
 
 TEST_CASE("the engine turns hops into tracked frames and beats", "[engine]") {
     const std::vector<float> signal = excerpt("synthetic.wav");
@@ -308,8 +364,7 @@ TEST_CASE("a command posted while stopped applies to the run that follows", "[en
 // Test names stay ASCII: ctest passes each one back to the binary as a command-line
 // argument, and a non-ASCII name comes through the console codepage mangled, so nothing
 // matches and the test fails without ever running. "÷2" cost exactly that.
-TEST_CASE("halving and doubling reach a tracking engine without dropping the lock",
-          "[engine]") {
+TEST_CASE("halving and doubling reach a tracking engine without dropping the lock", "[engine]") {
     // §5.5's octave buttons. The point of the queue is that this costs nothing: the
     // filter is not reseeded, the lock is not given up, and no audio is missed.
     const std::vector<float> signal = excerpt("synthetic.wav");

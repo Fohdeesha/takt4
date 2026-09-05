@@ -456,7 +456,30 @@ void WindowController::redouble() {
 }
 
 void WindowController::snapDownbeat() {
-    (void)tracker_.engine().post(engine::Command::snapDownbeat());
+    if (!tracker_.engine().post(engine::Command::snapDownbeat())) {
+        return; // queue full; nothing is coming, so do not light the button
+    }
+    // §5.5's snap deliberately takes effect on the *next* beat the tracker calls, which at
+    // 70 BPM is the best part of a second away. Remember the beat count now so the redraw
+    // can tell when it has landed, and light the button until then — the press is
+    // otherwise entirely invisible, and a bar phase shifting is hard to see moving even
+    // once it does.
+    snapAwaitingBeat_ = tracker_.engine().state().beats;
+    window_->set_snap_pending(true);
+}
+
+void WindowController::publishSnap() {
+    if (!snapAwaitingBeat_) {
+        return;
+    }
+    // A beat arriving is what says the snap landed. One could slip in between the post and
+    // the inference thread draining it — about two milliseconds against a beat period of
+    // hundreds — and clear this a beat early; that is a light going out slightly too soon,
+    // which is not worth a second counter through the engine to prevent.
+    if (tracker_.engine().state().beats != *snapAwaitingBeat_) {
+        snapAwaitingBeat_.reset();
+        window_->set_snap_pending(false);
+    }
 }
 
 void WindowController::setPinned(bool pinned) {
@@ -600,6 +623,10 @@ void WindowController::publishStopped() {
     // still in flight here would be showing an intention the next run will not honour.
     taps_.reset();
     pinPosted_.reset();
+    // A snap that never landed does not survive a stop either; the next run reseeds the
+    // tracker, so there is no beat coming that it was waiting for.
+    snapAwaitingBeat_.reset();
+    window_->set_snap_pending(false);
     publishTaps();
     publishIdleReadouts(*window_);
     publishOptions();
@@ -680,6 +707,11 @@ void WindowController::tick() {
     // changed — a learn that took, a control that was seen — only reaches the window on a
     // redraw, and binding buttons is something an operator does *before* pressing Start.
     publishControl();
+    // Above the early return with it, and for a related reason: what these two watch is
+    // the engine's own state, which moves whether or not a device is open. A test drives
+    // the engine directly without one, and holding the button lit forever there would be
+    // the window lying about a snap that had in fact landed.
+    publishSnap();
     if (!tracker_.running()) {
         return;
     }

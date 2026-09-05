@@ -271,6 +271,8 @@ export component MainWindow inherits Window {
   // the TAP button can say that a press registered. 0 when no set is in progress.
   in-out property <int> tap-count;
   in-out property <int> tap-needs;
+  /// A downbeat snap posted and not yet landed. See the DOWNBEAT button.
+  in-out property <bool> snap-pending;
 
   // How far the two settings above can be dragged. The values here are only a sane
   // starting point for a preview: the C++ side sets all four at startup from the
@@ -650,9 +652,15 @@ export component MainWindow inherits Window {
           // §5.5: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable — the best
           // online downbeat tracker in the world scores 56% F1, and being two beats out
           // is worse than one tap." So it is the widest thing in the row.
+          // Lit from the press until the beat it lands on, because §5.5's snap takes
+          // effect on the *next* beat the tracker calls — up to nine hundred milliseconds
+          // at 70 BPM. A button that does nothing for most of a second, and then shifts a
+          // bar phase that is hard to see moving, reads as a button that does nothing at
+          // all. This is the difference between "it is coming" and "it is broken".
           Press {
             text: "DOWNBEAT";
             primary: root.running;
+            active: root.snap-pending;
             enabled: root.running;
             min-width: 196px;
             clicked => {

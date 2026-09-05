@@ -576,6 +576,43 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
     CHECK(next->event.beatInBar == 1);
 }
 
+TEST_CASE("the downbeat button says it has been pressed", "[ui]") {
+    // The user's report, 2026-09-05: "the downbeat button has never seemed to do anything
+    // ... nothing changes". The snap itself was working — tests/engine proves it through
+    // the real filter — but the window said nothing between the press and the beat it
+    // lands on, which at 70 BPM is the best part of a second. A control that is invisible
+    // for that long, and then shifts a bar phase that is hard to see moving (and in a 2/4
+    // bar is barely visible at all), is indistinguishable from one that is broken.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+
+    REQUIRE(run.until([&tracker] { return tracker.engine().state().bars >= 2; }));
+    CHECK_FALSE(controller.window().get_snap_pending());
+
+    controller.window().invoke_snap_downbeat();
+    // Lit immediately, on the press itself rather than on the next redraw: the whole point
+    // is that nothing else happens for a while.
+    CHECK(controller.window().get_snap_pending());
+
+    // It stays lit while no beat has been called...
+    const std::uint64_t before = tracker.engine().state().beats;
+    controller.tick();
+    CHECK(controller.window().get_snap_pending());
+    CHECK(tracker.engine().state().beats == before);
+
+    // ...and goes out on the beat the snap lands on.
+    REQUIRE(run.until([&] { return tracker.engine().state().beats != before; }));
+    controller.tick();
+    CHECK_FALSE(controller.window().get_snap_pending());
+
+    // A stop also clears it — there is no beat coming that it was waiting for, since the
+    // next run reseeds the tracker. Not asserted here: `SyntheticRun` feeds the engine
+    // without opening a device, so `toggleRun()` would take the *start* path rather than
+    // the stop one. `publishStopped` is where it happens, beside the tap count that is
+    // dropped for the same reason.
+}
+
 TEST_CASE("the settings sliders send whole options, clamped to what they offer", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
