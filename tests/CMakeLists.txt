@@ -45,6 +45,8 @@ add_executable(takt4_tests
   tracking/state_space_test.cpp
   tracking/tap_tempo_test.cpp
   tracking/tempo_tracker_test.cpp
+  trigger/generator_test.cpp
+  trigger/value_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
