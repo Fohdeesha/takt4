@@ -79,17 +79,30 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
     runner.start();
     CHECK(runner.running());
     feedExcerpt(*engine);
-    runner.stop();
 
-    CHECK_FALSE(runner.running());
+    // Waited for rather than assumed, and checked *before* stop(): this is what says the
+    // thread drained them rather than stop()'s final sweep, which is a different claim
+    // and has a test of its own below.
+    //
+    // Waiting is the point. The first version of this asserted that the thread had made
+    // some rounds by the time the feed finished, and CI disagreed on 5b2b2b6: pushing the
+    // excerpt through the network and the filter pegs a core, and on a two-core runner the
+    // output thread can get almost none of the other one. That is the machine's business,
+    // not the code's — what the code owes is that the beats arrive, which they did there
+    // too (every other assertion passed).
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < until && transports.beats() < kExpectedBeats) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    INFO(runner.rounds() << " rounds, " << transports.beats() << " beats before the stop");
     CHECK(transports.beats() == kExpectedBeats);
     CHECK(transports.downbeats() == kExpectedDownbeats);
+
+    runner.stop();
+    CHECK_FALSE(runner.running());
+    CHECK(transports.beats() == kExpectedBeats); // and the final sweep found nothing left
     CHECK(engine->beatsDropped() == 0);
     CHECK(runner.errors() == 0);
-    // The thread really was the one doing it, rather than everything falling out of
-    // stop()'s final drain.
-    INFO(runner.rounds() << " rounds");
-    CHECK(runner.rounds() > 1);
 }
 
 TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
