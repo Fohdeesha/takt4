@@ -64,8 +64,12 @@ GTZAN figures. [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/
 numbers, the per-genre breakdown, what the octave fold costs as well as buys, and why the
 worst cases are BeatNet+'s behaviour rather than this port's.
 
-`takt4 --version` prints what it was built with, and the window opens; the UI does not
-show any of this yet.
+`takt4 --version` prints what it was built with. The window shows the tempo, the lock
+and confidence, a bar indicator drawn from the meter the tracker reports, the 50 Hz
+activation trace and an input meter — and drives the tracker: ÷2, ×2, tap, a manual
+downbeat, the octave-fold window and the latency offset. What it does **not** have yet
+is the outputs row, so nothing leaves the machine from the window; `takt4-cli track` is
+still the way to drive Link, OSC and MIDI clock.
 
 ### Development console
 

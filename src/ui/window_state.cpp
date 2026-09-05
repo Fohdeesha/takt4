@@ -40,6 +40,14 @@ void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Optio
     window.set_fold_on(options.octaveFold);
     window.set_fold_min(static_cast<float>(options.minBpm));
     window.set_fold_max(static_cast<float>(options.maxBpm));
+    window.set_latency_ms(static_cast<float>(options.latencyOffsetSeconds * 1000.0));
+}
+
+void publishControlLimits(MainWindow& window) {
+    window.set_fold_limit_min(static_cast<float>(kFoldFloorBpm));
+    window.set_fold_limit_max(static_cast<float>(kFoldCeilingBpm));
+    window.set_fold_least_span(static_cast<float>(kFoldLeastSpanBpm));
+    window.set_latency_limit_ms(static_cast<float>(kLatencyLimitMs));
 }
 
 void publishIdleReadouts(MainWindow& window) {

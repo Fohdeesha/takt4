@@ -214,6 +214,10 @@ int renderShot(const std::filesystem::path& out, int width, int height) {
     HeadlessWindow* const* rendered = installHeadlessPlatform(w, h);
 
     auto window = MainWindow::create();
+    publishControlLimits(*window);
+    // The controls are drawn as they look with a tracker running, which is the state
+    // worth looking at: everything the design calls manual is live only then.
+    window->set_tap_needs(3);
     fillPickers(*window);
     auto traceModel =
         std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength));

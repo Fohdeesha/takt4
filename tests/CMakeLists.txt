@@ -90,7 +90,11 @@ if(TAKT4_BUILD_UI)
 
   target_include_directories(takt4_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
+  # The committed excerpt is read in place too: the control tests drive the window against
+  # a tracker that has really followed it, which is what lets them assert a tempo rather
+  # than only that a callback was reached.
   target_compile_definitions(takt4_ui_tests PRIVATE
+    "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
     "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
     "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
   )
