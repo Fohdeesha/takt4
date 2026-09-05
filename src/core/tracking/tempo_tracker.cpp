@@ -103,8 +103,12 @@ void TempoTracker::reset() noexcept {
     filterBeatInBar_ = 0;
     barOffset_ = 0;
     snapPending_ = false;
+    snapUnsent_ = false;
     snapAwaitingFilter_ = false;
     sinceSnap_ = 0;
+    framesSinceBeat_ = 0;
+    beatsSeen_ = 0;
+    filterIntervalFrames_ = 0;
     beatFrames_.clear();
 }
 
@@ -295,8 +299,49 @@ void TempoTracker::seedTempo(double bpm) noexcept {
     }
 }
 
+bool TempoTracker::lastBeatIsNearer() const noexcept {
+    if (beatsSeen_ == 0 || filterIntervalFrames_ == 0) {
+        return false; // no beat behind, or no idea when the next one is due
+    }
+    // Nearer than the next beat, whose best estimate is one period after the last one. The
+    // comparison is doubled rather than halved so it stays in whole frames.
+    return 2 * framesSinceBeat_ < filterIntervalFrames_;
+}
+
 void TempoTracker::snapDownbeat() noexcept {
-    snapPending_ = true;
+    // Either way a correction is now owed to the outputs, and the next beat carries it.
+    snapUnsent_ = true;
+    if (!lastBeatIsNearer()) {
+        snapPending_ = true; // the beat being pointed at has not happened yet
+        return;
+    }
+    // The operator is pointing at the beat just called, so the bar starts there and this
+    // beat's successor is beat 2 — not beat 1, which is what made every snap read a beat
+    // late. Nothing is left pending: the rotation is known now and takes effect now.
+    snapPending_ = false;
+    const bool wasBarStart = state_.beatInBar == 1;
+    startBarHere();
+    state_.beatInBar = 1;
+    if (!wasBarStart) {
+        // A bar the operator has just declared, which the count above did not make. Had it
+        // already been beat 1 the bar was counted when it was called, and counting it twice
+        // would make a snap that changed nothing move the bar number.
+        ++state_.bars;
+    }
+}
+
+void TempoTracker::startBarHere() noexcept {
+    const std::uint32_t meter = state_.beatsPerBar;
+    snapAwaitingFilter_ = !(filterBeatInBar_ != 0 && meter > 0);
+    if (snapAwaitingFilter_) {
+        // Nothing to rotate yet. Count from here, and turn the count into an offset the
+        // moment the filter first has an opinion.
+        sinceSnap_ = 0;
+        return;
+    }
+    // Rotate so this beat comes out as 1. Reducing the position first keeps this right
+    // through a meter change that leaves the filter past the end of a bar.
+    barOffset_ = (meter - (filterBeatInBar_ - 1) % meter) % meter;
 }
 
 void TempoTracker::setLockPinned(bool pinned) noexcept {
@@ -344,17 +389,11 @@ void TempoTracker::advanceBar(bool filterCalledDownbeat) noexcept {
     const bool haveFilterBar = filterBeatInBar_ != 0;
 
     if (snapPending_) {
+        // A snap that named a beat still to come: this is it, so the bar starts here. The
+        // one that named the beat just gone rotated in snapDownbeat() and left nothing
+        // pending, which is why it falls through to the ordinary count below.
         snapPending_ = false;
-        snapAwaitingFilter_ = !(haveFilterBar && meter > 0);
-        if (snapAwaitingFilter_) {
-            // Nothing to rotate yet. Count from here, and turn the count into an offset
-            // the moment the filter first has an opinion.
-            sinceSnap_ = 0;
-        } else {
-            // Rotate so this beat comes out as 1. Reducing the position first keeps this
-            // right through a meter change that leaves the filter past the end of a bar.
-            barOffset_ = (meter - (filterBeatInBar_ - 1) % meter) % meter;
-        }
+        startBarHere();
     } else if (snapAwaitingFilter_ && meter > 0) {
         sinceSnap_ = (sinceSnap_ + 1) % meter;
         if (haveFilterBar) {
@@ -479,6 +518,13 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     state_.confidence = smoothedConfidence_;
     state_.rawBpm = frame.bpm;
     state_.beatsPerBar = frame.beatsPerBar;
+    // Where in the beat we are, for a snap arriving between two frames to read. Kept even
+    // when the interval is zero, because it is the last one known that says how long a beat
+    // lasts, not this frame's absence of one.
+    ++framesSinceBeat_;
+    if (frame.intervalFrames > 0) {
+        filterIntervalFrames_ = frame.intervalFrames;
+    }
 
     // The lock is decided on the state space's own whole-frame interval, never on the
     // refined tempo. The refinement moves by tenths of a BPM from one frame to the next,
@@ -513,6 +559,8 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     const bool emitted = frame.emitted != TrackedFrame::Emitted::None;
     if (emitted) {
         rememberBeat(frame.frameIndex);
+        framesSinceBeat_ = 0;
+        ++beatsSeen_;
     }
 
     // Holding below the confidence gate keeps whatever was last published (§5.5: "hold the
@@ -567,7 +615,8 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         return std::nullopt;
     }
 
-    const bool snapped = snapPending_;
+    const bool snapped = snapUnsent_;
+    snapUnsent_ = false;
     advanceBar(frame.emitted == TrackedFrame::Emitted::Downbeat);
     ++state_.beats;
 

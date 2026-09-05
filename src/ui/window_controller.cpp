@@ -459,11 +459,12 @@ void WindowController::snapDownbeat() {
     if (!tracker_.engine().post(engine::Command::snapDownbeat())) {
         return; // queue full; nothing is coming, so do not light the button
     }
-    // §5.5's snap deliberately takes effect on the *next* beat the tracker calls, which at
-    // 70 BPM is the best part of a second away. Remember the beat count now so the redraw
-    // can tell when it has landed, and light the button until then — the press is
-    // otherwise entirely invisible, and a bar phase shifting is hard to see moving even
-    // once it does.
+    // The snap's correction reaches the outputs on the next beat the tracker calls, which
+    // at 70 BPM is the best part of a second away — even when the bar dots move at once,
+    // which they do whenever the press named the beat just gone. Remember the beat count
+    // now so the redraw can tell when it has landed, and light the button until then: a
+    // press between beats is otherwise entirely invisible, and a bar phase shifting is hard
+    // to see moving even once it does.
     snapAwaitingBeat_ = tracker_.engine().state().beats;
     window_->set_snap_pending(true);
 }

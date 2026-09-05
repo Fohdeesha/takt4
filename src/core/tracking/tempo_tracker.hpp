@@ -39,9 +39,16 @@ struct BeatEvent {
     double bpm = 0.0;
     bool locked = false;
     double confidence = 0.0;
-    /// True on the one beat an operator's downbeat snap landed on. §5.6 reserves Link's
+    /// True on the first beat published under a snap's new bar phase. §5.6 reserves Link's
     /// `forceBeatAtTime` for exactly this beat — a `requestBeatAtTime` would be moved to
     /// where the session's phase already matches, which is the phase being corrected.
+    ///
+    /// That is the beat the operator pointed at only when they pointed at one still to
+    /// come. A snap naming the beat just gone (see `snapDownbeat`) cannot mark it, because
+    /// it has already been sent, so the flag rides the next beat instead — which carries
+    /// the identical correction, since `LinkSession::forceBeat` is given the *bar
+    /// position*, and forcing beat 2 of the bar moves a peer's phase exactly as far as
+    /// forcing beat 1 would.
     bool snapped = false;
 };
 
@@ -286,8 +293,33 @@ public:
     /// window by hand — a tap confirming what is already tracked must not cost sync.
     void seedTempo(double bpm) noexcept;
 
-    /// §5.5's manual downbeat: the next beat called starts the bar, and every bar after
-    /// it is counted from there.
+    /// §5.5's manual downbeat: the beat the operator is pointing at starts the bar, and
+    /// every bar after it is counted from there.
+    ///
+    /// **Which beat that is, is the whole difficulty.** This used to be "the next beat
+    /// called", and that is a beat late for the only way the control is ever used: a
+    /// person presses the button *on* the downbeat they can hear, by which time the
+    /// tracker has already called it, so the bar came out anchored to beat 2. The user's
+    /// report, 2026-09-05: "if I press the downbeat, it should start at the very beginning
+    /// of the four dots, but it's always one too slow." §5.5 wants a control that "snaps
+    /// bar phase immediately", and a beat late is not immediately.
+    ///
+    /// So it takes the **nearest** beat: the one just called if it is less than half a beat
+    /// period behind, and the one still to come otherwise. Nothing is assumed about which
+    /// side of the beat a press lands on, and nothing needs to be — the split is
+    /// symmetric, so an operator anticipating the beat and an operator reacting to it both
+    /// land on the beat they meant, and the pipeline's own delay only moves where inside
+    /// that window the press falls. There is deliberately no constant to tune: the
+    /// alternative is a fixed offset for a reaction time nobody has measured.
+    ///
+    /// The half is measured against the *filter's* beat period, never the published tempo,
+    /// because ÷2 and ×2 move the second and not the first — after a ÷2 the beats keep
+    /// arriving at the rate they always did.
+    ///
+    /// Naming the beat just gone takes effect **at once**: `beatInBar` is 1 before this
+    /// returns, so the count moves under the operator's finger instead of a beat later.
+    /// What cannot move is that beat's own outgoing event, which has been sent already —
+    /// the correction reaches the transports on the next beat, marked `BeatEvent::snapped`.
     ///
     /// The rotation this sets up is **kept** until the next snap or a reset, rather than
     /// being given back on the filter's next downbeat call. §5.5 asks for this because
@@ -365,6 +397,14 @@ private:
     /// Advances the filter's own bar position and turns it into the published one,
     /// applying whatever a snap has rotated the bar by. Called once per emitted beat.
     void advanceBar(bool filterCalledDownbeat) noexcept;
+    /// Rotates the bar so that the beat `filterBeatInBar_` is currently on comes out as 1.
+    /// A snap that names the beat just gone calls this before the position advances; one
+    /// that names the beat still to come calls it after. Same arithmetic, one beat apart —
+    /// which is the entire difference between the two.
+    void startBarHere() noexcept;
+    /// Whether the beat the filter last called is nearer than the one it will call next.
+    /// False when neither is known yet, so a snap before the first beat waits for it.
+    bool lastBeatIsNearer() const noexcept;
     /// The mean beat-to-beat gap in frames, over the gaps within `refineGapTolerance` of
     /// `cloudIntervalFrames`. Zero when there are not enough of them.
     double refinedIntervalFrames(double cloudIntervalFrames) const noexcept;
@@ -403,11 +443,23 @@ private:
     std::uint32_t filterBeatInBar_ = 0; ///< 1 on the filter's downbeat; 0 until it calls one
     std::uint32_t barOffset_ = 0;       ///< beats added to the filter's position
     bool snapPending_ = false;          ///< a snap waiting for the next beat to land on
+    /// A snap whose new bar phase has not reached the outputs yet. Set by every snap and
+    /// spent on the next beat, which is the earliest one that can carry it either way: a
+    /// snap naming a beat still to come is carried by that beat, and one naming the beat
+    /// just gone is carried by the beat after it. See `BeatEvent::snapped`.
+    bool snapUnsent_ = false;
     /// A snap that arrived before the filter had ever called a downbeat has nothing to
     /// rotate yet, so the bar runs from the snap itself until the filter does — and
     /// `sinceSnap_` is what turns that into an offset when it finally happens.
     bool snapAwaitingFilter_ = false;
     std::uint32_t sinceSnap_ = 0;
+    /// How long ago the last beat was and how far apart the beats are, both in frames, so
+    /// that a snap arriving between two frames can tell which beat it means. The period is
+    /// the filter's own, untouched by the fold or by ÷2 and ×2. Zero beats seen means the
+    /// first is still to come.
+    std::uint64_t framesSinceBeat_ = 0;
+    std::uint64_t beatsSeen_ = 0;
+    std::uint32_t filterIntervalFrames_ = 0;
 
     /// The frames the last few beats were called on, oldest first. Bounded by
     /// `refineOverBeats + 1`, so this allocates once and never grows.

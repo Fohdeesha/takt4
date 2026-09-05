@@ -23,6 +23,11 @@ using takt4::tracking::TrackedFrame;
 namespace {
 
 constexpr double kFramePeriod = 0.02; // 50 Hz, as the whole pipeline runs at
+/// A beat period for the bar tests: 23 frames, 460 ms, the nearest the state space gets to
+/// a track playing 128. The filter emits on one frame in twenty-three, and where inside
+/// that gap a downbeat press lands is what decides which beat it means — so the bar tests
+/// space their beats out rather than emitting one per frame.
+constexpr std::uint32_t kInterval = 23;
 
 /// The tempo of a beat period of `intervalFrames` whole frames. Those are the only
 /// tempi madmom's state space holds, so they are the only ones the filter can report:
@@ -476,10 +481,22 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
 TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking][tempo]") {
     // §5.5's manual downbeat, the one it calls non-negotiable: "the best online downbeat
     // tracker in the world scores 56% F1, and being two beats out is worse than one tap".
+    //
+    // The beats are 23 frames apart here rather than one per frame, because *where inside
+    // that gap* the press lands is now the whole question — see TempoTracker::snapDownbeat.
     TempoTracker tracker(kFramePeriod);
     std::uint64_t index = 0;
-    const auto beat = [&](TrackedFrame::Emitted kind) {
-        TrackedFrame frame = frameAt(index++, 23, 0.9, 4);
+    // Frames carrying no beat: the gap between two of them, run a piece at a time so a
+    // press can be put anywhere in it.
+    const auto gap = [&](std::uint32_t frames) {
+        for (std::uint32_t i = 0; i < frames; ++i) {
+            (void)tracker.process(frameAt(index++, kInterval, 0.9, 4));
+        }
+    };
+    // Whatever is left of the gap, and then the beat.
+    const auto beat = [&](TrackedFrame::Emitted kind, std::uint32_t rest = kInterval - 1) {
+        gap(rest);
+        TrackedFrame frame = frameAt(index++, kInterval, 0.9, 4);
         frame.emitted = kind;
         return tracker.process(frame);
     };
@@ -490,31 +507,36 @@ TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking]
     REQUIRE(tracker.state().beatInBar == 2);
     const std::uint64_t barsBefore = tracker.state().bars;
 
-    // The operator says the bar starts on the next beat — which the filter calls its
-    // third.
+    // The operator presses the button on the downbeat they can hear, which is the beat the
+    // tracker has just called — its second. That beat becomes the bar's first, and it does
+    // so immediately: waiting for the next one is what put the bar a beat behind the music.
     tracker.snapDownbeat();
+    CHECK(tracker.state().beatInBar == 1);
+    CHECK(tracker.state().bars == barsBefore + 1);
+
+    // So the next beat called is the bar's second, and it is the one that carries the new
+    // phase out to the transports — the beat the operator named went out before they
+    // pressed anything, and cannot be marked.
     std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
     REQUIRE(event.has_value());
-    CHECK(event->beatInBar == 1);
-    CHECK(event->downbeat);
+    CHECK(event->beatInBar == 2);
+    CHECK_FALSE(event->downbeat);
     CHECK(event->snapped);
-    CHECK(tracker.state().bars == barsBefore + 1);
 
     // Only that one beat is marked snapped; the rest are ordinary.
     event = beat(TrackedFrame::Emitted::Beat);
     REQUIRE(event.has_value());
-    CHECK(event->beatInBar == 2);
+    CHECK(event->beatInBar == 3);
     CHECK_FALSE(event->snapped);
 
-    // And the filter's own downbeat, two beats later, no longer starts a bar: the
-    // rotation is kept, or a correction the filter undid a bar later would be no
-    // correction at all.
+    // And the filter's own downbeat no longer starts a bar: the rotation is kept, or a
+    // correction the filter undid a bar later would be no correction at all.
     event = beat(TrackedFrame::Emitted::Downbeat);
     REQUIRE(event.has_value());
-    CHECK(event->beatInBar == 3);
+    CHECK(event->beatInBar == 4);
     CHECK_FALSE(event->downbeat);
-    for (const std::uint32_t expected : {4u, 1u, 2u, 3u, 4u, 1u}) {
-        event = beat(expected == 3 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat);
+    for (const std::uint32_t expected : {1u, 2u, 3u, 4u, 1u, 2u}) {
+        event = beat(expected == 4 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat);
         REQUIRE(event.has_value());
         INFO("expected beat " << expected << " of the bar");
         CHECK(event->beatInBar == expected);
@@ -522,11 +544,49 @@ TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking]
     }
 
     SECTION("a second snap moves it again") {
+        REQUIRE(tracker.state().beatInBar != 1);
         tracker.snapDownbeat();
+        CHECK(tracker.state().beatInBar == 1);
         event = beat(TrackedFrame::Emitted::Beat);
         REQUIRE(event.has_value());
-        CHECK(event->beatInBar == 1);
+        CHECK(event->beatInBar == 2);
         CHECK(event->snapped);
+    }
+
+    SECTION("a press past the middle of the gap means the beat still to come") {
+        // The other half of "nearest". Nothing moves on the press itself, because the beat
+        // being pointed at has not happened; when it does, it is beat 1. This is what every
+        // press used to do, and for a press here it is right.
+        constexpr std::uint32_t kLate = kInterval / 2 + 1; // 12 of 23: past the halfway mark
+        const std::uint32_t before = tracker.state().beatInBar;
+        const std::uint64_t bars = tracker.state().bars;
+        gap(kLate);
+        tracker.snapDownbeat();
+        CHECK(tracker.state().beatInBar == before);
+        CHECK(tracker.state().bars == bars);
+
+        event = beat(TrackedFrame::Emitted::Beat, kInterval - 1 - kLate);
+        REQUIRE(event.has_value());
+        CHECK(event->beatInBar == 1);
+        CHECK(event->downbeat);
+        CHECK(event->snapped);
+        CHECK(tracker.state().bars == bars + 1);
+    }
+
+    SECTION("the two halves of the gap divide at the middle of it") {
+        // 11 frames after the beat is 220 ms of a 460 ms period and belongs to the beat just
+        // gone; 12 is 240 ms and belongs to the next. No constant decides that — the split
+        // is the period's own middle, which is the only place it can be without a measured
+        // number for how long after a beat a person presses a button.
+        gap(kInterval / 2); // 11
+        tracker.snapDownbeat();
+        CHECK(tracker.state().beatInBar == 1);
+
+        (void)beat(TrackedFrame::Emitted::Beat, kInterval - 1 - kInterval / 2);
+        const std::uint32_t after = tracker.state().beatInBar;
+        gap(kInterval / 2 + 1); // 12
+        tracker.snapDownbeat();
+        CHECK(tracker.state().beatInBar == after);
     }
 
     SECTION("a reset gives the bar back to the filter") {
@@ -544,12 +604,20 @@ TEST_CASE("a manual downbeat before the filter has found one still starts the ba
     // runs from the tap — and joins up with the filter's when it finally calls one.
     TempoTracker tracker(kFramePeriod);
     std::uint64_t index = 0;
-    const auto beat = [&](TrackedFrame::Emitted kind) {
-        TrackedFrame frame = frameAt(index++, 23, 0.9, 4);
+    const auto gap = [&](std::uint32_t frames) {
+        for (std::uint32_t i = 0; i < frames; ++i) {
+            (void)tracker.process(frameAt(index++, kInterval, 0.9, 4));
+        }
+    };
+    const auto beat = [&](TrackedFrame::Emitted kind, std::uint32_t rest = kInterval - 1) {
+        gap(rest);
+        TrackedFrame frame = frameAt(index++, kInterval, 0.9, 4);
         frame.emitted = kind;
         return tracker.process(frame);
     };
 
+    // Before any beat at all there is no beat behind to name, so the press means the one
+    // still to come however early in the gap it lands.
     tracker.snapDownbeat();
     std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
     REQUIRE(event.has_value());
@@ -569,6 +637,60 @@ TEST_CASE("a manual downbeat before the filter has found one still starts the ba
     CHECK(event->beatInBar == 4);
     CHECK_FALSE(event->downbeat);
 
+    for (const std::uint32_t expected : {1u, 2u, 3u, 4u}) {
+        event = beat(TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        INFO("expected beat " << expected << " of the bar");
+        CHECK(event->beatInBar == expected);
+    }
+    CHECK(tracker.state().bars == 2);
+}
+
+TEST_CASE("a manual downbeat on a beat the filter has no bar for still starts one",
+          "[tracking][tempo]") {
+    // Between the filter's first beat and its first downbeat there is a real stretch —
+    // seconds of it on a track that opens without drums — where beats are being called and
+    // nothing has an opinion on the bar. A press in there names the beat just gone like any
+    // other, but there is no filter position to rotate against, so the count runs from the
+    // press and joins the filter's when it finally has one.
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+    const auto beat = [&](TrackedFrame::Emitted kind) {
+        for (std::uint32_t i = 0; i + 1 < kInterval; ++i) {
+            (void)tracker.process(frameAt(index++, kInterval, 0.9, 4));
+        }
+        TrackedFrame frame = frameAt(index++, kInterval, 0.9, 4);
+        frame.emitted = kind;
+        return tracker.process(frame);
+    };
+
+    // Beats, but no downbeat: the bar is unknown and says so.
+    for (int i = 0; i < 3; ++i) {
+        const std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
+        REQUIRE(event.has_value());
+        CHECK(event->beatInBar == 0);
+    }
+    CHECK(tracker.state().bars == 0);
+
+    tracker.snapDownbeat();
+    CHECK(tracker.state().beatInBar == 1);
+    CHECK(tracker.state().bars == 1);
+
+    std::optional<BeatEvent> event = beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 2);
+    CHECK(event->snapped);
+
+    event = beat(TrackedFrame::Emitted::Beat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 3);
+
+    // The filter's first downbeat lands on what the operator is counting as 4, and the
+    // count goes on from there rather than being taken back.
+    event = beat(TrackedFrame::Emitted::Downbeat);
+    REQUIRE(event.has_value());
+    CHECK(event->beatInBar == 4);
+    CHECK_FALSE(event->downbeat);
     for (const std::uint32_t expected : {1u, 2u, 3u, 4u}) {
         event = beat(TrackedFrame::Emitted::Beat);
         REQUIRE(event.has_value());

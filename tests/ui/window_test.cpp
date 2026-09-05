@@ -551,16 +551,26 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
     WindowController controller(tracker);
     SyntheticRun run(tracker);
 
-    // Far enough in that the filter has settled on a bar of its own to disagree with.
-    REQUIRE(run.until([&tracker] { return tracker.engine().state().bars >= 2; }));
+    // Far enough in that the filter has settled on a bar of its own to disagree with, and
+    // stopped on a beat that is not already the bar's first — a press there would agree with
+    // the filter and move nothing.
+    REQUIRE(run.until([&tracker] {
+        return tracker.engine().state().bars >= 2 && tracker.engine().state().beatInBar > 1;
+    }));
     takt4::engine::EngineBeat beat;
     while (tracker.engine().popBeat(beat)) {
     }
 
     controller.window().invoke_snap_downbeat();
+    run.applyPosted();
 
-    // The next beat the tracker calls is the one the snap landed on. What that then does
-    // to the bar afterwards is tests/engine/beat_engine_test.cpp's business.
+    // The press names the beat just called, so the bar moves on the press itself and no
+    // audio is needed for it. What it then does to the bar afterwards is
+    // tests/engine/beat_engine_test.cpp's business.
+    CHECK(tracker.engine().state().beatInBar == 1);
+
+    // The next beat is what carries the new phase out to the transports, and it is the
+    // bar's second.
     std::optional<takt4::engine::EngineBeat> next;
     REQUIRE(run.until([&] {
         while (tracker.engine().popBeat(beat)) {
@@ -572,8 +582,8 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
     }));
     REQUIRE(next);
     CHECK(next->event.snapped);
-    CHECK(next->event.downbeat);
-    CHECK(next->event.beatInBar == 1);
+    CHECK_FALSE(next->event.downbeat);
+    CHECK(next->event.beatInBar == 2);
 }
 
 TEST_CASE("the downbeat button says it has been pressed", "[ui]") {

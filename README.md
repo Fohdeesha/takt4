@@ -138,7 +138,7 @@ there is an interface. None of them stops the tracker or reseeds the filter.
 | Key | |
 |---|---|
 | `space` | tap the tempo. Three taps are enough; the fold window moves onto what you tapped, so the readout and the setting agree on why the tempo is what it is. |
-| `d` | downbeat now — the next beat starts the bar, and goes on starting it. With `--link`, that beat is placed with `forceBeatAtTime`, so peers move too. |
+| `d` | downbeat now — the beat nearest the press starts the bar, and goes on starting it. Press it *on* the downbeat you can hear: the beat just gone is the one it takes. With `--link`, the new phase is placed with `forceBeatAtTime`, so peers move too. |
 | `h` / `x` | halve and double the published tempo, keeping the lock. |
 | `[` / `]` | move the latency offset by 5 ms, on the beat timestamps and the transports alike. |
 | `f` | turn the octave fold off and on. |

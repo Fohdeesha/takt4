@@ -652,11 +652,12 @@ export component MainWindow inherits Window {
           // §5.5: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable — the best
           // online downbeat tracker in the world scores 56% F1, and being two beats out
           // is worse than one tap." So it is the widest thing in the row.
-          // Lit from the press until the beat it lands on, because §5.5's snap takes
-          // effect on the *next* beat the tracker calls — up to nine hundred milliseconds
-          // at 70 BPM. A button that does nothing for most of a second, and then shifts a
-          // bar phase that is hard to see moving, reads as a button that does nothing at
-          // all. This is the difference between "it is coming" and "it is broken".
+          // Lit from the press until the next beat, which is when the correction reaches
+          // the outputs — up to nine hundred milliseconds at 70 BPM. A press on the beat
+          // moves the bar dots immediately (the tracker takes the nearer beat, so it names
+          // the one just heard), but a press between beats still has to wait for one, and a
+          // button that does nothing for most of a second, then shifts a bar phase that is
+          // hard to see moving, reads as a button that does nothing at all.
           Press {
             text: "DOWNBEAT";
             primary: root.running;
