@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -72,8 +73,8 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
     // caller's loop deciding when. Nothing is configured to send, so what is under test
     // is the draining and the counting rather than any one transport.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
-    Transports transports{Transports::Config{}};
-    OutputRunner runner(*engine, transports);
+    OutputRunner runner(*engine, Transports::Config{});
+    const Transports& transports = runner.transports();
 
     runner.start();
     CHECK(runner.running());
@@ -96,8 +97,8 @@ TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
     // is ever started, so the ring is full of them and only stop()'s final drain can
     // account for the ones its thread did not reach.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
-    Transports transports{Transports::Config{}};
-    OutputRunner runner(*engine, transports);
+    OutputRunner runner(*engine, Transports::Config{});
+    const Transports& transports = runner.transports();
 
     feedExcerpt(*engine);
     CHECK(transports.beats() == 0); // nothing drains a ring until something drains it
@@ -110,8 +111,7 @@ TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
 
 TEST_CASE("the observer sees every beat, in the order they were called", "[output]") {
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
-    Transports transports{Transports::Config{}};
-    OutputRunner runner(*engine, transports);
+    OutputRunner runner(*engine, Transports::Config{});
 
     std::mutex mutex;
     std::vector<takt4::engine::EngineBeat> seen;
@@ -144,8 +144,7 @@ TEST_CASE("the output thread runs on its own clock", "[output]") {
     // That the thread exists is one claim and that it drains correctly is another. This
     // is the first, and it is the one a caller doing the draining itself would also pass.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
-    Transports transports{Transports::Config{}};
-    OutputRunner runner(*engine, transports);
+    OutputRunner runner(*engine, Transports::Config{});
 
     runner.start();
     const std::uint64_t before = runner.rounds();
@@ -162,9 +161,8 @@ TEST_CASE("the output thread runs on its own clock", "[output]") {
 
 TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
-    Transports transports{Transports::Config{}};
     {
-        OutputRunner runner(*engine, transports);
+        OutputRunner runner(*engine, Transports::Config{});
         runner.stop(); // never started
         CHECK_FALSE(runner.running());
         runner.start();
@@ -172,7 +170,60 @@ TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
         runner.stop();
         CHECK_FALSE(runner.running());
     } // and the destructor stops a running one
-    OutputRunner running(*engine, transports);
+    OutputRunner running(*engine, Transports::Config{});
     running.start();
     CHECK(running.running());
+}
+
+TEST_CASE("a change posted while stopped applies at once", "[output]") {
+    // An app is configured before it is started, and an operator ticking Link with nothing
+    // running should not have to press Start to find out whether it took.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, Transports::Config{});
+    REQUIRE_FALSE(runner.running());
+
+    runner.post(takt4::output::OutputCommand::linkEnabled(true));
+    CHECK(runner.transports().linkEnabled());
+    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 7000}}));
+    CHECK(runner.transports().osc().targetCount() == 1);
+    CHECK(runner.lastError().empty());
+}
+
+TEST_CASE("a change posted while running reaches the transports", "[output]") {
+    // The other half: the output thread owns them once it is going, so the change has to
+    // travel rather than be made by the caller.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.start();
+    REQUIRE_FALSE(runner.transports().linkEnabled());
+
+    runner.post(takt4::output::OutputCommand::linkEnabled(true));
+    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 7000}}));
+
+    // The thread applies them at the top of a round, so within a period or two.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+    while (std::chrono::steady_clock::now() < until && !runner.transports().linkEnabled()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    CHECK(runner.transports().linkEnabled());
+    CHECK(runner.transports().osc().targetCount() == 1);
+    CHECK(runner.lastError().empty());
+
+    runner.stop();
+}
+
+TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "[output]") {
+    // The transports keep working — Transports leaves what was open alone — so the only
+    // evidence is the message, and an operator has to be given it.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    runner.post(takt4::output::OutputCommand::midiClockPort(
+        std::string("takt4 test - no such MIDI port exists")));
+    CHECK_FALSE(runner.lastError().empty());
+    CHECK(runner.transports().midiClock() == nullptr);
+
+    // And a change that works clears it again.
+    runner.post(takt4::output::OutputCommand::linkEnabled(true));
+    CHECK(runner.lastError().empty());
 }

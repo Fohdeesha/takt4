@@ -46,6 +46,16 @@ void OscPublisher::addTarget(std::string_view host, std::uint16_t port) {
     targets_.push_back(std::make_unique<OscSender>(host, port));
 }
 
+void OscPublisher::clearTargets() noexcept {
+    targets_.clear();
+    // Back to exactly what a freshly built publisher holds, so a target added after this
+    // is told the same things a target present from the start would have been.
+    lastBpm_ = -1.0;
+    lastConfidence_ = -1.0;
+    lastLocked_ = -1;
+    lastMeter_ = 0;
+}
+
 void OscPublisher::sendInt(std::string_view address, std::int32_t value) {
     OscMessage message(address);
     message.addInt(value);
