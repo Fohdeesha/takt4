@@ -84,6 +84,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_redouble([this] { redouble(); });
     window_->on_tap([this] { tap(); });
     window_->on_snap_downbeat([this] { snapDownbeat(); });
+    window_->on_pin_changed([this](bool pinned) { setPinned(pinned); });
     window_->on_fold_on_changed([this](bool on) { setFoldEnabled(on); });
     window_->on_fold_min_changed([this](float bpm) { setFoldMin(static_cast<double>(bpm)); });
     window_->on_fold_max_changed([this](float bpm) { setFoldMax(static_cast<double>(bpm)); });
@@ -319,6 +320,20 @@ void WindowController::snapDownbeat() {
     (void)tracker_.engine().post(engine::Command::snapDownbeat());
 }
 
+void WindowController::setPinned(bool pinned) {
+    if (!tracker_.engine().post(engine::Command::setLockPinned(pinned))) {
+        // The queue is full, which takes 3200 posts a second. Nothing was sent, so nothing
+        // is in flight and the button goes back to telling the truth.
+        pinPosted_.reset();
+        return;
+    }
+    pinPosted_ = pinned;
+    pinSettling_ = 0;
+    // Optimistically, so the next press reads this rather than the state the engine has
+    // not been given a frame to update yet.
+    window_->set_pinned(pinned);
+}
+
 void WindowController::tap() {
     tap(nowSeconds());
 }
@@ -434,8 +449,11 @@ void WindowController::publishOutputs() {
 
 void WindowController::publishStopped() {
     window_->set_running(false);
-    // A set of taps does not span a stop, and the button must not go on counting.
+    // A set of taps does not span a stop, and the button must not go on counting. Nor
+    // does a pin: `BeatEngine::start` reseeds the tracker, which lets go of it, so a pin
+    // still in flight here would be showing an intention the next run will not honour.
     taps_.reset();
+    pinPosted_.reset();
     publishTaps();
     publishIdleReadouts(*window_);
     publishOptions();
@@ -484,6 +502,24 @@ void WindowController::publishOptions() {
         posted_.reset();
     }
     publishTempoOptions(*window_, live);
+}
+
+void WindowController::publishPin() {
+    const bool live = tracker_.engine().state().pinned;
+    if (pinPosted_) {
+        if (live != *pinPosted_) {
+            // The race `publishOptions` guards, for the same reason and on the same
+            // deadline: a redraw landing between the post and the inference thread
+            // draining it would read the old value back and un-light the button under the
+            // operator's finger.
+            if (!tracker_.running() || ++pinSettling_ <= kSettleRedraws) {
+                window_->set_pinned(*pinPosted_);
+                return;
+            }
+        }
+        pinPosted_.reset();
+    }
+    window_->set_pinned(live);
 }
 
 void WindowController::setStatus(const std::string& text, bool error) {
@@ -536,6 +572,9 @@ void WindowController::publishTrace() {
 
 void WindowController::publishState() {
     publishTempoState(*window_, tracker_.engine().state());
+    // After it: publishTempoState shows what the engine has, and this is the one property
+    // the window may legitimately be showing ahead of it.
+    publishPin();
     publishOptions();
 }
 

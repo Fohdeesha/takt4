@@ -123,6 +123,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     state.bpm = 128.25;
     state.rawBpm = 256.5;
     state.locked = true;
+    state.pinned = true;
     state.holding = false;
     state.refined = true;
     state.confidence = 0.82;
@@ -134,6 +135,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     CHECK_THAT(window->get_bpm(), WithinAbs(128.25, 1e-4));
     CHECK_THAT(window->get_raw_bpm(), WithinAbs(256.5, 1e-4));
     CHECK(window->get_locked());
+    CHECK(window->get_pinned());
     CHECK_FALSE(window->get_holding());
     CHECK(window->get_refined());
     CHECK_THAT(window->get_confidence(), WithinAbs(0.82, 1e-4));
@@ -145,6 +147,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     takt4::ui::publishIdleReadouts(*window);
     CHECK(window->get_bpm() == 0.0f);
     CHECK_FALSE(window->get_locked());
+    CHECK_FALSE(window->get_pinned()); // and the LOCK button is not still lit
     CHECK(window->get_beats_per_bar() == 0);
     CHECK(window->get_input_level() == 0.0f);
     CHECK(std::string(window->get_input_reading()).empty());
@@ -380,6 +383,29 @@ TEST_CASE("halving and doubling move the published tempo by an octave", "[ui]") 
     controller.window().invoke_redouble();
     run.applyPosted();
     CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw, 1e-6));
+}
+
+TEST_CASE("the LOCK button pins the tracker's lock and lets go of it", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+    REQUIRE_FALSE(controller.window().get_pinned());
+
+    controller.window().invoke_pin_changed(true);
+    // Lit before the engine has had a frame to agree, so a second press reads the
+    // intention rather than the state it is about to replace.
+    CHECK(controller.window().get_pinned());
+    run.applyPosted();
+    CHECK(tracker.engine().state().pinned);
+    CHECK(tracker.engine().state().locked);
+
+    controller.window().invoke_pin_changed(false);
+    CHECK_FALSE(controller.window().get_pinned());
+    run.applyPosted();
+    CHECK_FALSE(tracker.engine().state().pinned);
+    // Released, so the tracker has the tempo back and is hunting for it again.
+    CHECK_FALSE(tracker.engine().state().locked);
 }
 
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
