@@ -92,17 +92,32 @@ TEST_CASE("a reader never sees half of two values", "[rt]") {
         });
     }
 
-    for (std::uint64_t seed = 1; seed <= 200000; ++seed) {
-        published.publish(Wide::of(seed));
+    // Publish until the readers have really been scheduled, rather than for a fixed count.
+    // Three spinning threads on a contended two-core runner can get almost no time while
+    // this one races through 200000 publishes in a couple of milliseconds, and then the
+    // run proves nothing: it is the reads that catch a tear, not the writes. Measured on
+    // CI 2026-09-05, where "the readers really ran" failed while `torn == 0` held — the
+    // test reporting its own starvation as a fault in the code under test.
+    //
+    // The ceiling keeps a pathological scheduler to a failure rather than a hang.
+    constexpr std::uint64_t kWrites = 200000;
+    constexpr std::uint64_t kReadsWanted = 1000;
+    constexpr std::uint64_t kWritesCeiling = 20000000;
+    std::uint64_t writes = 0;
+    while (writes < kWritesCeiling &&
+           (writes < kWrites || reads.load(std::memory_order_relaxed) < kReadsWanted)) {
+        ++writes;
+        published.publish(Wide::of(writes));
     }
     stop.store(true, std::memory_order_relaxed);
     for (std::thread& reader : readers) {
         reader.join();
     }
 
-    INFO(reads.load() << " reads across three threads against 200000 writes");
-    CHECK(reads.load() > 1000); // the readers really ran
-    CHECK(torn.load() == 0);
-    CHECK(published.load().seed == 200000);
-    CHECK(published.revision() == 200000);
+    INFO(reads.load() << " reads across three threads against " << writes << " writes");
+    CHECK(torn.load() == 0);             // the whole point: no reader ever saw half of two values
+    CHECK(reads.load() >= kReadsWanted); // ...and enough of them ran for that to mean something
+    CHECK(writes >= kWrites);
+    CHECK(published.load().seed == writes);
+    CHECK(published.revision() == writes);
 }
