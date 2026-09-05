@@ -40,6 +40,8 @@ void writeBigEndian(std::byte* out, const void* value, std::size_t size) noexcep
     }
 }
 
+} // namespace
+
 bool addressIsLegal(std::string_view address) noexcept {
     if (address.empty() || address.front() != '/') {
         return false;
@@ -54,8 +56,6 @@ bool addressIsLegal(std::string_view address) noexcept {
     }
     return true;
 }
-
-} // namespace
 
 OscMessage::OscMessage(std::string_view address) noexcept : address_(address) {
     tags_[0] = ',';

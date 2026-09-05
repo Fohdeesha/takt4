@@ -46,6 +46,8 @@ add_executable(takt4_tests
   tracking/tap_tempo_test.cpp
   tracking/tempo_tracker_test.cpp
   trigger/generator_test.cpp
+  trigger/rule_test.cpp
+  trigger/trigger_engine_test.cpp
   trigger/value_test.cpp
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
