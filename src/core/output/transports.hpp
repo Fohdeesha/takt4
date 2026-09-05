@@ -81,6 +81,11 @@ public:
     const std::vector<OscTarget>& oscTargets() const noexcept { return oscTargets_; }
     void setOscTargets(const std::vector<OscTarget>& targets);
 
+    /// The namespace every address is sent under (§5.6). Fixed at construction: it is
+    /// what a receiver is configured to listen for, so changing it under a running rig
+    /// would silently stop everything downstream.
+    const std::string& oscPrefix() const noexcept { return oscPrefix_; }
+
     /// The port MIDI clock is going to, or empty for none. Opening throws if the port is
     /// not on the machine, and nothing is changed when it does.
     const std::optional<std::string>& midiClockPort() const noexcept { return midiClockPort_; }
@@ -133,6 +138,7 @@ private:
     /// make `advance` try to emit every tick since.
     double lastNow_ = 0.0;
     std::vector<OscTarget> oscTargets_;
+    std::string oscPrefix_;
     std::optional<std::string> midiClockPort_;
     double lastLinkBpm_ = -1.0;
     std::atomic<std::uint64_t> beats_{0};

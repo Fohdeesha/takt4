@@ -19,7 +19,7 @@ std::int64_t toMicros(double seconds) noexcept {
 
 Transports::Transports(const Config& config)
     : latencyMicros_(toMicros(config.latencySeconds)), link_(std::make_unique<LinkSession>(120.0)),
-      osc_(std::make_unique<OscPublisher>(config.oscPrefix)) {
+      osc_(std::make_unique<OscPublisher>(config.oscPrefix)), oscPrefix_(config.oscPrefix) {
     setOscTargets(config.oscTargets);
     setMidiClockPort(config.midiClockPort);
     linkEnabled_ = config.link;

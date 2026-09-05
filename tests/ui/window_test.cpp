@@ -3,6 +3,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
@@ -650,4 +651,139 @@ TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware
     CHECK(controller.outputs().errors() == 0);
     // Whatever the tracker called on silence, the transports were given all of it.
     CHECK(controller.outputs().transports().beats() == tracker.engine().beatsCalled());
+}
+
+// ---------------------------------------------------------------------------------------
+// Q7's two layers, from the window's side: what it restores on the way in and what it
+// hands back on the way out. Where the file lives and what it looks like is
+// tests/settings/settings_test.cpp's business.
+// ---------------------------------------------------------------------------------------
+
+TEST_CASE("a window with no settings comes up on the machine's own best guess", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    if (tracker.devices().empty()) {
+        SKIP("no input device on this machine");
+    }
+    // The ranking, unchanged by settings that say nothing.
+    const std::optional<InputDevice> best = bestInputDevice(tracker);
+    REQUIRE(best);
+    CHECK(controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name ==
+          best->name);
+    CHECK(controller.channelIndex() == 0);
+}
+
+TEST_CASE("the window restores the device and channel it was left on", "[ui][hardware]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (tracker.devices().empty()) {
+        SKIP("no input device on this machine");
+    }
+    // A device with more than one input, so there is a channel worth remembering.
+    std::optional<InputDevice> multi;
+    for (const InputDevice& device : tracker.devices()) {
+        if (device.maxInputChannels > 1) {
+            multi = device;
+            break;
+        }
+    }
+    if (!multi) {
+        SKIP("no device on this machine has two inputs");
+    }
+
+    takt4::settings::Settings saved;
+    saved.machine.deviceName = multi->name;
+    saved.machine.hostApiName = multi->hostApiName;
+    saved.machine.channel = 1;
+
+    WindowController controller(tracker, saved);
+    REQUIRE(controller.deviceIndex() >= 0);
+    const InputDevice& chosen =
+        controller.devices()[static_cast<std::size_t>(controller.deviceIndex())];
+    CHECK(chosen.name == multi->name);
+    CHECK(chosen.hostApiName == multi->hostApiName);
+    CHECK(controller.channelIndex() == 1);
+    CHECK(controller.window().get_channel_index() == 1);
+}
+
+TEST_CASE("a remembered device that is gone falls back rather than picking wrongly", "[ui]") {
+    // Restoring the wrong interface is worse than restoring none, which is why the device
+    // is remembered by name and not by index.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (tracker.devices().empty()) {
+        SKIP("no input device on this machine");
+    }
+    takt4::settings::Settings saved;
+    saved.machine.deviceName = "An interface that was unplugged";
+    saved.machine.hostApiName = "ASIO";
+    saved.machine.channel = 5;
+
+    WindowController controller(tracker, saved);
+    const std::optional<InputDevice> best = bestInputDevice(tracker);
+    REQUIRE(best);
+    CHECK(controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name ==
+          best->name);
+    // And the channel of a device we did not restore is not restored either.
+    CHECK(controller.channelIndex() == 0);
+}
+
+TEST_CASE("the window switches the outputs back on", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.preset.link = true;
+    saved.preset.oscPrefix = "/vj";
+    saved.preset.oscTargets = {{"127.0.0.1", 7000}, {"127.0.0.1", 7001}};
+
+    WindowController controller(tracker, saved);
+    CHECK(controller.outputs().transports().linkEnabled());
+    CHECK(controller.outputs().transports().osc().targetCount() == 2);
+    CHECK(controller.outputs().transports().oscPrefix() == "/vj");
+    CHECK(controller.window().get_link_on());
+    CHECK(controller.window().get_osc_on());
+    CHECK(std::string(controller.window().get_osc_targets()).find("7001") != std::string::npos);
+}
+
+TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[ui]") {
+    // The one restored setting that can fail. Construction must still finish: an app that
+    // will not open because a MIDI cable moved is worse than one with no clock.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.machine.midiClockPort = "takt4 test - a port from another machine";
+
+    WindowController controller(tracker, saved);
+    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    CHECK(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
+}
+
+TEST_CASE("what the window hands back is what it was given", "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.preset.link = true;
+    saved.preset.oscTargets = {{"192.168.1.40", 7000}};
+    saved.preset.oscPrefix = "/vj";
+
+    WindowController controller(tracker, saved);
+    // Changes made through the window are in it too.
+    controller.window().invoke_fold_min_changed(90.0f);
+    controller.window().invoke_latency_changed(-25.0f);
+    tracker.engine().step(); // let the engine take them, as a running one would
+
+    const takt4::settings::Settings out = controller.currentSettings();
+    CHECK(out.preset.link);
+    REQUIRE(out.preset.oscTargets.size() == 1);
+    CHECK(out.preset.oscTargets[0].first == "192.168.1.40");
+    CHECK(out.preset.oscPrefix == "/vj");
+    CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
+    CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.025, 1e-9));
+    if (!tracker.devices().empty()) {
+        CHECK_FALSE(out.machine.deviceName.empty());
+        CHECK_FALSE(out.machine.hostApiName.empty());
+    }
+
+    // And it survives the file, which is what the app actually does with it.
+    const takt4::settings::Settings reloaded =
+        takt4::settings::fromJson(takt4::settings::toJson(out));
+    CHECK(reloaded.preset.link);
+    CHECK_THAT(reloaded.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
+    CHECK(reloaded.machine.deviceName == out.machine.deviceName);
 }

@@ -40,15 +40,34 @@ bool sameSettings(const Options& a, const Options& b) noexcept {
            a.latencyOffsetSeconds == b.latencyOffsetSeconds;
 }
 
+/// What the last run was sending, as the transports want it.
+///
+/// The MIDI port comes from the machine half and everything else from the portable half,
+/// which is Q7's split: an OSC address travels to another laptop and a port on this box
+/// does not. A port that has since been unplugged throws on the way up, so it is left for
+/// `setMidiPort` to try once the window exists and can say so.
+output::Transports::Config transportConfig(const settings::Settings& settings,
+                                           const Options& tempo) {
+    output::Transports::Config config;
+    config.link = settings.preset.link;
+    config.oscPrefix = settings.preset.oscPrefix;
+    config.oscTargets = settings.preset.oscTargets;
+    config.latencySeconds = tempo.latencyOffsetSeconds;
+    return config;
+}
+
 } // namespace
 
 WindowController::WindowController(engine::LiveTracker& tracker)
+    : WindowController(tracker, settings::Settings{}) {}
+
+WindowController::WindowController(engine::LiveTracker& tracker, const settings::Settings& settings)
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
-      // Nothing switched on: an app that has not been configured sends nothing, and every
-      // output is a box the operator ticks.
-      runner_(tracker.engine(), output::Transports::Config{}) {
+      // Whatever the last run was sending, switched back on. With no settings that is
+      // nothing, which is what an app nobody has configured should send.
+      runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -88,7 +107,12 @@ WindowController::WindowController(engine::LiveTracker& tracker)
     }
     window_->set_midi_ports(ports);
 
-    refreshDevices();
+    refreshDevices(settings.machine);
+    // After the pickers, so a port that has gone missing since the last run reports on a
+    // status line the window already has rather than during construction.
+    if (!settings.machine.midiClockPort.empty()) {
+        setMidiPort(settings.machine.midiClockPort);
+    }
     publishStopped();
     publishOutputs();
 
@@ -99,7 +123,7 @@ void WindowController::run() {
     window_->run();
 }
 
-void WindowController::refreshDevices() {
+void WindowController::refreshDevices(const settings::MachineSettings& remembered) {
     devices_ = tracker_.devices();
     auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const audio::InputDevice& device : devices_) {
@@ -114,22 +138,51 @@ void WindowController::refreshDevices() {
         return;
     }
 
-    // The most useful device to land on: a real input before a loopback of the speakers
-    // (Q3 offers loopback as a way round a busy interface, not as the normal path), then a
-    // host API that can pick channels natively, then the machine's own default input, then
-    // the one with the most inputs.
-    const auto rank = [](const audio::InputDevice& device) {
-        return std::make_tuple(!device.isLoopback, audio::hasNativeChannelSelection(device.hostApi),
-                               device.isDefaultInput, device.maxInputChannels);
-    };
-    std::size_t best = 0;
-    for (std::size_t i = 1; i < devices_.size(); ++i) {
-        if (rank(devices_[i]) > rank(devices_[best])) {
-            best = i;
+    // What the last run was on, if it is still plugged in. By name and host API rather
+    // than by index, because an index means something different the moment anything else
+    // is connected — and restoring the wrong interface is worse than restoring none.
+    std::size_t chosen = devices_.size();
+    if (!remembered.deviceName.empty()) {
+        for (std::size_t i = 0; i < devices_.size(); ++i) {
+            if (devices_[i].name == remembered.deviceName &&
+                devices_[i].hostApiName == remembered.hostApiName) {
+                chosen = i;
+                break;
+            }
         }
     }
-    window_->set_device_index(static_cast<int>(best));
-    pickDevice(static_cast<int>(best));
+
+    const bool restored = chosen != devices_.size();
+    if (!restored) {
+        // Nothing remembered, or it is not here any more. The most useful device to land
+        // on: a real input before a loopback of the speakers (Q3 offers loopback as a way
+        // round a busy interface, not as the normal path), then a host API that can pick
+        // channels natively, then the machine's own default input, then the most inputs.
+        const auto rank = [](const audio::InputDevice& device) {
+            return std::make_tuple(!device.isLoopback,
+                                   audio::hasNativeChannelSelection(device.hostApi),
+                                   device.isDefaultInput, device.maxInputChannels);
+        };
+        chosen = 0;
+        for (std::size_t i = 1; i < devices_.size(); ++i) {
+            if (rank(devices_[i]) > rank(devices_[chosen])) {
+                chosen = i;
+            }
+        }
+    }
+
+    window_->set_device_index(static_cast<int>(chosen));
+    pickDevice(static_cast<int>(chosen));
+
+    // The channel only after the device, because picking a device resets it to the first
+    // input. And only when the device it was remembered *for* is the one we landed on: a
+    // channel number means nothing on a different interface, and "input 6" of whatever
+    // happened to be second in the list is exactly the wrong kind of restored setting.
+    if (restored && remembered.channel > 0 &&
+        remembered.channel < devices_[static_cast<std::size_t>(device_)].maxInputChannels) {
+        pickChannel(remembered.channel);
+        window_->set_channel_index(remembered.channel);
+    }
 }
 
 void WindowController::pickDevice(int index) {
@@ -337,6 +390,26 @@ void WindowController::postOptions(const Options& options) {
 
 void WindowController::publishTaps() {
     window_->set_tap_count(static_cast<int>(taps_.taps()));
+}
+
+settings::Settings WindowController::currentSettings() const {
+    settings::Settings out;
+    if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
+        const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
+        out.machine.deviceName = device.name;
+        out.machine.hostApiName = device.hostApiName;
+        out.machine.channel = channel_;
+    }
+    const output::Transports& transports = runner_.transports();
+    out.machine.midiClockPort = transports.midiClockPort().value_or(std::string{});
+
+    // The tracker's own, not this window's copy: a tap moves the fold window and the
+    // window is only ever showing what the engine has (§7 deviation 8).
+    out.preset.tempo = tracker_.engine().tempoOptions();
+    out.preset.link = transports.linkEnabled();
+    out.preset.oscTargets = transports.oscTargets();
+    out.preset.oscPrefix = transports.oscPrefix();
+    return out;
 }
 
 void WindowController::publishOutputs() {

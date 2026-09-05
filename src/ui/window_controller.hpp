@@ -3,6 +3,7 @@
 #include "core/audio/devices.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/settings/settings.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/window_state.hpp"
@@ -55,6 +56,15 @@ public:
     /// It also builds §4.2's output thread and hands the tracker Link's clock, which is
     /// why nothing outside has to know the ordering §4.3 needs: `LiveTracker::start`
     /// installs the clock before it opens the stream.
+    ///
+    /// `settings` is what the last run left behind (Q7): the interface and channel to
+    /// select if they are still there, and the outputs to switch back on. The tracker's
+    /// own tuning is not applied here — it belongs to the engine, and whoever built the
+    /// `LiveTracker` passes it in `Options::engine::tempo`.
+    ///
+    /// Two constructors rather than a default argument: §6 records that
+    /// `const Settings& = {}` in a declaration compiles on MSVC and on nothing else.
+    WindowController(engine::LiveTracker& tracker, const settings::Settings& settings);
     explicit WindowController(engine::LiveTracker& tracker);
 
     WindowController(const WindowController&) = delete;
@@ -116,6 +126,10 @@ public:
     /// The MIDI output port to send 24 PPQN to, or empty for none.
     void setMidiPort(const std::string& name);
 
+    /// Everything worth remembering for next time (Q7), as it stands now. The caller
+    /// saves it; this class does not know where settings live and does not want to.
+    settings::Settings currentSettings() const;
+
     /// What is being sent, for the row that draws it.
     const output::OutputRunner& outputs() const noexcept { return runner_; }
     /// Every MIDI output port on the machine, as offered in the picker.
@@ -134,7 +148,9 @@ public:
     std::uint64_t ticks() const noexcept { return ticks_; }
 
 private:
-    void refreshDevices();
+    /// Fills the device picker and selects one: the remembered device if it is still
+    /// there, otherwise the most useful one on the machine.
+    void refreshDevices(const settings::MachineSettings& remembered);
     void publishStopped();
     void publishOpenStream();
     void publishOptions();
