@@ -17,24 +17,18 @@ std::int64_t toMicros(double seconds) noexcept {
 
 } // namespace
 
-Transports::Transports(const Config& config) : latencyMicros_(toMicros(config.latencySeconds)) {
-    if (!config.oscTargets.empty()) {
-        osc_ = std::make_unique<OscPublisher>(config.oscPrefix);
-        for (const auto& [host, port] : config.oscTargets) {
-            osc_->addTarget(host, port);
-        }
-    }
-    if (config.midiClockPort) {
-        midiPort_ = std::make_unique<MidiOutput>(*config.midiClockPort);
-        midi_ = std::make_unique<MidiClock>(*midiPort_, 120.0);
-    }
-    if (config.link) {
-        link_ = std::make_unique<LinkSession>(120.0);
-    }
+Transports::Transports(const Config& config)
+    : latencyMicros_(toMicros(config.latencySeconds)), link_(std::make_unique<LinkSession>(120.0)),
+      osc_(std::make_unique<OscPublisher>(config.oscPrefix)) {
+    setOscTargets(config.oscTargets);
+    setMidiClockPort(config.midiClockPort);
+    linkEnabled_ = config.link;
 }
 
 void Transports::startOutputs(double now) {
-    if (link_) {
+    started_ = true;
+    lastNow_ = now;
+    if (linkEnabled_) {
         link_->enable(true);
     }
     if (midi_) {
@@ -43,40 +37,87 @@ void Transports::startOutputs(double now) {
 }
 
 void Transports::stopOutputs() noexcept {
+    started_ = false;
     if (midi_) {
         midi_->stop();
     }
-    if (link_) {
-        link_->enable(false);
+    link_->enable(false);
+}
+
+void Transports::setLinkEnabled(bool on) {
+    linkEnabled_ = on;
+    // Only actually joined while the outputs are running: switching Link on before Start
+    // says what to do, not to do it now.
+    link_->enable(on && started_);
+    if (!on) {
+        // A session rejoined later starts from nothing, so the next beat must resend the
+        // tempo rather than find it unchanged.
+        lastLinkBpm_ = -1.0;
+    }
+}
+
+void Transports::setOscTargets(const std::vector<OscTarget>& targets) {
+    oscTargets_ = targets;
+    osc_->clearTargets();
+    for (const auto& [host, port] : oscTargets_) {
+        osc_->addTarget(host, port);
+    }
+}
+
+void Transports::setMidiClockPort(const std::optional<std::string>& port) {
+    if (port == midiClockPort_ && (!port || midi_)) {
+        return;
+    }
+    if (!port) {
+        if (midi_) {
+            midi_->stop();
+        }
+        midi_.reset();
+        midiPort_.reset();
+        midiClockPort_.reset();
+        return;
+    }
+    // Built before anything is torn down, so a port that will not open leaves the one
+    // that was working exactly where it was.
+    auto opened = std::make_unique<MidiOutput>(*port);
+    auto clock = std::make_unique<MidiClock>(*opened, 120.0);
+    if (midi_) {
+        midi_->stop();
+    }
+    midiPort_ = std::move(opened);
+    midi_ = std::move(clock);
+    midiClockPort_ = port;
+    if (started_) {
+        // From now, not from when the outputs started: `advance` would otherwise try to
+        // emit every tick of the intervening set at once.
+        midi_->start(lastNow_);
     }
 }
 
 void Transports::advance(double now, const tracking::TempoState& state) {
+    lastNow_ = now;
     if (midi_) {
         (void)midi_->advance(now);
     }
-    if (osc_) {
-        osc_->publishState(state);
-    }
+    osc_->publishState(state);
 }
 
 void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double now) {
-    ++beats_;
+    lastNow_ = now;
+    beats_.fetch_add(1, std::memory_order_relaxed);
     if (event.downbeat) {
-        ++downbeats_;
+        downbeats_.fetch_add(1, std::memory_order_relaxed);
     }
     const std::int64_t latencyMicros = latencyMicros_.load(std::memory_order_relaxed);
 
-    if (osc_) {
-        osc_->publishBeat(event);
-    }
+    osc_->publishBeat(event);
     if (midi_) {
         midi_->setTempo(event.bpm);
         // The beat's audio arrived a pipeline's worth of time ago; the latency offset is
         // the one place that is compensated (§5.5).
         midi_->syncToBeat(now + static_cast<double>(latencyMicros) / 1e6);
     }
-    if (link_) {
+    if (linkEnabled_) {
         publishToLink(event, hostMicros, latencyMicros);
     }
 }
@@ -101,6 +142,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         link_->setTempo(event.bpm, at);
         lastLinkBpm_ = event.bpm;
     }
+    // The rest is bar phase, and there is none to publish before the first downbeat.
     // §5.6: phase through requestBeatAtTime with the detected meter as the quantum. The
     // beat number is the bar position, so peers line up on our downbeat; before the first
     // downbeat the bar phase is unknown and only the tempo is published.

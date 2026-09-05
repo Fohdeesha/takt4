@@ -40,23 +40,51 @@ public:
         double latencySeconds = 0.0;
     };
 
-    /// Opens whatever the config asks for and nothing else. Throws if a named MIDI port
-    /// is not on the machine, or if Link cannot open its sockets.
+    /// Builds the transports and applies `config` as their starting state. Throws if a
+    /// named MIDI port is not on the machine.
+    ///
+    /// **Link and OSC are always built, whether or not they are switched on.** Link
+    /// because `BeatEngine::setHostTimeSource` is handed a pointer to the session and the
+    /// audio thread reads it every hop (§4.3): building the session on demand would mean
+    /// destroying one under a running audio thread the first time an operator switched
+    /// Link off, and no amount of ordering makes that safe. Neither costs anything idle —
+    /// Link's constructor starts its service thread but "does not touch the network;
+    /// nothing is visible to peers until the session is enabled", and a publisher with no
+    /// targets sends to nobody. MIDI is the exception: it is a named device rather than a
+    /// switch, so it is opened when one is chosen and closed when it is not.
     explicit Transports(const Config& config);
 
     Transports(const Transports&) = delete;
     Transports& operator=(const Transports&) = delete;
 
-    /// Null when that transport was not asked for.
-    LinkSession* link() const noexcept { return link_.get(); }
-    OscPublisher* osc() const noexcept { return osc_.get(); }
+    /// Always there, switched on or not.
+    LinkSession& link() const noexcept { return *link_; }
+    OscPublisher& osc() const noexcept { return *osc_; }
+    /// Null unless a MIDI port is open.
     MidiClock* midiClock() const noexcept { return midi_.get(); }
     const MidiOutput* midiPort() const noexcept { return midiPort_.get(); }
 
     /// Whether anything is actually being sent. With nothing on, `publish` and `advance`
     /// still count beats and cost nothing else, which is what makes an app that has not
     /// been configured yet behave like one that has.
-    bool any() const noexcept { return link_ || osc_ || midi_; }
+    bool any() const noexcept { return linkEnabled_ || osc_->targetCount() != 0 || midi_; }
+
+    // --- what is switched on, and changing it -------------------------------------
+    //
+    // These mutate the transports, so they belong to whichever thread owns them — the
+    // output thread, when an `OutputRunner` is driving. Post through the runner rather
+    // than reaching for these; it applies them between rounds.
+
+    bool linkEnabled() const noexcept { return linkEnabled_; }
+    void setLinkEnabled(bool on);
+
+    const std::vector<OscTarget>& oscTargets() const noexcept { return oscTargets_; }
+    void setOscTargets(const std::vector<OscTarget>& targets);
+
+    /// The port MIDI clock is going to, or empty for none. Opening throws if the port is
+    /// not on the machine, and nothing is changed when it does.
+    const std::optional<std::string>& midiClockPort() const noexcept { return midiClockPort_; }
+    void setMidiClockPort(const std::optional<std::string>& port);
 
     /// Enables Link and starts the MIDI clock. `now` is the seconds-since-start clock
     /// `advance` and `publish` are given.
@@ -84,21 +112,31 @@ public:
     void setLatencySeconds(double seconds) noexcept;
     double latencySeconds() const noexcept;
 
-    std::uint64_t beats() const noexcept { return beats_; }
-    std::uint64_t downbeats() const noexcept { return downbeats_; }
+    /// Atomic so a UI can show them while the output thread is sending.
+    std::uint64_t beats() const noexcept { return beats_.load(std::memory_order_relaxed); }
+    std::uint64_t downbeats() const noexcept { return downbeats_.load(std::memory_order_relaxed); }
 
 private:
     void publishToLink(const tracking::BeatEvent& event, std::int64_t hostMicros,
                        std::int64_t latencyMicros);
 
     std::atomic<std::int64_t> latencyMicros_;
+    /// Never null, and never replaced: the audio thread holds a pointer to the session.
     std::unique_ptr<LinkSession> link_;
     std::unique_ptr<OscPublisher> osc_;
     std::unique_ptr<MidiOutput> midiPort_;
     std::unique_ptr<MidiClock> midi_;
+    bool linkEnabled_ = false;
+    bool started_ = false;
+    /// The most recent time the transports were driven with. A MIDI port opened mid-set
+    /// has to start its clock from now: starting it from when the *outputs* started would
+    /// make `advance` try to emit every tick since.
+    double lastNow_ = 0.0;
+    std::vector<OscTarget> oscTargets_;
+    std::optional<std::string> midiClockPort_;
     double lastLinkBpm_ = -1.0;
-    std::uint64_t beats_ = 0;
-    std::uint64_t downbeats_ = 0;
+    std::atomic<std::uint64_t> beats_{0};
+    std::atomic<std::uint64_t> downbeats_{0};
 };
 
 } // namespace takt4::output

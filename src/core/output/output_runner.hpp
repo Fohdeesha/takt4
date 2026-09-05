@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/audio/host_time.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/output/transports.hpp"
 
@@ -7,9 +8,47 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace takt4::output {
+
+/// A change to what the transports are sending.
+///
+/// Posted by whoever owns the controls — a window, §5.7's inbound OSC later — and applied
+/// by the output thread between rounds, because the transports belong to it. Exactly the
+/// shape `engine::Command` has for the tracker, and for the same reason: many producers,
+/// one consumer, and no caller reaching into something another thread is using.
+struct OutputCommand {
+    enum class Kind : std::uint8_t { LinkEnabled, OscTargets, MidiClockPort };
+
+    static OutputCommand linkEnabled(bool on) {
+        OutputCommand command;
+        command.kind = Kind::LinkEnabled;
+        command.enabled = on;
+        return command;
+    }
+    static OutputCommand oscTargets(std::vector<Transports::OscTarget> targets) {
+        OutputCommand command;
+        command.kind = Kind::OscTargets;
+        command.targets = std::move(targets);
+        return command;
+    }
+    static OutputCommand midiClockPort(std::optional<std::string> port) {
+        OutputCommand command;
+        command.kind = Kind::MidiClockPort;
+        command.port = std::move(port);
+        return command;
+    }
+
+    Kind kind = Kind::LinkEnabled;
+    bool enabled = false;
+    std::vector<Transports::OscTarget> targets;
+    std::optional<std::string> port;
+};
 
 /// HANDOFF §4.2's output thread.
 ///
@@ -30,9 +69,9 @@ namespace takt4::output {
 ///
 /// The caller still owns two things that have to happen around it:
 ///
-///   * `engine.setHostTimeSource(transports.link())` **before the engine is started**,
-///     because §4.3's stamp is taken on the audio thread and there has to be a clock in
-///     place before there is one.
+///   * `engine.setHostTimeSource(&runner.hostTimeClock())` **before the audio stream is
+///     opened**, because §4.3's stamp is taken on the audio thread and there has to be a
+///     clock in place before there is one.
 ///   * Draining `popFrame`, if anything wants the frames. Nobody has to, but a ring that
 ///     nobody drains fills and the engine starts counting frames lost.
 class OutputRunner {
@@ -46,8 +85,13 @@ public:
     /// loop has to come round well inside that or the ticks inherit its period as jitter.
     static constexpr std::chrono::milliseconds kPeriod{1};
 
-    /// Both must outlive this. Nothing is sent until `start()`.
-    OutputRunner(engine::BeatEngine& engine, Transports& transports);
+    /// The engine must outlive this. The transports are built here and owned here, which
+    /// is what makes "one thread touches them" structural rather than a comment: nothing
+    /// else can reach a mutating member of them. Changes go through `post`.
+    ///
+    /// Throws whatever `Transports` throws — a MIDI port that is not on the machine.
+    /// Nothing is sent until `start()`.
+    OutputRunner(engine::BeatEngine& engine, const Transports::Config& config);
     ~OutputRunner();
 
     OutputRunner(const OutputRunner&) = delete;
@@ -78,15 +122,53 @@ public:
     /// Seconds since `start()`, on the steady clock the transports are driven from.
     double elapsed() const noexcept;
 
+    /// The transports, for reading. Their counters are atomic and Link's own state is
+    /// safe to query, so a UI may call this while the thread is sending; the members that
+    /// change what is sent are not reachable through it, and that is deliberate.
+    const Transports& transports() const noexcept { return transports_; }
+
+    /// Link's clock, for `engine::BeatEngine::setHostTimeSource`.
+    ///
+    /// §4.3's stamp is taken on the audio thread, so this has to be installed before the
+    /// stream is opened. It is stable for this runner's life — the session is built once
+    /// and switched on and off, never replaced — which is exactly why switching Link off
+    /// mid-set cannot leave the audio thread holding a destroyed clock.
+    audio::HostTimeSource& hostTimeClock() noexcept { return transports_.link(); }
+
+    /// §5.5's latency offset. Any thread: it writes one atomic.
+    void setLatencySeconds(double seconds) noexcept { transports_.setLatencySeconds(seconds); }
+
+    /// Asks for a change to what is being sent. Any thread; applied by the output thread
+    /// before its next round, so it has happened within a millisecond. Applied
+    /// immediately on the calling thread when the runner is not running, which is what
+    /// lets an app be configured before it is started.
+    void post(OutputCommand command);
+
+    /// What went wrong applying the last posted change, or empty. A MIDI port that is not
+    /// on the machine is the one that happens; an operator has to be told rather than
+    /// left wondering why nothing ticks.
+    std::string lastError() const;
+
 private:
     void run() noexcept;
     /// One round: every beat waiting, then the clock. On the output thread, or on the
     /// caller's in `stop()` once the thread has been joined — never on both at once.
     void drainOnce(double now);
+    /// Everything posted since the last round, in order. On whichever thread owns the
+    /// transports at the time.
+    void applyCommands() noexcept;
+    void apply(const OutputCommand& command);
 
     engine::BeatEngine& engine_;
-    Transports& transports_;
+    Transports transports_;
     BeatObserver observer_;
+
+    mutable std::mutex commandMutex_;
+    std::vector<OutputCommand> pending_;
+    /// Drained into, and reused, so applying commands allocates nothing after the first.
+    std::vector<OutputCommand> applying_;
+    mutable std::mutex errorMutex_;
+    std::string lastError_;
     std::thread worker_;
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> rounds_{0};

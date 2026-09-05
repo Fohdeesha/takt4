@@ -1,5 +1,8 @@
 #include "core/output/output_runner.hpp"
 
+#include <exception>
+#include <utility>
+
 #if defined(_WIN32)
 #include <windows.h>
 // timeapi.h must follow windows.h.
@@ -34,8 +37,8 @@ void restoreTimerResolution(bool raised) noexcept {
 
 } // namespace
 
-OutputRunner::OutputRunner(engine::BeatEngine& engine, Transports& transports)
-    : engine_(engine), transports_(transports) {}
+OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config& config)
+    : engine_(engine), transports_(config) {}
 
 OutputRunner::~OutputRunner() {
     stop();
@@ -69,6 +72,10 @@ void OutputRunner::stop() noexcept {
     running_.store(false, std::memory_order_release);
     worker_.join();
 
+    // Anything posted in the moments before the stop still meant something, and the
+    // transports are this thread's now.
+    applyCommands();
+
     // The last beats of a set are still beats: the engine may have called one between the
     // final round and the join. Safe on this thread now — the only other consumer of that
     // ring has been joined.
@@ -84,8 +91,63 @@ void OutputRunner::stop() noexcept {
     raisedTimer_ = false;
 }
 
+void OutputRunner::post(OutputCommand command) {
+    if (!running()) {
+        // Nothing else is touching the transports, so there is no reason to make an
+        // operator press Start before a setting takes: this is how an app is configured
+        // before it is running at all.
+        apply(command);
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(commandMutex_);
+    pending_.push_back(std::move(command));
+}
+
+std::string OutputRunner::lastError() const {
+    const std::lock_guard<std::mutex> lock(errorMutex_);
+    return lastError_;
+}
+
+void OutputRunner::apply(const OutputCommand& command) {
+    try {
+        switch (command.kind) {
+        case OutputCommand::Kind::LinkEnabled:
+            transports_.setLinkEnabled(command.enabled);
+            break;
+        case OutputCommand::Kind::OscTargets:
+            transports_.setOscTargets(command.targets);
+            break;
+        case OutputCommand::Kind::MidiClockPort:
+            transports_.setMidiClockPort(command.port);
+            break;
+        }
+        const std::lock_guard<std::mutex> lock(errorMutex_);
+        lastError_.clear();
+    } catch (const std::exception& e) {
+        // A MIDI port that is not there. Transports leaves what was working alone, so the
+        // failure is only that the change did not happen — which somebody has to be told.
+        const std::lock_guard<std::mutex> lock(errorMutex_);
+        lastError_ = e.what();
+    }
+}
+
+void OutputRunner::applyCommands() noexcept {
+    {
+        const std::lock_guard<std::mutex> lock(commandMutex_);
+        if (pending_.empty()) {
+            return;
+        }
+        applying_.swap(pending_);
+    }
+    for (const OutputCommand& command : applying_) {
+        apply(command);
+    }
+    applying_.clear();
+}
+
 void OutputRunner::run() noexcept {
     while (running_.load(std::memory_order_acquire)) {
+        applyCommands();
         try {
             drainOnce(elapsed());
         } catch (...) {

@@ -1015,7 +1015,7 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
     offline.midiClockPort.reset();
 
     auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
-    takt4::output::Transports transports(transportConfig(offline));
+    takt4::output::Transports transports{transportConfig(offline)};
     BeatPrinter printer;
     if (args.beatsOut) {
         printer.writeTo(*args.beatsOut);
@@ -1068,7 +1068,10 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     options.sampleRate = args.beats.stream.rate;
     options.forceSoftwareSlice = args.beats.stream.software;
     takt4::audio::InputStream stream(session, device, selection, *engine, options);
-    takt4::output::Transports transports(transportConfig(args));
+    // The runner owns the transports (§4.2): one thread touches them, and that is
+    // structural rather than a comment now.
+    takt4::output::OutputRunner runner(*engine, transportConfig(args));
+    const takt4::output::Transports& transports = runner.transports();
     BeatPrinter printer;
     if (args.beatsOut) {
         printer.writeTo(*args.beatsOut);
@@ -1077,9 +1080,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // beat carries the host time of the audio it was found in rather than of the moment
     // this loop happened to notice it. Before the stream is started, because the stamp is
     // taken on the audio thread and there has to be a clock in place before there is one.
-    if (transports.link() != nullptr) {
-        engine->setHostTimeSource(transports.link());
-    }
+    engine->setHostTimeSource(&runner.hostTimeClock());
 
     std::cout << "device:    " << device.hostApiName << " / " << device.name << '\n'
               << "channel:   " << selection.channels[0] + 1;
@@ -1101,13 +1102,11 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     if (!args.anyOutput()) {
         std::cout << "none (--link, --osc HOST:PORT, --midi-clock PORT)";
     }
-    if (transports.link() != nullptr) {
+    if (transports.linkEnabled()) {
         std::cout << "Link ";
     }
-    if (transports.osc() != nullptr) {
-        for (std::size_t i = 0; i < transports.osc()->targetCount(); ++i) {
-            std::cout << "OSC " << transports.osc()->target(i).resolved() << " ";
-        }
+    for (std::size_t i = 0; i < transports.osc().targetCount(); ++i) {
+        std::cout << "OSC " << transports.osc().target(i).resolved() << " ";
     }
     if (transports.midiPort() != nullptr) {
         std::cout << "MIDI clock to \"" << transports.midiPort()->portName() << "\"";
@@ -1165,7 +1164,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             takt4::tracking::TempoTracker::Options live = engine->tempoOptions();
             live.latencyOffsetSeconds += key == '[' ? -0.005 : 0.005;
             (void)engine->post(Command::setTempoOptions(live));
-            transports.setLatencySeconds(live.latencyOffsetSeconds);
+            runner.setLatencySeconds(live.latencyOffsetSeconds);
             std::cout << "  latency offset " << fixed1(live.latencyOffsetSeconds * 1000.0)
                       << " ms\n";
             break;
@@ -1201,11 +1200,10 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     std::mutex publishedMutex;
     std::vector<takt4::engine::EngineBeat> published;
 
-    // §4.2's output thread. It is the single consumer of the engine's beat ring from here
-    // on, so this loop must not drain it: it polls keys, prints, and drains the *frame*
-    // ring, which nothing else wants. The tracking waits on neither — the inference thread
-    // runs at the audio's pace — and now neither does a MIDI tick.
-    takt4::output::OutputRunner runner(*engine, transports);
+    // §4.2's output thread. It is the single consumer of the engine's beat ring, so this
+    // loop must not drain it: it polls keys, prints, and drains the *frame* ring, which
+    // nothing else wants. The tracking waits on neither — the inference thread runs at the
+    // audio's pace — and now neither does a MIDI tick.
     runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
         const std::lock_guard<std::mutex> lock(publishedMutex);
         published.push_back(beat);
@@ -1272,18 +1270,18 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                       ? ", " + std::to_string(engine->framesDropped()) + " frames not drained"
                       : "")
               << '\n';
-    if (transports.osc() != nullptr) {
-        std::cout << "OSC: " << transports.osc()->messagesSent() << " messages sent, "
-                  << transports.osc()->messagesFailed() << " failed\n";
+    if (transports.osc().targetCount() != 0) {
+        std::cout << "OSC: " << transports.osc().messagesSent() << " messages sent, "
+                  << transports.osc().messagesFailed() << " failed\n";
     }
     if (transports.midiClock() != nullptr) {
         std::cout << "MIDI clock: " << transports.midiClock()->ticksSent() << " ticks, "
                   << transports.midiClock()->ticksSkipped() << " skipped\n";
     }
-    if (transports.link() != nullptr) {
-        std::cout << "Link: " << transports.link()->tempoUpdates() << " tempo updates, "
-                  << transports.link()->beatRequests() << " beat requests, "
-                  << transports.link()->numPeers() << " peers at the end\n";
+    if (transports.linkEnabled()) {
+        std::cout << "Link: " << transports.link().tempoUpdates() << " tempo updates, "
+                  << transports.link().beatRequests() << " beat requests, "
+                  << transports.link().numPeers() << " peers at the end\n";
     }
     return 0;
 }

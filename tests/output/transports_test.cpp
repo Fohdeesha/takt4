@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 using Catch::Matchers::WithinAbs;
 using takt4::output::Transports;
@@ -27,18 +29,22 @@ BeatEvent beatAt(double time, std::uint32_t beatInBar, double bpm) {
     return event;
 }
 
+/// A port name nothing on any machine can be called, for the failure path.
+const std::string kNoSuchPort = "takt4 test — no such MIDI port exists";
+
 } // namespace
 
-TEST_CASE("transports with nothing configured send nothing and still count", "[output]") {
-    // The state an app is in before anyone has set an output up, which is most of the
-    // time it is open. It has to be as harmless as it is uninteresting.
-    Transports transports(Transports::Config{});
+TEST_CASE("transports with nothing switched on send nothing and still count", "[output]") {
+    // The state an app is in before anyone has set an output up, which is most of the time
+    // it is open. It has to be as harmless as it is uninteresting.
+    Transports transports{Transports::Config{}};
 
     CHECK_FALSE(transports.any());
-    CHECK(transports.link() == nullptr);
-    CHECK(transports.osc() == nullptr);
+    CHECK_FALSE(transports.linkEnabled());
+    CHECK(transports.osc().targetCount() == 0);
     CHECK(transports.midiClock() == nullptr);
     CHECK(transports.midiPort() == nullptr);
+    CHECK_FALSE(transports.midiClockPort().has_value());
 
     transports.startOutputs(0.0);
     for (std::uint32_t beat = 1; beat <= 8; ++beat) {
@@ -64,48 +70,151 @@ TEST_CASE("the latency offset round-trips and is what the transports fire on", "
     CHECK_THAT(transports.latencySeconds(), WithinAbs(0.012, 1e-9));
 }
 
+TEST_CASE("Link is built whether or not it is switched on", "[output][link]") {
+    // The invariant the audio thread depends on. `BeatEngine::setHostTimeSource` is handed
+    // this session and reads it every hop (§4.3), so building it on demand would mean
+    // destroying one under a running audio thread the first time Link was switched off.
+    // It is built once, switched, and never replaced.
+    Transports transports{Transports::Config{}};
+    CHECK_FALSE(transports.linkEnabled());
+
+    const auto* before = &transports.link();
+    transports.startOutputs(0.0);
+    transports.setLinkEnabled(true);
+    CHECK(transports.linkEnabled());
+    CHECK(transports.any());
+    transports.setLinkEnabled(false);
+    CHECK_FALSE(transports.linkEnabled());
+    transports.stopOutputs();
+
+    CHECK(&transports.link() == before); // the same session throughout
+}
+
+TEST_CASE("switching Link on before the outputs start does not join yet", "[output][link]") {
+    // Setting something up is not the same as doing it: an operator ticks Link while the
+    // tracker is stopped, and nothing should appear to peers until Start.
+    Transports transports{Transports::Config{}};
+    transports.setLinkEnabled(true);
+    CHECK(transports.linkEnabled());
+    CHECK_FALSE(transports.link().enabled());
+
+    transports.startOutputs(0.0);
+    CHECK(transports.link().enabled());
+    transports.stopOutputs();
+    CHECK_FALSE(transports.link().enabled());
+}
+
+TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[output]") {
+    Transports transports{Transports::Config{}};
+    CHECK(transports.osc().targetCount() == 0);
+
+    transports.setOscTargets({{"127.0.0.1", 7000}, {"127.0.0.1", 7001}});
+    CHECK(transports.osc().targetCount() == 2);
+    CHECK(transports.oscTargets().size() == 2);
+    CHECK(transports.any());
+
+    transports.startOutputs(0.0);
+    TempoState state;
+    state.bpm = 128.0;
+    state.confidence = 0.7;
+    state.locked = true;
+    state.beatsPerBar = 4;
+    transports.advance(0.1, state);
+    const std::uint64_t afterFirst = transports.osc().messagesSent();
+    CHECK(afterFirst > 0);
+
+    // Nothing moved, so nothing is resent.
+    transports.advance(0.2, state);
+    CHECK(transports.osc().messagesSent() == afterFirst);
+
+    // A target added mid-set has never been told the tempo. It must not have to wait for
+    // the tempo to change before it learns what it is.
+    transports.setOscTargets({{"127.0.0.1", 7002}});
+    CHECK(transports.osc().targetCount() == 1);
+    transports.advance(0.3, state);
+    CHECK(transports.osc().messagesSent() > afterFirst);
+
+    transports.setOscTargets({});
+    CHECK(transports.osc().targetCount() == 0);
+    CHECK_FALSE(transports.any());
+    transports.stopOutputs();
+}
+
+TEST_CASE("a MIDI port that will not open leaves the transports as they were", "[output]") {
+    // The one reconfiguration that can fail, and the operator has to be able to keep
+    // working when it does.
+    Transports transports{Transports::Config{}};
+    CHECK_THROWS(transports.setMidiClockPort(kNoSuchPort));
+    CHECK(transports.midiClock() == nullptr);
+    CHECK_FALSE(transports.midiClockPort().has_value());
+    CHECK_FALSE(transports.any());
+
+    // And it is still usable afterwards.
+    transports.startOutputs(0.0);
+    transports.publish(beatAt(0.5, 1, 120.0), 0, 0.5);
+    CHECK(transports.beats() == 1);
+    transports.stopOutputs();
+}
+
+TEST_CASE("a config naming a MIDI port that is not there throws", "[output]") {
+    Transports::Config config;
+    config.midiClockPort = kNoSuchPort;
+    CHECK_THROWS(Transports{config});
+}
+
 TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link]") {
     // The wiring only, held to Link's own counters so that nothing here depends on
-    // timing. What those calls then *mean* — that only the phase survives a capture,
-    // that a request is moved to where the phase already matches — is
-    // link_session_test.cpp's business.
+    // timing. What those calls then *mean* — that only the phase survives a capture, that
+    // a request is moved to where the phase already matches — is link_session_test.cpp's
+    // business.
     Transports::Config config;
     config.link = true;
     Transports transports(config);
-    REQUIRE(transports.link() != nullptr);
     transports.startOutputs(0.0);
 
-    const std::int64_t hostMicros = transports.link()->now().count();
+    const std::int64_t hostMicros = transports.link().now().count();
 
     // Offline, there is no host clock to align to, so Link is deliberately left alone.
     transports.publish(beatAt(0.5, 1, 120.0), 0, 0.5);
-    CHECK(transports.link()->tempoUpdates() == 0);
-    CHECK(transports.link()->beatRequests() == 0);
+    CHECK(transports.link().tempoUpdates() == 0);
+    CHECK(transports.link().beatRequests() == 0);
 
     // Live, the same beat is a tempo and a bar position.
     transports.publish(beatAt(1.0, 1, 128.0), hostMicros, 1.0);
-    CHECK(transports.link()->tempoUpdates() == 1);
-    CHECK(transports.link()->beatRequests() == 1);
+    CHECK(transports.link().tempoUpdates() == 1);
+    CHECK(transports.link().beatRequests() == 1);
 
-    // A tempo that has not moved is not resent: the refined tempo wobbles by hundredths
-    // of a BPM on almost every beat, and no peer can act on that.
+    // A tempo that has not moved is not resent: the refined tempo wobbles by hundredths of
+    // a BPM on almost every beat, and no peer can act on that.
     transports.publish(beatAt(1.5, 2, 128.001), hostMicros, 1.5);
-    CHECK(transports.link()->tempoUpdates() == 1);
-    CHECK(transports.link()->beatRequests() == 2);
+    CHECK(transports.link().tempoUpdates() == 1);
+    CHECK(transports.link().beatRequests() == 2);
 
     // A tempo that really moved is.
     transports.publish(beatAt(2.0, 3, 130.0), hostMicros, 2.0);
-    CHECK(transports.link()->tempoUpdates() == 2);
-    CHECK(transports.link()->beatRequests() == 3);
+    CHECK(transports.link().tempoUpdates() == 2);
+    CHECK(transports.link().beatRequests() == 3);
 
-    // Before the first downbeat the bar phase is unknown, and publishing a guess would
-    // put every peer on the wrong beat of the bar. Nothing goes out for it.
+    // Before the first downbeat the bar phase is unknown, and publishing a guess would put
+    // every peer on the wrong beat of the bar. Nothing goes out for it.
     BeatEvent unphased = beatAt(2.5, 0, 130.0);
     unphased.beatsPerBar = 0;
     transports.publish(unphased, hostMicros, 2.5);
-    CHECK(transports.link()->beatRequests() == 3);
-    CHECK(transports.link()->tempoUpdates() == 2);
+    CHECK(transports.link().beatRequests() == 3);
+    CHECK(transports.link().tempoUpdates() == 2);
+
+    // Switched off, a beat stops reaching it at all.
+    transports.setLinkEnabled(false);
+    transports.publish(beatAt(3.0, 4, 135.0), hostMicros, 3.0);
+    CHECK(transports.link().tempoUpdates() == 2);
+    CHECK(transports.link().beatRequests() == 3);
+
+    // Switched on again, the tempo is resent even though it has not changed since: the
+    // session rejoined knowing nothing.
+    transports.setLinkEnabled(true);
+    transports.publish(beatAt(3.5, 1, 135.0), hostMicros, 3.5);
+    CHECK(transports.link().tempoUpdates() == 3);
 
     transports.stopOutputs();
-    CHECK(transports.beats() == 5);
+    CHECK(transports.beats() == 7);
 }

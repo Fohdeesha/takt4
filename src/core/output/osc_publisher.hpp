@@ -45,6 +45,14 @@ public:
     /// Adds a target. Throws std::runtime_error if the host cannot be resolved.
     void addTarget(std::string_view host, std::uint16_t port);
 
+    /// Removes every target, and forgets what was last published with them.
+    ///
+    /// The forgetting is the point: only changed values are sent between beats, so a
+    /// target added after this has never been told the tempo and would otherwise wait for
+    /// it to move before learning it. An operator who types an address mid-set expects
+    /// the next message, not the next tempo change.
+    void clearTargets() noexcept;
+
     std::size_t targetCount() const noexcept { return targets_.size(); }
     const OscSender& target(std::size_t index) const noexcept { return *targets_[index]; }
 
