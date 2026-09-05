@@ -210,8 +210,17 @@ TEST_CASE("the control thread acts on what arrives and counts what it cannot",
     OscMessage halve("/takt4/ctl/tempo/halve");
     REQUIRE(sender.send(halve.packet()));
 
+    // Wait for **both** things asserted below, not for the counter and then assume the
+    // message. `OscControl::run` increments `handled_` and only then takes the lock to
+    // write `last_`, so a reader that stops as soon as the count moves can catch the
+    // message still empty — a preemption between two statements on a busy runner is all
+    // it takes. The sibling of this cost a red macOS run at `66173912`.
+    const auto arrived = [&control] {
+        return control.handled() != 0 &&
+               control.lastMessage().find("/takt4/ctl/tempo/halve") != std::string::npos;
+    };
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-    while (std::chrono::steady_clock::now() < until && control.handled() == 0) {
+    while (std::chrono::steady_clock::now() < until && !arrived()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
     CHECK(control.handled() == 1);

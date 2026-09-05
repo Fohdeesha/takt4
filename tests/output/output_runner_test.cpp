@@ -214,8 +214,18 @@ TEST_CASE("a change posted while running reaches the transports", "[output]") {
     runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 7000}}));
 
     // The thread applies them at the top of a round, so within a period or two.
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
-    while (std::chrono::steady_clock::now() < until && !runner.transports().linkEnabled()) {
+    //
+    // Wait for **both**, not for the first and then assume the second. They are applied
+    // one after another rather than atomically, so a reader on this thread can see
+    // `linkEnabled` already true while `oscTargets` is still a few instructions behind —
+    // and a runner that preempts the output thread between the two turns that into a
+    // failure. macOS did exactly that at `66173912`. Waiting on the conjunction is also
+    // simply the honest thing: these are the two claims, so both are what to wait for.
+    const auto applied = [&runner] {
+        return runner.transports().linkEnabled() && runner.transports().osc().targetCount() == 1;
+    };
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until && !applied()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     CHECK(runner.transports().linkEnabled());
