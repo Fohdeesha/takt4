@@ -101,6 +101,12 @@ add_library(takt4_core STATIC
   tracking/tap_tempo.hpp
   tracking/tempo_tracker.cpp
   tracking/tempo_tracker.hpp
+  trigger/context.cpp
+  trigger/context.hpp
+  trigger/generator.cpp
+  trigger/generator.hpp
+  trigger/value.cpp
+  trigger/value.hpp
 )
 add_library(takt4::core ALIAS takt4_core)
 
