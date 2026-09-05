@@ -324,9 +324,12 @@ void WindowController::tick() {
 
     // The beats are drained and dropped. This window says nothing a beat carries that the
     // published state does not already have — but a ring nobody drains fills up, and the
-    // engine would rightly start counting beats lost. When the outputs arrive this is
-    // where they are driven from, or from the output thread that replaces this loop
-    // (§8 item 2).
+    // engine would rightly start counting beats lost.
+    //
+    // **This loop goes when the window gains an `output::OutputRunner`.** That ring is
+    // single-consumer by `rt::SpscRing`'s contract, and the runner is its consumer: two
+    // of them would each take half the beats, which is worse than either taking none.
+    // `takt4-cli track` already hands it over; this is the last place that has not.
     engine::EngineBeat beat;
     while (tracker_.engine().popBeat(beat)) {
     }

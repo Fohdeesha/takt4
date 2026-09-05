@@ -31,6 +31,8 @@ add_executable(takt4_tests
   output/midi_clock_test.cpp
   output/midi_ports_test.cpp
   output/osc_test.cpp
+  output/output_runner_test.cpp
+  output/transports_test.cpp
   rt/alloc_guard_test.cpp
   rt/published_test.cpp
   rt/spsc_ring_test.cpp
