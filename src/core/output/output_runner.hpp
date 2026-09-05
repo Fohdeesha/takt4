@@ -2,7 +2,9 @@
 
 #include "core/audio/host_time.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/trigger/trigger_engine.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -23,12 +25,57 @@ namespace takt4::output {
 /// shape `engine::Command` has for the tracker, and for the same reason: many producers,
 /// one consumer, and no caller reaching into something another thread is using.
 struct OutputCommand {
-    enum class Kind : std::uint8_t { LinkEnabled, OscTargets, MidiClockPort };
+    enum class Kind : std::uint8_t {
+        LinkEnabled,
+        OscTargets,
+        MidiClockPort,
+        /// §5.8's rules, whole. Replacing the set rather than editing one is what a preset
+        /// load does and what §5.9's editor will do on every change; a rule is small and the
+        /// set is short, so there is no reason for a finer command.
+        Rules,
+        /// §5.8's PANIC, and letting go of it.
+        Panic,
+        /// §5.7's `/ctl/rule/<id>/enable <0|1>`.
+        RuleEnabled,
+        /// §5.8's *"on manual hotkey"*, and §5.9's per-rule `[test]` button.
+        Manual,
+        TestRule,
+    };
 
     static OutputCommand linkEnabled(bool on) {
         OutputCommand command;
         command.kind = Kind::LinkEnabled;
         command.enabled = on;
+        return command;
+    }
+    static OutputCommand rules(std::vector<trigger::Rule::Config> configs) {
+        OutputCommand command;
+        command.kind = Kind::Rules;
+        command.ruleConfigs = std::move(configs);
+        return command;
+    }
+    static OutputCommand panic(bool on) {
+        OutputCommand command;
+        command.kind = Kind::Panic;
+        command.enabled = on;
+        return command;
+    }
+    static OutputCommand ruleEnabled(std::string id, bool on) {
+        OutputCommand command;
+        command.kind = Kind::RuleEnabled;
+        command.ruleId = std::move(id);
+        command.enabled = on;
+        return command;
+    }
+    static OutputCommand manual() {
+        OutputCommand command;
+        command.kind = Kind::Manual;
+        return command;
+    }
+    static OutputCommand testRule(std::string id) {
+        OutputCommand command;
+        command.kind = Kind::TestRule;
+        command.ruleId = std::move(id);
         return command;
     }
     static OutputCommand oscTargets(std::vector<Transports::OscTarget> targets) {
@@ -48,6 +95,8 @@ struct OutputCommand {
     bool enabled = false;
     std::vector<Transports::OscTarget> targets;
     std::optional<std::string> port;
+    std::vector<trigger::Rule::Config> ruleConfigs;
+    std::string ruleId;
 };
 
 /// HANDOFF §4.2's output thread.
@@ -149,6 +198,15 @@ public:
     /// left wondering why nothing ticks.
     std::string lastError() const;
 
+    /// §5.8's rules, for reading — how many there are, whether one is valid, what it has
+    /// fired. **Only while the thread is stopped**: the rules belong to the output thread,
+    /// like the transports, and for the same reason. Change them through `post`.
+    const trigger::TriggerEngine& triggers() const noexcept { return triggers_; }
+    bool panicked() const noexcept { return triggers_.panicked(); }
+    /// Rule messages that reached a transport, and those with nowhere to go. Atomic-free
+    /// counters on the output thread; a snapshot from anywhere else.
+    const RuleSink& ruleSink() const noexcept { return sink_; }
+
 private:
     void run() noexcept;
     /// One round: every beat waiting, then the clock. On the output thread, or on the
@@ -158,9 +216,20 @@ private:
     /// transports at the time.
     void applyCommands() noexcept;
     void apply(const OutputCommand& command);
+    /// The instant every rule in this round is judged against — §5.8's ONLY IF stage, made
+    /// once so that two rules with the same condition cannot disagree about it.
+    trigger::Context contextAt(double now) const;
 
     engine::BeatEngine& engine_;
     Transports transports_;
+    /// Declared after the transports it holds a reference to, and before the engine that
+    /// holds a reference to it: destruction runs in reverse, so this is the order that keeps
+    /// both references alive for as long as they are used.
+    RuleSink sink_;
+    trigger::TriggerEngine triggers_;
+    /// The onset count last seen from the engine. The output thread has no frames of its
+    /// own, so a count that moved is how it learns one happened.
+    std::uint64_t onsetsSeen_ = 0;
     BeatObserver observer_;
 
     mutable std::mutex commandMutex_;

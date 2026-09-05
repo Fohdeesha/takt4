@@ -38,7 +38,7 @@ void restoreTimerResolution(bool raised) noexcept {
 } // namespace
 
 OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config& config)
-    : engine_(engine), transports_(config) {}
+    : engine_(engine), transports_(config), sink_(transports_), triggers_(sink_) {}
 
 OutputRunner::~OutputRunner() {
     stop();
@@ -120,6 +120,27 @@ void OutputRunner::apply(const OutputCommand& command) {
         case OutputCommand::Kind::MidiClockPort:
             transports_.setMidiClockPort(command.port);
             break;
+        case OutputCommand::Kind::Rules:
+            triggers_.setRules(command.ruleConfigs);
+            break;
+        case OutputCommand::Kind::Panic:
+            if (command.enabled) {
+                triggers_.panic(contextAt(elapsed()));
+            } else {
+                triggers_.release();
+            }
+            break;
+        case OutputCommand::Kind::RuleEnabled:
+            if (trigger::Rule* rule = triggers_.find(command.ruleId)) {
+                rule->setEnabled(command.enabled);
+            }
+            break;
+        case OutputCommand::Kind::Manual:
+            triggers_.manual(contextAt(elapsed()));
+            break;
+        case OutputCommand::Kind::TestRule:
+            (void)triggers_.test(command.ruleId, contextAt(elapsed()));
+            break;
         }
         const std::lock_guard<std::mutex> lock(errorMutex_);
         lastError_.clear();
@@ -161,10 +182,38 @@ void OutputRunner::run() noexcept {
     }
 }
 
+trigger::Context OutputRunner::contextAt(double now) const {
+    const tracking::TempoState state = engine_.state();
+    const engine::EngineIntensity intensity = engine_.intensity();
+    trigger::Context context;
+    context.bpm = state.bpm;
+    context.confidence = state.confidence;
+    context.locked = state.locked;
+    context.meter = state.beatsPerBar;
+    context.beatInBar = state.beatInBar;
+    context.beats = state.beats;
+    context.bars = state.bars;
+    context.intensity = intensity.level;
+    context.now = now;
+    return context;
+}
+
 void OutputRunner::drainOnce(double now) {
     engine::EngineBeat beat;
     while (engine_.popBeat(beat)) {
         transports_.publish(beat.event, beat.hostMicros, now);
+        // §5.8's beat-counting triggers, off the state *at this beat* rather than off the
+        // engine's newest: a round can drain several beats, and a rule counting bars has to
+        // see each of them where it happened.
+        trigger::Context context = contextAt(now);
+        context.bpm = beat.state.bpm;
+        context.confidence = beat.state.confidence;
+        context.locked = beat.state.locked;
+        context.meter = beat.state.beatsPerBar;
+        context.beatInBar = beat.state.beatInBar;
+        context.beats = beat.state.beats;
+        context.bars = beat.state.bars;
+        triggers_.onBeat(context);
         if (observer_) {
             observer_(beat);
         }
@@ -172,6 +221,19 @@ void OutputRunner::drainOnce(double now) {
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
     transports_.advance(now, engine_.state());
+
+    const trigger::Context context = contextAt(now);
+    // The output thread never sees a frame, so an onset reaches it as a count that moved.
+    // Coalesced to one call however far it moved: two onsets inside one millisecond would
+    // be one hit as far as anything downstream is concerned, and the classifier's own
+    // minimum gap is sixty.
+    const std::uint64_t onsets = engine_.intensity().onsets;
+    if (onsets != onsetsSeen_) {
+        onsetsSeen_ = onsets;
+        triggers_.onOnset(context);
+    }
+    // Last: the triggers that do not wait for a beat, and any follow-up now due.
+    triggers_.advance(context);
 }
 
 } // namespace takt4::output

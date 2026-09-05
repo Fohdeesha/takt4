@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/output/osc_message.hpp"
 #include "core/output/osc_sender.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
@@ -67,10 +68,27 @@ public:
     /// after losing it, and available for the manual downbeat in Phase 5.
     void publishResync();
 
+    /// One address of Phase 6's own choosing, to every target. §5.8's rules build their
+    /// addresses from templates and aim them at a host's namespace — Resolume's
+    /// `/composition/layers/3/clips/7/connect` — so **the prefix is deliberately not
+    /// applied**: it names this app inside the generic namespace, and a rule's address
+    /// belongs to whatever is listening.
+    ///
+    /// A malformed address sends nothing and counts a failure, because `OscMessage` refuses
+    /// it. Rules validate their templates and check the filled result, so reaching here with
+    /// one should not happen; counting it is what makes it visible if it does.
+    void sendAddress(std::string_view address);
+    void sendAddress(std::string_view address, std::int32_t value);
+    void sendAddress(std::string_view address, float value);
+    void sendAddress(std::string_view address, std::string_view value);
+
     std::uint64_t messagesSent() const noexcept { return sent_; }
     std::uint64_t messagesFailed() const noexcept { return failed_; }
 
 private:
+    /// One assembled message to every target, counting what each one did with it. The only
+    /// place a datagram leaves this class.
+    void sendPacket(OscMessage& message);
     void sendInt(std::string_view address, std::int32_t value);
     void sendFloat(std::string_view address, float value);
     /// Sends the four state addresses whose value has moved, and remembers them.

@@ -5,8 +5,12 @@
 #include "core/output/output_runner.hpp"
 #include "core/output/transports.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/trigger/rule.hpp"
+
+#include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -20,8 +24,11 @@
 
 using takt4::audio::kHopSize;
 using takt4::engine::BeatEngine;
+using takt4::output::OutputCommand;
 using takt4::output::OutputRunner;
 using takt4::output::Transports;
+using takt4::testing::LoopbackReceiver;
+using takt4::trigger::Rule;
 
 namespace {
 
@@ -63,6 +70,18 @@ void feedExcerpt(BeatEngine& engine) {
     for (std::size_t hop = 0; hop < hops; ++hop) {
         engine.processHop(samples.data() + hop * kHopSize, hop);
         (void)engine.step();
+    }
+}
+
+/// Waits until the runner's transports have counted `beats`, or gives up.
+///
+/// Waiting rather than assuming, for the reason the first test below spells out at length:
+/// feeding the excerpt pegs a core, and on a small CI runner the output thread gets very
+/// little of the other one.
+void waitForBeats(const OutputRunner& runner, std::uint64_t beats) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < until && runner.transports().beats() < beats) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
 }
 
@@ -249,4 +268,91 @@ TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "
     // And a change that works clears it again.
     runner.post(takt4::output::OutputCommand::linkEnabled(true));
     CHECK(runner.lastError().empty());
+}
+
+TEST_CASE("a rule fires from the real beats, on the output thread", "[output][trigger]") {
+    // 5.8: "Rules are evaluated on the output thread, never the audio thread." This is that
+    // claim end to end — the real excerpt through the real tracker, the beats it really
+    // called, a rule the runner was handed by command, and a socket that really receives.
+    LoopbackReceiver receiver;
+    Transports::Config config;
+    config.oscTargets = {{"127.0.0.1", receiver.port()}};
+
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, config);
+
+    Rule::Config rule;
+    rule.id = "downbeat-clip";
+    rule.trigger = takt4::trigger::Trigger::Downbeat;
+    rule.address = "/composition/layers/1/clips/{c}/connect";
+    takt4::trigger::Generator::Config clip;
+    clip.low = 1;
+    clip.high = 4;
+    rule.segments = {clip};
+    rule.value = takt4::trigger::Generator::Config{};
+    rule.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.value.fixed = takt4::trigger::Value::ofInt(1);
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().ruleCount() == 1);
+    REQUIRE(runner.triggers().rule(0).valid());
+
+    runner.start();
+    feedExcerpt(*engine);
+    waitForBeats(runner, kExpectedBeats);
+    runner.stop();
+
+    // The excerpt has five downbeats, and the rule is on downbeats.
+    CHECK(runner.triggers().rule(0).fires() == kExpectedDownbeats);
+    CHECK(runner.ruleSink().delivered() == kExpectedDownbeats);
+    CHECK(runner.ruleSink().undeliverable() == 0);
+    CHECK(runner.triggers().dropped() == 0);
+
+    // And the addresses really left the machine, with the segment filled in.
+    //
+    // Counted out of everything that arrived rather than taken as the first five: §5.6's
+    // generic namespace is going to the same target on the same socket, so a rule's
+    // datagrams are interleaved with `/takt4/bpm` and the rest. That interleaving is the
+    // design — one OSC target, both namespaces — and a test that assumed otherwise would be
+    // asserting an ordering nothing promises.
+    std::uint64_t matched = 0;
+    std::uint64_t seen = 0;
+    for (std::string datagram = receiver.receive(); !datagram.empty();
+         datagram = receiver.receive()) {
+        ++seen;
+        if (datagram.find("/composition/layers/1/clips/") != std::string::npos) {
+            ++matched;
+        }
+    }
+    INFO(seen << " datagrams arrived in all");
+    CHECK(matched == kExpectedDownbeats);
+}
+
+TEST_CASE("panic reaches the rules through the same queue as everything else",
+          "[output][trigger]") {
+    // 5.8 calls PANIC "non-negotiable for live use", and 5.7 gives it an address. Both of
+    // those land here, on the thread that owns the rules.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    Rule::Config rule;
+    rule.id = "every-beat";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/fire";
+    runner.post(OutputCommand::rules({rule}));
+    runner.post(OutputCommand::panic(true));
+    CHECK(runner.panicked());
+
+    runner.start();
+    feedExcerpt(*engine);
+    waitForBeats(runner, kExpectedBeats);
+    runner.stop();
+    CHECK(runner.triggers().rule(0).fires() == 0);
+
+    // And 5.7's `/ctl/rule/<id>/enable` takes the same road.
+    runner.post(OutputCommand::ruleEnabled("every-beat", false));
+    CHECK_FALSE(runner.triggers().rule(0).enabled());
+    runner.post(OutputCommand::ruleEnabled("every-beat", true));
+    CHECK(runner.triggers().rule(0).enabled());
+    runner.post(OutputCommand::ruleEnabled("no-such-rule", false));
+    CHECK(runner.triggers().rule(0).enabled()); // and an id nobody has is not an error
 }
