@@ -4,6 +4,7 @@
 #include "core/audio/host_time.hpp"
 #include "core/audio/rates.hpp"
 #include "core/features/feature_extractor.hpp"
+#include "core/features/intensity.hpp"
 #include "core/model/beat_model.hpp"
 #include "core/model/weights.hpp"
 #include "core/rt/spsc_ring.hpp"
@@ -28,6 +29,21 @@ struct FrameActivation {
     float beat = 0.0f;
     float downbeat = 0.0f;
     float nonBeat = 0.0f;
+
+    /// HANDOFF §5.8's intensity classifier, riding along with the activation because it is
+    /// made from the same feature frame and on the same thread — see
+    /// `features::IntensityClassifier`, which reuses the difference half of the frame and so
+    /// costs 144 additions rather than a second FFT.
+    ///
+    /// Here rather than further down the chain because this is the last place the frame
+    /// exists. `tracking::TrackedFrame` is the particle filter's output and has no business
+    /// carrying it, and the output thread never sees a frame at all.
+    features::Intensity intensity = features::Intensity::Normal;
+    /// True on a frame the classifier called a flux peak — §5.8's *"on onset"*.
+    bool onset = false;
+    /// The raw spectral flux, unsmoothed. For a diagnostic trace; nothing should threshold
+    /// it directly, because its scale is a fact about the master rather than about the music.
+    float flux = 0.0f;
 };
 
 /// The live half of Phase 3 (HANDOFF §8): hops in from the audio callback, class
@@ -136,6 +152,7 @@ private:
     static void recordWorst(std::atomic<double>& worst, double micros) noexcept;
 
     features::FeatureExtractor extractor_;
+    features::IntensityClassifier intensity_;
     BeatModel model_;
     std::atomic<audio::HostTimeSource*> hostTime_{nullptr};
     rt::SpscRing<QueuedHop, kHopQueueCapacity> hops_;

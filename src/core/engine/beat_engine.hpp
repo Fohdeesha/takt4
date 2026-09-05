@@ -47,6 +47,26 @@ struct EngineBeat {
     std::int64_t hostMicros = 0;
 };
 
+/// HANDOFF §5.8's intensity, as the *output* thread can read it.
+///
+/// It is computed per frame (`features::IntensityClassifier`, on the model worker) and rides
+/// each `model::FrameActivation` — but the frame ring has exactly one consumer and that is
+/// §5.9's trace, so the output thread cannot have it that way. This is published instead,
+/// like the tempo state beside it.
+///
+/// It is **not** part of `tracking::TempoState`, deliberately. That is what the tempo state
+/// machine is saying, and intensity is not a tracking quantity; folding it in would make
+/// `core/tracking` depend on the features and would put a number in the Phase 4 gate's
+/// neighbourhood that has no business there.
+struct EngineIntensity {
+    features::Intensity level = features::Intensity::Normal;
+    /// Onsets seen since the engine was reset. The output thread has no frames, so a count
+    /// that moved is how it learns one happened — §5.8's *"on onset"*.
+    std::uint64_t onsets = 0;
+    /// The raw flux, for a diagnostic readout. See `FrameActivation::flux`.
+    float flux = 0.0f;
+};
+
 /// HANDOFF §4.2's inference thread, and the thing both the UI and the console drive.
 ///
 /// The chain from a hop of audio to a beat, in one object:
@@ -117,6 +137,10 @@ public:
     /// a status line or a UI that redraws on its own clock.
     tracking::TempoState state() const noexcept { return state_.load(); }
 
+    /// §5.8's intensity and onset count, for the output thread's rules and §5.6's
+    /// `/takt4/intensity`. See `EngineIntensity` for why it is published separately.
+    EngineIntensity intensity() const noexcept { return intensity_.load(); }
+
     /// The tracker's settings as they now stand, safely, from any thread.
     ///
     /// A caller that only ever posted them could keep its own copy — but a tap moves the
@@ -183,7 +207,10 @@ private:
     rt::SpscRing<EngineFrame, kFrameQueueCapacity> frames_;
     rt::SpscRing<EngineBeat, kBeatQueueCapacity> beats_;
     rt::Published<tracking::TempoState> state_;
+    rt::Published<EngineIntensity> intensity_;
     rt::Published<tracking::TempoTracker::Options> options_;
+    /// Running count behind `EngineIntensity::onsets`; only the inference thread touches it.
+    std::uint64_t onsets_ = 0;
 
     ControlQueue controls_;
     /// Drained into, and reused, so applying commands allocates nothing after the first.

@@ -1,22 +1,16 @@
 #pragma once
 
+#include "core/features/intensity.hpp"
+
 #include <cstdint>
-#include <string_view>
 
 namespace takt4::trigger {
 
-/// HANDOFF §5.8's intensity classifier, as three states with hysteresis.
-///
-/// "Spectral flux across the full band, classified calm / normal / intense with hysteresis
-/// to stop it flickering between states. Feeds the ONLY IF stage and is published over
-/// OSC." The classifier itself is elsewhere; this is the vocabulary, so the ONLY IF stage,
-/// the `Live` generator and §5.6's `/takt4/intensity` all name the same three things.
-///
-/// The numbers are the wire format — §5.6 gives `/<app>/intensity  int  0 | 1 | 2` — so
-/// they are fixed, not an implementation detail.
-enum class Intensity : std::uint8_t { Calm = 0, Normal = 1, Intense = 2 };
-
-std::string_view labelOf(Intensity intensity) noexcept;
+/// HANDOFF §5.8's intensity classifier, which lives with the thing that computes it:
+/// `features::IntensityClassifier` reads it straight out of the feature frame, so the type
+/// belongs beside the features rather than up here. Aliased so a rule reads as one —
+/// `labelOf` still resolves, by argument-dependent lookup.
+using Intensity = features::Intensity;
 
 /// Everything a rule can be asked about at the moment it might fire.
 ///

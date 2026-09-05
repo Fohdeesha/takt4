@@ -1010,7 +1010,7 @@ public:
         }
         out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
                 "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
-                "\temitted\n"
+                "\temitted\tflux\tintensity\tonset\n"
              << std::fixed << std::setprecision(6);
     }
 
@@ -1027,7 +1027,9 @@ public:
              << tracked.tempoAgreement << '\t' << state.bpm << '\t' << state.confidence << '\t'
              << (state.locked ? 1 : 0) << '\t' << (state.holding ? 1 : 0) << '\t'
              << state.beatsPerBar << '\t' << state.beatInBar << '\t'
-             << static_cast<int>(tracked.emitted) << '\n';
+             << static_cast<int>(tracked.emitted) << '\t' << frame.activation.flux << '\t'
+             << static_cast<int>(frame.activation.intensity) << '\t'
+             << (frame.activation.onset ? 1 : 0) << '\n';
     }
 
 private:

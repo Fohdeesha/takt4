@@ -32,6 +32,7 @@ void ActivationEngine::start() {
     while (activations_.tryPop(activation)) {
     }
     extractor_.reset();
+    intensity_.reset();
     model_.reset();
     hopsQueued_.store(0, std::memory_order_relaxed);
     hopsDropped_.store(0, std::memory_order_relaxed);
@@ -98,6 +99,9 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
     const Clock::time_point hopStart = Clock::now();
     const std::span<const float, audio::kHopSize> samples(hop.samples);
     if (extractor_.pushHop(samples)) {
+        // Before the model, and out of the same frame: §5.8's flux is the difference half of
+        // it already summed, so this is 144 additions rather than any new DSP.
+        const bool onset = intensity_.push(extractor_.frame());
         const Clock::time_point modelStart = Clock::now();
         const BeatModel::Activation activation = model_.process(extractor_.frame());
         recordWorst(worstModelMicros_, microsSince(modelStart));
@@ -111,9 +115,16 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
                 ? 0
                 : hop.hostMicros - static_cast<std::int64_t>(hop.index - frameIndex) *
                                        static_cast<std::int64_t>(audio::kHopMicros);
-        const FrameActivation out{
-            frameIndex,          hop.index, hostMicros, activation.beat(), activation.downbeat(),
-            activation.nonBeat()};
+        FrameActivation out;
+        out.frameIndex = frameIndex;
+        out.hopIndex = hop.index;
+        out.hostMicros = hostMicros;
+        out.beat = activation.beat();
+        out.downbeat = activation.downbeat();
+        out.nonBeat = activation.nonBeat();
+        out.intensity = intensity_.intensity();
+        out.onset = onset;
+        out.flux = static_cast<float>(intensity_.flux());
         if (activations_.tryPush(out)) {
             framesEmitted_.fetch_add(1, std::memory_order_relaxed);
         } else {
