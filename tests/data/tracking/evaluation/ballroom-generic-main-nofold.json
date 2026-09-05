@@ -11,52 +11,52 @@
   "octave_fold": "off",
   "per_group": {
     "ChaChaCha": {
-      "Downbeat F-measure": 0.6107053341132858,
+      "Downbeat F-measure": 0.6025362596791416,
       "F-measure": 0.8440847768266975,
       "files": 111
     },
     "Jive": {
-      "Downbeat F-measure": 0.4925422771328826,
+      "Downbeat F-measure": 0.4789475929621207,
       "F-measure": 0.9373635634187877,
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.72153979973861,
+      "Downbeat F-measure": 0.7184850996444233,
       "F-measure": 0.9354446752923745,
       "files": 82
     },
     "Rumba-American": {
-      "Downbeat F-measure": 0.47281101988182117,
+      "Downbeat F-measure": 0.4635853067591544,
       "F-measure": 0.8039155923091074,
       "files": 7
     },
     "Rumba-International": {
-      "Downbeat F-measure": 0.4466932879449093,
+      "Downbeat F-measure": 0.45084032934435675,
       "F-measure": 0.7345320118173869,
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.35324117875013245,
+      "Downbeat F-measure": 0.35284589901624697,
       "F-measure": 0.6419090703499348,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.4173555313929992,
+      "Downbeat F-measure": 0.4142523252748125,
       "F-measure": 0.6302831737151651,
       "files": 86
     },
     "Tango": {
-      "Downbeat F-measure": 0.6750933855001652,
+      "Downbeat F-measure": 0.6787736206516749,
       "F-measure": 0.9126231338159474,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9317706148529288,
+      "Downbeat F-measure": 0.9282934954245137,
       "F-measure": 0.9593612822631983,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.4668482751736473,
+      "Downbeat F-measure": 0.46180227583277234,
       "F-measure": 0.5742539746371922,
       "files": 110
     }
@@ -96,8 +96,8 @@
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.5767862197060685,
-      "median": 0.5806451612903225
+      "mean": 0.5730995807612566,
+      "median": 0.5789473684210527
     },
     "F-measure": {
       "files": 698,
@@ -121,12 +121,12 @@
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.5673352435530086,
+      "mean": 0.5659025787965616,
       "median": 1.0
     },
     "Tempo accuracy 2": {
       "files": 698,
-      "mean": 0.9555873925501432,
+      "mean": 0.9469914040114613,
       "median": 1.0
     }
   },

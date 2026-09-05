@@ -11,52 +11,52 @@
   "octave_fold": "88-176",
   "per_group": {
     "ChaChaCha": {
-      "Downbeat F-measure": 0.8510540476749479,
+      "Downbeat F-measure": 0.8494313915245555,
       "F-measure": 0.879314544826054,
       "files": 111
     },
     "Jive": {
-      "Downbeat F-measure": 0.8889911245649028,
+      "Downbeat F-measure": 0.8815197576759819,
       "F-measure": 0.9006354230261896,
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.863944958643862,
+      "Downbeat F-measure": 0.8616520485081988,
       "F-measure": 0.900076741251733,
       "files": 82
     },
     "Rumba-American": {
-      "Downbeat F-measure": 0.8943496436822355,
+      "Downbeat F-measure": 0.8764752123623092,
       "F-measure": 0.9353204252712738,
       "files": 7
     },
     "Rumba-International": {
-      "Downbeat F-measure": 0.8213798114630306,
+      "Downbeat F-measure": 0.818689874382866,
       "F-measure": 0.8977759695620909,
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.7236975531759486,
+      "Downbeat F-measure": 0.7234039454062338,
       "F-measure": 0.8364203739646208,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.7071614747188004,
+      "Downbeat F-measure": 0.7067414079042925,
       "F-measure": 0.7963872080795893,
       "files": 86
     },
     "Tango": {
-      "Downbeat F-measure": 0.9427959557859142,
+      "Downbeat F-measure": 0.9319239564268686,
       "F-measure": 0.9611485321535822,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9402624521059959,
+      "Downbeat F-measure": 0.9393561360683605,
       "F-measure": 0.9608429919928321,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.8819157175482562,
+      "Downbeat F-measure": 0.879931945501243,
       "F-measure": 0.9024326776212659,
       "files": 110
     }
@@ -76,12 +76,12 @@
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8001087025966224,
+      "mean": 0.800118884663878,
       "median": 0.8274198289199363
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8018234553895881,
+      "mean": 0.8018336374568439,
       "median": 0.8274198289199363
     },
     "Correct Metric Level Continuous": {
@@ -96,8 +96,8 @@
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.8535426944593719,
-      "median": 0.9
+      "mean": 0.8501921059825625,
+      "median": 0.89272030651341
     },
     "F-measure": {
       "files": 698,
@@ -111,7 +111,7 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.5030567878598007,
+      "mean": 0.5030622469340699,
       "median": 0.5119751551990304
     },
     "P-score": {
@@ -121,12 +121,12 @@
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.6389684813753582,
+      "mean": 0.7564469914040115,
       "median": 1.0
     },
     "Tempo accuracy 2": {
       "files": 698,
-      "mean": 0.9627507163323782,
+      "mean": 0.9469914040114613,
       "median": 1.0
     }
   },

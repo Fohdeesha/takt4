@@ -28,7 +28,7 @@ constexpr double kMinimumBeatFraction = 0.4; ///< of a beat period, between emis
 /// **Not upstream's, and not part of any gate** — see `meterOf`.
 ///
 /// How much of the meter evidence survives each time the downbeat stage runs, which is
-/// about once a beat. 0.95 averages over roughly twenty beats.
+/// about once a beat. 0.98 averages over roughly fifty beats.
 ///
 /// Chosen by measuring both things it trades off, over the eighteen excerpts in
 /// `tests/data/features` and the 698 Ballroom clips:
@@ -39,16 +39,62 @@ constexpr double kMinimumBeatFraction = 0.4; ///< of a beat period, between emis
 /// | mass, no memory | 167 | 0.8579 |
 /// | 0.8 | 71 | 0.8504 |
 /// | 0.9 | 57 | 0.8519 |
-/// | **0.95** | **47** | **0.8535** |
-/// | 0.98 | 41 | 0.8531 |
+/// | 0.95 | 47 | 0.8535 |
+/// | **0.98** | **41** | 0.8531 |
 ///
-/// Accuracy plateaus around 0.853 while steadiness keeps improving, so the choice past
-/// 0.9 is not about the F-measure. It is about the one cost Ballroom cannot show: every
-/// clip in it holds one meter throughout, so nothing there is worse for a memory that
-/// takes longer to *follow a genuine change*. 0.95 is about ten seconds at 120 BPM, which
-/// an operator changing tracks will wait through; 0.98 is twenty-five, which they will
-/// not, and it buys six fewer changes and no accuracy.
-constexpr double kMeterMemory = 0.95;
+/// **This was 0.95, and the note here used to say 0.98 bought six fewer changes and no
+/// accuracy — which was true of the excerpts and false of real tracks.** Measured again
+/// over the seventeen full tracks in `references/audio`, 68 minutes of the material the
+/// operator's report came from, and with `kMeterMargin` in place:
+///
+/// | memory | meter changes in 68 min |
+/// |---|---|
+/// | 0.95 | 129 |
+/// | **0.98** | **51** |
+///
+/// Thirty-second excerpts cannot show this. They are shorter than the memory itself, so
+/// most of what a long memory buys happens after the clip has ended.
+///
+/// The cost is the one Ballroom cannot show either, because every clip in it holds one
+/// meter throughout: how long a *genuine* change takes to follow. With the margin at 1.5,
+/// a cloud that switches wholesale needs 0.98^n < 0.4, so 45 beats — about 22 seconds at
+/// 120 BPM, against 9 at 0.95. Four-to-the-bar to four-to-the-bar, which is nearly every
+/// track change, costs nothing either way. **If an operator reports the meter too slow to
+/// follow a real change, this is the constant to lower, not the margin** — the margin adds
+/// no time at all.
+constexpr double kMeterMemory = 0.98;
+
+/// **Not upstream's either** — how far ahead of the meter in force another one has to be
+/// before it takes over, as a ratio of the remembered evidence.
+///
+/// The memory above made the evidence steady; it did not make the *argmax* of it steady,
+/// and those are different things. Two meters that the material genuinely supports about
+/// equally — which is most of any bar-length phrase, and every passage where a four could
+/// be read as two twos — leave their scores within a per cent of each other, so the leader
+/// still changes whenever the cloud breathes. Measured over the seventeen full tracks in
+/// `references/audio`, 68 minutes: 322 meter changes with the memory alone, one every
+/// thirteen seconds, which is what the report "the time signature still changes more than
+/// it should" was about.
+///
+/// So the meter in force keeps it until something is ahead by this much:
+///
+/// | margin | meter changes in 68 min | downbeat F-measure |
+/// |---|---|---|
+/// | 1.0, as it was | 322 | 0.8535 |
+/// | 1.25 | 179 | 0.8522 |
+/// | **1.5** | **129** | 0.8515 |
+///
+/// — all at memory 0.95; with the 0.98 above, that last row is **51** and 0.8502.
+///
+/// Note what this is *not*: it is not a delay. The version measured and rejected before the
+/// memory existed held a new meter for N frames before publishing it, and lost downbeat
+/// F-measure doing it — 0.8575 to 0.8143 at half a second — because the meter and the
+/// filter's own downbeat calls come out of this one cloud, and delaying one desynchronises
+/// it from the other. A margin costs no time at all: the frame the evidence becomes
+/// decisive is the frame the meter changes. It only declines to change on evidence that is
+/// not decisive, which is what "two hypotheses within a per cent of each other, and one
+/// particle moved" is.
+constexpr double kMeterMargin = 1.5;
 
 /// How many particles an injection can add, over every phase it might start at.
 constexpr std::size_t injectionSize(std::size_t intervals, std::size_t stride) {
@@ -298,11 +344,19 @@ std::uint32_t ParticleFilter::meterOf(const std::vector<std::uint32_t>& particle
     // arbitrary but fixed rule, so the filter stays deterministic.
     double best = -1.0;
     std::size_t at = 0;
+    double holding = -1.0;
     for (std::size_t interval = 0; interval < meterScores_.size(); ++interval) {
         if (meterScores_[interval] > best) {
             best = meterScores_[interval];
             at = interval;
         }
+        if (down.intervals()[interval] == meterNow_) {
+            holding = meterScores_[interval];
+        }
+    }
+    // Incumbent advantage: see kMeterMargin. With nothing in force yet the leader takes it.
+    if (meterNow_ != 0 && holding >= 0.0 && best <= holding * kMeterMargin) {
+        return meterNow_;
     }
     return down.intervals()[at];
 }
