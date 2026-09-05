@@ -16,7 +16,11 @@ struct TempoState {
     /// True once `bpm` is coming from the spacing of the beats themselves rather than
     /// from the particle cloud's tempo interval. See TempoTracker's header.
     bool refined = false;
-    bool locked = false;           ///< the tempo has agreed with itself long enough
+    bool locked = false; ///< the tempo has agreed with itself long enough
+    /// The operator has pinned the lock, so the hysteresis is not allowed to give it up.
+    /// Published because a tempo that has stopped responding to the audio is alarming
+    /// when nothing on screen says why.
+    bool pinned = false;
     bool holding = false;          ///< confidence is below the gate; bpm is the last good one
     double confidence = 0.0;       ///< 0 to 1; see TempoTracker's header for what it measures
     std::uint32_t beatsPerBar = 0; ///< from the filter's downbeat stage, never assumed
@@ -176,6 +180,46 @@ public:
     /// beat happens.
     void snapDownbeat() noexcept;
 
+    /// §5.7's `/ctl/lock <0|1>`, which **pins the lock rather than setting it**.
+    ///
+    /// A one-shot `setLocked(true)` would not be a lock at all: the hysteresis that owns
+    /// the flag would unwind it `unlockAfter` frames later — 1.5 s by default — and the
+    /// operator who pressed it during a breakdown would watch it come undone. So this
+    /// holds the flag up instead. While pinned the disagreement is still measured and
+    /// simply never acted on, which is the difference between a pin and an override: the
+    /// tracker goes on tracking, and letting go hands it straight back.
+    ///
+    /// What that buys is not the flag but what hangs off it. Once locked, the published
+    /// tempo comes from the spacing of the beats themselves (see this class's header) and
+    /// resolves to a fraction of a BPM; unlocked, it falls back to the state space's whole
+    /// frame intervals, which near 130 BPM step by 5.4.
+    ///
+    /// Be precise about how much that is worth, because it is less than it first looks.
+    /// An unlock is not ruinous on its own: `beatFrames_` survives it, so a few frames
+    /// later the hysteresis re-locks on the new value and the refinement pulls the
+    /// published tempo back to what the beats actually say. The coarse reading is a
+    /// transient. What the pin really prevents is the lock *moving to a different tempo*
+    /// and the refinement then re-anchoring around that — a cloud that sustainedly reads
+    /// one frame long takes the published tempo with it, permanently, and a pin is the
+    /// operator saying they know better.
+    ///
+    /// Pinning locks to whatever is showing, because that is what the operator is looking
+    /// at when they press it. With nothing tracked yet there is nothing to pin: the pin is
+    /// remembered and takes hold on the frame acquisition first locks — a pin cannot hold
+    /// up a flag that was never raised.
+    ///
+    /// Releasing drops the lock with it and starts the hunt again from what is playing
+    /// now. An operator letting go is saying "that tempo was wrong, look again", and a
+    /// lock left standing afterwards would be the very thing they were trying to shed.
+    ///
+    /// It holds against the *hysteresis*, not against the operator's other controls. A
+    /// fold window dragged until it no longer contains the pinned tempo still drops the
+    /// lock, and should: the alternative is publishing a tempo the operator's own settings
+    /// exclude. `reset()` clears the pin, because after a reseed it would be pinning
+    /// nothing.
+    void setLockPinned(bool pinned) noexcept;
+    bool lockPinned() const noexcept { return lockPinned_; }
+
     /// The octave fold on its own, for tests and for the UI to preview.
     double fold(double bpm) const noexcept;
 
@@ -199,6 +243,7 @@ private:
     std::size_t disagreeing_ = 0;
     double smoothedConfidence_ = 0.0;
     bool everConfident_ = false;
+    bool lockPinned_ = false;      ///< the operator is holding the lock up; see setLockPinned
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
 
     /// The bar, in two parts: where the filter thinks we are, and how far the operator

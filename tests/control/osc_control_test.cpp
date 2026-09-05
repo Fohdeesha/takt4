@@ -122,7 +122,35 @@ TEST_CASE("an address for another app is not ours to act on", "[control]") {
     // The ones Phase 6 and Q7 still owe, refused rather than half-done.
     CHECK_FALSE(control.dispatch("/takt4/ctl/panic", std::nullopt));
     CHECK_FALSE(control.dispatch("/takt4/ctl/preset", 1.0));
-    CHECK_FALSE(control.dispatch("/takt4/ctl/lock", 1.0));
+}
+
+TEST_CASE("the lock address pins and releases, and insists on being told which", "[control]") {
+    auto engine = makeEngine();
+    OscControl control(*engine, localConfig(kAnyPort));
+    trackUntilLocked(*engine);
+    REQUIRE(engine->state().locked);
+    REQUIRE_FALSE(engine->state().pinned);
+
+    // §5.7 spells it `<0|1>`, and without one there is nothing to do. Read as a toggle it
+    // would depend on a state the sender cannot see, so a control surface that missed one
+    // datagram would be inverted for the rest of the set.
+    CHECK_FALSE(control.dispatch("/takt4/ctl/lock", std::nullopt));
+    (void)engine->step();
+    CHECK_FALSE(engine->state().pinned);
+
+    CHECK(control.dispatch("/takt4/ctl/lock", 1.0));
+    (void)engine->step();
+    CHECK(engine->state().pinned);
+    CHECK(engine->state().locked);
+
+    // Whatever a control surface spells "true" with: OSC booleans arrive as 1 and 0, and
+    // a fader sending 1.0 means the same thing as an int 1.
+    CHECK(control.dispatch("/takt4/ctl/lock", 0.0));
+    (void)engine->step();
+    CHECK_FALSE(engine->state().pinned);
+    CHECK_FALSE(engine->state().locked); // released, so the tracker has it back
+
+    CHECK(engine->commandsDropped() == 0);
 }
 
 TEST_CASE("a listening socket receives what a sender sends it", "[control][network]") {

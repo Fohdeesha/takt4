@@ -34,6 +34,10 @@ struct Command {
         /// §5.5's tap tempo, already measured: `tracking::TapTempo` counts the taps on
         /// whichever thread they arrive on, and only the tempo it worked out travels here.
         SeedTempo,
+        /// §5.7's `/ctl/lock <0|1>`. Deliberately *not* superseded the way SetTempoOptions
+        /// is: a pin followed by a release is not a pin, so these have to arrive in the
+        /// order they were sent.
+        SetLockPinned,
     };
 
     Kind kind;
@@ -41,14 +45,21 @@ struct Command {
     tracking::TempoTracker::Options tempo;
     /// Read for SeedTempo and ignored otherwise.
     double bpm = 0.0;
+    /// Read for SetLockPinned and ignored otherwise.
+    bool pinned = false;
 
     static Command setTempoOptions(const tracking::TempoTracker::Options& options) noexcept {
-        return Command{Kind::SetTempoOptions, options, 0.0};
+        return Command{Kind::SetTempoOptions, options, 0.0, false};
     }
-    static Command halve() noexcept { return Command{Kind::Halve, {}, 0.0}; }
-    static Command redouble() noexcept { return Command{Kind::Redouble, {}, 0.0}; }
-    static Command snapDownbeat() noexcept { return Command{Kind::SnapDownbeat, {}, 0.0}; }
-    static Command seedTempo(double bpm) noexcept { return Command{Kind::SeedTempo, {}, bpm}; }
+    static Command halve() noexcept { return Command{Kind::Halve, {}, 0.0, false}; }
+    static Command redouble() noexcept { return Command{Kind::Redouble, {}, 0.0, false}; }
+    static Command snapDownbeat() noexcept { return Command{Kind::SnapDownbeat, {}, 0.0, false}; }
+    static Command seedTempo(double bpm) noexcept {
+        return Command{Kind::SeedTempo, {}, bpm, false};
+    }
+    static Command setLockPinned(bool pinned) noexcept {
+        return Command{Kind::SetLockPinned, {}, 0.0, pinned};
+    }
 };
 
 /// The road into the inference thread: many writers, one reader, bounded, no allocation

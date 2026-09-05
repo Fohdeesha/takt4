@@ -73,6 +73,9 @@ void TempoTracker::reset() noexcept {
     disagreeing_ = 0;
     smoothedConfidence_ = 0.0;
     everConfident_ = false;
+    // A reseed leaves nothing for a pin to hold, so it goes with everything else rather
+    // than surviving as a pin on a tempo that no longer exists.
+    lockPinned_ = false;
     octaveShift_ = 0;
     filterBeatInBar_ = 0;
     barOffset_ = 0;
@@ -182,6 +185,33 @@ void TempoTracker::snapDownbeat() noexcept {
     snapPending_ = true;
 }
 
+void TempoTracker::setLockPinned(bool pinned) noexcept {
+    if (pinned == lockPinned_) {
+        return; // idempotent: a control surface may resend its state at will
+    }
+    lockPinned_ = pinned;
+    state_.pinned = pinned;
+    if (pinned) {
+        // Pin what is showing. `lockedBpm_` is the tempo being published whether or not
+        // the lock has been earned, so this locks to what the operator is looking at.
+        // With nothing tracked there is nothing to pin, and acquisition — which the pin
+        // does not touch — raises the flag in its own time.
+        if (lockedBpm_ > 0.0) {
+            state_.locked = true;
+            disagreeing_ = 0;
+        }
+        return;
+    }
+    // Released: the lock goes too, and the beat spacing collected under it with it, so
+    // what comes back is a genuine re-acquisition rather than the old tempo wearing a
+    // new lock.
+    state_.locked = false;
+    state_.refined = false;
+    agreeing_ = 0;
+    disagreeing_ = 0;
+    beatFrames_.clear();
+}
+
 void TempoTracker::advanceBar(bool filterCalledDownbeat) noexcept {
     const std::uint32_t meter = state_.beatsPerBar;
 
@@ -253,6 +283,14 @@ void TempoTracker::updateLock(double folded) noexcept {
             candidate_ = folded;
         }
         if (++disagreeing_ >= options_.unlockAfter) {
+            if (lockPinned_) {
+                // The whole of the pin, in one branch: the disagreement is measured and
+                // simply not acted on. Parked at the threshold rather than left to run,
+                // so the count keeps meaning "still disagreeing" and not "for how long",
+                // which nothing asks and which would overflow given a long enough set.
+                disagreeing_ = options_.unlockAfter;
+                return;
+            }
             state_.locked = false;
             lockedBpm_ = candidate_;
             agreeing_ = 1;
@@ -261,6 +299,7 @@ void TempoTracker::updateLock(double folded) noexcept {
         return;
     }
 
+    // Not locked yet, pinned or not: a pin holds a flag up, it does not raise one.
     if (agreeing_ != 0 && std::abs(folded - candidate_) <= tolerance) {
         ++agreeing_;
     } else {

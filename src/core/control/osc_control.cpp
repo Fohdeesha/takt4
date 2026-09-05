@@ -85,7 +85,17 @@ bool OscControl::dispatch(std::string_view address, std::optional<double> argume
         (void)engine_.post(Command::redouble());
         return true;
     }
-    (void)argument; // no address takes one yet; /ctl/lock is where that starts
+    if (verb == "lock") {
+        // §5.7 spells this `<0|1>` and the argument is required. A bare `/ctl/lock` read
+        // as "toggle" would depend on a state the sender cannot see, so a Stream Deck
+        // whose button missed one datagram would be inverted for the rest of the set —
+        // and an operator pressing LOCK would sometimes unlock.
+        if (!argument) {
+            return false;
+        }
+        (void)engine_.post(Command::setLockPinned(*argument != 0.0));
+        return true;
+    }
     return false;
 }
 

@@ -136,6 +136,9 @@ void BeatEngine::applyCommands() noexcept {
         case Command::Kind::SeedTempo:
             tempo_.seedTempo(command.bpm);
             break;
+        case Command::Kind::SetLockPinned:
+            tempo_.setLockPinned(command.pinned);
+            break;
         }
     }
     // A command changes what the tracker is saying, and a reader of state() may not be

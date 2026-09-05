@@ -131,9 +131,10 @@ void printUsage(std::ostream& out) {
         << "      The outputs need a live input; over a file only the beats are printed.\n"
         << "      On a live input the manual controls are on the keyboard: space taps the\n"
         << "      tempo, d snaps the downbeat to the next beat, h and x halve and double\n"
-        << "      it, [ and ] move the latency offset, f turns the octave fold off and\n"
-        << "      on, q stops. These need a console: MinTTY, which Git Bash uses, is not\n"
-        << "      one, and the banner says so when the keys are unavailable.\n"
+        << "      it, l pins the lock so a breakdown cannot drop it, [ and ] move the\n"
+        << "      latency offset, f turns the octave fold off and on, q stops. These need\n"
+        << "      a console: MinTTY, which Git Bash uses, is not one, and the banner says\n"
+        << "      so when the keys are unavailable.\n"
         << "      The other options are the meter's and `beats`', and mean the same.\n"
         << "\n"
         << "  takt4-cli --version\n";
@@ -917,7 +918,7 @@ void printKeys(std::ostream& out, bool available) {
         out << "keys:      not available — stdin is not a console\n";
         return;
     }
-    out << "keys:      space tap tempo · d downbeat now · h /2 · x *2\n"
+    out << "keys:      space tap tempo · d downbeat now · h /2 · x *2 · l pin the lock\n"
         << "           [ ] latency offset -/+ 5 ms · f octave fold on/off · q quit\n";
 }
 
@@ -1153,6 +1154,16 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             (void)engine->post(Command::redouble());
             std::cout << "  *2\n";
             break;
+        case 'l': {
+            // A toggle here and an explicit 0/1 over OSC, on purpose. A console operator
+            // can see on the line below whether the pin took; a control surface cannot,
+            // so it says which state it means rather than asking for the other one.
+            const bool pin = !engine->state().pinned;
+            (void)engine->post(Command::setLockPinned(pin));
+            std::cout << (pin ? "  lock pinned: the tempo holds until it is released\n"
+                              : "  lock released: tracking it again from scratch\n");
+            break;
+        }
         case '[':
         case ']': {
             // A relative nudge reads what is there and adds to it, so two presses landing
@@ -1237,9 +1248,13 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             const takt4::tracking::TempoState state = engine->state();
             std::cout << "         "
                       << fixed1(std::chrono::duration<double>(now - start).count(), 8)
-                      << "s  ..        " << fixed1(state.bpm, 12) << " BPM  "
-                      << (state.locked ? "LOCKED  " : "hunting ") << "conf "
-                      << formatProbability(static_cast<float>(state.confidence))
+                      << "s  ..        " << fixed1(state.bpm, 12)
+                      << " BPM  "
+                      // Eight characters either way, so the column below stays a column.
+                      << (state.pinned   ? "PINNED  "
+                          : state.locked ? "LOCKED  "
+                                         : "hunting ")
+                      << "conf " << formatProbability(static_cast<float>(state.confidence))
                       << (state.holding ? "  (holding)" : "") << '\n';
         }
         std::cout << std::flush;

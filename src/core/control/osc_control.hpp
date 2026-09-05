@@ -28,11 +28,10 @@ namespace takt4::control {
 ///     meaning for it.
 ///   * `/ctl/preset <name|index>` waits for presets to be files. Q7's portable layer has
 ///     a shape (`settings::Preset`) but nothing names or stores one yet.
-///   * `/ctl/lock <0|1>` is the one tracker-side command still unwritten, and it needs a
-///     decision rather than a keystroke: a `setLocked(true)` that the hysteresis unwinds
-///     75 frames later is not a force, so "lock" has to mean either pinning the flag or
-///     building an override mode — and §7 already declined to build that mode for tap.
-///     An unknown address is counted and ignored, so sending it today is harmless.
+///
+/// `/ctl/lock <0|1>` **pins** the lock rather than setting it, because a `setLocked(true)`
+/// the hysteresis unwinds 75 frames later would not be a lock at all. The argument is
+/// required and is not a toggle; `TempoTracker::setLockPinned` carries the reasoning.
 class OscControl {
 public:
     struct Config {
