@@ -38,8 +38,11 @@ add_library(takt4_core STATIC
   engine/control.hpp
   engine/live_tracker.cpp
   engine/live_tracker.hpp
+  control/osc_parse.cpp
+  control/osc_parse.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
+  net/udp.hpp
   features/dimensions.hpp
   features/feature_extractor.cpp
   features/feature_extractor.hpp
