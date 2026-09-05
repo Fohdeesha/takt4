@@ -94,6 +94,12 @@ public:
     void redouble();
     void snapDownbeat();
 
+    /// §5.7's lock, pinned rather than set. Takes the state being asked for rather than
+    /// toggling: the button already shows the current one, so sending the intention is
+    /// what makes two quick presses land as two changes instead of reading the same
+    /// not-yet-updated value twice.
+    void setPinned(bool pinned);
+
     /// One tap. The no-argument form reads this object's steady clock; the other takes
     /// the time, which is how `tracking::TapTempo` is built to be driven and what lets a
     /// test tap out a tempo without spending it in real time.
@@ -154,6 +160,7 @@ private:
     void publishStopped();
     void publishOpenStream();
     void publishOptions();
+    void publishPin();
     void publishTrace();
     void publishState();
     void publishLevels();
@@ -188,6 +195,12 @@ private:
     /// operator's finger.
     std::optional<tracking::TempoTracker::Options> posted_;
     int settling_ = 0;
+
+    /// The same thing for the pin, which travels as its own command rather than inside
+    /// the settings — a pin followed by a release is not a pin, so it must not be
+    /// superseded the way `SetTempoOptions` is.
+    std::optional<bool> pinPosted_;
+    int pinSettling_ = 0;
 
     /// The trace as a plain buffer, oldest first, mirrored into the model each tick.
     std::vector<TracePoint> trace_;

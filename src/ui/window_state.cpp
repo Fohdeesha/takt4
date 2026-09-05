@@ -28,6 +28,7 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_bpm(static_cast<float>(state.bpm));
     window.set_raw_bpm(static_cast<float>(state.rawBpm));
     window.set_locked(state.locked);
+    window.set_pinned(state.pinned);
     window.set_holding(state.holding);
     window.set_refined(state.refined);
     window.set_confidence(static_cast<float>(state.confidence));

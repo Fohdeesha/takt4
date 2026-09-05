@@ -49,6 +49,9 @@ global Theme {
   out property <color> control: #2b313a;
   out property <color> controlEdge: #4a525f;
   out property <color> controlPrimary: #17567a;
+  // A toggle that is currently on, in the same green the lock readout uses — it is the
+  // lock the operator is holding, and green means locked everywhere else in this window.
+  out property <color> controlActive: #1a6b3c;
   out property <color> label: #ffffff;
   // A disabled button keeps its shape: it sits between the panel and an active control
   // rather than sinking into the background, because on a freshly opened window every
@@ -74,15 +77,20 @@ component Press inherits Rectangle {
   in property <bool> enabled: true;
   /// The one action in a row that should be reached for first.
   in property <bool> primary;
+  /// A toggle that is currently on, lit so it reads as held down rather than pressable.
+  in property <bool> active;
   callback clicked;
 
-  private property <color> face: root.primary ? Theme.controlPrimary : Theme.control;
+  private property <color> face: root.active ? Theme.controlActive
+    : root.primary ? Theme.controlPrimary
+    : Theme.control;
 
   min-height: 40px;
   horizontal-stretch: 0;
   border-radius: 5px;
   border-width: 1px;
   border-color: !root.enabled ? Theme.line
+    : root.active ? Theme.locked
     : root.primary ? Theme.accent
     : touch.has-hover ? Theme.accent
     : Theme.controlEdge;
@@ -240,6 +248,8 @@ export component MainWindow inherits Window {
   // --- what the tracker says -----------------------------------------------------
   in-out property <float> bpm;
   in-out property <bool> locked;
+  /// The operator is holding the lock up; see TempoTracker::setLockPinned.
+  in-out property <bool> pinned;
   in-out property <bool> holding;
   in-out property <bool> refined;
   in-out property <float> confidence;
@@ -303,6 +313,9 @@ export component MainWindow inherits Window {
   callback redouble();
   callback tap();
   callback snap-downbeat();
+  /// The state being asked for, not a toggle: the button already shows the current one,
+  /// and sending the intention is what makes two quick presses land as two changes.
+  callback pin-changed(bool);
   callback fold-on-changed(bool);
   callback fold-min-changed(float);
   callback fold-max-changed(float);
@@ -593,6 +606,19 @@ export component MainWindow inherits Window {
             min-width: 128px;
             clicked => {
               root.tap();
+            }
+          }
+
+          // §5.7's lock, pinned rather than set: the tracker goes on tracking and simply
+          // is not allowed to let go of the tempo. Lit while held, because a tempo that
+          // has stopped following the audio is alarming when nothing says why.
+          Press {
+            text: "LOCK";
+            active: root.pinned;
+            enabled: root.running;
+            min-width: 96px;
+            clicked => {
+              root.pin-changed(!root.pinned);
             }
           }
 

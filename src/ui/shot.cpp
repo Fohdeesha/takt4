@@ -163,6 +163,12 @@ void fillFromSyntheticRun(MainWindow& window,
     for (std::size_t i = 0; i < trace.size(); ++i) {
         traceModel->set_row_data(i, trace[i]);
     }
+    // Pinned, so the picture shows the one control that has an on-state: every other
+    // button looks the same lit or not, and this is the only way to see that a held LOCK
+    // reads as held rather than as merely another dark rectangle.
+    (void)beatEngine->post(engine::Command::setLockPinned(true));
+    (void)beatEngine->step();
+
     publishTempoState(window, beatEngine->state());
     publishTempoOptions(window, beatEngine->tempoOptions());
     publishInput(window, rms, peak);
