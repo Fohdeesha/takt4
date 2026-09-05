@@ -25,6 +25,7 @@ add_executable(takt4_tests
   engine/live_tracker_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
+  features/intensity_test.cpp
   io/npy_file_test.cpp
   io/wav_file_test.cpp
   model/activation_engine_test.cpp

@@ -442,7 +442,9 @@ TEST_CASE("every generator kind and live source has a name that reads back",
     CHECK_FALSE(takt4::trigger::generatorKindOf("nonsense").has_value());
     CHECK_FALSE(takt4::trigger::liveSourceOf("").has_value());
 
+    // Intensity is `features::Intensity` — it lives with the classifier that computes it,
+    // and `trigger` aliases it so a rule reads as one thing.
     for (const Intensity intensity : {Intensity::Calm, Intensity::Normal, Intensity::Intense}) {
-        CHECK_FALSE(takt4::trigger::labelOf(intensity).empty());
+        CHECK_FALSE(takt4::features::labelOf(intensity).empty());
     }
 }

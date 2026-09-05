@@ -54,6 +54,8 @@ void BeatEngine::start() {
     // operator then pressing start. The reset above clears tracking state, never options.
     applyCommands();
     state_.publish(tempo_.state());
+    onsets_ = 0;
+    intensity_.publish(EngineIntensity{});
     framesTracked_.store(0, std::memory_order_relaxed);
     framesDropped_.store(0, std::memory_order_relaxed);
     beatsCalled_.store(0, std::memory_order_relaxed);
@@ -162,6 +164,10 @@ void BeatEngine::track(const model::FrameActivation& activation) noexcept {
     // The state before the rings: a consumer that reads state() rather than draining
     // should never see a frame on the ring that is newer than the state.
     state_.publish(frame.state);
+    if (activation.onset) {
+        ++onsets_;
+    }
+    intensity_.publish(EngineIntensity{activation.intensity, onsets_, activation.flux});
     if (event) {
         beatsCalled_.fetch_add(1, std::memory_order_relaxed);
         if (!beats_.tryPush(EngineBeat{*event, frame.state, activation.hostMicros})) {
