@@ -65,6 +65,11 @@ public:
 
     const Config& config() const noexcept { return config_; }
 
+    /// The port actually being listened on, which is `config().port` unless that was 0 —
+    /// "any free one" — and 0 when nothing is listening. A UI has to show this rather than
+    /// the request, or an operator points their Stream Deck at a port nobody is on.
+    std::uint16_t port() const noexcept { return receiver_ ? receiver_->port() : 0; }
+
     /// Messages that matched an address and were acted on.
     std::uint64_t handled() const noexcept { return handled_.load(std::memory_order_relaxed); }
     /// Datagrams that were not §5.7 messages, or were addressed to nothing this knows.

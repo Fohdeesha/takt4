@@ -62,10 +62,10 @@ void trackUntilLocked(BeatEngine& engine) {
     }
 }
 
-/// Ports well above anything in HANDOFF, so a test never fights the real thing.
-std::uint16_t testPort(std::uint16_t offset) {
-    return static_cast<std::uint16_t>(48000 + offset);
-}
+/// Port 0 asks the platform for a free one, which is the only way a test on a shared
+/// runner cannot lose a race with whatever else is listening. `OscReceiver::port()` says
+/// which it got.
+constexpr std::uint16_t kAnyPort = 0;
 
 OscControl::Config localConfig(std::uint16_t port) {
     OscControl::Config config;
@@ -81,7 +81,7 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
     // §5.7's table, dispatched without a socket: the address table on its own, held to what the
     // engine ends up saying rather than to the fact that a handler was called.
     auto engine = makeEngine();
-    OscControl control(*engine, localConfig(testPort(0)));
+    OscControl control(*engine, localConfig(kAnyPort));
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
 
@@ -110,7 +110,7 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
 
 TEST_CASE("an address for another app is not ours to act on", "[control]") {
     auto engine = makeEngine();
-    OscControl control(*engine, localConfig(testPort(1)));
+    OscControl control(*engine, localConfig(kAnyPort));
 
     CHECK_FALSE(control.dispatch("/other/ctl/tempo/halve", std::nullopt));
     CHECK_FALSE(control.dispatch("/ctl/tempo/halve", std::nullopt)); // no prefix at all
@@ -128,9 +128,9 @@ TEST_CASE("an address for another app is not ours to act on", "[control]") {
 TEST_CASE("a listening socket receives what a sender sends it", "[control][network]") {
     // The socket half, over real UDP on the loopback. `OscSender` is the other end, so
     // this also says the two agree about the wire.
-    const std::uint16_t port = testPort(2);
-    OscReceiver receiver(port, /*localOnly=*/true);
-    CHECK(receiver.port() == port);
+    OscReceiver receiver(kAnyPort, /*localOnly=*/true);
+    const std::uint16_t port = receiver.port();
+    CHECK(port != 0);
     CHECK(receiver.datagrams() == 0);
 
     // Nothing sent: the wait ends on its own rather than blocking the test.
@@ -158,8 +158,9 @@ TEST_CASE("a listening socket receives what a sender sends it", "[control][netwo
 
 TEST_CASE("a port already in use is reported rather than silently dead", "[control][network]") {
     // A control surface that quietly does nothing is worse than one that will not start.
-    const std::uint16_t port = testPort(3);
-    const OscReceiver first(port, /*localOnly=*/true);
+    const OscReceiver first(kAnyPort, /*localOnly=*/true);
+    const std::uint16_t port = first.port();
+    REQUIRE(port != 0);
     CHECK_THROWS(OscReceiver(port, /*localOnly=*/true));
 
     auto engine = makeEngine();
@@ -170,11 +171,12 @@ TEST_CASE("a port already in use is reported rather than silently dead", "[contr
 
 TEST_CASE("the control thread acts on what arrives and counts what it cannot",
           "[control][network]") {
-    const std::uint16_t port = testPort(4);
     auto engine = makeEngine();
-    OscControl control(*engine, localConfig(port));
+    OscControl control(*engine, localConfig(kAnyPort));
     control.start();
     REQUIRE(control.running());
+    const std::uint16_t port = control.port();
+    REQUIRE(port != 0);
 
     OscSender sender("127.0.0.1", port);
     OscMessage halve("/takt4/ctl/tempo/halve");
@@ -208,15 +210,21 @@ TEST_CASE("a control that was never enabled never opens a socket", "[control]") 
     // Off unless asked for: a listening socket is not something to open on somebody's
     // behalf, and two takt4s on one machine must not fight over a port neither wanted.
     auto engine = makeEngine();
+    // A port we know is free, because we are holding it and letting it go.
+    std::uint16_t free = 0;
+    {
+        const OscReceiver probe(kAnyPort, /*localOnly=*/true);
+        free = probe.port();
+    }
     OscControl::Config config;
     config.enabled = false;
-    config.port = testPort(5);
+    config.port = free;
     OscControl control(*engine, config);
 
     control.start();
     CHECK_FALSE(control.running());
     // Which is to say the port is still free.
-    CHECK_NOTHROW(OscReceiver(config.port, /*localOnly=*/true));
+    CHECK_NOTHROW(OscReceiver(free, /*localOnly=*/true));
 
     control.stop();
     CHECK_FALSE(control.running());
@@ -225,7 +233,7 @@ TEST_CASE("a control that was never enabled never opens a socket", "[control]") 
 TEST_CASE("a control is safe to stop twice, and to never start", "[control]") {
     auto engine = makeEngine();
     {
-        OscControl control(*engine, localConfig(testPort(6)));
+        OscControl control(*engine, localConfig(kAnyPort));
         control.stop();
         control.start();
         control.stop();
@@ -233,10 +241,13 @@ TEST_CASE("a control is safe to stop twice, and to never start", "[control]") {
         CHECK_FALSE(control.running());
     }
     // And the destructor stops a running one, freeing the port with it.
+    std::uint16_t held = 0;
     {
-        OscControl control(*engine, localConfig(testPort(6)));
+        OscControl control(*engine, localConfig(kAnyPort));
         control.start();
         CHECK(control.running());
+        held = control.port();
+        REQUIRE(held != 0);
     }
-    CHECK_NOTHROW(OscReceiver(testPort(6), /*localOnly=*/true));
+    CHECK_NOTHROW(OscReceiver(held, /*localOnly=*/true));
 }

@@ -42,15 +42,28 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
                                  std::to_string(lastSocketError()) + ")");
     }
 
+    // Unqualified: `htons` and `htonl` are functions on Winsock but *macros* on glibc and
+    // on Darwin, and `::htons` asks a macro for a namespace it does not have. MSVC
+    // compiles the qualified form happily, which is why this only showed up on CI.
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = ::htons(port);
-    address.sin_addr.s_addr = ::htonl(localOnly ? INADDR_LOOPBACK : INADDR_ANY);
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr =
+        htonl(static_cast<std::uint32_t>(localOnly ? INADDR_LOOPBACK : INADDR_ANY));
     if (::bind(impl->socket, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
         const int error = lastSocketError();
         throw std::runtime_error("OSC control: cannot listen on port " + std::to_string(port) +
                                  " (" + std::to_string(error) +
                                  "); something else is probably using it");
+    }
+
+    // Asked for any free port: say which one it got, so a caller can tell somebody.
+    if (port_ == 0) {
+        sockaddr_in bound{};
+        socklen_t boundLength = sizeof bound;
+        if (::getsockname(impl->socket, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
+            port_ = ntohs(bound.sin_port);
+        }
     }
 
     impl_ = std::move(impl);
@@ -83,9 +96,15 @@ std::span<const std::byte> OscReceiver::receive(std::chrono::milliseconds timeou
 
     sockaddr_storage from{};
     socklen_t fromLength = sizeof from;
+    // Winsock's `recvfrom` takes an `int` length and POSIX's takes a `size_t`, so the
+    // cast has to differ or one of them is a signedness conversion `-Wconversion` refuses.
+#if defined(_WIN32)
+    const int capacity = static_cast<int>(impl_->buffer.size());
+#else
+    const std::size_t capacity = impl_->buffer.size();
+#endif
     const auto received = ::recvfrom(impl_->socket, reinterpret_cast<char*>(impl_->buffer.data()),
-                                     static_cast<int>(impl_->buffer.size()), 0,
-                                     reinterpret_cast<sockaddr*>(&from), &fromLength);
+                                     capacity, 0, reinterpret_cast<sockaddr*>(&from), &fromLength);
     if (received <= 0) {
         return {};
     }
