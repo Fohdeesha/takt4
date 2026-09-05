@@ -19,6 +19,7 @@
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/rates.hpp"
 #include "core/build_info.hpp"
+#include "core/control/control_action.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -239,6 +240,20 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         midiPorts->push_back(slint::SharedString(port));
     }
     window->set_midi_ports(midiPorts);
+
+    // §5.7's control row, built the way WindowController builds it.
+    auto midiInputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    midiInputs->push_back(slint::SharedString(""));
+    for (const std::string& port : output::listMidiInputPorts()) {
+        midiInputs->push_back(slint::SharedString(port));
+    }
+    window->set_midi_in_ports(midiInputs);
+    auto learnActions = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const control::ControlAction action : control::kControlActions) {
+        learnActions->push_back(slint::SharedString(std::string(control::labelOf(action))));
+    }
+    window->set_learn_actions(learnActions);
+
     auto traceModel =
         std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength));
     window->set_trace(traceModel);
@@ -253,6 +268,11 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_osc_on(true);
         window->set_osc_targets(slint::SharedString("192.168.1.40:7000"));
         window->set_beats_sent(21);
+        // A control surface bound, so the row shows what a learned binding reads as
+        // rather than an empty picker and a blank line.
+        window->set_control_on(true);
+        window->set_learn_action_index(0);
+        window->set_control_reading(slint::SharedString("note 36 ch 10"));
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));

@@ -9,8 +9,10 @@ namespace takt4::ui {
 int run();
 
 struct ShotOptions {
+    /// The window's own preferred size, so the picture is the layout as designed rather
+    /// than the layout squeezed. Keep these in step with `main_window.slint`.
     int width = 900;
-    int height = 640;
+    int height = 700;
     /// Draw the window as it looks with a tracker running. False renders the idle
     /// window — blank readouts, every manual control disabled — which is what the app
     /// looks like the moment it opens, and is therefore worth being able to look at.

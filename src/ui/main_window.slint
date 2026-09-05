@@ -225,9 +225,9 @@ component Setting inherits HorizontalLayout {
 export component MainWindow inherits Window {
   title: "takt4";
   preferred-width: 900px;
-  preferred-height: 640px;
+  preferred-height: 700px;
   min-width: 720px;
-  min-height: 560px;
+  min-height: 600px;
   background: Theme.background;
   init => {
     Palette.color-scheme = ColorScheme.dark;
@@ -299,6 +299,29 @@ export component MainWindow inherits Window {
   in-out property <string> midi-port;
   in-out property <[string]> midi-ports;
   in-out property <int> beats-sent;
+
+  // --- §5.7's control input --------------------------------------------------------
+  // What drives the app from outside it. The port is a fact about this desk and lives in
+  // machine settings; the bindings are *learned* rather than typed, because nobody knows
+  // what their controller's pad 3 sends and a box asking for a note number is a worse
+  // question than "press it now".
+  in-out property <[string]> midi-in-ports;
+  in-out property <string> midi-in-port;
+  in-out property <bool> control-on;
+  /// One per ControlAction, in kControlActions order, as labelOf() writes them.
+  in-out property <[string]> learn-actions;
+  in-out property <int> learn-action-index;
+  in-out property <bool> learning;
+  /// What the selected action is bound to, or what just arrived unbound. The second is
+  /// what tells an operator their controller is on a channel nothing is listening to,
+  /// which otherwise looks exactly like a broken cable.
+  in-out property <string> control-reading;
+
+  callback midi-in-picked(string);
+  callback learn-action-picked(int);
+  /// Arms learn mode for the selected action, or disarms it when it already is.
+  callback learn-clicked();
+  callback forget-clicked();
 
   in-out property <string> status;
   in-out property <bool> status-is-error;
@@ -903,6 +926,88 @@ export component MainWindow inherits Window {
           width: 104px;
           horizontal-alignment: right;
           vertical-alignment: center;
+        }
+      }
+    }
+
+    Rectangle {
+      height: 1px;
+      background: Theme.line;
+      vertical-stretch: 0;
+    }
+
+    // --- §5.7's control row ---------------------------------------------------------
+    // The mirror of the outputs row: that one says what is being sent, this one says what
+    // is allowed to drive us. Learn mode is the whole of it — an operator picks the thing
+    // they want a button for, presses LEARN, then presses the button.
+    Rectangle {
+      background: Theme.panel;
+      vertical-stretch: 0;
+
+      HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+
+        Text {
+          text: "control";
+          color: root.control-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 56px;
+          vertical-alignment: center;
+        }
+
+        control-picker := ComboBox {
+          model: root.midi-in-ports;
+          current-value <=> root.midi-in-port;
+          horizontal-stretch: 1;
+          selected => {
+            root.midi-in-picked(self.current-value);
+          }
+        }
+
+        learn-picker := ComboBox {
+          model: root.learn-actions;
+          current-index <=> root.learn-action-index;
+          enabled: root.control-on;
+          horizontal-stretch: 1;
+          selected => {
+            root.learn-action-picked(self.current-index);
+          }
+        }
+
+        // Lit while armed, in the green a held LOCK uses: both mean "this is waiting on
+        // you". Pressing it again gives up rather than stranding the operator in a mode
+        // with no way out.
+        learn-button := Press {
+          text: root.learning ? "PRESS IT" : "LEARN";
+          active: root.learning;
+          enabled: root.control-on;
+          min-width: 116px;
+          clicked => {
+            root.learn-clicked();
+          }
+        }
+
+        forget-button := Press {
+          text: "FORGET";
+          enabled: root.control-on;
+          min-width: 96px;
+          clicked => {
+            root.forget-clicked();
+          }
+        }
+
+        Text {
+          text: root.control-reading;
+          color: Theme.dim;
+          font-size: 12px;
+          font-family: "Consolas";
+          horizontal-stretch: 1;
+          vertical-alignment: center;
+          overflow: elide;
         }
       }
     }

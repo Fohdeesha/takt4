@@ -305,6 +305,32 @@ TEST_CASE("a control that was never enabled opens no port", "[control][midi]") {
     CHECK_FALSE(control.running());
 }
 
+TEST_CASE("changing the port keeps what was learned", "[control][midi]") {
+    // The whole reason `setPort` exists rather than building a new MidiControl: an
+    // operator moving from one controller to another is not asking to forget their
+    // bindings, and in a picker those two are one keystroke apart.
+    auto engine = makeEngine();
+    MidiControl control(*engine, offline());
+
+    MidiBinding tap;
+    tap.number = 36;
+    tap.channel = 10;
+    tap.action = ControlAction::Tap;
+    REQUIRE(control.bind(tap));
+
+    control.setPort("some other controller");
+    CHECK(control.config().port == "some other controller");
+    CHECK(control.config().enabled);
+    CHECK(control.bindings().size() == 1);
+    CHECK(control.bindings().front() == tap);
+
+    // And an empty name is "none", which stops it without touching the table.
+    control.setPort("");
+    CHECK_FALSE(control.config().enabled);
+    CHECK_FALSE(control.running());
+    CHECK(control.bindings().size() == 1);
+}
+
 TEST_CASE("a port that is not there is reported rather than silently dead",
           "[control][midi][hardware]") {
     auto engine = makeEngine();

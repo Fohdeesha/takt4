@@ -1,5 +1,7 @@
 #include "core/audio/devices.hpp"
 #include "core/audio/rates.hpp"
+#include "core/control/control_action.hpp"
+#include "core/control/midi_binding.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/io/wav_file.hpp"
@@ -406,6 +408,114 @@ TEST_CASE("the LOCK button pins the tracker's lock and lets go of it", "[ui]") {
     CHECK_FALSE(tracker.engine().state().pinned);
     // Released, so the tracker has the tempo back and is hunting for it again.
     CHECK_FALSE(tracker.engine().state().locked);
+}
+
+TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
+    // §5.7's learn mode, end to end through the window's own callbacks. No hardware:
+    // `MidiControl::dispatch` delivers the event a controller would have sent, which is the
+    // only way this path is checkable without somebody standing at the machine pressing a
+    // pad — and it is the same seam RtMidi's callback uses.
+    using takt4::control::ControlAction;
+    using takt4::control::MidiEvent;
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    // Learn is armed from the window, for whichever action the picker is on.
+    const int downbeat = 1; // kControlActions[1]
+    REQUIRE(takt4::control::kControlActions[downbeat] == ControlAction::Downbeat);
+    controller.window().invoke_learn_action_picked(downbeat);
+    controller.window().invoke_learn_clicked();
+    CHECK(controller.window().get_learning());
+    CHECK(controller.control().learning() == ControlAction::Downbeat);
+
+    MidiEvent pad;
+    pad.kind = MidiEvent::Kind::Note;
+    pad.channel = 10;
+    pad.number = 36;
+    pad.value = 100;
+    CHECK(controller.control().dispatch(pad));
+
+    REQUIRE(controller.control().bindings().size() == 1);
+    CHECK(controller.control().bindings().front().action == ControlAction::Downbeat);
+    CHECK_FALSE(controller.control().learning().has_value());
+
+    SECTION("and it shows on the row, without repeating the action beside it") {
+        // Off, because no port is open — the reading has to say that rather than claim a
+        // binding is live when nothing is listening.
+        controller.tick();
+        CHECK_FALSE(controller.window().get_learning());
+        CHECK_FALSE(controller.window().get_control_on());
+        CHECK(std::string(controller.window().get_control_reading()).find("note 36") ==
+              std::string::npos);
+    }
+
+    SECTION("what was learned is what gets saved") {
+        const takt4::settings::Settings saved = controller.currentSettings();
+        REQUIRE(saved.machine.midiBindings.size() == 1);
+        CHECK(saved.machine.midiBindings.front() == "note 36 ch 10 -> downbeat");
+
+        // And a window built from that file has it again, which is the whole round trip.
+        LiveTracker restored(kWeights, kStateSpace);
+        WindowController second(restored, saved);
+        REQUIRE(second.control().bindings().size() == 1);
+        CHECK(second.control().bindings().front().number == 36);
+        CHECK(second.control().bindings().front().channel == 10);
+        CHECK(second.control().bindings().front().action == ControlAction::Downbeat);
+    }
+
+    SECTION("pressing LEARN again gives up rather than stranding the operator") {
+        controller.window().invoke_learn_clicked();
+        CHECK(controller.control().learning().has_value());
+        controller.window().invoke_learn_clicked();
+        CHECK_FALSE(controller.control().learning().has_value());
+        CHECK(controller.control().bindings().size() == 1); // and nothing was bound
+    }
+
+    SECTION("FORGET unbinds the action the picker is on, and only that one") {
+        controller.window().invoke_learn_action_picked(0); // tap
+        controller.window().invoke_forget_clicked();
+        CHECK(controller.control().bindings().size() == 1); // downbeat's is untouched
+
+        controller.window().invoke_learn_action_picked(downbeat);
+        controller.window().invoke_forget_clicked();
+        CHECK(controller.control().bindings().empty());
+    }
+}
+
+TEST_CASE("a learned control reaches the tracker through the window", "[ui]") {
+    using takt4::control::ControlAction;
+    using takt4::control::MidiEvent;
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+
+    controller.window().invoke_learn_action_picked(2); // halve
+    REQUIRE(takt4::control::kControlActions[2] == ControlAction::TempoHalve);
+    controller.window().invoke_learn_clicked();
+
+    MidiEvent pad;
+    pad.number = 40;
+    pad.value = 127;
+    REQUIRE(controller.control().dispatch(pad));
+
+    // The binding gesture must not also fire it: an operator binding `tempo/halve` would
+    // otherwise halve the tempo in the act of binding it. Held as "did not halve" rather
+    // than to an exact number, because what is published here is the *refined* tempo from
+    // the beat spacing (129.03) and not the cloud's own rawBpm (130.40) — the two differ
+    // by more than any equality worth writing.
+    const double raw = tracker.engine().state().rawBpm;
+    const double before = tracker.engine().state().bpm;
+    run.applyPosted();
+    CHECK(tracker.engine().state().bpm > before * 0.9);
+
+    // The same pad again is the control doing its job. A halve republishes from rawBpm and
+    // drops the refinement, so this one *is* exact — as tests/ui's own ÷2 test relies on.
+    CHECK(controller.control().dispatch(pad));
+    run.applyPosted();
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw / 2.0, 1e-6));
 }
 
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {

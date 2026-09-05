@@ -60,6 +60,16 @@ public:
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     const Config& config() const noexcept { return config_; }
+
+    /// Points it at a different port, or at none when `port` is empty. Stops first; the
+    /// caller starts it again.
+    ///
+    /// A setter rather than building a new one, because **the bindings have to survive
+    /// this**: an operator moving from one controller to another is not asking for
+    /// everything they learned to be forgotten, and in a picker those two are one
+    /// keystroke apart. (A new instance could not be assigned in anyway — this holds a
+    /// mutex, so it is neither copyable nor movable.)
+    void setPort(std::string port);
     /// The port actually opened, which is RtMidi's full name for it rather than the
     /// substring that was asked for. Empty when nothing is open.
     std::string portName() const;

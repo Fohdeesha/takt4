@@ -131,6 +131,12 @@ void MidiControl::stop() noexcept {
     learning_.reset();
 }
 
+void MidiControl::setPort(std::string port) {
+    stop();
+    config_.enabled = !port.empty();
+    config_.port = std::move(port);
+}
+
 std::string MidiControl::portName() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return portName_;

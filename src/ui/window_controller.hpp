@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/audio/devices.hpp"
+#include "core/control/midi_control.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
@@ -132,6 +133,26 @@ public:
     /// The MIDI output port to send 24 PPQN to, or empty for none.
     void setMidiPort(const std::string& name);
 
+    /// §5.7's control input. The port is opened at once rather than at Start: an operator
+    /// binding buttons is doing it *before* the set, and a learn mode that needs the
+    /// tracker running would be a worse tool than a pen and paper.
+    void setMidiControlPort(const std::string& name);
+    /// Which action LEARN will bind, as an index into `control::kControlActions`.
+    void pickLearnAction(int index);
+    /// Arms learn mode for that action, or disarms when it is already armed. One button
+    /// for both, so an operator who pressed it by mistake is not stranded in a mode.
+    void toggleLearn();
+    /// Unbinds every control bound to the selected action.
+    void forgetLearned();
+
+    /// The MIDI surface itself. Non-const for the same reason `window()` is: a test drives
+    /// `dispatch` to deliver an event no hardware here can send, which is the only way the
+    /// path from a controller to a binding is checkable without somebody pressing a pad.
+    control::MidiControl& control() noexcept { return control_; }
+    const control::MidiControl& control() const noexcept { return control_; }
+    /// Every MIDI *input* port on the machine, as offered in the picker.
+    const std::vector<std::string>& midiInputPorts() const noexcept { return midiInputPorts_; }
+
     /// Everything worth remembering for next time (Q7), as it stands now. The caller
     /// saves it; this class does not know where settings live and does not want to.
     settings::Settings currentSettings() const;
@@ -166,6 +187,7 @@ private:
     void publishLevels();
     void publishTaps();
     void publishOutputs();
+    void publishControl();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
     void setStatus(const std::string& text, bool error);
@@ -175,6 +197,7 @@ private:
 
     engine::LiveTracker& tracker_;
     std::vector<std::string> midiPorts_;
+    std::vector<std::string> midiInputPorts_;
     slint::ComponentHandle<MainWindow> window_;
     slint::Timer timer_;
 
@@ -208,6 +231,15 @@ private:
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
+
+    /// §5.7's control input. Which action LEARN would bind, as an index into
+    /// `control::kControlActions`; the table itself lives in `control_`.
+    int learnAction_ = 0;
+
+    /// The MIDI surface. **Before `runner_`**, so it is destroyed after it: its callback
+    /// thread posts to the engine, and the engine outlives both, but nothing about the
+    /// ordering should depend on that staying true.
+    control::MidiControl control_;
 
     /// §4.2's output thread, and the single consumer of the engine's beat ring — which is
     /// why `tick()` no longer drains it.

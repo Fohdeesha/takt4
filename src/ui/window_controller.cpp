@@ -40,6 +40,21 @@ bool sameSettings(const Options& a, const Options& b) noexcept {
            a.latencyOffsetSeconds == b.latencyOffsetSeconds;
 }
 
+/// "note 36 ch 10" — the control half of a binding, without the action.
+///
+/// The row already says which action, in the picker right beside this text, so repeating
+/// it would spend the width twice. One spelling for both a binding and a loose event, so
+/// "not bound - last seen note 36 ch 10" reads against the bound ones above it.
+std::string describeControl(const control::MidiBinding& binding) {
+    const std::string whole = control::formatMidiBinding(binding);
+    return whole.substr(0, whole.find(" ->"));
+}
+
+std::string describeControl(const control::MidiEvent& event) {
+    return describeControl(
+        control::MidiBinding{event.kind, event.channel, event.number, control::ControlAction::Tap});
+}
+
 /// What the last run was sending, as the transports want it.
 ///
 /// The MIDI port comes from the machine half and everything else from the portable half,
@@ -65,6 +80,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
+      // Built disabled; `setMidiControlPort` is what opens a port, so a machine with a
+      // controller plugged in is not listened to until somebody says to.
+      control_(tracker.engine(), control::MidiControl::Config{}),
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
       runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())) {
@@ -73,6 +91,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // that ordering `LiveTracker::start`'s business instead of this class's.
     tracker_.setHostTimeSource(&runner_.hostTimeClock());
     midiPorts_ = output::listMidiOutputPorts();
+    midiInputPorts_ = output::listMidiInputPorts();
 
     window_->set_trace(traceModel_);
 
@@ -96,6 +115,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_midi_port_picked(
         [this](const slint::SharedString& name) { setMidiPort(std::string(name)); });
 
+    window_->on_midi_in_picked(
+        [this](const slint::SharedString& name) { setMidiControlPort(std::string(name)); });
+    window_->on_learn_action_picked([this](int index) { pickLearnAction(index); });
+    window_->on_learn_clicked([this] { toggleLearn(); });
+    window_->on_forget_clicked([this] { forgetLearned(); });
+
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
 
@@ -108,14 +133,42 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     }
     window_->set_midi_ports(ports);
 
+    auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    inputs->push_back(shared("")); // "none", as above
+    for (const std::string& port : midiInputPorts_) {
+        inputs->push_back(shared(port));
+    }
+    window_->set_midi_in_ports(inputs);
+
+    auto actions = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const control::ControlAction action : control::kControlActions) {
+        actions->push_back(shared(std::string(control::labelOf(action))));
+    }
+    window_->set_learn_actions(actions);
+
+    // Whatever was learned last time, restored. A line this build cannot read is skipped
+    // rather than refused: `settings` keeps the text it was given, so a file written by a
+    // later build with an action this one does not have still loads the rest.
+    std::vector<control::MidiBinding> bindings;
+    for (const std::string& text : settings.machine.midiBindings) {
+        if (const std::optional<control::MidiBinding> binding = control::parseMidiBinding(text)) {
+            bindings.push_back(*binding);
+        }
+    }
+    control_.setBindings(std::move(bindings));
+
     refreshDevices(settings.machine);
     // After the pickers, so a port that has gone missing since the last run reports on a
     // status line the window already has rather than during construction.
     if (!settings.machine.midiClockPort.empty()) {
         setMidiPort(settings.machine.midiClockPort);
     }
+    if (!settings.machine.midiControlPort.empty()) {
+        setMidiControlPort(settings.machine.midiControlPort);
+    }
     publishStopped();
     publishOutputs();
+    publishControl();
 
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
@@ -304,6 +357,92 @@ void WindowController::setMidiPort(const std::string& name) {
     publishOutputs();
 }
 
+void WindowController::setMidiControlPort(const std::string& name) {
+    // The bindings survive this: `setPort` keeps them, because an operator moving from
+    // one controller to another is not asking to forget what they learned.
+    control_.setPort(name);
+    if (!name.empty()) {
+        try {
+            control_.start();
+            setStatus("Control input on " + control_.portName() +
+                          ". Pick an action, press LEARN, then press the control.",
+                      false);
+        } catch (const std::exception& e) {
+            // The port list is what the machine offered when the window opened; a
+            // controller unplugged since then lands here, and saying so is the whole
+            // reason `start()` throws rather than quietly listening to nothing.
+            setStatus(e.what(), true);
+        }
+    }
+    publishControl();
+}
+
+void WindowController::pickLearnAction(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= control::kControlActions.size()) {
+        return;
+    }
+    learnAction_ = index;
+    // Changing what LEARN would bind while it is armed is a different intention, so the
+    // arming does not carry over to it.
+    control_.cancelLearn();
+    publishControl();
+}
+
+void WindowController::toggleLearn() {
+    if (control_.learning()) {
+        control_.cancelLearn();
+    } else {
+        control_.learn(control::kControlActions[static_cast<std::size_t>(learnAction_)]);
+    }
+    publishControl();
+}
+
+void WindowController::forgetLearned() {
+    const control::ControlAction action =
+        control::kControlActions[static_cast<std::size_t>(learnAction_)];
+    control_.cancelLearn();
+    (void)control_.forget(action);
+    publishControl();
+}
+
+void WindowController::publishControl() {
+    window_->set_control_on(control_.running());
+    window_->set_learning(control_.learning().has_value());
+    window_->set_learn_action_index(learnAction_);
+
+    if (!control_.running()) {
+        window_->set_control_reading(shared(
+            midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "off — pick a port"));
+        return;
+    }
+    if (control_.learning()) {
+        window_->set_control_reading(shared("waiting for a control..."));
+        return;
+    }
+
+    // What the selected action is bound to. More than one control can be bound to one
+    // action — two pads for one job is a reasonable thing to want — so they are all shown.
+    const control::ControlAction action =
+        control::kControlActions[static_cast<std::size_t>(learnAction_)];
+    std::string text;
+    for (const control::MidiBinding& binding : control_.bindings()) {
+        if (binding.action != action) {
+            continue;
+        }
+        if (!text.empty()) {
+            text += ", ";
+        }
+        text += describeControl(binding);
+    }
+    if (text.empty()) {
+        // Nothing bound. Say what did arrive instead, if anything has: a controller on a
+        // channel nothing is listening to looks exactly like a broken cable otherwise.
+        const std::optional<control::MidiEvent> last = control_.lastEvent();
+        text = last ? "not bound - last seen " + describeControl(*last) : std::string("not bound");
+    }
+    window_->set_control_reading(shared(text));
+}
+
 double WindowController::nowSeconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
 }
@@ -418,6 +557,13 @@ settings::Settings WindowController::currentSettings() const {
     const output::Transports& transports = runner_.transports();
     out.machine.midiClockPort = transports.midiClockPort().value_or(std::string{});
 
+    // §5.7's control surface, which is machine-local for the same reason and more so: what
+    // was learned describes the box of buttons on this desk.
+    out.machine.midiControlPort = control_.config().port;
+    for (const control::MidiBinding& binding : control_.bindings()) {
+        out.machine.midiBindings.push_back(control::formatMidiBinding(binding));
+    }
+
     // The tracker's own, not this window's copy: a tap moves the fold window and the
     // window is only ever showing what the engine has (§7 deviation 8).
     out.preset.tempo = tracker_.engine().tempoOptions();
@@ -530,6 +676,10 @@ void WindowController::setStatus(const std::string& text, bool error) {
 
 void WindowController::tick() {
     ++ticks_;
+    // Before the early return: a MIDI message arrives on RtMidi's thread, so what it
+    // changed — a learn that took, a control that was seen — only reaches the window on a
+    // redraw, and binding buttons is something an operator does *before* pressing Start.
+    publishControl();
     if (!tracker_.running()) {
         return;
     }
