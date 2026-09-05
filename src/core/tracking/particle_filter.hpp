@@ -97,6 +97,9 @@ private:
     void dropAtRandom(std::vector<std::uint32_t>& particles, std::size_t count) noexcept;
     std::uint32_t median(const std::vector<std::uint32_t>& particles) noexcept;
     std::uint32_t mode(const std::vector<std::uint32_t>& particles, std::size_t numStates) noexcept;
+    /// The meter the cloud as a whole is on — the beats-per-bar carrying the most
+    /// particles, not the beats-per-bar of the single commonest one. See the definition.
+    std::uint32_t meterOf(const std::vector<std::uint32_t>& particles) noexcept;
 
     const StateSpaceModel* model_;
     Options options_;
@@ -111,6 +114,7 @@ private:
     std::vector<std::uint32_t> resampled_;
     std::vector<std::uint32_t> sorted_;
     std::vector<std::uint32_t> counts_;
+    std::vector<double> meterScores_; ///< decaying evidence, one per meter; see meterOf
     std::vector<std::uint64_t> dropped_;
     std::vector<double> cumulative_;
     std::vector<double> beatWeights_;
@@ -120,6 +124,7 @@ private:
     double lastEmitTime_ = 0.0;
     TrackedFrame::Emitted lastEmitted_ = TrackedFrame::Emitted::None;
     std::uint32_t downMax_ = 0;
+    std::uint32_t meterNow_ = 0; ///< the meter last read off the cloud; see meterOf
     std::size_t gatherWindow_ = 0;
 };
 
