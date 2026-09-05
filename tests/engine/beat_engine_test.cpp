@@ -138,6 +138,8 @@ TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
 
     std::vector<std::uint32_t> positions; // beat-in-bar, one per beat called
     std::size_t snapAt = 0;               // how many beats had been called when it was posted
+    std::uint32_t pressedOn = 0;          // where in the bar the beat under the press was
+    std::uint32_t carriedOn = 0;          // where the count would have gone without it
     bool posted = false;
     bool sawSnapped = false;
     EngineBeat beat;
@@ -149,34 +151,44 @@ TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
             positions.push_back(beat.event.beatInBar);
             if (beat.event.snapped) {
                 sawSnapped = true;
-                // Exactly one beat carries it, and it is the first after the post.
+                // Exactly one beat carries it, and it is the first after the post — which
+                // is the beat *after* the one the press named, so it is the bar's second.
+                // The beat that was named went out before the press and cannot be marked.
                 CHECK(positions.size() == snapAt + 1);
-                CHECK(beat.event.beatInBar == 1);
-                CHECK(beat.event.downbeat);
+                CHECK(beat.event.beatInBar == 2);
+                CHECK_FALSE(beat.event.downbeat);
             }
-            // Post once the bar is genuinely running and the *next* beat would not have
-            // been beat 1 anyway — otherwise the check below proves nothing.
+            // Press once the bar is genuinely running, and on a beat that was not already
+            // its first — a press there agrees with the filter and moves nothing, which
+            // would make the checks below prove nothing.
             const bool settled = beat.event.beatsPerBar >= 2 && beat.event.beatInBar >= 1;
-            if (!posted && settled && positions.size() >= 8 &&
-                beat.event.beatInBar != beat.event.beatsPerBar) {
+            if (!posted && settled && positions.size() >= 8 && beat.event.beatInBar != 1) {
                 snapAt = positions.size();
-                (void)engine->post(Command::snapDownbeat());
+                pressedOn = beat.event.beatInBar;
+                carriedOn = pressedOn % beat.event.beatsPerBar + 1;
+                REQUIRE(engine->post(Command::snapDownbeat()));
                 posted = true;
+
+                // Drain the command with no new audio behind it, so what the tracker says
+                // next is what the press alone did. The bar moves *here*, on the press, and
+                // not a beat later: an operator pressing the button on the downbeat they
+                // can hear is naming the beat the tracker has just called.
+                const std::uint64_t before = engine->state().beats;
+                (void)engine->step();
+                CHECK(engine->state().beats == before);
+                CHECK(engine->state().beatInBar == 1);
             }
         }
     }
 
     REQUIRE(posted);
     REQUIRE(sawSnapped);
-    REQUIRE(positions.size() > snapAt + 3);
+    REQUIRE(positions.size() > snapAt + 1);
 
-    // The beat before the press was not the end of a bar, so without the snap the next one
-    // would have counted on rather than restarting. That difference is the whole feature.
-    CHECK(positions[snapAt - 1] + 1 != 1u);
-    CHECK(positions[snapAt] == 1);
-    // ...and the operator's bar keeps running from there rather than being handed back.
-    CHECK(positions[snapAt + 1] == 2);
-    CHECK(positions[snapAt + 2] == 3);
+    // Had the press done nothing, the count would have carried on from the beat under it.
+    // It did not: the bar restarted on that beat, so the next one is the bar's second.
+    CHECK(carriedOn != 2u);
+    CHECK(positions[snapAt] == 2);
     CHECK(engine->commandsDropped() == 0);
 }
 
@@ -574,18 +586,31 @@ TEST_CASE("a manual downbeat reaches the tracker and moves the bar", "[engine]")
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<BeatEngine> engine = makeEngine();
 
-    // Far enough in that the filter has settled on a bar of its own to disagree with.
+    // Far enough in that the filter has settled on a bar of its own to disagree with, and
+    // stopped on a beat that is not already the bar's first: pressing the button there
+    // agrees with the filter and moves nothing.
     std::size_t h = 0;
-    for (; h < hops && engine->state().bars < 2; ++h) {
+    EngineBeat beat;
+    bool ready = false;
+    for (; h < hops && !ready; ++h) {
         engine->processHop(signal.data() + h * kHopSize, h);
         (void)engine->step();
+        while (engine->popBeat(beat)) {
+            ready = engine->state().bars >= 2 && beat.event.beatInBar > 1;
+        }
     }
-    REQUIRE(h < hops);
-    EngineBeat beat;
+    REQUIRE(ready);
     while (engine->popBeat(beat)) {
     }
 
     REQUIRE(engine->post(Command::snapDownbeat()));
+    // Drained with no new audio behind it: the bar moves on the press, naming the beat the
+    // tracker has just called rather than waiting for the next one.
+    const std::uint64_t beatsBefore = engine->state().beats;
+    (void)engine->step();
+    CHECK(engine->state().beats == beatsBefore);
+    CHECK(engine->state().beatInBar == 1);
+
     std::optional<EngineBeat> snapped;
     for (; h < hops && !snapped; ++h) {
         engine->processHop(signal.data() + h * kHopSize, h);
@@ -598,11 +623,12 @@ TEST_CASE("a manual downbeat reaches the tracker and moves the bar", "[engine]")
     }
     REQUIRE(snapped.has_value());
 
-    // The very next beat, whichever of the bar the filter thought it was.
+    // The very next beat carries the new phase out to the transports. It is the bar's
+    // second, because its first was the beat under the operator's finger.
     CHECK(snapped->event.snapped);
-    CHECK(snapped->event.downbeat);
-    CHECK(snapped->event.beatInBar == 1);
-    CHECK(snapped->state.beatInBar == 1);
+    CHECK_FALSE(snapped->event.downbeat);
+    CHECK(snapped->event.beatInBar == 2);
+    CHECK(snapped->state.beatInBar == 2);
 
     // The bar then runs from there, and the filter's own downbeats do not take it back.
     std::vector<EngineBeat> after;

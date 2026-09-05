@@ -94,8 +94,8 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
     (void)engine->step();
     CHECK_THAT(engine->state().bpm, WithinAbs(raw, 1e-6));
 
-    // A downbeat snap lands on the next beat the tracker calls; what that then means to
-    // the bar is tests/engine/beat_engine_test.cpp's business.
+    // A downbeat snap lands on the beat nearest the message; what that then means to the
+    // bar is tests/engine/beat_engine_test.cpp's business.
     CHECK(control.dispatch("/takt4/ctl/downbeat", std::nullopt));
     (void)engine->step();
 

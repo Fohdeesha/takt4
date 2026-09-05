@@ -134,7 +134,7 @@ void printUsage(std::ostream& out) {
         << "                      substring of its name, or its index)\n"
         << "      The outputs need a live input; over a file only the beats are printed.\n"
         << "      On a live input the manual controls are on the keyboard: space taps the\n"
-        << "      tempo, d snaps the downbeat to the next beat, h and x halve and double\n"
+        << "      tempo, d snaps the bar to the nearest beat, h and x halve and double\n"
         << "      it, l pins the lock so a breakdown cannot drop it, [ and ] move the\n"
         << "      latency offset, f turns the octave fold off and on, q stops. These need\n"
         << "      a console: MinTTY, which Git Bash uses, is not one, and the banner says\n"
@@ -1206,7 +1206,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         }
         case 'd':
             (void)engine->post(Command::snapDownbeat());
-            std::cout << "  downbeat: the next beat starts the bar\n";
+            std::cout << "  downbeat: the nearest beat starts the bar\n";
             break;
         case 'h':
             (void)engine->post(Command::halve());

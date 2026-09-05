@@ -28,8 +28,9 @@ struct Command {
         SetTempoOptions,
         Halve,    ///< the ÷2.
         Redouble, ///< the ×2.
-        /// the manual downbeat: the next beat called starts the bar. The one command
-        /// the design calls non-negotiable, and the one an operator reaches for first.
+        /// the manual downbeat: the beat nearest the press starts the bar. The one
+        /// command the design calls non-negotiable, and the one an operator reaches for
+        /// first.
         SnapDownbeat,
         /// the tap tempo, already measured: `tracking::TapTempo` counts the taps on
         /// whichever thread they arrive on, and only the tempo it worked out travels here.
