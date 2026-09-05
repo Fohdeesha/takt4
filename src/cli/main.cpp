@@ -120,6 +120,10 @@ void printUsage(std::ostream& out) {
         << "      --latency MS    added to every beat's timestamp; negative fires early\n"
         << "      --confidence T  hold the last tempo below this, default 0.15\n"
         << "      --seed N        the particle filter's seed, default 1\n"
+        << "      --trace FILE    write every 50 Hz frame as a TSV: the activations, the\n"
+        << "                      cloud's tempo and agreement, and what was published. A\n"
+        << "                      diagnostic for \"the tempo moved and I want to know\n"
+        << "                      which layer moved it\", not an output\n"
         << "      --out FILE      write every beat as <seconds> TAB <beat in bar> TAB\n"
         << "                      <BPM>; the first two columns are the format the\n"
         << "                      beat-tracking datasets annotate in\n"
@@ -708,6 +712,10 @@ struct TrackArgs {
     std::uint64_t seed = 1;
     bool link = false;
     std::optional<std::filesystem::path> beatsOut;
+    /// Every 50 Hz frame, not just the beats: what the cloud said, what was published, and
+    /// why they differ. A beat file cannot answer "the tempo moved — was it the filter or
+    /// the lock?", because between two beats it has nothing to say.
+    std::optional<std::filesystem::path> traceOut;
     std::string oscPrefix = "/takt4";
     std::vector<std::pair<std::string, std::uint16_t>> oscTargets;
     std::optional<std::string> midiClockPort;
@@ -761,6 +769,8 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             out.link = true;
         } else if (arg == "--out") {
             out.beatsOut = std::filesystem::path(value());
+        } else if (arg == "--trace") {
+            out.traceOut = std::filesystem::path(value());
         } else if (arg == "--osc") {
             const std::string_view target = value();
             // The last colon separates the port, so a bare IPv6 address is still usable.
@@ -978,16 +988,60 @@ takt4::engine::BeatEngine::Options engineOptions(const TrackArgs& args) {
     options.tempo = args.tempo;
     return options;
 }
-/// Drains the frame ring and returns how many were on it.
+/// Drains the frame ring, optionally writing every frame out first.
 ///
-/// The console has no use for the per-frame trace — that is §5.9's scrolling activation
+/// The console has no *use* for the per-frame trace — that is §5.9's scrolling activation
 /// display and the window's business — but a ring nobody drains fills up and the engine
 /// would rightly start counting frames lost. The *beat* ring is not touched here:
 /// `output::OutputRunner` is its single consumer.
-std::size_t discardFrames(takt4::engine::BeatEngine& engine) {
+///
+/// `--trace` exists because a beat file cannot diagnose a tempo that moves: it has one row
+/// per beat, so a lock that unwound during a four-second breakdown with no beats in it is
+/// invisible in the very passage that caused it. These columns separate the three places a
+/// published tempo can come from — the cloud's own interval, the lock's discrete value, and
+/// the beat-spacing refinement — so a report of "the BPM jumped" can be attributed rather
+/// than guessed at.
+class FrameTracer {
+public:
+    void writeTo(const std::filesystem::path& path) {
+        out_.open(path, std::ios::trunc);
+        if (!out_) {
+            throw std::runtime_error(path.string() + ": cannot create");
+        }
+        out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
+                "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
+                "\temitted\n"
+             << std::fixed << std::setprecision(6);
+    }
+
+    bool wanted() const { return out_.is_open(); }
+
+    void write(const takt4::engine::EngineFrame& frame, double secondsPerFrame) {
+        const auto& tracked = frame.tracked;
+        const auto& state = frame.state;
+        out_ << tracked.frameIndex << '\t'
+             << static_cast<double>(tracked.frameIndex) * secondsPerFrame << '\t'
+             << frame.activation.beat << '\t' << frame.activation.downbeat << '\t'
+             << tracked.gathering << '\t' << tracked.intervalFrames << '\t'
+             << tracked.refinedIntervalFrames << '\t' << tracked.bpm << '\t'
+             << tracked.tempoAgreement << '\t' << state.bpm << '\t' << state.confidence << '\t'
+             << (state.locked ? 1 : 0) << '\t' << (state.holding ? 1 : 0) << '\t'
+             << state.beatsPerBar << '\t' << state.beatInBar << '\t'
+             << static_cast<int>(tracked.emitted) << '\n';
+    }
+
+private:
+    std::ofstream out_;
+};
+
+std::size_t drainFrames(takt4::engine::BeatEngine& engine, FrameTracer& tracer,
+                        double secondsPerFrame) {
     takt4::engine::EngineFrame frame;
     std::size_t frames = 0;
     while (engine.popFrame(frame)) {
+        if (tracer.wanted()) {
+            tracer.write(frame, secondsPerFrame);
+        }
         ++frames;
     }
     return frames;
@@ -1017,6 +1071,10 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
 
     auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
     takt4::output::Transports transports{transportConfig(offline)};
+    FrameTracer tracer;
+    if (args.traceOut) {
+        tracer.writeTo(*args.traceOut);
+    }
     BeatPrinter printer;
     if (args.beatsOut) {
         printer.writeTo(*args.beatsOut);
@@ -1035,7 +1093,7 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
     for (std::size_t h = 0; h < hops; ++h) {
         engine->processHop(padded.data() + h * kHopSize, h);
         (void)engine->step();
-        frames += discardFrames(*engine);
+        frames += drainFrames(*engine, tracer, model.secondsPerFrame());
         // The "now" a transport would tick on is the audio's own time; nothing is enabled
         // here, but passing anything else would be a lie in the argument.
         const double now = static_cast<double>(engine->framesTracked()) * model.secondsPerFrame();
@@ -1073,6 +1131,10 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // structural rather than a comment now.
     takt4::output::OutputRunner runner(*engine, transportConfig(args));
     const takt4::output::Transports& transports = runner.transports();
+    FrameTracer tracer;
+    if (args.traceOut) {
+        tracer.writeTo(*args.traceOut);
+    }
     BeatPrinter printer;
     if (args.beatsOut) {
         printer.writeTo(*args.beatsOut);
@@ -1233,7 +1295,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         for (int key = keys.poll(); key != 0; key = keys.poll()) {
             onKey(key, elapsed);
         }
-        (void)discardFrames(*engine);
+        (void)drainFrames(*engine, tracer, model.secondsPerFrame());
         {
             const std::lock_guard<std::mutex> lock(publishedMutex);
             toPrint.swap(published);
@@ -1265,7 +1327,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // sends to. Its stop() drains the last beats and stops the transports.
     runner.stop();
     engine->setHostTimeSource(nullptr);
-    (void)discardFrames(*engine);
+    (void)drainFrames(*engine, tracer, model.secondsPerFrame());
     {
         const std::lock_guard<std::mutex> lock(publishedMutex);
         toPrint.swap(published);
