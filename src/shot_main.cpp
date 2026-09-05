@@ -25,7 +25,7 @@ void printUsage(std::ostream& out) {
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
            "tests/data/features/synthetic.wav, which `takt4-cli track` prints as\n"
-           "\"499 frames, 21 beats (5 downbeats), ending at 127.7 BPM in 4/4, locked\".\n";
+           "\"499 frames, 21 beats (5 downbeats), ending at 128.4 BPM in 4/4, locked\".\n";
 }
 
 } // namespace

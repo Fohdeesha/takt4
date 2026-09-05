@@ -54,6 +54,7 @@ struct BeatEvent {
 ///   * **Octave fold.** The filter tracks 55-215 BPM; an operator knows their material
 ///     sits in, say, 70-140. An estimate outside that is halved or doubled into it
 ///     before anything else looks at it, which is what stops a house set reading 170.
+///     The window is a *preference*, not a fence: see `Options::foldHysteresis`.
 ///   * **Lock and hysteresis.** A tempo has to agree with itself for `lockAfter` frames
 ///     before it is called locked, and disagree for `unlockAfter` frames before that is
 ///     given up — never on one frame.
@@ -73,6 +74,31 @@ struct BeatEvent {
 /// tracked. On the synthetic excerpt that is the difference between reporting 130.4 and
 /// reporting 128.0, which is what the drum machine actually plays.
 ///
+/// **Once a lock has been earned, the published tempo only ever moves for a reason.** Three
+/// of them, and no others: the beat-spacing refinement sharpening it within
+/// `refineTempoTolerance`, a *different* tempo earning a lock of its own, or the operator
+/// asking. In particular losing the lock does **not** move it — an unlock says the tracker
+/// is no longer sure, not that it has a better answer, so what it publishes meanwhile is
+/// the tempo that last earned one, with `locked` false to say so.
+///
+/// That rule is the answer to the report this layer was rebuilt for: *"the BPM is way too
+/// eager to change hugely on mostly steady songs — as soon as the main beat drops it will
+/// go from 140 to 90 in seconds, just because the clap stopped."* All three of the places
+/// that came from were here rather than in the filter. Publishing the cloud's median while
+/// hunting is one: the median is a whole-frame interval, so it steps by 5.4 BPM at 130 and
+/// walks freely during a passage with nothing percussive in it, and the moment the lock
+/// unwound that walk was on screen. The fold's discontinuity at its own edge is the second
+/// (`Options::foldHysteresis`), and dropping from the refined tempo back to the coarse one
+/// whenever a frame had too few usable beat gaps is the third (`refinedBpm_`).
+///
+/// Measured over the seventeen full tracks in `references/audio`, 68 minutes of the
+/// material the report came from: **2737 tempo jumps of more than 2 % became 457** — and of
+/// those 457, **316 are inside the first 5.5 seconds of a track**, which is the acquisition
+/// the tracker is openly hunting through and says so. Past acquisition it is 141 against
+/// 2737: one every 29 seconds where it had been one every 1.5. Unlocks, 221 to 122.
+/// `tools/trace_stability.py` is the harness and
+/// `tests/data/tracking/evaluation/README.md` has the working.
+///
 /// Confidence is how much of the beat particle cloud agrees with the tempo its own
 /// median reports, smoothed over about a second. Upstream publishes no confidence at
 /// all; this is the natural one, because it is exactly what falls apart when the tracker
@@ -88,14 +114,81 @@ public:
         double minBpm = 70.0;
         double maxBpm = 140.0;
         bool octaveFold = true;
+        /// How far outside the window an estimate may stray before the fold picks a
+        /// different octave, as a fraction of the window's edges.
+        ///
+        /// Without this the fold is *discontinuous at its own edges*, and that was the
+        /// single largest source of "the BPM jumps by a factor of two". A 140 BPM track
+        /// under the default 70-140 window sits exactly on the edge: the cloud's estimate
+        /// wanders between 138 and 142 — which is one frame of the state space at that
+        /// tempo, the smallest step it can take — and the published tempo flips 136 / 71 /
+        /// 136 with it. Measured on `references/audio`'s "01 - Pirates": **fifty octave
+        /// flips in 213 seconds**, in bursts of two a second, with confidence at 0.6 and
+        /// the cloud's own tempo never moving more than 3 %.
+        ///
+        /// So the fold remembers the octave it chose and keeps it until the estimate
+        /// leaves the window by this margin. Near an edge that publishes a tempo slightly
+        /// outside the operator's window, and that is the right answer rather than a
+        /// compromise: the window says which octave the material is in, and a track at 141
+        /// under a 70-140 window is a 141 BPM track, not a 70.5 BPM one.
+        ///
+        /// 0.10 covers the state space's own resolution with room to spare — its step is
+        /// about 4 % at 130 BPM and 6.5 % at 214 — so a one-interval wobble can never
+        /// reach an edge from inside the window.
+        double foldHysteresis = 0.10;
 
         /// Frames of agreement before the tempo is called locked, and of disagreement
         /// before that is given up. At 50 Hz these are 0.5 s and 1.5 s.
         std::size_t lockAfter = 25;
         std::size_t unlockAfter = 75;
-        /// How close two estimates have to be to count as agreeing. The state space is
-        /// discrete, so in practice this means "the same tempo interval".
+        /// The *most* agreement a tempo can ever be asked for before it replaces the one
+        /// being published. 150 is three seconds.
+        ///
+        /// Acquiring a tempo and replacing one are not the same question, and treating them
+        /// as one is the last of the reasons a steady track's BPM would not sit still.
+        /// Acquisition has nothing to argue with; replacement has however long the old tempo
+        /// has already held, against a candidate agreed with for half a second. Measured
+        /// over `references/audio` with everything else here in place, the lock still moved
+        /// 173 times in 68 minutes and **the median time before it moved again was 7.1
+        /// seconds** — it was going somewhere and coming back, which is not a tempo change,
+        /// it is a passage the filter found hard.
+        ///
+        /// What a replacement actually costs is a *share of how long the incumbent has
+        /// held*, bounded below by `lockAfter` and above by this. That proportionality is
+        /// not decoration: charging the full price from birth made a bad first lock
+        /// permanent, and Ballroom said so at once — 28 clips where the baseline published
+        /// the right tempo went to a wrong faster one and stayed there, taking tempo
+        /// accuracy 1 from 0.769 to 0.734. A lock two seconds old has earned nothing and is
+        /// replaced for `lockAfter`; one that has run a whole track has earned all of this.
+        ///
+        /// The cost, at full price, is that a real change — a DJ blending into the next
+        /// record — is followed `unlockAfter + relockAfter` frames after the cloud settles
+        /// on it, 4.5 s rather than 2. A blend takes longer than that. A breakdown does not.
+        std::size_t relockAfter = 150;
+        /// How close two estimates have to be to count as the same *value*. The state space
+        /// is discrete, so in practice this means "the same tempo interval". Used where an
+        /// exact comparison is wanted — did a tap really move the tempo — rather than for
+        /// the lock, which asks the question below instead.
         double lockToleranceBpm = 0.5;
+        /// How far apart two estimates have to be before they are different *tempi*, as a
+        /// fraction. This is what the lock is decided on.
+        ///
+        /// Two questions were being asked with one tolerance and they are not the same
+        /// question. "Is this the same tempo interval?" is worth half a BPM. "Has the tempo
+        /// changed?" is not: the state space's neighbouring intervals are 4.3 % apart at
+        /// 130 BPM, so a cloud whose median hops between interval 22 and interval 23 — which
+        /// is what a cloud sitting on a 133 BPM track does, continually — read as
+        /// disagreement on every other frame, and no lock could survive a passage of it.
+        ///
+        /// Measured over `references/audio`: the median run of a constant cloud interval is
+        /// **six frames**, and only 141 runs in 68 minutes reach three seconds. Anything
+        /// that has to be sustained for seconds cannot be counted in consecutive frames of
+        /// an exact match; it has to be counted in frames of the same tempo.
+        ///
+        /// 0.06 spans a whole-frame step anywhere the fold puts a tempo (2.3 % at 70 BPM,
+        /// 5.1 % at 154) and nothing musically distinct: 130 against 96 is 26 % apart, and
+        /// 130 against 120 is 8 %.
+        double sameTempoTolerance = 0.06;
 
         /// Below this the published tempo is held and `holding` is set.
         double confidenceThreshold = 0.15;
@@ -107,16 +200,43 @@ public:
         double latencyOffsetSeconds = 0.0;
 
         /// How many beat-to-beat gaps the refined tempo is averaged over, and how many of
-        /// them have to survive outlier rejection before it is published at all. Eight
-        /// gaps is about two bars of 4/4.
-        std::size_t refineOverBeats = 8;
-        std::size_t refineNeedsBeats = 4;
+        /// them have to survive outlier rejection before it is published at all. Twenty-four
+        /// gaps is about six bars of 4/4.
+        ///
+        /// This was eight — two bars — and eight is not enough to average out the noise
+        /// that is *inherent* in the gaps. The filter emits a beat when its median particle
+        /// is anywhere in the first `kGatherSeconds` of one, which is four frames wide, so
+        /// a called beat can be up to four frames late: at 130 BPM that is 17 % of a period,
+        /// on every beat, before any question of the tracking being wrong. The mean of n
+        /// consecutive gaps telescopes to the span over n, so its error falls as 1/n rather
+        /// than 1/sqrt(n) — but at n = 8 that is still ±4 %, and the refinement was swinging
+        /// across most of the ±10 % `refineTempoTolerance` band while *locked*: 610 moves of
+        /// more than 2 % over `references/audio`, a median of 3.4 % and a worst of 13.6 %.
+        std::size_t refineOverBeats = 24;
+        std::size_t refineNeedsBeats = 8;
         /// How far a gap may be from the cloud's period and still be counted, and how far
         /// the refined tempo may be from the locked one before it is disbelieved. The
         /// first throws out a missed or doubled beat; the second stops a refinement ever
         /// silently becoming a different tempo.
+        ///
+        /// **Do not narrow this to reduce noise** — it was tried, and it made the tempo
+        /// *wrong* rather than steadier: Ballroom's tempo accuracy 1 fell 0.769 to 0.735 at
+        /// 0.15. The band is there to throw out a gap that is a missed beat (twice the
+        /// period) or an invented one (half), which are 50 % and 100 % out. The ±17 % that
+        /// a genuine gap carries at 130 BPM is the filter's four-frame gather window and is
+        /// *symmetric noise to be averaged*, not error to be rejected — clipping it keeps
+        /// only the gaps nearest the cloud's own quantised period and biases the mean back
+        /// onto it, which is the one thing the refinement exists to escape. Average over
+        /// more gaps instead; that is what `refineOverBeats` is for.
         double refineGapTolerance = 0.25;
         double refineTempoTolerance = 0.10;
+        /// How much of the way to a newly measured spacing the published tempo moves, on
+        /// each beat. The measurement is noisy by construction (see `refineOverBeats`), so
+        /// following it exactly puts that noise on screen; this bounds one beat's worth of
+        /// it to a quarter of the disagreement and costs about four beats of response,
+        /// which the lock is not waiting on — a *tempo change* moves the lock, and moving
+        /// the lock discards the refinement outright.
+        double refineSmoothing = 0.25;
     };
 
     /// Two constructors rather than `Options options = {}`: a default argument is
@@ -220,10 +340,26 @@ public:
     void setLockPinned(bool pinned) noexcept;
     bool lockPinned() const noexcept { return lockPinned_; }
 
-    /// The octave fold on its own, for tests and for the UI to preview.
+    /// The octave fold on its own, with no memory of what has been tracked: what a given
+    /// tempo folds to from a standing start. For tests and for the UI to preview. The
+    /// tracker itself folds *with* memory — see `Options::foldHysteresis`.
     double fold(double bpm) const noexcept;
 
 private:
+    /// Settles which octave the fold is in, from the cloud's *continuous* tempo. Separate
+    /// from applying it because the two want different inputs: the octave is a question
+    /// about roughly where the material sits, which the state space's whole-frame steps
+    /// answer badly, while the lock is a question about *which interval*, which is exactly
+    /// what they answer.
+    void chooseOctave(double bpm) noexcept;
+    /// A tempo arrived at some other way, put in the octave the fold has settled on. The
+    /// beat-spacing refinement measures a period in frames, so it has to be moved into the
+    /// same octave as the value it refines or it would be rejected as a disagreement.
+    double inChosenOctave(double bpm) const noexcept;
+    /// Forgets the octave the fold settled on, so the next frame decides afresh. Anything
+    /// that moves the window or the operator's octave has to call this.
+    void forgetFold() noexcept;
+
     void updateLock(double folded) noexcept;
     void rememberBeat(std::uint64_t frameIndex) noexcept;
     /// Advances the filter's own bar position and turns it into the published one,
@@ -243,6 +379,21 @@ private:
     std::size_t disagreeing_ = 0;
     double smoothedConfidence_ = 0.0;
     bool everConfident_ = false;
+    /// A lock has been earned at least once, so there is a tempo worth holding on to while
+    /// the tracker hunts. Before that there is not, and the published tempo follows the
+    /// cloud so something sensible is on screen during acquisition.
+    bool everLocked_ = false;
+    /// The last tempo the beat spacing gave, kept so a frame with too few usable gaps
+    /// publishes it again rather than dropping back to the state space's coarse value.
+    /// Those two differ by up to 5.4 BPM at 130, so alternating between them *is* a jump.
+    double refinedBpm_ = 0.0;
+    /// Frames the tempo now being published has held a lock for. What a challenger has to
+    /// out-argue: see `Options::relockAfter`.
+    std::size_t lockHeld_ = 0;
+    /// The octave the fold has settled on, as a power of two, and whether it has settled
+    /// on one yet. See `Options::foldHysteresis`.
+    std::int64_t foldOctave_ = 0;
+    bool foldChosen_ = false;
     bool lockPinned_ = false;      ///< the operator is holding the lock up; see setLockPinned
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
 

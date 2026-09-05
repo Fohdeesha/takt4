@@ -87,6 +87,46 @@ TEST_CASE("the octave fold pulls an estimate into the operator's range", "[track
     }
 }
 
+TEST_CASE("an estimate wandering across the window's edge does not take the octave with it",
+          "[tracking][tempo]") {
+    // The failure this exists to stop, measured on references/audio's "01 - Pirates": a
+    // 140 BPM track under the default 70-140 window flipped between 136 and 71 fifty times
+    // in 213 seconds, because the cloud reports interval 21 or interval 22 — 142.9 BPM or
+    // 136.4, the state space holding nothing in between — and a memoryless fold folds one
+    // and not the other. See TempoTracker::Options::foldHysteresis.
+    TempoTracker::Options options;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    // Interval 22 is 136.4, inside the window; interval 21 is 142.9, just outside it.
+    settle(tracker, index, 22, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(22)));
+
+    double lowest = tracker.state().bpm;
+    for (int round = 0; round < 40; ++round) {
+        settle(tracker, index, round % 2 == 0 ? 21 : 22, 0.9, 3);
+        lowest = std::min(lowest, tracker.state().bpm);
+    }
+    // Nothing near half. The published tempo stays up where the material is, and 142.9 is
+    // published as 142.9 rather than as 71.4: the window says which octave, not where the
+    // fence is.
+    CHECK(lowest > 100.0);
+    CHECK(tracker.state().bpm > 130.0);
+
+    SECTION("but an estimate genuinely out of range is still folded") {
+        // Well outside the window and its hysteresis, so there is nothing ambiguous about
+        // it: interval 14 is 214.3 BPM, which is what a Quickstep does under a 70-140
+        // window (§7 deviation 4).
+        settle(tracker, index, 14, 0.9, 300);
+        CHECK(tracker.state().bpm == Approx(bpmOf(14) / 2.0).margin(2.0));
+    }
+}
+
 TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same way",
           "[tracking][tempo]") {
     TempoTracker::Options options;
@@ -115,16 +155,69 @@ TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same 
         CHECK(tracker.state().locked);
     }
 
-    SECTION("sustained disagreement unlocks it and takes the new tempo") {
+    SECTION("sustained disagreement unlocks it, and the tempo waits for the new one to "
+            "earn a lock of its own") {
         settle(tracker, index, 31, 0.8, 74);
         CHECK(tracker.state().locked);
         CHECK(tracker.state().bpm == Approx(bpmOf(23)));
         settle(tracker, index, 31, 0.8, 1);
         CHECK_FALSE(tracker.state().locked);
-        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
-        // ...and locks again once the new tempo has agreed with itself long enough.
-        settle(tracker, index, 31, 0.8, 24);
+        // An unlock says the tracker is no longer sure; it does not say it has a better
+        // answer. What is published meanwhile is still the tempo that last earned a lock.
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        // The 75 frames that unwound the lock already count towards whatever replaces it,
+        // so a genuine change does not pay for the same evidence twice. This lock was 25
+        // frames old, so an eighth of that is under `lockAfter` and it is replaced at the
+        // ordinary price — see Options::relockAfter.
+        settle(tracker, index, 31, 0.8, 1);
         CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
+    }
+
+    SECTION("a disagreement that resolves never moves the tempo at all") {
+        // Two thirds of the way to an unlock, then back. This is the shape the operator's
+        // report was about — "as soon as the main beat drops it goes from 140 to 90 in
+        // seconds, just because the clap stopped" — and it now costs nothing.
+        settle(tracker, index, 31, 0.8, 50);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        settle(tracker, index, 23, 0.8, 1);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        // And the disagreement counter really was cleared, so a second excursion gets the
+        // whole window again rather than finishing off the first.
+        settle(tracker, index, 31, 0.8, 74);
+        CHECK(tracker.state().locked);
+    }
+
+    SECTION("a tempo that has held for a while is defended for longer than a new one") {
+        // Twelve seconds of lock, so a challenger owes an eighth of that: 75 frames, which
+        // is more than `lockAfter` and more than the 75 the unlock itself supplied.
+        settle(tracker, index, 23, 0.8, 600);
+        REQUIRE(tracker.state().locked);
+
+        settle(tracker, index, 31, 0.8, 75);
+        REQUIRE_FALSE(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        // A young lock would have taken it on the next frame; this one does not.
+        settle(tracker, index, 31, 0.8, 1);
+        CHECK_FALSE(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+        // ...but it is a delay, not a refusal: keep arguing and the new tempo wins.
+        settle(tracker, index, 31, 0.8, 100);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
+    }
+
+    SECTION("neighbouring tempo intervals are not a disagreement") {
+        // 23 frames is 130.43 and 22 is 136.36 — one step of the state space, 4.5 % apart,
+        // and a cloud sitting on a 133 BPM track hops between them continually. Counting
+        // that as disagreement is why no lock survived a long passage; see
+        // Options::sameTempoTolerance.
+        for (int round = 0; round < 40; ++round) {
+            settle(tracker, index, round % 2 == 0 ? 22 : 23, 0.8, 5);
+        }
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)).margin(bpmOf(23) * 0.06));
     }
 }
 
@@ -162,6 +255,10 @@ TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
         REQUIRE(loose.state().locked);
         settle(loose, at, 31, 0.8, options.unlockAfter);
         CHECK_FALSE(loose.state().locked);
+        // The tempo is held through the unlock itself and moves when the new one locks,
+        // which is the frame after — see "sustained disagreement unlocks it" above. What
+        // this control has to show is that the disagreement really arrived, and it did.
+        settle(loose, at, 31, 0.8, 1);
         CHECK(loose.state().bpm == Approx(bpmOf(31)));
     }
 
@@ -512,11 +609,25 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
     CHECK(tracker.state().bpm == Approx(128.0).margin(1.0));
     CHECK(last->bpm == tracker.state().bpm);
 
+    SECTION("a passage with no beats in it holds the refinement rather than dropping back "
+            "to the state space's coarse value") {
+        const double refined = tracker.state().bpm;
+        REQUIRE(refined == Approx(128.0).margin(1.0));
+        // Eight seconds of frames with nothing emitted, which is what a breakdown is. The
+        // gaps in `beatFrames_` go stale and stop being counted; before, that fell straight
+        // back to `lockedBpm_` — 130.43 here — and alternating between two values 2.4 BPM
+        // apart is exactly the jump the operator was reporting.
+        settle(tracker, next, 23, 0.9, 400);
+        CHECK(tracker.state().refined);
+        CHECK(tracker.state().bpm == Approx(refined));
+    }
+
     SECTION("a missed beat is thrown out rather than halving the tempo") {
         // Skip one beat: the gap doubles, and a mean over the gaps would drag the tempo
-        // down by an eighth.
+        // down by an eighth. Long enough to flush `refineOverBeats` of them, so what is
+        // being asserted is the outlier rejection rather than the length of the window.
         std::uint64_t at = next + 200;
-        for (int beat = 0; beat < 12; ++beat) {
+        for (int beat = 0; beat < 40; ++beat) {
             TrackedFrame frame = frameAt(at, 23, 0.9);
             frame.refinedIntervalFrames = 23.0;
             frame.emitted = TrackedFrame::Emitted::Beat;
@@ -659,7 +770,34 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
     options.maxBpm = 120.0; // 130.43 does not
     tracker.setOptions(options);
     CHECK_FALSE(tracker.state().locked);
+    // ...but it is *not* halved, because 130.43 is inside 120 widened by the fold's
+    // hysteresis. The window says which octave the material is in; it is not a fence, and
+    // a 130 BPM track under a 60-120 window is a 130 BPM track. An operator who wants the
+    // fence sets `foldHysteresis` to 0, and the section below is what that does.
+    CHECK(tracker.state().bpm == Approx(bpmOf(23)));
+
+    // Let it settle again — the invalidation above only fires on a tracker that is
+    // *locked*, so a second window change with nothing tracked in between does nothing.
+    settle(tracker, index, 23, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+
+    options.maxBpm = 100.0; // and now it is out of reach of the hysteresis too
+    tracker.setOptions(options);
+    CHECK_FALSE(tracker.state().locked);
     CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+
+    SECTION("a fold with no hysteresis is the fence it used to be") {
+        TempoTracker::Options hard = options;
+        hard.minBpm = 70.0;
+        hard.maxBpm = 140.0;
+        hard.foldHysteresis = 0.0;
+        hard.lockAfter = 5;
+        hard.confidenceSmoothing = 2.0;
+        TempoTracker fenced(kFramePeriod, hard);
+        std::uint64_t at = 0;
+        settle(fenced, at, 21, 0.9, 40); // 142.9, just over the edge
+        CHECK(fenced.state().bpm == Approx(bpmOf(21) / 2.0).margin(1.0));
+    }
 }
 
 TEST_CASE("nonsensical options are refused rather than tracked with", "[tracking][tempo]") {

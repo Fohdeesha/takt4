@@ -1,5 +1,6 @@
 #include "core/tracking/tempo_tracker.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +37,14 @@ double applyShift(double bpm, std::int64_t shift) noexcept {
     return bpm * std::pow(2.0, static_cast<double>(shift));
 }
 
+/// What fraction of the incumbent's tenure a challenger has to be agreed with for, before
+/// it may replace it — an eighth, bounded by `lockAfter` and `relockAfter`. So a lock held
+/// for twelve seconds is defended for one and a half, and anything past twenty-four seconds
+/// is defended for the full three. Eight rather than four or sixteen because it is the
+/// value at which a lock reaches full defence in about the time a phrase takes, which is
+/// the shortest stretch over which "this really is the tempo" means anything.
+constexpr std::size_t kDefenceShare = 8;
+
 } // namespace
 
 TempoTracker::TempoTracker(double secondsPerFrame) : TempoTracker(secondsPerFrame, Options{}) {}
@@ -49,7 +58,7 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
         throw std::invalid_argument(
             "TempoTracker: the octave-fold window must be a positive range");
     }
-    if (options.lockAfter == 0 || options.unlockAfter == 0) {
+    if (options.lockAfter == 0 || options.unlockAfter == 0 || options.relockAfter == 0) {
         throw std::invalid_argument("TempoTracker: locking needs at least one frame");
     }
     if (!(options.confidenceSmoothing >= 1.0)) {
@@ -60,6 +69,16 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
         throw std::invalid_argument(
             "TempoTracker: refining the tempo needs at least two beat-to-beat gaps, and no "
             "more required than kept");
+    }
+    if (!(options.sameTempoTolerance > 0.0) || !(options.sameTempoTolerance < 1.0)) {
+        throw std::invalid_argument(
+            "TempoTracker: two tempi have to differ by some fraction, and by less than all "
+            "of one, to be different tempi");
+    }
+    if (!(options.refineSmoothing > 0.0) || !(options.refineSmoothing <= 1.0)) {
+        throw std::invalid_argument(
+            "TempoTracker: the refinement smoother must move some of the way to a new "
+            "measurement and no further than all of it");
     }
     beatFrames_.reserve(options_.refineOverBeats + 1);
     reset();
@@ -73,6 +92,10 @@ void TempoTracker::reset() noexcept {
     disagreeing_ = 0;
     smoothedConfidence_ = 0.0;
     everConfident_ = false;
+    everLocked_ = false;
+    refinedBpm_ = 0.0;
+    lockHeld_ = 0;
+    forgetFold();
     // A reseed leaves nothing for a pin to hold, so it goes with everything else rather
     // than surviving as a pin on a tempo that no longer exists.
     lockPinned_ = false;
@@ -113,13 +136,27 @@ double TempoTracker::refinedIntervalFrames(double cloudIntervalFrames) const noe
 }
 
 void TempoTracker::setOptions(const Options& options) noexcept {
+    // A window the operator has moved is a new question, so the octave the fold had
+    // settled on under the old one is not an answer to it.
+    const bool windowMoved = options.octaveFold != options_.octaveFold ||
+                             options.minBpm != options_.minBpm || options.maxBpm != options_.maxBpm;
     options_ = options;
+    if (windowMoved) {
+        forgetFold();
+    }
     // A window that no longer holds the locked tempo invalidates the lock; anything else
     // leaves it alone, so nudging a slider does not drop sync.
     if (state_.locked && options_.octaveFold &&
         (lockedBpm_ < options_.minBpm || lockedBpm_ >= options_.maxBpm)) {
         state_.locked = false;
-        lockedBpm_ = fold(state_.rawBpm);
+        // The operator has excluded what was being published, so there is nothing left
+        // worth holding on to: hunt from what is playing now, following the cloud as
+        // during a first acquisition.
+        everLocked_ = false;
+        refinedBpm_ = 0.0;
+        lockHeld_ = 0;
+        chooseOctave(state_.rawBpm);
+        lockedBpm_ = inChosenOctave(state_.rawBpm);
         state_.bpm = lockedBpm_;
         state_.refined = false;
         candidate_ = lockedBpm_;
@@ -135,9 +172,78 @@ double TempoTracker::fold(double bpm) const noexcept {
     return applyShift(folded, octaveShift_);
 }
 
+void TempoTracker::forgetFold() noexcept {
+    foldChosen_ = false;
+    foldOctave_ = 0;
+}
+
+double TempoTracker::inChosenOctave(double bpm) const noexcept {
+    return applyShift(applyShift(bpm, foldOctave_), octaveShift_);
+}
+
+void TempoTracker::chooseOctave(double bpm) noexcept {
+    if (!options_.octaveFold || !(bpm > 0.0)) {
+        forgetFold();
+        return;
+    }
+    const bool inWindow = bpm >= options_.minBpm && bpm < options_.maxBpm;
+    // The window widened by the hysteresis at both ends: more than an octave wide by
+    // construction, so inside the overlap an estimate is legitimately in range in two
+    // octaves at once and something has to choose between them. Three rules, in order.
+    const double margin = 1.0 + std::max(0.0, options_.foldHysteresis);
+    const double low = options_.minBpm / margin;
+    const double high = options_.maxBpm * margin;
+
+    // 1. Continuity, but only where the answer is genuinely ambiguous — an estimate that
+    //    has left the operator's actual window and is out among the hysteresis. There the
+    //    octave already in force stands, which is what stops a track sitting *on* an edge
+    //    flipping between octaves. Under the default 70-140, a 140 BPM track is exactly on
+    //    one: its cloud reports interval 21 or interval 22, 142.9 BPM or 136.4 with nothing
+    //    in between because the state space holds nothing in between, and a plain fold
+    //    folds the first and not the second — an octave apart, twice a second, measured
+    //    fifty times in 213 seconds on `references/audio`'s "01 - Pirates".
+    //
+    //    Not before a lock, though: the octave on offer then is whatever the cloud's
+    //    opening guesses folded to, and being sticky about that is how a 133 BPM track came
+    //    out at 66.7 ("1 - Jungle - GOOD TIMES", measured). A hysteresis holds a position
+    //    that was arrived at; it does not freeze the first noise that came along.
+    if (!inWindow && foldChosen_ && everLocked_) {
+        const double kept = applyShift(bpm, foldOctave_);
+        if (kept >= low && kept < high) {
+            return;
+        }
+    }
+    // 2. No correction unless one is needed. An estimate inside the window — or inside the
+    //    hysteresis with nothing to be continuous with — is published as it stands.
+    //
+    //    Guarding rule 1 on `inWindow` is what makes this reachable again after an excursion,
+    //    and it has to be: the widened window spans 1.27 octaves, so from one octave down
+    //    the *whole* of the identity's range still satisfies rule 1. Without the guard a
+    //    single passage where the cloud ran to double time left the tempo halved for the
+    //    rest of the track — which is exactly what "1 - Jungle - GOOD TIMES" did, reading
+    //    66.7 for a cloud whose median was 133.7.
+    if (bpm >= low && bpm < high) {
+        foldOctave_ = 0;
+        foldChosen_ = true;
+        return;
+    }
+    // 3. Out of range in both directions: fold, as the operator asked.
+    const double folded = foldInto(bpm, options_.minBpm, options_.maxBpm);
+    // Recovered rather than counted, because foldInto gives up when the window is narrower
+    // than an octave and the number of steps it took is not the number that lands there.
+    foldOctave_ = std::llround(std::log2(folded / bpm));
+    foldChosen_ = true;
+}
+
 void TempoTracker::halve() noexcept {
     --octaveShift_;
-    lockedBpm_ = fold(state_.rawBpm);
+    // The operator's shift moves the tempo now, whether or not the tracker is locked: this
+    // is the one case where a hunting tracker's published tempo is allowed to move without
+    // a lock behind it, because it moved because they asked.
+    refinedBpm_ = 0.0;
+    lockHeld_ = 0;
+    chooseOctave(state_.rawBpm);
+    lockedBpm_ = inChosenOctave(state_.rawBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
     candidate_ = lockedBpm_;
@@ -146,7 +252,10 @@ void TempoTracker::halve() noexcept {
 
 void TempoTracker::redouble() noexcept {
     ++octaveShift_;
-    lockedBpm_ = fold(state_.rawBpm);
+    refinedBpm_ = 0.0;
+    lockHeld_ = 0;
+    chooseOctave(state_.rawBpm);
+    lockedBpm_ = inChosenOctave(state_.rawBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
     candidate_ = lockedBpm_;
@@ -165,8 +274,12 @@ void TempoTracker::seedTempo(double bpm) noexcept {
     options_.maxBpm = bpm * half;
     options_.octaveFold = true;
     octaveShift_ = 0;
+    forgetFold(); // a new window, so a new question about which octave
 
-    lockedBpm_ = fold(state_.rawBpm);
+    refinedBpm_ = 0.0;
+    lockHeld_ = 0;
+    chooseOctave(state_.rawBpm);
+    lockedBpm_ = inChosenOctave(state_.rawBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
     candidate_ = lockedBpm_;
@@ -175,6 +288,7 @@ void TempoTracker::seedTempo(double bpm) noexcept {
         // published and the hunt starts again. A tap that agrees keeps the lock, as
         // nudging the window by hand does.
         state_.locked = false;
+        everLocked_ = false; // and the tempo it would have held is the one just replaced
         agreeing_ = 0;
         disagreeing_ = 0;
         beatFrames_.clear();
@@ -204,8 +318,13 @@ void TempoTracker::setLockPinned(bool pinned) noexcept {
     }
     // Released: the lock goes too, and the beat spacing collected under it with it, so
     // what comes back is a genuine re-acquisition rather than the old tempo wearing a
-    // new lock.
+    // new lock. That includes not *holding* the released tempo while hunting, which an
+    // ordinary unlock does: the operator letting go is saying "that was wrong, look
+    // again", and holding it would be the one thing they were trying to shed.
     state_.locked = false;
+    everLocked_ = false;
+    refinedBpm_ = 0.0;
+    lockHeld_ = 0;
     state_.refined = false;
     agreeing_ = 0;
     disagreeing_ = 0;
@@ -270,45 +389,84 @@ void TempoTracker::advanceBar(bool filterCalledDownbeat) noexcept {
 }
 
 void TempoTracker::updateLock(double folded) noexcept {
-    const double tolerance = options_.lockToleranceBpm;
-    if (state_.locked) {
-        if (std::abs(folded - lockedBpm_) <= tolerance) {
-            disagreeing_ = 0;
-            candidate_ = folded;
-            return;
-        }
-        // Disagreement has to be sustained. Follow the new value as the candidate so the
-        // lock can move straight to it when the window runs out.
-        if (std::abs(folded - candidate_) > tolerance) {
-            candidate_ = folded;
-        }
-        if (++disagreeing_ >= options_.unlockAfter) {
-            if (lockPinned_) {
-                // The whole of the pin, in one branch: the disagreement is measured and
-                // simply not acted on. Parked at the threshold rather than left to run,
-                // so the count keeps meaning "still disagreeing" and not "for how long",
-                // which nothing asks and which would overflow given a long enough set.
-                disagreeing_ = options_.unlockAfter;
-                return;
-            }
-            state_.locked = false;
-            lockedBpm_ = candidate_;
-            agreeing_ = 1;
-            disagreeing_ = 0;
-        }
-        return;
-    }
+    // "Is this a different tempo?" — never "is this a different number?". The state space's
+    // neighbouring intervals are 4.3 % apart at 130 BPM, so a cloud whose median hops
+    // between interval 22 and interval 23 is not changing tempo, and counting that as
+    // disagreement is why no lock survived a long passage. See Options::sameTempoTolerance.
+    const auto sameTempo = [this](double a, double b) noexcept {
+        return b > 0.0 && std::abs(a - b) <= options_.sameTempoTolerance * b;
+    };
 
-    // Not locked yet, pinned or not: a pin holds a flag up, it does not raise one.
-    if (agreeing_ != 0 && std::abs(folded - candidate_) <= tolerance) {
+    // Whichever tempo is currently being argued for, tracked whether or not there is a lock
+    // — so the frames that unwound one already count towards whatever replaces it, and a
+    // genuine change costs `unlockAfter + relockAfter` rather than the two added up twice.
+    if (agreeing_ != 0 && sameTempo(folded, candidate_)) {
         ++agreeing_;
+        // The band is six per cent wide and a run can start anywhere in it, so let the
+        // candidate settle on the middle of its own evidence rather than on its first
+        // frame. Capped, or a candidate agreed with for a minute would stop moving at all.
+        const double weight = static_cast<double>(std::min(agreeing_, options_.lockAfter));
+        candidate_ += (folded - candidate_) / weight;
     } else {
         candidate_ = folded;
         agreeing_ = 1;
     }
-    lockedBpm_ = candidate_;
-    if (agreeing_ >= options_.lockAfter) {
+
+    if (state_.locked) {
+        ++lockHeld_;
+        if (sameTempo(folded, lockedBpm_)) {
+            disagreeing_ = 0;
+            return;
+        }
+        // Disagreement has to be sustained.
+        if (++disagreeing_ < options_.unlockAfter) {
+            return;
+        }
+        if (lockPinned_) {
+            // The whole of the pin, in one branch: the disagreement is measured and simply
+            // not acted on. Parked at the threshold rather than left to run, so the count
+            // keeps meaning "still disagreeing" and not "for how long", which nothing asks
+            // and which would overflow given a long enough set.
+            disagreeing_ = options_.unlockAfter;
+            return;
+        }
+        state_.locked = false;
+        // `lockedBpm_` deliberately stays where it is. An unlock says the tracker is no
+        // longer sure, not that it has a better answer, and moving the published tempo here
+        // was the loudest half of "140 to 90 in seconds": the candidate that unwound the
+        // lock was published the instant the count ran out, before anything had agreed with
+        // it. Now it has to earn a lock of its own first, and a transient excursion — the
+        // cloud wandering off through a breakdown and coming back — costs nothing at all,
+        // because what it comes back to is the tempo still being published.
+        disagreeing_ = 0;
+        return;
+    }
+
+    // Not locked, pinned or not: a pin holds a flag up, it does not raise one.
+    if (!everLocked_) {
+        // Nothing to hold yet, so the published tempo follows the cloud and there is
+        // something to look at while it hunts. After the first lock it holds — see process().
+        lockedBpm_ = candidate_;
+    }
+    // Replacing an established tempo is a different question from finding one, and costs
+    // more agreement: see Options::relockAfter. Coming back to what is already being
+    // published is not a replacement, so it re-locks at the ordinary price and the operator
+    // never sees the number move.
+    const bool replacing = everLocked_ && !sameTempo(candidate_, lockedBpm_);
+    std::size_t needed = options_.lockAfter;
+    if (replacing) {
+        // A share of how long the incumbent has held, between the two bounds. Charging the
+        // full price from birth is what made a bad first lock permanent — see relockAfter.
+        needed = std::clamp(lockHeld_ / kDefenceShare, options_.lockAfter, options_.relockAfter);
+    }
+    if (agreeing_ >= needed) {
+        if (replacing) {
+            refinedBpm_ = 0.0; // the beat spacing under the old tempo says nothing about this one
+            lockHeld_ = 0;     // and this tempo has earned nothing yet either
+        }
         state_.locked = true;
+        everLocked_ = true;
+        lockedBpm_ = candidate_;
         disagreeing_ = 0;
     }
 }
@@ -332,13 +490,21 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
             ? 60.0 / (static_cast<double>(frame.intervalFrames) * secondsPerFrame_)
             : frame.bpm;
     const bool confident = smoothedConfidence_ >= options_.confidenceThreshold;
+    // Which octave is decided from the cloud's continuous tempo; which tempo interval, from
+    // its discrete one. Both used to come from the discrete value, and that is what made a
+    // 140 BPM track under a 70-140 window unusable: the cloud reports interval 21 or
+    // interval 22 there — 142.9 BPM or 136.4, with nothing between them — so the octave
+    // decision was being taken on a number that steps by 6.5 BPM, either side of the edge.
+    // The continuous value sits at 140.3 and crosses the edge slowly, which is the only
+    // thing a hysteresis can do anything with.
+    chooseOctave(frame.bpm > 0.0 ? frame.bpm : discrete);
     if (confident) {
         everConfident_ = true;
-        updateLock(fold(discrete));
+        updateLock(inChosenOctave(discrete));
     } else if (!everConfident_) {
         // Nothing good has been seen yet, so there is nothing to hold: follow the
         // estimate and let the gate take over once it has been believed once.
-        lockedBpm_ = fold(discrete);
+        lockedBpm_ = inChosenOctave(discrete);
     }
     // Below the gate, state_.bpm keeps whatever it last held (§5.5: "hold the last good
     // tempo, stop emitting new values, and say so").
@@ -349,22 +515,50 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         rememberBeat(frame.frameIndex);
     }
 
-    if (!state_.holding) {
+    // Holding below the confidence gate keeps whatever was last published (§5.5: "hold the
+    // last good tempo, stop emitting new values, and say so"). Hunting after a lock has
+    // been earned does the same, for the same reason: what the cloud's median says between
+    // one lock and the next is a whole-frame interval walking around under a passage with
+    // nothing percussive in it, and putting that on screen is how a steady track came to
+    // read 140 then 90. `locked` going false is what says the tracker is unsure; the tempo
+    // saying it too, by wandering, tells the operator nothing they can use.
+    if (!state_.holding && (state_.locked || !everLocked_)) {
         state_.bpm = lockedBpm_;
         state_.refined = false;
         // Once the tempo is locked, the beats themselves say it more precisely than the
         // state space's whole-frame intervals ever can. Only believe that when it agrees
         // with the lock, so a refinement can sharpen the tempo but never change it.
         if (state_.locked) {
-            const double gaps = refinedIntervalFrames(
-                frame.refinedIntervalFrames > 0.0 ? frame.refinedIntervalFrames
-                                                  : static_cast<double>(frame.intervalFrames));
-            if (gaps > 0.0) {
-                const double refined = fold(60.0 / (gaps * secondsPerFrame_));
-                if (std::abs(refined - lockedBpm_) <= options_.refineTempoTolerance * lockedBpm_) {
-                    state_.bpm = refined;
-                    state_.refined = true;
+            const double tolerance = options_.refineTempoTolerance * lockedBpm_;
+            // Only on a frame that brought a beat. Between beats nothing new is known about
+            // the spacing — `beatFrames_` has not changed — and yet recomputing gave a
+            // different answer every frame anyway, because the band of gaps it accepts is
+            // sized from the cloud's period and *that* moves. So a gap would drop in or out
+            // of the mean on a frame carrying no new information, and the published tempo
+            // would step by a per cent or two for no reason an operator could name. That
+            // accounted for 801 of the 1302 jumps left over `references/audio` once the fold
+            // was fixed, all of them while locked.
+            if (emitted) {
+                const double gaps = refinedIntervalFrames(
+                    frame.refinedIntervalFrames > 0.0 ? frame.refinedIntervalFrames
+                                                      : static_cast<double>(frame.intervalFrames));
+                if (gaps > 0.0) {
+                    const double refined = inChosenOctave(60.0 / (gaps * secondsPerFrame_));
+                    if (std::abs(refined - lockedBpm_) <= tolerance) {
+                        refinedBpm_ = refinedBpm_ > 0.0 ? refinedBpm_ + options_.refineSmoothing *
+                                                                            (refined - refinedBpm_)
+                                                        : refined;
+                    }
                 }
+            }
+            // A frame with too few gaps near the cloud's period — which is every frame in
+            // a bar the drums sat out — used to fall back to `lockedBpm_`, and the two
+            // differ by up to 5.4 BPM at 130 because one is a whole-frame interval and the
+            // other is not. Alternating between them *is* a jump, so the last refinement
+            // is kept until the lock itself moves away from it.
+            if (refinedBpm_ > 0.0 && std::abs(refinedBpm_ - lockedBpm_) <= tolerance) {
+                state_.bpm = refinedBpm_;
+                state_.refined = true;
             }
         }
     }
