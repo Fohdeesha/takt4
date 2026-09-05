@@ -75,6 +75,8 @@ add_library(takt4_core STATIC
   output/transports.hpp
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
+  settings/settings.cpp
+  settings/settings.hpp
   rt/published.hpp
   rt/spsc_ring.hpp
   tracking/particle_filter.cpp

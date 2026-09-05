@@ -34,6 +34,7 @@ add_executable(takt4_tests
   output/output_runner_test.cpp
   output/transports_test.cpp
   rt/alloc_guard_test.cpp
+  settings/settings_test.cpp
   rt/published_test.cpp
   rt/spsc_ring_test.cpp
   tracking/particle_filter_test.cpp
