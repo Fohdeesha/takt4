@@ -97,7 +97,9 @@ TEST_CASE("learn mode binds the next control that moves", "[control][midi]") {
     CHECK(control.handled() == 0);
 
     REQUIRE(control.bindings().size() == 1);
-    const MidiBinding& learned = control.bindings().front();
+    // By value, not by reference: `bindings()` copies the table out from under its mutex,
+    // so a reference to `.front()` would dangle the moment the full-expression ended.
+    const MidiBinding learned = control.bindings().front();
     CHECK(learned.kind == MidiEvent::Kind::Note);
     CHECK(learned.number == 36);
     CHECK(learned.channel == 10);
