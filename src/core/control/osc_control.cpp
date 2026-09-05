@@ -16,7 +16,7 @@ constexpr std::chrono::milliseconds kPoll{100};
 } // namespace
 
 OscControl::OscControl(engine::BeatEngine& engine, Config config)
-    : engine_(engine), config_(std::move(config)) {}
+    : config_(std::move(config)), surface_(engine) {}
 
 OscControl::~OscControl() {
     stop();
@@ -29,7 +29,9 @@ void OscControl::start() {
     // Before the thread, so a port that is taken throws to the caller rather than
     // disappearing into a worker nobody is watching.
     receiver_ = std::make_unique<OscReceiver>(config_.port, config_.localOnly);
-    started_ = std::chrono::steady_clock::now();
+    // A set of taps does not span a stop. `TapTempo` would drop a stale one on its own
+    // timeout anyway; saying so here means it does not depend on how long the stop was.
+    surface_.resetTaps();
     running_.store(true, std::memory_order_release);
     worker_ = std::thread([this] { run(); });
 }
@@ -52,51 +54,21 @@ std::string OscControl::lastMessage() const {
 }
 
 bool OscControl::dispatch(std::string_view address, std::optional<double> argument) {
-    using engine::Command;
-
     // Everything §5.7 lists hangs off `<prefix>/ctl/`. A message for another app's
     // namespace is not ours to act on, however familiar the tail looks.
     const std::string base = config_.prefix + "/ctl/";
     if (address.size() <= base.size() || address.compare(0, base.size(), base) != 0) {
         return false;
     }
-    const std::string_view verb = address.substr(base.size());
 
-    if (verb == "tap") {
-        const double seconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
-        const std::optional<double> tapped = taps_.tap(seconds);
-        if (tapped) {
-            // A seed, not an override — §7's locked decision, and the same thing the
-            // window's TAP does.
-            (void)engine_.post(Command::seedTempo(*tapped));
-        }
-        return true;
+    // Which leaves the verb, which is the whole of what this surface knows. What each one
+    // does — and that `lock` refuses to act without its `<0|1>` — is `ControlSurface`'s,
+    // shared with the MIDI bindings so the two surfaces cannot drift apart.
+    const std::optional<ControlAction> action = actionOf(address.substr(base.size()));
+    if (!action) {
+        return false;
     }
-    if (verb == "downbeat") {
-        (void)engine_.post(Command::snapDownbeat());
-        return true;
-    }
-    if (verb == "tempo/halve") {
-        (void)engine_.post(Command::halve());
-        return true;
-    }
-    if (verb == "tempo/double") {
-        (void)engine_.post(Command::redouble());
-        return true;
-    }
-    if (verb == "lock") {
-        // §5.7 spells this `<0|1>` and the argument is required. A bare `/ctl/lock` read
-        // as "toggle" would depend on a state the sender cannot see, so a Stream Deck
-        // whose button missed one datagram would be inverted for the rest of the set —
-        // and an operator pressing LOCK would sometimes unlock.
-        if (!argument) {
-            return false;
-        }
-        (void)engine_.post(Command::setLockPinned(*argument != 0.0));
-        return true;
-    }
-    return false;
+    return surface_.apply(*action, argument);
 }
 
 void OscControl::run() noexcept {

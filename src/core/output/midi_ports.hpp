@@ -18,4 +18,8 @@ std::vector<MidiApiInfo> compiledMidiApis();
 /// that case is indistinguishable here from "no ports", which is acceptable for a listing.
 std::vector<std::string> listMidiOutputPorts();
 
+/// The same for input ports, which §5.7's learn mode needs. Same caveat: empty means
+/// either no ports or no usable API, and a listing cannot tell those apart.
+std::vector<std::string> listMidiInputPorts();
+
 } // namespace takt4::output

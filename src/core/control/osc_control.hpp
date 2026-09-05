@@ -1,8 +1,8 @@
 #pragma once
 
+#include "core/control/control_action.hpp"
 #include "core/control/osc_receiver.hpp"
 #include "core/engine/beat_engine.hpp"
-#include "core/tracking/tap_tempo.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -87,19 +87,15 @@ public:
 private:
     void run() noexcept;
 
-    engine::BeatEngine& engine_;
     Config config_;
+    /// This surface's own route in, including its own tap set — the taps arriving over the
+    /// wire are not the window's or a MIDI pad's. See `ControlSurface`.
+    ControlSurface surface_;
     std::unique_ptr<OscReceiver> receiver_;
     std::thread worker_;
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> handled_{0};
     std::atomic<std::uint64_t> ignored_{0};
-
-    /// The taps arriving over the wire, which are their own set: a Stream Deck's tap
-    /// button and the window's TAP are two surfaces, and interleaving them into one
-    /// tempo would give an operator using both a tempo neither of them meant.
-    tracking::TapTempo taps_;
-    std::chrono::steady_clock::time_point started_{};
 
     mutable std::mutex lastMutex_;
     std::string last_;

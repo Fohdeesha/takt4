@@ -16,19 +16,35 @@ std::vector<MidiApiInfo> compiledMidiApis() {
     return result;
 }
 
-std::vector<std::string> listMidiOutputPorts() {
+namespace {
+
+/// Both listings are the same four lines over a different RtMidi class, and both have to
+/// swallow the constructor throwing — RtMidi reports "no usable MIDI API at all" that way
+/// rather than by offering an empty list, and CI runs on exactly such a box.
+template <typename Midi>
+std::vector<std::string> listPorts() {
     std::vector<std::string> ports;
     try {
-        RtMidiOut out;
-        const unsigned int count = out.getPortCount();
+        Midi midi;
+        const unsigned int count = midi.getPortCount();
         ports.reserve(count);
         for (unsigned int i = 0; i < count; ++i) {
-            ports.push_back(out.getPortName(i));
+            ports.push_back(midi.getPortName(i));
         }
     } catch (const RtMidiError&) {
         // No usable MIDI API on this machine; see the header.
     }
     return ports;
+}
+
+} // namespace
+
+std::vector<std::string> listMidiOutputPorts() {
+    return listPorts<RtMidiOut>();
+}
+
+std::vector<std::string> listMidiInputPorts() {
+    return listPorts<RtMidiIn>();
 }
 
 } // namespace takt4::output

@@ -34,6 +34,17 @@ struct MachineSettings {
     /// The MIDI output port the clock goes to, by name. Empty for none. Machine-local for
     /// the same reason the interface is: it is a port on this box.
     std::string midiClockPort;
+
+    /// §5.7's control input: the MIDI port the learn mode listens on, and what has been
+    /// learned. Machine-local for the same reason again, and more strongly — "note 36 on
+    /// channel 10 is tap" is a fact about the box of buttons on this desk, not about the
+    /// music, so it must not travel in a preset to a machine with a different controller.
+    std::string midiControlPort;
+    /// Each one as `formatMidiBinding` writes it: "note 36 ch 10 -> tap". Text rather than
+    /// a struct because this is a file a person may open, and Q8's headless mode is
+    /// expected to hand-write one — a line that reads as a sentence can be typed, and
+    /// `parseMidiBinding` drops anything that does not.
+    std::vector<std::string> midiBindings;
 };
 
 /// What travels. Phase 6's rules join this.
