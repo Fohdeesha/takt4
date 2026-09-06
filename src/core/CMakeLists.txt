@@ -95,6 +95,8 @@ add_library(takt4_core STATIC
   rt/alloc_guard.hpp
   rt/published.hpp
   rt/spsc_ring.hpp
+  settings/rule_json.cpp
+  settings/rule_json.hpp
   settings/settings.cpp
   settings/settings.hpp
   tracking/particle_filter.cpp
