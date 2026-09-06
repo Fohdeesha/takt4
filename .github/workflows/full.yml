@@ -1,9 +1,17 @@
 name: full
 
-# The whole application, Slint included, on all three platforms. Every job builds
-# Slint from scratch through cargo (7–25 minutes, macOS billed at 10×), so this runs
-# only when something that can affect the UI build changes, once a week to catch
-# drift, and on demand. core.yml covers the engine on every push.
+# The whole application, Slint included. Every job builds Slint from scratch through cargo
+# (7–25 minutes), so this runs only when something that can affect the UI build changes,
+# once a week to catch drift, and on demand. core.yml covers the engine on every push.
+#
+# This workflow is DISABLED (`gh workflow list --all` says `disabled_manually`, by the user
+# on 2026-09-04). Nothing here runs until `gh workflow enable full.yml`.
+#
+# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries. That is worth
+# knowing before re-enabling this: it used to cost ≈150 billable minutes because macOS is
+# billed at 10× and Slint takes 7–25 minutes to build; with one Windows job it is a small
+# fraction of that. The macOS and Linux entries are commented out rather than deleted so
+# bringing them back is uncommenting.
 
 on:
   push:
@@ -56,14 +64,15 @@ jobs:
             preset: windows-msvc
             app: build/windows-msvc/bin/Release/takt4.exe
             cli: build/windows-msvc/bin/Release/takt4-cli.exe
-          - os: macos-latest
-            preset: macos
-            app: build/macos/bin/takt4
-            cli: build/macos/bin/takt4-cli
-          - os: ubuntu-24.04
-            preset: linux
-            app: build/linux/bin/takt4
-            cli: build/linux/bin/takt4-cli
+          # Windows only for now; see the note at the top of this file.
+          # - os: macos-latest
+          #   preset: macos
+          #   app: build/macos/bin/takt4
+          #   cli: build/macos/bin/takt4-cli
+          # - os: ubuntu-24.04
+          #   preset: linux
+          #   app: build/linux/bin/takt4
+          #   cli: build/linux/bin/takt4-cli
 
     steps:
       - uses: actions/checkout@v7
