@@ -6,11 +6,17 @@
 
 namespace takt4::trigger {
 
-/// HANDOFF §5.8's intensity classifier, which lives with the thing that computes it:
-/// `features::IntensityClassifier` reads it straight out of the feature frame, so the type
-/// belongs beside the features rather than up here. Aliased so a rule reads as one —
-/// `labelOf` still resolves, by argument-dependent lookup.
-using Intensity = features::Intensity;
+/// HANDOFF §5.8's intensity is `features::Intensity`, which lives with the thing that
+/// computes it: `features::IntensityClassifier` reads it straight out of the feature frame,
+/// so the type belongs beside the features rather than up here.
+///
+/// **It used to be aliased into this namespace as `Intensity`, and must not be again.** GCC's
+/// `-Wshadow` counts `LiveSource::Intensity` in `generator.hpp` as shadowing a namespace-scope
+/// `Intensity`, even though the enum is scoped — so the alias and that enumerator cannot both
+/// exist, and `linux-core` failed on `-Werror` at `dea67e3e` for exactly that. Neither MSVC nor
+/// the clang-tidy `tools/lint_clang.ps1` runs reproduces it, which is why it reached the
+/// remote: it is a GCC-only diagnostic and CI has not built with GCC since 2026-09-06 (§1).
+/// Writing `features::Intensity` costs eleven characters twice and removes the collision.
 
 /// Everything a rule can be asked about at the moment it might fire.
 ///
@@ -36,7 +42,7 @@ struct Context {
     std::uint32_t beatInBar = 0;
     std::uint64_t beats = 0;
     std::uint64_t bars = 0;
-    Intensity intensity = Intensity::Normal;
+    features::Intensity intensity = features::Intensity::Normal;
     /// Seconds since the outputs started, on the same clock `output::OutputRunner` drives
     /// the transports from. Cooldowns and follow-up delays are measured against it.
     double now = 0.0;

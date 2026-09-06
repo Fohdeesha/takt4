@@ -59,8 +59,8 @@ bool takesEvery(Trigger trigger) noexcept;
 struct Conditions {
     /// Fires only at or above this. `TempoState::confidence`, 0 to 1.
     double minConfidence = 0.0;
-    /// Whether each intensity is in the set, indexed by `Intensity`'s own value — which is
-    /// §5.6's wire number, so the array and the OSC address cannot drift apart.
+    /// Whether each intensity is in the set, indexed by `features::Intensity`'s own value —
+    /// which is §5.6's wire number, so the array and the OSC address cannot drift apart.
     std::array<bool, 3> intensities{true, true, true};
     /// Inclusive, on the *published* tempo — the number on screen, after the fold and any
     /// ÷2, because that is the one an operator reads before typing a range.
@@ -74,7 +74,7 @@ struct Conditions {
     /// the last time this rule *fired*, not from the last time it was evaluated.
     double cooldownSeconds = 0.0;
 
-    bool allows(Intensity intensity) const noexcept {
+    bool allows(features::Intensity intensity) const noexcept {
         return intensities[static_cast<std::size_t>(intensity)];
     }
 };

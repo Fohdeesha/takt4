@@ -9,10 +9,10 @@
 #include <vector>
 
 using Catch::Approx;
+using takt4::features::Intensity;
 using takt4::trigger::Context;
 using takt4::trigger::Generator;
 using takt4::trigger::GeneratorKind;
-using takt4::trigger::Intensity;
 using takt4::trigger::Message;
 using takt4::trigger::Rule;
 using takt4::trigger::Trigger;
