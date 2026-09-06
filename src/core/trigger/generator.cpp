@@ -53,6 +53,34 @@ std::optional<GeneratorKind> generatorKindOf(std::string_view name) noexcept {
     return std::nullopt;
 }
 
+std::string_view labelOf(Pool pool) noexcept {
+    switch (pool) {
+    case Pool::Range:
+        return "range";
+    case Pool::List:
+        return "list";
+    }
+    return "";
+}
+
+std::string_view nameOf(Pool pool) noexcept {
+    return labelOf(pool);
+}
+
+std::optional<Pool> poolOf(std::string_view name) noexcept {
+    for (const Pool pool : kPools) {
+        if (nameOf(pool) == name) {
+            return pool;
+        }
+    }
+    return std::nullopt;
+}
+
+bool takesPool(GeneratorKind kind) noexcept {
+    return kind == GeneratorKind::Shuffle || kind == GeneratorKind::Random ||
+           kind == GeneratorKind::Cycle;
+}
+
 std::string_view labelOf(LiveSource source) noexcept {
     switch (source) {
     case LiveSource::Bpm:
@@ -121,6 +149,11 @@ Generator::Generator(Config config) : config_(std::move(config)) {
     if (span > kMaxRangeSize) {
         config_.high = static_cast<std::int32_t>(config_.low + (kMaxRangeSize - 1));
     }
+    // The same ceiling on a list, and for the same reason: `Shuffle` holds a bag of these.
+    // Cut from the end, which is where an operator who pasted too many meant to stop.
+    if (config_.values.size() > static_cast<std::size_t>(kMaxRangeSize)) {
+        config_.values.resize(static_cast<std::size_t>(kMaxRangeSize));
+    }
     if (!(config_.normaliseHigh > config_.normaliseLow)) {
         // A degenerate host range would divide by zero, and a normalised value with no
         // range to normalise against says nothing. §5.6's Resolume figures are the sane
@@ -135,7 +168,7 @@ Generator::Generator(Config config) : config_(std::move(config)) {
     config_.noRepeatWithin = std::min({config_.noRepeatWithin, kMaxNoRepeat, guardable});
 
     if (config_.kind == GeneratorKind::Shuffle) {
-        bag_.resize(static_cast<std::size_t>(rangeSize()));
+        bag_.resize(drawSize());
     }
     recent_.resize(config_.noRepeatWithin);
     reset();
@@ -149,12 +182,27 @@ void Generator::reset() noexcept {
     recentCount_ = 0;
 }
 
+std::size_t Generator::drawSize() const noexcept {
+    const std::size_t size = choiceCount();
+    // An empty list still has to produce something, and integer zero is that something.
+    return size > 0 ? size : 1;
+}
+
+Value Generator::poolValue(std::size_t index) const noexcept {
+    if (config_.pool == Pool::List) {
+        // The bound only fails for the empty list `drawSize()` floors at one.
+        return index < config_.values.size() ? config_.values[index] : Value{};
+    }
+    return Value::ofInt(config_.low + static_cast<std::int32_t>(index));
+}
+
 std::size_t Generator::choiceCount() const noexcept {
     switch (config_.kind) {
     case GeneratorKind::Shuffle:
     case GeneratorKind::Random:
     case GeneratorKind::Cycle:
-        return static_cast<std::size_t>(rangeSize());
+        return config_.pool == Pool::List ? config_.values.size()
+                                          : static_cast<std::size_t>(rangeSize());
     case GeneratorKind::Weighted:
         return config_.choices.size();
     case GeneratorKind::Fixed:
@@ -185,7 +233,9 @@ void Generator::remember(const Value& value) noexcept {
 }
 
 void Generator::refillBag() noexcept {
-    std::iota(bag_.begin(), bag_.end(), config_.low);
+    // Indices into the pool, not the values themselves: that is what lets one bag shuffle a
+    // range and a list without knowing which it has.
+    std::iota(bag_.begin(), bag_.end(), 0);
     // Fisher-Yates, from the top down, over the tracker's own generator (§5.4's
     // xoshiro256++) so a seeded run is reproducible in a test.
     for (std::size_t i = bag_.size(); i > 1; --i) {
@@ -196,32 +246,35 @@ void Generator::refillBag() noexcept {
 }
 
 Value Generator::nextShuffled() noexcept {
-    // Never empty: the range is at least one wide by the time the constructor is done with
+    // Never empty: `drawSize()` is at least one by the time the constructor is done with
     // it, and the bag is sized from that and never resized.
     if (at_ >= bag_.size()) {
         refillBag();
     }
+    const auto valueAt = [this](std::size_t slot) {
+        return poolValue(static_cast<std::size_t>(bag_[slot]));
+    };
     // Within a bag nothing can repeat, so the guard can only bite across the seam between
     // one bag and the next — which is exactly the repeat it exists for. Swapping in a
     // later element keeps the bag a permutation, so the displaced value is still drawn.
-    if (isRecent(Value::ofInt(bag_[at_]))) {
+    if (isRecent(valueAt(at_))) {
         for (std::size_t j = at_ + 1; j < bag_.size(); ++j) {
-            if (!isRecent(Value::ofInt(bag_[j]))) {
+            if (!isRecent(valueAt(j))) {
                 std::swap(bag_[at_], bag_[j]);
                 break;
             }
         }
     }
-    const Value drawn = Value::ofInt(bag_[at_++]);
+    const Value drawn = valueAt(at_++);
     remember(drawn);
     return drawn;
 }
 
 Value Generator::nextRandom() noexcept {
-    const auto size = static_cast<std::uint64_t>(rangeSize());
-    Value drawn = Value::ofInt(config_.low);
+    const auto size = static_cast<std::uint64_t>(drawSize());
+    Value drawn = poolValue(0);
     for (int attempt = 0; attempt < kGuardAttempts; ++attempt) {
-        drawn = Value::ofInt(config_.low + static_cast<std::int32_t>(random_.bounded(size)));
+        drawn = poolValue(static_cast<std::size_t>(random_.bounded(size)));
         if (!isRecent(drawn)) {
             break;
         }
@@ -233,10 +286,14 @@ Value Generator::nextRandom() noexcept {
 }
 
 Value Generator::nextCycled() noexcept {
-    // Nothing is remembered: a cycle cannot repeat inside its own range, and it does not
+    // Nothing is remembered: a cycle cannot repeat inside its own pool, and it does not
     // consult the guard, so keeping the ring up to date would be work with no reader.
-    const Value drawn = Value::ofInt(config_.low + cycle_);
-    cycle_ = (cycle_ + 1) % rangeSize();
+    //
+    // **This is the ordered sequence.** With `Pool::List` it walks the operator's own list
+    // in the order they wrote it — 3, 7, 1, 12, 3, 7 — which is the thing a range could
+    // never say and the reason `Pool` exists.
+    const Value drawn = poolValue(static_cast<std::size_t>(cycle_));
+    cycle_ = (cycle_ + 1) % static_cast<std::int32_t>(drawSize());
     return drawn;
 }
 

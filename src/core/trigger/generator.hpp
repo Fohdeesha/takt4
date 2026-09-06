@@ -64,6 +64,36 @@ std::string_view labelOf(LiveSource source) noexcept;
 std::string_view nameOf(LiveSource source) noexcept;
 std::optional<LiveSource> liveSourceOf(std::string_view name) noexcept;
 
+/// Where `Shuffle`, `Random` and `Cycle` take their values from.
+///
+/// §5.8 describes those three over a *range* — "uniform random int in range", "round-robin
+/// through a range" — which is right for a clip grid and wrong for the other thing an
+/// operator wants constantly: a handful of clips they picked, in an order they chose. A
+/// range cannot say "3, 7, 1, 12", and neither could anything else here: `Weighted` holds an
+/// arbitrary list but draws from it at random, so an *ordered* list had no expression at all.
+///
+/// **This is a second dimension, not two more kinds.** "Which values" and "in what order"
+/// are two questions an operator answers separately — the same four clips can be cycled or
+/// shuffled, and the same range can be either — so doubling `GeneratorKind` to cover the
+/// pairs would make the UI ask one question where there are two, and would leave
+/// `noRepeatWithin` meaning something subtly different in each half.
+enum class Pool : std::uint8_t {
+    /// Every integer from `low` to `high`. §5.8's own reading, and the default.
+    Range,
+    /// Exactly `values`, in the order given.
+    List,
+};
+
+inline constexpr std::array<Pool, 2> kPools{Pool::Range, Pool::List};
+
+std::string_view labelOf(Pool pool) noexcept;
+std::string_view nameOf(Pool pool) noexcept;
+std::optional<Pool> poolOf(std::string_view name) noexcept;
+
+/// True where a generator's `pool` means anything — the three §5.8 spells with a range.
+/// `Weighted` carries its own list, `Fixed` one literal, and `Live` no set at all.
+bool takesPool(GeneratorKind kind) noexcept;
+
 /// One entry of a `Weighted` generator's list.
 struct WeightedChoice {
     Value value;
@@ -108,10 +138,27 @@ public:
         /// 'visuals that look random'."*
         GeneratorKind kind = GeneratorKind::Shuffle;
 
-        /// The range for `Shuffle`, `Random` and `Cycle`, inclusive at both ends. Given
-        /// backwards it is swapped; wider than `kMaxRangeSize` it is cut from the top.
+        /// Where `Shuffle`, `Random` and `Cycle` draw from. Ignored by the other three.
+        Pool pool = Pool::Range;
+
+        /// The range for `pool == Range`, inclusive at both ends. Given backwards it is
+        /// swapped; wider than `kMaxRangeSize` it is cut from the top.
         std::int32_t low = 1;
         std::int32_t high = 8;
+
+        /// The values for `pool == List`, in the order an operator put them in — which is
+        /// the order `Cycle` sends them in, and the set `Shuffle` draws from.
+        ///
+        /// `Value`, not `int`, so a sequence can be of anything a rule can send: clip
+        /// numbers, but also the text segments of an address (`intro`, `build`, `drop`) or
+        /// a set of floats. Truncated to `kMaxRangeSize` for the same reason a range is —
+        /// `Shuffle` holds a bag of them.
+        ///
+        /// **Empty is allowed and draws integer zero**, which is what an unconfigured
+        /// generator should send: something harmless, not nothing. It is not filled in with
+        /// a placeholder, because an editor mid-way through building a list would then show
+        /// an entry the operator did not add.
+        std::vector<Value> values;
 
         /// §5.8's *"no repeat within N guard"*, in draws. **One by default**, which for
         /// `Shuffle` costs nothing and closes the one hole a bag has: within a bag no value
@@ -160,8 +207,13 @@ public:
     Value next(const Context& context) noexcept;
 
     /// How many distinct values this can produce, where that is a finite number a UI can
-    /// show — the range size for `Shuffle`, `Random` and `Cycle`, the list length for
-    /// `Weighted`, 1 for `Fixed`, and 0 for `Live`, whose values are not drawn from a set.
+    /// show — the range size or the list length for `Shuffle`, `Random` and `Cycle`, the
+    /// list length for `Weighted`, 1 for `Fixed`, and 0 for `Live`, whose values are not
+    /// drawn from a set.
+    ///
+    /// **Honest, so it can be zero**: an empty list has nothing in it, and a UI saying "1"
+    /// there would be reporting the harmless zero that gets sent rather than what the
+    /// operator has. `drawSize()` is the other number and is never zero.
     std::size_t choiceCount() const noexcept;
 
 private:
@@ -175,10 +227,17 @@ private:
     bool isRecent(const Value& value) const noexcept;
     void remember(const Value& value) noexcept;
     std::int32_t rangeSize() const noexcept { return config_.high - config_.low + 1; }
+    /// How many values a draw picks between — `choiceCount()`, floored at one so that an
+    /// empty list has something to draw. Every index handed to `poolValue` is below this.
+    std::size_t drawSize() const noexcept;
+    /// The `index`-th value of whichever pool this draws from. Integer zero past the end of
+    /// an empty list, which is the one case `drawSize()`'s floor lets through.
+    Value poolValue(std::size_t index) const noexcept;
 
     Config config_;
     tracking::Xoshiro256pp random_;
-    /// The shuffled range, and how far through it we are. Sized once.
+    /// The shuffled pool as *indices* into it, and how far through we are. Indices rather
+    /// than values so one bag serves a range and a list alike. Sized once.
     std::vector<std::int32_t> bag_;
     std::size_t at_ = 0;
     /// `Cycle`'s position, and the no-repeat guard's ring of recent draws. `recentCount_`

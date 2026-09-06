@@ -17,6 +17,7 @@ using takt4::trigger::Context;
 using takt4::trigger::Generator;
 using takt4::trigger::GeneratorKind;
 using takt4::trigger::LiveSource;
+using takt4::trigger::Pool;
 using takt4::trigger::Value;
 using takt4::trigger::WeightedChoice;
 
@@ -211,6 +212,95 @@ TEST_CASE("cycle goes round its range in order", "[trigger][generator]") {
     SECTION("and reset puts it back at the start") {
         generator.reset();
         CHECK(draw(generator, 2) == std::vector<std::int32_t>{3, 4});
+    }
+}
+
+TEST_CASE("a list is a sequence the operator wrote, in the order they wrote it",
+          "[trigger][generator]") {
+    // The thing a range could never say. §5.8 describes Cycle as "round-robin through a
+    // range", which serves a clip grid and not the other thing an operator wants
+    // constantly: these four clips, in this order.
+    Generator::Config config;
+    config.kind = GeneratorKind::Cycle;
+    config.pool = Pool::List;
+    config.values = {Value::ofInt(3), Value::ofInt(7), Value::ofInt(1), Value::ofInt(12)};
+    Generator generator(config);
+
+    CHECK(generator.choiceCount() == 4);
+    CHECK(draw(generator, 9) == std::vector<std::int32_t>{3, 7, 1, 12, 3, 7, 1, 12, 3});
+
+    SECTION("and reset puts it back at the start") {
+        generator.reset();
+        CHECK(draw(generator, 2) == std::vector<std::int32_t>{3, 7});
+    }
+
+    SECTION("the range is ignored rather than mixed in") {
+        // Both are held, because an operator switching between them must not lose the one
+        // they are not using. Only the pool decides which is read.
+        Generator::Config both = config;
+        both.low = 100;
+        both.high = 108;
+        Generator listed(both);
+        CHECK(listed.config().low == 100); // kept, and clamped as a range still is
+        CHECK(draw(listed, 4) == std::vector<std::int32_t>{3, 7, 1, 12});
+    }
+}
+
+TEST_CASE("a list can be shuffled as well as walked", "[trigger][generator]") {
+    // The second dimension: which values, and in what order, are two questions. The same
+    // four clips a cycle walks are the ones a shuffle draws without replacement.
+    Generator::Config config;
+    config.kind = GeneratorKind::Shuffle;
+    config.pool = Pool::List;
+    config.values = {Value::ofInt(3), Value::ofInt(7), Value::ofInt(1), Value::ofInt(12)};
+    Generator generator(config);
+
+    const std::vector<std::int32_t> drawn = draw(generator, 8);
+    // Two full bags: each holds every value exactly once, which is what "without
+    // replacement" means and what a range-backed shuffle already promised.
+    for (const std::size_t offset : {std::size_t{0}, std::size_t{4}}) {
+        std::vector<std::int32_t> bag(drawn.begin() + static_cast<std::ptrdiff_t>(offset),
+                                      drawn.begin() + static_cast<std::ptrdiff_t>(offset) + 4);
+        std::sort(bag.begin(), bag.end());
+        CHECK(bag == std::vector<std::int32_t>{1, 3, 7, 12});
+    }
+    // And the seam guard still holds across the bags, which is the whole point of it.
+    CHECK(longestRun(drawn) == 1);
+}
+
+TEST_CASE("a list of anything, not just clip numbers", "[trigger][generator]") {
+    // `Value`, not `int`, so a sequence can be the *text* segments of an address — which is
+    // §5.9's "the address is assembled by clicking" for a rule that names its sections.
+    Generator::Config config;
+    config.kind = GeneratorKind::Cycle;
+    config.pool = Pool::List;
+    config.values = {Value::ofText("intro"), Value::ofText("build"), Value::ofText("drop")};
+    Generator generator(config);
+
+    const Context context;
+    std::string address;
+    for (int i = 0; i < 4; ++i) {
+        generator.next(context).appendTo(address);
+        address += " ";
+    }
+    CHECK(address == "intro build drop intro ");
+}
+
+TEST_CASE("a list with nothing in it sends something harmless", "[trigger][generator]") {
+    // §5.8's clamping policy, at the one place a list can be degenerate. An operator
+    // half-way through building one has an empty list for a moment, and a rule that threw
+    // or stalled there would be worse than one that sends a zero.
+    for (const GeneratorKind kind :
+         {GeneratorKind::Cycle, GeneratorKind::Shuffle, GeneratorKind::Random}) {
+        Generator::Config config;
+        config.kind = kind;
+        config.pool = Pool::List;
+        Generator generator(config);
+        INFO(takt4::trigger::nameOf(kind));
+        // Honest about being empty — a UI showing "1 value" would be reporting the zero
+        // rather than what the operator has.
+        CHECK(generator.choiceCount() == 0);
+        CHECK(draw(generator, 3) == std::vector<std::int32_t>{0, 0, 0});
     }
 }
 
@@ -439,8 +529,24 @@ TEST_CASE("every generator kind and live source has a name that reads back",
         CHECK_FALSE(takt4::trigger::labelOf(source).empty());
         CHECK(takt4::trigger::liveSourceOf(takt4::trigger::nameOf(source)) == source);
     }
+    for (const Pool pool : takt4::trigger::kPools) {
+        INFO("pool " << static_cast<int>(pool));
+        CHECK_FALSE(takt4::trigger::nameOf(pool).empty());
+        CHECK_FALSE(takt4::trigger::labelOf(pool).empty());
+        CHECK(takt4::trigger::poolOf(takt4::trigger::nameOf(pool)) == pool);
+    }
     CHECK_FALSE(takt4::trigger::generatorKindOf("nonsense").has_value());
     CHECK_FALSE(takt4::trigger::liveSourceOf("").has_value());
+    CHECK_FALSE(takt4::trigger::poolOf("ranges").has_value());
+
+    // Only the three §5.8 spells with a range have a pool to choose. A UI asking the
+    // question of the other three would be offering a control that changes nothing.
+    CHECK(takt4::trigger::takesPool(GeneratorKind::Shuffle));
+    CHECK(takt4::trigger::takesPool(GeneratorKind::Random));
+    CHECK(takt4::trigger::takesPool(GeneratorKind::Cycle));
+    CHECK_FALSE(takt4::trigger::takesPool(GeneratorKind::Weighted));
+    CHECK_FALSE(takt4::trigger::takesPool(GeneratorKind::Fixed));
+    CHECK_FALSE(takt4::trigger::takesPool(GeneratorKind::Live));
 
     // Intensity is `features::Intensity` — it lives with the classifier that computes it,
     // and `trigger` aliases it so a rule reads as one thing.
