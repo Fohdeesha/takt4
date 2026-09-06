@@ -1,9 +1,21 @@
 name: core
 
-# The engine, the console tool and the tests on every push, on all three platforms,
-# without Slint — so without a Rust toolchain and without the 7–25 minute cargo build.
-# full.yml builds the UI. A change to takt4_core that breaks src/ui/ is therefore only
-# caught by full.yml's weekly run or a manual dispatch; run one before a milestone.
+# The engine, the console tool and the tests on every push, without Slint — so without a
+# Rust toolchain and without the 7–25 minute cargo build. full.yml builds the UI. A change
+# to takt4_core that breaks src/ui/ is therefore only caught by full.yml's weekly run or a
+# manual dispatch; run one before a milestone.
+#
+# WINDOWS ONLY, by the user, 2026-09-06. macOS and Linux are wanted later and are not
+# wanted now, so their matrix entries are commented out below rather than deleted — every
+# fact needed to bring them back (image notes, preset names, the apt packages) is still
+# here, and re-enabling is uncommenting. macOS is billed at 10x and was most of what this
+# workflow cost.
+#
+# What that gives up: nothing here compiles with clang or gcc any more, and this workflow
+# was the only thing that did. `tools/lint_clang.ps1` runs clang-tidy locally in about a
+# minute and is now the *only* guard against the code quietly rotting for the port that is
+# coming — it has already caught one MSVC-accepts-clang-rejects bug that CI would otherwise
+# have found. Run it before every commit.
 
 on:
   push:
@@ -37,12 +49,13 @@ jobs:
           - os: windows-latest
             preset: windows-core
             cli: build/windows-core/bin/Release/takt4-cli.exe
-          - os: macos-latest
-            preset: macos-core
-            cli: build/macos-core/bin/takt4-cli
-          - os: ubuntu-24.04
-            preset: linux-core
-            cli: build/linux-core/bin/takt4-cli
+          # Windows only for now; see the note at the top of this file.
+          # - os: macos-latest
+          #   preset: macos-core
+          #   cli: build/macos-core/bin/takt4-cli
+          # - os: ubuntu-24.04
+          #   preset: linux-core
+          #   cli: build/linux-core/bin/takt4-cli
 
     steps:
       - uses: actions/checkout@v7
