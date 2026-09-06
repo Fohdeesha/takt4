@@ -98,6 +98,39 @@ bool takesEvery(Trigger trigger) noexcept {
     return trigger == Trigger::Beat || trigger == Trigger::Bar;
 }
 
+std::string_view labelOf(Message::Kind kind) noexcept {
+    switch (kind) {
+    case Message::Kind::Osc:
+        return "OSC address";
+    case Message::Kind::MidiNote:
+        return "MIDI note";
+    case Message::Kind::MidiCc:
+        return "MIDI CC";
+    }
+    return "";
+}
+
+std::string_view nameOf(Message::Kind kind) noexcept {
+    switch (kind) {
+    case Message::Kind::Osc:
+        return "osc";
+    case Message::Kind::MidiNote:
+        return "midi-note";
+    case Message::Kind::MidiCc:
+        return "midi-cc";
+    }
+    return "";
+}
+
+std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept {
+    for (const Message::Kind kind : kMessageKinds) {
+        if (nameOf(kind) == name) {
+            return kind;
+        }
+    }
+    return std::nullopt;
+}
+
 std::size_t countPlaceholders(std::string_view address) noexcept {
     std::size_t count = 0;
     for (std::size_t at = 0; at < address.size();) {

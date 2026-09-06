@@ -232,6 +232,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     if (!settings.machine.midiControlPort.empty()) {
         setMidiControlPort(settings.machine.midiControlPort);
     }
+    // §5.8's rules from the preset half, handed to the output thread. Before the OSC
+    // socket, so a control surface that comes up listening cannot enable a rule that has
+    // not been loaded yet.
+    if (!settings.preset.rules.empty()) {
+        setRules(settings.preset.rules);
+    }
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
         // reason the MIDI port is: a port another application has taken throws, and by now
@@ -450,6 +456,30 @@ void WindowController::setMidiControlPort(const std::string& name) {
         }
     }
     publishControl();
+}
+
+void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
+    rules_ = std::move(rules);
+    // The whole set, every time. A rule is small and the set is short, so there is no
+    // reason for a finer command — and replacing wholesale is what a preset load does, so
+    // the editor and the loader take one road rather than two.
+    runner_.post(output::OutputCommand::rules(rules_));
+
+    // §5.8's other policy: an invalid rule is *held* and refuses to fire, rather than being
+    // refused on the way in. Nothing else would tell an operator, so this does — and it
+    // counts rather than naming one, because a preset arriving with four broken rules
+    // should not report only the first.
+    std::size_t broken = 0;
+    for (const trigger::Rule::Config& config : rules_) {
+        if (!trigger::Rule(config).valid()) {
+            ++broken;
+        }
+    }
+    if (broken > 0) {
+        setStatus(std::to_string(broken) + (broken == 1 ? " rule will not fire until it is fixed."
+                                                        : " rules will not fire until fixed."),
+                  true);
+    }
 }
 
 void WindowController::setOscControlEnabled(bool on) {
@@ -796,6 +826,9 @@ settings::Settings WindowController::currentSettings() const {
     out.preset.link = transports.linkEnabled();
     out.preset.oscTargets = transports.oscTargets();
     out.preset.oscPrefix = transports.oscPrefix();
+    // This window's copy, not the runner's: the runner's belong to the output thread and
+    // reading them while it runs is what `rules()` explains is unsafe.
+    out.preset.rules = rules_;
     return out;
 }
 

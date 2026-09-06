@@ -1,5 +1,7 @@
 #include "core/settings/settings.hpp"
 
+#include "core/settings/rule_json.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -164,6 +166,11 @@ std::string toJson(const Settings& settings) {
              {"link", settings.preset.link},
              {"oscPrefix", settings.preset.oscPrefix},
              {"oscTargets", targets},
+             // Through `rule_json`, which owns the shape of a rule, and back through
+             // `json::parse` so it nests as an array rather than as a string of JSON.
+             // §5.8's rules are the largest thing a preset carries and the only part of it
+             // with a format of its own.
+             {"rules", json::parse(rulesToJson(settings.preset.rules))},
          }},
     };
     return document.dump(2) + "\n";
@@ -228,6 +235,9 @@ Settings fromJson(std::string_view text) {
         read(preset, "oscPrefix", settings.preset.oscPrefix);
         if (preset.is_object() && preset.contains("tempo")) {
             settings.preset.tempo = tempoFromJson(preset.at("tempo"));
+        }
+        if (preset.is_object() && preset.contains("rules")) {
+            settings.preset.rules = rulesFromJson(preset.at("rules").dump());
         }
         if (preset.is_object() && preset.contains("oscTargets") &&
             preset.at("oscTargets").is_array()) {

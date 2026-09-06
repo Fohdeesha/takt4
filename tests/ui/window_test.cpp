@@ -7,6 +7,9 @@
 #include "core/io/wav_file.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "core/trigger/generator.hpp"
+#include "core/trigger/rule.hpp"
+#include "core/trigger/trigger_engine.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
@@ -572,6 +575,70 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
         // one shorter than the table.
         CHECK(controller.window().get_learn_actions()->row_count() ==
               takt4::control::kControlActions.size() - 1);
+    }
+}
+
+TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") {
+    // Q7 puts §5.8's rules in the portable half, and this is the whole path an operator
+    // takes without knowing it: a file, into the output thread, and back to a file.
+    using takt4::trigger::Rule;
+
+    Rule::Config clip;
+    clip.id = "drop";
+    clip.name = "Random clip on downbeat";
+    clip.trigger = takt4::trigger::Trigger::Downbeat;
+    clip.address = "/composition/layers/3/clips/{c}/connect";
+    takt4::trigger::Generator::Config which;
+    which.pool = takt4::trigger::Pool::List;
+    which.values = {takt4::trigger::Value::ofInt(3), takt4::trigger::Value::ofInt(7),
+                    takt4::trigger::Value::ofInt(12)};
+    clip.segments = {which};
+
+    takt4::settings::Settings loaded;
+    loaded.preset.rules = {clip};
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, loaded);
+
+    // The window's own copy, which is the editable one.
+    REQUIRE(controller.rules().size() == 1);
+    CHECK(controller.rules()[0].id == "drop");
+
+    // And the output thread's, which is the live one. Safe to read here because the runner
+    // has not been started — which is what `rules()` documents as the only time it is.
+    REQUIRE(controller.outputs().triggers().ruleCount() == 1);
+    CHECK(controller.outputs().triggers().rule(0).valid());
+    CHECK_FALSE(controller.statusIsError()); // a valid rule says nothing
+
+    SECTION("and they go back into the file they came from") {
+        const takt4::settings::Settings saved = controller.currentSettings();
+        REQUIRE(saved.preset.rules.size() == 1);
+        CHECK(saved.preset.rules[0].id == "drop");
+        REQUIRE(saved.preset.rules[0].segments.size() == 1);
+        CHECK(saved.preset.rules[0].segments[0].values.size() == 3);
+    }
+
+    SECTION("replacing the set replaces it on the output thread too") {
+        Rule::Config other;
+        other.id = "stab";
+        other.address = "/fire";
+        controller.setRules({other});
+        CHECK(controller.rules().size() == 1);
+        CHECK(controller.outputs().triggers().ruleCount() == 1);
+        CHECK(controller.outputs().triggers().rule(0).id() == "stab");
+    }
+
+    SECTION("a rule that will not fire is kept, and said so") {
+        // §5.8's policy: held, shown, and refused at fire time. The alternative — dropping
+        // it on load — would delete the rule an operator is half-way through fixing.
+        Rule::Config broken;
+        broken.id = "broken";
+        broken.address = "/a/{x}/b"; // one placeholder, no segments
+        controller.setRules({broken});
+        CHECK(controller.rules().size() == 1);
+        REQUIRE(controller.outputs().triggers().ruleCount() == 1);
+        CHECK_FALSE(controller.outputs().triggers().rule(0).valid());
+        CHECK(controller.statusIsError());
     }
 }
 

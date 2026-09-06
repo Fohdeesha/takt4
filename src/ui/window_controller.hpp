@@ -167,6 +167,18 @@ public:
     /// Unbinds every control bound to the selected action.
     void forgetLearned();
 
+    /// §5.8's rules, as this window has them.
+    ///
+    /// **The window's copy is the editable one and the runner's is the live one.** They are
+    /// separate on purpose: the rules belong to §4.2's output thread, so reading them back
+    /// through `outputs().triggers()` is only safe while it is stopped — and an editor has
+    /// to work during a set. Everything here edits this copy and posts the set whole, which
+    /// is the same shape `postOptions` uses for a slider and what `OutputCommand::Rules`
+    /// was written for.
+    const std::vector<trigger::Rule::Config>& rules() const noexcept { return rules_; }
+    /// Replaces the set, hands it to the output thread, and reports what will not fire.
+    void setRules(std::vector<trigger::Rule::Config> rules);
+
     /// The MIDI surface itself. Non-const for the same reason `window()` is: a test drives
     /// `dispatch` to deliver an event no hardware here can send, which is the only way the
     /// path from a controller to a binding is checkable without somebody pressing a pad.
@@ -265,6 +277,9 @@ private:
     /// says it has arrived — and until then the DOWNBEAT button stays lit, because a
     /// control that does nothing visible for the best part of a second reads as broken.
     std::optional<std::uint64_t> snapAwaitingBeat_;
+
+    /// §5.8's rules as this window has them; see `rules()`.
+    std::vector<trigger::Rule::Config> rules_;
 
     /// §5.7's control input. Which action LEARN would bind, as an index into
     /// `learnActions_`; the binding table itself lives in `control_`.

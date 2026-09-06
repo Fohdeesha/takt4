@@ -40,6 +40,7 @@ add_executable(takt4_tests
   output/rule_sink_test.cpp
   output/transports_test.cpp
   rt/alloc_guard_test.cpp
+  settings/rule_json_test.cpp
   settings/settings_test.cpp
   rt/published_test.cpp
   rt/spsc_ring_test.cpp

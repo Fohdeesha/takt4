@@ -2,7 +2,9 @@
 
 #include "core/features/dimensions.hpp"
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -15,7 +17,15 @@ namespace takt4::features {
 /// intensity (a rule's "intensity in set", a UI's three checkboxes) indexes by these.
 enum class Intensity : std::uint8_t { Calm = 0, Normal = 1, Intense = 2 };
 
+/// The three, in §5.6's own order — which is also their wire number, so a UI list and an
+/// OSC argument cannot drift apart about which is which.
+inline constexpr std::array<Intensity, 3> kIntensities{Intensity::Calm, Intensity::Normal,
+                                                       Intensity::Intense};
+
 std::string_view labelOf(Intensity intensity) noexcept;
+/// The inverse of `labelOf`. One word each, so the label doubles as the name a preset
+/// spells a rule's intensity set with — there is nothing to shorten and nothing to expand.
+std::optional<Intensity> intensityOf(std::string_view label) noexcept;
 
 /// §5.8's intensity classifier: *"Spectral flux across the full band, classified calm /
 /// normal / intense with hysteresis to stop it flickering between states. Feeds the ONLY IF

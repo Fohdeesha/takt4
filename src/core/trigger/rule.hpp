@@ -105,6 +105,14 @@ struct Message {
     int value = 127;
 };
 
+inline constexpr std::array<Message::Kind, 3> kMessageKinds{
+    Message::Kind::Osc, Message::Kind::MidiNote, Message::Kind::MidiCc};
+
+/// What §5.9's SEND dropdown offers, and what a preset spells the choice with.
+std::string_view labelOf(Message::Kind kind) noexcept;
+std::string_view nameOf(Message::Kind kind) noexcept;
+std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept;
+
 /// Where a fired rule's messages go.
 ///
 /// An interface rather than a reference to `output::Transports`, for two reasons that both

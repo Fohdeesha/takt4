@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/tracking/tempo_tracker.hpp"
+#include "core/trigger/rule.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -61,13 +62,23 @@ struct MachineSettings {
     bool oscControlLocalOnly = true;
 };
 
-/// What travels. Phase 6's rules join this.
+/// What travels.
 struct Preset {
     /// §5.5's tuning — the octave-fold window, the confidence gate, the latency offset.
     tracking::TempoTracker::Options tempo;
     bool link = false;
     std::string oscPrefix = "/takt4";
     std::vector<std::pair<std::string, std::uint16_t>> oscTargets;
+
+    /// §5.8's rules, which Q7 puts here rather than in `MachineSettings`: a rule is about
+    /// the *show* — "a random clip on every fourth downbeat" — and travels to whatever
+    /// laptop is running it. The one machine-shaped thing a rule could carry is a MIDI
+    /// port, and it does not: a MIDI rule names a channel and a note, and which port they
+    /// leave by is `midiClockPort`'s business.
+    ///
+    /// Held as configuration rather than as live `trigger::Rule`s, which is what makes them
+    /// storable at all — see `Rule::Config`, which is plain data for exactly this.
+    std::vector<trigger::Rule::Config> rules;
 };
 
 struct Settings {

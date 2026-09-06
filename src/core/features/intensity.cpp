@@ -31,6 +31,15 @@ std::string_view labelOf(Intensity intensity) noexcept {
     return "";
 }
 
+std::optional<Intensity> intensityOf(std::string_view label) noexcept {
+    for (const Intensity intensity : kIntensities) {
+        if (labelOf(intensity) == label) {
+            return intensity;
+        }
+    }
+    return std::nullopt;
+}
+
 IntensityClassifier::IntensityClassifier() : IntensityClassifier(Options{}) {}
 
 IntensityClassifier::IntensityClassifier(Options options) : options_(options) {
