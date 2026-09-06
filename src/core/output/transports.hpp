@@ -3,13 +3,16 @@
 #include "core/output/link_session.hpp"
 #include "core/output/midi_clock.hpp"
 #include "core/output/osc_publisher.hpp"
+#include "core/output/output_target.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -27,13 +30,15 @@ namespace takt4::output {
 /// single thread. The exception is `setLatencySeconds`, which is documented below.
 class Transports {
 public:
-    /// A host and port to send OSC to.
+    /// A host and port to send OSC to. Kept as the pair it always was for the callers that
+    /// only ever wanted one — `setOscTargets` builds unnamed `OutputTarget`s from these.
     using OscTarget = std::pair<std::string, std::uint16_t>;
 
     struct Config {
         bool link = false;
         std::string oscPrefix = "/takt4";
-        std::vector<OscTarget> oscTargets;
+        /// §5.6's *"multiple simultaneous targets"*, named so a rule can pick between them.
+        std::vector<OutputTarget> outputs;
         std::optional<std::string> midiClockPort;
         /// §5.5's latency offset as the tracker has it, so the transports start out
         /// agreeing with it. `setLatencySeconds` keeps them agreeing when it is moved.
@@ -64,12 +69,17 @@ public:
     /// the same reason: these belong to whichever thread owns the transports, and Phase 6's
     /// rules send notes and CCs down this one.
     MidiClock* midiClock() const noexcept { return midi_.get(); }
-    MidiOutput* midiPort() const noexcept { return midiPort_.get(); }
+    /// The device the *clock* is going down, or null. A rule's notes no longer come this
+    /// way — they go to whichever of `outputs()` the rule named, which may be this device
+    /// or another one entirely. `midiTarget` is the routed answer.
+    MidiOutput* midiPort() const noexcept;
 
     /// Whether anything is actually being sent. With nothing on, `publish` and `advance`
     /// still count beats and cost nothing else, which is what makes an app that has not
     /// been configured yet behave like one that has.
-    bool any() const noexcept { return linkEnabled_ || osc_->targetCount() != 0 || midi_; }
+    bool any() const noexcept {
+        return linkEnabled_ || osc_->targetCount() != 0 || midi_ || !midiDevices_.empty();
+    }
 
     // --- what is switched on, and changing it -------------------------------------
     //
@@ -80,8 +90,25 @@ public:
     bool linkEnabled() const noexcept { return linkEnabled_; }
     void setLinkEnabled(bool on);
 
-    const std::vector<OscTarget>& oscTargets() const noexcept { return oscTargets_; }
+    /// §5.6's targets, in the order a rule's routing mask indexes them.
+    const std::vector<OutputTarget>& outputs() const noexcept { return outputs_; }
+    /// Replaces the set. Rebuilds every OSC sender and opens or closes MIDI devices to
+    /// match; a device that cannot be opened leaves that target unreachable and is reported
+    /// through `lastError`-style throwing, as `setMidiClockPort` already is.
+    void setOutputs(const std::vector<OutputTarget>& targets);
+
+    /// The OSC half of `outputs()`, as the host/port pairs the older callers use.
+    std::vector<OscTarget> oscTargets() const;
+    /// Replaces the outputs with these OSC targets, unnamed. What `takt4-cli` passes and
+    /// what a settings file written before names existed still means.
     void setOscTargets(const std::vector<OscTarget>& targets);
+
+    /// The MIDI device a rule routed to `name` should be sent down, or null when that
+    /// target is not a MIDI one, is switched off, or could not be opened.
+    MidiOutput* midiTarget(std::size_t index) const noexcept;
+    /// Whether any target is selected by a rule's routing mask — see
+    /// `OscPublisher::anyTargetIn`, which answers the same question for the OSC half.
+    bool anyOutputIn(std::uint64_t outputs) const noexcept;
 
     /// The namespace every address is sent under (§5.6). Fixed at construction: it is
     /// what a receiver is configured to listen for, so changing it under a running rig
@@ -90,6 +117,10 @@ public:
 
     /// The port MIDI clock is going to, or empty for none. Opening throws if the port is
     /// not on the machine, and nothing is changed when it does.
+    ///
+    /// **The device may also be one of `outputs()`.** Each device is opened once and shared:
+    /// a rig sending both 24 PPQN and §5.8's note messages down one cable is the ordinary
+    /// case, and opening the same port twice is refused by some drivers.
     const std::optional<std::string>& midiClockPort() const noexcept { return midiClockPort_; }
     void setMidiClockPort(const std::optional<std::string>& port);
 
@@ -127,11 +158,19 @@ private:
     void publishToLink(const tracking::BeatEvent& event, std::int64_t hostMicros,
                        std::int64_t latencyMicros);
 
+    /// Opens `device` if it is not already open, and hands back the shared port. Null when
+    /// the name is empty; throws when the device is not on the machine.
+    MidiOutput* openDevice(const std::string& device);
+    /// Closes every device nothing names any more — the clock's or a target's.
+    void closeUnusedDevices() noexcept;
+
     std::atomic<std::int64_t> latencyMicros_;
     /// Never null, and never replaced: the audio thread holds a pointer to the session.
     std::unique_ptr<LinkSession> link_;
     std::unique_ptr<OscPublisher> osc_;
-    std::unique_ptr<MidiOutput> midiPort_;
+    /// Every MIDI device in use, by name, opened once however many things name it — the
+    /// clock and any number of §5.8's rule targets. See `midiClockPort`.
+    std::map<std::string, std::unique_ptr<MidiOutput>> midiDevices_;
     std::unique_ptr<MidiClock> midi_;
     bool linkEnabled_ = false;
     bool started_ = false;
@@ -139,7 +178,11 @@ private:
     /// has to start its clock from now: starting it from when the *outputs* started would
     /// make `advance` try to emit every tick since.
     double lastNow_ = 0.0;
-    std::vector<OscTarget> oscTargets_;
+    /// §5.6's targets, and the MIDI port each one resolved to — null for an OSC target, for
+    /// one that is switched off, and for a device that would not open. Parallel to
+    /// `outputs_` so a rule's routing bit indexes both.
+    std::vector<OutputTarget> outputs_;
+    std::vector<MidiOutput*> outputPorts_;
     std::string oscPrefix_;
     std::optional<std::string> midiClockPort_;
     double lastLinkBpm_ = -1.0;

@@ -976,7 +976,7 @@ takt4::output::Transports::Config transportConfig(const TrackArgs& args) {
     takt4::output::Transports::Config config;
     config.link = args.link;
     config.oscPrefix = args.oscPrefix;
-    config.oscTargets = args.oscTargets;
+    config.outputs = takt4::output::oscOutputs(args.oscTargets);
     config.midiClockPort = args.midiClockPort;
     config.latencySeconds = args.tempo.latencyOffsetSeconds;
     return config;

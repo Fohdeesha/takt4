@@ -28,13 +28,65 @@ namespace takt4::trigger {
 /// name of the thing every generator produces — a generator called Value, being the one
 /// whose output it does not choose, is the worst possible place for that collision.
 /// `labelOf` gives a UI the words a person should see.
-enum class GeneratorKind : std::uint8_t { Shuffle, Random, Cycle, Weighted, Fixed, Live };
+enum class GeneratorKind : std::uint8_t {
+    Shuffle,
+    Random,
+    Cycle,
+    Weighted,
+    Fixed,
+    Live,
+    /// A value that sweeps its range over a whole number of bars, locked to the downbeat.
+    ///
+    /// **Not in §5.8's list**, and added on the user's ask for *"algorithmic settings ...
+    /// based on the bpm of the song and downbeat"*. It is the one generator whose output is
+    /// neither drawn nor read but *computed from where in the music we are*, which is what a
+    /// Resolume dashboard parameter, a layer opacity or a clip speed wants — a value that
+    /// breathes with the track rather than jumping about.
+    ///
+    /// Sampled when a rule fires, so its resolution is the rule's trigger: a rule on every
+    /// beat gives four steps a bar, one on every sixteenth-note Euclid step gives sixteen.
+    /// That is the right resolution — it is a *musical* ramp, not an animation.
+    Ramp,
+};
 
 /// Every kind, in the order a UI should offer them: §5.8's own order, which puts the
 /// default first and the deliberate choice second.
-inline constexpr std::array<GeneratorKind, 6> kGeneratorKinds{
-    GeneratorKind::Shuffle,  GeneratorKind::Random, GeneratorKind::Cycle,
-    GeneratorKind::Weighted, GeneratorKind::Fixed,  GeneratorKind::Live};
+inline constexpr std::array<GeneratorKind, 7> kGeneratorKinds{
+    GeneratorKind::Shuffle, GeneratorKind::Random, GeneratorKind::Cycle, GeneratorKind::Weighted,
+    GeneratorKind::Fixed,   GeneratorKind::Live,   GeneratorKind::Ramp};
+
+/// The shape a `Ramp` traces over its period.
+enum class RampShape : std::uint8_t {
+    /// Low to high, then straight back. A build that resets on the downbeat.
+    Saw,
+    /// Low to high and back down again — the one that does not jump, so it suits anything
+    /// an audience watches continuously.
+    Triangle,
+    /// A triangle with the corners taken off. Slower at the ends, quicker through the
+    /// middle, which is what "breathing" actually looks like.
+    Sine,
+    /// Low for the first half of the period, high for the second. A gate rather than a
+    /// sweep, and the cheapest way to make something alternate every N bars.
+    Square,
+};
+
+inline constexpr std::array<RampShape, 4> kRampShapes{RampShape::Saw, RampShape::Triangle,
+                                                      RampShape::Sine, RampShape::Square};
+
+std::string_view labelOf(RampShape shape) noexcept;
+std::string_view nameOf(RampShape shape) noexcept;
+std::optional<RampShape> rampShapeOf(std::string_view name) noexcept;
+
+/// Where in a `Ramp`'s period the music is, 0 to 1 — the *phase*, before any shape.
+///
+/// Built from the bar count and the position within the bar, so it is locked to the
+/// tracker's own downbeat rather than to a clock of its own: a ramp over four bars restarts
+/// on bar 1, 5, 9, and a manual downbeat snap moves it with the music.
+///
+/// `meter` of zero means the filter has no opinion about the bar yet (§5.5 — nothing assumes
+/// four), in which case the beat within the bar cannot be used and the phase advances a whole
+/// bar at a time.
+double rampPhase(const Context& context, std::uint32_t bars) noexcept;
 
 std::string_view labelOf(GeneratorKind kind) noexcept;
 /// The word a settings file spells the kind with, and what `generatorKindOf` reads back.
@@ -180,6 +232,18 @@ public:
         double normaliseLow = 20.0;
         double normaliseHigh = 500.0;
 
+        /// `Ramp`'s shape and its period in bars. Four bars is a phrase, which is the unit
+        /// an operator counts in and the one a build is written over.
+        RampShape shape = RampShape::Triangle;
+        std::uint32_t rampBars = 4;
+        /// Whether a `Ramp` produces a float or an int.
+        ///
+        /// A float across `low`-`high` is what a normalised host parameter wants — Resolume
+        /// takes 0-1 — and an int is what a clip index or a MIDI value wants. Both come from
+        /// the same phase; only the last step differs, and getting it wrong is the difference
+        /// between a smooth fade and four steps.
+        bool rampFloat = true;
+
         /// The random stream. Two generators with the same seed and configuration produce
         /// the same sequence, which is what lets a test state what Shuffle does — so the
         /// rule engine has to hand out distinct ones, or every rule in a preset fires the
@@ -203,13 +267,13 @@ public:
     /// A fresh bag, a cycle back at the start, the seed re-applied and nothing remembered.
     void reset() noexcept;
 
-    /// The next value. `context` is read only by `Live`; the others ignore it.
+    /// The next value. `context` is read by `Live` and `Ramp`; the others ignore it.
     Value next(const Context& context) noexcept;
 
     /// How many distinct values this can produce, where that is a finite number a UI can
     /// show — the range size or the list length for `Shuffle`, `Random` and `Cycle`, the
-    /// list length for `Weighted`, 1 for `Fixed`, and 0 for `Live`, whose values are not
-    /// drawn from a set.
+    /// list length for `Weighted`, 1 for `Fixed`, and 0 for `Live` and `Ramp`, whose values
+    /// are computed rather than drawn from a set.
     ///
     /// **Honest, so it can be zero**: an empty list has nothing in it, and a UI saying "1"
     /// there would be reporting the harmless zero that gets sent rather than what the
@@ -222,6 +286,7 @@ private:
     Value nextCycled() noexcept;
     Value nextWeighted() noexcept;
     Value nextLive(const Context& context) const noexcept;
+    Value nextRamp(const Context& context) const noexcept;
 
     void refillBag() noexcept;
     bool isRecent(const Value& value) const noexcept;

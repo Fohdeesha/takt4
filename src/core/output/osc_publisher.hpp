@@ -2,6 +2,7 @@
 
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_sender.hpp"
+#include "core/output/output_target.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <cstddef>
@@ -43,8 +44,15 @@ public:
     /// "/takt4" by default; a trailing '/' is not wanted and not accepted.
     explicit OscPublisher(std::string prefix = "/takt4");
 
-    /// Adds a target. Throws std::runtime_error if the host cannot be resolved.
-    void addTarget(std::string_view host, std::uint16_t port);
+    /// Adds a target, at the next routing bit. Throws std::runtime_error if the host
+    /// cannot be resolved.
+    ///
+    /// `bit` is which bit of a rule's `Message::outputs` mask selects this one — the index
+    /// of the target in `Transports`' own list, so that a rig with an OSC target, a MIDI
+    /// target and another OSC target routes to bits 0 and 2 here rather than 0 and 1.
+    /// Anything past `kMaxRoutableTargets` is given `kAllOutputs`, so it still receives
+    /// everything a rule sends everywhere.
+    void addTarget(std::string_view host, std::uint16_t port, std::size_t bit);
 
     /// Removes every target, and forgets what was last published with them.
     ///
@@ -55,7 +63,7 @@ public:
     void clearTargets() noexcept;
 
     std::size_t targetCount() const noexcept { return targets_.size(); }
-    const OscSender& target(std::size_t index) const noexcept { return *targets_[index]; }
+    const OscSender& target(std::size_t index) const noexcept { return *targets_[index].sender; }
 
     /// Publishes one beat, and any state that changed with it.
     void publishBeat(const tracking::BeatEvent& event);
@@ -77,20 +85,35 @@ public:
     /// A malformed address sends nothing and counts a failure, because `OscMessage` refuses
     /// it. Rules validate their templates and check the filled result, so reaching here with
     /// one should not happen; counting it is what makes it visible if it does.
+    /// To every target. §5.6's generic namespace goes this way: *"Always publish a generic
+    /// namespace regardless of which host preset is active, so anything can consume it with
+    /// zero configuration"* — a routing decision belongs to a rule, not to the app's own
+    /// description of what the tempo is.
     void sendAddress(std::string_view address);
     void sendAddress(std::string_view address, std::int32_t value);
     void sendAddress(std::string_view address, float value);
     void sendAddress(std::string_view address, std::string_view value);
 
+    /// The same, to the targets `outputs` selects — §5.6's *"rule subset"*. `kAllOutputs`
+    /// is every one of them and is what an unrouted rule carries.
+    void sendAddressTo(std::uint64_t outputs, std::string_view address);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::int32_t value);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, float value);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::string_view value);
+
+    /// Whether any target is selected by `outputs`. What tells "the rule sent nothing
+    /// because it is routed nowhere" from "the rule never fired", which look identical.
+    bool anyTargetIn(std::uint64_t outputs) const noexcept;
+
     std::uint64_t messagesSent() const noexcept { return sent_; }
     std::uint64_t messagesFailed() const noexcept { return failed_; }
 
 private:
-    /// One assembled message to every target, counting what each one did with it. The only
-    /// place a datagram leaves this class.
-    void sendPacket(OscMessage& message);
-    void sendInt(std::string_view address, std::int32_t value);
-    void sendFloat(std::string_view address, float value);
+    /// One assembled message to the selected targets, counting what each one did with it.
+    /// The only place a datagram leaves this class.
+    void sendPacket(OscMessage& message, std::uint64_t outputs);
+    void sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs);
+    void sendFloat(std::string_view address, float value, std::uint64_t outputs);
     /// Sends the four state addresses whose value has moved, and remembers them.
     void sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
                           bool force);
@@ -106,7 +129,12 @@ private:
     std::string meterAddress_;
     std::string resyncAddress_;
 
-    std::vector<std::unique_ptr<OscSender>> targets_;
+    /// A sender and the routing bit that selects it; see `addTarget`.
+    struct Target {
+        std::unique_ptr<OscSender> sender;
+        std::uint64_t bit = 0;
+    };
+    std::vector<Target> targets_;
 
     // What was last published, so an unchanged value is not resent between beats.
     double lastBpm_ = -1.0;

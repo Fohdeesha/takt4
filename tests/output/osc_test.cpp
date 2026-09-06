@@ -136,7 +136,7 @@ TEST_CASE("datagrams reach a socket that is really listening", "[output][osc]") 
 TEST_CASE("the generic namespace is published as HANDOFF 5.6 specifies", "[output][osc]") {
     LoopbackReceiver receiver;
     OscPublisher publisher;
-    publisher.addTarget("127.0.0.1", receiver.port());
+    publisher.addTarget("127.0.0.1", receiver.port(), 0);
     REQUIRE(publisher.targetCount() == 1);
 
     takt4::tracking::BeatEvent event;

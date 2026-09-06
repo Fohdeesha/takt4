@@ -35,19 +35,43 @@ enum class Trigger : std::uint8_t {
     /// §5.8's *"manual hotkey"* — `TriggerEngine::manual`, which §5.7 will reach from OSC
     /// and MIDI alongside the rest.
     Manual,
+    /// A Euclidean rhythm: `pulses` hits spread as evenly as they go over `every` beats,
+    /// counted from the first beat of the pattern.
+    ///
+    /// **Not in §5.8's list**, and added on the user's ask for *"cool randomization or
+    /// algorithmic settings ... based on the bpm of the song and downbeat"*. It earns its
+    /// place because it is the one pattern that is neither "every N" nor random: 3-in-8 is
+    /// the tresillo, 5-in-8 the cinquillo, 5-in-16 the bossa. An operator gets those by
+    /// typing two numbers, and they are locked to the tracker's own beat rather than to a
+    /// clock of their own.
+    Euclid,
 };
 
-inline constexpr std::array<Trigger, 8> kTriggers{Trigger::Beat,       Trigger::Bar,
-                                                  Trigger::Downbeat,   Trigger::TempoChange,
-                                                  Trigger::LockChange, Trigger::IntensityChange,
-                                                  Trigger::Onset,      Trigger::Manual};
+inline constexpr std::array<Trigger, 9> kTriggers{
+    Trigger::Beat,        Trigger::Bar,        Trigger::Downbeat,
+    Trigger::TempoChange, Trigger::LockChange, Trigger::IntensityChange,
+    Trigger::Onset,       Trigger::Manual,     Trigger::Euclid};
 
 std::string_view labelOf(Trigger trigger) noexcept;
 std::string_view nameOf(Trigger trigger) noexcept;
 std::optional<Trigger> triggerOf(std::string_view name) noexcept;
 
-/// True where `Trigger::every` means anything — the two §5.8 spells with an N.
+/// True where `Trigger::every` means anything — the two §5.8 spells with an N, and
+/// `Euclid`, where it is the number of steps the pattern spans.
 bool takesEvery(Trigger trigger) noexcept;
+
+/// True where `Trigger::pulses` means anything — `Euclid` alone.
+bool takesPulses(Trigger trigger) noexcept;
+
+/// Whether step `step` of a `pulses`-in-`steps` Euclidean pattern is a hit.
+///
+/// Bjorklund's construction, computed directly rather than by the recursive bit-string
+/// algorithm: hit *k* of the pattern falls on step `floor(k * steps / pulses)`, which is the
+/// same distribution and needs no allocation, no table and no state. `step` counts from zero.
+///
+/// Degenerate cases are answered rather than refused, as §5.8's clamping policy asks: no
+/// pulses is silence, and pulses at or above steps is every step.
+bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept;
 
 /// §5.8's ONLY IF column: *"confidence above threshold · intensity in set · BPM in range ·
 /// probability percentage · minimum cooldown in ms"*.
@@ -103,6 +127,18 @@ struct Message {
     int number = 0;
     /// MIDI: the velocity or the controller value, 0 to 127.
     int value = 127;
+
+    /// §5.6's *"rule subset"*: which of the app's outputs this goes to, one bit each, in
+    /// the order `output::Transports::outputs()` holds them. All bits — `output::
+    /// kAllOutputs` — means everywhere, which is what an unrouted rule means and what
+    /// every rule meant before routing existed.
+    ///
+    /// **A mask rather than the names themselves**, for two reasons that both matter. A
+    /// fire allocates nothing extra, where a `vector<string>` per message would be three
+    /// allocations at 3.6 messages a second per rule. And a follow-up outlives its rule:
+    /// §5.8 says a pending release is still sent after the rule set has been replaced, so
+    /// anything the message pointed *at* would dangle exactly when it was needed.
+    std::uint64_t outputs = ~std::uint64_t{0};
 };
 
 inline constexpr std::array<Message::Kind, 3> kMessageKinds{
@@ -164,6 +200,10 @@ public:
         /// 1, 5 and 9 rather than 4, 8 and 12. An operator counting a phrase in starts at
         /// one. Ignored where `takesEvery` is false; zero is read as one.
         std::uint32_t every = 1;
+        /// How many of `every` steps a `Euclid` pattern hits. Ignored by every other
+        /// trigger. Zero is silence and is left as the operator typed it — a pattern being
+        /// built up from nothing passes through it.
+        std::uint32_t pulses = 3;
         /// How far the published tempo has to move to count as a `TempoChange`, as a
         /// fraction. The published tempo is *refined* continuously once locked — the beat
         /// spacing resolves it to a fraction of a BPM and it moves most beats — so an exact
@@ -197,6 +237,17 @@ public:
         /// Seeds every generator this rule owns, each offset from it, so two rules in a
         /// preset do not fire the same clip as each other. See `Generator::Config::seed`.
         std::uint64_t seed = 1;
+
+        /// §5.6's *"rule subset"*: the names of the outputs this rule sends to. **Empty
+        /// means every output**, which is what a rule an operator has not routed means and
+        /// what every rule meant before there was more than one target.
+        ///
+        /// Names rather than indices, because this travels in a preset (Q7) and an index
+        /// moves the moment an output above it is deleted. A name that matches nothing on
+        /// this rig contributes nothing and is *kept*: a preset written where there was a
+        /// "lights" output, opened where there is not, should still say "lights" so that
+        /// plugging it back in restores the routing rather than needing it typed again.
+        std::vector<std::string> outputs;
     };
 
     explicit Rule(Config config);
@@ -214,6 +265,15 @@ public:
 
     /// Fresh generators, no cooldown owed, nothing remembered about the tempo or the lock.
     void reset() noexcept;
+
+    /// Which outputs this rule's messages carry, as `Message::outputs`.
+    ///
+    /// Resolved from `Config::outputs` by whoever knows what the outputs *are* — which is
+    /// `output::OutputRunner`, and neither this class nor `TriggerEngine`. Set again
+    /// whenever the target list changes, or a rule keeps routing to the bit its old
+    /// neighbour used to occupy.
+    std::uint64_t outputMask() const noexcept { return outputMask_; }
+    void setOutputMask(std::uint64_t mask) noexcept { outputMask_ = mask; }
 
     /// Whether `context` is a change of the kind this rule's trigger names — tempo, lock or
     /// intensity — and remembers it either way.
@@ -267,6 +327,9 @@ private:
     Generator number_;
     /// §5.8's probability percentage, on this rule's own stream. See `conditionsHold`.
     tracking::Xoshiro256pp probability_;
+    /// See `outputMask`. Everywhere until somebody who knows the outputs says otherwise,
+    /// which is the right default for a rule nobody has routed.
+    std::uint64_t outputMask_ = ~std::uint64_t{0};
     /// What `seesChange` last counted as a change. Negative means "nothing seen yet", which
     /// is not a change: a rule must not fire on the first round merely for existing.
     double lastBpmSeen_ = -1.0;

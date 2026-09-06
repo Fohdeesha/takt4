@@ -277,7 +277,7 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     // called, a rule the runner was handed by command, and a socket that really receives.
     LoopbackReceiver receiver;
     Transports::Config config;
-    config.oscTargets = {{"127.0.0.1", receiver.port()}};
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", receiver.port()}});
 
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
     OutputRunner runner(*engine, config);

@@ -50,6 +50,13 @@ bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noex
         return context.beatInBar == 1 && context.bars >= 1 && (context.bars - 1) % every == 0;
     case Trigger::Downbeat:
         return context.beatInBar == 1;
+    case Trigger::Euclid:
+        // Counted from the first beat, like `Beat` above and for the same reason — an
+        // operator counting a phrase in starts at one — so the pattern's step 0 is beat 1
+        // and a 3-in-8 lands on beats 1, 4 and 7 of every eight.
+        return context.beats >= 1 &&
+               euclidHit(static_cast<std::uint32_t>((context.beats - 1) % every), config.pulses,
+                         static_cast<std::uint32_t>(every));
     default:
         return false;
     }

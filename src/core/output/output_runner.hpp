@@ -31,6 +31,10 @@ struct OutputCommand {
         LinkEnabled,
         OscTargets,
         MidiClockPort,
+        /// §5.6's named targets, whole. Every rule's routing is resolved again afterwards,
+        /// because a name means a *bit*, and the bit a name resolves to moves the moment a
+        /// target above it is added or deleted.
+        Outputs,
         /// §5.8's rules, whole. Replacing the set rather than editing one is what a preset
         /// load does and what §5.9's editor will do on every change; a rule is small and the
         /// set is short, so there is no reason for a finer command.
@@ -86,6 +90,12 @@ struct OutputCommand {
         command.targets = std::move(targets);
         return command;
     }
+    static OutputCommand outputs(std::vector<OutputTarget> targets) {
+        OutputCommand command;
+        command.kind = Kind::Outputs;
+        command.outputTargets = std::move(targets);
+        return command;
+    }
     static OutputCommand midiClockPort(std::optional<std::string> port) {
         OutputCommand command;
         command.kind = Kind::MidiClockPort;
@@ -96,6 +106,7 @@ struct OutputCommand {
     Kind kind = Kind::LinkEnabled;
     bool enabled = false;
     std::vector<Transports::OscTarget> targets;
+    std::vector<OutputTarget> outputTargets;
     std::optional<std::string> port;
     std::vector<trigger::Rule::Config> ruleConfigs;
     std::string ruleId;
@@ -269,6 +280,9 @@ private:
     /// transports at the time.
     void applyCommands() noexcept;
     void apply(const OutputCommand& command);
+    /// Turns every rule's output *names* into the bit mask its messages carry. Run after the
+    /// rules change and after the targets do, because either moves the answer.
+    void resolveRouting() noexcept;
     /// The instant every rule in this round is judged against — §5.8's ONLY IF stage, made
     /// once so that two rules with the same condition cannot disagree about it.
     trigger::Context contextAt(double now) const;

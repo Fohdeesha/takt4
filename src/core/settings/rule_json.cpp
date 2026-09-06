@@ -128,6 +128,15 @@ json generatorToJson(const Generator::Config& config) {
             out["normaliseHigh"] = config.normaliseHigh;
         }
     }
+    if (config.kind == trigger::GeneratorKind::Ramp) {
+        out["shape"] = std::string(trigger::nameOf(config.shape));
+        out["rampBars"] = config.rampBars;
+        out["rampFloat"] = config.rampFloat;
+        // The range a ramp sweeps, which `takesPool` does not cover — a ramp has a range and
+        // no pool, so neither branch above would have written it.
+        out["low"] = config.low;
+        out["high"] = config.high;
+    }
     return out;
 }
 
@@ -145,6 +154,9 @@ Generator::Config generatorFromJson(const json& node) {
     readNamed(node, "source", config.source, trigger::liveSourceOf);
     read(node, "normaliseLow", config.normaliseLow);
     read(node, "normaliseHigh", config.normaliseHigh);
+    readNamed(node, "shape", config.shape, trigger::rampShapeOf);
+    read(node, "rampBars", config.rampBars);
+    read(node, "rampFloat", config.rampFloat);
 
     if (node.contains("fixed")) {
         config.fixed = valueFromJson(node.at("fixed"));
@@ -239,6 +251,19 @@ json ruleToJson(const Rule::Config& rule) {
     if (trigger::takesEvery(rule.trigger)) {
         out["every"] = rule.every;
     }
+    if (trigger::takesPulses(rule.trigger)) {
+        out["pulses"] = rule.pulses;
+    }
+    if (!rule.outputs.empty()) {
+        // §5.6's rule subset. Left out when a rule goes everywhere, which is the default and
+        // the majority — a preset should say what an operator chose, not restate the default
+        // for every rule in it.
+        json outputs = json::array();
+        for (const std::string& name : rule.outputs) {
+            outputs.push_back(name);
+        }
+        out["outputs"] = outputs;
+    }
     if (rule.trigger == trigger::Trigger::TempoChange) {
         out["tempoChangeTolerance"] = rule.tempoChangeTolerance;
     }
@@ -268,7 +293,15 @@ Rule::Config ruleFromJson(const json& node) {
     read(node, "enabled", rule.enabled);
     readNamed(node, "trigger", rule.trigger, trigger::triggerOf);
     read(node, "every", rule.every);
+    read(node, "pulses", rule.pulses);
     read(node, "tempoChangeTolerance", rule.tempoChangeTolerance);
+    if (node.contains("outputs") && node.at("outputs").is_array()) {
+        for (const json& name : node.at("outputs")) {
+            if (name.is_string()) {
+                rule.outputs.push_back(name.get<std::string>());
+            }
+        }
+    }
     readNamed(node, "send", rule.sendKind, trigger::messageKindOf);
     read(node, "address", rule.address);
     read(node, "sendValue", rule.sendValue);

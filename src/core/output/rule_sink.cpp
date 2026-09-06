@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace takt4::output {
 
@@ -37,26 +40,29 @@ void RuleSink::send(const trigger::Message& message) {
 
 void RuleSink::sendOsc(const trigger::Message& message) {
     OscPublisher& osc = transports_.osc();
-    if (osc.targetCount() == 0) {
+    // §5.6's rule subset. A rule routed to a target that is switched off, or named one this
+    // rig does not have, reaches nothing — which is *undeliverable* rather than sent, and is
+    // the difference between "your routing is wrong" and "your rule never fired".
+    if (!osc.anyTargetIn(message.outputs)) {
         ++undeliverable_;
         return;
     }
     if (!message.hasArgument) {
-        osc.sendAddress(message.address);
+        osc.sendAddressTo(message.outputs, message.address);
     } else {
         // The argument goes out as the type the generator produced. An operator who chose a
         // float generator meant a float: OSC is typed, and a host expecting one and given
         // the other ignores the message rather than guessing.
         switch (message.argument.kind()) {
         case trigger::Value::Kind::Float:
-            osc.sendAddress(message.address, message.argument.asFloat());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.asFloat());
             break;
         case trigger::Value::Kind::Text:
-            osc.sendAddress(message.address, message.argument.text());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.text());
             break;
         case trigger::Value::Kind::Int:
         case trigger::Value::Kind::Bool:
-            osc.sendAddress(message.address, message.argument.asInt());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.asInt());
             break;
         }
     }
@@ -65,20 +71,33 @@ void RuleSink::sendOsc(const trigger::Message& message) {
 
 void RuleSink::sendMidi(const trigger::Message& message) {
     // §5.6: "Also send configurable note or CC messages on beat and downbeat for MIDI-learn
-    // targets." The same port the clock goes to — a second port would be a second setting
-    // for no reason anyone has asked for, and a MIDI-learn target is listening to one cable.
-    MidiOutput* port = transports_.midiPort();
-    if (port == nullptr) {
-        ++undeliverable_;
-        return;
-    }
+    // targets." Down whichever of §5.6's targets the rule named, which may be several cables
+    // — a rig with a lighting desk and a hardware sequencer on it is two — and which may be
+    // the same device the 24 PPQN clock uses. `Transports` opens each device once.
+    //
     // A note with velocity zero is a note-off on every device made since 1983, which is
-    // exactly what a follow-up of 0 should be — so the release half of §5.8's press-then-
+    // exactly what a follow-up of 0 should be, so the release half of §5.8's press-then-
     // release needs no separate status byte.
     const std::array<unsigned char, 3> bytes{statusFor(message.kind, message.channel),
                                              sevenBits(message.number), sevenBits(message.value)};
-    port->send(bytes);
-    ++delivered_;
+    bool sent = false;
+    const std::vector<OutputTarget>& targets = transports_.outputs();
+    for (std::size_t i = 0; i < targets.size() && i < kMaxRoutableTargets; ++i) {
+        if ((message.outputs & (std::uint64_t{1} << i)) == 0) {
+            continue; // routed away from this one
+        }
+        if (MidiOutput* const port = transports_.midiTarget(i)) {
+            port->send(bytes);
+            sent = true;
+        }
+    }
+    if (sent) {
+        ++delivered_;
+    } else {
+        // No MIDI target on this rig, or none the rule is routed to. Counted rather than
+        // silent: a rule firing into nothing looks exactly like a rule that never fires.
+        ++undeliverable_;
+    }
 }
 
 } // namespace takt4::output

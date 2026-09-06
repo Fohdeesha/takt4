@@ -59,6 +59,8 @@ std::string_view labelOf(Trigger trigger) noexcept {
         return "onset";
     case Trigger::Manual:
         return "manual hotkey";
+    case Trigger::Euclid:
+        return "euclidean pattern";
     }
     return "";
 }
@@ -81,6 +83,8 @@ std::string_view nameOf(Trigger trigger) noexcept {
         return "onset";
     case Trigger::Manual:
         return "manual";
+    case Trigger::Euclid:
+        return "euclid";
     }
     return "";
 }
@@ -95,7 +99,35 @@ std::optional<Trigger> triggerOf(std::string_view name) noexcept {
 }
 
 bool takesEvery(Trigger trigger) noexcept {
-    return trigger == Trigger::Beat || trigger == Trigger::Bar;
+    return trigger == Trigger::Beat || trigger == Trigger::Bar || trigger == Trigger::Euclid;
+}
+
+bool takesPulses(Trigger trigger) noexcept {
+    return trigger == Trigger::Euclid;
+}
+
+bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept {
+    if (steps == 0 || pulses == 0) {
+        return false; // no pattern, or a pattern of rests
+    }
+    if (pulses >= steps) {
+        return true; // more hits than places to put them: every step
+    }
+    // The Bresenham construction: step *k* is a hit when `(k * pulses) mod steps` is below
+    // `pulses`. That gives exactly `pulses` hits, spaced as evenly as whole steps allow — the
+    // definition of a Euclidean rhythm — and, unlike the "count the hits due so far" form,
+    // **it always puts a hit on step 0**. That is not a detail: a pattern is counted from the
+    // downbeat, and one that started with a rest would be the same rhythm heard in the wrong
+    // place.
+    //
+    // The rotation this produces is not always the one Toussaint's paper prints — E(3,8) is
+    // the tresillo either way, E(5,8) comes out as a rotation of the cinquillo — and every
+    // rotation of a Euclidean rhythm is a Euclidean rhythm. Starting on the beat is the
+    // property worth fixing; which rotation of the remainder is a convention.
+    //
+    // 64-bit throughout: `step * pulses` overflows 32 bits at a pattern nobody would write,
+    // and a wrong answer there would be a rhythm that quietly stopped making sense.
+    return (static_cast<std::uint64_t>(step) * pulses) % steps < pulses;
 }
 
 std::string_view labelOf(Message::Kind kind) noexcept {
@@ -318,6 +350,10 @@ bool Rule::conditionsHold(const Context& context) noexcept {
 std::optional<Message> Rule::fire(const Context& context) {
     Message message;
     message.kind = config_.sendKind;
+    // §5.6's rule subset, carried on the message rather than looked up later: a follow-up
+    // is sent after the rule set may have been replaced, and it has to go where the press
+    // went. `outputMask_` is set by whoever knows what the outputs are — see `outputMask`.
+    message.outputs = outputMask_;
     if (config_.sendKind == Message::Kind::Osc) {
         segmentValues_.clear();
         for (Generator& generator : segments_) {

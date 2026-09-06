@@ -44,7 +44,21 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.preset.tempo.latencyOffsetSeconds = -0.030;
     in.preset.link = true;
     in.preset.oscPrefix = "/vj";
-    in.preset.oscTargets = {{"192.168.1.40", 7000}, {"127.0.0.1", 7001}};
+    in.preset.outputs = takt4::output::oscOutputs({{"192.168.1.40", 7000}, {"127.0.0.1", 7001}});
+    // A named one, and a MIDI one, and one switched off — the three things a target can be
+    // that an address pair could not say.
+    in.preset.outputs.front().name = "wall";
+    takt4::output::OutputTarget lights;
+    lights.name = "lights";
+    lights.kind = takt4::output::OutputTarget::Kind::Midi;
+    lights.device = "MOTU Pro Audio Midi Out 1";
+    in.preset.outputs.push_back(lights);
+    takt4::output::OutputTarget spare;
+    spare.name = "spare";
+    spare.host = "10.0.0.9";
+    spare.port = 9000;
+    spare.enabled = false;
+    in.preset.outputs.push_back(spare);
 
     const Settings out = roundTrip(in);
     CHECK(out.machine.deviceName == in.machine.deviceName);
@@ -63,10 +77,15 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.030, 1e-9));
     CHECK(out.preset.link);
     CHECK(out.preset.oscPrefix == "/vj");
-    REQUIRE(out.preset.oscTargets.size() == 2);
-    CHECK(out.preset.oscTargets[0].first == "192.168.1.40");
-    CHECK(out.preset.oscTargets[0].second == 7000);
-    CHECK(out.preset.oscTargets[1].second == 7001);
+    REQUIRE(out.preset.outputs.size() == 4);
+    CHECK(out.preset.outputs[0].name == "wall");
+    CHECK(out.preset.outputs[0].host == "192.168.1.40");
+    CHECK(out.preset.outputs[0].port == 7000);
+    CHECK(out.preset.outputs[1].port == 7001);
+    CHECK(out.preset.outputs[2].kind == takt4::output::OutputTarget::Kind::Midi);
+    CHECK(out.preset.outputs[2].device == "MOTU Pro Audio Midi Out 1");
+    CHECK(out.preset.outputs[3].name == "spare");
+    CHECK_FALSE(out.preset.outputs[3].enabled);
 }
 
 TEST_CASE("the two layers stay apart in the file", "[settings]") {
@@ -116,7 +135,7 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK(out.machine.deviceName.empty());
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(defaults.preset.tempo.minBpm, 1e-9));
     CHECK(out.preset.oscPrefix == defaults.preset.oscPrefix);
-    CHECK(out.preset.oscTargets.empty());
+    CHECK(out.preset.outputs.empty());
     // The listening socket most of all: a build that did not have this field must not
     // load as one that opens a port.
     CHECK_FALSE(out.machine.oscControlEnabled);
@@ -173,12 +192,26 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
 
     // A target with no host, or a port outside the range, is left out rather than sent to.
     const Settings targets = takt4::settings::fromJson(
-        R"({"preset": {"oscTargets": [{"host": "", "port": 7000},
-                                      {"host": "a", "port": 0},
-                                      {"host": "b", "port": 99999},
-                                      {"host": "good", "port": 7000}]}})");
-    REQUIRE(targets.preset.oscTargets.size() == 1);
-    CHECK(targets.preset.oscTargets[0].first == "good");
+        R"({"preset": {"outputs": [" = :7000", "a:0", "b:99999", "good = 10.0.0.1:7000"]}})");
+    REQUIRE(targets.preset.outputs.size() == 1);
+    CHECK(targets.preset.outputs[0].name == "good");
+    CHECK(targets.preset.outputs[0].host == "10.0.0.1");
+}
+
+TEST_CASE("a settings file written before targets had names still loads", "[settings]") {
+    // The shape older builds wrote: an array of {host, port} objects under `oscTargets`.
+    // Dropping it silently would cost an operator every target they had typed, which is the
+    // one upgrade failure they would notice and could not diagnose.
+    const Settings out = takt4::settings::fromJson(
+        R"({"preset": {"oscTargets": [{"host": "192.168.1.40", "port": 7000},
+                                      {"host": "", "port": 7000},
+                                      {"host": "127.0.0.1", "port": 7001}]}})");
+    REQUIRE(out.preset.outputs.size() == 2);
+    CHECK(out.preset.outputs[0].host == "192.168.1.40");
+    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Osc);
+    // Named after its own address, which is what an unnamed target has always been called.
+    CHECK(out.preset.outputs[0].name == "192.168.1.40:7000");
+    CHECK(out.preset.outputs[1].port == 7001);
 }
 
 TEST_CASE("settings write to a file and read back from it", "[settings]") {

@@ -34,8 +34,54 @@ std::string_view labelOf(GeneratorKind kind) noexcept {
         return "fixed";
     case GeneratorKind::Live:
         return "live value";
+    case GeneratorKind::Ramp:
+        return "ramp";
     }
     return "";
+}
+
+std::string_view labelOf(RampShape shape) noexcept {
+    switch (shape) {
+    case RampShape::Saw:
+        return "saw";
+    case RampShape::Triangle:
+        return "triangle";
+    case RampShape::Sine:
+        return "sine";
+    case RampShape::Square:
+        return "square";
+    }
+    return "";
+}
+
+std::string_view nameOf(RampShape shape) noexcept {
+    return labelOf(shape);
+}
+
+std::optional<RampShape> rampShapeOf(std::string_view name) noexcept {
+    for (const RampShape shape : kRampShapes) {
+        if (nameOf(shape) == name) {
+            return shape;
+        }
+    }
+    return std::nullopt;
+}
+
+double rampPhase(const Context& context, std::uint32_t bars) noexcept {
+    const std::uint32_t period = std::max<std::uint32_t>(1, bars);
+    // Counted from the first bar, so a four-bar ramp restarts on bars 1, 5, 9 — the same
+    // "counting from the first" every other N in this layer uses (§7 deviation 11).
+    const std::uint64_t bar = context.bars >= 1 ? context.bars - 1 : 0;
+    const double whole = static_cast<double>(bar % period);
+
+    // Where in the bar we are, when the filter has an opinion about the bar at all. §5.5:
+    // nothing assumes four, and a meter of zero means it has not decided — in which case the
+    // ramp still advances, a whole bar at a time, rather than sitting at zero.
+    double within = 0.0;
+    if (context.meter > 0 && context.beatInBar >= 1) {
+        within = static_cast<double>(context.beatInBar - 1) / static_cast<double>(context.meter);
+    }
+    return (whole + within) / static_cast<double>(period);
 }
 
 std::string_view nameOf(GeneratorKind kind) noexcept {
@@ -208,7 +254,8 @@ std::size_t Generator::choiceCount() const noexcept {
     case GeneratorKind::Fixed:
         return 1;
     case GeneratorKind::Live:
-        // Not drawn from a set: it is whatever the tracker is saying.
+    case GeneratorKind::Ramp:
+        // Not drawn from a set: computed from what the tracker is saying.
         return 0;
     }
     return 0;
@@ -371,8 +418,56 @@ Value Generator::next(const Context& context) noexcept {
         return config_.fixed;
     case GeneratorKind::Live:
         return nextLive(context);
+    case GeneratorKind::Ramp:
+        return nextRamp(context);
     }
     return Value{};
+}
+
+Value Generator::nextRamp(const Context& context) const noexcept {
+    const double phase = rampPhase(context, config_.rampBars);
+
+    // The shape, all on a 0-to-1 phase and all returning 0 to 1.
+    double shaped = phase;
+    switch (config_.shape) {
+    case RampShape::Saw:
+        break;
+    case RampShape::Triangle:
+        shaped = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
+        break;
+    case RampShape::Sine:
+        // A raised cosine: 0 at both ends, 1 in the middle, and flat where it turns — which
+        // is the difference between a triangle and something that looks like breathing.
+        shaped = 0.5 - 0.5 * std::cos(phase * 2.0 * 3.14159265358979323846);
+        break;
+    case RampShape::Square:
+        shaped = phase < 0.5 ? 0.0 : 1.0;
+        break;
+    }
+
+    // Onto the operator's own range. **The two kinds map differently, and it is not a
+    // rounding detail** — they are answers to different questions.
+    //
+    // A float *sweeps*: 0 to 1 across the phrase, for a host parameter that is watched
+    // continuously. The top is reached only at phase 1, which a saw never quite gets to
+    // because phase 1 *is* phase 0 of the next phrase — which is right, and is what makes a
+    // saw loop without a hitch in it.
+    //
+    // An int *steps*: a ramp over 1-4 across four bars should be 1, 2, 3, 4, one to a bar.
+    // Sweeping and rounding gives 1, 2, 3, 3 — the top value appearing only at an instant
+    // nothing samples — which is the same off-by-one that makes a stepped sequencer feel
+    // wrong. So the range is cut into `high - low + 1` equal slices and the phase picks one.
+    const double low = static_cast<double>(config_.low);
+    const double high = static_cast<double>(config_.high);
+    if (config_.rampFloat) {
+        return Value::ofFloat(static_cast<float>(low + shaped * (high - low)));
+    }
+    const double steps = high - low + 1.0;
+    const double slice = std::floor(shaped * steps);
+    // `shaped` reaches exactly 1 at the top of a triangle or a sine, which would index one
+    // slice past the end.
+    const double picked = low + std::min(slice, steps - 1.0);
+    return Value::ofInt(static_cast<std::int32_t>(picked));
 }
 
 } // namespace takt4::trigger

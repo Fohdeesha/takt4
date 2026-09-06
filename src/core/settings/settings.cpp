@@ -136,9 +136,14 @@ std::filesystem::path settingsFile() {
 }
 
 std::string toJson(const Settings& settings) {
+    // One line each, as `formatOutputTarget` writes them: "main = 127.0.0.1:7000" and
+    // "lights = midi MOTU Pro Audio Midi Out 1". Text rather than an object per target for
+    // the reason the MIDI bindings are text — this is a file a person may open and Q8's
+    // headless mode is expected to hand-write one, and a line that reads as a sentence can
+    // be typed.
     json targets = json::array();
-    for (const auto& [host, port] : settings.preset.oscTargets) {
-        targets.push_back(json{{"host", host}, {"port", port}});
+    for (const output::OutputTarget& target : settings.preset.outputs) {
+        targets.push_back(output::formatOutputTarget(target));
     }
 
     json bindings = json::array();
@@ -165,7 +170,7 @@ std::string toJson(const Settings& settings) {
              {"tempo", tempoToJson(settings.preset.tempo)},
              {"link", settings.preset.link},
              {"oscPrefix", settings.preset.oscPrefix},
-             {"oscTargets", targets},
+             {"outputs", targets},
              // Through `rule_json`, which owns the shape of a rule, and back through
              // `json::parse` so it nests as an array rather than as a string of JSON.
              // §5.8's rules are the largest thing a preset carries and the only part of it
@@ -239,15 +244,32 @@ Settings fromJson(std::string_view text) {
         if (preset.is_object() && preset.contains("rules")) {
             settings.preset.rules = rulesFromJson(preset.at("rules").dump());
         }
-        if (preset.is_object() && preset.contains("oscTargets") &&
-            preset.at("oscTargets").is_array()) {
-            for (const json& target : preset.at("oscTargets")) {
+        // `outputs` is what this build writes; `oscTargets` is what older ones did. Both
+        // are read, so an upgrade keeps the targets an operator had typed rather than
+        // silently losing them — the one failure they would notice and could not diagnose.
+        for (const char* key : {"outputs", "oscTargets"}) {
+            if (!preset.contains(key) || !preset.at(key).is_array()) {
+                continue;
+            }
+            for (const json& entry : preset.at(key)) {
+                output::OutputTarget target;
+                // A line, as this build writes them: "main = 127.0.0.1:7000".
+                if (entry.is_string() &&
+                    output::parseOutputTarget(entry.get<std::string>(), target)) {
+                    settings.preset.outputs.push_back(std::move(target));
+                    continue;
+                }
+                // Or the object an older build wrote.
                 std::string host;
                 int port = 0;
-                read(target, "host", host);
-                read(target, "port", port);
+                read(entry, "host", host);
+                read(entry, "port", port);
                 if (!host.empty() && port > 0 && port <= 65535) {
-                    settings.preset.oscTargets.emplace_back(host, static_cast<std::uint16_t>(port));
+                    target.kind = output::OutputTarget::Kind::Osc;
+                    target.host = host;
+                    target.port = static_cast<std::uint16_t>(port);
+                    target.name = host + ":" + std::to_string(port);
+                    settings.preset.outputs.push_back(std::move(target));
                 }
             }
         }

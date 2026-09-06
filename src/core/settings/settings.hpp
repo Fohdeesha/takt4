@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/output/output_target.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/rule.hpp"
 
@@ -68,7 +69,17 @@ struct Preset {
     tracking::TempoTracker::Options tempo;
     bool link = false;
     std::string oscPrefix = "/takt4";
-    std::vector<std::pair<std::string, std::uint16_t>> oscTargets;
+
+    /// §5.6's *"multiple simultaneous targets, each with its own host, port, enabled state
+    /// and rule subset"* — the named outputs a rule routes to.
+    ///
+    /// Portable, and the judgement is worth stating because it is not obvious. A MIDI
+    /// target names a *device*, which is a fact about this box — but the routing that
+    /// names it is a fact about the show, and splitting the two would mean a preset that
+    /// said "send the stabs to the lighting output" and could not say what that was. So the
+    /// whole target travels, and a device that is not on this machine leaves that one
+    /// output unreachable and the rest of the rig working. §5.9 says which.
+    std::vector<output::OutputTarget> outputs;
 
     /// §5.8's rules, which Q7 puts here rather than in `MachineSettings`: a rule is about
     /// the *show* — "a random clip on every fourth downbeat" — and travels to whatever

@@ -96,6 +96,127 @@ void playBars(TriggerEngine& engine, int bars, double from = 0.0) {
 
 } // namespace
 
+TEST_CASE("a euclidean pattern is the rhythm its two numbers name", "[trigger]") {
+    // The user's ask on 2026-09-06 for "cool ... algorithmic settings". A Euclidean pattern
+    // is the one rhythm that is neither "every N" nor random, and the classics fall straight
+    // out of two numbers — which is what makes it worth a trigger rather than a preset.
+    using takt4::trigger::euclidHit;
+
+    const auto pattern = [](std::uint32_t pulses, std::uint32_t steps) {
+        std::string bits;
+        for (std::uint32_t step = 0; step < steps; ++step) {
+            bits += euclidHit(step, pulses, steps) ? 'x' : '.';
+        }
+        return bits;
+    };
+
+    // Rhythms a person can hear, so a change to the distribution fails against something
+    // checkable rather than against a number nobody can read.
+    CHECK(pattern(3, 8) == "x..x..x."); // the tresillo, exactly as Toussaint prints it
+    CHECK(pattern(2, 4) == "x.x.");     // every other
+    CHECK(pattern(4, 4) == "xxxx");     // every one
+    CHECK(pattern(1, 8) == "x.......");
+    // E(5,8) is the cinquillo up to rotation — every rotation of a Euclidean rhythm is one,
+    // and this construction fixes the rotation that starts on the beat. See `euclidHit`.
+    CHECK(pattern(5, 8) == "x.x.xx.x");
+    CHECK(pattern(5, 16) == "x...x..x..x..x..");
+
+    SECTION("every pattern starts on the beat") {
+        // The property that is *not* a convention: a pattern is counted from the downbeat,
+        // and one starting with a rest would be the same rhythm heard in the wrong place.
+        for (std::uint32_t steps = 1; steps <= 32; ++steps) {
+            for (std::uint32_t pulses = 1; pulses <= steps; ++pulses) {
+                INFO(pulses << " in " << steps);
+                REQUIRE(euclidHit(0, pulses, steps));
+            }
+        }
+    }
+
+    SECTION("and is as even as whole steps allow, which is what makes it Euclidean") {
+        // The actual definition: the gaps between hits take at most two distinct lengths,
+        // and those differ by one. A distribution that merely had the right *count* would
+        // pass every other check here and sound like nothing.
+        for (std::uint32_t steps = 2; steps <= 32; ++steps) {
+            for (std::uint32_t pulses = 1; pulses <= steps; ++pulses) {
+                std::vector<std::uint32_t> hits;
+                for (std::uint32_t step = 0; step < steps; ++step) {
+                    if (euclidHit(step, pulses, steps)) {
+                        hits.push_back(step);
+                    }
+                }
+                REQUIRE(hits.size() == pulses);
+                std::uint32_t shortest = steps;
+                std::uint32_t longest = 0;
+                for (std::size_t i = 0; i < hits.size(); ++i) {
+                    // Round the loop, so the gap over the end of the pattern counts too.
+                    const std::uint32_t next = i + 1 < hits.size() ? hits[i + 1] : hits[0] + steps;
+                    const std::uint32_t gap = next - hits[i];
+                    shortest = std::min(shortest, gap);
+                    longest = std::max(longest, gap);
+                }
+                INFO(pulses << " in " << steps << ": gaps " << shortest << " to " << longest);
+                REQUIRE(longest - shortest <= 1);
+            }
+        }
+    }
+
+    SECTION("every pattern has exactly the number of hits it was asked for") {
+        for (std::uint32_t steps = 1; steps <= 32; ++steps) {
+            for (std::uint32_t pulses = 0; pulses <= steps; ++pulses) {
+                std::uint32_t hits = 0;
+                for (std::uint32_t step = 0; step < steps; ++step) {
+                    hits += euclidHit(step, pulses, steps) ? 1u : 0u;
+                }
+                INFO(pulses << " in " << steps);
+                CHECK(hits == pulses);
+            }
+        }
+    }
+
+    SECTION("and the degenerate ones are answered rather than refused") {
+        // §5.8's clamping policy at the two edges a half-built pattern passes through.
+        CHECK_FALSE(euclidHit(0, 0, 8)); // no pulses is silence
+        CHECK_FALSE(euclidHit(0, 3, 0)); // no steps is no pattern
+        CHECK(euclidHit(3, 12, 4));      // more pulses than places: every step
+    }
+}
+
+TEST_CASE("a rule on a euclidean pattern fires on its own beats", "[trigger]") {
+    // The pattern above, driven through the real engine against real beat counts — which is
+    // what says the trigger is wired to the tracker's beats rather than to a clock of its own.
+    Recorder sink;
+    TriggerEngine engine(sink);
+
+    Rule::Config rule;
+    rule.id = "tresillo";
+    rule.trigger = Trigger::Euclid;
+    rule.every = 8;  // steps
+    rule.pulses = 3; // hits
+    rule.address = "/hit";
+    rule.sendValue = false;
+    engine.setRules({rule});
+
+    Context context;
+    context.bpm = 128.0;
+    context.meter = 4;
+    std::vector<std::uint64_t> firedOn;
+    for (std::uint64_t beat = 1; beat <= 16; ++beat) {
+        const std::size_t before = sink.sent.size();
+        context.beats = beat;
+        context.beatInBar = static_cast<std::uint32_t>(((beat - 1) % 4) + 1);
+        context.bars = ((beat - 1) / 4) + 1;
+        context.now = static_cast<double>(beat);
+        engine.onBeat(context);
+        if (sink.sent.size() > before) {
+            firedOn.push_back(beat);
+        }
+    }
+
+    // "x..x..x." over eight, twice: beats 1, 4, 7 and then 9, 12, 15. Counted from the first
+    // beat, like every other N in this layer (§7 deviation 11).
+    CHECK(firedOn == std::vector<std::uint64_t>{1, 4, 7, 9, 12, 15});
+}
+
 TEST_CASE("the WHEN stage counts beats and bars from the first, not from the modulo",
           "[trigger][engine]") {
     // §5.8's first four: "every beat · every N beats · every bar · every N bars · on

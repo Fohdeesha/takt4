@@ -445,6 +445,121 @@ TEST_CASE("a live generator reads the tracker rather than drawing", "[trigger][g
     }
 }
 
+TEST_CASE("a ramp breathes with the bar rather than jumping about", "[trigger][generator]") {
+    // The user's ask on 2026-09-06: "algorithmic settings ... based on the bpm of the song
+    // and downbeat". A ramp is the one generator whose value is computed from *where in the
+    // music we are*, which is what a host's dashboard parameter or a layer opacity wants.
+    using takt4::trigger::rampPhase;
+    using takt4::trigger::RampShape;
+
+    Context context;
+    context.meter = 4;
+
+    // Phase first, on its own: four bars of four, so sixteen steps from 0 to just under 1.
+    const auto phaseAt = [&context](std::uint64_t bar, std::uint32_t beat, std::uint32_t bars) {
+        context.bars = bar;
+        context.beatInBar = beat;
+        return rampPhase(context, bars);
+    };
+    CHECK(phaseAt(1, 1, 4) == Approx(0.0));   // the downbeat of the first bar
+    CHECK(phaseAt(1, 3, 4) == Approx(0.125)); // half way through bar one of four
+    CHECK(phaseAt(3, 1, 4) == Approx(0.5));   // half way through the phrase
+    CHECK(phaseAt(5, 1, 4) == Approx(0.0));   // and back to the top on bar five
+    // One bar is one bar, whatever the meter says. Nothing here assumes four (§5.5).
+    context.meter = 3;
+    CHECK(phaseAt(2, 2, 1) == Approx(1.0 / 3.0));
+
+    SECTION("a meter the filter has not decided still advances, a bar at a time") {
+        // §5.5: a meter of zero means the downbeat stage has no opinion yet. A ramp that sat
+        // at zero until it did would look broken during exactly the passage it is for.
+        context.meter = 0;
+        context.beatInBar = 0;
+        CHECK(phaseAt(1, 0, 4) == Approx(0.0));
+        CHECK(phaseAt(3, 0, 4) == Approx(0.5));
+    }
+
+    SECTION("each shape is what its name says") {
+        Generator::Config config;
+        config.kind = GeneratorKind::Ramp;
+        config.low = 0;
+        config.high = 1;
+        config.rampBars = 4;
+        config.rampFloat = true;
+        context.meter = 4;
+
+        const auto valueAt = [&](RampShape shape, std::uint64_t bar, std::uint32_t beat) {
+            Generator::Config shaped = config;
+            shaped.shape = shape;
+            Generator generator(shaped);
+            context.bars = bar;
+            context.beatInBar = beat;
+            return static_cast<double>(generator.next(context).asFloat());
+        };
+
+        // Saw: straight up, then back to the bottom on the next phrase.
+        CHECK(valueAt(RampShape::Saw, 1, 1) == Approx(0.0));
+        CHECK(valueAt(RampShape::Saw, 3, 1) == Approx(0.5));
+        CHECK(valueAt(RampShape::Saw, 5, 1) == Approx(0.0));
+
+        // Triangle: up for half the phrase and down for the other half, with no jump.
+        CHECK(valueAt(RampShape::Triangle, 1, 1) == Approx(0.0));
+        CHECK(valueAt(RampShape::Triangle, 3, 1) == Approx(1.0));
+        CHECK(valueAt(RampShape::Triangle, 5, 1) == Approx(0.0));
+
+        // Sine: the same ends as a triangle, and flatter where it turns — which is the
+        // difference between a ramp and something that looks like breathing.
+        CHECK(valueAt(RampShape::Sine, 1, 1) == Approx(0.0));
+        CHECK(valueAt(RampShape::Sine, 3, 1) == Approx(1.0));
+        CHECK(valueAt(RampShape::Sine, 2, 1) == Approx(0.5));
+        // A quarter of the way in, a triangle is at 0.5 and a sine is below it.
+        CHECK(valueAt(RampShape::Sine, 1, 3) < valueAt(RampShape::Triangle, 1, 3));
+
+        // Square: a gate, which is the cheapest way to alternate every N bars.
+        CHECK(valueAt(RampShape::Square, 1, 1) == Approx(0.0));
+        CHECK(valueAt(RampShape::Square, 3, 1) == Approx(1.0));
+    }
+
+    SECTION("an int ramp steps, where a float ramp sweeps") {
+        Generator::Config config;
+        config.kind = GeneratorKind::Ramp;
+        config.shape = RampShape::Saw;
+        config.low = 1;
+        config.high = 4;
+        config.rampBars = 4;
+        config.rampFloat = false;
+        Generator generator(config);
+        context.meter = 1; // one beat a bar, so a bar is a step
+
+        std::vector<std::int32_t> seen;
+        for (std::uint64_t bar = 1; bar <= 4; ++bar) {
+            context.bars = bar;
+            context.beatInBar = 1;
+            seen.push_back(generator.next(context).asInt());
+        }
+        // One value a bar, all four of them. Sweeping and rounding would give 1, 2, 3, 3 —
+        // the top value appearing only at an instant nothing samples, which is the same
+        // off-by-one that makes a stepped sequencer feel wrong.
+        CHECK(seen == std::vector<std::int32_t>{1, 2, 3, 4});
+
+        // A float over the same range sweeps instead, and deliberately does *not* reach the
+        // top: phase 1 is phase 0 of the next phrase, which is what makes a saw loop without
+        // a hitch in it.
+        Generator::Config sweeping = config;
+        sweeping.rampFloat = true;
+        Generator smooth(sweeping);
+        context.bars = 4;
+        context.beatInBar = 1;
+        CHECK(smooth.next(context).asFloat() == Approx(3.25f));
+    }
+
+    SECTION("it is not drawn from a set, so it has no choices to count") {
+        Generator::Config config;
+        config.kind = GeneratorKind::Ramp;
+        CHECK(Generator(config).choiceCount() == 0);
+        CHECK_FALSE(takt4::trigger::takesPool(GeneratorKind::Ramp));
+    }
+}
+
 TEST_CASE("a configuration is clamped to something usable, never refused", "[trigger][generator]") {
     // `settings::load` is documented never to fail — "settings that cannot be parsed must
     // not be the reason an app will not open" — so a rule read from a file with a nonsense
@@ -529,6 +644,14 @@ TEST_CASE("every generator kind and live source has a name that reads back",
         CHECK_FALSE(takt4::trigger::labelOf(source).empty());
         CHECK(takt4::trigger::liveSourceOf(takt4::trigger::nameOf(source)) == source);
     }
+    for (const takt4::trigger::RampShape shape : takt4::trigger::kRampShapes) {
+        INFO("shape " << static_cast<int>(shape));
+        CHECK_FALSE(takt4::trigger::nameOf(shape).empty());
+        CHECK_FALSE(takt4::trigger::labelOf(shape).empty());
+        CHECK(takt4::trigger::rampShapeOf(takt4::trigger::nameOf(shape)) == shape);
+    }
+    CHECK_FALSE(takt4::trigger::rampShapeOf("sawtooth").has_value());
+
     for (const Pool pool : takt4::trigger::kPools) {
         INFO("pool " << static_cast<int>(pool));
         CHECK_FALSE(takt4::trigger::nameOf(pool).empty());
