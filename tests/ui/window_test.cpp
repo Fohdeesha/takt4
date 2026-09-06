@@ -976,34 +976,87 @@ TEST_CASE("the Link tick reaches the transports and shows its peers", "[ui]") {
     CHECK_FALSE(controller.outputs().transports().linkEnabled());
 }
 
-TEST_CASE("OSC targets are parsed, and a bad one does not lose the good ones", "[ui]") {
+TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
+    const auto& transports = [&controller]() -> const takt4::output::Transports& {
+        return controller.outputs().transports();
+    };
 
+    // The format this field always took, before targets had names — still a target, named
+    // after its own address.
     controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:7000"));
-    CHECK(controller.outputs().transports().osc().targetCount() == 1);
+    CHECK(transports().osc().targetCount() == 1);
+    REQUIRE(transports().outputs().size() == 1);
+    CHECK(transports().outputs()[0].name == "127.0.0.1:7000");
     CHECK(controller.window().get_osc_on());
 
     // A single line holds more than one, separated by commas, because the window offers
-    // one line.
+    // one line. §5.6's "multiple simultaneous targets", each with a name a rule can use.
     controller.window().invoke_osc_targets_edited(
-        slint::SharedString("127.0.0.1:7000, 127.0.0.1:7001"));
-    CHECK(controller.outputs().transports().osc().targetCount() == 2);
+        slint::SharedString("deck = 127.0.0.1:7000, wall = 127.0.0.1:7001"));
+    CHECK(transports().osc().targetCount() == 2);
+    REQUIRE(transports().outputs().size() == 2);
+    CHECK(transports().outputs()[0].name == "deck");
+    CHECK(transports().outputs()[1].name == "wall");
 
-    // Halfway through typing an address, the ones that already worked must survive.
-    controller.window().invoke_osc_targets_edited(
-        slint::SharedString("127.0.0.1:7000, 127.0.0.1:"));
-    CHECK(controller.outputs().transports().osc().targetCount() == 1);
-    CHECK(controller.statusIsError());
-    CHECK(std::string(controller.window().get_status()).find("host:port") != std::string::npos);
+    SECTION("and the field shows them back in the form they can be typed in") {
+        const std::string shown(controller.window().get_osc_targets());
+        INFO(shown);
+        CHECK(shown.find("deck = 127.0.0.1:7000") != std::string::npos);
+        CHECK(shown.find("wall = 127.0.0.1:7001") != std::string::npos);
+    }
 
-    // A port outside the range is not a port.
-    controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:99999"));
-    CHECK(controller.outputs().transports().osc().targetCount() == 0);
+    SECTION("a switched-off target is kept and sends nothing") {
+        controller.window().invoke_osc_targets_edited(
+            slint::SharedString("deck = 127.0.0.1:7000, off wall = 127.0.0.1:7001"));
+        REQUIRE(transports().outputs().size() == 2);
+        CHECK_FALSE(transports().outputs()[1].enabled);
+        // Held in the list, so it can be switched back on — but no socket behind it.
+        CHECK(transports().osc().targetCount() == 1);
+    }
 
-    controller.window().invoke_osc_targets_edited(slint::SharedString(""));
-    CHECK(controller.outputs().transports().osc().targetCount() == 0);
-    CHECK_FALSE(controller.window().get_osc_on());
+    SECTION("two targets with one name is said rather than silently resolved") {
+        // `resolveOutputs` would take the first, and a rule routed to the second would go
+        // somewhere its operator did not choose.
+        controller.window().invoke_osc_targets_edited(
+            slint::SharedString("deck = 127.0.0.1:7000, deck = 127.0.0.1:7001"));
+        CHECK(controller.statusIsError());
+    }
+
+    SECTION("halfway through typing, the ones that already worked survive") {
+        controller.window().invoke_osc_targets_edited(
+            slint::SharedString("deck = 127.0.0.1:7000, wall = 127.0.0.1:"));
+        CHECK(transports().osc().targetCount() == 1);
+        CHECK(controller.statusIsError());
+        CHECK(std::string(controller.window().get_status()).find("not a target") !=
+              std::string::npos);
+    }
+
+    SECTION("a port outside the range is not a port") {
+        controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:99999"));
+        CHECK(transports().osc().targetCount() == 0);
+    }
+
+    SECTION("and clearing the field clears the outputs") {
+        controller.window().invoke_osc_targets_edited(slint::SharedString(""));
+        CHECK(transports().outputs().empty());
+        CHECK_FALSE(controller.window().get_osc_on());
+    }
+
+    SECTION("the editor is told what there is to route to") {
+        // The rule editor names these, so it has to know what the names are — and has to be
+        // told again when they change, or it would be checking a rule against a rig that no
+        // longer exists.
+        controller.editor().add();
+        controller.editor().setOutputs("deck");
+        CHECK(std::string(controller.editor().window().get_outputs_available()) ==
+              "reaches 1 output");
+
+        controller.window().invoke_osc_targets_edited(slint::SharedString("hall = 127.0.0.1:7002"));
+        CHECK(std::string(controller.editor().window().get_outputs_available()) ==
+              "no output called deck");
+    }
 }
 
 TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
@@ -1119,7 +1172,7 @@ TEST_CASE("the window switches the outputs back on", "[ui]") {
     takt4::settings::Settings saved;
     saved.preset.link = true;
     saved.preset.oscPrefix = "/vj";
-    saved.preset.oscTargets = {{"127.0.0.1", 7000}, {"127.0.0.1", 7001}};
+    saved.preset.outputs = takt4::output::oscOutputs({{"127.0.0.1", 7000}, {"127.0.0.1", 7001}});
 
     WindowController controller(tracker, saved);
     CHECK(controller.outputs().transports().linkEnabled());
@@ -1147,7 +1200,7 @@ TEST_CASE("what the window hands back is what it was given", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     saved.preset.link = true;
-    saved.preset.oscTargets = {{"192.168.1.40", 7000}};
+    saved.preset.outputs = takt4::output::oscOutputs({{"192.168.1.40", 7000}});
     saved.preset.oscPrefix = "/vj";
 
     WindowController controller(tracker, saved);
@@ -1158,8 +1211,8 @@ TEST_CASE("what the window hands back is what it was given", "[ui]") {
 
     const takt4::settings::Settings out = controller.currentSettings();
     CHECK(out.preset.link);
-    REQUIRE(out.preset.oscTargets.size() == 1);
-    CHECK(out.preset.oscTargets[0].first == "192.168.1.40");
+    REQUIRE(out.preset.outputs.size() == 1);
+    CHECK(out.preset.outputs[0].host == "192.168.1.40");
     CHECK(out.preset.oscPrefix == "/vj");
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.025, 1e-9));

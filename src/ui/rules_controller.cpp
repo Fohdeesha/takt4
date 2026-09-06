@@ -7,9 +7,11 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace takt4::ui {
 namespace {
@@ -126,6 +128,74 @@ std::string spellNumber(double value) {
     return text;
 }
 
+/// A comma-separated list, as the routing field shows it back.
+std::string join(const std::vector<std::string>& names) {
+    std::string text;
+    for (const std::string& name : names) {
+        if (!text.empty()) {
+            text += ", ";
+        }
+        text += name;
+    }
+    return text;
+}
+
+/// What a rule's routing currently reaches, beside the field the names were typed into.
+///
+/// Three different things worth saying, and they are not interchangeable. A rule that names
+/// nothing goes everywhere and should say which "everywhere" is, or an operator who has just
+/// added a second output has no way to know the rule now hits it too. A name that matches
+/// nothing is the one real mistake here — and is *kept* rather than corrected, because a
+/// preset from another rig should still say what it meant (`Rule::Config::outputs`), so
+/// saying so is the only way it gets noticed.
+std::string describeRouting(const std::vector<std::string>& names,
+                            const std::vector<output::OutputTarget>& targets) {
+    if (targets.empty()) {
+        return "no outputs yet";
+    }
+    if (names.empty()) {
+        std::string all = "every output: ";
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            all += i == 0 ? "" : ", ";
+            all += targets[i].name;
+        }
+        return all;
+    }
+    std::string missing;
+    for (const std::string& name : names) {
+        if (output::findTarget(targets, name) == nullptr) {
+            missing += missing.empty() ? "" : ", ";
+            missing += name;
+        }
+    }
+    if (missing.empty()) {
+        return "reaches " + std::to_string(names.size()) +
+               (names.size() == 1 ? " output" : " outputs");
+    }
+    return "no output called " + missing;
+}
+
+/// A Euclidean pattern as something a person can hear before it plays: "x..x..x.".
+///
+/// Two numbers are not a rhythm anybody can read, and this is the cheapest way to make them
+/// one — it is the same `euclidHit` the engine fires on, so the picture cannot disagree with
+/// the playing.
+std::string spellEuclid(const Rule::Config& rule) {
+    if (!trigger::takesPulses(rule.trigger)) {
+        return {};
+    }
+    const std::uint32_t steps = std::max<std::uint32_t>(1, rule.every);
+    if (steps > 64) {
+        return std::to_string(rule.pulses) + " in " + std::to_string(steps);
+    }
+    std::string pattern;
+    pattern.reserve(steps);
+    for (std::uint32_t step = 0; step < steps; ++step) {
+        pattern += trigger::euclidHit(step, rule.pulses, steps) ? 'x' : '.';
+    }
+    return pattern;
+}
+
 /// §5.6's host presets: *"Ship presets for Resolume 7, TouchDesigner, MadMapper, QLC+ and a
 /// blank custom option. The preset is a starting point the user can edit — never a hardcoded
 /// code path."*
@@ -156,6 +226,141 @@ const std::array<HostPreset, 5> kHostPresets{{
     {"TouchDesigner", "/takt4/{name}"},
     {"MadMapper — cue", "/medias/{cue}/play"},
 }};
+
+// --- rig presets -------------------------------------------------------------------------
+//
+// A host preset fills in one rule's address. A *rig* preset builds several rules at once,
+// which is a different thing and the one an operator actually starts from: "random clips on
+// three layers" is three rules, and nobody wants to build the same rule three times and
+// remember to give each a different seed.
+//
+// Still §5.6's rule about presets — "a starting point the user can edit, never a hardcoded
+// code path". Every one of these produces ordinary `Rule::Config`s that the editor then edits
+// like any other, and nothing downstream ever asks which preset a rule came from.
+
+/// One clip-launching rule for one Resolume layer.
+Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t seed) {
+    Rule::Config rule;
+    rule.id = "layer" + std::to_string(layer);
+    rule.name = "Layer " + std::to_string(layer) + " — random clip";
+    rule.enabled = false; // built switched off, like every rule the editor makes
+    rule.trigger = trigger::Trigger::Bar;
+    rule.every = everyBars;
+    rule.address = "/composition/layers/{layer}/clips/{clip}/connect";
+
+    Generator::Config which;
+    which.kind = GeneratorKind::Fixed;
+    which.fixed = trigger::Value::ofInt(layer);
+
+    Generator::Config clip;
+    clip.kind = GeneratorKind::Shuffle; // §5.8's default, and why: repeats read as bugs
+    clip.low = 1;
+    clip.high = 8;
+    clip.noRepeatWithin = 2;
+    rule.segments = {which, clip};
+
+    rule.value.kind = GeneratorKind::Fixed;
+    rule.value.fixed = trigger::Value::ofInt(1);
+    // §7.4: connect is a mouse click. Without the release the clip stays held.
+    rule.followUp = true;
+    rule.followUpValue = trigger::Value::ofInt(0);
+    rule.followUpDelaySeconds = 0.05;
+    rule.seed = seed;
+    return rule;
+}
+
+/// The rig presets, in the order the picker offers them.
+std::vector<Rule::Config> rigPresetRules(std::size_t index) {
+    switch (index) {
+    case 1: {
+        // The ask this was built for: random clips on three Resolume layers at once. Each
+        // layer gets its own rule so each can be switched off, re-timed or re-routed on its
+        // own — and its own seed, or all three would fire the same clip as each other, which
+        // is `Generator::Config::seed`'s whole reason.
+        //
+        // Staggered periods rather than three identical ones: 4, 8 and 16 bars means the
+        // three layers change at different times and the combination keeps moving. Three
+        // layers all changing on the same downbeat is one event, not three.
+        return {resolumeLayer(1, 4, 101), resolumeLayer(2, 8, 202), resolumeLayer(3, 16, 303)};
+    }
+    case 2: {
+        // Resolume's own tempo, kept in step with the tracker. §5.6 and §A.4 verified both
+        // addresses: the tempo is "float, normalised 0-1 across 20-500 BPM", which is exactly
+        // what the `Live` generator's `BpmNormalised` source exists for.
+        Rule::Config tempo;
+        tempo.id = "tempo";
+        tempo.name = "Resolume tempo follows takt4";
+        tempo.enabled = false;
+        tempo.trigger = trigger::Trigger::TempoChange;
+        tempo.address = "/composition/tempocontroller/tempo";
+        tempo.value.kind = GeneratorKind::Live;
+        tempo.value.source = trigger::LiveSource::BpmNormalised;
+        tempo.value.normaliseLow = 20.0;
+        tempo.value.normaliseHigh = 500.0;
+        tempo.seed = 404;
+
+        Rule::Config resync;
+        resync.id = "resync";
+        resync.name = "Resync Resolume when the lock returns";
+        resync.enabled = false;
+        resync.trigger = trigger::Trigger::LockChange;
+        resync.address = "/composition/tempocontroller/resync";
+        resync.value.kind = GeneratorKind::Fixed;
+        resync.value.fixed = trigger::Value::ofInt(1);
+        resync.conditions.minConfidence = 0.5; // not while it is still hunting
+        resync.seed = 505;
+        return {tempo, resync};
+    }
+    case 3: {
+        // Something that *moves* rather than jumping: a dashboard parameter breathing over
+        // four bars, locked to the downbeat. This is what `Ramp` is for, and the one rule
+        // here that fires on every beat — a ramp is only as smooth as it is sampled.
+        Rule::Config breathe;
+        breathe.id = "breathe";
+        breathe.name = "Dashboard breathes over 4 bars";
+        breathe.enabled = false;
+        breathe.trigger = trigger::Trigger::Beat;
+        breathe.address = "/composition/dashboard/link1";
+        breathe.value.kind = GeneratorKind::Ramp;
+        breathe.value.shape = trigger::RampShape::Sine;
+        breathe.value.rampBars = 4;
+        breathe.value.rampFloat = true;
+        breathe.value.low = 0;
+        breathe.value.high = 1;
+        breathe.seed = 606;
+        return {breathe};
+    }
+    case 4: {
+        // A Euclidean pattern out to MIDI: three hits over eight beats, the tresillo, on a
+        // note a lighting desk or a sampler can learn. The rhythm nothing else here can make.
+        Rule::Config stabs;
+        stabs.id = "stabs";
+        stabs.name = "Euclidean stabs — 3 in 8";
+        stabs.enabled = false;
+        stabs.trigger = trigger::Trigger::Euclid;
+        stabs.every = 8;
+        stabs.pulses = 3;
+        stabs.sendKind = trigger::Message::Kind::MidiNote;
+        stabs.channel = 10; // where a drum map lives on most hardware
+        stabs.number.kind = GeneratorKind::Shuffle;
+        stabs.number.low = 36;
+        stabs.number.high = 43;
+        stabs.value.kind = GeneratorKind::Fixed;
+        stabs.value.fixed = trigger::Value::ofInt(110);
+        stabs.followUp = true;
+        stabs.followUpValue = trigger::Value::ofInt(0); // velocity 0 is a note-off
+        stabs.followUpDelaySeconds = 0.08;
+        stabs.seed = 707;
+        return {stabs};
+    }
+    default:
+        return {};
+    }
+}
+
+constexpr std::array<const char*, 5> kRigPresets{
+    "add a preset...", "Resolume: clips on 3 layers", "Resolume: tempo and resync",
+    "Resolume: breathing dashboard", "MIDI: euclidean stabs"};
 
 } // namespace
 
@@ -195,16 +400,29 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_live_sources(sources);
 
+    auto shapes = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::RampShape shape : trigger::kRampShapes) {
+        shapes->push_back(shared(std::string(trigger::labelOf(shape))));
+    }
+    window_->set_ramp_shapes(shapes);
+
     auto hosts = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const HostPreset& preset : kHostPresets) {
         hosts->push_back(slint::SharedString(preset.label));
     }
     window_->set_host_presets(hosts);
 
+    auto rigs = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* label : kRigPresets) {
+        rigs->push_back(slint::SharedString(label));
+    }
+    window_->set_rig_presets(rigs);
+
     window_->on_rule_picked([this](int index) { pick(index); });
     window_->on_rule_added([this] { add(); });
     window_->on_rule_removed([this] { remove(); });
     window_->on_rule_duplicated([this] { duplicate(); });
+    window_->on_rig_added([this](int index) { addRig(index); });
     window_->on_rule_enabled_changed([this](bool on) { setEnabled(on); });
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
     window_->on_rule_tested([this] { test(); });
@@ -212,6 +430,9 @@ RulesController::RulesController(output::OutputRunner& runner,
 
     window_->on_trigger_picked([this](int index) { pickTrigger(index); });
     window_->on_every_changed([this](int every) { setEvery(every); });
+    window_->on_pulses_changed([this](int pulses) { setPulses(pulses); });
+    window_->on_outputs_edited(
+        [this](const slint::SharedString& text) { setOutputs(std::string(text)); });
 
     window_->on_min_confidence_changed([this](float v) { setMinConfidence(v); });
     window_->on_intensity_changed([this](int which, bool on) { setIntensity(which, on); });
@@ -241,6 +462,10 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_slot_fixed_edited(
         [this](int slot, const slint::SharedString& t) { setSlotFixed(slot, std::string(t)); });
     window_->on_slot_live_picked([this](int slot, int source) { pickSlotLive(slot, source); });
+    window_->on_slot_shape_picked([this](int slot, int shape) { pickSlotShape(slot, shape); });
+    window_->on_slot_ramp_bars_changed([this](int slot, int bars) { setSlotRampBars(slot, bars); });
+    window_->on_slot_ramp_float_changed(
+        [this](int slot, bool asFloat) { setSlotRampFloat(slot, asFloat); });
 
     window_->on_log_cleared([this] { clearLog(); });
 
@@ -258,6 +483,15 @@ void RulesController::show() {
 void RulesController::hide() {
     window_->hide();
     visible_ = false;
+}
+
+const trigger::Rule::Config* RulesController::findRule(std::string_view id) const noexcept {
+    for (const Rule::Config& rule : rules_) {
+        if (rule.id == id) {
+            return &rule;
+        }
+    }
+    return nullptr;
 }
 
 trigger::Rule::Config* RulesController::current() noexcept {
@@ -415,6 +649,37 @@ void RulesController::duplicate() {
     window_->set_selected(selected_);
 }
 
+void RulesController::addRig(int index) {
+    if (index <= 0) {
+        return; // the picker's own label
+    }
+    const std::vector<Rule::Config> added = rigPresetRules(static_cast<std::size_t>(index));
+    if (added.empty()) {
+        return;
+    }
+    // Appended rather than replacing: an operator adding a second rig to a set they have
+    // already built has not asked to lose the first.
+    for (Rule::Config rule : added) {
+        // An id already in use would make §5.7's `/ctl/rule/<id>/enable` ambiguous, and
+        // `TriggerEngine::find` takes the first. Numbered up rather than refused: adding the
+        // same rig twice is a reasonable thing to do with three more layers in mind.
+        std::string id = rule.id;
+        for (int n = 2; findRule(id) != nullptr; ++n) {
+            id = rule.id + "-" + std::to_string(n);
+        }
+        if (id != rule.id) {
+            rule.seed += 977; // a different stream too, or the copy fires what the first does
+            rule.id = id;
+        }
+        rules_.push_back(std::move(rule));
+    }
+    selected_ = static_cast<int>(rules_.size()) - static_cast<int>(added.size());
+    commit();
+    publishSelected();
+    publishFiring();
+    window_->set_selected(selected_);
+}
+
 void RulesController::rename(const std::string& name) {
     if (Rule::Config* rule = current()) {
         rule->name = name;
@@ -454,6 +719,56 @@ void RulesController::pickTrigger(int index) {
 void RulesController::setEvery(int every) {
     if (Rule::Config* rule = current()) {
         rule->every = static_cast<std::uint32_t>(std::max(1, every));
+        commit();
+    }
+}
+
+void RulesController::setTargets(std::vector<output::OutputTarget> targets) {
+    targets_ = std::move(targets);
+    publishSelected(); // the "reaches ..." line beside the routing field
+}
+
+void RulesController::setPulses(int pulses) {
+    if (Rule::Config* rule = current()) {
+        rule->pulses = static_cast<std::uint32_t>(std::max(0, pulses));
+        commit();
+        publishSelected(); // the pattern the two numbers name
+    }
+}
+
+void RulesController::setOutputs(const std::string& text) {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    rule->outputs.clear();
+    for (const std::string_view part : split(text, ",;")) {
+        rule->outputs.emplace_back(part);
+    }
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickSlotShape(int slot, int shape) {
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr || shape < 0 ||
+        static_cast<std::size_t>(shape) >= trigger::kRampShapes.size()) {
+        return;
+    }
+    config->shape = trigger::kRampShapes[static_cast<std::size_t>(shape)];
+    commit();
+}
+
+void RulesController::setSlotRampBars(int slot, int bars) {
+    if (Generator::Config* config = slotConfig(slot)) {
+        config->rampBars = static_cast<std::uint32_t>(std::max(1, bars));
+        commit();
+    }
+}
+
+void RulesController::setSlotRampFloat(int slot, bool asFloat) {
+    if (Generator::Config* config = slotConfig(slot)) {
+        config->rampFloat = asFloat;
         commit();
     }
 }
@@ -784,6 +1099,15 @@ void RulesController::publishSelected() {
     window_->set_trigger_index(static_cast<int>(triggerIndex));
     window_->set_trigger_takes_every(trigger::takesEvery(rule->trigger));
     window_->set_every(static_cast<int>(rule->every));
+    window_->set_trigger_takes_pulses(trigger::takesPulses(rule->trigger));
+    window_->set_pulses(static_cast<int>(rule->pulses));
+    window_->set_euclid_pattern(shared(spellEuclid(*rule)));
+
+    // §5.6's rule subset, and what it currently reaches. Both are needed: the names are what
+    // the operator typed and the second line is whether this rig has them, which is the one
+    // question a preset from another rig raises.
+    window_->set_outputs(shared(join(rule->outputs)));
+    window_->set_outputs_available(shared(describeRouting(rule->outputs, targets_)));
 
     window_->set_min_confidence(static_cast<float>(rule->conditions.minConfidence));
     window_->set_allow_calm(rule->conditions.allows(features::Intensity::Calm));
@@ -841,6 +1165,13 @@ void RulesController::publishSlots() {
             std::find(trigger::kLiveSources.begin(), trigger::kLiveSources.end(), config.source) -
             trigger::kLiveSources.begin();
         row.live_index = static_cast<int>(sourceIndex);
+        row.is_ramp = config.kind == GeneratorKind::Ramp;
+        const auto shapeIndex =
+            std::find(trigger::kRampShapes.begin(), trigger::kRampShapes.end(), config.shape) -
+            trigger::kRampShapes.begin();
+        row.shape_index = static_cast<int>(shapeIndex);
+        row.ramp_bars = static_cast<int>(config.rampBars);
+        row.ramp_float = config.rampFloat;
         row.last = slint::SharedString("");
         rows.push_back(std::move(row));
     };

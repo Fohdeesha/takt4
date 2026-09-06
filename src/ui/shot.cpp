@@ -253,6 +253,20 @@ void fillRules(RulesWindow& window) {
     }
     window.set_host_presets(hosts);
 
+    auto rigs = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* label :
+         {"add a preset...", "Resolume: clips on 3 layers", "Resolume: tempo and resync",
+          "Resolume: breathing dashboard", "MIDI: euclidean stabs"}) {
+        rigs->push_back(slint::SharedString(label));
+    }
+    window.set_rig_presets(rigs);
+
+    auto shapes = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* label : {"saw", "triangle", "sine", "square"}) {
+        shapes->push_back(slint::SharedString(label));
+    }
+    window.set_ramp_shapes(shapes);
+
     // Three rules, because a list of one says nothing about a list: one firing, one switched
     // off, and one that will not fire — the state §5.8 insists has to be *visible*.
     const auto rule = [](const char* name, bool enabled, const char* problem, int fires) {
@@ -264,14 +278,21 @@ void fillRules(RulesWindow& window) {
         return row;
     };
     auto rules = std::make_shared<slint::VectorModel<RuleRow>>();
-    rules->push_back(rule("Random clip on downbeat", true, "", 37));
-    rules->push_back(rule("Strobe on the drop", false, "", 0));
+    rules->push_back(rule("Layer 1 - random clip", true, "", 37));
+    rules->push_back(rule("Layer 2 - random clip", true, "", 18));
+    rules->push_back(rule("Layer 3 - random clip", false, "", 0));
+    rules->push_back(rule("Dashboard breathes over 4 bars", true, "", 296));
+    rules->push_back(rule("Euclidean stabs - 3 in 8", true, "", 111));
     rules->push_back(rule("Resync every 8 bars", true,
                           "the address has 1 templated segment and the rule has 0", 0));
     window.set_rules(rules);
     window.set_selected(0);
 
-    window.set_rule_name(slint::SharedString("Random clip on downbeat"));
+    // §5.6's rule subset, and what it currently reaches.
+    window.set_outputs(slint::SharedString("deck"));
+    window.set_outputs_available(slint::SharedString("reaches 1 output"));
+
+    window.set_rule_name(slint::SharedString("Layer 1 - random clip"));
     window.set_rule_enabled(true);
     window.set_trigger_index(1); // every N bars
     window.set_trigger_takes_every(true);
@@ -435,7 +456,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_link_on(true);
         window->set_link_peers(2);
         window->set_osc_on(true);
-        window->set_osc_targets(slint::SharedString("192.168.1.40:7000"));
+        // §5.6's named targets, which is what the field holds now: a media server and a
+        // lighting desk, each of which a rule can be aimed at by name.
+        window->set_osc_targets(
+            slint::SharedString("deck = 192.168.1.40:7000, lights = midi MOTU Midi Out 1"));
         window->set_beats_sent(21);
         // A control surface bound, so the row shows what a learned binding reads as
         // rather than an empty picker and a blank line.

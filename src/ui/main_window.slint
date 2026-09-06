@@ -38,9 +38,9 @@ export struct TracePoint {
 export component MainWindow inherits Window {
   title: "takt4";
   preferred-width: 900px;
-  preferred-height: 800px;
+  preferred-height: 836px;
   min-width: 720px;
-  min-height: 700px;
+  min-height: 736px;
   background: Theme.background;
   init => {
     Palette.color-scheme = ColorScheme.dark;
@@ -694,11 +694,15 @@ export component MainWindow inherits Window {
       background: Theme.panel;
       vertical-stretch: 0;
 
+      // A layout, not two loose children: a Rectangle positions its children itself, so the
+      // second row would be drawn on top of the first — silently (§6).
+      VerticalLayout {
+
       HorizontalLayout {
         padding-left: 24px;
         padding-right: 24px;
         padding-top: 12px;
-        padding-bottom: 12px;
+        padding-bottom: 8px;
         spacing: 10px;
 
         Text {
@@ -732,26 +736,6 @@ export component MainWindow inherits Window {
         }
 
         Text {
-          text: "OSC";
-          color: root.osc-on ? Theme.text : Theme.dim;
-          font-size: 12px;
-          width: 32px;
-          vertical-alignment: center;
-        }
-
-        osc-field := LineEdit {
-          text <=> root.osc-targets;
-          placeholder-text: "host:port — Enter to apply";
-          font-size: 12px;
-          horizontal-stretch: 1;
-          // `accepted`, not `edited`: `edited` fires on every keystroke, and each one
-          // would tear the sockets down and build them again halfway through an address.
-          accepted(text) => {
-            root.osc-targets-edited(text);
-          }
-        }
-
-        Text {
           text: "MIDI clock";
           color: root.midi-on ? Theme.text : Theme.dim;
           font-size: 12px;
@@ -779,6 +763,41 @@ export component MainWindow inherits Window {
           horizontal-alignment: right;
           vertical-alignment: center;
         }
+      }
+
+      // §5.6's targets on a line of their own. They used to be one field among four on the
+      // row above, which was room for one address — and the whole point of naming them is
+      // that a rig has several. This is the longest thing in the window after the address
+      // template, and the one a rule's routing is checked against.
+      HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-bottom: 12px;
+        spacing: 10px;
+
+        Text {
+          // Not "OSC" any more: §5.6's targets are OSC *and* MIDI, named so a rule can pick
+          // between them. `output::formatOutputTarget` is the form this field takes.
+          text: "targets";
+          color: root.osc-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 74px;
+          vertical-alignment: center;
+        }
+
+        osc-field := LineEdit {
+          text <=> root.osc-targets;
+          placeholder-text: "deck = 127.0.0.1:7000, lights = midi PORT — Enter to apply";
+          font-size: 12px;
+          horizontal-stretch: 1;
+          // `accepted`, not `edited`: `edited` fires on every keystroke, and each one
+          // would tear the sockets down and build them again halfway through an address.
+          accepted(text) => {
+            root.osc-targets-edited(text);
+          }
+        }
+      }
+
       }
     }
 

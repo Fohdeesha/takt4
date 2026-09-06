@@ -69,7 +69,7 @@ output::Transports::Config transportConfig(const settings::Settings& settings,
     output::Transports::Config config;
     config.link = settings.preset.link;
     config.oscPrefix = settings.preset.oscPrefix;
-    config.oscTargets = settings.preset.oscTargets;
+    config.outputs = settings.preset.outputs;
     config.latencySeconds = tempo.latencyOffsetSeconds;
     return config;
 }
@@ -397,43 +397,52 @@ void WindowController::setLinkEnabled(bool on) {
 }
 
 void WindowController::setOscTargets(const std::string& text) {
-    // One host:port per line or per comma — the window offers a single line, so a comma
-    // is how more than one fits in it. A part that will not parse is named on the status
-    // line and the rest are still applied: an operator halfway through typing an address
-    // must not lose the ones that already worked.
+    // §5.6's named targets, one per line or per comma — the window offers a single line, so
+    // a comma is how more than one fits in it. Each is `name = host:port` or
+    // `name = midi Device`, and `output::parseOutputTarget` also accepts the bare
+    // `host:port` this field took before targets had names.
+    //
+    // A part that will not parse is named on the status line and the rest are still applied:
+    // an operator halfway through typing an address must not lose the ones that already
+    // worked.
     std::string separated = text;
     std::replace(separated.begin(), separated.end(), ',', '\n');
-    std::vector<output::Transports::OscTarget> targets;
+    std::vector<output::OutputTarget> targets;
     std::string bad;
     std::istringstream lines(separated);
     std::string line;
     while (std::getline(lines, line)) {
-        const std::size_t begin = line.find_first_not_of(" \t\r");
-        if (begin == std::string::npos) {
+        if (line.find_first_not_of(" \t\r") == std::string::npos) {
             continue;
         }
-        const std::size_t end = line.find_last_not_of(" \t\r");
-        const std::string trimmed = line.substr(begin, end - begin + 1);
-        const std::size_t colon = trimmed.rfind(':');
-        int port = 0;
-        if (colon != std::string::npos && colon + 1 < trimmed.size()) {
-            const std::string digits = trimmed.substr(colon + 1);
-            port = std::all_of(digits.begin(), digits.end(),
-                               [](unsigned char c) { return std::isdigit(c) != 0; })
-                       ? std::atoi(digits.c_str())
-                       : 0;
+        output::OutputTarget target;
+        if (output::parseOutputTarget(line, target)) {
+            targets.push_back(std::move(target));
+        } else if (bad.empty()) {
+            bad = line;
         }
-        if (colon == std::string::npos || colon == 0 || port <= 0 || port > 65535) {
-            if (bad.empty()) {
-                bad = trimmed;
-            }
-            continue;
-        }
-        targets.emplace_back(trimmed.substr(0, colon), static_cast<std::uint16_t>(port));
     }
-    runner_.post(output::OutputCommand::oscTargets(std::move(targets)));
+
+    // Two targets with one name would make a rule's routing ambiguous, and `resolveOutputs`
+    // would quietly take the first. Said rather than silently allowed, because the operator
+    // who typed it is the only one who can decide which they meant.
+    for (std::size_t i = 0; i < targets.size() && bad.empty(); ++i) {
+        for (std::size_t j = i + 1; j < targets.size(); ++j) {
+            if (targets[i].name == targets[j].name) {
+                bad = targets[i].name;
+                break;
+            }
+        }
+    }
+
+    runner_.post(output::OutputCommand::outputs(targets));
+    const std::string error = runner_.lastError();
     if (!bad.empty()) {
-        setStatus("OSC: \"" + bad + "\" is not host:port, so it was left out.", true);
+        setStatus("outputs: \"" + bad + "\" is not a target, so it was left out.", true);
+    } else if (!error.empty()) {
+        // A MIDI device that is not on this machine. The rest of the rig is still sending;
+        // what failed is one output, and §5.6's whole point is that they are separate.
+        setStatus("outputs: " + error, true);
     } else if (statusIsError_) {
         setStatus("Pick an input and press Start.", false);
     }
@@ -863,7 +872,7 @@ settings::Settings WindowController::currentSettings() const {
     // window is only ever showing what the engine has (§7 deviation 8).
     out.preset.tempo = tracker_.engine().tempoOptions();
     out.preset.link = transports.linkEnabled();
-    out.preset.oscTargets = transports.oscTargets();
+    out.preset.outputs = transports.outputs();
     out.preset.oscPrefix = transports.oscPrefix();
     // This window's copy, not the runner's: the runner's belong to the output thread and
     // reading them while it runs is what `rules()` explains is unsafe.
@@ -876,15 +885,21 @@ void WindowController::publishOutputs() {
     window_->set_link_on(transports.linkEnabled());
     window_->set_link_peers(static_cast<int>(transports.link().numPeers()));
 
-    std::string osc;
-    for (const auto& [host, port] : transports.oscTargets()) {
-        if (!osc.empty()) {
-            osc += '\n';
+    // One line per target, as `formatOutputTarget` writes them — which is also what a
+    // settings file holds and what an operator can type back into the field.
+    std::string outputs;
+    for (const output::OutputTarget& target : transports.outputs()) {
+        if (!outputs.empty()) {
+            outputs += ", ";
         }
-        osc += host + ":" + std::to_string(port);
+        outputs += output::formatOutputTarget(target);
     }
-    window_->set_osc_targets(shared(osc));
-    window_->set_osc_on(!transports.oscTargets().empty());
+    window_->set_osc_targets(shared(outputs));
+    window_->set_osc_on(!transports.outputs().empty());
+    // The editor names these when it routes a rule, so it has to know what there is. Told
+    // here rather than read from the runner, because `Transports` belongs to the output
+    // thread and this is the one place already holding a safe snapshot of it.
+    editor_.setTargets(transports.outputs());
 
     window_->set_midi_port(shared(transports.midiClockPort().value_or(std::string{})));
     window_->set_midi_on(transports.midiClock() != nullptr);

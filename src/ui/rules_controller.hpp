@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::ui {
@@ -46,6 +47,10 @@ public:
     /// The runner must outlive this. Nothing is shown until `show()`.
     RulesController(output::OutputRunner& runner, std::vector<trigger::Rule::Config> rules);
 
+    /// The outputs a rule may be routed to, for the editor to show and check names against.
+    /// Set again whenever the main window's outputs field changes.
+    void setTargets(std::vector<output::OutputTarget> targets);
+
     RulesController(const RulesController&) = delete;
     RulesController& operator=(const RulesController&) = delete;
 
@@ -77,6 +82,11 @@ public:
     void add();
     void remove();
     void duplicate();
+    /// Adds a whole rig at once — §5.6's presets, but several rules rather than one address.
+    /// "Random clips on three layers" is three rules with three seeds, and nobody should
+    /// have to build the same rule three times. Index 0 is the picker's own label and adds
+    /// nothing. Every rule it makes is switched off, like every rule the editor makes.
+    void addRig(int index);
     void rename(const std::string& name);
     void setEnabled(bool on);
     void test();
@@ -84,6 +94,9 @@ public:
 
     void pickTrigger(int index);
     void setEvery(int every);
+    void setPulses(int pulses);
+    /// §5.6's rule subset, as a comma-separated list of output names. Empty is everywhere.
+    void setOutputs(const std::string& text);
 
     void setMinConfidence(double value);
     void setIntensity(int which, bool allowed);
@@ -109,10 +122,16 @@ public:
     void setSlotNoRepeat(int slot, int within);
     void setSlotFixed(int slot, const std::string& text);
     void pickSlotLive(int slot, int source);
+    void pickSlotShape(int slot, int shape);
+    void setSlotRampBars(int slot, int bars);
+    void setSlotRampFloat(int slot, bool asFloat);
 
     void clearLog();
 
 private:
+    /// The rule with this id, or null. Rule ids have to be unique: §5.7 addresses one by
+    /// id and `TriggerEngine::find` takes the first of a duplicate pair.
+    const trigger::Rule::Config* findRule(std::string_view id) const noexcept;
     /// The selected rule, or null when there is none.
     trigger::Rule::Config* current() noexcept;
     const trigger::Rule::Config* current() const noexcept;
@@ -138,6 +157,10 @@ private:
     std::vector<trigger::Rule::Config> rules_;
     int selected_ = -1;
     RulesChanged changed_;
+    /// What §5.6's targets are called on this rig, so the editor can say which of a rule's
+    /// names reach something. Only the names are needed; the addresses are the main
+    /// window's business.
+    std::vector<output::OutputTarget> targets_;
 
     slint::ComponentHandle<RulesWindow> window_;
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;

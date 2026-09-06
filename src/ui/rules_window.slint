@@ -58,6 +58,12 @@ export struct SlotRow {
   is-fixed: bool,
   is-live: bool,
   live-index: int,
+  /// `Ramp`'s shape and period. A ramp has a range and no pool, so it borrows `low`/`high`
+  /// above and adds these.
+  is-ramp: bool,
+  shape-index: int,
+  ramp-bars: int,
+  ramp-float: bool,
   /// What this slot last produced, so an operator can see a sequence advancing without
   /// waiting for the address line to scroll past.
   last: string,
@@ -88,6 +94,9 @@ export component RulesWindow inherits Window {
   callback rule-enabled-changed(bool);
   callback rule-renamed(string);
   callback panic-clicked();
+  /// §5.6's presets at rig scale: a whole set of rules in one pick.
+  in-out property <[string]> rig-presets;
+  callback rig-added(int);
   /// §5.9's per-rule [test] button. Fires past `enabled` and past the conditions, which is
   /// deliberate: an operator building a rule wants to see where the message lands without
   /// waiting for a downbeat at the right confidence.
@@ -100,9 +109,16 @@ export component RulesWindow inherits Window {
   /// count is offered only where §5.8 gives it a meaning.
   in-out property <bool> trigger-takes-every;
   in-out property <int> every: 1;
+  /// Whether the selected trigger takes a pulse count — `Euclid` alone.
+  in-out property <bool> trigger-takes-pulses;
+  in-out property <int> pulses: 3;
+  /// The pattern those two numbers name, as "x..x..x." — two numbers are not a rhythm
+  /// anybody can hear, and this is the cheapest way to make them one.
+  in-out property <string> euclid-pattern;
 
   callback trigger-picked(int);
   callback every-changed(int);
+  callback pulses-changed(int);
 
   // --- ONLY IF ---------------------------------------------------------------------
   in-out property <float> min-confidence;
@@ -139,7 +155,17 @@ export component RulesWindow inherits Window {
 
   in-out property <[string]> generator-kinds;
   in-out property <[string]> live-sources;
+  in-out property <[string]> ramp-shapes;
   in-out property <[SlotRow]> slots;
+
+  /// §5.6's *"rule subset"*: which of the app's outputs this rule reaches, by name and
+  /// comma-separated. Empty is every one of them, which is what an unrouted rule means.
+  in-out property <string> outputs;
+  /// The targets the app actually has, so an operator can see what there is to name and
+  /// whether what they typed matches any of it.
+  in-out property <string> outputs-available;
+
+  callback outputs-edited(string);
 
   callback send-picked(int);
   callback address-edited(string);
@@ -157,6 +183,9 @@ export component RulesWindow inherits Window {
   callback slot-no-repeat-changed(int, int);
   callback slot-fixed-edited(int, string);
   callback slot-live-picked(int, int);
+  callback slot-shape-picked(int, int);
+  callback slot-ramp-bars-changed(int, int);
+  callback slot-ramp-float-changed(int, bool);
 
   // --- what it is doing ------------------------------------------------------------
   /// §5.9: "the last-fired line on each rule card, showing the actually-sent message with a
@@ -240,6 +269,22 @@ export component RulesWindow inherits Window {
                 root.rule-picked(index);
               }
             }
+          }
+        }
+
+        // §5.6's presets, but several rules at once — "random clips on three layers" is
+        // three rules, and nobody should build the same rule three times and remember to
+        // give each a different seed. Everything it adds is an ordinary rule, editable like
+        // any other; nothing downstream asks which preset a rule came from.
+        ComboBox {
+          model: root.rig-presets;
+          current-index: 0;
+          vertical-stretch: 0;
+          selected => {
+            root.rig-added(self.current-index);
+            // Back to the label, so picking the same rig twice is two presses rather than
+            // one that appears to do nothing.
+            self.current-index = 0;
           }
         }
 
@@ -400,13 +445,37 @@ export component RulesWindow inherits Window {
               }
             }
 
+            if root.trigger-takes-pulses : Text {
+              text: "with";
+              color: Theme.text;
+              font-size: 13px;
+              vertical-alignment: center;
+            }
+
+            if root.trigger-takes-pulses : SpinBox {
+              value <=> root.pulses;
+              minimum: 0;
+              maximum: 64;
+              enabled: root.selected >= 0;
+              width: 88px;
+              edited(v) => {
+                root.pulses-changed(v);
+              }
+            }
+
             Text {
               // "every 4 bars" counts from the first, so it is bars 1, 5 and 9 rather than
               // 4, 8 and 12 — §7 deviation 11. An operator counting a phrase in starts at
               // one, and the alternative anchors the phrase to wherever the modulo lands.
-              text: root.trigger-takes-every ? "counting from the first" : "";
+              //
+              // For a Euclidean pattern the same line shows the pattern itself, which is the
+              // only way two numbers become something an operator can hear before it plays.
+              text: root.trigger-takes-pulses ? root.euclid-pattern
+                : root.trigger-takes-every ? "counting from the first"
+                : "";
               color: Theme.dim;
               font-size: 12px;
+              font-family: root.trigger-takes-pulses ? "Consolas" : "";
               vertical-alignment: center;
               horizontal-stretch: 1;
             }
@@ -637,6 +706,43 @@ export component RulesWindow inherits Window {
             Rectangle { horizontal-stretch: 1; }
           }
 
+          // §5.6's rule subset. A field of names rather than a list of checkboxes: the set of
+          // outputs is edited on the main window as text too, an operator who has three of
+          // them can type all three faster than they can find them, and a name that matches
+          // nothing is kept — a preset written on another rig should say what it meant.
+          HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+              text: "send to";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            outputs-field := LineEdit {
+              text <=> root.outputs;
+              placeholder-text: "every output — or name them: deck, wall";
+              enabled: root.selected >= 0;
+              font-size: 12px;
+              horizontal-stretch: 1;
+              accepted(text) => {
+                root.outputs-edited(text);
+              }
+            }
+
+            Text {
+              text: root.outputs-available;
+              color: Theme.dim;
+              font-size: 11px;
+              font-family: "Consolas";
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+          }
+
           // The address on a line of its own: it is the longest thing in the window and the
           // one an operator reads character by character, so sharing a row with two pickers
           // left it with a hundred pixels. §5.9's sketch gives it a line too.
@@ -739,9 +845,66 @@ export component RulesWindow inherits Window {
                 }
               }
 
+              // A ramp: its shape, the range it sweeps, how many bars it takes, and whether
+              // it lands on whole numbers. Four controls, because a ramp is the one
+              // generator whose whole behaviour is in its configuration.
+              if slot.is-ramp : ComboBox {
+                model: root.ramp-shapes;
+                current-index: slot.shape-index;
+                width: 108px;
+                selected => {
+                  root.slot-shape-picked(index, self.current-index);
+                }
+              }
+
+              if slot.is-ramp : LineEdit {
+                text: slot.low + " - " + slot.high;
+                placeholder-text: "0 - 1";
+                font-size: 12px;
+                horizontal-stretch: 1;
+                accepted(text) => {
+                  root.slot-range-edited(index, text);
+                }
+              }
+
+              if slot.is-ramp : Text {
+                text: "over";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+              }
+
+              if slot.is-ramp : SpinBox {
+                value: slot.ramp-bars;
+                minimum: 1;
+                maximum: 64;
+                width: 76px;
+                edited(v) => {
+                  root.slot-ramp-bars-changed(index, v);
+                }
+              }
+
+              if slot.is-ramp : Text {
+                text: "bars";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+              }
+
+              if slot.is-ramp : CheckBox {
+                // A float sweeps and an int steps — see `Generator::nextRamp`, where the
+                // difference is spelled out. Which one a host wants is not guessable.
+                text: "whole";
+                checked: !slot.ramp-float;
+                toggled => {
+                  root.slot-ramp-float-changed(index, !self.checked);
+                }
+              }
+
               // Something stretchy for the kinds that offer no field of their own, so the
               // row does not collapse around the dropdown.
-              if !slot.takes-pool && !slot.is-fixed && !slot.is-live : Rectangle {
+              if !slot.takes-pool && !slot.is-fixed && !slot.is-live && !slot.is-ramp
+                  : Rectangle {
                 horizontal-stretch: 1;
               }
 
