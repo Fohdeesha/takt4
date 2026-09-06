@@ -20,7 +20,7 @@ namespace {
 
 Transports::Config withTarget(std::uint16_t port) {
     Transports::Config config;
-    config.oscTargets = {{"127.0.0.1", port}};
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", port}});
     return config;
 }
 

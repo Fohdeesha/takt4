@@ -42,8 +42,13 @@ OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
     }
 }
 
-void OscPublisher::addTarget(std::string_view host, std::uint16_t port) {
-    targets_.push_back(std::make_unique<OscSender>(host, port));
+void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::size_t bit) {
+    // Past the mask's width a target cannot be named individually, so it is given every bit
+    // instead: it then receives from rules that go everywhere, which is the default, and
+    // nothing that was routed away from it. Losing routing is better than losing the feed.
+    const std::uint64_t selector =
+        bit < kMaxRoutableTargets ? (std::uint64_t{1} << bit) : kAllOutputs;
+    targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector});
 }
 
 void OscPublisher::clearTargets() noexcept {
@@ -57,28 +62,58 @@ void OscPublisher::clearTargets() noexcept {
 }
 
 void OscPublisher::sendAddress(std::string_view address) {
-    OscMessage message(address);
-    sendPacket(message);
+    sendAddressTo(kAllOutputs, address);
 }
 
 void OscPublisher::sendAddress(std::string_view address, std::int32_t value) {
-    sendInt(address, value);
+    sendAddressTo(kAllOutputs, address, value);
 }
 
 void OscPublisher::sendAddress(std::string_view address, float value) {
-    sendFloat(address, value);
+    sendAddressTo(kAllOutputs, address, value);
 }
 
 void OscPublisher::sendAddress(std::string_view address, std::string_view value) {
-    OscMessage message(address);
-    message.addString(value);
-    sendPacket(message);
+    sendAddressTo(kAllOutputs, address, value);
 }
 
-void OscPublisher::sendPacket(OscMessage& message) {
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address) {
+    OscMessage message(address);
+    sendPacket(message, outputs);
+}
+
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
+                                 std::int32_t value) {
+    sendInt(address, value, outputs);
+}
+
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address, float value) {
+    sendFloat(address, value, outputs);
+}
+
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
+                                 std::string_view value) {
+    OscMessage message(address);
+    message.addString(value);
+    sendPacket(message, outputs);
+}
+
+bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
+    for (const Target& target : targets_) {
+        if ((target.bit & outputs) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs) {
     const auto packet = message.packet();
-    for (const auto& target : targets_) {
-        if (target->send(packet)) {
+    for (const Target& target : targets_) {
+        if ((target.bit & outputs) == 0) {
+            continue; // routed away from this one
+        }
+        if (target.sender->send(packet)) {
             ++sent_;
         } else {
             ++failed_;
@@ -86,35 +121,35 @@ void OscPublisher::sendPacket(OscMessage& message) {
     }
 }
 
-void OscPublisher::sendInt(std::string_view address, std::int32_t value) {
+void OscPublisher::sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs) {
     OscMessage message(address);
     message.addInt(value);
-    sendPacket(message);
+    sendPacket(message, outputs);
 }
 
-void OscPublisher::sendFloat(std::string_view address, float value) {
+void OscPublisher::sendFloat(std::string_view address, float value, std::uint64_t outputs) {
     OscMessage message(address);
     message.addFloat(value);
-    sendPacket(message);
+    sendPacket(message, outputs);
 }
 
 void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
                                     bool force) {
     if (force || std::abs(bpm - lastBpm_) > kBpmEpsilon) {
-        sendFloat(bpmAddress_, static_cast<float>(bpm));
+        sendFloat(bpmAddress_, static_cast<float>(bpm), kAllOutputs);
         lastBpm_ = bpm;
     }
     if (force || std::abs(confidence - lastConfidence_) > kConfidenceEpsilon) {
-        sendFloat(confidenceAddress_, static_cast<float>(confidence));
+        sendFloat(confidenceAddress_, static_cast<float>(confidence), kAllOutputs);
         lastConfidence_ = confidence;
     }
     const int lockedNow = locked ? 1 : 0;
     if (force || lockedNow != lastLocked_) {
-        sendInt(lockedAddress_, lockedNow);
+        sendInt(lockedAddress_, lockedNow, kAllOutputs);
         lastLocked_ = lockedNow;
     }
     if (force || meter != lastMeter_) {
-        sendInt(meterAddress_, static_cast<std::int32_t>(meter));
+        sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs);
         lastMeter_ = meter;
     }
 }
@@ -123,12 +158,12 @@ void OscPublisher::publishBeat(const tracking::BeatEvent& event) {
     // State first: a consumer that reads the beat and then looks at the tempo should see
     // the tempo of the beat it just got, not the one before it.
     sendChangedState(event.bpm, event.confidence, event.locked, event.beatsPerBar, true);
-    sendInt(beatAddress_, 1);
+    sendInt(beatAddress_, 1, kAllOutputs);
     if (event.beatInBar > 0) {
-        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar));
+        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs);
     }
     if (event.downbeat) {
-        sendInt(downbeatAddress_, 1);
+        sendInt(downbeatAddress_, 1, kAllOutputs);
     }
 }
 
@@ -137,7 +172,7 @@ void OscPublisher::publishState(const tracking::TempoState& state) {
 }
 
 void OscPublisher::publishResync() {
-    sendInt(resyncAddress_, 1);
+    sendInt(resyncAddress_, 1, kAllOutputs);
 }
 
 } // namespace takt4::output

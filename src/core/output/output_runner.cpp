@@ -159,12 +159,18 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::OscTargets:
             transports_.setOscTargets(command.targets);
+            resolveRouting();
+            break;
+        case OutputCommand::Kind::Outputs:
+            transports_.setOutputs(command.outputTargets);
+            resolveRouting();
             break;
         case OutputCommand::Kind::MidiClockPort:
             transports_.setMidiClockPort(command.port);
             break;
         case OutputCommand::Kind::Rules:
             triggers_.setRules(command.ruleConfigs);
+            resolveRouting();
             break;
         case OutputCommand::Kind::Panic:
             if (command.enabled) {
@@ -195,6 +201,17 @@ void OutputRunner::apply(const OutputCommand& command) {
         // failure is only that the change did not happen — which somebody has to be told.
         const std::lock_guard<std::mutex> lock(errorMutex_);
         lastError_ = e.what();
+    }
+}
+
+void OutputRunner::resolveRouting() noexcept {
+    // The one place a rule's output *names* become the bits its messages carry. Neither
+    // `Rule` nor `TriggerEngine` knows what an output is, and `Transports` does not know
+    // what a rule is; this owns both and is where the two meet.
+    const std::vector<OutputTarget>& targets = transports_.outputs();
+    for (std::size_t i = 0; i < triggers_.ruleCount(); ++i) {
+        trigger::Rule& rule = triggers_.rule(i);
+        rule.setOutputMask(resolveOutputs(rule.config().outputs, targets));
     }
 }
 
