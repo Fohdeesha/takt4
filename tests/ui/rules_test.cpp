@@ -13,6 +13,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -155,6 +156,161 @@ TEST_CASE("Phase 6's exit criterion, built by clicking", "[ui][trigger]") {
             INFO(expected);
             CHECK(std::count(presses.begin(), presses.end(), expected) == 1);
         }
+    }
+}
+
+TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
+    // The ask this was built for, 2026-09-06: "send osc to resolume to randomly trigger
+    // clips on all three resolume layers". One pick in the rig picker, and the three rules
+    // that come out are checked against what 5.6 and 7.4 say they have to be.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+
+    editor.addRig(1); // "Resolume: clips on 3 layers"
+    REQUIRE(editor.rules().size() == 3);
+
+    for (int layer = 1; layer <= 3; ++layer) {
+        const Rule::Config& rule = editor.rules()[static_cast<std::size_t>(layer - 1)];
+        INFO("layer " << layer);
+        CHECK(rule.address == "/composition/layers/{layer}/clips/{clip}/connect");
+        REQUIRE(rule.segments.size() == 2);
+        // The layer is fixed and the clip is shuffled, which is what "randomly trigger clips
+        // on all three layers" means: three layers, each picking its own clip.
+        CHECK(rule.segments[0].kind == GeneratorKind::Fixed);
+        CHECK(rule.segments[0].fixed.asInt() == layer);
+        CHECK(rule.segments[1].kind == GeneratorKind::Shuffle);
+        // 7.4: connect is a mouse click, and without the release the clip stays held.
+        CHECK(rule.followUp);
+        CHECK(rule.followUpValue.asInt() == 0);
+        // Off until the operator says so, like every rule the editor makes.
+        CHECK_FALSE(rule.enabled);
+        CHECK(Rule(rule).valid());
+    }
+
+    SECTION("with three seeds, or all three layers fire the same clip as each other") {
+        CHECK(editor.rules()[0].seed != editor.rules()[1].seed);
+        CHECK(editor.rules()[1].seed != editor.rules()[2].seed);
+    }
+
+    SECTION("and three periods, so the three do not all change on one downbeat") {
+        // Three layers changing together is one event, not three.
+        CHECK(editor.rules()[0].every != editor.rules()[1].every);
+        CHECK(editor.rules()[1].every != editor.rules()[2].every);
+    }
+
+    SECTION("adding the same rig twice keeps both, with ids that stay unique") {
+        // 5.7 addresses a rule by id and `TriggerEngine::find` takes the first of a pair,
+        // so a duplicate id would make `/ctl/rule/<id>/enable` mean the wrong rule.
+        editor.addRig(1);
+        REQUIRE(editor.rules().size() == 6);
+        std::set<std::string> ids;
+        for (const Rule::Config& rule : editor.rules()) {
+            ids.insert(rule.id);
+        }
+        CHECK(ids.size() == 6);
+    }
+
+    SECTION("and what they send is three layers of clips, over a real socket") {
+        // End to end: the rules the preset built, fired through the engine, at a runner that
+        // really sends. Nothing about this is a mock.
+        for (const Rule::Config& rule : editor.rules()) {
+            rig.runner.post(takt4::output::OutputCommand::testRule(rule.id));
+        }
+        const std::vector<takt4::output::OutputRunner::Fired> fired = rig.runner.takeFired();
+
+        std::set<std::string> layers;
+        for (const takt4::output::OutputRunner::Fired& entry : fired) {
+            const std::size_t at = entry.message.find("/layers/");
+            if (at != std::string::npos) {
+                layers.insert(entry.message.substr(at + 8, 1));
+            }
+        }
+        CHECK(layers == std::set<std::string>{"1", "2", "3"});
+    }
+}
+
+TEST_CASE("the other rigs a pick builds", "[ui][trigger]") {
+    Rig rig;
+    RulesController editor(rig.runner, {});
+
+    SECTION("Resolume's own tempo, from 5.6's verified addresses") {
+        editor.addRig(2);
+        REQUIRE(editor.rules().size() == 2);
+        CHECK(editor.rules()[0].address == "/composition/tempocontroller/tempo");
+        // 5.6 and A.4: "float, normalised 0-1 across 20-500 BPM", which is exactly what the
+        // Live generator's BpmNormalised source exists for.
+        CHECK(editor.rules()[0].value.kind == GeneratorKind::Live);
+        CHECK(editor.rules()[0].value.source == takt4::trigger::LiveSource::BpmNormalised);
+        CHECK(editor.rules()[0].value.normaliseLow == Approx(20.0));
+        CHECK(editor.rules()[0].value.normaliseHigh == Approx(500.0));
+        CHECK(editor.rules()[1].address == "/composition/tempocontroller/resync");
+    }
+
+    SECTION("a dashboard parameter that breathes rather than jumping") {
+        editor.addRig(3);
+        REQUIRE(editor.rules().size() == 1);
+        const Rule::Config& rule = editor.rules()[0];
+        CHECK(rule.value.kind == GeneratorKind::Ramp);
+        CHECK(rule.value.rampFloat);
+        // On every beat: a ramp is only as smooth as it is sampled.
+        CHECK(rule.trigger == Trigger::Beat);
+        CHECK(Rule(rule).valid());
+    }
+
+    SECTION("a euclidean pattern out to MIDI") {
+        editor.addRig(4);
+        REQUIRE(editor.rules().size() == 1);
+        const Rule::Config& rule = editor.rules()[0];
+        CHECK(rule.trigger == Trigger::Euclid);
+        CHECK(rule.every == 8);
+        CHECK(rule.pulses == 3); // the tresillo
+        CHECK(rule.sendKind == takt4::trigger::Message::Kind::MidiNote);
+        CHECK(Rule(rule).valid());
+        // The pattern shows in the editor as something a person can read before it plays.
+        editor.pick(0);
+        CHECK(std::string(editor.window().get_euclid_pattern()) == "x..x..x.");
+    }
+
+    SECTION("and the picker's own label adds nothing") {
+        editor.addRig(0);
+        CHECK(editor.rules().empty());
+    }
+}
+
+TEST_CASE("a rule is routed by naming outputs", "[ui][trigger]") {
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    std::vector<takt4::output::OutputTarget> targets(2);
+    targets[0].name = "deck";
+    targets[0].port = 7000;
+    targets[1].name = "wall";
+    targets[1].port = 7001;
+    editor.setTargets(targets);
+
+    editor.add();
+    editor.setAddress("/fire");
+
+    // Empty is everywhere, and says which everywhere is — an operator who has just added a
+    // second output otherwise has no way to know the rule now reaches it too.
+    CHECK(editor.rules()[0].outputs.empty());
+    CHECK(std::string(editor.window().get_outputs_available()) == "every output: deck, wall");
+
+    editor.setOutputs("deck, wall");
+    CHECK(editor.rules()[0].outputs == std::vector<std::string>{"deck", "wall"});
+    CHECK(std::string(editor.window().get_outputs_available()) == "reaches 2 outputs");
+
+    SECTION("a name this rig does not have is kept, and said") {
+        // A preset written where there was a "lights" output should still say "lights", so
+        // that plugging it back in restores the routing rather than needing it retyped.
+        editor.setOutputs("lights");
+        CHECK(editor.rules()[0].outputs == std::vector<std::string>{"lights"});
+        CHECK(std::string(editor.window().get_outputs_available()) == "no output called lights");
+    }
+
+    SECTION("clearing the field is back to everywhere") {
+        editor.setOutputs("deck");
+        editor.setOutputs("");
+        CHECK(editor.rules()[0].outputs.empty());
     }
 }
 
