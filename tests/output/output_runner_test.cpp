@@ -1,4 +1,5 @@
 #include "core/audio/rates.hpp"
+#include "core/control/rule_control.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -355,4 +356,62 @@ TEST_CASE("panic reaches the rules through the same queue as everything else",
     CHECK(runner.triggers().rule(0).enabled());
     runner.post(OutputCommand::ruleEnabled("no-such-rule", false));
     CHECK(runner.triggers().rule(0).enabled()); // and an id nobody has is not an error
+}
+
+TEST_CASE("a control surface reaches the rules without knowing what a runner is",
+          "[output][trigger][control]") {
+    // The far end of 5.7's two remaining addresses. `control::ControlSurface` is written
+    // against `RuleControl` and this is the only implementation an app has: the runner owns
+    // the rules, so there is nowhere else for the route to end.
+    //
+    // Driven through the *interface* deliberately, rather than through `post`. A surface
+    // holds a `RuleControl*` and never sees an OutputRunner, so what has to be checked is
+    // that the two calls it can make do what the commands do.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    Rule::Config rule;
+    rule.id = "every-beat";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/fire";
+    runner.post(OutputCommand::rules({rule}));
+
+    takt4::control::RuleControl& rules = runner;
+
+    SECTION("while stopped, both take effect at once") {
+        rules.panic(true);
+        CHECK(runner.panicked());
+        rules.panic(false);
+        CHECK_FALSE(runner.panicked());
+
+        rules.setRuleEnabled("every-beat", false);
+        CHECK_FALSE(runner.triggers().rule(0).enabled());
+        rules.setRuleEnabled("every-beat", true);
+        CHECK(runner.triggers().rule(0).enabled());
+
+        // A Stream Deck holding a button for a rule the current preset no longer has is an
+        // ordinary state of the world, not something to report.
+        rules.setRuleEnabled("no-such-rule", false);
+        CHECK(runner.triggers().rule(0).enabled());
+    }
+
+    SECTION("while running, a panic from another thread stops the rules firing") {
+        // The live case: the call arrives on RtMidi's callback thread or the OSC receiver's
+        // while the output thread is mid-set, and the queue is what makes that safe.
+        runner.start();
+
+        // Panic before any beat is fed, so what is being measured is the halt and not a
+        // race with the excerpt. The rules are read back after the stop, which is what
+        // `triggers()` documents as the only time it is safe to.
+        std::thread surface([&rules] { rules.panic(true); });
+        surface.join();
+
+        feedExcerpt(*engine);
+        waitForBeats(runner, kExpectedBeats);
+        runner.stop();
+
+        CHECK(runner.panicked());
+        CHECK(runner.triggers().rule(0).fires() == 0);
+        CHECK(runner.errors() == 0);
+    }
 }

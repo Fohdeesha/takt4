@@ -129,6 +129,9 @@ void OutputRunner::apply(const OutputCommand& command) {
             } else {
                 triggers_.release();
             }
+            // After the engine, so a reader that sees the flag knows the halt has already
+            // happened rather than being about to.
+            panicked_.store(command.enabled, std::memory_order_relaxed);
             break;
         case OutputCommand::Kind::RuleEnabled:
             if (trigger::Rule* rule = triggers_.find(command.ruleId)) {

@@ -56,8 +56,8 @@ struct MidiControl::Impl {
     RtMidiIn in;
 };
 
-MidiControl::MidiControl(engine::BeatEngine& engine, Config config)
-    : config_(std::move(config)), surface_(engine) {}
+MidiControl::MidiControl(engine::BeatEngine& engine, Config config, RuleControl* rules)
+    : config_(std::move(config)), surface_(engine, rules) {}
 
 MidiControl::~MidiControl() {
     stop();
@@ -142,9 +142,9 @@ std::string MidiControl::portName() const {
     return portName_;
 }
 
-void MidiControl::learn(ControlAction action) {
+void MidiControl::learn(ControlTarget target) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    learning_ = action;
+    learning_ = std::move(target);
 }
 
 void MidiControl::cancelLearn() noexcept {
@@ -152,7 +152,7 @@ void MidiControl::cancelLearn() noexcept {
     learning_.reset();
 }
 
-std::optional<ControlAction> MidiControl::learning() const {
+std::optional<ControlTarget> MidiControl::learning() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return learning_;
 }
@@ -195,8 +195,14 @@ bool MidiControl::bind(const MidiBinding& binding) {
 
 std::size_t MidiControl::forget(ControlAction action) {
     const std::lock_guard<std::mutex> lock(mutex_);
+    return std::erase_if(
+        bindings_, [action](const MidiBinding& held) { return held.target.action == action; });
+}
+
+std::size_t MidiControl::forget(const ControlTarget& target) {
+    const std::lock_guard<std::mutex> lock(mutex_);
     return std::erase_if(bindings_,
-                         [action](const MidiBinding& held) { return held.action == action; });
+                         [&target](const MidiBinding& held) { return held.target == target; });
 }
 
 std::optional<MidiEvent> MidiControl::lastEvent() const {
@@ -205,18 +211,18 @@ std::optional<MidiEvent> MidiControl::lastEvent() const {
 }
 
 bool MidiControl::dispatch(const MidiEvent& event) {
-    std::optional<ControlAction> learned;
-    std::vector<ControlAction> matched;
+    std::optional<ControlTarget> learned;
+    std::vector<ControlTarget> matched;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         lastEvent_ = event;
         if (learning_) {
-            learned = *learning_;
+            learned = std::move(*learning_);
             learning_.reset();
         } else {
             for (const MidiBinding& binding : bindings_) {
                 if (binding.matches(event)) {
-                    matched.push_back(binding.action);
+                    matched.push_back(binding.target);
                 }
             }
         }
@@ -227,7 +233,7 @@ bool MidiControl::dispatch(const MidiEvent& event) {
         binding.kind = event.kind;
         binding.channel = event.channel;
         binding.number = event.number;
-        binding.action = *learned;
+        binding.target = *std::move(learned);
         (void)bind(binding);
         // Learned, not acted on. The gesture that assigns a control should not also fire
         // it: an operator binding `tempo/halve` would otherwise halve the tempo to do it.
@@ -240,8 +246,8 @@ bool MidiControl::dispatch(const MidiEvent& event) {
     }
     // A table with two bindings for one control cannot happen through `bind`, but a
     // caller can build one; act on all of them rather than silently picking.
-    for (const ControlAction action : matched) {
-        (void)surface_.apply(action, argumentOf(event));
+    for (const ControlTarget& target : matched) {
+        (void)surface_.apply(target, argumentOf(event));
     }
     handled_.fetch_add(1, std::memory_order_relaxed);
     return true;
