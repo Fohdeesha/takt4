@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,8 +36,24 @@ namespace takt4::trigger {
 /// Nothing is evaluated twice: a trigger belongs to exactly one of the two.
 class TriggerEngine {
 public:
+    /// Told about every message that goes out, and which rule sent it.
+    ///
+    /// §5.9 wants two things this is the only source of: *"the last-fired line on each rule
+    /// card, showing the actually-sent message with a timestamp"*, and Phase 6's event log.
+    /// Both need to know what was sent *and* by whom, and `Sink` deliberately does not — it
+    /// is the seam to the transports, which have no business knowing what a rule is.
+    ///
+    /// Called on the output thread, between a beat and the next MIDI tick, so an
+    /// implementation must be short and must not block. `output::OutputRunner` is the one
+    /// that sets it, and copies into a ring a UI can drain from its own thread — this class
+    /// stays single-threaded, which is what its class note promises.
+    using FireObserver = std::function<void(std::string_view ruleId, const Message&)>;
+
     /// The sink must outlive this. Nothing is sent until there are rules.
     explicit TriggerEngine(Sink& sink) noexcept;
+
+    /// Set before anything fires; the output thread reads it without synchronisation.
+    void setFireObserver(FireObserver observer) { observer_ = std::move(observer); }
 
     /// Replaces every rule. The `Rule::Config::id`s are what §5.7's
     /// `/ctl/rule/<id>/enable` and §5.9's cards address them by; a duplicate id is kept
@@ -105,6 +122,10 @@ private:
     struct Pending {
         double due = 0.0;
         Message message;
+        /// Which rule owes it, so the observer can name the sender of a release the same
+        /// way it names the press. Copied rather than pointed at: the rule set can be
+        /// replaced while a follow-up is still owed, and §5.8 says those are still sent.
+        std::string ruleId;
     };
 
     /// Fires one rule that has already passed its trigger and its conditions: builds the
@@ -113,12 +134,13 @@ private:
     /// Everything whose delay has passed, in the order it was queued.
     void drainDue(double now);
     void flushPending();
-    void deliver(const Message& message);
+    void deliver(const Message& message, std::string_view ruleId);
     /// Whether a beat satisfies `rule`'s trigger — §5.8's WHEN stage, for the four that
     /// count beats and bars.
     static bool beatSatisfies(const Rule& rule, const Context& context) noexcept;
 
     Sink& sink_;
+    FireObserver observer_;
     std::vector<Rule> rules_;
     std::vector<Pending> pending_;
     bool panicked_ = false;

@@ -8,6 +8,7 @@
 #include "core/settings/settings.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -179,6 +180,15 @@ public:
     /// Replaces the set, hands it to the output thread, and reports what will not fire.
     void setRules(std::vector<trigger::Rule::Config> rules);
 
+    /// §5.9's rule editor, in its own window. Built with this one and shown on demand: an
+    /// operator who never writes a rule never sees it, and one who does keeps their place
+    /// in it across opening and closing.
+    RulesController& editor() noexcept { return editor_; }
+    /// Opens the editor, or brings it forward.
+    void openEditor();
+    /// §5.8's PANIC from the main window's own row, so a halt never waits on a window.
+    void togglePanic();
+
     /// The MIDI surface itself. Non-const for the same reason `window()` is: a test drives
     /// `dispatch` to deliver an event no hardware here can send, which is the only way the
     /// path from a controller to a binding is checkable without somebody pressing a pad.
@@ -224,6 +234,7 @@ private:
     /// Both of §5.7's surfaces. Each half publishes independently, because the MIDI half
     /// returns early when no port is open and anything written after that return would
     /// never run on a window that has only the OSC socket.
+    void publishTriggers();
     void publishControl();
     void publishMidiControl();
     void publishOscControl();
@@ -309,6 +320,10 @@ private:
     /// operator using both a tempo neither meant (`control::ControlSurface`).
     control::MidiControl control_;
     control::OscControl oscControl_;
+
+    /// §5.9's editor. **After the two surfaces**, so it is destroyed before them and long
+    /// before `runner_` — it posts to the runner like they do, though only from this thread.
+    RulesController editor_;
 };
 
 } // namespace takt4::ui

@@ -235,6 +235,31 @@ public:
     /// counters on the output thread; a snapshot from anywhere else.
     const RuleSink& ruleSink() const noexcept { return sink_; }
 
+    /// One message a rule sent, as §5.9's last-fired line and Phase 6's event log want it.
+    struct Fired {
+        /// `Rule::Config::id` — which rule, so a card can show only its own.
+        std::string ruleId;
+        /// The OSC address, or "note 36 ch 10", exactly as it went out with every `{}`
+        /// already filled in. §5.9: *"showing the actually-sent message"*, not the template.
+        std::string message;
+        /// Seconds since `start()`, on the clock the transports are driven from.
+        double when = 0.0;
+    };
+
+    /// Everything rules have sent since the last call, oldest first, and clears it.
+    ///
+    /// **A drain rather than a snapshot**, and from any thread. A UI reading this at 30 Hz
+    /// would otherwise copy the whole history every tick; taking it means each message is
+    /// copied once. The buffer is capped at `kFiredCapacity` and drops the *oldest* when it
+    /// overflows, because a log that stops recording once it is full stops being a log —
+    /// and an operator who has not looked for ten minutes wants the last ten seconds.
+    std::vector<Fired> takeFired();
+
+    /// How many messages are held between drains. A rule on every beat at 214 BPM is 3.6 a
+    /// second, so this is a minute and a half of one — far more than a 30 Hz reader needs,
+    /// and small enough that nothing has to think about it.
+    static constexpr std::size_t kFiredCapacity = 512;
+
 private:
     void run() noexcept;
     /// One round: every beat waiting, then the clock. On the output thread, or on the
@@ -266,6 +291,11 @@ private:
     std::vector<OutputCommand> applying_;
     mutable std::mutex errorMutex_;
     std::string lastError_;
+    /// §5.9's fired messages, written by the output thread and drained by a UI. A mutex
+    /// rather than a ring because the entries hold strings and both sides are far from the
+    /// audio thread — the output thread already takes two of these every round.
+    mutable std::mutex firedMutex_;
+    std::vector<Fired> fired_;
     std::thread worker_;
     std::atomic<bool> running_{false};
     /// A reader-safe mirror of `triggers_.panicked()`; see `panicked()`.

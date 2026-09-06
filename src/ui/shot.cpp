@@ -26,6 +26,8 @@
 #include "core/output/midi_ports.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "core/trigger/generator.hpp"
+#include "core/trigger/rule.hpp"
 #include "ui/app.hpp"
 #include "ui/headless.hpp"
 #include "ui/window_state.hpp"
@@ -213,6 +215,159 @@ void fillPickers(MainWindow& window) {
     window.set_channel_index(0);
 }
 
+/// §5.9's editor, with a set of rules in it worth looking at.
+///
+/// Built here rather than through `RulesController`, because a controller needs an
+/// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout
+/// has any business opening. What is drawn is the real component with the real models; only
+/// where the values came from differs.
+void fillRules(RulesWindow& window) {
+    auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::Trigger which : trigger::kTriggers) {
+        names->push_back(slint::SharedString(std::string(trigger::labelOf(which))));
+    }
+    window.set_trigger_names(names);
+
+    auto sends = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::Message::Kind kind : trigger::kMessageKinds) {
+        sends->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
+    }
+    window.set_send_kinds(sends);
+
+    auto kinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::GeneratorKind kind : trigger::kGeneratorKinds) {
+        kinds->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
+    }
+    window.set_generator_kinds(kinds);
+
+    auto sources = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::LiveSource source : trigger::kLiveSources) {
+        sources->push_back(slint::SharedString(std::string(trigger::labelOf(source))));
+    }
+    window.set_live_sources(sources);
+
+    auto hosts = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* label : {"custom", "Resolume 7 - clip", "Resolume 7 - resync", "TouchDesigner",
+                              "MadMapper - cue"}) {
+        hosts->push_back(slint::SharedString(label));
+    }
+    window.set_host_presets(hosts);
+
+    // Three rules, because a list of one says nothing about a list: one firing, one switched
+    // off, and one that will not fire — the state §5.8 insists has to be *visible*.
+    const auto rule = [](const char* name, bool enabled, const char* problem, int fires) {
+        RuleRow row{};
+        row.name = slint::SharedString(name);
+        row.enabled = enabled;
+        row.problem = slint::SharedString(problem);
+        row.fires = fires;
+        return row;
+    };
+    auto rules = std::make_shared<slint::VectorModel<RuleRow>>();
+    rules->push_back(rule("Random clip on downbeat", true, "", 37));
+    rules->push_back(rule("Strobe on the drop", false, "", 0));
+    rules->push_back(rule("Resync every 8 bars", true,
+                          "the address has 1 templated segment and the rule has 0", 0));
+    window.set_rules(rules);
+    window.set_selected(0);
+
+    window.set_rule_name(slint::SharedString("Random clip on downbeat"));
+    window.set_rule_enabled(true);
+    window.set_trigger_index(1); // every N bars
+    window.set_trigger_takes_every(true);
+    window.set_every(4);
+    window.set_min_confidence(0.70f);
+    window.set_probability(0.9f);
+    window.set_min_bpm(120);
+    window.set_max_bpm(140);
+    window.set_cooldown_ms(500);
+    window.set_allow_calm(false);
+    window.set_send_index(0);
+    window.set_sends_osc(true);
+    window.set_address(slint::SharedString("/composition/layers/{layer}/clips/{clip}/connect"));
+    window.set_follow_up(true);
+    window.set_follow_up_value(slint::SharedString("0"));
+    window.set_follow_up_ms(50);
+
+    // The two chips of that address, and the value. The middle one is the sequence the whole
+    // of `trigger::Pool` exists for: four clips the operator picked, shuffled.
+    //
+    // By name, not by position: §6 records that a Slint `export struct` becomes a C++ class
+    // with its fields in declaration order, and that nothing promises that survives a Slint
+    // bump. A thirteen-field aggregate is the last place to rely on it.
+    const auto fixedSlot = [](const char* label, const char* value, const char* last) {
+        SlotRow row{};
+        row.label = slint::SharedString(label);
+        row.kind_index = 4; // Fixed
+        row.fixed = slint::SharedString(value);
+        row.is_fixed = true;
+        row.last = slint::SharedString(last);
+        return row;
+    };
+
+    auto slots = std::make_shared<slint::VectorModel<SlotRow>>();
+    slots->push_back(fixedSlot("{layer}", "3", "3"));
+
+    SlotRow clip{};
+    clip.label = slint::SharedString("{clip}");
+    clip.kind_index = 0; // Shuffle
+    clip.takes_pool = true;
+    clip.is_list = true;
+    clip.low = 1;
+    clip.high = 8;
+    clip.values = slint::SharedString("3, 7, 1, 12");
+    clip.no_repeat = 2;
+    clip.last = slint::SharedString("7");
+    slots->push_back(clip);
+
+    slots->push_back(fixedSlot("value", "1", "1"));
+    window.set_slots(slots);
+
+    window.set_last_fired(slint::SharedString("/composition/layers/3/clips/7/connect 1"));
+    window.set_last_fired_ago(slint::SharedString("2s ago"));
+
+    auto log = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* line : {"184s  drop  /composition/layers/3/clips/7/connect 1",
+                             "184s  drop  /composition/layers/3/clips/7/connect 0",
+                             "177s  drop  /composition/layers/3/clips/12/connect 1",
+                             "177s  drop  /composition/layers/3/clips/12/connect 0",
+                             "170s  drop  /composition/layers/3/clips/1/connect 1",
+                             "170s  drop  /composition/layers/3/clips/1/connect 0",
+                             "163s  drop  /composition/layers/3/clips/3/connect 1"}) {
+        log->push_back(slint::SharedString(line));
+    }
+    window.set_log(log);
+}
+
+/// Renders whatever component `build` returns, and writes it out — the half of `renderShot`
+/// that does not care which of the two windows it is looking at.
+template <typename Build>
+int renderWindow(const std::filesystem::path& out, int width, int height, Build build) {
+    HeadlessWindow* const* rendered = installHeadlessPlatform(static_cast<std::uint32_t>(width),
+                                                              static_cast<std::uint32_t>(height));
+
+    auto window = build();
+    // show() creates the adapter; the two dispatches give the scene its scale and size,
+    // which nothing else would do without a window manager to hear from.
+    window->show();
+    window->window().dispatch_scale_factor_change_event(1.0f);
+    window->window().dispatch_resize_event(
+        slint::LogicalSize({static_cast<float>(width), static_cast<float>(height)}));
+
+    if (*rendered == nullptr) {
+        std::cerr << "takt4-shot: the platform was never asked for a window\n";
+        return 1;
+    }
+    std::vector<slint::Rgb8Pixel> pixels(static_cast<std::size_t>(width) *
+                                         static_cast<std::size_t>(height));
+    (*rendered)->software().render(pixels, static_cast<std::size_t>(width));
+    writeBmp(out, pixels, width, height);
+
+    std::cout << "takt4-shot: " << width << " x " << height << " written to " << out.string()
+              << '\n';
+    return 0;
+}
+
 } // namespace
 
 int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
@@ -222,6 +377,15 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     }
     const int width = options.width;
     const int height = options.height;
+
+    if (options.rules) {
+        return renderWindow(out, width, height, [] {
+            auto window = RulesWindow::create();
+            fillRules(*window);
+            return window;
+        });
+    }
+
     const auto w = static_cast<std::uint32_t>(width);
     const auto h = static_cast<std::uint32_t>(height);
 
@@ -284,6 +448,12 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_osc_control_port(slint::SharedString("7001"));
         window->set_osc_control_reading(
             slint::SharedString("/takt4/ctl/tap  from 192.168.1.40  9 acted, 0 ignored"));
+        // §5.9's TRIGGERS row, with a rule set behind it: what the main window says about
+        // the editor without the editor being open.
+        window->set_rules_active(2);
+        window->set_rules_total(3);
+        window->set_rules_last_fired(
+            slint::SharedString("/composition/layers/3/clips/7/connect 1"));
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));

@@ -1,0 +1,200 @@
+// The vocabulary both of takt4's windows are built from — HANDOFF §5.9.
+//
+// Extracted from main_window.slint when the rule editor became a second window: a Slint
+// `global` and a component are file-scoped unless they are exported, so two windows that
+// are meant to look like one application have to import their theme from one place. This
+// is that place, and it holds nothing that knows what either window is for.
+
+import { Slider } from "std-widgets.slint";
+
+// A dark window, whatever the desktop is set to. This is read across a booth, and the
+// std-widgets are pinned to the same scheme so the pickers do not come up white.
+export global Theme {
+  out property <color> background: #121316;
+  out property <color> panel: #191b1f;
+  out property <color> line: #2b2f36;
+  out property <color> text: #e9ebee;
+  out property <color> dim: #878d97;
+  out property <color> accent: #60cdff;   // fluent's own dark accent, so the pickers agree
+  out property <color> locked: #4ade80;
+  out property <color> holding: #fbbf24;
+  out property <color> trace: #3f596b;
+
+  // The pressable controls. Lighter than the panel they sit on, so a button reads as a
+  // button, and their labels are plain white rather than the body text's off-white —
+  // these are hit in a dark room, at a glance, while something else is going on.
+  out property <color> control: #2b313a;
+  out property <color> controlEdge: #4a525f;
+  out property <color> controlPrimary: #17567a;
+  // A toggle that is currently on, in the same green the lock readout uses — it is the
+  // lock the operator is holding, and green means locked everywhere else in this window.
+  out property <color> controlActive: #1a6b3c;
+  out property <color> label: #ffffff;
+  // A disabled button keeps its shape: it sits between the panel and an active control
+  // rather than sinking into the background, because on a freshly opened window every
+  // one of these is disabled and a row of holes is not what the app should look like.
+  out property <color> controlOff: #21252b;
+}
+
+/// A button, built here rather than taken from std-widgets.
+///
+/// `Button` exposes `text`, `icon`, `primary`, `enabled` and `checkable` — and no
+/// `font-size` or `font-weight`. Its label therefore comes out at the widget set's own
+/// size in the widget set's own foreground colour, which on this dark panel is grey on
+/// grey and too small to read at a glance. These are the controls an operator hits in a
+/// booth, mid-set, while looking at something else, so the type is 17px, bold, and plain
+/// white. It also settles `÷2`: at the std size the dots of U+00F7 all but vanish and the
+/// glyph reads as `+`.
+///
+/// What is given up is the Fluent look and its focus ring. The pickers and sliders are
+/// still std widgets, so the window keeps that vocabulary everywhere it does not cost
+/// legibility.
+export component Press inherits Rectangle {
+  in property <string> text;
+  in property <bool> enabled: true;
+  /// The one action in a row that should be reached for first.
+  in property <bool> primary;
+  /// A toggle that is currently on, lit so it reads as held down rather than pressable.
+  in property <bool> active;
+  callback clicked;
+
+  private property <color> face: root.active ? Theme.controlActive
+    : root.primary ? Theme.controlPrimary
+    : Theme.control;
+
+  min-height: 40px;
+  horizontal-stretch: 0;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: !root.enabled ? Theme.line
+    : root.active ? Theme.locked
+    : root.primary ? Theme.accent
+    : touch.has-hover ? Theme.accent
+    : Theme.controlEdge;
+  background: !root.enabled ? Theme.controlOff
+    : touch.pressed ? root.face.darker(0.3)
+    : touch.has-hover ? root.face.brighter(0.25)
+    : root.face;
+
+  HorizontalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+
+    Text {
+      text: root.text;
+      // Plain white, not Theme.text: this is the one thing in the window that has to
+      // survive being glanced at rather than read.
+      color: root.enabled ? Theme.label : Theme.dim;
+      font-size: 17px;
+      font-weight: 700;
+      horizontal-alignment: center;
+      vertical-alignment: center;
+    }
+  }
+
+  touch := TouchArea {
+    enabled: root.enabled;
+    clicked => {
+      root.clicked();
+    }
+  }
+}
+
+/// A horizontal level bar with a label and a reading beside it.
+export component Bar inherits HorizontalLayout {
+  in property <string> label;
+  in property <float> value;      // 0 to 1
+  in property <string> reading;
+  in property <color> fill: Theme.accent;
+
+  spacing: 10px;
+
+  Text {
+    text: root.label;
+    color: Theme.dim;
+    font-size: 12px;
+    width: 74px;
+    vertical-alignment: center;
+  }
+
+  Rectangle {
+    background: Theme.panel;
+    border-radius: 3px;
+    vertical-stretch: 0;
+    height: 10px;
+    y: (parent.height - self.height) / 2;
+    clip: true;
+
+    Rectangle {
+      x: 0;
+      width: parent.width * clamp(root.value, 0.0, 1.0);
+      height: 100%;
+      background: root.fill;
+      border-radius: 3px;
+    }
+  }
+
+  Text {
+    text: root.reading;
+    color: Theme.text;
+    font-size: 12px;
+    font-family: "Consolas";
+    width: 76px;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+  }
+}
+
+/// A setting the operator drags: the same label and reading columns as `Bar`, so a
+/// control and a meter line up down the window.
+///
+/// `value` is two-way bound all the way down to the Slider, which is what lets the C++
+/// side move the control when something other than a drag changes the setting — a tap
+/// moves the fold window, and the window has to follow it (§7 deviation 8).
+export component Setting inherits HorizontalLayout {
+  in property <string> label;
+  in-out property <float> value;
+  in property <float> minimum;
+  in property <float> maximum;
+  in property <float> step: 1;
+  in property <string> reading;
+  /// Blank column between the label and the slider, so a row with no switch in it lines
+  /// its slider up with a row that has one.
+  in property <length> indent: 0px;
+  callback moved(float);
+
+  spacing: 10px;
+
+  Text {
+    text: root.label;
+    color: Theme.dim;
+    font-size: 12px;
+    width: 74px;
+    vertical-alignment: center;
+  }
+
+  Rectangle { width: root.indent; }
+
+  Slider {
+    minimum: root.minimum;
+    maximum: root.maximum;
+    step: root.step;
+    value <=> root.value;
+    // A slider sends the value it now has, never a nudge. The control queue coalesces
+    // settings changes, so two relative steps arriving in one round would collapse into
+    // one and lose a step; an absolute value does not have the question.
+    changed(v) => {
+      root.moved(v);
+    }
+  }
+
+  Text {
+    text: root.reading;
+    color: Theme.text;
+    font-size: 12px;
+    font-family: "Consolas";
+    width: 76px;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+  }
+}

@@ -8,6 +8,11 @@
 # through next to MSBuild's default /W1 and the compiler reports the clash, D9025, on
 # every build.)
 add_library(takt4_ui_slint STATIC)
+# One entry point, not two. Each generated translation unit embeds the resources its
+# window uses, and both windows use the same std-widgets fonts — compiling them separately
+# gives a screenful of LNK4006 "already defined; second definition ignored" and two copies
+# of every font in the binary. main_window.slint re-exports RulesWindow instead, so there
+# is one generated header holding both.
 slint_target_sources(takt4_ui_slint main_window.slint)
 set_target_properties(takt4_ui_slint PROPERTIES
   # Never let generated code refer to files by their build-machine paths.
@@ -28,6 +33,8 @@ add_library(takt4_ui STATIC
   app.hpp
   headless.cpp
   headless.hpp
+  rules_controller.cpp
+  rules_controller.hpp
   shot.cpp
   window_controller.cpp
   window_controller.hpp

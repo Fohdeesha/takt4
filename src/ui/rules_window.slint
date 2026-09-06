@@ -1,0 +1,941 @@
+// The rule editor — HANDOFF §5.9's second half, and Phase 6's exit criterion.
+//
+// §8: "A rule that fires a non-repeating random clip on every fourth downbeat can be built
+// entirely by clicking, in under a minute, by someone who has not read the docs."
+// Everything underneath that sentence has worked since Phase 6's engine half; this is the
+// clicking.
+//
+// **A window of its own**, by the user's call on 2026-09-06: the tracker and the rules are
+// watched at the same time, and one screen holding both means either can be on a second
+// monitor. The main window keeps a TRIGGERS row that opens this and shows what it is doing.
+//
+// **Master-detail rather than §5.9's stack of cards.** The sketch draws every rule as a
+// card with its whole editor visible, which reads beautifully at three rules and not at
+// twenty — and a card holds thirty controls, so a repeater over them is thirty times the
+// markup with no way to test one. A list down the left and one editor on the right scales,
+// keeps the parts that matter (§5.9's chips, the last-fired line, the [test] button) at
+// full size, and is the shape every rule editor an operator has already used takes.
+//
+// Nothing here talks to the trigger engine. `ui::RulesController` owns the rules, edits its
+// own copy and posts the set whole — see its header for why the runner's copy cannot be the
+// one being edited.
+
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { Press, Theme } from "theme.slint";
+
+/// One row of the rule list. Everything the list shows without the editor being open.
+export struct RuleRow {
+  name: string,
+  enabled: bool,
+  /// Empty when the rule is fine; otherwise `Rule::problem()`, which is why it will not
+  /// fire. §5.8's policy is that an invalid rule is held and shown rather than refused.
+  problem: string,
+  fires: int,
+}
+
+/// One editable `{...}` of the address, or the rule's value, or its MIDI note number —
+/// whatever a `trigger::Generator` fills in. §5.9: "Template segments render as editable
+/// chips; clicking one opens a small popover with the generator type and its range."
+///
+/// Inline rather than in a popover: a popover hides the one thing an operator is comparing
+/// against, which is the other segments of the same address. They are stacked instead, each
+/// labelled with the placeholder it fills.
+export struct SlotRow {
+  /// `{C}` for an address segment, "value" for the argument, "note" for MIDI.
+  label: string,
+  kind-index: int,
+  /// Whether this generator draws from a range or from a list — only meaningful for
+  /// shuffle, random and cycle, and hidden for the rest.
+  takes-pool: bool,
+  is-list: bool,
+  low: int,
+  high: int,
+  /// The list as an operator writes it: "3, 7, 1, 12". Parsed leniently on the way in.
+  values: string,
+  no-repeat: int,
+  /// `Fixed`'s literal and `Live`'s source, shown only for those kinds.
+  fixed: string,
+  is-fixed: bool,
+  is-live: bool,
+  live-index: int,
+  /// What this slot last produced, so an operator can see a sequence advancing without
+  /// waiting for the address line to scroll past.
+  last: string,
+}
+
+export component RulesWindow inherits Window {
+  title: "takt4 — triggers";
+  preferred-width: 1180px;
+  preferred-height: 790px;
+  min-width: 900px;
+  min-height: 560px;
+  background: Theme.background;
+  init => {
+    Palette.color-scheme = ColorScheme.dark;
+  }
+
+  // --- the set ---------------------------------------------------------------------
+  in-out property <[RuleRow]> rules;
+  in-out property <int> selected: -1;
+  /// §5.8's PANIC, latched. Lit while it is held, because a rig that has stopped firing
+  /// and a rig with no rules look identical otherwise.
+  in-out property <bool> panicked;
+
+  callback rule-picked(int);
+  callback rule-added();
+  callback rule-removed();
+  callback rule-duplicated();
+  callback rule-enabled-changed(bool);
+  callback rule-renamed(string);
+  callback panic-clicked();
+  /// §5.9's per-rule [test] button. Fires past `enabled` and past the conditions, which is
+  /// deliberate: an operator building a rule wants to see where the message lands without
+  /// waiting for a downbeat at the right confidence.
+  callback rule-tested();
+
+  // --- WHEN ------------------------------------------------------------------------
+  in-out property <[string]> trigger-names;
+  in-out property <int> trigger-index;
+  /// Whether the selected trigger counts — "every N beats" and "every N bars" — so the
+  /// count is offered only where §5.8 gives it a meaning.
+  in-out property <bool> trigger-takes-every;
+  in-out property <int> every: 1;
+
+  callback trigger-picked(int);
+  callback every-changed(int);
+
+  // --- ONLY IF ---------------------------------------------------------------------
+  in-out property <float> min-confidence;
+  in-out property <bool> allow-calm: true;
+  in-out property <bool> allow-normal: true;
+  in-out property <bool> allow-intense: true;
+  in-out property <float> min-bpm;
+  in-out property <float> max-bpm: 1000;
+  in-out property <float> probability: 1;
+  in-out property <float> cooldown-ms;
+
+  callback min-confidence-changed(float);
+  callback intensity-changed(int, bool);
+  callback bpm-range-edited(string);
+  callback probability-changed(float);
+  callback cooldown-changed(float);
+
+  // --- SEND ------------------------------------------------------------------------
+  in-out property <[string]> send-kinds;
+  in-out property <int> send-index;
+  in-out property <bool> sends-osc: true;
+  in-out property <string> address;
+  in-out property <int> channel: 1;
+  /// §5.6's host presets: "The preset is a starting point the user can edit — never a
+  /// hardcoded code path." Picking one fills the address and the slots in, and every part
+  /// of what it filled stays editable.
+  in-out property <[string]> host-presets;
+  in-out property <bool> send-value: true;
+  /// §5.8's "optional follow-up value after a delay" — §5.6's press-then-release, without
+  /// which a Resolume clip stays latched on.
+  in-out property <bool> follow-up;
+  in-out property <string> follow-up-value;
+  in-out property <float> follow-up-ms;
+
+  in-out property <[string]> generator-kinds;
+  in-out property <[string]> live-sources;
+  in-out property <[SlotRow]> slots;
+
+  callback send-picked(int);
+  callback address-edited(string);
+  callback channel-changed(int);
+  callback host-preset-picked(int);
+  callback send-value-changed(bool);
+  callback follow-up-changed(bool);
+  callback follow-up-value-edited(string);
+  callback follow-up-delay-changed(float);
+
+  callback slot-kind-picked(int, int);
+  callback slot-pool-changed(int, bool);
+  callback slot-range-edited(int, string);
+  callback slot-values-edited(int, string);
+  callback slot-no-repeat-changed(int, int);
+  callback slot-fixed-edited(int, string);
+  callback slot-live-picked(int, int);
+
+  // --- what it is doing ------------------------------------------------------------
+  /// §5.9: "the last-fired line on each rule card, showing the actually-sent message with a
+  /// timestamp. That single line turns a config screen into an instrument."
+  in-out property <string> last-fired;
+  in-out property <string> last-fired-ago;
+  /// Phase 6's event log tab, flattened into a pane: every message that left, newest first.
+  in-out property <[string]> log;
+  in-out property <string> status;
+  in-out property <bool> status-is-error;
+
+  callback log-cleared();
+
+  HorizontalLayout {
+    padding: 0px;
+    spacing: 0px;
+
+    // --- the rule list -------------------------------------------------------------
+    Rectangle {
+      background: Theme.panel;
+      width: 244px;
+      horizontal-stretch: 0;
+
+      VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+          text: "TRIGGERS";
+          color: Theme.dim;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 1px;
+        }
+
+        ListView {
+          vertical-stretch: 1;
+          for row[index] in root.rules: Rectangle {
+            height: 46px;
+            background: index == root.selected ? Theme.control : transparent;
+            border-radius: 4px;
+
+            HorizontalLayout {
+              padding-left: 8px;
+              padding-right: 8px;
+              spacing: 8px;
+
+              // The dot says three things at a glance, which is what a list is for:
+              // disabled, broken, or ready. An operator scanning twenty rules needs the
+              // broken one to be findable without opening each.
+              Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                y: (parent.height - self.height) / 2;
+                background: !row.enabled ? Theme.dim
+                  : row.problem != "" ? Theme.holding
+                  : Theme.locked;
+              }
+
+              Text {
+                text: row.name == "" ? "(unnamed)" : row.name;
+                color: row.enabled ? Theme.text : Theme.dim;
+                font-size: 13px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+
+              Text {
+                text: row.fires > 0 ? row.fires : "";
+                color: Theme.dim;
+                font-size: 11px;
+                font-family: "Consolas";
+                vertical-alignment: center;
+              }
+            }
+
+            TouchArea {
+              clicked => {
+                root.rule-picked(index);
+              }
+            }
+          }
+        }
+
+        HorizontalLayout {
+          spacing: 6px;
+          vertical-stretch: 0;
+
+          Press {
+            text: "+";
+            min-width: 44px;
+            clicked => {
+              root.rule-added();
+            }
+          }
+          Press {
+            text: "COPY";
+            enabled: root.selected >= 0;
+            horizontal-stretch: 1;
+            clicked => {
+              root.rule-duplicated();
+            }
+          }
+          Press {
+            text: "DELETE";
+            enabled: root.selected >= 0;
+            horizontal-stretch: 1;
+            clicked => {
+              root.rule-removed();
+            }
+          }
+        }
+
+        // PANIC lives here rather than beside the rules it stops, because it is reached in
+        // a hurry: bottom-left of the window, the same place every time, never scrolled
+        // away, and lit while it is held so the state is unmistakable.
+        Press {
+          text: root.panicked ? "PANICKED — RELEASE" : "PANIC";
+          active: root.panicked;
+          primary: !root.panicked;
+          vertical-stretch: 0;
+          clicked => {
+            root.panic-clicked();
+          }
+        }
+      }
+    }
+
+    Rectangle {
+      width: 1px;
+      background: Theme.line;
+      horizontal-stretch: 0;
+    }
+
+    // --- the editor ----------------------------------------------------------------
+    VerticalLayout {
+      horizontal-stretch: 1;
+      padding: 0px;
+
+      // The title bar of §5.9's card: the name, whether it is on, and [test].
+      Rectangle {
+        background: Theme.panel;
+        vertical-stretch: 0;
+        height: 60px;
+
+        HorizontalLayout {
+          padding-left: 18px;
+          padding-right: 18px;
+          padding-top: 10px;
+          padding-bottom: 10px;
+          spacing: 10px;
+
+          CheckBox {
+            checked <=> root.rule-enabled;
+            enabled: root.selected >= 0;
+            toggled => {
+              root.rule-enabled-changed(self.checked);
+            }
+          }
+
+          LineEdit {
+            text <=> root.rule-name;
+            placeholder-text: "name this rule";
+            enabled: root.selected >= 0;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            edited(text) => {
+              root.rule-renamed(text);
+            }
+          }
+
+          Press {
+            text: "TEST";
+            enabled: root.selected >= 0;
+            min-width: 92px;
+            clicked => {
+              root.rule-tested();
+            }
+          }
+        }
+      }
+
+      Rectangle {
+        height: 1px;
+        background: Theme.line;
+        vertical-stretch: 0;
+      }
+
+      scroller := ScrollView {
+        vertical-stretch: 1;
+        // Scrolls vertically only. Without this a ScrollView sizes its viewport to whatever
+        // its content asks for, and a column of rows full of fixed widths asks for more than
+        // the pane has — so the editor scrolled sideways and half of every row was simply
+        // not on screen. Two renders found it; nothing in the markup says it is wrong.
+        viewport-width: self.visible-width;
+
+        VerticalLayout {
+          padding: 16px;
+          spacing: 14px;
+          alignment: start;
+
+          // --- WHEN ------------------------------------------------------------
+          Text {
+            text: "WHEN";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+          }
+
+          HorizontalLayout {
+            spacing: 10px;
+
+            ComboBox {
+              model: root.trigger-names;
+              current-index <=> root.trigger-index;
+              enabled: root.selected >= 0;
+              width: 220px;
+              selected => {
+                root.trigger-picked(self.current-index);
+              }
+            }
+
+            if root.trigger-takes-every : Text {
+              text: "every";
+              color: Theme.text;
+              font-size: 13px;
+              vertical-alignment: center;
+            }
+
+            if root.trigger-takes-every : SpinBox {
+              value <=> root.every;
+              minimum: 1;
+              maximum: 64;
+              enabled: root.selected >= 0;
+              width: 96px;
+              edited(v) => {
+                root.every-changed(v);
+              }
+            }
+
+            Text {
+              // "every 4 bars" counts from the first, so it is bars 1, 5 and 9 rather than
+              // 4, 8 and 12 — §7 deviation 11. An operator counting a phrase in starts at
+              // one, and the alternative anchors the phrase to wherever the modulo lands.
+              text: root.trigger-takes-every ? "counting from the first" : "";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+            }
+          }
+
+          Rectangle { height: 1px; background: Theme.line; }
+
+          // --- ONLY IF ---------------------------------------------------------
+          Text {
+            text: "ONLY IF";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+          }
+
+          HorizontalLayout {
+            spacing: 10px;
+
+            Text {
+              text: "confidence over";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            Slider {
+              minimum: 0;
+              maximum: 1;
+              value <=> root.min-confidence;
+              enabled: root.selected >= 0;
+              horizontal-stretch: 1;
+              changed(v) => {
+                root.min-confidence-changed(v);
+              }
+            }
+
+            Text {
+              text: Math.round(root.min-confidence * 100) / 100;
+              color: Theme.text;
+              font-size: 12px;
+              font-family: "Consolas";
+              width: 44px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+          }
+
+          HorizontalLayout {
+            spacing: 10px;
+
+            Text {
+              text: "probability";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            Slider {
+              minimum: 0;
+              maximum: 1;
+              value <=> root.probability;
+              enabled: root.selected >= 0;
+              horizontal-stretch: 1;
+              changed(v) => {
+                root.probability-changed(v);
+              }
+            }
+
+            Text {
+              text: Math.round(root.probability * 100) + "%";
+              color: Theme.text;
+              font-size: 12px;
+              font-family: "Consolas";
+              width: 44px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+          }
+
+          // The three that are not sliders, on a line of their own. One row of six controls
+          // was what the first render showed running off the edge of the pane.
+          HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+              text: "intensity";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            CheckBox {
+              text: "calm";
+              checked <=> root.allow-calm;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.intensity-changed(0, self.checked);
+              }
+            }
+            CheckBox {
+              text: "normal";
+              checked <=> root.allow-normal;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.intensity-changed(1, self.checked);
+              }
+            }
+            CheckBox {
+              text: "intense";
+              checked <=> root.allow-intense;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.intensity-changed(2, self.checked);
+              }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+              text: "BPM between";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            bpm-field := LineEdit {
+              text: root.min-bpm + " - " + root.max-bpm;
+              placeholder-text: "any";
+              enabled: root.selected >= 0;
+              font-size: 12px;
+              width: 116px;
+              accepted(text) => {
+                root.bpm-range-edited(text);
+              }
+            }
+
+            Text {
+              text: "cooldown";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 72px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+
+            cooldown-field := LineEdit {
+              text: root.cooldown-ms;
+              enabled: root.selected >= 0;
+              font-size: 12px;
+              width: 76px;
+              accepted(text) => {
+                root.cooldown-changed(text.to-float());
+              }
+            }
+
+            Text {
+              text: "ms";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          Rectangle { height: 1px; background: Theme.line; }
+
+          // --- SEND ------------------------------------------------------------
+          Text {
+            text: "SEND";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+          }
+
+          HorizontalLayout {
+            spacing: 8px;
+
+            ComboBox {
+              model: root.send-kinds;
+              current-index <=> root.send-index;
+              enabled: root.selected >= 0;
+              width: 140px;
+              selected => {
+                root.send-picked(self.current-index);
+              }
+            }
+
+            if root.sends-osc : ComboBox {
+              // §5.6's host presets. A starting point that fills the address and its
+              // slots, never a code path — everything it wrote stays editable.
+              model: root.host-presets;
+              enabled: root.selected >= 0;
+              width: 168px;
+              selected => {
+                root.host-preset-picked(self.current-index);
+              }
+            }
+
+            if !root.sends-osc : Text {
+              text: "channel";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            if !root.sends-osc : SpinBox {
+              value <=> root.channel;
+              minimum: 1;
+              maximum: 16;
+              enabled: root.selected >= 0;
+              width: 96px;
+              edited(v) => {
+                root.channel-changed(v);
+              }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // The address on a line of its own: it is the longest thing in the window and the
+          // one an operator reads character by character, so sharing a row with two pickers
+          // left it with a hundred pixels. §5.9's sketch gives it a line too.
+          if root.sends-osc : LineEdit {
+            text <=> root.address;
+            placeholder-text: "/composition/layers/3/clips/{clip}/connect";
+            enabled: root.selected >= 0;
+            font-size: 13px;
+            accepted(text) => {
+              root.address-edited(text);
+            }
+          }
+
+          // Every `{...}` of the address, plus the value and — for MIDI — the note. Each
+          // one is a generator, and this is where "custom random triggers and sequences"
+          // actually gets designed.
+          for slot[index] in root.slots: Rectangle {
+            background: Theme.panel;
+            border-radius: 5px;
+            vertical-stretch: 0;
+            height: 48px;
+
+            HorizontalLayout {
+              padding: 8px;
+              spacing: 6px;
+
+              Text {
+                text: slot.label;
+                color: Theme.accent;
+                font-size: 13px;
+                font-family: "Consolas";
+                width: 64px;
+                vertical-alignment: center;
+                overflow: elide;
+              }
+
+              ComboBox {
+                model: root.generator-kinds;
+                current-index: slot.kind-index;
+                width: 104px;
+                selected => {
+                  root.slot-kind-picked(index, self.current-index);
+                }
+              }
+
+              // `if`, not `visible`, on every one of these — and it is not a style
+              // preference. Slint's own reference: *"When set to false, the element and all
+              // its children won't be drawn ... The element still takes up layout space
+              // within any layout container."* These five are alternatives to each other, so
+              // with `visible` the row reserved room for all of them at once and ran off the
+              // right of the pane, drawing a stray empty field beside the one that mattered.
+              // `if` takes the element out of the tree. Two renders to find, one line to fix.
+
+              // Which values, asked separately from how they are drawn — the two questions
+              // `trigger::Pool` exists to keep apart.
+              if slot.takes-pool : CheckBox {
+                text: "list";
+                checked: slot.is-list;
+                toggled => {
+                  root.slot-pool-changed(index, self.checked);
+                }
+              }
+
+              if slot.takes-pool && !slot.is-list : LineEdit {
+                text: slot.low + " - " + slot.high;
+                placeholder-text: "1 - 8";
+                font-size: 12px;
+                horizontal-stretch: 1;
+                accepted(text) => {
+                  root.slot-range-edited(index, text);
+                }
+              }
+
+              if slot.takes-pool && slot.is-list : LineEdit {
+                text: slot.values;
+                placeholder-text: "3, 7, 1, 12 — in this order";
+                font-size: 12px;
+                horizontal-stretch: 1;
+                accepted(text) => {
+                  root.slot-values-edited(index, text);
+                }
+              }
+
+              if slot.is-fixed : LineEdit {
+                text: slot.fixed;
+                placeholder-text: "value";
+                font-size: 12px;
+                horizontal-stretch: 1;
+                accepted(text) => {
+                  root.slot-fixed-edited(index, text);
+                }
+              }
+
+              if slot.is-live : ComboBox {
+                model: root.live-sources;
+                current-index: slot.live-index;
+                horizontal-stretch: 1;
+                selected => {
+                  root.slot-live-picked(index, self.current-index);
+                }
+              }
+
+              // Something stretchy for the kinds that offer no field of their own, so the
+              // row does not collapse around the dropdown.
+              if !slot.takes-pool && !slot.is-fixed && !slot.is-live : Rectangle {
+                horizontal-stretch: 1;
+              }
+
+              if slot.takes-pool : Text {
+                // Short because the row is tight and the SpinBox beside it says the rest:
+                // "no repeat 2" reads as what it is. `Generator::Config::noRepeatWithin`.
+                text: "no repeat";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+              }
+
+              if slot.takes-pool : SpinBox {
+                value: slot.no-repeat;
+                minimum: 0;
+                maximum: 64;
+                width: 76px;
+                edited(v) => {
+                  root.slot-no-repeat-changed(index, v);
+                }
+              }
+
+              Text {
+                // What this slot last produced. §5.9 asks for a last-fired line on the
+                // rule; a sequence is easier to believe when each part shows its own.
+                text: slot.last;
+                color: Theme.locked;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 40px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+            }
+          }
+
+          HorizontalLayout {
+            spacing: 10px;
+
+            CheckBox {
+              text: "send a value";
+              checked <=> root.send-value;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.send-value-changed(self.checked);
+              }
+            }
+
+            CheckBox {
+              // §7.4: Resolume's connect takes 1 for press and 0 for release, and a rule
+              // that sends only the 1 leaves the clip held. This is that release.
+              text: "then send";
+              checked <=> root.follow-up;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.follow-up-changed(self.checked);
+              }
+            }
+
+            LineEdit {
+              text <=> root.follow-up-value;
+              enabled: root.selected >= 0 && root.follow-up;
+              font-size: 12px;
+              width: 76px;
+              accepted(text) => {
+                root.follow-up-value-edited(text);
+              }
+            }
+
+            Text {
+              text: "after";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            LineEdit {
+              text: root.follow-up-ms;
+              enabled: root.selected >= 0 && root.follow-up;
+              font-size: 12px;
+              width: 76px;
+              accepted(text) => {
+                root.follow-up-delay-changed(text.to-float());
+              }
+            }
+
+            Text {
+              text: "ms";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+        }
+      }
+
+      Rectangle {
+        height: 1px;
+        background: Theme.line;
+        vertical-stretch: 0;
+      }
+
+      // §5.9: "the last-fired line ... That single line turns a config screen into an
+      // instrument." Above the log rather than inside it, because it is about *this* rule
+      // and the log is about all of them.
+      Rectangle {
+        background: Theme.panel;
+        vertical-stretch: 0;
+        height: 38px;
+
+        HorizontalLayout {
+          padding-left: 18px;
+          padding-right: 18px;
+          spacing: 10px;
+
+          Text {
+            text: root.last-fired == "" ? "not fired yet" : "→ " + root.last-fired;
+            color: root.last-fired == "" ? Theme.dim : Theme.locked;
+            font-size: 12px;
+            font-family: "Consolas";
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+          }
+
+          Text {
+            text: root.last-fired-ago;
+            color: Theme.dim;
+            font-size: 12px;
+            font-family: "Consolas";
+            vertical-alignment: center;
+          }
+        }
+      }
+    }
+
+    Rectangle {
+      width: 1px;
+      background: Theme.line;
+      horizontal-stretch: 0;
+    }
+
+    // --- the event log --------------------------------------------------------------
+    // Phase 6's list has a tab for this. A pane rather than a tab: an operator watching a
+    // rule they just built wants the log and the editor on screen together, and the whole
+    // point of a second window was that there is room.
+    Rectangle {
+      background: Theme.panel;
+      width: 264px;
+      horizontal-stretch: 0;
+
+      VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+          spacing: 8px;
+          Text {
+            text: "EVENT LOG";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+          }
+          Press {
+            text: "CLEAR";
+            min-width: 76px;
+            clicked => {
+              root.log-cleared();
+            }
+          }
+        }
+
+        ListView {
+          vertical-stretch: 1;
+          for line in root.log: Text {
+            text: line;
+            color: Theme.dim;
+            font-size: 11px;
+            font-family: "Consolas";
+            height: 18px;
+            overflow: elide;
+          }
+        }
+      }
+    }
+  }
+
+  // The name and enabled state of the selected rule, held here so the two controls in the
+  // title bar can bind to them two-way. Written by the C++ side on every selection.
+  in-out property <string> rule-name;
+  in-out property <bool> rule-enabled;
+}

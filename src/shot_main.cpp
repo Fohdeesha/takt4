@@ -16,11 +16,12 @@ void printUsage(std::ostream& out) {
     out << "takt4-shot " << takt4::buildInfo().version
         << " — render the main window to a BMP\n"
            "\n"
-           "  takt4-shot OUT.bmp [--size WxH] [--stopped]\n"
+           "  takt4-shot OUT.bmp [--size WxH] [--stopped] [--rules]\n"
            "\n"
-           "  --size WxH      the window size to render, default 900x640\n"
+           "  --size WxH      the window size to render, default the window's own\n"
            "  --stopped       draw the idle window — blank readouts and the manual\n"
            "                  controls disabled — instead of a tracker running\n"
+           "  --rules         draw §5.9's rule editor instead of the main window\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
@@ -35,6 +36,7 @@ int main(int argc, char** argv) {
     takt4::ui::ShotOptions options;
     int width = options.width;
     int height = options.height;
+    bool sized = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -44,7 +46,10 @@ int main(int argc, char** argv) {
         }
         if (arg == "--stopped") {
             options.running = false;
+        } else if (arg == "--rules") {
+            options.rules = true;
         } else if (arg == "--size") {
+            sized = true;
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --size needs WxH\n";
                 return 2;
@@ -79,6 +84,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Each window renders at its own preferred size unless one was asked for, so a picture
+    // is the layout as designed rather than the layout squeezed.
+    if (options.rules && !sized) {
+        width = takt4::ui::kRulesShotWidth;
+        height = takt4::ui::kRulesShotHeight;
+    }
     options.width = width;
     options.height = height;
     try {

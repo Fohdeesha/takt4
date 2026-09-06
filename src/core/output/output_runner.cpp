@@ -1,6 +1,7 @@
 #include "core/output/output_runner.hpp"
 
 #include <exception>
+#include <string>
 #include <utility>
 
 #if defined(_WIN32)
@@ -35,10 +36,52 @@ void restoreTimerResolution(bool raised) noexcept {
 #endif
 }
 
+/// One message as a person reads it: the address for OSC, the target for MIDI.
+///
+/// The *sent* form, with every `{}` already filled in — §5.9 asks for "the actually-sent
+/// message", and a card showing the template would be showing what the operator typed back
+/// at them rather than what happened.
+std::string describe(const trigger::Message& message) {
+    if (message.kind == trigger::Message::Kind::Osc) {
+        std::string text = message.address;
+        if (message.hasArgument) {
+            text += ' ';
+            message.argument.appendTo(text);
+        }
+        return text;
+    }
+    const bool note = message.kind == trigger::Message::Kind::MidiNote;
+    return std::string(note ? "note " : "cc ") + std::to_string(message.number) + " ch " +
+           std::to_string(message.channel) + " = " + std::to_string(message.value);
+}
+
 } // namespace
 
 OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config& config)
-    : engine_(engine), transports_(config), sink_(transports_), triggers_(sink_) {}
+    : engine_(engine), transports_(config), sink_(transports_), triggers_(sink_) {
+    // §5.9's last-fired line and event log. Copied out of the output thread and into a
+    // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
+    triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message) {
+        Fired entry;
+        entry.ruleId = ruleId;
+        entry.message = describe(message);
+        entry.when = elapsed();
+        const std::lock_guard<std::mutex> lock(firedMutex_);
+        if (fired_.size() >= kFiredCapacity) {
+            // The oldest goes. A log that stops recording when it is full stops being a
+            // log, and what an operator wants is the last few seconds, not the first.
+            fired_.erase(fired_.begin());
+        }
+        fired_.push_back(std::move(entry));
+    });
+}
+
+std::vector<OutputRunner::Fired> OutputRunner::takeFired() {
+    std::vector<Fired> out;
+    const std::lock_guard<std::mutex> lock(firedMutex_);
+    out.swap(fired_);
+    return out;
+}
 
 OutputRunner::~OutputRunner() {
     stop();

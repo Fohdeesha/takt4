@@ -1,0 +1,159 @@
+#pragma once
+
+#include "core/output/output_runner.hpp"
+#include "core/trigger/rule.hpp"
+
+#include "main_window.h" // generated; holds RulesWindow too — see src/ui/CMakeLists.txt
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace takt4::ui {
+
+/// HANDOFF §5.9's rule editor, behind its own window.
+///
+/// §8's exit criterion for Phase 6 is entirely about this: *"A rule that fires a
+/// non-repeating random clip on every fourth downbeat can be built entirely by clicking, in
+/// under a minute, by someone who has not read the docs."* Everything under that sentence
+/// has worked since Phase 6's engine half.
+///
+/// **It edits its own copy of the rules and posts the set whole.** The live rules belong to
+/// §4.2's output thread — `OutputRunner::triggers()` is documented as safe to read only
+/// while that thread is stopped — and an editor has to work during a set. So every edit
+/// changes `rules_` and hands the whole set over through `OutputCommand::Rules`, which is
+/// the command's stated purpose and the same shape `WindowController::postOptions` uses for
+/// a slider. Replacing a short vector of small structs a few times a second is nothing next
+/// to what the output thread does between rounds anyway.
+///
+/// Nothing here touches a Slint property outside `tick()` and the callbacks, both of which
+/// run on the UI thread — §7.5's rule.
+class RulesController {
+public:
+    /// Called whenever the rule set changes, so the owner can save it (Q7) and keep its own
+    /// copy in step. The controller does not know where settings live and does not want to.
+    using RulesChanged = std::function<void(const std::vector<trigger::Rule::Config>&)>;
+
+    /// How many messages the event log remembers. Phase 6's list asks for a log tab; this is
+    /// the pane. Bounded because a rule on every beat at 214 BPM is 3.6 lines a second, and
+    /// an unbounded log of a four-hour set is a memory leak with a scrollbar.
+    static constexpr std::size_t kLogLines = 200;
+
+    /// The runner must outlive this. Nothing is shown until `show()`.
+    RulesController(output::OutputRunner& runner, std::vector<trigger::Rule::Config> rules);
+
+    RulesController(const RulesController&) = delete;
+    RulesController& operator=(const RulesController&) = delete;
+
+    void setRulesChanged(RulesChanged changed) { changed_ = std::move(changed); }
+
+    /// Shows the window, or brings it forward if it is already up.
+    void show();
+    void hide();
+    bool visible() const noexcept { return visible_; }
+
+    /// One round of refreshing what the window shows — fire counts, the last-fired line,
+    /// the log. Driven by the main window's redraw timer so the app has one timer, and
+    /// cheap enough to call at 30 Hz whether or not the window is up.
+    void tick();
+
+    RulesWindow& window() { return *window_; }
+
+    const std::vector<trigger::Rule::Config>& rules() const noexcept { return rules_; }
+    /// Replaces the set from outside — a preset load. Keeps the selection where it can.
+    void setRules(std::vector<trigger::Rule::Config> rules);
+
+    /// Which rule the editor is on, or -1 when the set is empty.
+    int selected() const noexcept { return selected_; }
+
+    /// What the window's callbacks do, reachable directly as well as through a click —
+    /// which is how `takt4_ui_tests` drives them, Slint's element-level testing API being
+    /// behind SLINT_FEATURE_EXPERIMENTAL (§6).
+    void pick(int index);
+    void add();
+    void remove();
+    void duplicate();
+    void rename(const std::string& name);
+    void setEnabled(bool on);
+    void test();
+    void panic();
+
+    void pickTrigger(int index);
+    void setEvery(int every);
+
+    void setMinConfidence(double value);
+    void setIntensity(int which, bool allowed);
+    void setBpmRange(const std::string& text);
+    void setProbability(double value);
+    void setCooldownMs(double milliseconds);
+
+    void pickSend(int index);
+    void setAddress(const std::string& address);
+    void setChannel(int channel);
+    void pickHostPreset(int index);
+    void setSendValue(bool on);
+    void setFollowUp(bool on);
+    void setFollowUpValue(const std::string& text);
+    void setFollowUpMs(double milliseconds);
+
+    /// The generators, one per `{...}` of the address plus the value and the MIDI note.
+    /// `slot` indexes what the window is showing, which `slotConfigs()` decides.
+    void pickSlotKind(int slot, int kind);
+    void setSlotPool(int slot, bool list);
+    void setSlotRange(int slot, const std::string& text);
+    void setSlotValues(int slot, const std::string& text);
+    void setSlotNoRepeat(int slot, int within);
+    void setSlotFixed(int slot, const std::string& text);
+    void pickSlotLive(int slot, int source);
+
+    void clearLog();
+
+private:
+    /// The selected rule, or null when there is none.
+    trigger::Rule::Config* current() noexcept;
+    const trigger::Rule::Config* current() const noexcept;
+    /// The generator a slot index names, in the order `publishSlots` lists them: the
+    /// address's placeholders, then the value, then the MIDI number.
+    trigger::Generator::Config* slotConfig(int slot) noexcept;
+
+    /// Hands the set to the output thread and tells the owner. Every edit ends here.
+    void commit();
+    /// Keeps `segments` as long as the address has placeholders — §5.8's validity is mostly
+    /// that count, so an edit that adds a `{}` should give the operator a chip rather than a
+    /// rule that refuses to fire until they work out why.
+    void matchSegmentsToAddress(trigger::Rule::Config& rule);
+
+    void publishAll();
+    void publishList();
+    void publishSelected();
+    void publishSlots();
+    void publishFiring();
+    void setStatus(const std::string& text, bool error);
+
+    output::OutputRunner& runner_;
+    std::vector<trigger::Rule::Config> rules_;
+    int selected_ = -1;
+    RulesChanged changed_;
+
+    slint::ComponentHandle<RulesWindow> window_;
+    std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
+    std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
+    std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
+    bool visible_ = false;
+
+    /// Fires seen per rule, by id, so the log can name what fired without the trigger
+    /// engine keeping a ring of its own — which it deliberately does not, the shape of a
+    /// log being a UI question.
+    std::vector<std::uint64_t> firesSeen_;
+    std::vector<std::string> log_;
+    /// What the selected rule last sent and when, on this controller's own clock.
+    std::string lastFired_;
+    double lastFiredAt_ = -1.0;
+    const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+};
+
+} // namespace takt4::ui

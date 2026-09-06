@@ -136,7 +136,11 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // destination: §5.7's `panic` and `rule/<id>/enable` are questions for the rules,
       // which live on the output thread behind that queue.
       control_(tracker.engine(), control::MidiControl::Config{}, &runner_),
-      oscControl_(tracker.engine(), oscControlConfig(settings), &runner_) {
+      oscControl_(tracker.engine(), oscControlConfig(settings), &runner_),
+      // §5.9's editor, built with the window and shown on demand. It is given the rules
+      // straight from the preset rather than through `setRules`, because the runner has
+      // not been told about them yet — the constructor body does that below, once.
+      editor_(runner_, settings.preset.rules) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -177,6 +181,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         setOscControlPort(readPort(std::string(text)));
     });
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
+
+    window_->on_rules_clicked([this] { openEditor(); });
+    window_->on_panic_clicked([this] { togglePanic(); });
+
+    // The editor owns the editing and this owns the file, so a change there comes back
+    // here rather than the editor knowing where settings live.
+    editor_.setRulesChanged(
+        [this](const std::vector<trigger::Rule::Config>& rules) { rules_ = rules; });
 
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
@@ -458,8 +470,20 @@ void WindowController::setMidiControlPort(const std::string& name) {
     publishControl();
 }
 
+void WindowController::openEditor() {
+    editor_.show();
+}
+
+void WindowController::togglePanic() {
+    runner_.panic(!runner_.panicked());
+    publishTriggers();
+}
+
 void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
     rules_ = std::move(rules);
+    // The editor's copy too, or it would go on showing the set it was built with — and the
+    // next edit there would post that stale set back over this one.
+    editor_.setRules(rules_);
     // The whole set, every time. A rule is small and the set is short, so there is no
     // reason for a finer command — and replacing wholesale is what a preset load does, so
     // the editor and the loader take one road rather than two.
@@ -629,6 +653,21 @@ void WindowController::publishMidiControl() {
         text = last ? "not bound - last seen " + describeControl(*last) : std::string("not bound");
     }
     window_->set_control_reading(shared(text));
+}
+
+void WindowController::publishTriggers() {
+    int active = 0;
+    for (const trigger::Rule::Config& config : rules_) {
+        // What "active" means to an operator: it would fire if its moment came. A rule that
+        // is switched off and one that cannot fire are both not going to, and counting them
+        // as active would make the row lie in the direction that matters.
+        if (config.enabled && trigger::Rule(config).valid()) {
+            ++active;
+        }
+    }
+    window_->set_rules_active(active);
+    window_->set_rules_total(static_cast<int>(rules_.size()));
+    window_->set_panicked(runner_.panicked());
 }
 
 void WindowController::publishOscControl() {
@@ -948,6 +987,11 @@ void WindowController::tick() {
     // the engine directly without one, and holding the button lit forever there would be
     // the window lying about a snap that had in fact landed.
     publishSnap();
+    // And the rules, for the same reason twice over: they fire on the output thread, and
+    // the editor is where an operator watches them. Both above the early return — a rule
+    // can be built and tested with no device open, which is exactly how one gets built.
+    publishTriggers();
+    editor_.tick();
     if (!tracker_.running()) {
         return;
     }
