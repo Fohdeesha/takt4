@@ -250,6 +250,11 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_midi_in_ports(midiInputs);
     auto learnActions = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const control::ControlAction action : control::kControlActions) {
+        // The same list the window builds, and skipping the same one: a gesture cannot say
+        // which rule `rule/<id>/enable` means. See `WindowController`'s constructor.
+        if (control::takesRuleId(action)) {
+            continue;
+        }
         learnActions->push_back(slint::SharedString(std::string(control::labelOf(action))));
     }
     window->set_learn_actions(learnActions);

@@ -80,12 +80,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
-      // Built disabled; `setMidiControlPort` is what opens a port, so a machine with a
-      // controller plugged in is not listened to until somebody says to.
-      control_(tracker.engine(), control::MidiControl::Config{}),
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
-      runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())) {
+      runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())),
+      // Built disabled; `setMidiControlPort` is what opens a port, so a machine with a
+      // controller plugged in is not listened to until somebody says to. The runner is its
+      // second destination: §5.7's `panic` and `rule/<id>/enable` are questions for the
+      // rules, which live on the output thread behind that queue.
+      control_(tracker.engine(), control::MidiControl::Config{}, &runner_) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -140,8 +142,17 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     }
     window_->set_midi_in_ports(inputs);
 
+    // Everything a gesture can bind on its own. §5.7's `rule/<id>/enable` is the one that
+    // cannot: pressing a pad says which button, never which rule, and this window has
+    // nowhere to ask the second question. §5.9's rule editor is where that binding gets
+    // armed, from the card that already names the rule — `MidiControl::learn` takes a whole
+    // target for exactly that.
     auto actions = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const control::ControlAction action : control::kControlActions) {
+        if (control::takesRuleId(action)) {
+            continue;
+        }
+        learnActions_.push_back(action);
         actions->push_back(shared(std::string(control::labelOf(action))));
     }
     window_->set_learn_actions(actions);
@@ -378,7 +389,7 @@ void WindowController::setMidiControlPort(const std::string& name) {
 }
 
 void WindowController::pickLearnAction(int index) {
-    if (index < 0 || static_cast<std::size_t>(index) >= control::kControlActions.size()) {
+    if (index < 0 || static_cast<std::size_t>(index) >= learnActions_.size()) {
         return;
     }
     learnAction_ = index;
@@ -392,14 +403,13 @@ void WindowController::toggleLearn() {
     if (control_.learning()) {
         control_.cancelLearn();
     } else {
-        control_.learn(control::kControlActions[static_cast<std::size_t>(learnAction_)]);
+        control_.learn(learnActions_[static_cast<std::size_t>(learnAction_)]);
     }
     publishControl();
 }
 
 void WindowController::forgetLearned() {
-    const control::ControlAction action =
-        control::kControlActions[static_cast<std::size_t>(learnAction_)];
+    const control::ControlAction action = learnActions_[static_cast<std::size_t>(learnAction_)];
     control_.cancelLearn();
     (void)control_.forget(action);
     publishControl();
@@ -422,11 +432,10 @@ void WindowController::publishControl() {
 
     // What the selected action is bound to. More than one control can be bound to one
     // action — two pads for one job is a reasonable thing to want — so they are all shown.
-    const control::ControlAction action =
-        control::kControlActions[static_cast<std::size_t>(learnAction_)];
+    const control::ControlAction action = learnActions_[static_cast<std::size_t>(learnAction_)];
     std::string text;
     for (const control::MidiBinding& binding : control_.bindings()) {
-        if (binding.action != action) {
+        if (binding.target.action != action) {
             continue;
         }
         if (!text.empty()) {

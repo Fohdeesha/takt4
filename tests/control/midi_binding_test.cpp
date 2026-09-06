@@ -66,7 +66,11 @@ TEST_CASE("a binding survives being written down and read back", "[control][midi
             binding.kind = kind;
             binding.channel = 16;
             binding.number = 127;
-            binding.action = action;
+            // The one action that names something as well as doing it has to carry the name
+            // through the file too, or a restored binding would point at no rule at all.
+            binding.target = takt4::control::takesRuleId(action)
+                                 ? takt4::control::ControlTarget(action, "intro")
+                                 : takt4::control::ControlTarget(action);
 
             const std::string text = takt4::control::formatMidiBinding(binding);
             INFO(text);
@@ -80,24 +84,41 @@ TEST_CASE("a binding survives being written down and read back", "[control][midi
     MidiBinding tap;
     tap.number = 36;
     tap.channel = 10;
-    tap.action = ControlAction::Tap;
+    tap.target = ControlAction::Tap;
     CHECK(takt4::control::formatMidiBinding(tap) == "note 36 ch 10 -> tap");
+
+    MidiBinding arm;
+    arm.kind = MidiEvent::Kind::ControlChange;
+    arm.number = 21;
+    arm.channel = 1;
+    arm.target = takt4::control::ControlTarget(ControlAction::RuleEnable, "drop");
+    CHECK(takt4::control::formatMidiBinding(arm) == "cc 21 ch 1 -> rule/drop/enable");
 }
 
 TEST_CASE("a line that is not a binding is refused rather than half-read", "[control][midi]") {
     using takt4::control::parseMidiBinding;
     // This reads a file a person may have edited, so every one of these is reachable.
     CHECK_FALSE(parseMidiBinding("").has_value());
-    CHECK_FALSE(parseMidiBinding("note 36 ch 10").has_value());          // no action
-    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> ").has_value());      // no verb
-    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> panic").has_value()); // Phase 6's, not ours
-    CHECK_FALSE(parseMidiBinding("note 36 -> tap").has_value());         // no channel
-    CHECK_FALSE(parseMidiBinding("pad 36 ch 10 -> tap").has_value());    // not a kind we know
-    CHECK_FALSE(parseMidiBinding("note 300 ch 10 -> tap").has_value());  // out of range
-    CHECK_FALSE(parseMidiBinding("note 36 ch 0 -> tap").has_value());    // channels are 1-16
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10").has_value());         // no action
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> ").has_value());     // no verb
+    CHECK_FALSE(parseMidiBinding("note 36 -> tap").has_value());        // no channel
+    CHECK_FALSE(parseMidiBinding("pad 36 ch 10 -> tap").has_value());   // not a kind we know
+    CHECK_FALSE(parseMidiBinding("note 300 ch 10 -> tap").has_value()); // out of range
+    CHECK_FALSE(parseMidiBinding("note 36 ch 0 -> tap").has_value());   // channels are 1-16
     CHECK_FALSE(parseMidiBinding("note 36 ch 17 -> tap").has_value());
     CHECK_FALSE(parseMidiBinding("note x ch 10 -> tap").has_value());
     CHECK_FALSE(parseMidiBinding("note 36x ch 10 -> tap").has_value()); // trailing rubbish
+
+    // `rule/<id>/enable` is the one verb with a hole in the middle, so its malformed shapes
+    // are their own list. The last is the one worth having: `rule/` and `/enable` overlap
+    // on it, so both halves match and there is still no rule being named.
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule/intro").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> intro/enable").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule/intro/disable").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule//enable").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule/enable").has_value());
+    CHECK_FALSE(parseMidiBinding("note 36 ch 10 -> rule/x/enable/enable").has_value());
 
     // Whitespace is forgiven, because a person typed it.
     CHECK(parseMidiBinding("  cc 7 ch 1  ->  downbeat  ").has_value());
@@ -120,19 +141,36 @@ TEST_CASE("what a control hands an action that wants a 0 or a 1", "[control][mid
 }
 
 TEST_CASE("the verbs a binding and an OSC address share", "[control]") {
+    using takt4::control::ControlTarget;
+    using takt4::control::targetOf;
+    using takt4::control::verbFor;
+
     // One table, so the two surfaces cannot drift apart about what an action is called.
     for (const ControlAction action : takt4::control::kControlActions) {
-        const std::string_view verb = takt4::control::verbOf(action);
+        const ControlTarget target = takt4::control::takesRuleId(action)
+                                         ? ControlTarget(action, "intro")
+                                         : ControlTarget(action);
+        const std::string verb = verbFor(target);
+        INFO(verb);
         CHECK_FALSE(verb.empty());
-        CHECK(takt4::control::actionOf(verb) == action);
+        CHECK(targetOf(verb) == target);
         CHECK_FALSE(takt4::control::labelOf(action).empty());
     }
-    CHECK_FALSE(takt4::control::actionOf("panic").has_value());
-    CHECK_FALSE(takt4::control::actionOf("").has_value());
-    CHECK_FALSE(takt4::control::actionOf("tap/").has_value());
+    CHECK_FALSE(targetOf("").has_value());
+    CHECK_FALSE(targetOf("tap/").has_value());
+    CHECK_FALSE(targetOf("preset").has_value()); // Q7's, and refused rather than half-done
 
-    // Only `lock` takes one today, and §5.7 spells it `<0|1>`.
+    // §5.7's own spellings: `lock <0|1>` and `rule/<id>/enable <0|1>` are written with an
+    // argument and `panic` is written bare, and that difference is the rule here. A panic
+    // button that had to send a value would not be a panic button.
     CHECK(takt4::control::takesArgument(ControlAction::Lock));
+    CHECK(takt4::control::takesArgument(ControlAction::RuleEnable));
+    CHECK_FALSE(takt4::control::takesArgument(ControlAction::Panic));
     CHECK_FALSE(takt4::control::takesArgument(ControlAction::Tap));
     CHECK_FALSE(takt4::control::takesArgument(ControlAction::Downbeat));
+
+    // Only `rule/<id>/enable` names something, and a UI's learn list turns on this being
+    // the one it cannot arm from a gesture.
+    CHECK(takt4::control::takesRuleId(ControlAction::RuleEnable));
+    CHECK_FALSE(takt4::control::takesRuleId(ControlAction::Panic));
 }

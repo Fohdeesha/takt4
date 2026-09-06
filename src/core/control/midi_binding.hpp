@@ -44,11 +44,15 @@ std::optional<MidiEvent> readMidiEvent(std::span<const unsigned char> message) n
 /// what lets one CC bound to `lock` both pin and release — the fader's own position says
 /// which — instead of needing two bindings that could never both be learned from one
 /// gesture.
+///
+/// A `ControlTarget` rather than a bare `ControlAction`, because §5.7's
+/// `rule/<id>/enable` names a rule and a binding to it is worthless without one. The
+/// implicit conversion means a binding to any of the other six still reads as before.
 struct MidiBinding {
     MidiEvent::Kind kind = MidiEvent::Kind::Note;
     std::uint8_t channel = 1;
     std::uint8_t number = 0;
-    ControlAction action = ControlAction::Tap;
+    ControlTarget target;
 
     /// True when `event` is this control, whatever it is currently sending.
     bool matches(const MidiEvent& event) const noexcept {
@@ -58,7 +62,8 @@ struct MidiBinding {
     friend bool operator==(const MidiBinding&, const MidiBinding&) = default;
 };
 
-/// "note 36 ch 10 -> tap", the form a settings file stores and a UI shows. Round-trips
+/// "note 36 ch 10 -> tap", the form a settings file stores and a UI shows — and
+/// "cc 21 ch 1 -> rule/intro/enable" for the one action that names something. Round-trips
 /// through `parseMidiBinding`.
 std::string formatMidiBinding(const MidiBinding& binding);
 

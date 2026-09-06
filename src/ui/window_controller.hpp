@@ -240,22 +240,27 @@ private:
     std::optional<std::uint64_t> snapAwaitingBeat_;
 
     /// §5.7's control input. Which action LEARN would bind, as an index into
-    /// `control::kControlActions`; the table itself lives in `control_`.
+    /// `learnActions_`; the binding table itself lives in `control_`.
     int learnAction_ = 0;
-
-    /// The MIDI surface. **Before `runner_`**, so it is destroyed after it: its callback
-    /// thread posts to the engine, and the engine outlives both, but nothing about the
-    /// ordering should depend on that staying true.
-    control::MidiControl control_;
+    /// The actions this window offers for binding: `control::kControlActions` minus the
+    /// ones that need a rule named too, which a gesture cannot supply. See the constructor.
+    std::vector<control::ControlAction> learnActions_;
 
     /// §4.2's output thread, and the single consumer of the engine's beat ring — which is
     /// why `tick()` no longer drains it.
     ///
-    /// **Last, so that it is destroyed first.** Its destructor joins the thread, and that
-    /// has to happen before anything the thread could still be touching goes away. Nothing
-    /// it holds today reaches back into this class, but a beat observer is the obvious next
-    /// thing to give it, and by then the ordering would be a bug rather than a choice.
+    /// Its destructor joins the thread, and that has to happen before anything the thread
+    /// could still be touching goes away. Nothing it holds today reaches back into this
+    /// class, but a beat observer is the obvious next thing to give it.
     output::OutputRunner runner_;
+
+    /// The MIDI surface. **After `runner_`, so it is destroyed first**, and that ordering
+    /// is now load-bearing rather than a preference: since §5.7's `panic` and
+    /// `rule/<id>/enable` landed, this posts to the *runner* as well as to the engine, on
+    /// RtMidi's own callback thread. Destroying the runner first would leave that thread
+    /// with a queue that has gone. The engine outlives both either way, which is what made
+    /// the opposite order safe before and is no longer the whole question.
+    control::MidiControl control_;
 };
 
 } // namespace takt4::ui

@@ -21,13 +21,13 @@ namespace takt4::control {
 /// of it. It reaches the tracker exactly the way the window's buttons and the console's
 /// keys do, and for the same reason: many producers, one consumer, applied between frames.
 ///
-/// **What it does not carry yet**, and why:
+/// **What it does not carry yet**, and why: `/ctl/preset <name|index>` waits for presets to
+/// be files. Q7's portable layer has a shape (`settings::Preset`) but nothing names or
+/// stores one yet, so a stub would be inventing a meaning for it.
 ///
-///   * `/ctl/panic` and `/ctl/rule/<id>/enable` are Phase 6's. §5.7 defines panic as
-///     "halt all rules immediately", and there are no rules; a stub would be inventing a
-///     meaning for it.
-///   * `/ctl/preset <name|index>` waits for presets to be files. Q7's portable layer has
-///     a shape (`settings::Preset`) but nothing names or stores one yet.
+/// `/ctl/panic` and `/ctl/rule/<id>/enable` reach the *rules* rather than the tracker, which
+/// live behind `output::OutputRunner` on §4.2's own thread — so they need a `RuleControl` as
+/// well as an engine, and are refused where nothing supplies one.
 ///
 /// `/ctl/lock <0|1>` **pins** the lock rather than setting it, because a `setLocked(true)`
 /// the hysteresis unwinds 75 frames later would not be a lock at all. The argument is
@@ -48,7 +48,12 @@ public:
     };
 
     /// The engine must outlive this. Nothing listens until `start()`.
-    OscControl(engine::BeatEngine& engine, Config config);
+    ///
+    /// `rules` is where §5.7's `panic` and `rule/<id>/enable` go — `output::OutputRunner` in
+    /// an app, null where there is none, in which case those two addresses are answered
+    /// "not understood" rather than accepted and dropped. It must outlive this where it is
+    /// not null; `setRuleControl` exists because an owner usually builds the runner second.
+    OscControl(engine::BeatEngine& engine, Config config, RuleControl* rules = nullptr);
     ~OscControl();
 
     OscControl(const OscControl&) = delete;
@@ -63,6 +68,9 @@ public:
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     const Config& config() const noexcept { return config_; }
+
+    /// Where §5.7's two rule addresses go. See the constructor.
+    void setRuleControl(RuleControl* rules) noexcept { surface_.setRuleControl(rules); }
 
     /// The port actually being listened on, which is `config().port` unless that was 0 —
     /// "any free one" — and 0 when nothing is listening. A UI has to show this rather than

@@ -44,6 +44,7 @@ add_library(takt4_core STATIC
   control/osc_parse.hpp
   control/osc_receiver.cpp
   control/osc_receiver.hpp
+  control/rule_control.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   engine/beat_engine.cpp

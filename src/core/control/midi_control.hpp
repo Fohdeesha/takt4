@@ -45,7 +45,12 @@ public:
     };
 
     /// The engine must outlive this. Nothing is opened until `start()`.
-    MidiControl(engine::BeatEngine& engine, Config config);
+    ///
+    /// `rules` is where §5.7's `panic` and `rule/<id>/enable` go — `output::OutputRunner`
+    /// in an app, null where there is none, in which case a binding to either is refused
+    /// rather than silently doing nothing. It must outlive this where it is not null;
+    /// `setRuleControl` exists because an owner usually builds the runner second.
+    MidiControl(engine::BeatEngine& engine, Config config, RuleControl* rules = nullptr);
     ~MidiControl();
 
     MidiControl(const MidiControl&) = delete;
@@ -74,12 +79,19 @@ public:
     /// substring that was asked for. Empty when nothing is open.
     std::string portName() const;
 
-    /// Arms learn mode for `action`. The next note or CC that arrives is bound to it.
-    void learn(ControlAction action);
+    /// Where §5.7's two rule actions go. See the constructor.
+    void setRuleControl(RuleControl* rules) noexcept { surface_.setRuleControl(rules); }
+
+    /// Arms learn mode for `target`. The next note or CC that arrives is bound to it.
+    ///
+    /// A whole target, so that a caller who knows which rule — §5.9's editor, when it draws
+    /// one — can arm `rule/<id>/enable` from the card that already names it. A gesture says
+    /// *which button*, never *which rule*, so nothing else can supply that half.
+    void learn(ControlTarget target);
     /// Disarms without binding anything.
     void cancelLearn() noexcept;
     /// What learn mode is waiting to bind, or nothing when it is not armed.
-    std::optional<ControlAction> learning() const;
+    std::optional<ControlTarget> learning() const;
 
     /// The bindings, in the order they were made.
     std::vector<MidiBinding> bindings() const;
@@ -88,8 +100,13 @@ public:
     void setBindings(std::vector<MidiBinding> bindings);
     /// Adds or rebinds one control. Returns false only when the binding is unusable.
     bool bind(const MidiBinding& binding);
-    /// Forgets every binding for `action`. Returns how many went.
+    /// Forgets every binding for `action`, whatever rule it names. Returns how many went.
+    ///
+    /// By action rather than by target because that is what a FORGET button beside an action
+    /// picker means. Forgetting the binding for one particular rule is `forget(target)`.
     std::size_t forget(ControlAction action);
+    /// Forgets every binding for exactly this target. Returns how many went.
+    std::size_t forget(const ControlTarget& target);
 
     /// Acts on one event as if it had arrived, and learns from it when armed. The way a
     /// test drives this without hardware, and the seam a UI uses to show what arrived.
@@ -122,7 +139,7 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<MidiBinding> bindings_;
-    std::optional<ControlAction> learning_;
+    std::optional<ControlTarget> learning_;
     std::optional<MidiEvent> lastEvent_;
     std::string portName_;
 };

@@ -9,6 +9,8 @@
 #include "core/output/osc_sender.hpp"
 #include "core/tracking/state_space.hpp"
 
+#include "support/recording_rules.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -21,6 +23,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -119,9 +122,83 @@ TEST_CASE("an address for another app is not ours to act on", "[control]") {
     CHECK_FALSE(control.dispatch("/takt4/ctl/tempo/halveXX", std::nullopt));
     CHECK_FALSE(control.dispatch("", std::nullopt));
 
-    // The ones Phase 6 and Q7 still owe, refused rather than half-done.
-    CHECK_FALSE(control.dispatch("/takt4/ctl/panic", std::nullopt));
+    // Q7's, still refused rather than half-done: nothing names or stores a preset yet.
     CHECK_FALSE(control.dispatch("/takt4/ctl/preset", 1.0));
+
+    // And the two that are understood but have nowhere to go, because this control was
+    // given no rules. Refused rather than accepted and dropped — an operator whose panic
+    // button is not wired has to be able to find that out before the set, not during it.
+    CHECK_FALSE(control.dispatch("/takt4/ctl/panic", std::nullopt));
+    CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/enable", 1.0));
+}
+
+TEST_CASE("the two addresses that reach the rules rather than the tracker", "[control]") {
+    // §5.7's `panic` and `rule/<id>/enable`. The rule engine has carried both since Phase
+    // 6's first half; this is the *route*, and the route is the whole of what is checked
+    // here — what the rules then do with it is tests/output/output_runner_test.cpp's.
+    auto engine = makeEngine();
+    takt4::testing::RecordingRules rules;
+    OscControl control(*engine, localConfig(kAnyPort), &rules);
+
+    SECTION("a bare panic engages, because a panic button panics") {
+        // §5.7 writes `lock <0|1>` and `rule/<id>/enable <0|1>` with an argument and writes
+        // `panic` bare. A message with no argument is the whole gesture.
+        CHECK(control.dispatch("/takt4/ctl/panic", std::nullopt));
+        CHECK(rules.panics() == std::vector<bool>{true});
+    }
+
+    SECTION("an argument is still read, so the same surface can let go of it") {
+        // §5.8 makes panic a latch, and §5.7 exists so the laptop need not be touched. A
+        // Stream Deck that could only engage would strand the operator at the machine.
+        CHECK(control.dispatch("/takt4/ctl/panic", 1.0));
+        CHECK(control.dispatch("/takt4/ctl/panic", 0.0));
+        CHECK(rules.panics() == std::vector<bool>{true, false});
+    }
+
+    SECTION("a rule is named in the middle of its own address") {
+        CHECK(control.dispatch("/takt4/ctl/rule/intro/enable", 0.0));
+        CHECK(control.dispatch("/takt4/ctl/rule/drop/enable", 1.0));
+        const std::vector<std::pair<std::string, bool>> expected{{"intro", false}, {"drop", true}};
+        CHECK(rules.enables() == expected);
+    }
+
+    SECTION("enabling insists on being told which, exactly as the lock does") {
+        // Read as a toggle it would depend on a state the sender cannot see, so a surface
+        // that missed one message would be inverted for the rest of the set.
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/enable", std::nullopt));
+        CHECK(rules.enables().empty());
+    }
+
+    SECTION("an address that is nearly the rule address is not one") {
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule", 1.0));
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro", 1.0));
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule/enable", 1.0));
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule//enable", 1.0));
+        // Both ends match here and the id would be "x/enable", which no rule can be called.
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule/x/enable/enable", 1.0));
+        CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/disable", 1.0));
+        CHECK(rules.enables().empty());
+    }
+
+    SECTION("one surface, two destinations, in one sequence") {
+        // The point of the whole change: a Stream Deck sends §5.7's addresses down one
+        // socket and does not know that five of them are the tracker's and two are the
+        // rules'. Interleaved here so that a route which only worked from a cold surface —
+        // or only before a tracker command — would show up.
+        trackUntilLocked(*engine);
+        REQUIRE(engine->state().locked);
+        const double raw = engine->state().rawBpm;
+
+        CHECK(control.dispatch("/takt4/ctl/panic", std::nullopt));
+        CHECK(control.dispatch("/takt4/ctl/tempo/halve", std::nullopt));
+        CHECK(control.dispatch("/takt4/ctl/rule/intro/enable", 0.0));
+        (void)engine->step();
+
+        CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+        CHECK(rules.panics() == std::vector<bool>{true});
+        const std::vector<std::pair<std::string, bool>> expected{{"intro", false}};
+        CHECK(rules.enables() == expected);
+    }
 }
 
 TEST_CASE("the lock address pins and releases, and insists on being told which", "[control]") {

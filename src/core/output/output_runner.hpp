@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/audio/host_time.hpp"
+#include "core/control/rule_control.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -123,7 +125,14 @@ struct OutputCommand {
 ///     clock in place before there is one.
 ///   * Draining `popFrame`, if anything wants the frames. Nobody has to, but a ring that
 ///     nobody drains fills and the engine starts counting frames lost.
-class OutputRunner {
+///
+/// **It is also §5.7's `control::RuleControl`**, which is the answer to "how does an inbound
+/// OSC message reach a rule". The rules are behind this queue and nothing else can reach
+/// them, so the interface a control surface is written against is implemented by the one
+/// object that owns them — the same dependency inversion `RuleSink` makes in the other
+/// direction, and for the same reason: neither `core/control` nor `core/trigger` should have
+/// to know what the other is.
+class OutputRunner final : public control::RuleControl {
 public:
     /// Called on the output thread for every beat, after the transports have had it — a
     /// console that prints them, a UI that flashes on one. Keep it short: it runs between
@@ -141,7 +150,7 @@ public:
     /// Throws whatever `Transports` throws — a MIDI port that is not on the machine.
     /// Nothing is sent until `start()`.
     OutputRunner(engine::BeatEngine& engine, const Transports::Config& config);
-    ~OutputRunner();
+    ~OutputRunner() override;
 
     OutputRunner(const OutputRunner&) = delete;
     OutputRunner& operator=(const OutputRunner&) = delete;
@@ -193,6 +202,17 @@ public:
     /// lets an app be configured before it is started.
     void post(OutputCommand command);
 
+    /// §5.7's `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.
+    ///
+    /// Both are `post` under another name — the rules belong to the output thread, so there
+    /// is no other way in — and both are safe from a socket's thread or RtMidi's callback
+    /// for exactly that reason. A rule id that names nothing is applied to nothing and is
+    /// not an error; see `RuleControl`.
+    void panic(bool engaged) override { post(OutputCommand::panic(engaged)); }
+    void setRuleEnabled(std::string_view id, bool enabled) override {
+        post(OutputCommand::ruleEnabled(std::string(id), enabled));
+    }
+
     /// What went wrong applying the last posted change, or empty. A MIDI port that is not
     /// on the machine is the one that happens; an operator has to be told rather than
     /// left wondering why nothing ticks.
@@ -202,7 +222,15 @@ public:
     /// fired. **Only while the thread is stopped**: the rules belong to the output thread,
     /// like the transports, and for the same reason. Change them through `post`.
     const trigger::TriggerEngine& triggers() const noexcept { return triggers_; }
-    bool panicked() const noexcept { return triggers_.panicked(); }
+
+    /// Whether §5.8's halt is engaged. **Any thread, running or not** — unlike everything
+    /// reached through `triggers()`, which is the output thread's alone.
+    ///
+    /// Its own atomic rather than `triggers_.panicked()`, because that is a plain `bool`
+    /// written on the output thread and a console loop or a 30 Hz redraw reading it while
+    /// the thread runs is a data race. A PANIC button has to show its own state, so this
+    /// gets read exactly that way. Only `Kind::Panic` moves it, so the mirror cannot drift.
+    bool panicked() const noexcept { return panicked_.load(std::memory_order_relaxed); }
     /// Rule messages that reached a transport, and those with nowhere to go. Atomic-free
     /// counters on the output thread; a snapshot from anywhere else.
     const RuleSink& ruleSink() const noexcept { return sink_; }
@@ -240,6 +268,8 @@ private:
     std::string lastError_;
     std::thread worker_;
     std::atomic<bool> running_{false};
+    /// A reader-safe mirror of `triggers_.panicked()`; see `panicked()`.
+    std::atomic<bool> panicked_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
     std::chrono::steady_clock::time_point started_{};

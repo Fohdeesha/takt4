@@ -8,6 +8,8 @@
 #include "core/output/midi_ports.hpp"
 #include "core/tracking/state_space.hpp"
 
+#include "support/recording_rules.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -16,6 +18,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -103,7 +106,7 @@ TEST_CASE("learn mode binds the next control that moves", "[control][midi]") {
     CHECK(learned.kind == MidiEvent::Kind::Note);
     CHECK(learned.number == 36);
     CHECK(learned.channel == 10);
-    CHECK(learned.action == ControlAction::Downbeat);
+    CHECK(learned.target.action == ControlAction::Downbeat);
 
     // And now it is that control.
     CHECK(control.dispatch(note(36, 10)));
@@ -113,7 +116,7 @@ TEST_CASE("learn mode binds the next control that moves", "[control][midi]") {
         control.learn(ControlAction::Tap);
         CHECK(control.dispatch(note(36, 10)));
         REQUIRE(control.bindings().size() == 1);
-        CHECK(control.bindings().front().action == ControlAction::Tap);
+        CHECK(control.bindings().front().target.action == ControlAction::Tap);
     }
 
     SECTION("cancelling leaves the table alone") {
@@ -136,10 +139,10 @@ TEST_CASE("a bound control reaches the tracker", "[control][midi]") {
 
     MidiBinding halve;
     halve.number = 40;
-    halve.action = ControlAction::TempoHalve;
+    halve.target = ControlAction::TempoHalve;
     MidiBinding redouble;
     redouble.number = 41;
-    redouble.action = ControlAction::TempoDouble;
+    redouble.target = ControlAction::TempoDouble;
     REQUIRE(control.bind(halve));
     REQUIRE(control.bind(redouble));
 
@@ -170,7 +173,7 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
     MidiBinding lock;
     lock.kind = MidiEvent::Kind::ControlChange;
     lock.number = 64; // where a sustain pedal lives
-    lock.action = ControlAction::Lock;
+    lock.target = ControlAction::Lock;
     REQUIRE(control.bind(lock));
 
     CHECK(control.dispatch(cc(64, 127)));
@@ -189,7 +192,7 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
         // controller cannot see.
         MidiBinding pad;
         pad.number = 50;
-        pad.action = ControlAction::Lock;
+        pad.target = ControlAction::Lock;
         REQUIRE(control.bind(pad));
         CHECK(control.dispatch(note(50)));
         (void)engine->step();
@@ -200,13 +203,103 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
     }
 }
 
+TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[control][midi]") {
+    // §5.7: "Every one of these is also bindable to a MIDI note or CC through a learn
+    // mode." That includes the two addresses whose subject is §5.8's rules rather than the
+    // tracker, and they take a different route out of the surface to get there.
+    auto engine = makeEngine();
+    takt4::testing::RecordingRules rules;
+    MidiControl control(*engine, offline(), &rules);
+
+    SECTION("a pad bound to panic is a panic button, and stays one") {
+        // A note carries a press and no release (`argumentOf`), so it engages every time.
+        // For panic that is exactly right: a second press during a bad moment must not be
+        // the thing that lets the rig go again.
+        MidiBinding pad;
+        pad.number = 36;
+        pad.target = ControlAction::Panic;
+        REQUIRE(control.bind(pad));
+
+        CHECK(control.dispatch(note(36)));
+        CHECK(control.dispatch(note(36)));
+        CHECK(rules.panics() == std::vector<bool>{true, true});
+    }
+
+    SECTION("a switch bound to panic is a switch, so the same control lets go") {
+        MidiBinding knob;
+        knob.kind = MidiEvent::Kind::ControlChange;
+        knob.number = 64;
+        knob.target = ControlAction::Panic;
+        REQUIRE(control.bind(knob));
+
+        CHECK(control.dispatch(cc(64, 127)));
+        CHECK(control.dispatch(cc(64, 0)));
+        CHECK(rules.panics() == std::vector<bool>{true, false});
+    }
+
+    SECTION("a binding to a rule carries which rule, because a gesture cannot") {
+        MidiBinding arm;
+        arm.kind = MidiEvent::Kind::ControlChange;
+        arm.number = 21;
+        arm.target = takt4::control::ControlTarget(ControlAction::RuleEnable, "drop");
+        REQUIRE(control.bind(arm));
+
+        CHECK(control.dispatch(cc(21, 127)));
+        CHECK(control.dispatch(cc(21, 0)));
+        const std::vector<std::pair<std::string, bool>> expected{{"drop", true}, {"drop", false}};
+        CHECK(rules.enables() == expected);
+    }
+
+    SECTION("learn mode arms a whole target, so the rule survives being bound") {
+        // §5.9's editor is what will call this, from the card that already names the rule —
+        // which is why `learn` takes a target rather than an action.
+        control.learn(takt4::control::ControlTarget(ControlAction::RuleEnable, "intro"));
+        REQUIRE(control.dispatch(note(48)));
+        REQUIRE(control.bindings().size() == 1);
+        CHECK(control.bindings().front().target ==
+              takt4::control::ControlTarget(ControlAction::RuleEnable, "intro"));
+        // Learned, not acted on — the same rule every other action follows.
+        CHECK(rules.enables().empty());
+
+        CHECK(control.dispatch(note(48)));
+        const std::vector<std::pair<std::string, bool>> expected{{"intro", true}};
+        CHECK(rules.enables() == expected);
+    }
+}
+
+TEST_CASE("a rule control that is not there refuses rather than swallows", "[control][midi]") {
+    // The default: a `MidiControl` built with no rules — Q8's headless mode before it has
+    // an output runner, or any app that has none. A binding to panic then reports that it
+    // did nothing, which is what puts "your panic button is not wired" in front of somebody
+    // at the bench rather than during a set.
+    auto engine = makeEngine();
+    MidiControl control(*engine, offline());
+
+    MidiBinding pad;
+    pad.number = 36;
+    pad.target = ControlAction::Panic;
+    REQUIRE(control.bind(pad));
+
+    // The *event* was still ours — it matched a binding — so it counts as handled; what it
+    // asked for is what could not be done. Those are two different claims and the counters
+    // keep them apart.
+    CHECK(control.dispatch(note(36)));
+    CHECK(control.handled() == 1);
+
+    // And it becomes real the moment something is wired, with no rebinding.
+    takt4::testing::RecordingRules rules;
+    control.setRuleControl(&rules);
+    CHECK(control.dispatch(note(36)));
+    CHECK(rules.panics() == std::vector<bool>{true});
+}
+
 TEST_CASE("three taps on a pad make a tempo", "[control][midi]") {
     auto engine = makeEngine();
     MidiControl control(*engine, offline());
 
     MidiBinding tap;
     tap.number = 36;
-    tap.action = ControlAction::Tap;
+    tap.target = ControlAction::Tap;
     REQUIRE(control.bind(tap));
 
     // The first two say nothing, which is not the same as failing: the control was
@@ -228,7 +321,9 @@ TEST_CASE("the binding table is restored the way it was saved", "[control][midi]
         MidiBinding binding;
         binding.number = static_cast<std::uint8_t>(40 + saved.size());
         binding.channel = 3;
-        binding.action = action;
+        binding.target = takt4::control::takesRuleId(action)
+                             ? takt4::control::ControlTarget(action, "intro")
+                             : takt4::control::ControlTarget(action);
         saved.push_back(binding);
     }
     control.setBindings(saved);
@@ -238,15 +333,15 @@ TEST_CASE("the binding table is restored the way it was saved", "[control][midi]
         std::vector<MidiBinding> clashing;
         MidiBinding first;
         first.number = 60;
-        first.action = ControlAction::Tap;
+        first.target = ControlAction::Tap;
         MidiBinding second;
         second.number = 60;
-        second.action = ControlAction::Downbeat;
+        second.target = ControlAction::Downbeat;
         clashing.push_back(first);
         clashing.push_back(second);
         control.setBindings(clashing);
         REQUIRE(control.bindings().size() == 1);
-        CHECK(control.bindings().front().action == ControlAction::Downbeat);
+        CHECK(control.bindings().front().target.action == ControlAction::Downbeat);
     }
 
     SECTION("an unusable line is dropped rather than kept as a control nothing can send") {
@@ -264,11 +359,11 @@ TEST_CASE("the binding table is restored the way it was saved", "[control][midi]
         MidiBinding second;
         second.number = 99;
         second.channel = 3;
-        second.action = ControlAction::Tap;
+        second.target = ControlAction::Tap;
         REQUIRE(control.bind(second));
         CHECK(control.forget(ControlAction::Tap) == 2);
         for (const MidiBinding& binding : control.bindings()) {
-            CHECK(binding.action != ControlAction::Tap);
+            CHECK(binding.target.action != ControlAction::Tap);
         }
     }
 }
@@ -317,7 +412,7 @@ TEST_CASE("changing the port keeps what was learned", "[control][midi]") {
     MidiBinding tap;
     tap.number = 36;
     tap.channel = 10;
-    tap.action = ControlAction::Tap;
+    tap.target = ControlAction::Tap;
     REQUIRE(control.bind(tap));
 
     control.setPort("some other controller");

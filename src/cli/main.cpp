@@ -929,7 +929,8 @@ void printKeys(std::ostream& out, bool available) {
         return;
     }
     out << "keys:      space tap tempo · d downbeat now · h /2 · x *2 · l pin the lock\n"
-        << "           [ ] latency offset -/+ 5 ms · f octave fold on/off · q quit\n";
+        << "           [ ] latency offset -/+ 5 ms · f octave fold on/off · q quit\n"
+        << "           p PANIC, halting every rule; p again lets go\n";
 }
 
 /// The console's half of a beat: the line it prints and the file it optionally writes.
@@ -1250,6 +1251,17 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             (void)engine->post(Command::setTempoOptions(live));
             std::cout << "  octave fold " << (live.octaveFold ? "on" : "off") << ", window "
                       << fixed1(live.minBpm) << "-" << fixed1(live.maxBpm) << " BPM\n";
+            break;
+        }
+        case 'p': {
+            // §5.8: "reachable from the UI, a keyboard shortcut, OSC and MIDI". This is the
+            // keyboard shortcut, and it is a toggle here for the same reason `l` is — a
+            // console operator can see on the line below which way it went, where a control
+            // surface cannot and so says which state it means.
+            const bool halt = !runner.panicked();
+            runner.panic(halt);
+            std::cout << (halt ? "  PANIC: every rule halted; pending follow-ups sent\n"
+                               : "  panic released: the rules fire again\n");
             break;
         }
         case '?':

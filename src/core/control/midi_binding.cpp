@@ -71,23 +71,23 @@ std::string formatMidiBinding(const MidiBinding& binding) {
     text += " ch ";
     text += std::to_string(static_cast<unsigned int>(binding.channel));
     text += " -> ";
-    text += verbOf(binding.action);
+    text += verbFor(binding.target);
     return text;
 }
 
-std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept {
+std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept try {
     const std::size_t arrow = text.find("->");
     if (arrow == std::string_view::npos) {
         return std::nullopt;
     }
-    const std::optional<ControlAction> action = actionOf(trim(text.substr(arrow + 2)));
-    if (!action) {
+    const std::optional<ControlTarget> target = targetOf(trim(text.substr(arrow + 2)));
+    if (!target) {
         return std::nullopt;
     }
 
     std::string_view control = trim(text.substr(0, arrow));
     MidiBinding binding;
-    binding.action = *action;
+    binding.target = *target;
 
     if (control.starts_with("note ")) {
         binding.kind = MidiEvent::Kind::Note;
@@ -112,6 +112,11 @@ std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept {
     binding.number = *number;
     binding.channel = *channel;
     return binding;
+} catch (...) {
+    // A function-try-block so the header's "never throws" stays literally true now that a
+    // target holds a rule id: `targetOf` allocates one, and a line this long is a file a
+    // person edited rather than anything the program produced. Not a binding, then.
+    return std::nullopt;
 }
 
 double argumentOf(const MidiEvent& event) noexcept {

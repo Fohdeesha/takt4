@@ -15,8 +15,8 @@ constexpr std::chrono::milliseconds kPoll{100};
 
 } // namespace
 
-OscControl::OscControl(engine::BeatEngine& engine, Config config)
-    : config_(std::move(config)), surface_(engine) {}
+OscControl::OscControl(engine::BeatEngine& engine, Config config, RuleControl* rules)
+    : config_(std::move(config)), surface_(engine, rules) {}
 
 OscControl::~OscControl() {
     stop();
@@ -63,12 +63,13 @@ bool OscControl::dispatch(std::string_view address, std::optional<double> argume
 
     // Which leaves the verb, which is the whole of what this surface knows. What each one
     // does — and that `lock` refuses to act without its `<0|1>` — is `ControlSurface`'s,
-    // shared with the MIDI bindings so the two surfaces cannot drift apart.
-    const std::optional<ControlAction> action = actionOf(address.substr(base.size()));
-    if (!action) {
+    // shared with the MIDI bindings so the two surfaces cannot drift apart. `rule/<id>/enable`
+    // is the one verb that carries a name as well; `targetOf` is what splits it out.
+    const std::optional<ControlTarget> target = targetOf(address.substr(base.size()));
+    if (!target) {
         return false;
     }
-    return surface_.apply(*action, argument);
+    return surface_.apply(*target, argument);
 }
 
 void OscControl::run() noexcept {

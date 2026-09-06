@@ -437,7 +437,7 @@ TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
     CHECK(controller.control().dispatch(pad));
 
     REQUIRE(controller.control().bindings().size() == 1);
-    CHECK(controller.control().bindings().front().action == ControlAction::Downbeat);
+    CHECK(controller.control().bindings().front().target.action == ControlAction::Downbeat);
     CHECK_FALSE(controller.control().learning().has_value());
 
     SECTION("and it shows on the row, without repeating the action beside it") {
@@ -461,7 +461,7 @@ TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
         REQUIRE(second.control().bindings().size() == 1);
         CHECK(second.control().bindings().front().number == 36);
         CHECK(second.control().bindings().front().channel == 10);
-        CHECK(second.control().bindings().front().action == ControlAction::Downbeat);
+        CHECK(second.control().bindings().front().target.action == ControlAction::Downbeat);
     }
 
     SECTION("pressing LEARN again gives up rather than stranding the operator") {
@@ -516,6 +516,46 @@ TEST_CASE("a learned control reaches the tracker through the window", "[ui]") {
     CHECK(controller.control().dispatch(pad));
     run.applyPosted();
     CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw / 2.0, 1e-6));
+}
+
+TEST_CASE("a learned control reaches the rules through the window", "[ui][trigger]") {
+    // The other destination. §5.7's `panic` is a question for §5.8's rules rather than for
+    // the tracker, so a binding to it has to arrive at the window's *output runner* — which
+    // is a different object, on a different thread, behind a different queue.
+    //
+    // This is also what holds the member ordering in `WindowController` in place: the MIDI
+    // surface now posts to the runner from RtMidi's callback thread, so it has to be
+    // declared after it and destroyed before it. Nothing here can catch that ordering going
+    // wrong, but a test that exercises the route makes the reason visible next to it.
+    using takt4::control::ControlAction;
+    using takt4::control::MidiEvent;
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    const int panic = 5;
+    REQUIRE(takt4::control::kControlActions[panic] == ControlAction::Panic);
+    controller.window().invoke_learn_action_picked(panic);
+    controller.window().invoke_learn_clicked();
+
+    MidiEvent pad;
+    pad.number = 44;
+    pad.value = 127;
+    REQUIRE(controller.control().dispatch(pad)); // learned, not fired
+    CHECK_FALSE(controller.outputs().panicked());
+
+    // And now it is the panic button. The runner is stopped, so the command applies on this
+    // thread at once — which is exactly what an operator arming a rig before a set does.
+    CHECK(controller.control().dispatch(pad));
+    CHECK(controller.outputs().panicked());
+
+    SECTION("the picker offers panic but not the one that would need a rule named") {
+        // §5.7's `rule/<id>/enable` cannot be armed from a gesture: pressing a pad says
+        // which button, never which rule. The list is the actions minus that one, so it is
+        // one shorter than the table.
+        CHECK(controller.window().get_learn_actions()->row_count() ==
+              takt4::control::kControlActions.size() - 1);
+    }
 }
 
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
