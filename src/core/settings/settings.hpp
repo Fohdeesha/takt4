@@ -45,6 +45,20 @@ struct MachineSettings {
     /// expected to hand-write one — a line that reads as a sentence can be typed, and
     /// `parseMidiBinding` drops anything that does not.
     std::vector<std::string> midiBindings;
+
+    /// §5.7's inbound OSC: whether to listen, on which port, and whether to accept anything
+    /// but loopback.
+    ///
+    /// **Machine-local, and more strongly than the ports above.** A listening socket is a
+    /// fact about this box and its network — a preset carrying "listen on 0.0.0.0:7001" to
+    /// somebody else's laptop would open a port they never asked for.
+    ///
+    /// Off by default, and `oscControlLocalOnly` true by default, because OSC has no
+    /// authentication and takt4 invents none. Turning either on is the operator's call, and
+    /// it is the same call they make when they put a Stream Deck on that network.
+    bool oscControlEnabled = false;
+    std::uint16_t oscControlPort = 7001;
+    bool oscControlLocalOnly = true;
 };
 
 /// What travels. Phase 6's rules join this.

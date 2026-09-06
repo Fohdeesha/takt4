@@ -48,6 +48,11 @@ void OscControl::stop() noexcept {
     receiver_.reset();
 }
 
+void OscControl::setConfig(Config config) {
+    stop();
+    config_ = std::move(config);
+}
+
 std::string OscControl::lastMessage() const {
     const std::lock_guard<std::mutex> lock(lastMutex_);
     return last_;

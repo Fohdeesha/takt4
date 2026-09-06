@@ -12,11 +12,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <optional>
 #include <sstream>
+#include <string_view>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -71,6 +74,50 @@ output::Transports::Config transportConfig(const settings::Settings& settings,
     return config;
 }
 
+/// A port number a person typed. -1 for anything that is not one, which `setOscControlPort`
+/// reports rather than acting on: a field that silently ignored "70o1" would leave an
+/// operator pointing a control surface at a port nobody is listening on.
+int readPort(const std::string& text) {
+    std::string_view view(text);
+    while (!view.empty() && (view.front() == ' ' || view.front() == '\t')) {
+        view.remove_prefix(1);
+    }
+    while (!view.empty() && (view.back() == ' ' || view.back() == '\t')) {
+        view.remove_suffix(1);
+    }
+    if (view.empty()) {
+        return -1;
+    }
+    int value = 0;
+    const char* const begin = view.data();
+    const char* const end = begin + view.size();
+    const std::from_chars_result result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return -1;
+    }
+    return value;
+}
+
+/// §5.7's listening socket, from the machine half — a port on this box, never a preset's.
+///
+/// `enabled` is carried across but the socket is not opened here: the constructor builds
+/// this and `setOscControlEnabled` starts it, after the window exists, so a port that is
+/// already taken reports on a status line instead of throwing out of a constructor.
+control::OscControl::Config oscControlConfig(const settings::Settings& settings) {
+    control::OscControl::Config config;
+    config.enabled = settings.machine.oscControlEnabled;
+    config.port = settings.machine.oscControlPort;
+    config.localOnly = settings.machine.oscControlLocalOnly;
+    // One namespace in both directions: §5.6 publishes `<prefix>/bpm` and §5.7 listens on
+    // `<prefix>/ctl/…`, and an operator who has learned one has learned the other. The
+    // prefix is the portable half's — it describes the app, not the box — while whether to
+    // listen at all is machine-local.
+    if (!settings.preset.oscPrefix.empty()) {
+        config.prefix = settings.preset.oscPrefix;
+    }
+    return config;
+}
+
 } // namespace
 
 WindowController::WindowController(engine::LiveTracker& tracker)
@@ -83,11 +130,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
       runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())),
-      // Built disabled; `setMidiControlPort` is what opens a port, so a machine with a
-      // controller plugged in is not listened to until somebody says to. The runner is its
-      // second destination: §5.7's `panic` and `rule/<id>/enable` are questions for the
-      // rules, which live on the output thread behind that queue.
-      control_(tracker.engine(), control::MidiControl::Config{}, &runner_) {
+      // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
+      // a port, so a machine with a controller plugged in is not listened to — and no
+      // socket is bound — until somebody says to. The runner is each one's second
+      // destination: §5.7's `panic` and `rule/<id>/enable` are questions for the rules,
+      // which live on the output thread behind that queue.
+      control_(tracker.engine(), control::MidiControl::Config{}, &runner_),
+      oscControl_(tracker.engine(), oscControlConfig(settings), &runner_) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -122,6 +171,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_learn_action_picked([this](int index) { pickLearnAction(index); });
     window_->on_learn_clicked([this] { toggleLearn(); });
     window_->on_forget_clicked([this] { forgetLearned(); });
+
+    window_->on_osc_control_toggled([this](bool on) { setOscControlEnabled(on); });
+    window_->on_osc_control_port_edited([this](const slint::SharedString& text) {
+        setOscControlPort(readPort(std::string(text)));
+    });
+    window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
 
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
@@ -176,6 +231,15 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     }
     if (!settings.machine.midiControlPort.empty()) {
         setMidiControlPort(settings.machine.midiControlPort);
+    }
+    if (settings.machine.oscControlEnabled) {
+        // The socket is bound here rather than in the member initialiser, for the same
+        // reason the MIDI port is: a port another application has taken throws, and by now
+        // there is a status line to say so on.
+        //
+        // `setOscControlEnabled` reads `running()`, which is false, so this really does
+        // start it rather than seeing the config flag and returning.
+        setOscControlEnabled(true);
     }
     publishStopped();
     publishOutputs();
@@ -388,6 +452,81 @@ void WindowController::setMidiControlPort(const std::string& name) {
     publishControl();
 }
 
+void WindowController::setOscControlEnabled(bool on) {
+    if (on == oscControl_.running()) {
+        return;
+    }
+    if (!on) {
+        oscControl_.stop();
+        setStatus("OSC control off.", false);
+        publishControl();
+        return;
+    }
+
+    // `start()` reads `config().enabled`, so the flag has to be set before it is called —
+    // and a port that is taken throws out of `start()` rather than out of the thread, which
+    // is the whole reason it throws at all.
+    control::OscControl::Config config = oscControl_.config();
+    config.enabled = true;
+    oscControl_.setConfig(config);
+    try {
+        oscControl_.start();
+        setStatus("OSC control listening on " + std::to_string(oscControl_.port()) +
+                      (config.localOnly ? " (this machine only)." : " (any address)."),
+                  false);
+    } catch (const std::exception& e) {
+        // A port another application already has. Saying so is the point: a control
+        // surface that silently does nothing is worse than one that will not start.
+        config.enabled = false;
+        oscControl_.setConfig(config);
+        setStatus(std::string("OSC control: ") + e.what(), true);
+    }
+    publishControl();
+}
+
+void WindowController::setOscControlPort(int port) {
+    if (port < 0 || port > 65535) {
+        setStatus("A port is 0 to 65535; 0 asks for any free one.", true);
+        publishControl();
+        return;
+    }
+    control::OscControl::Config config = oscControl_.config();
+    if (config.port == static_cast<std::uint16_t>(port)) {
+        return;
+    }
+    config.port = static_cast<std::uint16_t>(port);
+
+    // A socket is bound at `start()`, so changing the port means going round again — but
+    // only if it was listening. Editing the number while it is off is just editing a
+    // number, and must not open a socket nobody asked for.
+    const bool wasRunning = oscControl_.running();
+    oscControl_.stop();
+    config.enabled = false;
+    oscControl_.setConfig(config);
+    if (wasRunning) {
+        setOscControlEnabled(true);
+    } else {
+        publishControl();
+    }
+}
+
+void WindowController::setOscControlNetwork(bool allowNetwork) {
+    control::OscControl::Config config = oscControl_.config();
+    if (config.localOnly == !allowNetwork) {
+        return;
+    }
+    config.localOnly = !allowNetwork;
+    const bool wasRunning = oscControl_.running();
+    oscControl_.stop();
+    config.enabled = false;
+    oscControl_.setConfig(config);
+    if (wasRunning) {
+        setOscControlEnabled(true);
+    } else {
+        publishControl();
+    }
+}
+
 void WindowController::pickLearnAction(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= learnActions_.size()) {
         return;
@@ -416,6 +555,16 @@ void WindowController::forgetLearned() {
 }
 
 void WindowController::publishControl() {
+    // Two independent surfaces, published independently. **Not one function with two
+    // halves**: the MIDI half returns early when no port is open, and an OSC half written
+    // below that return was silently never published — caught by
+    // `tests/ui/window_test.cpp`'s "opens only when asked", which found the port field
+    // empty on a window whose socket was bound.
+    publishMidiControl();
+    publishOscControl();
+}
+
+void WindowController::publishMidiControl() {
     window_->set_control_on(control_.running());
     window_->set_learning(control_.learning().has_value());
     window_->set_learn_action_index(learnAction_);
@@ -450,6 +599,41 @@ void WindowController::publishControl() {
         text = last ? "not bound - last seen " + describeControl(*last) : std::string("not bound");
     }
     window_->set_control_reading(shared(text));
+}
+
+void WindowController::publishOscControl() {
+    const control::OscControl::Config& config = oscControl_.config();
+    const bool listening = oscControl_.running();
+    window_->set_osc_control_on(listening);
+    window_->set_osc_control_network(!config.localOnly);
+    // The port bound while it is listening, and the one asked for while it is not. With 0
+    // meaning "any free one" those differ, and only the bound one is a number an operator
+    // can point a Stream Deck at.
+    window_->set_osc_control_port(
+        shared(std::to_string(listening ? oscControl_.port() : config.port)));
+
+    if (!listening) {
+        window_->set_osc_control_reading(shared("off"));
+        return;
+    }
+    // Two different questions, and only one of them is live at a time. Before anything has
+    // arrived the operator needs the address to aim at; once packets are landing they need
+    // to know what landed, and the address has answered itself.
+    const std::uint64_t handled = oscControl_.handled();
+    const std::uint64_t ignored = oscControl_.ignored();
+    if (handled == 0 && ignored == 0) {
+        window_->set_osc_control_reading(shared(config.prefix + "/ctl/...  nothing yet"));
+        return;
+    }
+    std::string text = oscControl_.lastMessage();
+    if (!text.empty()) {
+        text += "  ";
+    }
+    // Counted separately, because "arriving but not understood" is a different fault from
+    // "not arriving" and they need different fixes — a wrong prefix against a wrong
+    // address. Nothing else on screen tells the two apart.
+    text += std::to_string(handled) + " acted, " + std::to_string(ignored) + " ignored";
+    window_->set_osc_control_reading(shared(text));
 }
 
 double WindowController::nowSeconds() const {
@@ -596,6 +780,15 @@ settings::Settings WindowController::currentSettings() const {
     for (const control::MidiBinding& binding : control_.bindings()) {
         out.machine.midiBindings.push_back(control::formatMidiBinding(binding));
     }
+
+    // §5.7's other surface. `running()` rather than `config().enabled`, so a port that was
+    // taken at startup is remembered as *off* — the operator saw the error and did not get
+    // a listener, and a file that claims otherwise would fail the same way every launch.
+    // The port asked for, not `port()`: with 0 meaning "any free one", saving what the
+    // platform happened to hand out would silently pin next launch to it.
+    out.machine.oscControlEnabled = oscControl_.running();
+    out.machine.oscControlPort = oscControl_.config().port;
+    out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
 
     // The tracker's own, not this window's copy: a tap moves the fold window and the
     // window is only ever showing what the engine has (§7 deviation 8).

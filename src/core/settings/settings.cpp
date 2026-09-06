@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
@@ -153,6 +154,9 @@ std::string toJson(const Settings& settings) {
              {"midiClockPort", settings.machine.midiClockPort},
              {"midiControlPort", settings.machine.midiControlPort},
              {"midiBindings", bindings},
+             {"oscControlEnabled", settings.machine.oscControlEnabled},
+             {"oscControlPort", settings.machine.oscControlPort},
+             {"oscControlLocalOnly", settings.machine.oscControlLocalOnly},
          }},
         {"preset",
          json{
@@ -179,8 +183,29 @@ Settings fromJson(std::string_view text) {
         read(machine, "channel", settings.machine.channel);
         read(machine, "midiClockPort", settings.machine.midiClockPort);
         read(machine, "midiControlPort", settings.machine.midiControlPort);
+        read(machine, "oscControlEnabled", settings.machine.oscControlEnabled);
+        read(machine, "oscControlLocalOnly", settings.machine.oscControlLocalOnly);
         if (settings.machine.channel < 0) {
             settings.machine.channel = 0;
+        }
+        // Read by hand rather than through `read`, because a port has two ways of being
+        // wrong that a hand-edited file really does contain and the generic path takes
+        // neither seriously. `read` into a `uint16_t` would take the low bits of 99999 —
+        // port 33465, which nobody meant and nobody could guess — and nlohmann *converts*
+        // a JSON float, so `1.5` would arrive as port 1. Both are rejected here so the
+        // default stands, which is what "settings never fail" has to mean for a value that
+        // opens a socket.
+        //
+        // 0 is legal and means "any free port": `OscReceiver` supports it and `port()`
+        // reports which one it got.
+        if (machine.is_object() && machine.contains("oscControlPort")) {
+            const json& port = machine.at("oscControlPort");
+            if (port.is_number_integer()) {
+                const std::int64_t value = port.get<std::int64_t>();
+                if (value >= 0 && value <= 65535) {
+                    settings.machine.oscControlPort = static_cast<std::uint16_t>(value);
+                }
+            }
         }
         if (machine.is_object() && machine.contains("midiBindings") &&
             machine.at("midiBindings").is_array()) {

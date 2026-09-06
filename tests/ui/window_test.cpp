@@ -549,12 +549,110 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
     CHECK(controller.control().dispatch(pad));
     CHECK(controller.outputs().panicked());
 
+    SECTION("and the OSC socket moves the same latch the pad just moved") {
+        // §5.7's other surface, wired into the window on 2026-09-06. The pad above left
+        // panic engaged, and this releases it *from the socket* — which is the whole claim:
+        // one runner, two surfaces, one latch. Two runners would show up here as a release
+        // that does nothing.
+        //
+        // Driven through `dispatch` rather than a real datagram: the socket has its own
+        // tests in tests/control, and nothing here needs one to exist.
+        REQUIRE(controller.outputs().panicked());
+        CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", 0.0));
+        CHECK_FALSE(controller.outputs().panicked());
+
+        // And a bare `/ctl/panic` engages, because a panic button panics.
+        CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", std::nullopt));
+        CHECK(controller.outputs().panicked());
+    }
+
     SECTION("the picker offers panic but not the one that would need a rule named") {
         // §5.7's `rule/<id>/enable` cannot be armed from a gesture: pressing a pad says
         // which button, never which rule. The list is the actions minus that one, so it is
         // one shorter than the table.
         CHECK(controller.window().get_learn_actions()->row_count() ==
               takt4::control::kControlActions.size() - 1);
+    }
+}
+
+TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[ui]") {
+    // §5.7's listening socket, which nothing opened until 2026-09-06 — the library existed
+    // and no application built one. Three separate decisions live here and each is the
+    // operator's: listen at all, on which port, and whether past this machine.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    // Off on a fresh window. A socket is not something to open on somebody's behalf.
+    CHECK_FALSE(controller.oscControl().running());
+    CHECK_FALSE(controller.window().get_osc_control_on());
+    CHECK(controller.oscControlPort() == 0); // nothing bound, so no port to report
+
+    SECTION("switching it on binds a socket and says which port") {
+        // Port 0 asks the platform for a free one, which is the only way a test on a shared
+        // runner cannot lose a race with whatever else is listening.
+        controller.window().invoke_osc_control_port_edited(slint::SharedString("0"));
+        controller.window().invoke_osc_control_toggled(true);
+
+        REQUIRE(controller.oscControl().running());
+        // The port *bound*, not the 0 that was asked for — an operator cannot aim a Stream
+        // Deck at "any free one".
+        const std::uint16_t bound = controller.oscControlPort();
+        CHECK(bound != 0);
+        CHECK(std::string(controller.window().get_osc_control_port()) == std::to_string(bound));
+        CHECK_FALSE(controller.statusIsError());
+
+        SECTION("and what is saved is the port asked for, not the one handed out") {
+            // Saving the bound port would silently pin every future launch to whatever the
+            // platform happened to give this run.
+            const takt4::settings::Settings saved = controller.currentSettings();
+            CHECK(saved.machine.oscControlEnabled);
+            CHECK(saved.machine.oscControlPort == 0);
+            CHECK(saved.machine.oscControlLocalOnly);
+        }
+
+        SECTION("switching it off closes it") {
+            controller.window().invoke_osc_control_toggled(false);
+            CHECK_FALSE(controller.oscControl().running());
+            CHECK(controller.oscControlPort() == 0);
+            CHECK_FALSE(controller.currentSettings().machine.oscControlEnabled);
+        }
+
+        SECTION("opening it to the network rebinds rather than leaving it loopback") {
+            controller.window().invoke_osc_control_network_toggled(true);
+            CHECK(controller.oscControl().running()); // it was listening, so it still is
+            CHECK_FALSE(controller.oscControl().config().localOnly);
+            CHECK_FALSE(controller.currentSettings().machine.oscControlLocalOnly);
+        }
+    }
+
+    SECTION("a port that is not a number is refused rather than silently ignored") {
+        controller.window().invoke_osc_control_port_edited(slint::SharedString("70o1"));
+        CHECK(controller.statusIsError());
+        CHECK_FALSE(controller.oscControl().running());
+        // And the config is untouched, so the field goes back to what it was.
+        CHECK(controller.oscControl().config().port == 7001);
+    }
+
+    SECTION("editing the port while it is off does not open a socket") {
+        // A number typed into a field is a number typed into a field. Binding on it would
+        // be opening a port nobody asked for, which is the one thing this must not do.
+        controller.window().invoke_osc_control_port_edited(slint::SharedString("7005"));
+        CHECK_FALSE(controller.oscControl().running());
+        CHECK(controller.oscControl().config().port == 7005);
+        CHECK_FALSE(controller.currentSettings().machine.oscControlEnabled);
+    }
+
+    SECTION("what the last run had, the next run opens") {
+        takt4::settings::Settings remembered;
+        remembered.machine.oscControlEnabled = true;
+        remembered.machine.oscControlPort = 0; // any free one, as above
+        remembered.machine.oscControlLocalOnly = false;
+
+        LiveTracker second(kWeights, kStateSpace);
+        WindowController restored(second, remembered);
+        CHECK(restored.oscControl().running());
+        CHECK(restored.oscControlPort() != 0);
+        CHECK_FALSE(restored.oscControl().config().localOnly);
     }
 }
 

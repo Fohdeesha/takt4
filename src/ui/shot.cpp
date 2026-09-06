@@ -278,6 +278,12 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_control_on(true);
         window->set_learn_action_index(0);
         window->set_control_reading(slint::SharedString("note 36 ch 10"));
+        // §5.7's other surface, listening and being driven — the state worth looking at,
+        // since "off" is two blank fields and says nothing about the layout.
+        window->set_osc_control_on(true);
+        window->set_osc_control_port(slint::SharedString("7001"));
+        window->set_osc_control_reading(
+            slint::SharedString("/takt4/ctl/tap  from 192.168.1.40  9 acted, 0 ignored"));
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
@@ -288,6 +294,11 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         publishIdleReadouts(*window);
         publishTempoOptions(*window, tracking::TempoTracker::Options{});
         window->set_running(false);
+        // What a freshly opened app shows: the port it *would* bind, and no socket. The
+        // defaults, spelled out, because this picture is the one that shows an operator
+        // what they are turning on.
+        window->set_osc_control_port(slint::SharedString("7001"));
+        window->set_osc_control_reading(slint::SharedString("off"));
         window->set_status(slint::SharedString("takt4 " + buildInfo().version +
                                                " — pick an input and press "
                                                "Start."));

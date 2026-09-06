@@ -2,6 +2,7 @@
 
 #include "core/audio/devices.hpp"
 #include "core/control/midi_control.hpp"
+#include "core/control/osc_control.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
@@ -137,6 +138,27 @@ public:
     /// binding buttons is doing it *before* the set, and a learn mode that needs the
     /// tracker running would be a worse tool than a pen and paper.
     void setMidiControlPort(const std::string& name);
+
+    /// §5.7's *other* control input: the OSC listening socket, so a Stream Deck or Bitfocus
+    /// Companion can drive this without touching the laptop.
+    ///
+    /// Off until asked, like the MIDI port and for a stronger reason — a listening socket is
+    /// something to open on somebody's say-so, never on their behalf. `port` 0 asks the
+    /// platform for a free one; `oscControlPort()` reports which it got, which is what an
+    /// operator has to point their surface at.
+    void setOscControlEnabled(bool on);
+    void setOscControlPort(int port);
+    /// Whether anything but 127.0.0.1 is accepted. False is the default; true is what a
+    /// control surface on another machine needs, and is the operator's call because OSC
+    /// carries no authentication and takt4 invents none.
+    void setOscControlNetwork(bool allowNetwork);
+
+    /// The OSC control surface, for reading and for a test to `dispatch` into.
+    control::OscControl& oscControl() noexcept { return oscControl_; }
+    const control::OscControl& oscControl() const noexcept { return oscControl_; }
+    /// The port actually listening, or 0 when nothing is. Not the port that was *asked*
+    /// for: with port 0 those differ, and the operator needs the real one.
+    std::uint16_t oscControlPort() const noexcept { return oscControl_.port(); }
     /// Which action LEARN will bind, as an index into `control::kControlActions`.
     void pickLearnAction(int index);
     /// Arms learn mode for that action, or disarms when it is already armed. One button
@@ -187,7 +209,12 @@ private:
     void publishLevels();
     void publishTaps();
     void publishOutputs();
+    /// Both of §5.7's surfaces. Each half publishes independently, because the MIDI half
+    /// returns early when no port is open and anything written after that return would
+    /// never run on a window that has only the OSC socket.
     void publishControl();
+    void publishMidiControl();
+    void publishOscControl();
     void publishSnap();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
@@ -254,13 +281,19 @@ private:
     /// class, but a beat observer is the obvious next thing to give it.
     output::OutputRunner runner_;
 
-    /// The MIDI surface. **After `runner_`, so it is destroyed first**, and that ordering
-    /// is now load-bearing rather than a preference: since §5.7's `panic` and
-    /// `rule/<id>/enable` landed, this posts to the *runner* as well as to the engine, on
-    /// RtMidi's own callback thread. Destroying the runner first would leave that thread
-    /// with a queue that has gone. The engine outlives both either way, which is what made
-    /// the opposite order safe before and is no longer the whole question.
+    /// §5.7's two control surfaces. **Both after `runner_`, so both are destroyed first**,
+    /// and that ordering is load-bearing rather than a preference: since §5.7's `panic` and
+    /// `rule/<id>/enable` landed, each of these posts to the *runner* as well as to the
+    /// engine — MIDI on RtMidi's callback thread, OSC on its own receive loop. Destroying
+    /// the runner first would leave either thread with a queue that has gone. The engine
+    /// outlives all three either way, which is what made the opposite order safe before and
+    /// is no longer the whole question.
+    ///
+    /// Two surfaces rather than one because each owns its own tap set: a Stream Deck's tap
+    /// button and a MIDI pad are two surfaces, and interleaving their taps would give an
+    /// operator using both a tempo neither meant (`control::ControlSurface`).
     control::MidiControl control_;
+    control::OscControl oscControl_;
 };
 
 } // namespace takt4::ui

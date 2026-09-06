@@ -69,6 +69,15 @@ public:
 
     const Config& config() const noexcept { return config_; }
 
+    /// Points it at a different port, or opens it to the network. **Stops first**, because
+    /// every field here is decided when the socket is bound and none of them can be changed
+    /// under a bound one; the caller starts it again.
+    ///
+    /// A setter rather than building a new one for the reason `MidiControl::setPort` has:
+    /// this holds a mutex and a thread, so it is neither copyable nor movable, and an owner
+    /// that keeps one as a member cannot replace it.
+    void setConfig(Config config);
+
     /// Where §5.7's two rule addresses go. See the constructor.
     void setRuleControl(RuleControl* rules) noexcept { surface_.setRuleControl(rules); }
 

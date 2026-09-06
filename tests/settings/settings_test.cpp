@@ -32,7 +32,11 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.machine.channel = 6;
     in.machine.midiClockPort = "Microsoft GS Wavetable Synth 0";
     in.machine.midiControlPort = "MOTU Pro Audio Midi In 1";
-    in.machine.midiBindings = {"note 36 ch 10 -> tap", "cc 64 ch 1 -> lock"};
+    in.machine.midiBindings = {"note 36 ch 10 -> tap", "cc 64 ch 1 -> lock",
+                               "cc 21 ch 1 -> rule/drop/enable"};
+    in.machine.oscControlEnabled = true;
+    in.machine.oscControlPort = 7005;
+    in.machine.oscControlLocalOnly = false;
     in.preset.tempo.minBpm = 88.0;
     in.preset.tempo.maxBpm = 176.0;
     in.preset.tempo.octaveFold = false;
@@ -49,6 +53,9 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.machine.midiClockPort == in.machine.midiClockPort);
     CHECK(out.machine.midiControlPort == in.machine.midiControlPort);
     CHECK(out.machine.midiBindings == in.machine.midiBindings);
+    CHECK(out.machine.oscControlEnabled);
+    CHECK(out.machine.oscControlPort == 7005);
+    CHECK_FALSE(out.machine.oscControlLocalOnly);
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(88.0, 1e-9));
     CHECK_THAT(out.preset.tempo.maxBpm, WithinAbs(176.0, 1e-9));
     CHECK_FALSE(out.preset.tempo.octaveFold);
@@ -78,6 +85,12 @@ TEST_CASE("the two layers stay apart in the file", "[settings]") {
     // carrying nothing.
     CHECK(text.find("midiControlPort", preset) == std::string::npos);
     CHECK(text.find("midiBindings", preset) == std::string::npos);
+    // Nor the listening socket, and for a sharper reason than the rest: a preset carrying
+    // "listen on 0.0.0.0:7001" to somebody else's laptop would open a port they never
+    // asked for.
+    CHECK(text.find("oscControlEnabled", preset) == std::string::npos);
+    CHECK(text.find("oscControlPort", preset) == std::string::npos);
+    CHECK(text.find("oscControlLocalOnly", preset) == std::string::npos);
     CHECK(text.find("version") != std::string::npos);
 }
 
@@ -104,6 +117,30 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(defaults.preset.tempo.minBpm, 1e-9));
     CHECK(out.preset.oscPrefix == defaults.preset.oscPrefix);
     CHECK(out.preset.oscTargets.empty());
+    // The listening socket most of all: a build that did not have this field must not
+    // load as one that opens a port.
+    CHECK_FALSE(out.machine.oscControlEnabled);
+    CHECK(out.machine.oscControlPort == defaults.machine.oscControlPort);
+    CHECK(out.machine.oscControlLocalOnly);
+}
+
+TEST_CASE("a control port a file could not have meant is refused", "[settings]") {
+    // A hand-edited file is exactly where "port 99999" comes from, and reading it into a
+    // uint16_t would take the low bits — 33465, a port nobody meant and nobody can guess.
+    const auto portIn = [](const std::string& value) {
+        return takt4::settings::fromJson(R"({"machine": {"oscControlPort": )" + value + "}}")
+            .machine.oscControlPort;
+    };
+
+    for (const char* value : {"99999", "-1", "\"7001\"", "1.5", "null"}) {
+        INFO("port: " << value);
+        CHECK(portIn(value) == 7001); // the default, kept
+    }
+
+    // 0 is not out of range: it asks the platform for a free port, which `OscReceiver`
+    // supports and the window reports back once it has one.
+    CHECK(portIn("0") == 0);
+    CHECK(portIn("65535") == 65535);
 }
 
 TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[settings]") {

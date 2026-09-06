@@ -225,9 +225,9 @@ component Setting inherits HorizontalLayout {
 export component MainWindow inherits Window {
   title: "takt4";
   preferred-width: 900px;
-  preferred-height: 700px;
+  preferred-height: 744px;
   min-width: 720px;
-  min-height: 600px;
+  min-height: 644px;
   background: Theme.background;
   init => {
     Palette.color-scheme = ColorScheme.dark;
@@ -324,6 +324,24 @@ export component MainWindow inherits Window {
   /// Arms learn mode for the selected action, or disarms it when it already is.
   callback learn-clicked();
   callback forget-clicked();
+
+  /// §5.7's other surface: a listening UDP socket, so a Stream Deck or Bitfocus Companion
+  /// can drive this without touching the laptop. Off until asked — OSC carries no
+  /// authentication and takt4 invents none, so opening the socket, and opening it past
+  /// loopback, are two separate decisions and both are the operator's.
+  in-out property <bool> osc-control-on;
+  /// The port actually bound, as text, or what has been typed while it is off. Not always
+  /// the port that was asked for: 0 means "any free one" and the operator needs the real
+  /// number to point a surface at.
+  in-out property <string> osc-control-port;
+  in-out property <bool> osc-control-network;
+  /// The last address that arrived and where from, or the counts. What tells an operator
+  /// their surface is aimed at the wrong prefix, which otherwise looks like a dead cable.
+  in-out property <string> osc-control-reading;
+
+  callback osc-control-toggled(bool);
+  callback osc-control-port-edited(string);
+  callback osc-control-network-toggled(bool);
 
   in-out property <string> status;
   in-out property <bool> status-is-error;
@@ -947,11 +965,18 @@ export component MainWindow inherits Window {
 
     // --- §5.7's control row ---------------------------------------------------------
     // The mirror of the outputs row: that one says what is being sent, this one says what
-    // is allowed to drive us. Learn mode is the whole of it — an operator picks the thing
-    // they want a button for, presses LEARN, then presses the button.
+    // is allowed to drive us. Two lines, because §5.7 has two surfaces — a box of buttons
+    // on this desk, and a socket anything on the network can reach. Learn mode carries the
+    // first: an operator picks the thing they want a button for, presses LEARN, then
+    // presses the button.
     Rectangle {
       background: Theme.panel;
       vertical-stretch: 0;
+
+      // A layout, not two loose children: a Rectangle positions its children itself, so a
+      // second HorizontalLayout beside the first would be drawn on top of it rather than
+      // under it — silently, which is §6's standing warning about Slint layout bugs.
+      VerticalLayout {
 
       HorizontalLayout {
         padding-left: 24px;
@@ -1018,6 +1043,72 @@ export component MainWindow inherits Window {
           vertical-alignment: center;
           overflow: elide;
         }
+      }
+
+      // The OSC half of the same row, on its own line: a socket rather than a port, and
+      // three separate decisions — listen at all, on which port, and whether past this
+      // machine. Kept visually inside the control panel because it answers the same
+      // question the line above does: what is allowed to drive us.
+      HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-bottom: 10px;
+        spacing: 10px;
+
+        Text {
+          text: "OSC in";
+          color: root.osc-control-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 56px;
+          vertical-alignment: center;
+        }
+
+        osc-control-check := CheckBox {
+          checked <=> root.osc-control-on;
+          text: "listen";
+          toggled => {
+            root.osc-control-toggled(self.checked);
+          }
+        }
+
+        osc-control-port-field := LineEdit {
+          text <=> root.osc-control-port;
+          placeholder-text: "port";
+          font-size: 12px;
+          // A port is five characters. Fixed rather than stretched so the reading beside
+          // it — which is the part that changes and the part an operator is watching —
+          // gets the room instead.
+          width: 84px;
+          horizontal-stretch: 0;
+          // `accepted`, not `edited`, for the reason the OSC target field gives: a
+          // keystroke at a time would rebind the socket on every digit.
+          accepted(text) => {
+            root.osc-control-port-edited(text);
+          }
+        }
+
+        osc-control-network-check := CheckBox {
+          checked <=> root.osc-control-network;
+          // Spelled as what it *allows* rather than as "local only", so the checked state
+          // is the permissive one. A negative box that is safe when ticked reads backwards
+          // in a hurry, and this is a decision worth reading correctly.
+          text: "allow other machines";
+          toggled => {
+            root.osc-control-network-toggled(self.checked);
+          }
+        }
+
+        Text {
+          text: root.osc-control-reading;
+          color: Theme.dim;
+          font-size: 12px;
+          font-family: "Consolas";
+          horizontal-stretch: 1;
+          vertical-alignment: center;
+          overflow: elide;
+        }
+      }
+
       }
     }
 
