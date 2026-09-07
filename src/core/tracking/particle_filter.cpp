@@ -378,6 +378,11 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
 
     TrackedFrame frame;
     frame.frameIndex = counter_;
+    // Carried, not used: see TrackedFrame. Taken before the gate above is applied, because
+    // what the layer above weighs beats against each other with is the network's reading,
+    // not the floor a quiet frame is flattened to.
+    frame.beatActivation = beatActivation;
+    frame.downbeatActivation = downbeatActivation;
     frame.gathering = median(particles_);
     const std::size_t intervalIndex = beat.intervalOf(frame.gathering);
     frame.intervalFrames = beat.intervals()[intervalIndex];

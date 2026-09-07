@@ -354,6 +354,10 @@ std::optional<Message> Rule::fire(const Context& context) {
     // is sent after the rule set may have been replaced, and it has to go where the press
     // went. `outputMask_` is set by whoever knows what the outputs are — see `outputMask`.
     message.outputs = outputMask_;
+    // Rebuilt from scratch each fire, in the order `lastSlots` documents. Cleared first so a
+    // fire that cannot build its address leaves nothing behind: the editor would otherwise
+    // go on showing the values of the last fire that worked, beside a rule that is failing.
+    lastSlots_.clear();
     if (config_.sendKind == Message::Kind::Osc) {
         segmentValues_.clear();
         for (Generator& generator : segments_) {
@@ -364,13 +368,22 @@ std::optional<Message> Rule::fire(const Context& context) {
         }
         message.address = address_;
         message.hasArgument = config_.sendValue;
+        lastSlots_.assign(segmentValues_.begin(), segmentValues_.end());
         if (config_.sendValue) {
             message.argument = value_.next(context);
+            lastSlots_.push_back(message.argument);
         }
     } else {
         message.channel = std::clamp(config_.channel, 1, kMidiChannels);
         message.number = std::clamp(number_.next(context).asInt(), 0, kMidiMax);
         message.value = std::clamp(value_.next(context).asInt(), 0, kMidiMax);
+        // The clamped numbers, not what the generator offered: what went on the wire is what
+        // the chip beside the generator should say, or a note pushed back into range would
+        // read on screen as the note that was sent.
+        lastSlots_.push_back(Value::ofInt(message.number));
+        if (config_.sendValue) {
+            lastSlots_.push_back(Value::ofInt(message.value));
+        }
     }
     ++fires_;
     lastFired_ = context.now;

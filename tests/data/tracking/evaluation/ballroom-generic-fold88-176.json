@@ -36,23 +36,23 @@
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.7234039454062338,
-      "F-measure": 0.8364203739646208,
+      "Downbeat F-measure": 0.7247297029819914,
+      "F-measure": 0.8368494991030483,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.7067414079042925,
-      "F-measure": 0.7963872080795893,
+      "Downbeat F-measure": 0.6999588816450221,
+      "F-measure": 0.7962406378235799,
       "files": 86
     },
     "Tango": {
       "Downbeat F-measure": 0.9319239564268686,
-      "F-measure": 0.9611485321535822,
+      "F-measure": 0.961022882609328,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9393561360683605,
-      "F-measure": 0.9608429919928321,
+      "Downbeat F-measure": 0.9366311340434353,
+      "F-measure": 0.959762897682304,
       "files": 65
     },
     "Waltz": {
@@ -66,57 +66,57 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.4922526708626985,
-      "median": 0.3915981198589894
+      "mean": 0.4913794198606012,
+      "median": 0.3902439024390244
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.7754250513426114,
-      "median": 0.8207142857142857
+      "mean": 0.7751536049986523,
+      "median": 0.8196385542168674
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.800118884663878,
+      "mean": 0.8000229749572287,
       "median": 0.8274198289199363
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8018336374568439,
+      "mean": 0.8017377277501946,
       "median": 0.8274198289199363
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.4888707236008693,
-      "median": 0.3902439024390244
+      "mean": 0.48799747259877196,
+      "median": 0.38642533936651585
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.7711265191284076,
-      "median": 0.8196385542168674
+      "mean": 0.7708550727844484,
+      "median": 0.8187294633077766
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.8501921059825625,
-      "median": 0.89272030651341
+      "mean": 0.8491786502706898,
+      "median": 0.888888888888889
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.8941395812334986,
+      "mean": 0.8940300511081835,
       "median": 0.9223227752639518
     },
     "Goto": {
       "files": 698,
-      "mean": 0.21203438395415472,
+      "mean": 0.21060171919770773,
       "median": 0.0
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.5030622469340699,
+      "mean": 0.5029971137145696,
       "median": 0.5119751551990304
     },
     "P-score": {
       "files": 698,
-      "mean": 0.8614874262266033,
+      "mean": 0.8613883521880654,
       "median": 0.9038461538461539
     },
     "Tempo accuracy 1": {

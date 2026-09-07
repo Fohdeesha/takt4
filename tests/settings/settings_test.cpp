@@ -248,15 +248,60 @@ TEST_CASE("a missing or unreadable settings file is not an error", "[settings]")
     CHECK(takt4::settings::load(truncated).machine.deviceName.empty());
 }
 
-TEST_CASE("the settings file has a home on this machine", "[settings]") {
-    // Not asserting the exact path — it is the platform's to decide — but it has to be
-    // absolute, under a directory, and named the same every time.
+TEST_CASE("the settings file lives beside the program", "[settings]") {
+    // What makes takt4 something an operator can copy onto a stick: the settings travel
+    // with the executable rather than staying in a profile on one machine.
     const std::filesystem::path file = takt4::settings::settingsFile();
     if (file.empty()) {
-        SKIP("this environment names no config directory");
+        SKIP("this environment names neither an executable nor a config directory");
     }
     CHECK(file.is_absolute());
     CHECK(file.filename() == "settings.json");
     CHECK(file.parent_path() == takt4::settings::settingsDirectory());
-    CHECK(takt4::settings::settingsDirectory().filename() == "takt4");
+
+    // This test binary is the program, so its own directory is the answer — and finding an
+    // executable in there is what shows the path came from the running program rather than
+    // from an environment variable, which is the whole change.
+    std::error_code code;
+    const std::filesystem::path directory = takt4::settings::settingsDirectory();
+    REQUIRE(std::filesystem::is_directory(directory, code));
+    bool foundAnExecutable = false;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, code)) {
+        // Named rather than extension-matched, so this reads the same on a platform where an
+        // executable has no extension at all.
+        if (entry.path().stem().string().starts_with("takt4")) {
+            foundAnExecutable = true;
+            break;
+        }
+    }
+    CHECK(foundAnExecutable);
+}
+
+TEST_CASE("settings left by an older build are still read", "[settings]") {
+    // The per-user location is where these used to be kept. A rig that has one there must
+    // not lose its outputs, its device and its MIDI bindings just because the file moved,
+    // so it is read until a save writes one beside the executable.
+    const std::filesystem::path beside = takt4::settings::settingsFile();
+    const std::filesystem::path user = takt4::settings::userSettingsDirectory();
+    if (beside.empty()) {
+        SKIP("this environment names no executable");
+    }
+
+    std::error_code code;
+    const bool haveNew = std::filesystem::exists(beside, code);
+    const bool haveOld = !user.empty() && std::filesystem::exists(user / "settings.json", code);
+
+    // Whichever exists, `existingSettingsFile` names one that can be read; and the new
+    // location wins whenever both are there, so the move only ever happens once.
+    if (haveNew) {
+        CHECK(takt4::settings::existingSettingsFile() == beside);
+    } else if (haveOld) {
+        CHECK(takt4::settings::existingSettingsFile() == user / "settings.json");
+    } else {
+        // Neither: it still names where one would be written, and loading it gives defaults
+        // rather than failing.
+        CHECK(takt4::settings::existingSettingsFile() == beside);
+        CHECK(takt4::settings::load(takt4::settings::existingSettingsFile())
+                  .machine.deviceName.empty());
+    }
 }

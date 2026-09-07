@@ -20,6 +20,14 @@ LiveTracker::LiveTracker(const std::filesystem::path& weights,
                          const std::filesystem::path& stateSpace)
     : LiveTracker(weights, stateSpace, Options{}) {}
 
+LiveTracker::LiveTracker(model::ModelWeights weights, tracking::StateSpaceModel stateSpace,
+                         Options options)
+    // `weightsPath_` is declared after `stateSpace_` and before `engine_`, so it is read out
+    // of `weights` while `weights` is still whole.
+    : stateSpace_(std::move(stateSpace)), weightsPath_(weights.path()), options_(options),
+      engine_(std::make_unique<BeatEngine>(weights, stateSpace_, options.engine)),
+      fanout_{engine_.get(), &meter_} {}
+
 LiveTracker::~LiveTracker() {
     stop();
 }

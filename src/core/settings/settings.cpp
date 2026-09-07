@@ -6,14 +6,18 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <ios>
 #include <sstream>
+#include <string>
 #include <system_error>
 
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 namespace takt4::settings {
@@ -45,6 +49,51 @@ std::string environmentVariable(const char* name) {
 #else
     const char* value = std::getenv(name);
     return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
+/// This program's own file, or empty when the platform will not say.
+///
+/// Not `argv[0]`, which is whatever the caller felt like passing and is a bare name when the
+/// program was found on PATH. Every platform has a real answer and this asks for it.
+std::filesystem::path executablePath() {
+#if defined(_WIN32)
+    // A path can be longer than MAX_PATH, and `GetModuleFileNameW` says so only by filling
+    // the buffer exactly and setting ERROR_INSUFFICIENT_BUFFER, so it is asked in a loop
+    // rather than once with a number somebody guessed.
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD written =
+            GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (written == 0) {
+            return {};
+        }
+        if (written < buffer.size()) {
+            buffer.resize(written);
+            return std::filesystem::path(buffer);
+        }
+        if (buffer.size() >= 32768) {
+            return {}; // past the longest path Windows has
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size); // fails, and fills in the size it wants
+    std::string buffer(size, '\0');
+    if (size == 0 || _NSGetExecutablePath(buffer.data(), &size) != 0) {
+        return {};
+    }
+    buffer.resize(std::strlen(buffer.c_str()));
+    std::error_code code;
+    // Through the symlink: an app run from a bin/ symlink keeps its settings with the real
+    // program, not with the link.
+    const std::filesystem::path resolved = std::filesystem::canonical(buffer, code);
+    return code ? std::filesystem::path(buffer) : resolved;
+#else
+    std::error_code code;
+    const std::filesystem::path resolved = std::filesystem::read_symlink("/proc/self/exe", code);
+    return code ? std::filesystem::path{} : resolved;
 #endif
 }
 
@@ -105,6 +154,17 @@ tracking::TempoTracker::Options tempoFromJson(const json& object) {
 } // namespace
 
 std::filesystem::path settingsDirectory() {
+    // The executable's own, which is what makes this a program that can be copied to a
+    // stick and run: the settings travel with it, and two copies in two folders are two
+    // rigs rather than one fighting over a shared file. `userSettingsDirectory` is what
+    // this used to be, and is still read once — see `existingSettingsFile`.
+    // `parent_path`, not `remove_filename`: the latter leaves the trailing separator, so the
+    // directory would not compare equal to the `parent_path()` of the file inside it.
+    const std::filesystem::path exe = executablePath();
+    return exe.empty() ? userSettingsDirectory() : exe.parent_path();
+}
+
+std::filesystem::path userSettingsDirectory() {
 #if defined(_WIN32)
     const std::string appData = environmentVariable("APPDATA");
     if (appData.empty()) {
@@ -133,6 +193,24 @@ std::filesystem::path settingsDirectory() {
 std::filesystem::path settingsFile() {
     const std::filesystem::path directory = settingsDirectory();
     return directory.empty() ? std::filesystem::path{} : directory / "settings.json";
+}
+
+std::filesystem::path existingSettingsFile() {
+    const std::filesystem::path beside = settingsFile();
+    std::error_code code;
+    if (!beside.empty() && std::filesystem::exists(beside, code)) {
+        return beside;
+    }
+    // A build before this one kept the file under the user's profile. With none beside the
+    // executable yet, that one is still this machine's settings, and reading it is how a rig
+    // keeps its outputs, its device and its MIDI bindings across the change. It is read and
+    // not moved: the next save writes beside the executable, so the copy left behind is what
+    // an older build — or another copy of this one — still finds.
+    const std::filesystem::path user = userSettingsDirectory();
+    if (!user.empty() && std::filesystem::exists(user / "settings.json", code)) {
+        return user / "settings.json";
+    }
+    return beside;
 }
 
 std::string toJson(const Settings& settings) {

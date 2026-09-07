@@ -56,6 +56,15 @@ export component Press inherits Rectangle {
   in property <bool> primary;
   /// A toggle that is currently on, lit so it reads as held down rather than pressable.
   in property <bool> active;
+  /// Air either side of the label. It is most of what a short button's minimum width *is*,
+  /// so a row of these in a pane that can be dragged narrow wants less of it than a row of
+  /// performance controls does.
+  in property <length> pad: 16px;
+  /// 17px is for the controls hit mid-set from across a booth, which is what this component
+  /// was written for and is still the default. An editor's own COPY and DELETE are not
+  /// those, and at 17px two of them do not fit a pane that can be dragged to a third of the
+  /// window — the choice is a smaller label or no label, and a smaller one still reads.
+  in property <length> font: 17px;
   callback clicked;
 
   private property <color> face: root.active ? Theme.controlActive
@@ -77,18 +86,23 @@ export component Press inherits Rectangle {
     : root.face;
 
   HorizontalLayout {
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-left: root.pad;
+    padding-right: root.pad;
 
     Text {
       text: root.text;
       // Plain white, not Theme.text: this is the one thing in the window that has to
       // survive being glanced at rather than read.
       color: root.enabled ? Theme.label : Theme.dim;
-      font-size: 17px;
+      font-size: root.font;
       font-weight: 700;
       horizontal-alignment: center;
       vertical-alignment: center;
+      // A label with no elide reports its whole width as the button's minimum, and a
+      // layout will not shrink a child past its minimum — so in a pane that can be dragged
+      // narrower than the row of buttons in it, the buttons ran off the edge and were
+      // clipped rather than giving way. Eliding makes the minimum one ellipsis wide.
+      overflow: elide;
     }
   }
 
@@ -96,6 +110,35 @@ export component Press inherits Rectangle {
     enabled: root.enabled;
     clicked => {
       root.clicked();
+    }
+  }
+}
+
+/// The line between two panes, draggable.
+///
+/// A pane whose width is written into the markup is the right width for whoever wrote it.
+/// An operator with twenty rules wants the list wide; one watching what a rule they have
+/// just built is sending wants the log wide and the list gone — and which of those is true
+/// changes during a set, so it is not a decision this file can make once.
+///
+/// It reports a **delta** rather than a width, because the pane it moves may be on either
+/// side of it: the owner adds it to the left-hand pane's width or subtracts it from the
+/// right-hand one's, and clamps. `mouse-x - pressed-x` is the movement since the last time
+/// this was reported, because the divider — and with it this touch area's own origin —
+/// moves by whatever the owner did with it.
+export component Splitter inherits Rectangle {
+  callback dragged(length);
+
+  width: 5px;
+  horizontal-stretch: 0;
+  // Lit under the pointer, because a 5px line that does something is worth nothing if
+  // nobody can tell it from the 1px lines that do not.
+  background: touch.pressed || touch.has-hover ? Theme.accent : Theme.line;
+
+  touch := TouchArea {
+    mouse-cursor: ew-resize;
+    moved => {
+      root.dragged(self.mouse-x - self.pressed-x);
     }
   }
 }

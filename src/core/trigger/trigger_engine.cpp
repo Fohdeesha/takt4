@@ -62,14 +62,15 @@ bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noex
     }
 }
 
-void TriggerEngine::deliver(const Message& message, std::string_view ruleId) {
+void TriggerEngine::deliver(const Message& message, std::string_view ruleId, bool followUp,
+                            std::span<const Value> slots) {
     sink_.send(message);
     ++sent_;
     if (observer_) {
         // After the sink, so what an observer is told about has already gone out. A UI
         // showing a message that then failed to send would be worse than one showing
         // nothing — `RuleSink`'s own counters are where "it went nowhere" is reported.
-        observer_(ruleId, message);
+        observer_(ruleId, message, followUp, slots);
     }
 }
 
@@ -79,7 +80,7 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context) {
         ++dropped_;
         return false;
     }
-    deliver(*message, rule.id());
+    deliver(*message, rule.id(), false, rule.lastSlots());
     if (const std::optional<Message> follow = rule.followUpFor(*message)) {
         // Never in the past, however the delay was configured: a follow-up due before the
         // message it follows would be sent in the same round and read as a rule that sends
@@ -100,7 +101,7 @@ void TriggerEngine::drainDue(double now) {
     std::size_t kept = 0;
     for (std::size_t i = 0; i < pending_.size(); ++i) {
         if (pending_[i].due <= now) {
-            deliver(pending_[i].message, pending_[i].ruleId);
+            deliver(pending_[i].message, pending_[i].ruleId, true, {});
         } else {
             if (kept != i) {
                 pending_[kept] = std::move(pending_[i]);
@@ -113,7 +114,7 @@ void TriggerEngine::drainDue(double now) {
 
 void TriggerEngine::flushPending() {
     for (const Pending& waiting : pending_) {
-        deliver(waiting.message, waiting.ruleId);
+        deliver(waiting.message, waiting.ruleId, true, {});
     }
     pending_.clear();
 }

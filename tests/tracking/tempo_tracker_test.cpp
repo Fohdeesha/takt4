@@ -92,6 +92,148 @@ TEST_CASE("the octave fold pulls an estimate into the operator's range", "[track
     }
 }
 
+namespace {
+
+/// Runs `frames` frames at one filter period, calling a beat on every `interval`-th frame,
+/// and returns how many beats the tracker actually *published*. The two numbers are the
+/// whole of what `Options::foldBeats` is about, and they used to be the same number by
+/// construction.
+///
+/// `meter` beats to the bar, with every `meter`-th call a downbeat, so that the bar can be
+/// counted as well as the beats.
+struct Published {
+    std::size_t beats = 0;
+    std::size_t downbeats = 0;
+};
+
+Published feed(TempoTracker& tracker, std::uint64_t& index, std::uint32_t interval,
+               std::size_t frames, std::uint32_t meter = 4, std::uint64_t* called = nullptr) {
+    Published out;
+    for (std::size_t f = 0; f < frames; ++f) {
+        TrackedFrame frame = frameAt(index, interval, 0.9, meter);
+        if (index % interval == 0) {
+            const bool downbeat = (index / interval) % meter == 0;
+            frame.emitted =
+                downbeat ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
+            // The network believing this is a beat, split across the two classes as a
+            // softmax over beat / downbeat / non-beat really is. Equal on every beat: the
+            // fold must not need one sub-grid to be louder than the other, because measured
+            // over real audio neither is. See Options::foldSupportFrames.
+            frame.beatActivation = downbeat ? 0.2f : 0.7f;
+            frame.downbeatActivation = downbeat ? 0.5f : 0.0f;
+            if (called != nullptr) {
+                ++*called;
+            }
+        }
+        ++index;
+        if (const std::optional<BeatEvent> event = tracker.process(frame)) {
+            ++out.beats;
+            if (event->downbeat) {
+                ++out.downbeats;
+            }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("the octave fold divides the beats, not only the number", "[tracking][tempo]") {
+    // The user's report of 2026-09-06: "the tool kept detecting the bpm as double, when it
+    // has a very obvious kick drum at 93ish bpm ... it kept trying to fold from 186."
+    //
+    // The fold was folding — the *number* read 92. What went past it untouched were the
+    // beats, so OSC, MIDI clock, Link's phase and every trigger rule ran at 186 under a
+    // readout that said 92. See Options::foldBeats.
+    TempoTracker tracker(kFramePeriod); // the default 70-140 window
+    std::uint64_t index = 0;
+
+    // Interval 32 is 93.75 BPM, inside the window. The cloud sitting there is the evidence
+    // the fold needs before it will divide anything: Options::foldSupportFrames.
+    const Published slow = feed(tracker, index, 32, 400);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(32)).margin(1.0));
+    // Nothing divided: the filter and the published grid are the same grid.
+    CHECK(slow.beats == 400 / 32 + 1);
+
+    // Now the filter goes to double time — interval 16, 187.5 BPM — which is exactly what it
+    // does over 56 % of "03 - Fake Sweat". The tempo must not move, and the beats must halve
+    // with it rather than doubling under a number that did not.
+    std::uint64_t called = 0;
+    const Published fast = feed(tracker, index, 16, 640, 4, &called);
+    CHECK(tracker.state().bpm == Approx(bpmOf(32)).margin(2.0));
+    CHECK(called == 640 / 16);
+    CHECK(fast.beats == called / 2);
+    // And the bar with them: a filter bar is four of *its* beats, so under a divisor of two
+    // it calls a downbeat twice as often as one is due.
+    CHECK(fast.downbeats == called / 8);
+
+    SECTION("switched off, the fold moves the number and nothing else — as it used to") {
+        TempoTracker::Options options;
+        options.foldBeats = false;
+        TempoTracker unfolded(kFramePeriod, options);
+        std::uint64_t at = 0;
+        (void)feed(unfolded, at, 32, 400);
+        std::uint64_t calls = 0;
+        const Published all = feed(unfolded, at, 16, 640, 4, &calls);
+        CHECK(all.beats == calls); // every one of the filter's, at twice the published tempo
+        CHECK(unfolded.state().bpm == Approx(bpmOf(32)).margin(2.0));
+    }
+}
+
+TEST_CASE("a record the cloud never reads slowly keeps every beat", "[tracking][tempo]") {
+    // The other half of the same question, and the reason the fold asks the music before it
+    // divides anything. A 204 BPM Quickstep under a 70-140 window reaches the fold looking
+    // exactly like the case above — the filter is calling twice as many beats as the
+    // published tempo — and is its opposite: the filter is right and the window does not fit
+    // the record. Halving there throws away every second real beat.
+    //
+    // Measured over Ballroom, dividing unconditionally cost Quickstep 0.90 beat F-measure to
+    // 0.62, Viennese Waltz 0.96 to 0.65 and Jive 0.90 to 0.66. Nothing in the activations
+    // separates the two cases; the cloud never settling on the slower octave does. See
+    // Options::foldSupportFrames.
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+
+    // Straight in at 187.5 BPM and never anywhere else, which is what a genuinely fast
+    // record looks like: the cloud has no reason to visit half of it.
+    std::uint64_t called = 0;
+    const Published fast = feed(tracker, index, 16, 2000, 4, &called);
+    CHECK(tracker.state().bpm == Approx(bpmOf(32)).margin(2.0)); // the number still folds
+    CHECK(fast.beats == called);                                 // and the beats are all kept
+    CHECK(called > 100);
+}
+
+TEST_CASE("a manual halving divides the beats without waiting to be convinced",
+          "[tracking][tempo]") {
+    // Evidence is wanted in place of an instruction, not in spite of one: the operator
+    // pressing ÷2 has said which grid they mean. See Options::foldSupportFrames.
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+    std::uint64_t before = 0;
+    const Published kept = feed(tracker, index, 16, 320, 4, &before);
+    REQUIRE(kept.beats == before); // nothing has convinced it yet
+
+    tracker.halve();
+    std::uint64_t after = 0;
+    const Published halved = feed(tracker, index, 16, 640, 4, &after);
+
+    // The press lands on top of a fold that had *already* put the number an octave down
+    // without being allowed to move the beats, so the grid divides by four here and the
+    // number by two. Asserting either count on its own would be asserting that arithmetic
+    // rather than the thing it is for, which is this:
+    //
+    //   **the beats a tracker publishes are the tempo it publishes.**
+    //
+    // That is the invariant the whole of `Options::foldBeats` exists to restore, it is what
+    // the user's report was a violation of, and it is true here where a ÷2 has been pressed
+    // on a fold that was holding back — which is exactly where it is easiest to lose.
+    const double publishedPeriodFrames = 60.0 / (tracker.state().bpm * kFramePeriod);
+    const double framesPerPublishedBeat = 640.0 / static_cast<double>(halved.beats);
+    CHECK(framesPerPublishedBeat == Approx(publishedPeriodFrames).margin(2.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(64)).margin(2.0)); // 187.5, folded then halved
+}
+
 TEST_CASE("an estimate wandering across the window's edge does not take the octave with it",
           "[tracking][tempo]") {
     // The failure this exists to stop, measured on references/audio's "01 - Pirates": a

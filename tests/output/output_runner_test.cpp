@@ -328,6 +328,62 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     CHECK(matched == kExpectedDownbeats);
 }
 
+TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][trigger]") {
+    // The user's report of 2026-09-06, at the far end of the chain it actually mattered at.
+    // A fold that moves the number and leaves `TrackedFrame::emitted` alone is invisible in
+    // the tracker's own tests and *deafening* here: the readout says 93 and every OSC
+    // datagram, MIDI clock tick and trigger rule fires at 186. So this asserts the halving
+    // where an operator would see it — on a socket, in the datagrams that really left.
+    //
+    // Driven from ÷2 rather than from the automatic fold because the excerpt is ten seconds
+    // long and the automatic one deliberately waits five for the music to agree with it
+    // (Options::foldSupportFrames); the operator's ÷2 is the same divisor without the wait.
+    LoopbackReceiver receiver;
+    Transports::Config config;
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", receiver.port()}});
+
+    const auto beatsOnTheWire = [&](bool halve) {
+        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+        OutputRunner runner(*engine, config);
+        Rule::Config rule;
+        rule.id = "flash";
+        rule.trigger = takt4::trigger::Trigger::Beat;
+        rule.address = "/flash";
+        rule.sendValue = false;
+        runner.post(OutputCommand::rules({rule}));
+        runner.start();
+        if (halve) {
+            REQUIRE(engine->post(takt4::engine::Command::halve()));
+        }
+        feedExcerpt(*engine);
+        waitForBeats(runner, halve ? kExpectedBeats / 2 : kExpectedBeats);
+        runner.stop();
+
+        std::uint64_t flashes = 0;
+        for (std::string datagram = receiver.receive(); !datagram.empty();
+             datagram = receiver.receive()) {
+            if (datagram.find("/flash") != std::string::npos) {
+                ++flashes;
+            }
+        }
+        // What the rule fired, what the sink delivered and what a socket really received are
+        // three different claims, and a fold that reached only two of them would be the same
+        // bug one layer further down.
+        CHECK(runner.triggers().rule(0).fires() == flashes);
+        CHECK(runner.ruleSink().delivered() == flashes);
+        return flashes;
+    };
+
+    const std::uint64_t whole = beatsOnTheWire(false);
+    CHECK(whole == kExpectedBeats);
+
+    const std::uint64_t halved = beatsOnTheWire(true);
+    // Half the beats, on the wire, for a control that halves the tempo. Before
+    // `Options::foldBeats` this was 21 either way.
+    CHECK(halved >= kExpectedBeats / 2 - 1);
+    CHECK(halved <= kExpectedBeats / 2 + 1);
+}
+
 TEST_CASE("panic reaches the rules through the same queue as everything else",
           "[output][trigger]") {
     // 5.8 calls PANIC "non-negotiable for live use", and 5.7 gives it an address. Both of
