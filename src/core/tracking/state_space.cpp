@@ -69,7 +69,9 @@ std::uint32_t fnv1a32(const void* data, std::size_t bytes) noexcept {
 /// the file is long enough for what it claims to hold.
 class Reader {
 public:
-    Reader(const std::vector<unsigned char>& bytes, std::string name)
+    // A span rather than a vector reference, so the same reader walks a blob read from a
+    // file and one compiled into the program.
+    Reader(std::span<const unsigned char> bytes, std::string name)
         : bytes_(bytes), name_(std::move(name)) {}
 
     std::uint32_t u32() {
@@ -105,7 +107,7 @@ private:
         return at;
     }
 
-    const std::vector<unsigned char>& bytes_;
+    std::span<const unsigned char> bytes_;
     std::string name_;
     std::size_t offset_ = 0;
 };
@@ -220,8 +222,18 @@ StateSpaceModel StateSpaceModel::fromFile(const std::filesystem::path& path) {
     if (!in) {
         throw std::runtime_error(name + ": cannot open");
     }
-    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
-                                     std::istreambuf_iterator<char>());
+    // Into `char` and viewed as bytes: `std::byte` is an enum class, so a vector of them
+    // cannot be filled from a stream iterator without a conversion per element.
+    const std::vector<char> read((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+    return fromBytes(std::as_bytes(std::span(read)), name);
+}
+
+StateSpaceModel StateSpaceModel::fromBytes(std::span<const std::byte> blob,
+                                           std::string_view from) {
+    const std::string name(from);
+    const std::span<const unsigned char> bytes(
+        reinterpret_cast<const unsigned char*>(blob.data()), blob.size());
     if (bytes.size() < kHeaderBytes) {
         throw std::runtime_error(name + ": too short to be a takt4 state space blob");
     }
@@ -268,7 +280,7 @@ StateSpaceModel StateSpaceModel::fromFile(const std::filesystem::path& path) {
     require(header.beatIntervals > 0 && header.downIntervals > 0, name, "a state space is empty");
 
     StateSpaceModel model;
-    model.path_ = path;
+    model.path_ = name;
     model.config_ = Config{header.fps,
                            header.minBpm,
                            header.maxBpm,

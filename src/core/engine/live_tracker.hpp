@@ -57,6 +57,14 @@ public:
     LiveTracker(const std::filesystem::path& weights, const std::filesystem::path& stateSpace,
                 Options options);
     LiveTracker(const std::filesystem::path& weights, const std::filesystem::path& stateSpace);
+
+    /// The same, from assets already loaded — which is how the application starts, because
+    /// its weights and state space are compiled into it (`assets::weights()`) rather than
+    /// sitting in a folder it would have to find. `weightsPath()` then reports whatever name
+    /// the weight set was given rather than a path, which is what a status line wants either
+    /// way: the question it answers is *which weights*, not *from where*.
+    LiveTracker(model::ModelWeights weights, tracking::StateSpaceModel stateSpace,
+                Options options);
     ~LiveTracker();
 
     LiveTracker(const LiveTracker&) = delete;

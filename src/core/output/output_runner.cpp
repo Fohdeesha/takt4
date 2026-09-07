@@ -1,6 +1,7 @@
 #include "core/output/output_runner.hpp"
 
 #include <exception>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -61,11 +62,14 @@ OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config&
     : engine_(engine), transports_(config), sink_(transports_), triggers_(sink_) {
     // §5.9's last-fired line and event log. Copied out of the output thread and into a
     // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
-    triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message) {
+    triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
+                                     bool followUp, std::span<const trigger::Value> slots) {
         Fired entry;
         entry.ruleId = ruleId;
         entry.message = describe(message);
         entry.when = elapsed();
+        entry.followUp = followUp;
+        entry.slots.assign(slots.begin(), slots.end());
         const std::lock_guard<std::mutex> lock(firedMutex_);
         if (fired_.size() >= kFiredCapacity) {
             // The oldest goes. A log that stops recording when it is full stops being a

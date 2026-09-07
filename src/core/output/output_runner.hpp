@@ -255,6 +255,14 @@ public:
         std::string message;
         /// Seconds since `start()`, on the clock the transports are driven from.
         double when = 0.0;
+        /// §5.6's release half rather than a fire of its own. It belongs in the log — a
+        /// release that never left is a clip left held, and nothing else would say so — but
+        /// **a rule that fired once has to count once**, and a Resolume connect sends a 1 and
+        /// then a 0. See `trigger::TriggerEngine::FireObserver`.
+        bool followUp = false;
+        /// What each generator produced, in the order §5.9's editor draws the chips. Empty
+        /// for a follow-up. See `trigger::Rule::lastSlots`.
+        std::vector<trigger::Value> slots;
     };
 
     /// Everything rules have sent since the last call, oldest first, and clears it.

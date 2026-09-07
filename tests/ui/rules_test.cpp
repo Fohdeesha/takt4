@@ -7,6 +7,7 @@
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
+#include "ui/model_watch.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -26,6 +27,7 @@ using takt4::trigger::Pool;
 using takt4::trigger::Rule;
 using takt4::trigger::Trigger;
 using takt4::ui::RulesController;
+using takt4::tests::ModelWatch;
 
 namespace {
 
@@ -314,6 +316,100 @@ TEST_CASE("a rule is routed by naming outputs", "[ui][trigger]") {
     }
 }
 
+TEST_CASE("the routing is ticked from the rig's own list of outputs", "[ui][trigger]") {
+    // It used to be a field of comma-separated names, which asks an operator to remember
+    // what their outputs are called and to spell each the same way twice — and a typo there
+    // is a rule that silently sends nowhere. The rig knows what it has; this offers them.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    std::vector<takt4::output::OutputTarget> targets(2);
+    targets[0].name = "deck";
+    targets[1].name = "wall";
+    editor.setTargets(targets);
+
+    editor.add();
+    editor.setAddress("/fire");
+
+    const auto choices = [&editor] { return editor.window().get_output_choices(); };
+
+    // A rule that names nothing reaches every output, and that is the state the list opens
+    // in: the "every output" line ticked, and the outputs themselves not.
+    CHECK(editor.window().get_outputs_all());
+    CHECK(std::string(editor.window().get_outputs_summary()) == "every output");
+    REQUIRE(choices()->row_count() == 2);
+    CHECK(std::string(choices()->row_data(0)->name) == "deck");
+    CHECK_FALSE(choices()->row_data(0)->chosen);
+    CHECK_FALSE(choices()->row_data(1)->chosen);
+
+    SECTION("ticking one routes the rule to it alone") {
+        editor.setOutputChosen("deck", true);
+        CHECK(editor.rules()[0].outputs == std::vector<std::string>{"deck"});
+        CHECK_FALSE(editor.window().get_outputs_all());
+        CHECK(std::string(editor.window().get_outputs_summary()) == "deck");
+        CHECK(choices()->row_data(0)->chosen);
+        CHECK_FALSE(choices()->row_data(1)->chosen);
+
+        // And more than one, which is the whole reason this is not a ComboBox.
+        editor.setOutputChosen("wall", true);
+        CHECK(editor.rules()[0].outputs == std::vector<std::string>{"deck", "wall"});
+        CHECK(std::string(editor.window().get_outputs_summary()) == "deck, wall");
+    }
+
+    SECTION("ticking the same one twice does not name it twice") {
+        editor.setOutputChosen("deck", true);
+        editor.setOutputChosen("deck", true);
+        CHECK(editor.rules()[0].outputs == std::vector<std::string>{"deck"});
+    }
+
+    SECTION("unticking the last one is every output again") {
+        // An empty list *is* everywhere (`output::resolveOutputs`), so there is no third
+        // state to get wrong: the two cannot disagree because there is only one of them.
+        editor.setOutputChosen("deck", true);
+        editor.setOutputChosen("deck", false);
+        CHECK(editor.rules()[0].outputs.empty());
+        CHECK(editor.window().get_outputs_all());
+        CHECK(std::string(editor.window().get_outputs_summary()) == "every output");
+    }
+
+    SECTION("and every output is one click from anywhere") {
+        editor.setOutputChosen("wall", true);
+        editor.chooseAllOutputs();
+        CHECK(editor.rules()[0].outputs.empty());
+        CHECK(editor.window().get_outputs_all());
+    }
+
+    SECTION("a name this rig has not got is listed, marked, and can only be taken off") {
+        // A preset written where there was a "lights" output. It cannot be typed back — the
+        // list is the rig's — so it has to be visible while it is still named.
+        editor.setOutputs("lights");
+        REQUIRE(choices()->row_count() == 3);
+        CHECK(std::string(choices()->row_data(2)->name) == "lights");
+        CHECK(choices()->row_data(2)->chosen);
+        CHECK(choices()->row_data(2)->missing);
+        CHECK_FALSE(choices()->row_data(0)->missing);
+
+        editor.setOutputChosen("lights", false);
+        CHECK(editor.rules()[0].outputs.empty());
+        CHECK(choices()->row_count() == 2);
+    }
+
+    SECTION("an output added to the rig appears in the list") {
+        targets.emplace_back();
+        targets[2].name = "haze";
+        editor.setTargets(targets);
+        REQUIRE(choices()->row_count() == 3);
+        CHECK(std::string(choices()->row_data(2)->name) == "haze");
+    }
+
+    SECTION("and the list follows the selected rule") {
+        editor.setOutputChosen("wall", true);
+        editor.add();
+        CHECK(editor.window().get_outputs_all());
+        editor.pick(0);
+        CHECK(std::string(editor.window().get_outputs_summary()) == "wall");
+    }
+}
+
 TEST_CASE("a list typed into the editor is the sequence that comes out", "[ui][trigger]") {
     Rig rig;
     RulesController editor(rig.runner, {});
@@ -395,6 +491,61 @@ TEST_CASE("the address and its chips stay in step", "[ui][trigger]") {
     editor.setAddress("/a/b");
     CHECK(editor.rules().front().segments.empty());
     CHECK(Rule(editor.rules().front()).valid());
+}
+
+TEST_CASE("the host preset picker says what the rule is, and custom empties it",
+          "[ui][trigger]") {
+    // Reported from a rig on 2026-09-06: pick the Resolume preset, change the picker back to
+    // "custom", and the Resolume address, its two chips and its press-then-release are all
+    // still there under a box that says "custom". Both halves of that were wrong — the box
+    // never followed the rule, and "custom" did nothing.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+
+    editor.pickHostPreset(1); // Resolume 7 — clip
+    REQUIRE(editor.rules().front().address ==
+            "/composition/layers/{layer}/clips/{clip}/connect");
+    REQUIRE(editor.rules().front().segments.size() == 2);
+    CHECK(editor.rules().front().followUp);
+    // The picker names the preset the address is, rather than whatever was last clicked.
+    CHECK(editor.window().get_host_preset_index() == 1);
+
+    SECTION("custom clears the address, its chips and the host's release") {
+        editor.pickHostPreset(0);
+        CHECK(editor.rules().front().address.empty());
+        CHECK(editor.rules().front().segments.empty());
+        // §7.4's press-then-release is a fact about Resolume's `connect`, not about OSC.
+        CHECK_FALSE(editor.rules().front().followUp);
+        CHECK(editor.window().get_host_preset_index() == 0);
+        CHECK(std::string(editor.window().get_address()).empty());
+        // And it says so, on a status line that until now nothing drew.
+        CHECK(std::string(editor.window().get_status()).find("Cleared") != std::string::npos);
+        CHECK_FALSE(editor.window().get_status_is_error());
+    }
+
+    SECTION("editing one character of a preset's address is no longer that preset") {
+        editor.setAddress("/composition/layers/{layer}/clips/{clip}/select");
+        CHECK(editor.window().get_host_preset_index() == 0);
+        // What the operator typed is kept; only the picker's claim about it changed.
+        CHECK(editor.rules().front().address ==
+              "/composition/layers/{layer}/clips/{clip}/select");
+        CHECK(editor.rules().front().segments.size() == 2);
+    }
+
+    SECTION("and selecting another rule brings that rule's answer, not this one's") {
+        editor.add();
+        CHECK(editor.window().get_host_preset_index() == 0);
+        editor.pick(0);
+        CHECK(editor.window().get_host_preset_index() == 1);
+    }
+
+    SECTION("the next edit that works takes the status line back down") {
+        editor.pickHostPreset(0);
+        REQUIRE(!std::string(editor.window().get_status()).empty());
+        editor.rename("something");
+        CHECK(std::string(editor.window().get_status()).empty());
+    }
 }
 
 TEST_CASE("the rule list is edited by clicking too", "[ui][trigger]") {
@@ -548,6 +699,161 @@ TEST_CASE("what fired reaches the editor's log and its last-fired line", "[ui][t
     }
 }
 
+TEST_CASE("a rule firing does not rebuild the boxes being typed into", "[ui][trigger]") {
+    // Reported from a set: *"editing triggers, like the text input boxes etc, was almost
+    // impossible, every beat of the music, it would kick me out of the edit box"*.
+    //
+    // `tick` runs on the redraw timer and republishes the rules and their generator slots
+    // every time a rule fires — which, for a rule on beats, is every beat. It did that with
+    // `set_vector`, which resets the model, which makes the repeater destroy and rebuild
+    // every row. The generator chips are rows, and they are full of text boxes.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/composition/layers/3/clips/{clip}/connect");
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+    editor.setSlotRange(0, "1 - 8");
+
+    // Settle first, so what is counted is the steady state a set is actually in and not the
+    // one-off publishing that building the rule caused.
+    editor.test();
+    editor.tick();
+
+    const auto slots = editor.window().get_slots();
+    const auto rules = editor.window().get_rules();
+    // The `{clip}` placeholder and the value beside it — two chips, both editable.
+    REQUIRE(slots->row_count() == 2);
+    const auto slotWatch = std::make_shared<ModelWatch>();
+    const auto ruleWatch = std::make_shared<ModelWatch>();
+    slots->attach_peer(slotWatch);
+    rules->attach_peer(ruleWatch);
+    const auto chipBefore = *slots->row_data(0);
+
+    // A couple of bars' worth, watching what the chip's readout says as it goes.
+    std::set<std::string> readouts;
+    for (int beat = 0; beat < 16; ++beat) {
+        editor.test();
+        editor.tick();
+        readouts.insert(std::string(slots->row_data(0)->last));
+    }
+
+    // **Not one rebuild, on either list.** This is the assertion that would have caught the
+    // bug. A reset makes the repeater destroy its items and build new ones, and a new item
+    // is a new element tree — which is what took the keyboard away from whichever box had
+    // it. A row *changing* leaves the element alone, and Slint drops a `text:` binding the
+    // moment somebody types into the box, so a half-typed field is not overwritten either.
+    CHECK(slotWatch->resets == 0);
+    CHECK(ruleWatch->resets == 0);
+    CHECK(slotWatch->added == 0);
+    CHECK(slotWatch->removed == 0);
+
+    // What the rows are *allowed* to carry: both lists have a live readout on them now — the
+    // fire count on a rule, the last value on a chip — so they do get written, which is the
+    // point of them. Every field an operator can edit has to be untouched.
+    CHECK(slotWatch->changes > 0);
+    CHECK(ruleWatch->changes > 0);
+
+    const auto chipAfter = *slots->row_data(0);
+    CHECK(chipAfter.kind_index == chipBefore.kind_index);
+    CHECK(chipAfter.low == chipBefore.low);
+    CHECK(chipAfter.high == chipBefore.high);
+    CHECK(chipAfter.no_repeat == chipBefore.no_repeat);
+    CHECK(std::string(chipAfter.values) == std::string(chipBefore.values));
+    CHECK(std::string(chipAfter.fixed) == std::string(chipBefore.fixed));
+    CHECK(chipAfter.ramp_bars == chipBefore.ramp_bars);
+
+    // ...and the one field that moved is the readout, which really is following the draws:
+    // a shuffle over 1-8 does not hand back the same number sixteen times.
+    CHECK_FALSE(std::string(chipAfter.last).empty());
+    CHECK(readouts.size() > 1);
+
+    SECTION("and a rule really added still reaches the list") {
+        editor.add();
+        CHECK(ruleWatch->resets == 0);
+        CHECK(ruleWatch->added == 1);
+        CHECK(rules->row_count() == 2);
+    }
+
+    SECTION("and a rule removed still leaves the list") {
+        editor.remove();
+        CHECK(ruleWatch->resets == 0);
+        CHECK(ruleWatch->removed == 1);
+        CHECK(rules->row_count() == 0);
+    }
+}
+
+TEST_CASE("every card counts its own fires, and a release is not one", "[ui][trigger]") {
+    // The count in the rule list was drawn from a vector nothing ever incremented, so it
+    // read 0 forever — a number on screen that was not a number. The trap in wiring it up is
+    // §7.4's press-and-release: a Resolume connect sends a 1 and then a 0, both of which
+    // reach the fire observer, and counting the pair would say every clip rule had fired
+    // twice as often as it had.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.addRig(1); // three layers, each a connect with a release
+    REQUIRE(editor.rules().size() == 3);
+
+    const auto rules = editor.window().get_rules();
+    REQUIRE(rules->row_count() == 3);
+    CHECK(rules->row_data(0)->fires == 0);
+
+    // The first rule only, five times.
+    editor.pick(0);
+    for (int i = 0; i < 5; ++i) {
+        editor.test();
+        editor.tick();
+    }
+
+    CHECK(rules->row_data(0)->fires == 5);
+    // And only its own: the other two cards have not been touched.
+    CHECK(rules->row_data(1)->fires == 0);
+    CHECK(rules->row_data(2)->fires == 0);
+
+    // Whether a *release* is counted is settled where the releases actually come out — see
+    // "a release reaches an observer marked as one" in tests/trigger. The runner applies
+    // commands on the calling thread while it is stopped, so nothing here brings a round
+    // round, and a follow-up sits in the engine's queue for the whole of this test.
+
+    SECTION("and a count follows its rule when one above it is deleted") {
+        // The counts used to be a vector indexed by row. Deleting a rule from the middle
+        // shifted every count below it up one, so a card would inherit a number that
+        // belonged to the rule that had just been removed.
+        editor.pick(1);
+        for (int i = 0; i < 3; ++i) {
+            editor.test();
+            editor.tick();
+        }
+        REQUIRE(rules->row_data(1)->fires == 3);
+
+        editor.pick(0);
+        editor.remove();
+        REQUIRE(rules->row_count() == 2);
+        // What was the second rule is now the first, and it brought its own three with it.
+        CHECK(rules->row_data(0)->fires == 3);
+        CHECK(rules->row_data(1)->fires == 0);
+
+        // And the deleted rule's five did not go to whoever gets its id next. `add` numbers
+        // ids from the set's size, so a rule added now is called what the deleted one was.
+        editor.add();
+        REQUIRE(rules->row_count() == 3);
+        CHECK(rules->row_data(2)->fires == 0);
+    }
+
+    SECTION("and a preset load starts the counts again") {
+        // A preset can reuse the ids of the set it replaces, so keeping the counts would
+        // hand a card a number belonging to a rule that is no longer loaded.
+        REQUIRE(rules->row_data(0)->fires == 5);
+        std::vector<Rule::Config> fresh;
+        Rule::Config one;
+        one.id = "rule1"; // the same id the counted rule had
+        one.name = "From a file";
+        fresh.push_back(one);
+        editor.setRules(std::move(fresh));
+        REQUIRE(rules->row_count() == 1);
+        CHECK(rules->row_data(0)->fires == 0);
+    }
+}
+
 TEST_CASE("a preset load replaces what the editor is showing", "[ui][trigger]") {
     Rig rig;
     Rule::Config loaded;
@@ -567,4 +873,47 @@ TEST_CASE("a preset load replaces what the editor is showing", "[ui][trigger]") 
     CHECK(editor.rules().size() == 1);
     CHECK(editor.rules()[0].id == "later");
     CHECK(std::string(editor.window().get_rule_name()) == "Later");
+}
+
+TEST_CASE("the panes either side of the editor are dragged to size", "[ui]") {
+    // The one thing about a splitter worth testing is whether it moves, and that cannot be
+    // asked of the markup — only of a drag. So this is a real press, a real move and a real
+    // release, dispatched into the window; nothing here calls the handler directly.
+    //
+    // No controller: the splitters are markup, and a `RulesController` wants an output
+    // runner — a Link session and three sockets — which a question about a pane's width has
+    // no business opening.
+    auto window = RulesWindow::create();
+    window->show();
+    window->window().dispatch_scale_factor_change_event(1.0f);
+    // The size `takt4_ui_tests`' headless platform reports; the layout is that size whatever
+    // is dispatched, so asking for it is only saying so out loud.
+    window->window().dispatch_resize_event(slint::LogicalSize({900.0f, 520.0f}));
+
+    const auto drag = [&window](float from, float to) {
+        window->window().dispatch_pointer_press_event(slint::LogicalPosition({from, 300.0f}),
+                                                      slint::PointerEventButton::Left);
+        window->window().dispatch_pointer_move_event(slint::LogicalPosition({to, 300.0f}));
+        window->window().dispatch_pointer_release_event(slint::LogicalPosition({to, 300.0f}),
+                                                        slint::PointerEventButton::Left);
+    };
+
+    SECTION("the rule list narrows when its divider is pulled left") {
+        const float was = window->get_list_width();
+        drag(was + 2.0f, was - 58.0f);
+        CHECK(window->get_list_width() == Approx(was - 60.0f).margin(2.0f));
+    }
+
+    SECTION("and the log widens when the divider on its left is") {
+        const float was = window->get_log_width();
+        const float divider = 900.0f - was - 3.0f;
+        drag(divider, divider - 60.0f);
+        CHECK(window->get_log_width() == Approx(was + 60.0f).margin(2.0f));
+    }
+
+    SECTION("neither can be dragged away entirely — the divider is what drags it back") {
+        const float was = window->get_list_width();
+        drag(was + 2.0f, 0.0f);
+        CHECK(window->get_list_width() >= 100.0f);
+    }
 }

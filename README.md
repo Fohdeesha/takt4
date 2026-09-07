@@ -45,6 +45,16 @@ beat, and the meter taken from the filter rather than assumed. Tempo is refined 
 spacing of the beats themselves, because the state space's whole-frame intervals are 5
 BPM apart at 130 and nothing inside the filter can do better.
 
+The fold moves the **beats**, not only the number. A tracker that reads 92 BPM while
+firing 186 beats a minute at OSC and MIDI clock is worse than one that reads 186, and
+that is what folding the label alone amounts to — measured on a 92 BPM track whose filter
+grid is 186, it fired 125 beats a minute under a readout that said 92. So when the fold
+puts the published tempo an octave down, every second of the filter's beats is dropped and
+the bar is divided with them. It does that only once the filter's own cloud has settled on
+the slower octave for five seconds, because a genuinely fast record under a window that
+does not fit it looks identical from the inside and must not be halved; the working is in
+[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
+
 The operator's controls reach all of that while it runs, through a queue the tracking
 thread drains between frames: a tap says which tempo was meant and moves the fold window
 onto it, a downbeat snap says where the bar starts and keeps it there, and ×2, ÷2 and
@@ -67,9 +77,55 @@ worst cases are BeatNet+'s behaviour rather than this port's.
 `takt4 --version` prints what it was built with. The window shows the tempo, the lock
 and confidence, a bar indicator drawn from the meter the tracker reports, the 50 Hz
 activation trace and an input meter — and drives the tracker: ÷2, ×2, tap, a manual
-downbeat, the octave-fold window and the latency offset. What it does **not** have yet
-is the outputs row, so nothing leaves the machine from the window; `takt4-cli track` is
-still the way to drive Link, OSC and MIDI clock.
+downbeat, the octave-fold window and the latency offset. It carries the outputs row too:
+Link, MIDI clock and any number of named OSC and MIDI targets, each with its own enable
+and its own [offset](#offsets), and §5.9's rule editor behind it.
+
+**`takt4` is one file.** The BeatNet+ weights and the state space are compiled into the
+executable (`tools/embed_asset.py`, `src/core/assets/`), so copying `takt4.exe` anywhere
+copies a working program — there is no folder beside it to find and nothing to leave
+behind. Settings go in a `settings.json` **next to the executable**, created on first
+exit; two copies in two folders are two rigs, which is what an operator with a rehearsal
+setup and a show setup wants. A `settings.json` left by an older build under
+`%APPDATA%\takt4` (or `~/.config/takt4`) is still read once, so a rig keeps its device,
+its outputs and its MIDI bindings across the move.
+
+### Offsets
+
+Nothing downstream is ready at the instant a beat is detected. A media server is a frame
+or two behind, a robot that has to physically move is far more, and takt4's own pipeline
+costs 40 ms of centred framing before any of that. Two controls move things around the
+beat, and they add up:
+
+- **latency**, one slider for the whole rig (`--latency`, §5.5).
+- **a slider per output**, because the lag being compensated does not belong to takt4 —
+  it belongs to the thing on the end of each cable, and one number cannot describe a rig
+  with a media server and a robot on it.
+
+Both are signed, and both mean the same thing: **positive is later, negative is earlier.**
+What differs is what each transport can do with a negative one.
+
+Ableton Link and the MIDI clock carry a running grid, so its phase moves either way and a
+negative offset really does shift them earlier. An OSC message is one datagram about a
+beat that has already been heard, and it cannot be sent into the past — so "earlier"
+there is measured from the **next** beat instead: the message is held for what is left of
+a beat after the offset, and arrives that far ahead of the beat it lands on. Downstream
+cannot tell the difference, and it is the number an operator actually has in their head —
+*this device is 300 ms slow, take 300 ms off it.*
+
+**The number you set is a fixed number of milliseconds and has nothing to do with the
+tempo.** A media server takes as long to key a clip at 92 BPM as at 140; you measure your
+device's lag once and type it in, and it stays right as the music changes.
+
+What varies with tempo is the *wait*, and it has to, because the thing being aimed at moves.
+A device 300 ms slow, told −300 ms, is held 352 ms at 92 BPM and 169 ms at 128 — in both
+cases landing on screen exactly on a beat. That arithmetic is the app's, not yours. Each
+row's readout shows the milliseconds you set in full brightness and, dimmed beside them,
+the same offset as a fraction of the beat now playing — a consequence, for the times you
+would rather think in beats ("put the robot half a beat late") than in milliseconds.
+
+In a settings file an offset is a suffix on the target —
+`robot = 192.168.1.42:7000 +352ms`, `wall = 192.168.1.41:7000 -80ms`.
 
 ### Development console
 
@@ -114,9 +170,9 @@ tracker is, and a status line every two seconds in between.
 
 | Option | |
 |---|---|
-| `--bpm LO-HI` | the octave-fold window, default `70-140`. An estimate outside it is halved or doubled into it, which is what stops a house set reading 170. |
+| `--bpm LO-HI` | the octave-fold window, default `70-140`. An estimate outside it is halved or doubled into it, which is what stops a house set reading 170. Folding *down* takes the beats with it, once the filter has settled on the slower octave for five seconds. |
 | `--confidence T` | below this the last good tempo is held and the line says so; default 0.15 |
-| `--latency MS` | added to every beat's timestamp and to what the transports are told; negative fires early, which is the useful direction |
+| `--latency MS` | added to every beat's timestamp and to what all three transports are told; negative fires early, which is the useful direction. See [Offsets](#offsets) for what "early" can mean for OSC. |
 | `--seed N` | the particle filter's seed. The same seed and the same audio give the same beats, every time and on every platform. |
 | `--link` | join the Ableton Link network as tempo master |
 | `--osc HOST:PORT` | send the generic namespace there; repeat for more targets |
@@ -277,6 +333,7 @@ using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
 
 ```
 src/core/     the engine — no UI dependency, must always build without Slint
+src/core/assets/    the weights and state space, compiled into the application
 src/core/audio/     devices, channel picking, resampling, hop accumulation
 src/core/dsp/       real FFT (KissFFT)
 src/core/features/  madmom-equivalent feature front end: STFT, filterbank, log, diff
@@ -290,6 +347,8 @@ src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp
 assets/weights/    the three BeatNet+ weight sets, converted (tools/convert_weights.py)
 assets/statespace/ madmom's bar-pointer state space, precomputed (tools/dump_statespace.py)
+                   generic.bin and default.bin are compiled into takt4 at build time
+                   (tools/embed_asset.py); takt4-cli and the tests read them from here
 tests/        Catch2; links takt4_core only
 tests/data/   golden excerpts: audio, madmom's features for it, PyTorch's activations
 tools/        Python that generates committed artifacts from madmom and torch (above)

@@ -33,6 +33,7 @@ add_library(takt4_ui STATIC
   app.hpp
   headless.cpp
   headless.hpp
+  model_rows.hpp
   rules_controller.cpp
   rules_controller.hpp
   shot.cpp
@@ -53,5 +54,8 @@ target_link_libraries(takt4_ui
     takt4::core
     takt4_ui_slint
   PRIVATE
+    # The weights and the state space, compiled in: app.cpp starts the tracker from these
+    # rather than from a folder beside the exe. See src/core/CMakeLists.txt.
+    takt4::assets
     takt4::warnings
 )

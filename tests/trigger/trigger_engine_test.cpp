@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using Catch::Approx;
@@ -544,4 +546,92 @@ TEST_CASE("the ONLY IF stage is asked on every fire, not only the first", "[trig
     }
     // Beats at 2.0 and 3.5: the first one over the gate, then the next past the cooldown.
     CHECK(sink.sent.size() == 2);
+}
+
+TEST_CASE("an observer is told which values a fire produced, and which sends are releases",
+          "[trigger][engine]") {
+    // Two things §5.9 draws that had no source until now: the fire count on each rule card,
+    // and "what this slot last produced" beside each generator chip. Both come from here,
+    // because the rules themselves belong to the output thread and a UI cannot read them.
+    Recorder sink;
+    TriggerEngine engine(sink);
+
+    Rule::Config config = simple("clip", Trigger::Beat);
+    config.address = "/composition/layers/{layer}/clips/{clip}/connect";
+    config.segments = {fixedAt(3), fixedAt(7)};
+    config.sendValue = true;
+    config.value = fixedAt(1);
+    // §7.4's release, on a timer — the thing that would double a naive fire count.
+    config.followUp = true;
+    config.followUpValue = Value::ofInt(0);
+    config.followUpDelaySeconds = 0.05;
+    engine.setRules({config});
+
+    struct Seen {
+        std::string ruleId;
+        bool followUp = false;
+        std::vector<Value> slots;
+    };
+    std::vector<Seen> seen;
+    engine.setFireObserver([&seen](std::string_view ruleId, const Message&, bool followUp,
+                                   std::span<const Value> slots) {
+        seen.push_back(Seen{std::string(ruleId), followUp,
+                            std::vector<Value>(slots.begin(), slots.end())});
+    });
+
+    engine.onBeat(beatAt(1, 1, 1, 0.0));
+    REQUIRE(seen.size() == 1);
+    CHECK(seen[0].ruleId == "clip");
+    CHECK_FALSE(seen[0].followUp);
+    // The layer, the clip and the value — the three chips the editor draws for this rule,
+    // in the order it draws them. That ordering is what pairs a value with its own box.
+    REQUIRE(seen[0].slots.size() == 3);
+    CHECK(seen[0].slots[0].asInt() == 3);
+    CHECK(seen[0].slots[1].asInt() == 7);
+    CHECK(seen[0].slots[2].asInt() == 1);
+
+    // The release, 50 ms later. `advance` is what drains what is owed — `onBeat` only fires
+    // rules — and the output thread calls it every round.
+    engine.advance(beatAt(1, 1, 1, 0.06));
+    const auto release =
+        std::find_if(seen.begin(), seen.end(), [](const Seen& s) { return s.followUp; });
+    REQUIRE(release != seen.end());
+    CHECK(release->ruleId == "clip");
+    CHECK(release->slots.empty());
+
+    SECTION("so counting only the fires counts each fire once") {
+        // What the rule card shows. A bar of 4/4 driven the way the output thread drives it
+        // — a beat, then the rounds that follow it — so every release lands. Eight messages
+        // leave and the number an operator recognises is four.
+        for (int i = 0; i < 4; ++i) {
+            const double now = 10.0 + 0.5 * static_cast<double>(i);
+            const auto beat = static_cast<std::uint64_t>(i + 2); // beat 1 fired above
+            engine.onBeat(beatAt(beat, static_cast<std::uint32_t>(i % 4) + 1, 1, now));
+            engine.advance(beatAt(beat, static_cast<std::uint32_t>(i % 4) + 1, 1, now + 0.06));
+        }
+        const auto fires = std::count_if(seen.begin(), seen.end(),
+                                         [](const Seen& s) { return !s.followUp; });
+        const auto releases = std::count_if(seen.begin(), seen.end(),
+                                            [](const Seen& s) { return s.followUp; });
+        // One from the top of the test and four here, each with exactly one release.
+        CHECK(fires == 5);
+        CHECK(releases == 5);
+        CHECK(sink.sent.size() == 10);
+        // And the rule's own counter agrees, which is what the card would show if it could
+        // safely be read — it cannot, which is why the observer exists.
+        CHECK(engine.rule(0).fires() == 5);
+    }
+
+    SECTION("and a fire whose address cannot be built leaves no stale values behind") {
+        // A generator that produces something illegal in an OSC address fails the fill, and
+        // the chips must not go on showing the values of the last fire that worked.
+        Rule::Config broken = config;
+        broken.id = "broken";
+        broken.segments = {fixedAt(3), Generator::Config{}};
+        broken.segments[1].kind = GeneratorKind::Fixed;
+        broken.segments[1].fixed = Value::ofText("has space");
+        engine.setRules({broken});
+        engine.onBeat(beatAt(1, 1, 1, 20.0));
+        CHECK(engine.rule(0).lastSlots().empty());
+    }
 }

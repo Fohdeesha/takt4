@@ -52,7 +52,37 @@ public:
     /// target and another OSC target routes to bits 0 and 2 here rather than 0 and 1.
     /// Anything past `kMaxRoutableTargets` is given `kAllOutputs`, so it still receives
     /// everything a rule sends everywhere.
-    void addTarget(std::string_view host, std::uint16_t port, std::size_t bit);
+    /// `delaySeconds` offsets everything bound for this target — later when positive, earlier
+    /// (that is, ahead of the *next* beat) when negative. See `OutputTarget::delaySeconds`.
+    void addTarget(std::string_view host, std::uint16_t port, std::size_t bit,
+                   double delaySeconds = 0.0);
+
+    /// The output thread's clock, which is what a delay is measured against. Set before
+    /// anything is published so a message queued this round is due relative to *this* round.
+    void setNow(double now) noexcept { now_ = now; }
+    double now() const noexcept { return now_; }
+
+    /// How long one beat currently lasts, in seconds — what a negative offset is subtracted
+    /// from. Zero when no tempo is known, which makes a negative offset hold nothing rather
+    /// than invent a beat length.
+    void setBeatSeconds(double seconds) noexcept { beatSeconds_ = seconds > 0.0 ? seconds : 0.0; }
+
+    /// §5.5's latency offset, added to every target's own before either is applied.
+    ///
+    /// The whole-rig control and the per-target one are the same quantity measured from two
+    /// places — one says "everything downstream of me is this late", the other "this device
+    /// is". They compose by adding, and the UI shows each row's total for that reason.
+    void setOffsetSeconds(double seconds) noexcept { offsetSeconds_ = seconds; }
+
+    /// Sends everything whose delay has run out. Called every round by `Transports::advance`
+    /// — a delayed message is not waiting for the next beat, it is waiting for a clock.
+    void flushDue();
+
+    /// Datagrams waiting on a delay, and those dropped because too many were. The queue is
+    /// bounded: a target delayed a second while a rule fires on every 32nd note holds tens
+    /// of messages, not thousands, and something has gone wrong upstream if it holds more.
+    std::size_t pending() const noexcept { return pending_.size(); }
+    std::uint64_t dropped() const noexcept { return dropped_; }
 
     /// Removes every target, and forgets what was last published with them.
     ///
@@ -109,6 +139,12 @@ public:
     std::uint64_t messagesFailed() const noexcept { return failed_; }
 
 private:
+    /// How long a message offset by `delaySeconds` waits, in seconds — the whole-rig offset
+    /// included. Never negative: see `OutputTarget::delaySeconds` for why "earlier" is a
+    /// shorter wait and not an earlier clock, and `kMinOutputDelaySeconds` for why it stops
+    /// at zero rather than going back another beat.
+    double holdFor(double delaySeconds) const noexcept;
+
     /// One assembled message to the selected targets, counting what each one did with it.
     /// The only place a datagram leaves this class.
     void sendPacket(OscMessage& message, std::uint64_t outputs);
@@ -133,8 +169,27 @@ private:
     struct Target {
         std::unique_ptr<OscSender> sender;
         std::uint64_t bit = 0;
+        double delaySeconds = 0.0;
     };
     std::vector<Target> targets_;
+
+    /// One datagram waiting for its target's delay to run out. The bytes are copied rather
+    /// than the message kept, because `OscMessage`'s buffer is reused by the next send and a
+    /// held span would be rewritten under the queue.
+    struct Pending {
+        double due = 0.0;
+        std::size_t target = 0;
+        std::vector<std::byte> packet;
+    };
+    /// FIFO, and in due order because a target's delay is constant while its messages queue:
+    /// two messages to one target keep the order they were sent in, which is the whole point
+    /// of delaying rather than dropping. Changing a delay does not reorder what is already
+    /// queued — see `flushDue`.
+    std::vector<Pending> pending_;
+    double now_ = 0.0;
+    double beatSeconds_ = 0.0;
+    double offsetSeconds_ = 0.0;
+    std::uint64_t dropped_ = 0;
 
     // What was last published, so an unchanged value is not resent between beats.
     double lastBpm_ = -1.0;

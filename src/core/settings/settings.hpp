@@ -97,14 +97,32 @@ struct Settings {
     Preset preset;
 };
 
-/// Where this machine keeps them: `%APPDATA%\takt4` on Windows,
-/// `~/Library/Application Support/takt4` on macOS, `$XDG_CONFIG_HOME/takt4` or
-/// `~/.config/takt4` elsewhere. Empty when the environment says nothing useful, which is
-/// a machine where settings cannot be kept rather than an error.
+/// Where settings are kept: **the directory the running executable is in**.
+///
+/// takt4 is a program somebody copies onto a stick and carries to a venue, so its settings
+/// belong beside it rather than in a profile on one machine. Two copies in two folders are
+/// two rigs, which is what an operator with a rehearsal setup and a show setup wants; and a
+/// machine that is not theirs keeps none of their configuration after they unplug.
+///
+/// Falls back to `userSettingsDirectory()` only where the platform will not name the
+/// executable at all.
 std::filesystem::path settingsDirectory();
 
-/// `settingsDirectory()/settings.json`, or empty when there is no directory.
+/// Where settings *used* to be kept: `%APPDATA%\takt4` on Windows, `~/Library/Application
+/// Support/takt4` on macOS, `$XDG_CONFIG_HOME/takt4` or `~/.config/takt4` elsewhere. Empty
+/// when the environment says nothing useful, which is a machine where settings cannot be
+/// kept rather than an error. Still read once — see `existingSettingsFile`.
+std::filesystem::path userSettingsDirectory();
+
+/// `settingsDirectory()/settings.json`, or empty when there is no directory. **Where to
+/// write.** Created on the first save if it is not there.
 std::filesystem::path settingsFile();
+
+/// **Where to read.** `settingsFile()` when that exists; otherwise the file under
+/// `userSettingsDirectory()` if a build before this one left one there, so a rig keeps its
+/// outputs, its device and its MIDI bindings across the move; otherwise `settingsFile()`
+/// again, which `load` will report as the defaults.
+std::filesystem::path existingSettingsFile();
 
 /// Reads `path`. **Never throws, and never fails**: a file that is missing, unreadable,
 /// truncated or nonsense gives the defaults, because settings that cannot be parsed must

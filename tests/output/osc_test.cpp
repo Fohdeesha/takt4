@@ -1,10 +1,12 @@
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_publisher.hpp"
 #include "core/output/osc_sender.hpp"
+#include "core/output/output_target.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include "support/loopback_receiver.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -212,4 +214,235 @@ TEST_CASE("the namespace prefix is checked when the publisher is built", "[outpu
     CHECK_THROWS_AS(OscPublisher("/takt4/"), std::invalid_argument);
     CHECK_THROWS_AS(OscPublisher("/tak t4"), std::invalid_argument);
     CHECK_THROWS_AS(OscPublisher("/takt4/*"), std::invalid_argument);
+}
+
+TEST_CASE("a target's delay holds its datagrams and nobody else's", "[output][osc]") {
+    // §5.6's per-target latency, on real sockets. The thing this exists for is a rig whose
+    // destinations do not share a lag — a media server a frame behind and a robot that has
+    // to physically move — so the claim under test is not "it is late" but "it is late *and
+    // the other one is not*". See `OutputTarget::delaySeconds`.
+    LoopbackReceiver prompt;
+    LoopbackReceiver slow;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", prompt.port(), 0);
+    publisher.addTarget("127.0.0.1", slow.port(), 1, 0.2);
+
+    publisher.setNow(10.0);
+    publisher.sendAddress("/cue");
+
+    // The undelayed target has it already; the delayed one has nothing at all yet.
+    CHECK_FALSE(prompt.receive().empty());
+    CHECK(slow.receive().empty());
+    CHECK(publisher.pending() == 1);
+
+    // Not yet: a delay is a deadline, not a "next round".
+    publisher.setNow(10.199);
+    publisher.flushDue();
+    CHECK(slow.receive().empty());
+    CHECK(publisher.pending() == 1);
+
+    publisher.setNow(10.2);
+    publisher.flushDue();
+    const std::string held = slow.receive();
+    REQUIRE_FALSE(held.empty());
+    CHECK(held.substr(0, held.find('\0')) == "/cue");
+    CHECK(publisher.pending() == 0);
+    CHECK(publisher.dropped() == 0);
+
+    SECTION("a target's own messages keep their order through the delay") {
+        publisher.setNow(20.0);
+        publisher.sendAddress("/first");
+        publisher.setNow(20.05);
+        publisher.sendAddress("/second");
+        publisher.setNow(20.3);
+        publisher.flushDue();
+        std::vector<std::string> got;
+        for (std::string packet = slow.receive(); !packet.empty(); packet = slow.receive()) {
+            got.push_back(packet.substr(0, packet.find('\0')));
+        }
+        CHECK(got == std::vector<std::string>{"/first", "/second"});
+    }
+
+    SECTION("replacing the targets drops what was waiting for them") {
+        publisher.setNow(30.0);
+        publisher.sendAddress("/stale");
+        REQUIRE(publisher.pending() == 1);
+        publisher.clearTargets();
+        CHECK(publisher.pending() == 0);
+    }
+}
+
+TEST_CASE("a negative offset lands ahead of the next beat", "[output][osc]") {
+    // The user's question of 2026-09-07: the whole-rig latency slider goes both ways, so why
+    // can a target's not? It can. A message about a beat already heard cannot be sent before
+    // that beat, so "earlier" is measured from the *next* one instead — the publisher holds
+    // it for what is left of a beat after the offset. See `OutputTarget::delaySeconds`.
+    LoopbackReceiver early;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", early.port(), 0, -0.300);
+
+    // 92 BPM: a beat is 652.17 ms, so 300 ms early is 352.17 ms late.
+    publisher.setBeatSeconds(60.0 / 92.0);
+    publisher.setNow(0.0);
+    publisher.sendAddress("/cue");
+    REQUIRE(publisher.pending() == 1);
+
+    publisher.setNow(0.352);
+    publisher.flushDue();
+    CHECK(early.receive().empty()); // 352.17 ms, not 352
+    publisher.setNow(0.3522);
+    publisher.flushDue();
+    CHECK_FALSE(early.receive().empty());
+
+    SECTION("and it follows the tempo, which a fixed delay cannot") {
+        // The same −300 ms at 128 BPM, where a beat is 468.75 ms: the hold is 168.75 ms. An
+        // operator sets the lag of their device once and it stays right as the music moves.
+        publisher.setBeatSeconds(60.0 / 128.0);
+        publisher.setNow(10.0);
+        publisher.sendAddress("/cue");
+        publisher.setNow(10.168);
+        publisher.flushDue();
+        CHECK(early.receive().empty());
+        publisher.setNow(10.169);
+        publisher.flushDue();
+        CHECK_FALSE(early.receive().empty());
+    }
+
+    SECTION("with no tempo yet it waits for nothing rather than inventing a beat") {
+        publisher.setBeatSeconds(0.0);
+        publisher.setNow(20.0);
+        publisher.sendAddress("/cue");
+        CHECK(publisher.pending() == 0);
+        CHECK_FALSE(early.receive().empty());
+    }
+
+    SECTION("an offset longer than the beat is as early as it can go, not two beats early") {
+        // 55 BPM is the slowest the state space tracks and its beat is 1.09 s, so this is
+        // only reachable from a hand-edited file — but it must not send a cue a bar early.
+        publisher.setBeatSeconds(60.0 / 240.0); // 250 ms
+        publisher.setNow(30.0);
+        publisher.sendAddress("/cue");
+        CHECK(publisher.pending() == 0);
+        CHECK_FALSE(early.receive().empty());
+    }
+}
+
+TEST_CASE("the whole-rig offset and a target's own add up", "[output][osc]") {
+    // §5.5's slider and §5.6's per-target one are the same quantity measured from two places
+    // — "everything downstream of me is this late" and "this device is". They compose, and
+    // the window shows each row's total for that reason.
+    LoopbackReceiver target;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", target.port(), 0, 0.100);
+    publisher.setBeatSeconds(0.5);
+
+    // +100 ms of its own, −40 ms for the rig: 60 ms. Straddled rather than landed on,
+    // because 0.1 − 0.04 is not exactly 0.06 in a double and the deadline is a `>`.
+    publisher.setOffsetSeconds(-0.040);
+    publisher.setNow(0.0);
+    publisher.sendAddress("/cue");
+    publisher.setNow(0.0599);
+    publisher.flushDue();
+    CHECK(target.receive().empty());
+    publisher.setNow(0.0601);
+    publisher.flushDue();
+    CHECK_FALSE(target.receive().empty());
+
+    SECTION("and a total that comes out negative is measured from the next beat") {
+        // +100 ms of its own against −250 ms for the rig is −150 ms, which on a 500 ms beat
+        // is a 350 ms hold.
+        publisher.setOffsetSeconds(-0.250);
+        publisher.setNow(10.0);
+        publisher.sendAddress("/cue");
+        publisher.setNow(10.3499);
+        publisher.flushDue();
+        CHECK(target.receive().empty());
+        publisher.setNow(10.3501);
+        publisher.flushDue();
+        CHECK_FALSE(target.receive().empty());
+    }
+
+    SECTION("and an undelayed target still feels the rig's offset") {
+        // Which is the hole this closed: the slider moved Link and the MIDI clock and left
+        // OSC — the thing a media server actually listens to — exactly where it was.
+        LoopbackReceiver plain;
+        OscPublisher rig;
+        rig.addTarget("127.0.0.1", plain.port(), 0);
+        rig.setBeatSeconds(0.5);
+        rig.setOffsetSeconds(-0.150);
+        rig.setNow(0.0);
+        rig.sendAddress("/cue");
+        CHECK(rig.pending() == 1);
+        CHECK(plain.receive().empty());
+        rig.setNow(0.350);
+        rig.flushDue();
+        CHECK_FALSE(plain.receive().empty());
+    }
+}
+
+TEST_CASE("a delay round-trips through a target's written form", "[output][routing]") {
+    takt4::output::OutputTarget target;
+    target.name = "robot";
+    target.host = "10.0.0.7";
+    target.port = 7000;
+    target.delaySeconds = 0.352;
+
+    const std::string text = takt4::output::formatOutputTarget(target);
+    CHECK(text == "robot = 10.0.0.7:7000 +352ms");
+
+    takt4::output::OutputTarget back;
+    REQUIRE(takt4::output::parseOutputTarget(text, back));
+    CHECK(back.name == "robot");
+    CHECK(back.host == "10.0.0.7");
+    CHECK(back.port == 7000);
+    CHECK(back.delaySeconds == Catch::Approx(0.352));
+
+    SECTION("and so does a negative one, sign and all") {
+        takt4::output::OutputTarget ahead;
+        ahead.name = "resolume";
+        ahead.host = "10.0.0.9";
+        ahead.port = 7000;
+        ahead.delaySeconds = -0.300;
+
+        const std::string written = takt4::output::formatOutputTarget(ahead);
+        CHECK(written == "resolume = 10.0.0.9:7000 -300ms");
+
+        takt4::output::OutputTarget parsed;
+        REQUIRE(takt4::output::parseOutputTarget(written, parsed));
+        CHECK(parsed.host == "10.0.0.9");
+        CHECK(parsed.delaySeconds == Catch::Approx(-0.300));
+    }
+
+    SECTION("an offset past either end is refused rather than half-applied") {
+        // The address is then left exactly as typed, so it fails as an address instead of
+        // silently becoming one with an offset nobody asked for.
+        takt4::output::OutputTarget parsed;
+        CHECK_FALSE(takt4::output::parseOutputTarget("a = 10.0.0.9:7000 -4000ms", parsed));
+        CHECK_FALSE(takt4::output::parseOutputTarget("a = 10.0.0.9:7000 +4000ms", parsed));
+    }
+
+    SECTION("a MIDI device name is not eaten by the suffix, and keeps its spaces") {
+        takt4::output::OutputTarget midi;
+        midi.name = "lights";
+        midi.kind = takt4::output::OutputTarget::Kind::Midi;
+        midi.device = "MOTU Pro Audio Midi Out 1";
+        midi.delaySeconds = 0.04;
+        takt4::output::OutputTarget parsed;
+        REQUIRE(takt4::output::parseOutputTarget(takt4::output::formatOutputTarget(midi), parsed));
+        CHECK(parsed.device == "MOTU Pro Audio Midi Out 1");
+        CHECK(parsed.delaySeconds == Catch::Approx(0.04));
+    }
+
+    SECTION("no delay writes no suffix, so nothing that already worked has changed") {
+        takt4::output::OutputTarget plain;
+        plain.name = "deck";
+        CHECK(takt4::output::formatOutputTarget(plain) == "deck = 127.0.0.1:7000");
+    }
+
+    SECTION("an address that merely ends in a number is not a delay") {
+        takt4::output::OutputTarget parsed;
+        REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:7000", parsed));
+        CHECK(parsed.delaySeconds == 0.0);
+        CHECK(parsed.port == 7000);
+    }
 }

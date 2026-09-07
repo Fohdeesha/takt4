@@ -123,7 +123,10 @@ void printUsage(std::ostream& out) {
         << "      --trace FILE    write every 50 Hz frame as a TSV: the activations, the\n"
         << "                      cloud's tempo and agreement, and what was published. A\n"
         << "                      diagnostic for \"the tempo moved and I want to know\n"
-        << "                      which layer moved it\", not an output\n"
+        << "                      which layer moved it\", not an output. `emitted` is the\n"
+        << "                      beat the filter called and `published` the one that left\n"
+        << "                      the tracker; they differ wherever the fold divides the\n"
+        << "                      grid. tools/trace_stability.py reads both\n"
         << "      --out FILE      write every beat as <seconds> TAB <beat in bar> TAB\n"
         << "                      <BPM>; the first two columns are the format the\n"
         << "                      beat-tracking datasets annotate in\n"
@@ -1009,9 +1012,13 @@ public:
         if (!out_) {
             throw std::runtime_error(path.string() + ": cannot create");
         }
+        // `emitted` is the *filter's* call and `published` is what left the tracker. They
+        // differ wherever the octave fold divides the beat grid, which is the one place a
+        // "the beats are at twice the tempo on screen" report can come from — and with only
+        // the first of them a trace cannot tell that story at all.
         out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
                 "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
-                "\temitted\tflux\tintensity\tonset\n"
+                "\temitted\tpublished\tflux\tintensity\tonset\n"
              << std::fixed << std::setprecision(6);
     }
 
@@ -1028,9 +1035,9 @@ public:
              << tracked.tempoAgreement << '\t' << state.bpm << '\t' << state.confidence << '\t'
              << (state.locked ? 1 : 0) << '\t' << (state.holding ? 1 : 0) << '\t'
              << state.beatsPerBar << '\t' << state.beatInBar << '\t'
-             << static_cast<int>(tracked.emitted) << '\t' << frame.activation.flux << '\t'
-             << static_cast<int>(frame.activation.intensity) << '\t'
-             << (frame.activation.onset ? 1 : 0) << '\n';
+             << static_cast<int>(tracked.emitted) << '\t' << (frame.beat ? 1 : 0) << '\t'
+             << frame.activation.flux << '\t' << static_cast<int>(frame.activation.intensity)
+             << '\t' << (frame.activation.onset ? 1 : 0) << '\n';
     }
 
 private:

@@ -2,6 +2,7 @@
 
 #include "core/output/osc_message.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -13,6 +14,14 @@
 namespace takt4::output {
 
 namespace {
+
+/// How many delayed datagrams may be waiting at once, across every target.
+///
+/// A second of delay at the fastest thing anyone sends — §5.6's namespace is a handful per
+/// beat, and a rule on 32nd notes at 215 BPM is 115 a second — is well under this. Past it
+/// something upstream is wrong, and dropping the newest with a count is better than growing
+/// a queue on the thread that has a MIDI clock to keep.
+constexpr std::size_t kMaxPending = 512;
 
 /// Below this a tempo or a confidence has not really moved, and resending it would only
 /// add traffic. A hundredth of a BPM is finer than anything downstream can act on.
@@ -42,17 +51,70 @@ OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
     }
 }
 
-void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::size_t bit) {
+void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::size_t bit,
+                             double delaySeconds) {
     // Past the mask's width a target cannot be named individually, so it is given every bit
     // instead: it then receives from rules that go everywhere, which is the default, and
     // nothing that was routed away from it. Losing routing is better than losing the feed.
     const std::uint64_t selector =
         bit < kMaxRoutableTargets ? (std::uint64_t{1} << bit) : kAllOutputs;
-    targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector});
+    const double delay =
+        std::clamp(delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+    targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector, delay});
+}
+
+double OscPublisher::holdFor(double delaySeconds) const noexcept {
+    const double offset = delaySeconds + offsetSeconds_;
+    if (offset >= 0.0) {
+        return offset;
+    }
+    // Earlier than a beat we have already heard is not a thing that can be sent, so it is
+    // taken off the *next* beat instead: hold for what is left of a beat after the offset.
+    // With no tempo yet there is no beat to take it off, and holding an arbitrary amount
+    // would be worse than not holding at all.
+    if (beatSeconds_ <= 0.0) {
+        return 0.0;
+    }
+    // Clamped rather than stepped back another beat: an offset longer than the beat is an
+    // operator describing a rig problem, and two beats of anticipation would be a stranger
+    // answer than "as early as it can go".
+    return std::max(0.0, beatSeconds_ + offset);
+}
+
+void OscPublisher::flushDue() {
+    if (pending_.empty()) {
+        return;
+    }
+    // Everything due, in the order it was queued. Partitioned rather than scanned-and-erased
+    // per item: one round can retire a whole beat's worth, and erasing from the front of a
+    // vector once per message is the one way to make a queue this short expensive.
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        Pending& item = pending_[i];
+        if (item.due > now_) {
+            if (kept != i) {
+                pending_[kept] = std::move(item);
+            }
+            ++kept;
+            continue;
+        }
+        // A target list replaced under a queued message leaves nothing to send it to. It is
+        // dropped rather than sent somewhere else: the index it was queued against named a
+        // socket that is gone, and guessing at a replacement would send a robot's cue to a
+        // lighting desk.
+        if (item.target < targets_.size() && targets_[item.target].sender->send(item.packet)) {
+            ++sent_;
+        } else {
+            ++failed_;
+        }
+    }
+    pending_.resize(kept);
 }
 
 void OscPublisher::clearTargets() noexcept {
     targets_.clear();
+    // Whatever was waiting was waiting for a socket that no longer exists. See flushDue.
+    pending_.clear();
     // Back to exactly what a freshly built publisher holds, so a target added after this
     // is told the same things a target present from the start would have been.
     lastBpm_ = -1.0;
@@ -109,15 +171,29 @@ bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
 
 void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs) {
     const auto packet = message.packet();
-    for (const Target& target : targets_) {
+    for (std::size_t i = 0; i < targets_.size(); ++i) {
+        const Target& target = targets_[i];
         if ((target.bit & outputs) == 0) {
             continue; // routed away from this one
         }
-        if (target.sender->send(packet)) {
-            ++sent_;
-        } else {
-            ++failed_;
+        const double hold = holdFor(target.delaySeconds);
+        if (hold <= 0.0) {
+            if (target.sender->send(packet)) {
+                ++sent_;
+            } else {
+                ++failed_;
+            }
+            continue;
         }
+        // Held for this target and this target only. The others on the same message have
+        // already gone, which is the point: one beat, several destinations, each hearing it
+        // when the thing on the end of it needs to.
+        if (pending_.size() >= kMaxPending) {
+            ++dropped_;
+            continue;
+        }
+        pending_.push_back(
+            Pending{now_ + hold, i, std::vector<std::byte>(packet.begin(), packet.end())});
     }
 }
 

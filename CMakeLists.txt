@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(takt4
-  VERSION 0.1.0
+  VERSION 0.8.0
   DESCRIPTION "Real-time beat, downbeat and tempo tracker driving Ableton Link, OSC and MIDI"
   HOMEPAGE_URL "https://github.com/Fohdeesha/takt4"
   LANGUAGES C CXX

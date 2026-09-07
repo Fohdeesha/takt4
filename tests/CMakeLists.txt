@@ -100,6 +100,7 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST)
 if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests
     ui/main.cpp
+    ui/model_watch.hpp
     ui/rules_test.cpp
     ui/window_test.cpp
     support/crt_dialogs.cpp

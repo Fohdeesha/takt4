@@ -35,6 +35,23 @@ struct TrackedFrame {
     /// How much of the cloud agrees with the median's tempo, 0 to 1. Not upstream's —
     /// it publishes no confidence — but the natural one to gate on (§5.5).
     double tempoAgreement = 0.0;
+
+    /// The network's own opinion of this frame, carried through untouched.
+    ///
+    /// The filter makes no further use of these — they are its *input* — but the layer
+    /// above needs them, and this is the only structure that crosses between the two. When
+    /// `TempoTracker`'s octave fold halves the beat grid it has to decide *which* half of
+    /// the filter's beats are the real ones, and the network already answered that: over
+    /// the double-time passages of `references/audio`'s "03 - Fake Sweat" the sub-sequence
+    /// carrying the kick averages 0.50 against 0.29 for the one between. See
+    /// `Options::foldBeats`.
+    ///
+    /// Their sum is P(this frame is a beat of any kind), because the model's three classes
+    /// are a softmax over beat / downbeat / non-beat: a downbeat frame reads high on
+    /// `downbeatActivation` and *low* on `beatActivation`, so either one alone would call
+    /// every bar start a weak beat.
+    float beatActivation = 0.0f;
+    float downbeatActivation = 0.0f;
 };
 
 /// BeatNet+'s two-stage particle filter cascade (HANDOFF §5.4), ported.

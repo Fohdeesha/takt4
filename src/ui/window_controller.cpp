@@ -9,6 +9,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
 #include "core/output/midi_ports.hpp"
+#include "ui/model_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -17,7 +18,7 @@
 #include <cstdlib>
 #include <exception>
 #include <optional>
-#include <sstream>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
@@ -98,6 +99,55 @@ int readPort(const std::string& text) {
     return value;
 }
 
+std::string_view trim(std::string_view text) noexcept {
+    while (!text.empty() && (std::isspace(static_cast<unsigned char>(text.front())) != 0)) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && (std::isspace(static_cast<unsigned char>(text.back())) != 0)) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+/// One target's worth of text at a time, from a field that may hold several.
+///
+/// A row's address box holds one address — that is the point of there being rows — but a
+/// line pasted from the field this list replaced holds the whole rig, and `setOscTargets`
+/// still takes one. Both end up here, and both end up as rows.
+std::vector<std::string_view> splitTargets(std::string_view text) {
+    std::vector<std::string_view> parts;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t next = text.find_first_of(",\n", at);
+        const std::string_view part = trim(
+            text.substr(at, next == std::string_view::npos ? std::string_view::npos : next - at));
+        if (!part.empty()) {
+            parts.push_back(part);
+        }
+        if (next == std::string_view::npos) {
+            break;
+        }
+        at = next + 1;
+    }
+    return parts;
+}
+
+/// A target as the two boxes of its row hold it.
+///
+/// The name box is left **empty** when the target is named after its own address, which is
+/// what an unnamed one is called (`parseOutputTarget`). Filling it in with the address would
+/// be true and useless: it is the box the operator types a name into, and it would come back
+/// holding a copy of the box beside it every time they did not.
+OutputRow rowOf(const output::OutputTarget& target) {
+    OutputRow row{};
+    const std::string address = output::formatOutputAddress(target);
+    row.name = slint::SharedString(target.name == address ? std::string{} : target.name);
+    row.address = slint::SharedString(address);
+    row.enabled = target.enabled;
+    row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
+    return row;
+}
+
 /// §5.7's listening socket, from the machine half — a port on this box, never a preset's.
 ///
 /// `enabled` is carried across but the socket is not opened here: the constructor builds
@@ -127,6 +177,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
+      targetModel_(std::make_shared<slint::VectorModel<OutputRow>>()),
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
       runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())),
@@ -149,6 +200,20 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     midiInputPorts_ = output::listMidiInputPorts();
 
     window_->set_trace(traceModel_);
+    window_->set_outputs_list(targetModel_);
+    // Set once and never again: the build does not change while it runs. It reaches the
+    // title bar and the corner of the status bar, so "which build is this?" is answerable
+    // at a glance and stays answerable — the opening status line used to be the only place
+    // it was said, and the first status after it took the answer away.
+    window_->set_version(slint::SharedString(buildInfo().version));
+
+    // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
+    // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
+    // times a second while the tracker does and would otherwise replace a row mid-word.
+    for (const output::OutputTarget& target : runner_.transports().outputs()) {
+        targetDrafts_.push_back(rowOf(target));
+    }
+    publishTargetRows();
 
     window_->on_device_picked([this](int index) { pickDevice(index); });
     window_->on_channel_picked([this](int index) { pickChannel(index); });
@@ -165,8 +230,18 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
 
     window_->on_link_toggled([this](bool on) { setLinkEnabled(on); });
-    window_->on_osc_targets_edited(
-        [this](const slint::SharedString& text) { setOscTargets(std::string(text)); });
+    window_->on_output_edited(
+        [this](int index, const slint::SharedString& name, const slint::SharedString& address) {
+            editTarget(index, std::string(name), std::string(address));
+        });
+    window_->on_output_accepted(
+        [this](int index, const slint::SharedString& name, const slint::SharedString& address) {
+            acceptTarget(index, std::string(name), std::string(address));
+        });
+    window_->on_output_added([this] { addTarget(); });
+    window_->on_output_removed([this](int index) { removeTarget(index); });
+    window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
+    window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
     window_->on_midi_port_picked(
         [this](const slint::SharedString& name) { setMidiPort(std::string(name)); });
 
@@ -396,49 +471,165 @@ void WindowController::setLinkEnabled(bool on) {
     publishOutputs();
 }
 
+void WindowController::editTarget(int index, const std::string& name, const std::string& address) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    row.name = shared(name);
+    row.address = shared(address);
+    // Deliberately no `applyTargets` and no `publishTargetRows`: this is one keystroke.
+    // Applying would rebuild a socket per character, and publishing would re-evaluate the
+    // `text:` binding of the box the operator is inside.
+}
+
+void WindowController::acceptTarget(int index, const std::string& name,
+                                    const std::string& address) {
+    editTarget(index, name, address);
+    applyTargets();
+}
+
+void WindowController::addTarget() {
+    OutputRow row{};
+    row.enabled = true;
+    targetDrafts_.push_back(row);
+    // Nothing to apply: a blank row is a place to type, not an output. Anything already
+    // typed into the rows above survives because `editTarget` kept it here.
+    publishTargetRows();
+}
+
+void WindowController::removeTarget(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    targetDrafts_.erase(targetDrafts_.begin() + index);
+    applyTargets();
+}
+
+void WindowController::setTargetEnabled(int index, bool on) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    targetDrafts_[static_cast<std::size_t>(index)].enabled = on;
+    applyTargets();
+}
+
+void WindowController::setTargetDelay(int index, float ms) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    const float clamped = std::clamp(ms, static_cast<float>(output::kMinOutputDelaySeconds * 1000.0),
+                                     static_cast<float>(output::kMaxOutputDelaySeconds * 1000.0));
+    OutputRow& draft = targetDrafts_[static_cast<std::size_t>(index)];
+    if (draft.delay_ms == clamped) {
+        return; // the slider resending where it already is; see the fold sliders
+    }
+    draft.delay_ms = clamped;
+    // Applied as it moves, so the offset can be found by ear. That means rebuilding this
+    // target's sender on every step of the drag, which costs a socket and nothing else —
+    // `setOutputs` only reopens what actually changed for MIDI, and a UDP socket is free.
+    applyTargets();
+}
+
 void WindowController::setOscTargets(const std::string& text) {
-    // §5.6's named targets, one per line or per comma — the window offers a single line, so
-    // a comma is how more than one fits in it. Each is `name = host:port` or
-    // `name = midi Device`, and `output::parseOutputTarget` also accepts the bare
-    // `host:port` this field took before targets had names.
+    // The whole rig as one piece of text, which is what a settings file's line looks like
+    // and what somebody pastes. It arrives as a single draft and `applyTargets` splits it
+    // into rows, which is the same path a pasted row takes.
+    OutputRow row{};
+    row.address = shared(text);
+    row.enabled = true;
+    targetDrafts_.clear();
+    targetDrafts_.push_back(row);
+    applyTargets();
+}
+
+void WindowController::applyTargets() {
+    // §5.6's named targets. Each row is `host:port` or `midi Device` with the name in the
+    // box beside it, and `output::parseOutputTarget` also takes the whole `name = address`
+    // form — which is what a row holds when a line has been pasted into it.
     //
-    // A part that will not parse is named on the status line and the rest are still applied:
-    // an operator halfway through typing an address must not lose the ones that already
-    // worked.
-    std::string separated = text;
-    std::replace(separated.begin(), separated.end(), ',', '\n');
+    // A row that will not parse is named on the status line and kept exactly as it was
+    // typed; the rest are still applied. An operator halfway through an address must not
+    // lose the outputs that already worked.
+    std::vector<OutputRow> rows;
     std::vector<output::OutputTarget> targets;
     std::string bad;
-    std::istringstream lines(separated);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (line.find_first_not_of(" \t\r") == std::string::npos) {
+    for (const OutputRow& draft : targetDrafts_) {
+        const std::string name(draft.name);
+        const std::string address(draft.address);
+        const std::vector<std::string_view> parts = splitTargets(address);
+        if (parts.empty()) {
+            // A row just added, or one whose address has been cleared. Kept — it is being
+            // filled in — and nothing is sent for it.
+            rows.push_back(draft);
             continue;
         }
-        output::OutputTarget target;
-        if (output::parseOutputTarget(line, target)) {
+
+        std::vector<output::OutputTarget> parsed;
+        for (const std::string_view part : parts) {
+            output::OutputTarget target;
+            if (!output::parseOutputTarget(part, target)) {
+                parsed.clear();
+                break;
+            }
+            parsed.push_back(std::move(target));
+        }
+        if (parsed.empty()) {
+            if (bad.empty()) {
+                bad = address;
+            }
+            rows.push_back(draft);
+            continue;
+        }
+
+        for (std::size_t i = 0; i < parsed.size(); ++i) {
+            output::OutputTarget& target = parsed[i];
+            // The name box wins over a name inside the address, but only for the row it
+            // belongs to: the rest of a pasted line brought its own names.
+            if (i == 0 && !name.empty()) {
+                target.name = name;
+            }
+            // Both have to agree: the switch is the row's, and "off " in front of a pasted
+            // address is that line saying the same thing.
+            target.enabled = target.enabled && draft.enabled;
+            // The slider owns the row's offset, because `formatOutputAddress` never writes one
+            // into the address box — so an offset coming back from the parse can only be one a
+            // person just typed or pasted, and that is them saying it outright.
+            //
+            // Exactly zero, not "not positive": an offset can be negative now, and a pasted
+            // `-300ms` is as deliberate as a pasted `+300ms`.
+            if (i == 0 && target.delaySeconds == 0.0) {
+                target.delaySeconds = static_cast<double>(draft.delay_ms) / 1000.0;
+            }
+            rows.push_back(rowOf(target));
             targets.push_back(std::move(target));
-        } else if (bad.empty()) {
-            bad = line;
         }
     }
 
     // Two targets with one name would make a rule's routing ambiguous, and `resolveOutputs`
     // would quietly take the first. Said rather than silently allowed, because the operator
-    // who typed it is the only one who can decide which they meant.
-    for (std::size_t i = 0; i < targets.size() && bad.empty(); ++i) {
+    // who typed it is the only one who can decide which they meant — and said as what it is:
+    // a duplicate name reported as "not a target" sends somebody looking at an address that
+    // is perfectly fine.
+    std::string duplicate;
+    for (std::size_t i = 0; i < targets.size() && duplicate.empty(); ++i) {
         for (std::size_t j = i + 1; j < targets.size(); ++j) {
             if (targets[i].name == targets[j].name) {
-                bad = targets[i].name;
+                duplicate = targets[i].name;
                 break;
             }
         }
     }
 
+    targetDrafts_ = std::move(rows);
     runner_.post(output::OutputCommand::outputs(targets));
     const std::string error = runner_.lastError();
     if (!bad.empty()) {
         setStatus("outputs: \"" + bad + "\" is not a target, so it was left out.", true);
+    } else if (!duplicate.empty()) {
+        setStatus("outputs: two are called \"" + duplicate +
+                      "\". A rule routed there reaches the first of them.",
+                  true);
     } else if (!error.empty()) {
         // A MIDI device that is not on this machine. The rest of the rig is still sending;
         // what failed is one output, and §5.6's whole point is that they are separate.
@@ -446,7 +637,15 @@ void WindowController::setOscTargets(const std::string& text) {
     } else if (statusIsError_) {
         setStatus("Pick an input and press Start.", false);
     }
+    publishTargetRows();
     publishOutputs();
+}
+
+void WindowController::publishTargetRows() {
+    // In place. `applyTargets` calls this, and `setTargetDelay` calls `applyTargets` on every
+    // step of a drag — so replacing the model here destroyed and rebuilt the very slider the
+    // pointer was holding, and the drag ended on the first pixel of movement. See `writeRows`.
+    writeRows(*targetModel_, targetDrafts_);
 }
 
 void WindowController::setMidiPort(const std::string& name) {
@@ -617,14 +816,14 @@ void WindowController::forgetLearned() {
     publishControl();
 }
 
-void WindowController::publishControl() {
+void WindowController::publishControl(bool force) {
     // Two independent surfaces, published independently. **Not one function with two
     // halves**: the MIDI half returns early when no port is open, and an OSC half written
     // below that return was silently never published — caught by
     // `tests/ui/window_test.cpp`'s "opens only when asked", which found the port field
     // empty on a window whose socket was bound.
     publishMidiControl();
-    publishOscControl();
+    publishOscControl(force);
 }
 
 void WindowController::publishMidiControl() {
@@ -677,9 +876,14 @@ void WindowController::publishTriggers() {
     window_->set_rules_active(active);
     window_->set_rules_total(static_cast<int>(rules_.size()));
     window_->set_panicked(runner_.panicked());
+    // The editor is the only thing that drains what fired — `OutputRunner::takeFired` is a
+    // drain and two readers would each get half — so this row is fed from what the editor
+    // saw rather than from the runner. It is published *after* `editor_.tick()` in `tick()`
+    // for that reason: reading it before would always be one round behind.
+    window_->set_rules_last_fired(shared(editor_.lastFiredAnywhere()));
 }
 
-void WindowController::publishOscControl() {
+void WindowController::publishOscControl(bool force) {
     const control::OscControl::Config& config = oscControl_.config();
     const bool listening = oscControl_.running();
     window_->set_osc_control_on(listening);
@@ -687,8 +891,19 @@ void WindowController::publishOscControl() {
     // The port bound while it is listening, and the one asked for while it is not. With 0
     // meaning "any free one" those differ, and only the bound one is a number an operator
     // can point a Stream Deck at.
-    window_->set_osc_control_port(
-        shared(std::to_string(listening ? oscControl_.port() : config.port)));
+    //
+    // **Only when the number underneath has moved.** The markup binds this two-way —
+    // `text <=> root.osc-control-port` — so the property *is* the box, and this runs on the
+    // redraw timer: writing it unconditionally put the current port back into the field
+    // thirty times a second, which erased each digit before the next one could be typed. The
+    // field commits on Enter, so there was no way to reach a different port at all. Forced
+    // from every path that is an operator doing something, including the one that rejects
+    // what they typed, so a refused port is still put back.
+    const std::string port = std::to_string(listening ? oscControl_.port() : config.port);
+    if (force || port != oscControlPortShown_) {
+        oscControlPortShown_ = port;
+        window_->set_osc_control_port(shared(port));
+    }
 
     if (!listening) {
         window_->set_osc_control_reading(shared("off"));
@@ -885,16 +1100,9 @@ void WindowController::publishOutputs() {
     window_->set_link_on(transports.linkEnabled());
     window_->set_link_peers(static_cast<int>(transports.link().numPeers()));
 
-    // One line per target, as `formatOutputTarget` writes them — which is also what a
-    // settings file holds and what an operator can type back into the field.
-    std::string outputs;
-    for (const output::OutputTarget& target : transports.outputs()) {
-        if (!outputs.empty()) {
-            outputs += ", ";
-        }
-        outputs += output::formatOutputTarget(target);
-    }
-    window_->set_osc_targets(shared(outputs));
+    // The rows themselves are **not** written here. They are what is being typed into, this
+    // runs on the redraw timer, and a row replaced under the cursor is a row that cannot be
+    // edited while the tracker runs. `applyTargets` owns them; see `targetDrafts_`.
     window_->set_osc_on(!transports.outputs().empty());
     // The editor names these when it routes a rule, so it has to know what there is. Told
     // here rather than read from the runner, because `Transports` belongs to the output
@@ -921,7 +1129,9 @@ void WindowController::publishStopped() {
     publishIdleReadouts(*window_);
     publishOptions();
     if (!devices_.empty() && !statusIsError_) {
-        setStatus("takt4 " + buildInfo().version + " — pick an input and press Start.", false);
+        // The version is not repeated here: it is in the title bar and the status bar's
+        // corner now, and unlike this line neither of them is spent by the next status.
+        setStatus("pick an input and press Start.", false);
     }
 }
 
@@ -996,7 +1206,8 @@ void WindowController::tick() {
     // Before the early return: a MIDI message arrives on RtMidi's thread, so what it
     // changed — a learn that took, a control that was seen — only reaches the window on a
     // redraw, and binding buttons is something an operator does *before* pressing Start.
-    publishControl();
+    // Unforced, so the port field is left alone unless the port itself has moved.
+    publishControl(false);
     // Above the early return with it, and for a related reason: what these two watch is
     // the engine's own state, which moves whether or not a device is open. A test drives
     // the engine directly without one, and holding the button lit forever there would be
@@ -1005,8 +1216,12 @@ void WindowController::tick() {
     // And the rules, for the same reason twice over: they fire on the output thread, and
     // the editor is where an operator watches them. Both above the early return — a rule
     // can be built and tested with no device open, which is exactly how one gets built.
-    publishTriggers();
+    //
+    // The editor first: it is what drains the fired log, and `publishTriggers` shows the
+    // last message out of what the drain found. The other way round the TRIGGERS row was
+    // always one redraw stale, which at 30 Hz nobody would see but which would be a lie.
     editor_.tick();
+    publishTriggers();
     if (!tracker_.running()) {
         return;
     }

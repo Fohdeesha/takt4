@@ -46,8 +46,51 @@ struct OutputTarget {
     /// it back afterwards with its addresses intact.
     bool enabled = true;
 
+    /// Where this target's messages sit relative to the beat, in seconds — §5.5's latency
+    /// offset, but per target rather than one number for the whole rig.
+    ///
+    /// One offset was never enough, because the lag being compensated does not belong to
+    /// takt4: it belongs to the thing on the end of each cable. A media server keying a clip
+    /// is a frame or two behind; a robot that has to physically *move* is a great deal more,
+    /// and it is behind by an amount that has nothing to do with what the lighting desk on
+    /// the next output is doing. §5.5's single slider moves all of them together, which is
+    /// the one adjustment that cannot help a rig with two different lags in it.
+    ///
+    /// **Positive is later, negative is earlier, and both are real** — but they are not
+    /// symmetrical underneath, and the asymmetry is worth stating because it is the whole
+    /// reason this comment is long.
+    ///
+    /// A message cannot be sent before the beat that caused it has been heard. So "earlier"
+    /// cannot mean *before this beat*; it means **before the next one**. A target at −300 ms
+    /// is held for one beat less 300 ms, and what arrives is a message 300 ms ahead of the
+    /// beat it lands on. Downstream cannot tell the difference — a clip change that arrives
+    /// 300 ms before a beat is a clip change that arrives 300 ms before a beat, whichever
+    /// beat we counted from — and it is the number an operator actually has in their head:
+    /// *this device is 300 ms slow, take 300 ms off it.*
+    ///
+    /// It follows the tempo, which a fixed delay cannot. At 92 BPM −300 ms holds for 352 ms;
+    /// at 128 BPM the same −300 ms holds for 169 ms. The operator sets the lag of their
+    /// device once and it stays right as the music changes. `OscPublisher::setBeatSeconds`
+    /// is where the current beat comes from; with no tempo yet, a negative offset holds
+    /// nothing rather than guessing.
+    ///
+    /// Held on the output thread and sent when it comes due (`OscPublisher::flushDue`), so
+    /// the resolution is that thread's round — 1 ms, which is why it raises Windows' timer
+    /// granularity. Nothing is reordered: one target's queue is FIFO.
+    double delaySeconds = 0.0;
+
     friend bool operator==(const OutputTarget&, const OutputTarget&) = default;
 };
+
+/// How far either way a target may be offset. A whole second is longer than a beat anywhere
+/// in the state space's 55-215 BPM, so any phase of any beat is reachable from either
+/// direction; past that an operator is describing a rig problem rather than a latency.
+///
+/// A negative offset larger than the beat would ask for a hold shorter than nothing. That is
+/// clamped to zero rather than wrapped further back, because two beats of anticipation is
+/// not a latency either — see `OscPublisher::holdFor`.
+inline constexpr double kMaxOutputDelaySeconds = 1.0;
+inline constexpr double kMinOutputDelaySeconds = -1.0;
 
 /// How many targets a rule can be routed to by name.
 ///
@@ -86,8 +129,16 @@ const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::st
 
 /// "main = 127.0.0.1:7000" and "lights = midi MOTU Pro Audio Midi Out 1", which is how a
 /// settings file stores one and how §5.9's outputs field shows it. A switched-off target
-/// leads with "off ". Round-trips through `parseOutputTarget`.
+/// leads with "off ", and one with a delay ends with " +120ms". Round-trips through
+/// `parseOutputTarget`.
 std::string formatOutputTarget(const OutputTarget& target);
+
+/// Just the destination half: "127.0.0.1:7000", or "midi MOTU Pro Audio Midi Out 1".
+///
+/// What §5.9's outputs list puts in the address box, the name having a box of its own. It is
+/// also what `formatOutputTarget` writes after the `=`, and `parseOutputTarget` takes it back
+/// on its own — the name is optional there for exactly this reason.
+std::string formatOutputAddress(const OutputTarget& target);
 
 /// The inverse. Nothing when the text is not a target — never throws, because this reads a
 /// file a person may have edited and a field they are half-way through typing.

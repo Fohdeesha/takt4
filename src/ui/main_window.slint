@@ -35,8 +35,30 @@ export struct TracePoint {
   called: bool,
 }
 
+/// One of §5.6's simultaneous targets, as the row that edits it holds it.
+///
+/// **A row each, and two boxes rather than one line.** This was a single field holding
+/// `deck = 127.0.0.1:7000, wall = 127.0.0.1:7001, …`, which is the whole rig on one line: a
+/// third address had to be typed onto the end of a string already too long to read, and one
+/// mistyped character anywhere in it took the parse down. A rig has several outputs — that is
+/// §5.6's premise — so the list is a list, the name a rule aims at is its own box, and the
+/// destination is its own box beside it.
+export struct OutputRow {
+  /// What a rule names it by (`trigger::Rule::Config::outputs`). Left empty, the target is
+  /// named after its address, which is what this field meant before names existed.
+  name: string,
+  /// "127.0.0.1:7000", or "midi Some Device" — `output::formatOutputAddress`.
+  address: string,
+  /// §5.6's per-target enabled state. Off sends nothing and keeps the address.
+  enabled: bool,
+  /// How long everything to this target is held back, in milliseconds — `OutputTarget::
+  /// delaySeconds`. Milliseconds here rather than seconds because that is what the slider
+  /// moves in and what the row reads out; the C++ side owns the conversion.
+  delay-ms: float,
+}
+
 export component MainWindow inherits Window {
-  title: "takt4";
+  title: root.version == "" ? "takt4" : "takt4 " + root.version;
   preferred-width: 900px;
   preferred-height: 836px;
   min-width: 720px;
@@ -95,6 +117,10 @@ export component MainWindow inherits Window {
   in-out property <float> fold-limit-max: 220;
   in-out property <float> fold-least-span: 5;
   in-out property <float> latency-limit-ms: 250;
+  /// How far a single output's delay slider goes, in milliseconds — `kMaxOutputDelaySeconds`.
+  /// A whole second is longer than a beat anywhere in the tracker's range, so every phase of
+  /// every beat is reachable.
+  in-out property <float> output-delay-limit-ms: 1000;
 
   // --- the two displays that carry the window ------------------------------------
   in-out property <[TracePoint]> trace;
@@ -109,7 +135,9 @@ export component MainWindow inherits Window {
   in-out property <bool> link-on;
   in-out property <int> link-peers;
   in-out property <bool> osc-on;
-  in-out property <string> osc-targets;   // one host:port per line
+  /// §5.6's targets, one row each. Written by the C++ side whenever the list changes shape
+  /// — never while a row is being typed into, which would reset the field under the cursor.
+  in-out property <[OutputRow]> outputs-list;
   in-out property <bool> midi-on;
   in-out property <string> midi-port;
   in-out property <[string]> midi-ports;
@@ -171,6 +199,12 @@ export component MainWindow inherits Window {
   in-out property <string> status;
   in-out property <bool> status-is-error;
 
+  // What this build is, kept where it cannot be scrolled or overwritten. It used to be
+  // said once, in the opening status line, and the first thing that set a status took it
+  // away — so the answer to "which build is this?" was gone by the time anyone had cause
+  // to ask. It is in the title bar and in the corner of the status bar instead.
+  in-out property <string> version;
+
   callback device-picked(int);
   callback channel-picked(int);
   callback toggle-run();
@@ -190,7 +224,20 @@ export component MainWindow inherits Window {
   callback latency-changed(float);
 
   callback link-toggled(bool);
-  callback osc-targets-edited(string);
+  /// A keystroke in either box of row N: remembered, not applied. Applying opens and closes
+  /// a socket, and doing that once per character would rebuild it halfway through an
+  /// address — but a draft that is only in the widget is lost the moment the list is
+  /// republished, which is what pressing [+] does.
+  callback output-edited(int, string, string);
+  /// Enter, which is where a row is applied.
+  callback output-accepted(int, string, string);
+  callback output-added();
+  callback output-removed(int);
+  callback output-enabled-changed(int, bool);
+  /// Row N's delay slider, in milliseconds. Applied as it moves, like the enabled tick and
+  /// unlike the two text boxes: dragging it is how an operator finds the offset by ear, and
+  /// a delay that waited for Enter could not be found that way at all.
+  callback output-delay-changed(int, float);
   callback midi-port-picked(string);
 
   VerticalLayout {
@@ -593,8 +640,11 @@ export component MainWindow inherits Window {
           minimum: -root.latency-limit-ms;
           maximum: root.latency-limit-ms;
           // The sign is the whole point of this control — negative fires early — so it
-          // is shown rather than left to be inferred from a thumb position.
-          reading: (root.latency-ms > 0 ? "+" : "") + round(root.latency-ms) + " ms";
+          // is shown rather than left to be inferred from a thumb position. "all outputs"
+          // because this one moves the whole rig and each output row has its own beside it;
+          // the row readouts show the sum, so moving this visibly moves all of them.
+          reading: (root.latency-ms > 0 ? "+" : "") + round(root.latency-ms) + " ms"
+              + (root.latency-ms == 0 ? "" : "  all");
           moved(v) => {
             root.latency-changed(v);
           }
@@ -765,10 +815,145 @@ export component MainWindow inherits Window {
         }
       }
 
-      // §5.6's targets on a line of their own. They used to be one field among four on the
-      // row above, which was room for one address — and the whole point of naming them is
-      // that a rig has several. This is the longest thing in the window after the address
-      // template, and the one a rule's routing is checked against.
+      // §5.6's targets, a row each. They used to be one field among four on the row
+      // above, then one field of their own holding a comma-separated line — and the whole
+      // point of naming them is that a rig has several, so a rig's worth of them is a
+      // list. The name a rule routes to and the place the message goes are two facts, so
+      // they get two boxes: `output::formatOutputAddress` is what the second one holds.
+      for target[index] in root.outputs-list: HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-bottom: 6px;
+        spacing: 10px;
+
+        Text {
+          // The column label, on the first row only. Repeated down the side it would read
+          // as four separate settings rather than as one list.
+          text: index == 0 ? "targets" : "";
+          color: root.osc-on ? Theme.text : Theme.dim;
+          font-size: 12px;
+          width: 74px;
+          vertical-alignment: center;
+        }
+
+        CheckBox {
+          // §5.6's per-target enabled state: a switch rather than deleting the row, because
+          // an operator killing one feed mid-set wants it back afterwards with its address
+          // intact. Applied at once — a tick box that waited for Enter would be a lie.
+          checked: target.enabled;
+          width: 28px;
+          toggled => {
+            root.output-enabled-changed(index, self.checked);
+          }
+        }
+
+        name-field := LineEdit {
+          text: target.name;
+          placeholder-text: "name";
+          font-size: 12px;
+          width: 116px;
+          horizontal-stretch: 0;
+          // Both boxes report both values: they are one target, and the row is applied
+          // whole, so the half that was not touched has to travel with the half that was.
+          // An id inside a repeater names the sibling in *this* row, not in the first.
+          edited(text) => {
+            root.output-edited(index, text, address-field.text);
+          }
+          accepted(text) => {
+            root.output-accepted(index, text, address-field.text);
+          }
+        }
+
+        address-field := LineEdit {
+          text: target.address;
+          placeholder-text: "127.0.0.1:7000   or   midi Device Name   — Enter to apply";
+          font-size: 12px;
+          horizontal-stretch: 1;
+          edited(text) => {
+            root.output-edited(index, name-field.text, text);
+          }
+          accepted(text) => {
+            root.output-accepted(index, name-field.text, text);
+          }
+        }
+
+        // §5.5's latency offset, per target. The thing on the end of each cable has its own
+        // lag — a media server is a frame or two behind and a robot that has to physically
+        // move is far more — so one slider for the whole rig is the one adjustment that
+        // cannot help. See `OutputTarget::delaySeconds`, including what "earlier" can mean
+        // for a message about a beat that has already been heard.
+        Slider {
+          minimum: -root.output-delay-limit-ms;
+          maximum: root.output-delay-limit-ms;
+          step: 1;
+          enabled: target.enabled;
+          value: target.delay-ms;
+          width: 112px;
+          horizontal-stretch: 0;
+          changed(v) => {
+            root.output-delay-changed(index, v);
+          }
+        }
+
+        // Two readouts, not one string, and the difference between them is the point.
+        //
+        // **The milliseconds are the setting.** A device's lag is a fixed number of
+        // milliseconds — a media server takes as long to key a clip at 92 BPM as at 140 —
+        // and this is where an operator types what they measured. It does not move when the
+        // music does.
+        //
+        // The beat fraction beside it is a *consequence*, which is why it is dim: it is the
+        // same offset expressed against the tempo now playing, useful for the other way of
+        // thinking about this ("put the robot half a beat late") and misleading if read as
+        // the thing being set. One offset shows as 0.46♩ at 92 BPM and 0.64♩ at 128, and
+        // nothing about the rig has changed.
+        HorizontalLayout {
+          spacing: 6px;
+          width: 116px;
+          horizontal-stretch: 0;
+
+          Text {
+            // The row's **total** offset: this target's own plus the whole-rig slider above,
+            // because that is what actually happens to this feed and a reader should not
+            // have to add two numbers on two sides of the window to find it.
+            property <float> total: target.delay-ms + root.latency-ms;
+            text: (total > 0 ? "+" : "") + round(total) + " ms";
+            color: total != 0 ? Theme.text : Theme.dim;
+            font-size: 12px;
+            font-family: "Consolas";
+            width: 64px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+          }
+
+          Text {
+            property <float> total: target.delay-ms + root.latency-ms;
+            // Blank rather than a fraction of nothing when no tempo is being published.
+            text: total != 0 && root.bpm > 0
+                ? round(total * root.bpm / 600.0) / 100.0 + "♩"
+                : "";
+            color: Theme.dim;
+            font-size: 12px;
+            font-family: "Consolas";
+            // Wide enough for "-0.46♩", which is the longest this gets: the slider stops at
+            // a second and the beat it is measured against never exceeds 1.1 s.
+            width: 46px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+          }
+        }
+        Press {
+          text: "−";
+          // Shorter than a Press usually is: a row of these is a list, not a row of things
+          // to hit in a hurry, and forty pixels each would push the trace off the window.
+          min-height: 30px;
+          min-width: 44px;
+          clicked => {
+            root.output-removed(index);
+          }
+        }
+      }
+
       HorizontalLayout {
         padding-left: 24px;
         padding-right: 24px;
@@ -776,25 +961,33 @@ export component MainWindow inherits Window {
         spacing: 10px;
 
         Text {
-          // Not "OSC" any more: §5.6's targets are OSC *and* MIDI, named so a rule can pick
-          // between them. `output::formatOutputTarget` is the form this field takes.
-          text: "targets";
-          color: root.osc-on ? Theme.text : Theme.dim;
+          // The label lives on the first target row; with no rows there is none, and this
+          // is the only line the word can be on.
+          text: root.outputs-list.length == 0 ? "targets" : "";
+          color: Theme.dim;
           font-size: 12px;
           width: 74px;
           vertical-alignment: center;
         }
 
-        osc-field := LineEdit {
-          text <=> root.osc-targets;
-          placeholder-text: "deck = 127.0.0.1:7000, lights = midi PORT — Enter to apply";
+        Press {
+          text: "+ ADD OUTPUT";
+          min-height: 30px;
+          min-width: 168px;
+          clicked => {
+            root.output-added();
+          }
+        }
+
+        Text {
+          text: root.outputs-list.length == 0
+              ? "nothing is being sent — add a media server or a lighting desk"
+              : "";
+          color: Theme.dim;
           font-size: 12px;
           horizontal-stretch: 1;
-          // `accepted`, not `edited`: `edited` fires on every keystroke, and each one
-          // would tear the sockets down and build them again halfway through an address.
-          accepted(text) => {
-            root.osc-targets-edited(text);
-          }
+          vertical-alignment: center;
+          overflow: elide;
         }
       }
 
@@ -1031,13 +1224,24 @@ export component MainWindow inherits Window {
 
       Text {
         x: 16px;
-        width: parent.width - 32px;
+        // Stops short of the version, which is the one thing in this bar that never
+        // changes and so must never be the thing that gets elided.
+        width: parent.width - 32px - build.width - 16px;
         height: 100%;
         text: root.status;
         color: root.status-is-error ? Theme.holding : Theme.dim;
         font-size: 12px;
         vertical-alignment: center;
         overflow: elide;
+      }
+
+      build := Text {
+        x: parent.width - self.width - 16px;
+        height: 100%;
+        text: root.version;
+        color: Theme.dim;
+        font-size: 12px;
+        vertical-alignment: center;
       }
     }
   }

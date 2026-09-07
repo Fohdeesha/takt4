@@ -145,6 +145,10 @@ public:
     /// to `event.time`; this is the same number applied to the host times the transports
     /// fire on, and the two must not be allowed to drift apart.
     ///
+    /// It reaches all three transports. Link and the MIDI clock shift their grid by it in
+    /// either direction; OSC can only ever wait, so a negative offset there lands the message
+    /// ahead of the *next* beat instead. See `setOscOffsets`.
+    ///
     /// The one member safe to call from another thread — a UI slider, §5.7's inbound OSC
     /// — because it writes a single atomic and reads nothing.
     void setLatencySeconds(double seconds) noexcept;
@@ -155,6 +159,10 @@ public:
     std::uint64_t downbeats() const noexcept { return downbeats_.load(std::memory_order_relaxed); }
 
 private:
+    /// Hands the OSC publisher §5.5's offset and the current beat length, which is what lets
+    /// a negative offset mean anything there. Called before anything is published or flushed.
+    void setOscOffsets(double bpm) noexcept;
+
     void publishToLink(const tracking::BeatEvent& event, std::int64_t hostMicros,
                        std::int64_t latencyMicros);
 

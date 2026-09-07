@@ -7,9 +7,12 @@
 #include <cstring>
 #include <fstream>
 #include <ios>
+#include <iterator>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // The floats are copied straight from the file into float storage, which is only right
 // on a little-endian host — the only kind takt4 is built for, as in io/npy_file.cpp.
@@ -96,18 +99,29 @@ ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
     if (!in) {
         throw std::runtime_error(name + ": cannot open");
     }
+    // Read whole and then parsed, rather than parsed as it streams, so that a blob from a
+    // file and a blob compiled into the program go through exactly the same checks. Three
+    // megabytes read once at startup is not worth a second implementation to avoid.
+    //
+    // Into `char` and viewed as bytes: `std::byte` is an enum class, so a vector of them
+    // cannot be filled from a stream iterator without a conversion per element.
+    const std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+    return fromBytes(std::as_bytes(std::span(bytes)), name);
+}
 
-    std::array<unsigned char, kHeaderBytes> header{};
-    if (!in.read(reinterpret_cast<char*>(header.data()),
-                 static_cast<std::streamsize>(header.size()))) {
+ModelWeights ModelWeights::fromBytes(std::span<const std::byte> blob, std::string_view from) {
+    const std::string name(from);
+    const auto* const raw = reinterpret_cast<const unsigned char*>(blob.data());
+    if (blob.size() < kHeaderBytes) {
         throw std::runtime_error(name + ": too short to be a takt4 weight blob");
     }
-    if (std::memcmp(header.data(), kMagic.data(), kMagic.size()) != 0) {
+    if (std::memcmp(raw, kMagic.data(), kMagic.size()) != 0) {
         throw std::runtime_error(name + ": not a takt4 weight blob");
     }
     std::array<std::uint32_t, kHeaderFields> fields{};
     for (std::size_t i = 0; i < fields.size(); ++i) {
-        fields[i] = readU32(header.data() + kMagic.size() + i * sizeof(std::uint32_t));
+        fields[i] = readU32(raw + kMagic.size() + i * sizeof(std::uint32_t));
     }
     if (fields[0] != kFormatVersion) {
         throw std::runtime_error(name + ": weight blob format version " +
@@ -123,19 +137,22 @@ ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
     expect(fields[7], kNumClasses, "class count", name);
     expect(fields[8], kTotalParameters, "parameter count", name);
 
-    ModelWeights weights;
-    weights.path_ = path;
-    weights.values_.resize(kTotalParameters);
-    const auto bytes = static_cast<std::streamsize>(kTotalParameters * sizeof(float));
-    if (!in.read(reinterpret_cast<char*>(weights.values_.data()), bytes) || in.gcount() != bytes) {
+    const std::size_t payload = kTotalParameters * sizeof(float);
+    if (blob.size() < kHeaderBytes + payload) {
         throw std::runtime_error(name + ": weight blob holds fewer than " +
                                  std::to_string(kTotalParameters) + " parameters");
     }
-    if (in.peek() != std::char_traits<char>::eof()) {
+    if (blob.size() > kHeaderBytes + payload) {
         throw std::runtime_error(name + ": weight blob is longer than its header says");
     }
-    const std::uint32_t checksum =
-        fnv1a32(weights.values_.data(), kTotalParameters * sizeof(float));
+
+    ModelWeights weights;
+    weights.path_ = name;
+    weights.values_.resize(kTotalParameters);
+    // Byte-for-byte: the floats were written by a little-endian host and this is one, which
+    // is what the static_assert at the top of this file is for.
+    std::memcpy(weights.values_.data(), raw + kHeaderBytes, payload);
+    const std::uint32_t checksum = fnv1a32(weights.values_.data(), payload);
     if (checksum != fields[9]) {
         throw std::runtime_error(name + ": weight blob checksum mismatch (file says " +
                                  std::to_string(fields[9]) + ", contents give " +

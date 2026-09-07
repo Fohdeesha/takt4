@@ -252,6 +252,9 @@ void fillRules(RulesWindow& window) {
         hosts->push_back(slint::SharedString(label));
     }
     window.set_host_presets(hosts);
+    // Which preset the address below is, as `RulesController::presetOf` works it out — the
+    // picker names the rule in front of it rather than the last thing clicked.
+    window.set_host_preset_index(1);
 
     auto rigs = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const char* label :
@@ -288,8 +291,21 @@ void fillRules(RulesWindow& window) {
     window.set_rules(rules);
     window.set_selected(0);
 
-    // §5.6's rule subset, and what it currently reaches.
-    window.set_outputs(slint::SharedString("deck"));
+    // §5.6's rule subset, and what it currently reaches: the rig's own outputs, ticked.
+    auto choices = std::make_shared<slint::VectorModel<OutputChoice>>();
+    const auto choice = [](const char* name, bool chosen, bool missing) {
+        OutputChoice row{};
+        row.name = slint::SharedString(name);
+        row.chosen = chosen;
+        row.missing = missing;
+        return row;
+    };
+    choices->push_back(choice("deck", true, false));
+    choices->push_back(choice("wall", false, false));
+    choices->push_back(choice("lights", false, false));
+    window.set_output_choices(choices);
+    window.set_outputs_all(false);
+    window.set_outputs_summary(slint::SharedString("deck"));
     window.set_outputs_available(slint::SharedString("reaches 1 output"));
 
     window.set_rule_name(slint::SharedString("Layer 1 - random clip"));
@@ -456,10 +472,29 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_link_on(true);
         window->set_link_peers(2);
         window->set_osc_on(true);
-        // §5.6's named targets, which is what the field holds now: a media server and a
-        // lighting desk, each of which a rule can be aimed at by name.
-        window->set_osc_targets(
-            slint::SharedString("deck = 192.168.1.40:7000, lights = midi MOTU Midi Out 1"));
+        // §5.6's named targets, which is what the list holds now: a media server and a
+        // lighting desk, each of which a rule can be aimed at by name, and one switched off
+        // — the state a single field could only spell as "off " in front of an address.
+        auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+        const auto target = [](const char* name, const char* address, bool enabled,
+                               float delayMs = 0.0f) {
+            OutputRow row{};
+            row.name = slint::SharedString(name);
+            row.address = slint::SharedString(address);
+            row.enabled = enabled;
+            row.delay_ms = delayMs;
+            return row;
+        };
+        targets->push_back(target("deck", "192.168.1.40:7000", true));
+        // One of each sign, because a rig where every destination shares a lag is the case
+        // that never needed §5.6's per-target offset — and because the two directions do
+        // different things underneath. The media server is nudged *early*, which for a
+        // message about a beat already heard means "just before the next one"; the robot,
+        // which has to physically move, is pushed late.
+        targets->push_back(target("wall", "192.168.1.41:7000", true, -80.0f));
+        targets->push_back(target("robot", "192.168.1.42:7000", true, 352.0f));
+        targets->push_back(target("lights", "midi MOTU Midi Out 1", false));
+        window->set_outputs_list(targets);
         window->set_beats_sent(21);
         // A control surface bound, so the row shows what a learned binding reads as
         // rather than an empty picker and a blank line.
@@ -493,11 +528,13 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // what they are turning on.
         window->set_osc_control_port(slint::SharedString("7001"));
         window->set_osc_control_reading(slint::SharedString("off"));
-        window->set_status(slint::SharedString("takt4 " + buildInfo().version +
-                                               " — pick an input and press "
-                                               "Start."));
+        window->set_status(slint::SharedString("pick an input and press Start."));
     }
     window->set_status_is_error(false);
+    // As the real app does it: the build belongs in the title bar and the status bar's
+    // corner, where a status cannot take it away. A screenshot that did not carry it would
+    // be a picture with no way of saying which build it is a picture of.
+    window->set_version(slint::SharedString(buildInfo().version));
 
     // show() creates the adapter; the two dispatches give the scene its scale and size,
     // which nothing else would do without a window manager to hear from.

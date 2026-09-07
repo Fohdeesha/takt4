@@ -316,6 +316,18 @@ public:
     double lastFired() const noexcept { return lastFired_; }
     std::uint64_t fires() const noexcept { return fires_; }
 
+    /// What each generator produced on the last fire, **in the order §5.9's editor draws
+    /// the chips**: the address segments and then the value for OSC, the note or CC number
+    /// and then the value for MIDI, with the value left out when the rule sends none.
+    ///
+    /// That ordering is the contract. The editor pairs these with its rows by position, and
+    /// a generator that produced a value nobody can see beside the box that configures it is
+    /// a rule an operator has to read the event log to debug.
+    ///
+    /// Empty before the rule has fired, and cleared by a fire that could not build its
+    /// message — there is nothing to show for a fire that did not happen.
+    std::span<const Value> lastSlots() const noexcept { return lastSlots_; }
+
 private:
     void validate();
 
@@ -340,6 +352,9 @@ private:
     /// Reused so building an address does not reallocate on every fire.
     std::string address_;
     std::vector<Value> segmentValues_;
+    /// See `lastSlots`. Reused for the same reason as `address_`: the size settles after the
+    /// first fire and the output thread stops allocating for it.
+    std::vector<Value> lastSlots_;
 };
 
 /// How many `{...}` placeholders an address template holds, and where they are. Public

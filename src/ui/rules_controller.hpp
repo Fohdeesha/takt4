@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace takt4::ui {
@@ -68,6 +69,15 @@ public:
 
     RulesWindow& window() { return *window_; }
 
+    /// The last message any rule sent, as it went out. The main window's TRIGGERS row shows
+    /// it too — an operator watching the tracker should not have to open the editor to see
+    /// whether anything is leaving the machine. Empty until something fires.
+    const std::string& lastFiredAnywhere() const noexcept { return lastFiredAnywhere_; }
+
+    /// How many times the rule with this id has fired, releases not counted. Zero for a rule
+    /// that has not fired and for one this controller has never heard of.
+    std::uint64_t firesOf(std::string_view ruleId) const;
+
     const std::vector<trigger::Rule::Config>& rules() const noexcept { return rules_; }
     /// Replaces the set from outside — a preset load. Keeps the selection where it can.
     void setRules(std::vector<trigger::Rule::Config> rules);
@@ -96,7 +106,14 @@ public:
     void setEvery(int every);
     void setPulses(int pulses);
     /// §5.6's rule subset, as a comma-separated list of output names. Empty is everywhere.
+    /// Not reachable from the window any more — the routing is ticked from the rig's own
+    /// list — but it is still how a preset arrives and how a whole routing is set at once.
     void setOutputs(const std::string& text);
+    /// One output named or un-named. Un-naming the last one is "every output" again: an
+    /// empty list *is* everywhere (`output::resolveOutputs`), so the two cannot disagree.
+    void setOutputChosen(const std::string& name, bool chosen);
+    /// Back to reaching every output, which is what naming none of them means.
+    void chooseAllOutputs();
 
     void setMinConfidence(double value);
     void setIntensity(int which, bool allowed);
@@ -149,6 +166,9 @@ private:
     void publishAll();
     void publishList();
     void publishSelected();
+    /// The "send to" list: every output this rig has, ticked where the rule names it, plus
+    /// any name the rule carries that this rig has not got.
+    void publishOutputChoices();
     void publishSlots();
     void publishFiring();
     void setStatus(const std::string& text, bool error);
@@ -164,18 +184,35 @@ private:
 
     slint::ComponentHandle<RulesWindow> window_;
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
+    std::shared_ptr<slint::VectorModel<OutputChoice>> choiceModel_;
     std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
     std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
     bool visible_ = false;
 
-    /// Fires seen per rule, by id, so the log can name what fired without the trigger
-    /// engine keeping a ring of its own — which it deliberately does not, the shape of a
-    /// log being a UI question.
-    std::vector<std::uint64_t> firesSeen_;
+    /// Fires seen per rule, so each card can say how often it has gone off — the number in
+    /// the rule list. Counted here rather than read from `trigger::Rule::fires()`, because
+    /// the live rules belong to the output thread and are safe to read only while it is
+    /// stopped; `OutputRunner::Fired` is the seam that crosses that boundary.
+    ///
+    /// **Keyed by rule id, not by position.** A vector indexed by row lost its meaning the
+    /// moment a rule was deleted from the middle — every count below it would shift up one
+    /// and start describing a different rule. An id survives reordering, and a preset load
+    /// brings new ids, which is exactly when the counts should start again.
+    ///
+    /// §5.6's release half is not counted: see `OutputRunner::Fired::followUp`.
+    std::unordered_map<std::string, std::uint64_t> firesSeen_;
+    /// What each rule's generators last produced, by rule id — `trigger::Rule::lastSlots`,
+    /// kept per rule so selecting another card shows *its* last values rather than nothing
+    /// until it happens to fire again.
+    std::unordered_map<std::string, std::vector<trigger::Value>> slotsSeen_;
     std::vector<std::string> log_;
     /// What the selected rule last sent and when, on this controller's own clock.
     std::string lastFired_;
     double lastFiredAt_ = -1.0;
+    /// The same for the rig as a whole, for the main window's TRIGGERS row. Kept apart from
+    /// `lastFired_` because that one is the *selected* rule's and goes blank when a card
+    /// that has never fired is picked, which is right there and wrong on a status row.
+    std::string lastFiredAnywhere_;
     const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
 };
 

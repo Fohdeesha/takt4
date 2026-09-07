@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::tracking {
@@ -108,6 +109,11 @@ public:
     /// it: missing, truncated, wrong magic, a format version this build does not know, a
     /// checksum mismatch, or tables that do not describe a usable state space.
     static StateSpaceModel fromFile(const std::filesystem::path& path);
+
+    /// The same, from bytes already in memory — the application's own copy, compiled in by
+    /// `assets::stateSpace()` so the program is one file. `from` is what `path()` will say
+    /// and what an error message will name, since there is no file to point at.
+    static StateSpaceModel fromBytes(std::span<const std::byte> blob, std::string_view from);
 
     const Config& config() const noexcept { return config_; }
     const StateSpace& beat() const noexcept { return beat_; }

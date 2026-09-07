@@ -113,7 +113,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
         }
         try {
             if (target.kind == OutputTarget::Kind::Osc) {
-                osc_->addTarget(target.host, target.port, i);
+                osc_->addTarget(target.host, target.port, i, target.delaySeconds);
             } else {
                 outputPorts_[i] = openDevice(target.device);
             }
@@ -200,11 +200,47 @@ void Transports::advance(double now, const tracking::TempoState& state) {
     if (midi_) {
         (void)midi_->advance(now);
     }
+    osc_->setNow(now);
+    setOscOffsets(state.bpm);
+    // Before this round's state, so a message held from an earlier round goes out ahead of
+    // one sent now. A per-target delay reorders against the *other* targets on purpose and
+    // must never reorder a target against itself.
+    osc_->flushDue();
     osc_->publishState(state);
+}
+
+void Transports::setOscOffsets(double bpm) noexcept {
+    // §5.5's offset applies to OSC as well as to the two clock transports. It did not, for
+    // most of this file's life, and that was a hole rather than a decision: an operator
+    // pulling the slider back to put a media server's clip change on the beat moved Link and
+    // the MIDI clock and left the OSC the media server actually listens to exactly where it
+    // was. The three now agree about what the number means.
+    //
+    // What differs is what each can do with it, and only the sign is affected. Link and the
+    // MIDI clock carry a running grid whose phase can be moved either way, so they take the
+    // offset as it stands. An OSC message is one datagram about one beat that has already
+    // happened, so "earlier" has to become "earlier than the next one" — see
+    // `OscPublisher::holdFor`, which is why it needs the beat length.
+    osc_->setOffsetSeconds(static_cast<double>(latencyMicros_.load(std::memory_order_relaxed)) /
+                           1e6);
+    // Only ever *updated*, never cleared. `advance` runs on every round and is handed the
+    // published state, which reports no tempo while the tracker is between locks — and
+    // forgetting the beat length there would make a negative offset stop holding for a bar
+    // at a time, so a rig would slide on and off the beat as the tracker's confidence moved.
+    // Zero until the first tempo is known, which is what `holdFor` treats as "no beat yet".
+    if (bpm > 0.0) {
+        osc_->setBeatSeconds(60.0 / bpm);
+    }
 }
 
 void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double now) {
     lastNow_ = now;
+    // A beat queued for a delayed target is due `delaySeconds` after *this* beat, not after
+    // whenever the next round happens to run.
+    osc_->setNow(now);
+    // From the beat's own tempo rather than the last round's state: a negative offset is a
+    // fraction of *this* beat, and on the beat that changes tempo the two differ.
+    setOscOffsets(event.bpm);
     beats_.fetch_add(1, std::memory_order_relaxed);
     if (event.downbeat) {
         downbeats_.fetch_add(1, std::memory_order_relaxed);

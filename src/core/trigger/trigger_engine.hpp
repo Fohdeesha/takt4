@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -47,7 +48,19 @@ public:
     /// implementation must be short and must not block. `output::OutputRunner` is the one
     /// that sets it, and copies into a ring a UI can drain from its own thread — this class
     /// stays single-threaded, which is what its class note promises.
-    using FireObserver = std::function<void(std::string_view ruleId, const Message&)>;
+    ///
+    /// `followUp` marks §5.6's release half — the second half of a press-and-release, sent
+    /// on a timer after the message it follows. It goes to the observer because the event
+    /// log should show it (a release that never left is a clip left held, and invisible
+    /// otherwise) and because **a rule that fires once must count once**: a Resolume connect
+    /// sends a 1 and then a 0, and a counter that could not tell them apart would say every
+    /// such rule had fired twice as often as it had.
+    ///
+    /// `slots` is what each generator produced, in the order §5.9's editor draws the chips
+    /// — `Rule::lastSlots`. Empty for a follow-up, which produces no new values: it is the
+    /// message just sent with one number changed.
+    using FireObserver = std::function<void(std::string_view ruleId, const Message&, bool followUp,
+                                            std::span<const Value> slots)>;
 
     /// The sink must outlive this. Nothing is sent until there are rules.
     explicit TriggerEngine(Sink& sink) noexcept;
@@ -134,7 +147,8 @@ private:
     /// Everything whose delay has passed, in the order it was queued.
     void drainDue(double now);
     void flushPending();
-    void deliver(const Message& message, std::string_view ruleId);
+    void deliver(const Message& message, std::string_view ruleId, bool followUp,
+                 std::span<const Value> slots);
     /// Whether a beat satisfies `rule`'s trigger — §5.8's WHEN stage, for the four that
     /// count beats and bars.
     static bool beatSatisfies(const Rule& rule, const Context& context) noexcept;

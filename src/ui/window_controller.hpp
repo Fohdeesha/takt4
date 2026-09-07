@@ -128,9 +128,30 @@ public:
     /// §5.9's outputs row. Each posts on the output thread's queue and returns; the change
     /// is applied before its next round, or immediately while it is stopped.
     void setLinkEnabled(bool on);
-    /// One `host:port` per line, blank lines ignored. A line that is not `host:port` is
-    /// reported on the status line and the rest are still applied — an operator halfway
-    /// through typing an address must not lose the ones that already worked.
+
+    /// §5.6's targets, one row each — see `OutputRow`.
+    ///
+    /// A row is two boxes and a switch, and the two boxes are edited a character at a time,
+    /// so the two halves are separate: `editTarget` remembers what has been typed and
+    /// `acceptTarget` applies it. Applying rebuilds the sockets behind the list, which is
+    /// not something to do once per keystroke — but neither is losing a half-typed address
+    /// the moment [+] republishes the list, which is what remembering it prevents.
+    void editTarget(int index, const std::string& name, const std::string& address);
+    void acceptTarget(int index, const std::string& name, const std::string& address);
+    /// A blank row to type into. Applies nothing: an empty row sends nowhere.
+    void addTarget();
+    void removeTarget(int index);
+    void setTargetEnabled(int index, bool on);
+    /// Row `index`'s per-output delay, in milliseconds — §5.6's answer to a rig whose
+    /// destinations do not all have the same lag. See `output::OutputTarget::delaySeconds`.
+    void setTargetDelay(int index, float ms);
+
+    /// Every target from one piece of text — `name = host:port` or `name = midi Device`,
+    /// separated by commas or newlines — replacing the whole list.
+    ///
+    /// What the outputs row was before it was a list, kept because it is still the shape a
+    /// settings file's line has and the shape a rig gets pasted in. A part that will not
+    /// parse is reported on the status line and the rest are still applied.
     void setOscTargets(const std::string& text);
     /// The MIDI output port to send 24 PPQN to, or empty for none.
     void setMidiPort(const std::string& name);
@@ -231,13 +252,24 @@ private:
     void publishLevels();
     void publishTaps();
     void publishOutputs();
+    /// The drafts, parsed into targets and handed to the output thread. Rows that will not
+    /// parse are kept as they were typed and named on the status line; a row whose address
+    /// holds several targets — a pasted line — becomes several rows.
+    void applyTargets();
+    /// The drafts into the window's model. Never called from `editTarget`: replacing a row
+    /// re-evaluates the `text:` binding of the box being typed into.
+    void publishTargetRows();
     /// Both of §5.7's surfaces. Each half publishes independently, because the MIDI half
     /// returns early when no port is open and anything written after that return would
     /// never run on a window that has only the OSC socket.
     void publishTriggers();
-    void publishControl();
+    /// `force` writes the OSC control port back into its field whatever it currently holds.
+    /// True for every caller that is an operator doing something, and **false from the
+    /// redraw timer**, whose job is to show what changed rather than to overwrite the box
+    /// somebody is typing a port into. See `publishOscControl`.
+    void publishControl(bool force = true);
     void publishMidiControl();
-    void publishOscControl();
+    void publishOscControl(bool force);
     void publishSnap();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
@@ -279,9 +311,23 @@ private:
     /// The trace as a plain buffer, oldest first, mirrored into the model each tick.
     std::vector<TracePoint> trace_;
     std::shared_ptr<slint::VectorModel<TracePoint>> traceModel_;
+
+    /// §5.6's targets **as they are being typed**, which is not the same list as the one
+    /// behind `Transports`: a row half-way through an address is not a target yet, and an
+    /// empty row is a place to type rather than an output that sends nowhere. This is the
+    /// window's copy and the one the rows are drawn from; `applyTargets` is what turns it
+    /// into the transports' list.
+    std::vector<OutputRow> targetDrafts_;
+    std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
+
+    /// The OSC control port as this controller last wrote it into the field. The field is
+    /// bound two-way, so it is also whatever an operator has typed since — which is why the
+    /// redraw compares against *this* and not against the widget: the two differing is what
+    /// being typed into looks like. See `publishOscControl`.
+    std::string oscControlPortShown_;
 
     /// The tracker's beat count when a downbeat snap was posted, while one is still in
     /// flight. §5.5's snap lands on the *next* beat called, so the count moving is what

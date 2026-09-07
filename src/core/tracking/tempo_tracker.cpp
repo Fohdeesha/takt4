@@ -75,6 +75,20 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
             "TempoTracker: two tempi have to differ by some fraction, and by less than all "
             "of one, to be different tempi");
     }
+    if (!(options.foldPhaseMemory > 0.0) || !(options.foldPhaseMemory < 1.0)) {
+        throw std::invalid_argument(
+            "TempoTracker: the fold's sub-grid evidence must decay by some fraction, and "
+            "keep some of what it had, from one beat to the next");
+    }
+    if (!(options.foldPhaseMargin >= 1.0)) {
+        throw std::invalid_argument(
+            "TempoTracker: a sub-grid may not take the beat from the one in force by "
+            "scoring less than it does");
+    }
+    if (options.foldSupportFrames == 0) {
+        throw std::invalid_argument(
+            "TempoTracker: believing an octave takes at least one frame of evidence");
+    }
     if (!(options.refineSmoothing > 0.0) || !(options.refineSmoothing <= 1.0)) {
         throw std::invalid_argument(
             "TempoTracker: the refinement smoother must move some of the way to a new "
@@ -109,7 +123,94 @@ void TempoTracker::reset() noexcept {
     framesSinceBeat_ = 0;
     beatsSeen_ = 0;
     filterIntervalFrames_ = 0;
+    resetFoldPhase(1);
+    framesSinceCalled_ = 0;
+    beatsCalled_ = 0;
+    foldRun_ = 0;
+    foldSupported_ = false;
+    sinceDownbeat_ = 0;
+    anyDownbeat_ = false;
     beatFrames_.clear();
+}
+
+std::uint32_t TempoTracker::foldDivisor() const noexcept {
+    if (!options_.foldBeats) {
+        return 1;
+    }
+    // How far the published tempo sits below the filter's own grid, as a power of two. The
+    // fold's octave and the operator's shift both count: they are the two things that move
+    // the published tempo off the cloud's, and `inChosenOctave` applies exactly this sum.
+    const std::int64_t shift = foldOctave_ + octaveShift_;
+    if (shift >= 0) {
+        return 1; // publishing at or above the filter's rate; nothing to divide out
+    }
+    // The window is a promise about the material and can be wrong for the record playing.
+    // Dividing the grid on the automatic fold alone would halve a genuinely fast track, so
+    // the cloud has to have shown that the slower octave is a reading of the music. A manual
+    // ÷2 is an instruction and needs no evidence. See Options::foldSupportFrames.
+    if (octaveShift_ == 0 && !foldSupported_) {
+        return 1;
+    }
+    const std::int64_t steps = std::min<std::int64_t>(-shift, 2);
+    return static_cast<std::uint32_t>(1) << steps;
+}
+
+void TempoTracker::resetFoldPhase(std::uint32_t divisor) noexcept {
+    foldDivisor_ = divisor;
+    foldSlot_ = 0;
+    foldPhase_ = 0;
+    foldAnchored_ = false;
+    for (double& score : foldScore_) {
+        score = 0.0;
+    }
+}
+
+bool TempoTracker::onPublishedGrid(const TrackedFrame& frame) noexcept {
+    // How many of the filter's beats have gone by since the last one it called — normally
+    // one, but the filter drops beats through a quiet passage and a slot counted in *calls*
+    // would take the published grid with it every time it did. Counted in periods instead,
+    // the grid is anchored to the music's own time and a missed beat costs nothing.
+    std::uint32_t slot = foldPhase_;
+    if (foldAnchored_) {
+        std::uint32_t steps = 1;
+        if (filterIntervalFrames_ != 0) {
+            const double periods = static_cast<double>(framesSinceCalled_) /
+                                   static_cast<double>(filterIntervalFrames_);
+            // Bounded by the divisor: past that a published beat is due whatever the phase
+            // says, and an unbounded step would let one long gap rotate it anywhere.
+            steps = static_cast<std::uint32_t>(
+                std::clamp(std::llround(periods), 1LL, static_cast<long long>(foldDivisor_)));
+        }
+        slot = (foldSlot_ + steps) % foldDivisor_;
+    }
+    foldSlot_ = slot;
+    foldAnchored_ = true;
+
+    // P(this frame is a beat of any kind). The classes are a softmax over beat / downbeat /
+    // non-beat, so a bar start reads high on the second and low on the first; either alone
+    // would score the downbeat sub-grid as the weak one. See TrackedFrame.
+    const double evidence =
+        static_cast<double>(frame.beatActivation) + static_cast<double>(frame.downbeatActivation);
+    // One average per sub-grid, each stepped only on its own beats, so that two of them are
+    // compared at the same point in their cycle. See Options::foldPhaseMemory for what
+    // decaying all of them on every beat does instead.
+    foldScore_[slot] =
+        options_.foldPhaseMemory * foldScore_[slot] + (1.0 - options_.foldPhaseMemory) * evidence;
+
+    // The leader takes the grid only by a margin, as the meter is taken in
+    // `ParticleFilter::meterOf` and for the same reason: two sub-grids trading places is two
+    // beats in the wrong place every time they do it.
+    std::uint32_t leader = foldPhase_;
+    for (std::uint32_t candidate = 0; candidate < foldDivisor_; ++candidate) {
+        if (foldScore_[candidate] > foldScore_[leader]) {
+            leader = candidate;
+        }
+    }
+    if (leader != foldPhase_ &&
+        foldScore_[leader] > foldScore_[foldPhase_] * options_.foldPhaseMargin) {
+        foldPhase_ = leader;
+    }
+    return slot == foldPhase_;
 }
 
 void TempoTracker::rememberBeat(std::uint64_t frameIndex) noexcept {
@@ -305,7 +406,12 @@ bool TempoTracker::lastBeatIsNearer() const noexcept {
     }
     // Nearer than the next beat, whose best estimate is one period after the last one. The
     // comparison is doubled rather than halved so it stays in whole frames.
-    return 2 * framesSinceBeat_ < filterIntervalFrames_;
+    //
+    // The period is the published one — the filter's, times whatever the fold divides the
+    // grid by. The operator is pointing at a beat they can hear, and under a fold that
+    // halves the grid every second of the filter's beats is silent.
+    const std::uint64_t period = static_cast<std::uint64_t>(filterIntervalFrames_) * foldDivisor();
+    return 2 * framesSinceBeat_ < period;
 }
 
 void TempoTracker::snapDownbeat() noexcept {
@@ -502,6 +608,10 @@ void TempoTracker::updateLock(double folded) noexcept {
         if (replacing) {
             refinedBpm_ = 0.0; // the beat spacing under the old tempo says nothing about this one
             lockHeld_ = 0;     // and this tempo has earned nothing yet either
+            // Nor does the octave evidence: it was gathered about a tempo that has just been
+            // replaced. See Options::foldSupportFrames.
+            foldRun_ = 0;
+            foldSupported_ = false;
         }
         state_.locked = true;
         everLocked_ = true;
@@ -522,6 +632,7 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     // when the interval is zero, because it is the last one known that says how long a beat
     // lasts, not this frame's absence of one.
     ++framesSinceBeat_;
+    ++framesSinceCalled_;
     if (frame.intervalFrames > 0) {
         filterIntervalFrames_ = frame.intervalFrames;
     }
@@ -556,11 +667,59 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     // tempo, stop emitting new values, and say so").
     state_.holding = !confident && everConfident_;
 
-    const bool emitted = frame.emitted != TrackedFrame::Emitted::None;
-    if (emitted) {
+    // Whether the music supports the octave the window asked for: how much of the recent past
+    // the cloud's own continuous tempo has spent *at* the published tempo rather than at a
+    // multiple of it. See Options::foldSupportFrames — this is the whole of what tells a
+    // double-timed 92 BPM track from a 204 BPM one, and the activations cannot.
+    const bool atPublished =
+        lockedBpm_ > 0.0 && frame.bpm > 0.0 &&
+        std::abs(frame.bpm - lockedBpm_) <= options_.sameTempoTolerance * lockedBpm_;
+    foldRun_ = atPublished ? foldRun_ + 1 : 0;
+    if (foldRun_ >= options_.foldSupportFrames) {
+        foldSupported_ = true;
+    }
+
+    // Two different questions from here on: whether the *filter* called a beat, and whether
+    // one is *published*. They are the same until the fold divides the grid.
+    const bool called = frame.emitted != TrackedFrame::Emitted::None;
+    // The refinement measures the filter's own spacing against the cloud's own period and
+    // folds the answer afterwards, so it goes on seeing every beat the filter calls. Taking
+    // only the published ones would leave it averaging gaps twice the length of the band it
+    // accepts them in, and it would reject all of them.
+    if (called) {
         rememberBeat(frame.frameIndex);
+    }
+
+    const std::uint32_t divisor = foldDivisor();
+    if (divisor != foldDivisor_) {
+        // Evidence gathered over two sub-grids says nothing about four, and the fold moving
+        // octave means the beats being weighed against each other are different beats.
+        resetFoldPhase(divisor);
+    }
+    bool emitted = called;
+    bool downbeat = frame.emitted == TrackedFrame::Emitted::Downbeat;
+    if (called && divisor > 1) {
+        emitted = onPublishedGrid(frame);
+        // A filter bar is `beatsPerBar` of the filter's beats, so under a divisor the filter
+        // calls a downbeat oftener than one is due. A bar may not be shorter than the meter
+        // counted in published beats — which is inert at a divisor of one, and closes for
+        // any meter: `divisor` filter bars are `beatsPerBar` published beats. See
+        // `sinceDownbeat_`.
+        downbeat = emitted && downbeat && anyDownbeat_ &&
+                   sinceDownbeat_ + 1 >= std::max<std::uint32_t>(state_.beatsPerBar, 1);
+        if (emitted && frame.emitted == TrackedFrame::Emitted::Downbeat && !anyDownbeat_) {
+            downbeat = true; // the first bar has nothing to be too short against
+        }
+    }
+    if (called) {
+        framesSinceCalled_ = 0;
+        ++beatsCalled_;
+    }
+    if (emitted) {
         framesSinceBeat_ = 0;
         ++beatsSeen_;
+        sinceDownbeat_ = downbeat ? 0 : sinceDownbeat_ + 1;
+        anyDownbeat_ = anyDownbeat_ || downbeat;
     }
 
     // Holding below the confidence gate keeps whatever was last published (§5.5: "hold the
@@ -586,7 +745,10 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
             // would step by a per cent or two for no reason an operator could name. That
             // accounted for 801 of the 1302 jumps left over `references/audio` once the fold
             // was fixed, all of them while locked.
-            if (emitted) {
+            //
+            // Every beat the *filter* called, not every one published: those are the gaps
+            // `beatFrames_` holds, and a beat the fold left out still moved it.
+            if (called) {
                 const double gaps = refinedIntervalFrames(
                     frame.refinedIntervalFrames > 0.0 ? frame.refinedIntervalFrames
                                                       : static_cast<double>(frame.intervalFrames));
@@ -617,7 +779,7 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
 
     const bool snapped = snapUnsent_;
     snapUnsent_ = false;
-    advanceBar(frame.emitted == TrackedFrame::Emitted::Downbeat);
+    advanceBar(downbeat);
     ++state_.beats;
 
     BeatEvent event;

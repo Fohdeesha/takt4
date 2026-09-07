@@ -149,6 +149,49 @@ if(WIN32)
   )
 endif()
 
+# takt4_assets — the weights and the state space, compiled into the program.
+#
+# What makes takt4.exe one file somebody can copy to a stick and run. HANDOFF §8 Phase 7
+# had an installer put these beside the executable; inside it is the same intent taken one
+# step further, and it removes the failure the copy on D:\ actually hit — an exe that went
+# on reading its weights out of the source tree it happened to be built in.
+#
+# Kept out of takt4_core deliberately. The console and the test binary link core, want to be
+# pointed at *any* weight set rather than the one that is built in, and have no reason to
+# carry three megabytes of literal in every link. Only the application links this.
+#
+# Python is required only when the UI is built; a core-only configuration never runs it.
+if(TAKT4_BUILD_UI)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+  set(takt4_embed_script "${PROJECT_SOURCE_DIR}/tools/embed_asset.py")
+  set(takt4_assets_dir "${PROJECT_BINARY_DIR}/generated/assets")
+
+  # (function name, asset file) pairs. The script rewrites its output only when the bytes
+  # change, so an incremental build does not recompile a multi-megabyte translation unit
+  # every time something else moves.
+  foreach(entry "weights|${PROJECT_SOURCE_DIR}/assets/weights/generic.bin"
+                "stateSpace|${PROJECT_SOURCE_DIR}/assets/statespace/default.bin")
+    string(REPLACE "|" ";" parts "${entry}")
+    list(GET parts 0 fn)
+    list(GET parts 1 blob)
+    set(generated "${takt4_assets_dir}/${fn}_blob.cpp")
+    add_custom_command(
+      OUTPUT "${generated}"
+      COMMAND "${Python3_EXECUTABLE}" "${takt4_embed_script}" "${blob}" "${generated}"
+              --name "${fn}"
+      DEPENDS "${blob}" "${takt4_embed_script}"
+      COMMENT "Embedding ${blob}"
+      VERBATIM
+    )
+    list(APPEND takt4_asset_sources "${generated}")
+  endforeach()
+
+  add_library(takt4_assets STATIC ${takt4_asset_sources} assets/embedded.hpp)
+  add_library(takt4::assets ALIAS takt4_assets)
+  target_link_libraries(takt4_assets PRIVATE takt4::core takt4::warnings)
+endif()
+
 # The real-time allocation guard (HANDOFF §7.6): rt/alloc_guard_new.cpp replaces the
 # global operator new/delete. A replacement has to be compiled into the executable
 # itself — one sitting in a static library is not guaranteed to be pulled in — so it

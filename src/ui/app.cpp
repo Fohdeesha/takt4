@@ -1,7 +1,10 @@
 #include "ui/app.hpp"
 
+#include "core/assets/embedded.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/model/weights.hpp"
 #include "core/settings/settings.hpp"
+#include "core/tracking/state_space.hpp"
 #include "ui/window_controller.hpp"
 
 #include <exception>
@@ -10,17 +13,6 @@
 #include <memory>
 
 namespace takt4::ui {
-namespace {
-
-std::filesystem::path weightsPath() {
-    return std::filesystem::path(TAKT4_WEIGHTS_DIR) / "generic.bin";
-}
-
-std::filesystem::path stateSpacePath() {
-    return std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin";
-}
-
-} // namespace
 
 int run() {
     // Whatever the last run left (Q7). Never fails: a settings file that is missing or
@@ -28,17 +20,27 @@ int run() {
     // open. The tracker's own tuning goes in here rather than being applied afterwards,
     // so the engine is built with it and the window's sliders show it from the first
     // frame instead of jumping a moment later.
+    //
+    // Read from wherever the settings currently are and written back beside the executable,
+    // which are the same place on every run but the first one after the move — that run
+    // reads the old per-user file and, on the way out, leaves a settings.json next to
+    // takt4.exe. See `settings::existingSettingsFile`.
     const std::filesystem::path settingsPath = settings::settingsFile();
-    const settings::Settings saved = settings::load(settingsPath);
+    const settings::Settings saved = settings::load(settings::existingSettingsFile());
     engine::LiveTracker::Options options;
     options.engine.tempo = saved.preset.tempo;
 
-    // The assets are read before the window opens, so a broken install says which file is
-    // missing rather than showing an empty window that will not start. Phase 7's
-    // first-run flow is where this becomes something friendlier than a line on stderr.
+    // The assets come out of the executable itself (`core/assets/embedded.hpp`), so there is
+    // no folder to find and nothing to go missing when somebody copies takt4.exe somewhere
+    // else — which is the whole point of embedding them. They are still validated, and still
+    // before the window opens: a checksum only fails here if the binary itself is damaged,
+    // and that is worth saying plainly rather than crashing in the model a second later.
     std::unique_ptr<engine::LiveTracker> tracker;
     try {
-        tracker = std::make_unique<engine::LiveTracker>(weightsPath(), stateSpacePath(), options);
+        tracker = std::make_unique<engine::LiveTracker>(
+            model::ModelWeights::fromBytes(assets::weights(), "generic (built in)"),
+            tracking::StateSpaceModel::fromBytes(assets::stateSpace(), "default (built in)"),
+            options);
     } catch (const std::exception& e) {
         std::cerr << "takt4: " << e.what() << '\n';
         return 1;

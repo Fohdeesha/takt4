@@ -1,6 +1,7 @@
 #include "ui/window_state.hpp"
 
 #include "core/audio/hop_meter.hpp"
+#include "core/output/output_target.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -49,6 +50,9 @@ void publishControlLimits(MainWindow& window) {
     window.set_fold_limit_max(static_cast<float>(kFoldCeilingBpm));
     window.set_fold_least_span(static_cast<float>(kFoldLeastSpanBpm));
     window.set_latency_limit_ms(static_cast<float>(kLatencyLimitMs));
+    // Per-output delay, which is a different control from §5.5's latency above: that one
+    // moves the whole rig's timeline, this one is one cable's own lag.
+    window.set_output_delay_limit_ms(static_cast<float>(output::kMaxOutputDelaySeconds * 1000.0));
 }
 
 void publishIdleReadouts(MainWindow& window) {

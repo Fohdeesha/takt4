@@ -70,6 +70,61 @@ TEST_CASE("the latency offset round-trips and is what the transports fire on", "
     CHECK_THAT(transports.latencySeconds(), WithinAbs(0.012, 1e-9));
 }
 
+TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output][osc]") {
+    // The user's report of 2026-09-07: *"I was going to use it to make the resolume clip
+    // changing end up on beat but it didn't seem to work how I expected."* It did not,
+    // because it moved Link and the MIDI clock and never touched the publisher — and
+    // Resolume listens to OSC. This is the wiring that closed that.
+    Transports::Config config;
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", 7000}});
+    config.latencySeconds = -0.200;
+    Transports transports(config);
+    transports.startOutputs(0.0);
+
+    // The state the beats below are reporting, so `advance` publishes nothing of its own and
+    // every message counted here came from a beat.
+    TempoState steady;
+    steady.bpm = 120.0;
+    steady.confidence = 0.8;
+    steady.locked = true;
+    steady.beatsPerBar = 4;
+
+    // A beat at 120 BPM, where a beat is 500 ms: 200 ms early is a 300 ms hold. Nothing has
+    // left yet, which is the assertion — before this, everything went out immediately.
+    transports.publish(beatAt(1.0, 1, 120.0), 0, 1.0);
+    const std::size_t held = transports.osc().pending();
+    CHECK(held > 0);
+    CHECK(transports.osc().messagesSent() == 0);
+
+    transports.advance(1.2999, steady);
+    CHECK(transports.osc().messagesSent() == 0);
+    CHECK(transports.osc().pending() == held);
+
+    transports.advance(1.3001, steady);
+    CHECK(transports.osc().messagesSent() == held);
+    CHECK(transports.osc().pending() == 0);
+
+    SECTION("and moving it mid-set leaves what is already queued where it was") {
+        // A held message keeps the deadline it was given: a target's queue is FIFO, and
+        // rewriting deadlines under it would reorder a rig in the middle of a bar.
+        transports.publish(beatAt(2.0, 2, 120.0), 0, 2.0);
+        const std::size_t queued = transports.osc().pending();
+        REQUIRE(queued > 0);
+
+        transports.setLatencySeconds(0.0);
+        transports.advance(2.1, steady); // before the 2.3 those are due at
+        CHECK(transports.osc().pending() == queued);
+
+        // The next beat feels the new offset and goes out at once.
+        const std::uint64_t before = transports.osc().messagesSent();
+        transports.publish(beatAt(2.5, 3, 120.0), 0, 2.5);
+        CHECK(transports.osc().messagesSent() > before);
+        CHECK(transports.osc().pending() == queued);
+    }
+
+    transports.stopOutputs();
+}
+
 TEST_CASE("Link is built whether or not it is switched on", "[output][link]") {
     // The invariant the audio thread depends on. `BeatEngine::setHostTimeSource` is handed
     // this session and reads it every hop (§4.3), so building it on demand would mean

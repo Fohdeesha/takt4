@@ -61,7 +61,10 @@ struct BeatEvent {
 ///   * **Octave fold.** The filter tracks 55-215 BPM; an operator knows their material
 ///     sits in, say, 70-140. An estimate outside that is halved or doubled into it
 ///     before anything else looks at it, which is what stops a house set reading 170.
-///     The window is a *preference*, not a fence: see `Options::foldHysteresis`.
+///     The window is a *preference*, not a fence: see `Options::foldHysteresis`. Folding
+///     down takes the **beats** with it and not just the number — a filter calling 186
+///     beats a minute under a tempo published as 93 would otherwise fire every output at
+///     twice the rate on screen; see `Options::foldBeats`.
 ///   * **Lock and hysteresis.** A tempo has to agree with itself for `lockAfter` frames
 ///     before it is called locked, and disagree for `unlockAfter` frames before that is
 ///     given up — never on one frame.
@@ -143,6 +146,122 @@ public:
         /// about 4 % at 130 BPM and 6.5 % at 214 — so a one-interval wobble can never
         /// reach an edge from inside the window.
         double foldHysteresis = 0.10;
+
+        /// Whether the fold reaches the **beats**, or only the number on the screen.
+        ///
+        /// This is the half of the octave fold that was missing, and it is the whole of the
+        /// user's report of 2026-09-06: *"the tool kept detecting the bpm as double, when it
+        /// has a very obvious kick drum at 93ish bpm ... it kept trying to fold from 186."*
+        ///
+        /// Measured on `references/audio`'s "03 - Fake Sweat", whose kick is at 92.0 BPM
+        /// (independently: the peak of the 30-110 Hz onset envelope's autocorrelation, where
+        /// the on-beat energy is **15.7 times** the energy halfway between): the particle
+        /// filter tracks the *double-time* grid for 56 % of the track — a beat period of 16
+        /// frames, 187.5 BPM, is its single commonest reading, on 5626 of 11987 frames. The
+        /// fold then did its job on the number and published 92.0, correctly. But
+        /// `TrackedFrame::emitted` went past untouched, so **the beats, the downbeats, and
+        /// with them OSC, MIDI clock, Link's phase and every trigger rule ran at 186 while
+        /// the readout said 92**: 501 beats in 239.7 s, a mean of 125 BPM, swinging between
+        /// 90 and 165 from one twenty-second window to the next as the cloud changed octave.
+        ///
+        /// A fold is a statement about *which grid the music is on*, not about how a number
+        /// is printed. So when it puts the published tempo an octave or two below the
+        /// filter's, only every second (or fourth) of the filter's beats is published, and
+        /// the bar is divided with them — see `foldPhaseMemory` for which of them.
+        ///
+        /// This only ever divides. A fold that puts the published tempo *above* the filter's
+        /// grid — a ×2, or a window that folds a half-time estimate up — would have to
+        /// invent beats between the filter's, which is a different thing needing its own
+        /// answer for where they fall and what confidence they carry; §5.5's ×2 still moves
+        /// the number alone, as it always has. Set this false to have every fold do that.
+        bool foldBeats = true;
+        /// How the fold decides *which* of the filter's beats are the music's, and how hard
+        /// it is to talk it out of that once decided.
+        ///
+        /// Each of the candidate sub-grids carries an average of the network's P(beat of any
+        /// kind) over the filter beats falling on it — one exponential average per sub-grid,
+        /// each stepped only on its own beats, so that two grids are compared at the same
+        /// point in their cycle. (Decaying every grid on every beat and adding to one is the
+        /// obvious way to write it and is wrong: the grid updated last then leads by 1 /
+        /// memory — 1.176 at 0.85 — whatever the music is doing, which is a reading of the
+        /// smoother rather than of the audio.) 0.85 averages over about seven beats.
+        ///
+        /// The leader has to beat the incumbent by `foldPhaseMargin` before the grid moves,
+        /// the same incumbent advantage `ParticleFilter::meterOf` gives the meter and for the
+        /// same reason: two sub-grids trading places is two beats in the wrong place every
+        /// time they do it.
+        double foldPhaseMemory = 0.85;
+        double foldPhaseMargin = 1.25;
+
+        /// **Whether the music supports the octave the window asks for**, and the gate that
+        /// decides it. This is what keeps the fold from halving a track that really is fast.
+        ///
+        /// A window is a promise about the material, and an operator's promise can simply be
+        /// wrong for the record that is playing. Both of these reach the fold as "the filter
+        /// is calling twice as many beats as the published tempo", and they are opposite:
+        ///
+        ///   * "03 - Fake Sweat" — a 92 BPM track whose filter grid is 186. Halving is right.
+        ///   * A 204 BPM Quickstep under a 70-140 window. The filter is right, the window
+        ///     does not fit the record, and halving throws away every second real beat.
+        ///
+        /// **Nothing in the activations tells them apart**, and it is worth saying why so it
+        /// is not tried again: measured over both, the two sub-grids differ by a factor of
+        /// 1.7 to 2.3 in `beatActivation` *in both cases*, because a 4/4 bar puts its
+        /// probability alternately on the beat and downbeat classes; the sum of the two —
+        /// which is P(beat of any kind), and the only form of the question worth asking — is
+        /// 1.02 to 1.13 for every genre and for Fake Sweat alike. The network believes all
+        /// 186 of those beats. It is not wrong: there are eighth notes there.
+        ///
+        /// What does tell them apart is **the filter's own cloud**. If the slower octave is a
+        /// real reading of the music, the cloud keeps returning to it; if the record is
+        /// simply fast, it never goes there at all. Measured as the fraction of frames whose
+        /// continuous tempo is already at the published tempo rather than a multiple of it:
+        ///
+        /// | | frames at the folded tempo |
+        /// |---|---|
+        /// | "03 - Fake Sweat" (92, filter at 186) | **30.9 %** |
+        /// | Jive (171) | 1.5 % (0.8-3.9) |
+        /// | Viennese Waltz (178) | 1.2 % (0.1-1.4) |
+        /// | Quickstep (204) | 0.9 % (0.0-2.6) |
+        ///
+        /// Twenty times over — but **an average of that will not do**, and the reason is the
+        /// whole shape of this setting. A cloud visits an octave in runs, not in independent
+        /// frames, so a smoothed fraction is a reading of which run it happens to be in: over
+        /// ten seconds it reached 0.26 on a Jive and 0.34 on a Viennese Waltz while falling
+        /// to 0.002 on Fake Sweat's densest passage. The populations overlap completely and a
+        /// gate on the average flickers on both.
+        ///
+        /// The *longest sustained* run does separate them, because what is being asked is
+        /// whether the slower octave is a place the cloud can settle rather than somewhere it
+        /// passes through:
+        ///
+        /// | | longest run at the folded tempo |
+        /// |---|---|
+        /// | "03 - Fake Sweat" | **748 frames, 15.0 s** |
+        /// | Quickstep | 104 frames, 2.1 s (median 32) |
+        /// | Jive | 96 frames, 1.9 s (median 58) |
+        /// | Viennese Waltz | 72 frames, 1.4 s (median 38) |
+        ///
+        /// So it is a **latch on a sustained run**, not a proportion: `foldSupportFrames` of
+        /// unbroken agreement and the octave is believed thereafter. 250 frames is five
+        /// seconds — two and a half times the longest run any genuinely fast record managed,
+        /// and a third of what the double-timed one sustained, which is as close to the
+        /// middle of a gap that wide as makes no difference.
+        ///
+        /// Latched rather than continuous because the question is about the record, not the
+        /// moment: once the music has shown that the operator's octave is one it lives in,
+        /// a passage where the filter runs double is exactly when the fold is wanted most.
+        /// The latch is dropped when the lock moves to a *different tempo*, alongside
+        /// `refinedBpm_` and for the same reason — the evidence was about the tempo that has
+        /// just been replaced.
+        ///
+        /// Until it latches the fold moves the number alone, as it always did. That costs the
+        /// first few seconds of a track, which is the acquisition the tracker is already
+        /// openly hunting through.
+        ///
+        /// A manual ÷2 is not gated. The operator pressing it has said which grid they want,
+        /// and evidence is wanted in place of an instruction, not in spite of one.
+        std::size_t foldSupportFrames = 250;
 
         /// Frames of agreement before the tempo is called locked, and of disagreement
         /// before that is given up. At 50 Hz these are 0.5 s and 1.5 s.
@@ -392,6 +511,18 @@ private:
     /// that moves the window or the operator's octave has to call this.
     void forgetFold() noexcept;
 
+    /// How many of the filter's beats go to one published beat: 1 unless the fold has put
+    /// the published tempo below the filter's grid, then 2 or 4. See `Options::foldBeats`.
+    std::uint32_t foldDivisor() const noexcept;
+    /// Starts the sub-grid choice again, with nothing believed about which of the filter's
+    /// beats are the music's. Called whenever the divisor changes under it, because a score
+    /// collected over two sub-grids says nothing about four.
+    void resetFoldPhase(std::uint32_t divisor) noexcept;
+    /// Whether this filter beat falls on the sub-grid being published, having first counted
+    /// the network's opinion of it towards that sub-grid's score. Advances the slot, so it
+    /// is called exactly once per filter beat and only when the divisor is above one.
+    bool onPublishedGrid(const TrackedFrame& frame) noexcept;
+
     void updateLock(double folded) noexcept;
     void rememberBeat(std::uint64_t frameIndex) noexcept;
     /// Advances the filter's own bar position and turns it into the published one,
@@ -437,6 +568,45 @@ private:
     bool lockPinned_ = false;      ///< the operator is holding the lock up; see setLockPinned
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
 
+    /// The most the fold will divide the beat grid by. Two octaves: a filter reading four
+    /// times the published tempo is already a tracking failure rather than an octave
+    /// preference, and bounding it keeps the scores below a fixed-size array.
+    static constexpr std::size_t kMaxFoldDivisor = 4;
+    /// Which of the filter's beats are published, when the fold divides the grid. See
+    /// `Options::foldBeats` for the whole of it: `foldSlot_` counts filter beats within one
+    /// published beat, `foldPhase_` is the slot being published, and `foldScore_` is the
+    /// decayed evidence for each.
+    std::uint32_t foldDivisor_ = 1;
+    std::uint32_t foldSlot_ = 0;
+    std::uint32_t foldPhase_ = 0;
+    double foldScore_[kMaxFoldDivisor] = {};
+    /// The filter's own beats — how long since the last one and how many there have been.
+    /// The slot above is advanced by how many beat *periods* have gone by rather than by
+    /// one per call, so that a beat the filter drops through a quiet bar does not rotate the
+    /// published grid onto the off-beat and leave it there.
+    std::uint64_t framesSinceCalled_ = 0;
+    std::uint64_t beatsCalled_ = 0;
+    /// The evidence `Options::foldSupportFrames` gates the fold's division of the beat grid
+    /// on: how many frames in a row the cloud's own tempo has been the published one rather
+    /// than a multiple of it, and whether that has ever run long enough to believe. Starts at
+    /// nothing, so a fold divides only once the music has argued for it.
+    std::size_t foldRun_ = 0;
+    bool foldSupported_ = false;
+    /// Whether the published grid has a beat to be a phase *of*. The first beat after the
+    /// divisor changes is published whatever the scores say, because until one has been
+    /// there is no grid — only a slot number nothing has voted on.
+    bool foldAnchored_ = false;
+    /// Published beats since the last published downbeat, which is what divides the **bar**
+    /// along with the beats. A filter bar is as many of its own beats as the meter says, so
+    /// under a divisor of two the filter calls a downbeat twice as often as one is due; the
+    /// rule is simply that a bar cannot be shorter than the meter, counted in the beats
+    /// actually being published. That is inert at a divisor of one — the filter's downbeats
+    /// already arrive exactly `beatsPerBar` published beats apart — so it changes nothing
+    /// about an unfolded track, and it closes the arithmetic for any meter: `divisor` filter
+    /// bars are `beatsPerBar` published beats, whether the meter is odd or even.
+    std::uint32_t sinceDownbeat_ = 0;
+    bool anyDownbeat_ = false; ///< a bar has been started, so the rule above has a floor
+
     /// The bar, in two parts: where the filter thinks we are, and how far the operator
     /// has rotated that. `state_.beatInBar` is the second applied to the first, so with
     /// no snap the published bar is the filter's, beat for beat.
@@ -453,10 +623,16 @@ private:
     /// `sinceSnap_` is what turns that into an offset when it finally happens.
     bool snapAwaitingFilter_ = false;
     std::uint32_t sinceSnap_ = 0;
-    /// How long ago the last beat was and how far apart the beats are, both in frames, so
-    /// that a snap arriving between two frames can tell which beat it means. The period is
-    /// the filter's own, untouched by the fold or by ÷2 and ×2. Zero beats seen means the
-    /// first is still to come.
+    /// How long ago the last **published** beat was and how far apart they are, both in
+    /// frames, so that a snap arriving between two frames can tell which beat it means.
+    /// Zero beats seen means the first is still to come.
+    ///
+    /// `filterIntervalFrames_` is the filter's own period, and the one a snap is judged
+    /// against is that times `foldDivisor()` — because the operator is pointing at a beat
+    /// they can hear, and under a fold that divides the grid the beats they can hear are
+    /// the published ones. A ÷2 or ×2 that only moved the number left the filter's beats
+    /// arriving at the rate they always did, and this used to say so; that is still true of
+    /// ×2, which does not divide anything.
     std::uint64_t framesSinceBeat_ = 0;
     std::uint64_t beatsSeen_ = 0;
     std::uint32_t filterIntervalFrames_ = 0;

@@ -1,22 +1,28 @@
+#include "core/assets/embedded.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/rates.hpp"
+#include "core/build_info.hpp"
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/output/output_target.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
+#include "ui/model_watch.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <slint-platform.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +39,7 @@ using takt4::engine::LiveTracker;
 using takt4::tracking::TempoState;
 using Options = takt4::tracking::TempoTracker::Options;
 using takt4::ui::WindowController;
+using takt4::tests::ModelWatch;
 
 namespace {
 
@@ -156,6 +163,27 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     CHECK(window->get_beats_per_bar() == 0);
     CHECK(window->get_input_level() == 0.0f);
     CHECK(std::string(window->get_input_reading()).empty());
+}
+
+TEST_CASE("the build's version is on screen and stays there", "[ui]") {
+    // It used to be said once, in the opening status line, and the first status after it
+    // took it away — so "which build am I looking at?" was unanswerable from the window
+    // exactly when somebody had reason to ask, which is while it is running.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    const std::string version(controller.window().get_version());
+    CHECK(version == takt4::buildInfo().version);
+    CHECK_FALSE(version.empty());
+    // A version, not a name: the title composes the two and the status bar shows this on
+    // its own, so anything else here would read as "takt4 takt4" in the title bar.
+    CHECK(version.find("takt4") == std::string::npos);
+
+    // Whatever the status becomes, the version is not what is spent to say it — they are
+    // two properties now, and that is the whole of the fix.
+    controller.window().set_status(slint::SharedString("outputs: OSC 127.0.0.1:7000"));
+    CHECK(std::string(controller.window().get_version()) == version);
+    CHECK(std::string(controller.window().get_status()).find(version) == std::string::npos);
 }
 
 TEST_CASE("the fold window reaches the window unchanged", "[ui]") {
@@ -654,6 +682,33 @@ TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[u
     CHECK_FALSE(controller.window().get_osc_control_on());
     CHECK(controller.oscControlPort() == 0); // nothing bound, so no port to report
 
+    SECTION("a port being typed is not overwritten by the redraw timer") {
+        // The same fault as the trigger editor's boxes, in the one text field on the main
+        // window: `text <=> root.osc-control-port` makes the property *be* the box, and
+        // `publishControl` runs on the redraw timer. Writing the current port back
+        // unconditionally erased every digit before the next could be typed, and the field
+        // commits on Enter — so a different port could not be reached at all.
+        //
+        // Typing is simulated by writing the property, which is exactly what the widget
+        // does: a two-way binding is one property with two writers.
+        const std::string before(controller.window().get_osc_control_port());
+        controller.window().set_osc_control_port(slint::SharedString("76"));
+        pumpTimers(std::chrono::milliseconds(250)); // several ticks
+        CHECK(std::string(controller.window().get_osc_control_port()) == "76");
+
+        // ...and pressing Enter still commits it, error path included: a port that will not
+        // do is put back rather than left sitting there looking accepted.
+        controller.window().invoke_osc_control_port_edited(slint::SharedString("99999"));
+        CHECK(controller.statusIsError());
+        CHECK(std::string(controller.window().get_osc_control_port()) == before);
+
+        // And one that will do is taken, which is the whole point of being able to type it.
+        controller.window().invoke_osc_control_port_edited(slint::SharedString("7005"));
+        CHECK(std::string(controller.window().get_osc_control_port()) == "7005");
+        pumpTimers(std::chrono::milliseconds(120));
+        CHECK(std::string(controller.window().get_osc_control_port()) == "7005");
+    }
+
     SECTION("switching it on binds a socket and says which port") {
         // Port 0 asks the platform for a free one, which is the only way a test on a shared
         // runner cannot lose a race with whatever else is listening.
@@ -983,63 +1038,179 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         return controller.outputs().transports();
     };
 
-    // The format this field always took, before targets had names — still a target, named
+    // The format this row always took, before targets had names — still a target, named
     // after its own address.
-    controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:7000"));
+    controller.setOscTargets("127.0.0.1:7000");
     CHECK(transports().osc().targetCount() == 1);
     REQUIRE(transports().outputs().size() == 1);
     CHECK(transports().outputs()[0].name == "127.0.0.1:7000");
     CHECK(controller.window().get_osc_on());
 
-    // A single line holds more than one, separated by commas, because the window offers
-    // one line. §5.6's "multiple simultaneous targets", each with a name a rule can use.
-    controller.window().invoke_osc_targets_edited(
-        slint::SharedString("deck = 127.0.0.1:7000, wall = 127.0.0.1:7001"));
+    // §5.6's "multiple simultaneous targets", each with a name a rule can use. One piece of
+    // text still holds several — a settings line, or a rig pasted in.
+    controller.setOscTargets("deck = 127.0.0.1:7000, wall = 127.0.0.1:7001");
     CHECK(transports().osc().targetCount() == 2);
     REQUIRE(transports().outputs().size() == 2);
     CHECK(transports().outputs()[0].name == "deck");
     CHECK(transports().outputs()[1].name == "wall");
 
-    SECTION("and the field shows them back in the form they can be typed in") {
-        const std::string shown(controller.window().get_osc_targets());
-        INFO(shown);
-        CHECK(shown.find("deck = 127.0.0.1:7000") != std::string::npos);
-        CHECK(shown.find("wall = 127.0.0.1:7001") != std::string::npos);
+    SECTION("and a line holding several becomes a row each, name and address apart") {
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 2);
+        CHECK(std::string(rows->row_data(0)->name) == "deck");
+        CHECK(std::string(rows->row_data(0)->address) == "127.0.0.1:7000");
+        CHECK(std::string(rows->row_data(1)->name) == "wall");
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
+    }
+
+    SECTION("a target named after its own address leaves the name box empty") {
+        // It is still called "127.0.0.1:7000" and a rule can still route to it by that; the
+        // box the operator types a *name* into is not where to say so.
+        controller.setOscTargets("127.0.0.1:7000");
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 1);
+        CHECK(std::string(rows->row_data(0)->name).empty());
+        CHECK(transports().outputs()[0].name == "127.0.0.1:7000");
+    }
+
+    SECTION("each target carries its own delay, and only its own") {
+        // §5.6's per-output latency: the user's ask of 2026-09-07 — *"robot has latency so I
+        // need to offset it half a beat or somethin"*. §5.5's single slider moves the whole
+        // rig's timeline together, which is the one adjustment a rig with two different lags
+        // in it cannot use.
+        controller.setTargetDelay(1, 352.0f);
+        REQUIRE(transports().outputs().size() == 2);
+        CHECK(transports().outputs()[0].delaySeconds == 0.0);
+        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(0.352));
+
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 2);
+        CHECK(rows->row_data(0)->delay_ms == Catch::Approx(0.0f));
+        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(352.0f));
+
+        // The address box never shows it — the slider is where it lives, and a delay
+        // appearing in the text an operator is typing into would be edited by accident.
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
+
+        // Past either limit is clamped rather than refused: a slider cannot get there, but
+        // §5.7's inbound OSC and a hand-edited settings file both can.
+        controller.setTargetDelay(1, 5000.0f);
+        CHECK(transports().outputs()[1].delaySeconds ==
+              Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
+        controller.setTargetDelay(1, -5000.0f);
+        CHECK(transports().outputs()[1].delaySeconds ==
+              Catch::Approx(takt4::output::kMinOutputDelaySeconds));
+
+        // Negative is a real setting now, not a clamp to zero: "this device is 300 ms slow"
+        // is the sentence an operator says, and the publisher turns it into a wait.
+        controller.setTargetDelay(1, -300.0f);
+        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(-0.300));
+        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(-300.0f));
+
+        // And it survives the rest of the row being edited, which is what would break if the
+        // delay were carried in the address text rather than beside it.
+        controller.setTargetDelay(1, 120.0f);
+        controller.setTargetEnabled(1, false);
+        controller.setTargetEnabled(1, true);
+        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(0.12));
+    }
+
+    SECTION("dragging a delay slider does not rebuild the slider being dragged") {
+        // The same fault as the trigger editor's text boxes, in the control shipped to fix
+        // the robot's latency. `setTargetDelay` applies as it moves so the offset can be
+        // found by ear, and applying republished the rows — which reset the model, which made
+        // the repeater destroy and rebuild the row, which took the slider out from under the
+        // pointer. The drag would have ended on its first pixel of movement.
+        const auto rows = controller.window().get_outputs_list();
+        const auto watch = std::make_shared<ModelWatch>();
+        rows->attach_peer(watch);
+
+        // One drag, sixty steps of it.
+        for (int step = 0; step <= 60; ++step) {
+            controller.setTargetDelay(1, static_cast<float>(step) * 5.0f);
+        }
+        CHECK(watch->resets == 0);
+        CHECK(watch->added == 0);
+        CHECK(watch->removed == 0);
+        // One row written per step, and never the row that was not being dragged.
+        CHECK(watch->changes == 60);
+        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(300.0f));
+        CHECK(rows->row_data(0)->delay_ms == Catch::Approx(0.0f));
+
+        // A step that lands where the slider already is writes nothing at all, so a slider
+        // resending its own position cannot churn the row it lives in.
+        const int settled = watch->changes;
+        controller.setTargetDelay(1, 300.0f);
+        CHECK(watch->changes == settled);
     }
 
     SECTION("a switched-off target is kept and sends nothing") {
-        controller.window().invoke_osc_targets_edited(
-            slint::SharedString("deck = 127.0.0.1:7000, off wall = 127.0.0.1:7001"));
+        controller.setTargetEnabled(1, false);
         REQUIRE(transports().outputs().size() == 2);
         CHECK_FALSE(transports().outputs()[1].enabled);
         // Held in the list, so it can be switched back on — but no socket behind it.
         CHECK(transports().osc().targetCount() == 1);
+        CHECK_FALSE(controller.window().get_outputs_list()->row_data(1)->enabled);
+
+        controller.setTargetEnabled(1, true);
+        CHECK(transports().osc().targetCount() == 2);
     }
 
     SECTION("two targets with one name is said rather than silently resolved") {
         // `resolveOutputs` would take the first, and a rule routed to the second would go
         // somewhere its operator did not choose.
-        controller.window().invoke_osc_targets_edited(
-            slint::SharedString("deck = 127.0.0.1:7000, deck = 127.0.0.1:7001"));
+        controller.acceptTarget(1, "deck", "127.0.0.1:7001");
         CHECK(controller.statusIsError());
+        // And said as what it is: both addresses are fine, and calling one of them "not a
+        // target" would send somebody looking at the wrong thing.
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("two are called") != std::string::npos);
     }
 
     SECTION("halfway through typing, the ones that already worked survive") {
-        controller.window().invoke_osc_targets_edited(
-            slint::SharedString("deck = 127.0.0.1:7000, wall = 127.0.0.1:"));
+        controller.acceptTarget(1, "wall", "127.0.0.1:");
         CHECK(transports().osc().targetCount() == 1);
         CHECK(controller.statusIsError());
         CHECK(std::string(controller.window().get_status()).find("not a target") !=
               std::string::npos);
+        // And the half-typed row is still there, exactly as it was typed. Losing it would
+        // be the field clearing itself under somebody mid-address.
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 2);
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:");
+    }
+
+    SECTION("a keystroke is remembered and not applied") {
+        // Applying opens and closes a socket. Doing that per character would rebuild it
+        // halfway through an address — but the draft still has to survive the list being
+        // republished, which is what [+] does.
+        controller.editTarget(1, "wall", "127.0.0.1:7009");
+        CHECK(transports().outputs()[1].port == 7001);
+        controller.addTarget();
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 3);
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7009");
+        CHECK(std::string(rows->row_data(2)->address).empty());
+        // The blank row is a place to type, not an output that sends nowhere.
+        CHECK(transports().outputs().size() == 2);
+    }
+
+    SECTION("a row removed is a target removed") {
+        controller.removeTarget(0);
+        REQUIRE(transports().outputs().size() == 1);
+        CHECK(transports().outputs()[0].name == "wall");
+        CHECK(controller.window().get_outputs_list()->row_count() == 1);
     }
 
     SECTION("a port outside the range is not a port") {
-        controller.window().invoke_osc_targets_edited(slint::SharedString("127.0.0.1:99999"));
+        controller.setOscTargets("127.0.0.1:99999");
         CHECK(transports().osc().targetCount() == 0);
     }
 
-    SECTION("and clearing the field clears the outputs") {
-        controller.window().invoke_osc_targets_edited(slint::SharedString(""));
+    SECTION("and clearing the row clears the outputs") {
+        controller.acceptTarget(0, "", "");
+        controller.acceptTarget(1, "", "");
         CHECK(transports().outputs().empty());
         CHECK_FALSE(controller.window().get_osc_on());
     }
@@ -1053,10 +1224,31 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
               "reaches 1 output");
 
-        controller.window().invoke_osc_targets_edited(slint::SharedString("hall = 127.0.0.1:7002"));
+        controller.setOscTargets("hall = 127.0.0.1:7002");
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
               "no output called deck");
     }
+}
+
+TEST_CASE("a MIDI target is a row like any other", "[ui]") {
+    // §5.6's targets are OSC *and* MIDI, named so a rule can pick between them. The address
+    // box takes both, which is what `output::parseOutputTarget` accepts either way.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.addTarget();
+    controller.acceptTarget(0, "lights", "midi takt4 test - no such port");
+
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 1);
+    CHECK(std::string(rows->row_data(0)->address) == "midi takt4 test - no such port");
+    // The device is not on this machine, so opening it fails — and that is *said* rather
+    // than dropping the row, because the rest of the rig is still sending.
+    CHECK(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("outputs:") != std::string::npos);
+    REQUIRE(controller.outputs().transports().outputs().size() == 1);
+    CHECK(controller.outputs().transports().outputs()[0].kind ==
+          takt4::output::OutputTarget::Kind::Midi);
 }
 
 TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
@@ -1180,7 +1372,10 @@ TEST_CASE("the window switches the outputs back on", "[ui]") {
     CHECK(controller.outputs().transports().oscPrefix() == "/vj");
     CHECK(controller.window().get_link_on());
     CHECK(controller.window().get_osc_on());
-    CHECK(std::string(controller.window().get_osc_targets()).find("7001") != std::string::npos);
+    // And into the rows that edit them, seeded once from what the runner was built with.
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 2);
+    CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
 }
 
 TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[ui]") {
@@ -1227,4 +1422,51 @@ TEST_CASE("what the window hands back is what it was given", "[ui]") {
     CHECK(reloaded.preset.link);
     CHECK_THAT(reloaded.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
     CHECK(reloaded.machine.deviceName == out.machine.deviceName);
+}
+
+TEST_CASE("the program carries its own weights and state space", "[ui]") {
+    // The user's ask of 2026-09-07: *"the exe should be entirely self contained. not relying
+    // on weights or whatever in some other directory. isolated exe that works anywhere."*
+    //
+    // The blobs are compiled in, so this checks two separate things. That they *load* — the
+    // format checks and the FNV-1a checksum both run over the embedded copy, which is what
+    // would catch a chunking bug in tools/embed_asset.py. And that they are the **right**
+    // blobs: a checksum only proves a blob is internally consistent, so the wrong file
+    // embedded by mistake would sail through it. Only comparing against the committed
+    // asset catches that.
+    const takt4::model::ModelWeights built =
+        takt4::model::ModelWeights::fromBytes(takt4::assets::weights(), "generic (built in)");
+    const takt4::model::ModelWeights onDisk = takt4::model::ModelWeights::fromFile(
+        std::filesystem::path(TAKT4_WEIGHTS_DIR) / "generic.bin");
+
+    REQUIRE(built.convWeight().size() == onDisk.convWeight().size());
+    CHECK(std::equal(built.convWeight().begin(), built.convWeight().end(),
+                     onDisk.convWeight().begin()));
+    REQUIRE(built.outputWeight().size() == onDisk.outputWeight().size());
+    CHECK(std::equal(built.outputWeight().begin(), built.outputWeight().end(),
+                     onDisk.outputWeight().begin()));
+    // The last block in the blob, so a copy that stopped short would differ here first.
+    REQUIRE(built.outputBias().size() == onDisk.outputBias().size());
+    CHECK(std::equal(built.outputBias().begin(), built.outputBias().end(),
+                     onDisk.outputBias().begin()));
+
+    const takt4::tracking::StateSpaceModel space = takt4::tracking::StateSpaceModel::fromBytes(
+        takt4::assets::stateSpace(), "default (built in)");
+    const takt4::tracking::StateSpaceModel spaceOnDisk = takt4::tracking::StateSpaceModel::fromFile(
+        std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin");
+    CHECK(space.beat().numStates() == spaceOnDisk.beat().numStates());
+    CHECK(space.beat().numIntervals() == spaceOnDisk.beat().numIntervals());
+    CHECK(space.downbeat().numStates() == spaceOnDisk.downbeat().numStates());
+    CHECK_THAT(space.secondsPerFrame(), WithinAbs(spaceOnDisk.secondsPerFrame(), 1e-12));
+    CHECK_THAT(space.bpmOfInterval(0), WithinAbs(spaceOnDisk.bpmOfInterval(0), 1e-12));
+
+    // And a tracker really starts on them, which is what app.cpp does and the only proof
+    // that matters: no path was consulted to get here.
+    LiveTracker tracker(takt4::model::ModelWeights::fromBytes(takt4::assets::weights(),
+                                                             "generic (built in)"),
+                        takt4::tracking::StateSpaceModel::fromBytes(takt4::assets::stateSpace(),
+                                                                    "default (built in)"),
+                        LiveTracker::Options{});
+    CHECK(tracker.weightsPath() == "generic (built in)");
+    CHECK(tracker.stateSpace().beat().numStates() == spaceOnDisk.beat().numStates());
 }

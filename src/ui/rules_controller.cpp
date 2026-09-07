@@ -2,6 +2,7 @@
 
 #include "core/features/intensity.hpp"
 #include "core/trigger/generator.hpp"
+#include "ui/model_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -216,9 +217,14 @@ struct HostPreset {
 /// starting points in the strongest sense: a TouchDesigner address is whatever the operator
 /// named their CHOP, so a preset can only offer the convention.
 ///
-/// The first entry is §5.6's *"blank custom option"*, and picking it changes nothing rather
-/// than clearing what is there — an operator who has typed an address and then brushed the
-/// picker has not asked to lose it.
+/// The first entry is §5.6's *"blank custom option"*, and it means what it says: picking it
+/// empties the address and takes the host's press-then-release off with it. It used to change
+/// nothing, on the reasoning that an operator who had typed an address and then brushed the
+/// picker had not asked to lose it — but the picker did not show which preset the rule *was*
+/// either, so going back to "custom" after a Resolume preset left the Resolume address, its
+/// two chips and its release sitting under a box that said "custom". Reported from a rig.
+/// The picker now follows the address (`presetOf`), so "custom" is a state as well as a
+/// choice, and choosing it is choosing an empty one.
 const std::array<HostPreset, 5> kHostPresets{{
     {"custom", ""},
     {"Resolume 7 — clip", "/composition/layers/{layer}/clips/{clip}/connect"},
@@ -226,6 +232,20 @@ const std::array<HostPreset, 5> kHostPresets{{
     {"TouchDesigner", "/takt4/{name}"},
     {"MadMapper — cue", "/medias/{cue}/play"},
 }};
+
+/// Which preset an address *is*, or 0 for none of them — which is what "custom" means.
+///
+/// By the address alone: it is the whole of what a preset writes that cannot also have been
+/// typed, and an operator who has edited one character of it is no longer on that preset,
+/// which is exactly what the picker should then say.
+int presetOf(std::string_view address) {
+    for (std::size_t i = 1; i < kHostPresets.size(); ++i) {
+        if (address == kHostPresets[i].address) {
+            return static_cast<int>(i);
+        }
+    }
+    return 0;
+}
 
 // --- rig presets -------------------------------------------------------------------------
 //
@@ -368,9 +388,11 @@ RulesController::RulesController(output::OutputRunner& runner,
                                  std::vector<trigger::Rule::Config> rules)
     : runner_(runner), rules_(std::move(rules)), window_(RulesWindow::create()),
       listModel_(std::make_shared<slint::VectorModel<RuleRow>>()),
+      choiceModel_(std::make_shared<slint::VectorModel<OutputChoice>>()),
       slotModel_(std::make_shared<slint::VectorModel<SlotRow>>()),
       logModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()) {
     window_->set_rules(listModel_);
+    window_->set_output_choices(choiceModel_);
     window_->set_slots(slotModel_);
     window_->set_log(logModel_);
 
@@ -431,8 +453,10 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_trigger_picked([this](int index) { pickTrigger(index); });
     window_->on_every_changed([this](int every) { setEvery(every); });
     window_->on_pulses_changed([this](int pulses) { setPulses(pulses); });
-    window_->on_outputs_edited(
-        [this](const slint::SharedString& text) { setOutputs(std::string(text)); });
+    window_->on_output_chosen([this](const slint::SharedString& name, bool chosen) {
+        setOutputChosen(std::string(name), chosen);
+    });
+    window_->on_all_outputs_chosen([this] { chooseAllOutputs(); });
 
     window_->on_min_confidence_changed([this](float v) { setMinConfidence(v); });
     window_->on_intensity_changed([this](int which, bool on) { setIntensity(which, on); });
@@ -522,6 +546,11 @@ Generator::Config* RulesController::slotConfig(int slot) noexcept {
 }
 
 void RulesController::commit() {
+    // Whatever the status line was saying was about the *last* edit — "a range is two
+    // numbers", most often — and this one worked. Cleared here rather than by a timer so
+    // the message stays up for exactly as long as it is the last thing that happened; the
+    // few callers that raise a status of their own do it after committing.
+    setStatus({}, false);
     runner_.post(output::OutputCommand::rules(rules_));
     if (changed_) {
         changed_(rules_);
@@ -548,6 +577,12 @@ void RulesController::matchSegmentsToAddress(Rule::Config& rule) {
 }
 
 void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
+    // A whole new set, so the counts and last values start again. A preset may well reuse
+    // the ids of the set it replaces — `add` numbers them "rule1", "rule2" — and a card
+    // inheriting a number from a different rule that happened to share its id is a readout
+    // that is quietly wrong, which is worse than one that reads zero.
+    firesSeen_.clear();
+    slotsSeen_.clear();
     rules_ = std::move(rules);
     if (rules_.empty()) {
         selected_ = -1;
@@ -607,9 +642,15 @@ void RulesController::add() {
 }
 
 void RulesController::remove() {
-    if (current() == nullptr) {
+    const Rule::Config* const going = current();
+    if (going == nullptr) {
         return;
     }
+    // Forgotten with the rule. `add` recycles ids — delete "rule1" and the next rule added
+    // is called "rule1" again — so a count left behind here would be handed to a rule that
+    // has never fired.
+    firesSeen_.erase(going->id);
+    slotsSeen_.erase(going->id);
     rules_.erase(rules_.begin() + selected_);
     if (rules_.empty()) {
         selected_ = -1;
@@ -724,6 +765,15 @@ void RulesController::setEvery(int every) {
 }
 
 void RulesController::setTargets(std::vector<output::OutputTarget> targets) {
+    // **Only when they have actually changed.** The main window tells us this from
+    // `publishOutputs`, which runs on its redraw timer — thirty times a second while the
+    // tracker does. `publishSelected` writes every field of the selected rule, including the
+    // name, the address and the routing, so republishing unconditionally meant those fields
+    // were reset thirty times a second and a rule could not be typed into while anything was
+    // playing, which is the only time anybody edits one.
+    if (targets == targets_) {
+        return;
+    }
     targets_ = std::move(targets);
     publishSelected(); // the "reaches ..." line beside the routing field
 }
@@ -745,6 +795,36 @@ void RulesController::setOutputs(const std::string& text) {
     for (const std::string_view part : split(text, ",;")) {
         rule->outputs.emplace_back(part);
     }
+    commit();
+    publishSelected();
+}
+
+void RulesController::setOutputChosen(const std::string& name, bool chosen) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || name.empty()) {
+        return;
+    }
+    const auto at = std::find(rule->outputs.begin(), rule->outputs.end(), name);
+    if (chosen) {
+        if (at == rule->outputs.end()) {
+            rule->outputs.push_back(name);
+        }
+    } else if (at != rule->outputs.end()) {
+        rule->outputs.erase(at);
+    }
+    // Nothing to say about an empty list: it already means every output, which is what the
+    // "every output" line then shows as ticked. `resolveOutputs` and this cannot disagree
+    // because there is only one representation of "everywhere".
+    commit();
+    publishSelected();
+}
+
+void RulesController::chooseAllOutputs() {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    rule->outputs.clear();
     commit();
     publishSelected();
 }
@@ -869,8 +949,22 @@ void RulesController::setChannel(int channel) {
 
 void RulesController::pickHostPreset(int index) {
     Rule::Config* rule = current();
-    if (rule == nullptr || index <= 0 || static_cast<std::size_t>(index) >= kHostPresets.size()) {
-        return; // 0 is "custom", which changes nothing
+    if (rule == nullptr || index < 0 || static_cast<std::size_t>(index) >= kHostPresets.size()) {
+        return;
+    }
+    if (index == 0) {
+        // §5.6's *"blank custom option"*, blanked. The address goes, its chips go with it —
+        // `matchSegmentsToAddress` drops a generator when the placeholder it filled does —
+        // and so does the press-then-release, which is a thing about Resolume's `connect`
+        // and not about OSC. What is left is a rule that sends a value to an address the
+        // operator is about to type, which is what the entry has always claimed to be.
+        rule->address.clear();
+        matchSegmentsToAddress(*rule);
+        rule->followUp = false;
+        commit();
+        publishSelected();
+        setStatus("Cleared the address. Type one, or pick a host to start from.", false);
+        return;
     }
     const HostPreset& preset = kHostPresets[static_cast<std::size_t>(index)];
     rule->sendKind = trigger::Message::Kind::Osc;
@@ -1013,7 +1107,7 @@ void RulesController::pickSlotLive(int slot, int source) {
 
 void RulesController::clearLog() {
     log_.clear();
-    logModel_->set_vector({});
+    logModel_->clear();
 }
 
 void RulesController::tick() {
@@ -1025,6 +1119,12 @@ void RulesController::tick() {
         const Rule::Config* rule = current();
         for (const output::OutputRunner::Fired& entry : fired) {
             log_.push_back(spellNumber(entry.when) + "s  " + entry.ruleId + "  " + entry.message);
+            lastFiredAnywhere_ = entry.message;
+            if (!entry.followUp) {
+                // The press, not the release: see `OutputRunner::Fired::followUp`.
+                ++firesSeen_[entry.ruleId];
+                slotsSeen_[entry.ruleId] = entry.slots;
+            }
             if (rule != nullptr && entry.ruleId == rule->id) {
                 lastFired_ = entry.message;
                 lastFiredAt_ = entry.when;
@@ -1041,7 +1141,7 @@ void RulesController::tick() {
         for (auto line = log_.rbegin(); line != log_.rend(); ++line) {
             lines.push_back(shared(*line));
         }
-        logModel_->set_vector(std::move(lines));
+        writeRows(*logModel_, lines);
         publishList();
         publishSlots();
     }
@@ -1058,6 +1158,11 @@ void RulesController::publishAll() {
     window_->set_selected(selected_);
 }
 
+std::uint64_t RulesController::firesOf(std::string_view ruleId) const {
+    const auto at = firesSeen_.find(std::string(ruleId));
+    return at == firesSeen_.end() ? 0 : at->second;
+}
+
 void RulesController::publishList() {
     std::vector<RuleRow> rows;
     rows.reserve(rules_.size());
@@ -1070,15 +1175,14 @@ void RulesController::publishList() {
         row.name = shared(config.name);
         row.enabled = config.enabled;
         row.problem = shared(rule.problem());
-        row.fires = 0;
+        // By id, so a rule deleted from the middle does not hand its count to the one that
+        // moves up into its place. See `firesSeen_`.
+        row.fires = static_cast<int>(firesOf(config.id));
         rows.push_back(std::move(row));
     }
-    // The fire counts, kept here because the live rules cannot be asked for them safely.
-    firesSeen_.resize(rules_.size(), 0);
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-        rows[i].fires = static_cast<int>(firesSeen_[i]);
-    }
-    listModel_->set_vector(std::move(rows));
+    // In place: this runs on the redraw timer whenever a rule fires, and the fire counts
+    // move on every beat. See `writeRows`.
+    writeRows(*listModel_, rows);
 }
 
 void RulesController::publishSelected() {
@@ -1103,10 +1207,10 @@ void RulesController::publishSelected() {
     window_->set_pulses(static_cast<int>(rule->pulses));
     window_->set_euclid_pattern(shared(spellEuclid(*rule)));
 
-    // §5.6's rule subset, and what it currently reaches. Both are needed: the names are what
-    // the operator typed and the second line is whether this rig has them, which is the one
-    // question a preset from another rig raises.
-    window_->set_outputs(shared(join(rule->outputs)));
+    // §5.6's rule subset, and what it currently reaches. Both are needed: the first is what
+    // the rule names and the second is whether this rig has it, which is the one question a
+    // preset from another rig raises.
+    publishOutputChoices();
     window_->set_outputs_available(shared(describeRouting(rule->outputs, targets_)));
 
     window_->set_min_confidence(static_cast<float>(rule->conditions.minConfidence));
@@ -1124,6 +1228,9 @@ void RulesController::publishSelected() {
     window_->set_send_index(static_cast<int>(sendIndex));
     window_->set_sends_osc(rule->sendKind == trigger::Message::Kind::Osc);
     window_->set_address(shared(rule->address));
+    // Which preset this address is, so the picker describes the rule in front of it rather
+    // than the last thing anybody clicked in it.
+    window_->set_host_preset_index(presetOf(rule->address));
     window_->set_channel(rule->channel);
     window_->set_send_value(rule->sendValue);
     window_->set_follow_up(rule->followUp);
@@ -1131,15 +1238,62 @@ void RulesController::publishSelected() {
     window_->set_follow_up_ms(static_cast<float>(rule->followUpDelaySeconds * 1000.0));
 }
 
-void RulesController::publishSlots() {
+void RulesController::publishOutputChoices() {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
-        slotModel_->set_vector({});
+        choiceModel_->clear();
+        window_->set_outputs_all(false);
+        window_->set_outputs_summary(slint::SharedString(""));
         return;
     }
 
+    const auto names = rule->outputs;
+    const auto named = [&names](const std::string& name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+
+    std::vector<OutputChoice> rows;
+    rows.reserve(targets_.size() + names.size());
+    for (const output::OutputTarget& target : targets_) {
+        OutputChoice row{};
+        row.name = shared(target.name);
+        row.chosen = named(target.name);
+        row.missing = false;
+        rows.push_back(std::move(row));
+    }
+    // Names this rule carries that the rig has no target for — a preset written elsewhere.
+    // Listed rather than dropped, for `Rule::Config::outputs`' own reason: plugging that
+    // output back in should restore the routing, so the name has to survive not being here.
+    for (const std::string& name : names) {
+        if (output::findTarget(targets_, name) == nullptr) {
+            OutputChoice row{};
+            row.name = shared(name);
+            row.chosen = true;
+            row.missing = true;
+            rows.push_back(std::move(row));
+        }
+    }
+    writeRows(*choiceModel_, rows);
+
+    window_->set_outputs_all(names.empty());
+    window_->set_outputs_summary(shared(names.empty() ? "every output" : join(names)));
+}
+
+void RulesController::publishSlots() {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        slotModel_->clear();
+        return;
+    }
+
+    // What this rule's generators produced last time it fired, in the order the chips are
+    // built below — which is the order `Rule::lastSlots` promises. Empty until it has fired.
+    const auto seen = slotsSeen_.find(rule->id);
+    const std::vector<trigger::Value>* const produced =
+        seen == slotsSeen_.end() ? nullptr : &seen->second;
+
     std::vector<SlotRow> rows;
-    const auto push = [&rows](const std::string& label, const Generator::Config& raw) {
+    const auto push = [&rows, produced](const std::string& label, const Generator::Config& raw) {
         // What the generator **accepted**, not what was typed. `Generator::config()` gives
         // back the clamped configuration, so §5.8's clamp-never-refuse policy shows on
         // screen instead of being silent: a range typed backwards comes back the right way
@@ -1172,7 +1326,14 @@ void RulesController::publishSlots() {
         row.shape_index = static_cast<int>(shapeIndex);
         row.ramp_bars = static_cast<int>(config.rampBars);
         row.ramp_float = config.rampFloat;
-        row.last = slint::SharedString("");
+        // §5.9's "what this slot last produced", paired by position: this chip is being
+        // pushed at index `rows.size()`, which is the slot `Rule::lastSlots` put there.
+        // Blank rather than stale when the rule has not fired since it was last edited —
+        // adding a placeholder shifts every chip after it, and a number under the wrong box
+        // is worse than no number.
+        row.last = produced != nullptr && rows.size() < produced->size()
+                       ? shared(spellValue((*produced)[rows.size()]))
+                       : slint::SharedString("");
         rows.push_back(std::move(row));
     };
 
@@ -1201,7 +1362,11 @@ void RulesController::publishSlots() {
     if (rule->sendValue) {
         push("value", rule->value);
     }
-    slotModel_->set_vector(std::move(rows));
+    // In place, and this is the one that mattered: these rows are the generator chips, they
+    // are full of text boxes, and `tick` republishes them every time a rule fires. See
+    // `writeRows`. Nothing here moves between fires, so the common case writes no rows at
+    // all and the boxes are left entirely alone.
+    writeRows(*slotModel_, rows);
 }
 
 void RulesController::publishFiring() {

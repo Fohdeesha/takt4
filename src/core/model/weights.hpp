@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::model {
@@ -32,6 +33,11 @@ public:
     /// it: missing, truncated, wrong magic, a format version this build does not know,
     /// dimensions that are not this architecture's, or a checksum mismatch.
     static ModelWeights fromFile(const std::filesystem::path& path);
+
+    /// The same, from bytes already in memory — the application's own copy, compiled in by
+    /// `assets::weights()` so the program is one file. `from` is what `path()` will say and
+    /// what an error message will name, since there is no file to point at.
+    static ModelWeights fromBytes(std::span<const std::byte> blob, std::string_view from);
 
     /// Conv1d(1, kConvFilters, kKernelSize): kConvFilters × kKernelSize, row-major.
     std::span<const float> convWeight() const noexcept { return at(0); }

@@ -21,7 +21,7 @@
 // one being edited.
 
 import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { Press, Theme } from "theme.slint";
+import { Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -69,6 +69,21 @@ export struct SlotRow {
   last: string,
 }
 
+/// One line of the "send to" list: an output this rule may be routed to, and whether it is.
+///
+/// §5.6's *"rule subset"* was a field of comma-separated names, which asks an operator to
+/// remember what their outputs are called and to spell them the same way twice. The rig
+/// already knows what it has, so the list is the rig's and the operator only ticks.
+export struct OutputChoice {
+  name: string,
+  chosen: bool,
+  /// Named by the rule but not on this rig — a preset written somewhere else. Kept and shown
+  /// rather than quietly dropped (`Rule::Config::outputs`), because plugging that output
+  /// back in should restore the routing, and because a name reaching nothing is worth
+  /// seeing. It can be ticked off; it cannot be typed back.
+  missing: bool,
+}
+
 export component RulesWindow inherits Window {
   title: "takt4 — triggers";
   preferred-width: 1180px;
@@ -79,6 +94,19 @@ export component RulesWindow inherits Window {
   init => {
     Palette.color-scheme = ColorScheme.dark;
   }
+
+  // --- the shape of the window -----------------------------------------------------
+  // How wide the two side panes are, dragged rather than written down. See `Splitter`:
+  // which of the three panes deserves the width is a question that changes during a set,
+  // and the answer was a number in this file.
+  in-out property <length> list-width: 244px;
+  in-out property <length> log-width: 264px;
+  /// How narrow a side pane can be dragged, and how wide. Not zero: the divider is what
+  /// drags it back, and a pane dragged to nothing takes its own handle with it. 165px is
+  /// measured rather than chosen: it is where COPY and DELETE still read as words, and an
+  /// ellipsis where a label used to be is a worse pane than a slightly wider one.
+  private property <length> pane-min: 165px;
+  private property <length> pane-max: root.width * 0.4;
 
   // --- the set ---------------------------------------------------------------------
   in-out property <[RuleRow]> rules;
@@ -146,6 +174,10 @@ export component RulesWindow inherits Window {
   /// hardcoded code path." Picking one fills the address and the slots in, and every part
   /// of what it filled stays editable.
   in-out property <[string]> host-presets;
+  /// Which of them the selected rule's address currently *is*, or 0 — "custom" — when it is
+  /// none of them. Written by the C++ side on every edit, so the box cannot go on naming a
+  /// preset the address no longer matches.
+  in-out property <int> host-preset-index;
   in-out property <bool> send-value: true;
   /// §5.8's "optional follow-up value after a delay" — §5.6's press-then-release, without
   /// which a Resolume clip stays latched on.
@@ -158,14 +190,21 @@ export component RulesWindow inherits Window {
   in-out property <[string]> ramp-shapes;
   in-out property <[SlotRow]> slots;
 
-  /// §5.6's *"rule subset"*: which of the app's outputs this rule reaches, by name and
-  /// comma-separated. Empty is every one of them, which is what an unrouted rule means.
-  in-out property <string> outputs;
-  /// The targets the app actually has, so an operator can see what there is to name and
-  /// whether what they typed matches any of it.
+  /// §5.6's *"rule subset"*: which of the app's outputs this rule reaches. One line per
+  /// output, ticked or not — see `OutputChoice`.
+  in-out property <[OutputChoice]> output-choices;
+  /// Whether the rule names none of them, which is what reaching *every* one means: an empty
+  /// list is "everywhere" (`resolveOutputs`), so this is a state rather than a fourth tick.
+  in-out property <bool> outputs-all;
+  /// What the closed control says: "every output", or the names, comma-separated.
+  in-out property <string> outputs-summary;
+  /// What that currently reaches, or which named output this rig has not got.
   in-out property <string> outputs-available;
 
-  callback outputs-edited(string);
+  /// One output ticked or unticked. Unticking the last one is "every output" again, because
+  /// naming nothing is what reaching everything is.
+  callback output-chosen(string, bool);
+  callback all-outputs-chosen();
 
   callback send-picked(int);
   callback address-edited(string);
@@ -206,19 +245,45 @@ export component RulesWindow inherits Window {
     // --- the rule list -------------------------------------------------------------
     Rectangle {
       background: Theme.panel;
-      width: 244px;
+      width: root.list-width;
       horizontal-stretch: 0;
+      // Dragged narrow, the buttons below stop fitting side by side. A layout does not
+      // shrink a child past its minimum, so without this they would draw over the editor.
+      clip: true;
 
       VerticalLayout {
         padding: 12px;
         spacing: 8px;
 
-        Text {
-          text: "TRIGGERS";
-          color: Theme.dim;
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 1px;
+        // [+] beside the heading rather than down with COPY and DELETE. Three buttons on one
+        // row need 210px between them, and this pane is dragged narrower than that; two need
+        // 120px, which is as narrow as it goes. Adding from the top of a list is also where
+        // every other list an operator has used puts it.
+        HorizontalLayout {
+          spacing: 8px;
+          vertical-stretch: 0;
+
+          Text {
+            text: "TRIGGERS";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+          }
+
+          Press {
+            text: "+";
+            pad: 8px;
+            font: 15px;
+            min-width: 34px;
+            min-height: 26px;
+            clicked => {
+              root.rule-added();
+            }
+          }
         }
 
         ListView {
@@ -288,19 +353,16 @@ export component RulesWindow inherits Window {
           }
         }
 
+        // Tighter than the performance controls, because this pane can be dragged narrow and
+        // these two have to give way when it is — see `Press::pad` and its label's elide.
         HorizontalLayout {
           spacing: 6px;
           vertical-stretch: 0;
 
           Press {
-            text: "+";
-            min-width: 44px;
-            clicked => {
-              root.rule-added();
-            }
-          }
-          Press {
             text: "COPY";
+            pad: 8px;
+            font: 13px;
             enabled: root.selected >= 0;
             horizontal-stretch: 1;
             clicked => {
@@ -309,6 +371,8 @@ export component RulesWindow inherits Window {
           }
           Press {
             text: "DELETE";
+            pad: 8px;
+            font: 13px;
             enabled: root.selected >= 0;
             horizontal-stretch: 1;
             clicked => {
@@ -332,10 +396,10 @@ export component RulesWindow inherits Window {
       }
     }
 
-    Rectangle {
-      width: 1px;
-      background: Theme.line;
-      horizontal-stretch: 0;
+    Splitter {
+      dragged(by) => {
+        root.list-width = clamp(root.list-width + by, root.pane-min, root.pane-max);
+      }
     }
 
     // --- the editor ----------------------------------------------------------------
@@ -677,7 +741,14 @@ export component RulesWindow inherits Window {
             if root.sends-osc : ComboBox {
               // §5.6's host presets. A starting point that fills the address and its
               // slots, never a code path — everything it wrote stays editable.
+              //
+              // Bound to the rule rather than left wherever it was last clicked: this box
+              // used to keep saying "Resolume 7" over an address the operator had since
+              // typed over, and say it about the *next* rule they selected too. It now
+              // shows which preset the address in front of it is, and "custom" when it is
+              // none of them — including after an edit that took it off a preset.
               model: root.host-presets;
+              current-index <=> root.host-preset-index;
               enabled: root.selected >= 0;
               width: 168px;
               selected => {
@@ -706,10 +777,13 @@ export component RulesWindow inherits Window {
             Rectangle { horizontal-stretch: 1; }
           }
 
-          // §5.6's rule subset. A field of names rather than a list of checkboxes: the set of
-          // outputs is edited on the main window as text too, an operator who has three of
-          // them can type all three faster than they can find them, and a name that matches
-          // nothing is kept — a preset written on another rig should say what it meant.
+          // §5.6's rule subset, ticked from the rig's own list.
+          //
+          // This was a field of comma-separated names, on the reasoning that somebody with
+          // three outputs can type three names faster than they can find them. They cannot:
+          // it asks them to remember what their outputs are called *and* to spell each the
+          // same way twice, and a typo reads as a rule that silently sends nowhere. The rig
+          // knows what it has, so it offers them and the operator ticks.
           HorizontalLayout {
             spacing: 8px;
 
@@ -721,14 +795,153 @@ export component RulesWindow inherits Window {
               vertical-alignment: center;
             }
 
-            outputs-field := LineEdit {
-              text <=> root.outputs;
-              placeholder-text: "every output — or name them: deck, wall";
-              enabled: root.selected >= 0;
-              font-size: 12px;
-              horizontal-stretch: 1;
-              accepted(text) => {
-                root.outputs-edited(text);
+            // The closed control. Not a std `ComboBox`: that one picks exactly one thing and
+            // closes on the pick, and this picks any number of them.
+            outputs-field := Rectangle {
+              width: 260px;
+              height: 32px;
+              horizontal-stretch: 0;
+              border-radius: 4px;
+              border-width: 1px;
+              border-color: root.selected < 0 ? Theme.line
+                : outputs-touch.has-hover ? Theme.accent
+                : Theme.controlEdge;
+              background: root.selected < 0 ? Theme.controlOff : Theme.control;
+
+              HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 6px;
+
+                Text {
+                  text: root.outputs-summary;
+                  color: root.selected < 0 ? Theme.dim
+                    : root.outputs-all ? Theme.dim
+                    : Theme.text;
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  vertical-alignment: center;
+                  overflow: elide;
+                }
+
+                Text {
+                  // U+25BC, not the lighter U+2304 or U+25BE this started as: neither of
+                  // those is in the font the software renderer embeds, so both came out as
+                  // nothing at all — measured, in a shot. Small and dim so a solid triangle
+                  // reads as a chevron rather than as a warning.
+                  text: "▼";
+                  color: Theme.dim;
+                  font-size: 8px;
+                  vertical-alignment: center;
+                }
+              }
+
+              outputs-touch := TouchArea {
+                enabled: root.selected >= 0;
+                clicked => {
+                  outputs-popup.show();
+                }
+              }
+
+              outputs-popup := PopupWindow {
+                x: 0;
+                y: parent.height + 2px;
+                width: parent.width;
+                // Not the default: a click *inside* is a tick, and a list that closed on the
+                // first one would make routing to three outputs three trips.
+                close-policy: close-on-click-outside;
+
+                Rectangle {
+                  background: Theme.panel;
+                  border-radius: 5px;
+                  border-width: 1px;
+                  border-color: Theme.controlEdge;
+
+                  VerticalLayout {
+                    padding: 6px;
+                    spacing: 2px;
+
+                    // "every output" is what naming nothing means, so it is a state and not
+                    // a tick that can be taken off — clicking it clears the names. A
+                    // CheckBox here would snap back under the pointer and read as broken.
+                    Rectangle {
+                      height: 28px;
+                      border-radius: 3px;
+                      background: all-touch.has-hover ? Theme.control : transparent;
+
+                      HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+
+                        Text {
+                          text: root.outputs-all ? "✓" : "";
+                          color: Theme.locked;
+                          font-size: 12px;
+                          width: 14px;
+                          vertical-alignment: center;
+                        }
+
+                        Text {
+                          text: "every output";
+                          color: Theme.text;
+                          font-size: 12px;
+                          horizontal-stretch: 1;
+                          vertical-alignment: center;
+                        }
+                      }
+
+                      all-touch := TouchArea {
+                        clicked => {
+                          root.all-outputs-chosen();
+                        }
+                      }
+                    }
+
+                    Rectangle {
+                      height: 1px;
+                      background: Theme.line;
+                    }
+
+                    if root.output-choices.length == 0 : Text {
+                      text: "no outputs yet — add one on the main window";
+                      color: Theme.dim;
+                      font-size: 11px;
+                      height: 28px;
+                      vertical-alignment: center;
+                      horizontal-alignment: center;
+                    }
+
+                    for choice in root.output-choices : Rectangle {
+                      height: 28px;
+
+                      HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 8px;
+                        spacing: 6px;
+
+                        CheckBox {
+                          checked: choice.chosen;
+                          text: choice.name;
+                          horizontal-stretch: 1;
+                          toggled => {
+                            root.output-chosen(choice.name, self.checked);
+                          }
+                        }
+
+                        Text {
+                          // A name from a preset written on a rig this is not. Ticking it
+                          // off is the only thing that can be done with it here, which is
+                          // exactly what a name that reaches nothing deserves.
+                          text: choice.missing ? "not on this rig" : "";
+                          color: Theme.holding;
+                          font-size: 11px;
+                          vertical-alignment: center;
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
 
@@ -1023,17 +1236,29 @@ export component RulesWindow inherits Window {
           spacing: 10px;
 
           Text {
-            text: root.last-fired == "" ? "not fired yet" : "→ " + root.last-fired;
-            color: root.last-fired == "" ? Theme.dim : Theme.locked;
+            // The status *instead of* the last-fired line, not beside it: this bar is one
+            // line high and two stretchy columns in it would each get half a sentence.
+            // A status is raised by an edit — "a range is two numbers" — and cleared by the
+            // next edit that works (`RulesController::commit`), so it is on screen for
+            // exactly as long as it is the last thing that happened.
+            //
+            // Until this, `status` was a property nothing drew: every one of those messages
+            // was written and never shown, which is the same as not writing them.
+            text: root.status != "" ? root.status
+              : root.last-fired == "" ? "not fired yet"
+              : "→ " + root.last-fired;
+            color: root.status != "" ? (root.status-is-error ? Theme.holding : Theme.text)
+              : root.last-fired == "" ? Theme.dim
+              : Theme.locked;
             font-size: 12px;
-            font-family: "Consolas";
+            font-family: root.status != "" ? "" : "Consolas";
             horizontal-stretch: 1;
             vertical-alignment: center;
             overflow: elide;
           }
 
           Text {
-            text: root.last-fired-ago;
+            text: root.status != "" ? "" : root.last-fired-ago;
             color: Theme.dim;
             font-size: 12px;
             font-family: "Consolas";
@@ -1043,10 +1268,11 @@ export component RulesWindow inherits Window {
       }
     }
 
-    Rectangle {
-      width: 1px;
-      background: Theme.line;
-      horizontal-stretch: 0;
+    Splitter {
+      // The pane this one moves is on its *right*, so a drag left widens it.
+      dragged(by) => {
+        root.log-width = clamp(root.log-width - by, root.pane-min, root.pane-max);
+      }
     }
 
     // --- the event log --------------------------------------------------------------
@@ -1055,8 +1281,9 @@ export component RulesWindow inherits Window {
     // point of a second window was that there is room.
     Rectangle {
       background: Theme.panel;
-      width: 264px;
+      width: root.log-width;
       horizontal-stretch: 0;
+      clip: true;
 
       VerticalLayout {
         padding: 12px;
@@ -1072,10 +1299,13 @@ export component RulesWindow inherits Window {
             letter-spacing: 1px;
             vertical-alignment: center;
             horizontal-stretch: 1;
+            overflow: elide;
           }
           Press {
             text: "CLEAR";
-            min-width: 76px;
+            pad: 8px;
+            font: 13px;
+            min-width: 56px;
             clicked => {
               root.log-cleared();
             }
