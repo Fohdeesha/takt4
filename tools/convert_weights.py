@@ -99,8 +99,14 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def convert(source, out_dir):
-    name, use_case = WEIGHT_SETS[source.name]
+def convert(source, out_dir, name=None, use_case=None, training=None):
+    """Write <name>.bin and <name>.json. Without `name` the source must be one of the
+    three published sets; with it, any BeatNet+ branch state_dict — a fine-tune from
+    tools/train/finetune.py — and `training` (a dict, typically the run's provenance) is
+    recorded in the JSON beside the upstream fields, which still name the architecture
+    and the weights it started from."""
+    if name is None:
+        name, use_case = WEIGHT_SETS[source.name]
     state = load_state_dict(source)
     data = blob(state)
 
@@ -109,7 +115,7 @@ def convert(source, out_dir):
     info = {
         "name": name,
         "use_case": use_case,
-        "source": source.name,
+        "source": source.name if training is None else str(source),
         "source_bytes": source.stat().st_size,
         "source_sha256": sha256(source),
         "upstream": UPSTREAM,
@@ -121,6 +127,8 @@ def convert(source, out_dir):
         "torch": torch.__version__,
         "numpy": np.__version__,
     }
+    if training is not None:
+        info["training"] = training
     (out_dir / f"{name}.json").write_text(json.dumps(info, indent=2) + "\n",
                                           encoding="utf-8", newline="\n")
     print(f"{source.name} -> {bin_path.name}  {len(data)} bytes, {TOTAL_PARAMS} parameters "
@@ -132,17 +140,32 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("models", type=Path,
-                        help="BeatNet+'s src/BeatNetPlus/models directory, or one .pt in it")
+                        help="BeatNet+'s src/BeatNetPlus/models directory, one .pt in it, or "
+                             "with --name any branch state_dict (a fine-tune's best.pt)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
                         help=f"default: {DEFAULT_OUT_DIR}")
+    parser.add_argument("--name", help="the set's name for a .pt that is not one of the three "
+                                       "published ones; writes <name>.bin and <name>.json")
+    parser.add_argument("--use-case", default="", help="with --name: what the set is for")
+    parser.add_argument("--provenance", type=Path,
+                        help="with --name: a JSON file recorded under \"training\" in <name>.json")
     args = parser.parse_args()
+
+    if args.name:
+        if not args.models.is_file():
+            raise SystemExit(f"{args.models} is not a file")
+        training = json.loads(args.provenance.read_text(encoding="utf-8")) if args.provenance else {}
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        convert(args.models, args.out_dir, name=args.name, use_case=args.use_case, training=training)
+        return
 
     if args.models.is_dir():
         sources = [args.models / name for name in WEIGHT_SETS]
     elif args.models.name in WEIGHT_SETS:
         sources = [args.models]
     else:
-        raise SystemExit(f"{args.models} is not one of {sorted(WEIGHT_SETS)} nor a directory of them")
+        raise SystemExit(f"{args.models} is not one of {sorted(WEIGHT_SETS)} nor a directory of them; "
+                         f"pass --name for a fine-tuned set")
     missing = [str(path) for path in sources if not path.is_file()]
     if missing:
         raise SystemExit("not found: " + ", ".join(missing))

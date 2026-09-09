@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <array>
 #include <fstream>
 #include <string>
 
@@ -40,6 +41,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.preset.tempo.minBpm = 88.0;
     in.preset.tempo.maxBpm = 176.0;
     in.preset.tempo.octaveFold = false;
+    in.preset.decoder = takt4::tracking::Decoder::ParticleFilter;
+    in.preset.meters = {3, 4, 0, 0};
     in.preset.tempo.confidenceThreshold = 0.25;
     in.preset.tempo.latencyOffsetSeconds = -0.030;
     in.preset.link = true;
@@ -73,6 +76,27 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(88.0, 1e-9));
     CHECK_THAT(out.preset.tempo.maxBpm, WithinAbs(176.0, 1e-9));
     CHECK_FALSE(out.preset.tempo.octaveFold);
+    CHECK(out.preset.decoder == takt4::tracking::Decoder::ParticleFilter);
+    // And the default is the forward filter, whatever a file says that is not "particle".
+    CHECK(Settings{}.preset.decoder == takt4::tracking::Decoder::Forward);
+    CHECK(takt4::settings::fromJson(R"({"preset": {"decoder": "banana"}})").preset.decoder ==
+          takt4::tracking::Decoder::Forward);
+    CHECK(takt4::settings::fromJson(R"({"preset": {"decoder": "forward"}})").preset.decoder ==
+          takt4::tracking::Decoder::Forward);
+    // The meters travel as a list, and the default is a bar of four alone.
+    CHECK(out.preset.meters == std::array<std::uint8_t, 4>{3, 4, 0, 0});
+    CHECK(Settings{}.preset.meters == std::array<std::uint8_t, 4>{4, 0, 0, 0});
+    CHECK(takt4::settings::fromJson(R"({"preset": {"meters": [3, 4]}})").preset.meters ==
+          std::array<std::uint8_t, 4>{3, 4, 0, 0});
+    // A list the decoder could not be built from leaves the default standing.
+    CHECK(takt4::settings::fromJson(R"({"preset": {"meters": []}})").preset.meters ==
+          std::array<std::uint8_t, 4>{4, 0, 0, 0});
+    CHECK(takt4::settings::fromJson(R"({"preset": {"meters": [0, 4]}})").preset.meters ==
+          std::array<std::uint8_t, 4>{4, 0, 0, 0});
+    CHECK(takt4::settings::fromJson(R"({"preset": {"meters": "4"}})").preset.meters ==
+          std::array<std::uint8_t, 4>{4, 0, 0, 0});
+    CHECK(takt4::settings::fromJson(R"({"preset": {"meters": [2, 3, 4, 6, 8]}})").preset.meters ==
+          std::array<std::uint8_t, 4>{4, 0, 0, 0});
     CHECK_THAT(out.preset.tempo.confidenceThreshold, WithinAbs(0.25, 1e-9));
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.030, 1e-9));
     CHECK(out.preset.link);

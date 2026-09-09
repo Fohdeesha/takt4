@@ -1,0 +1,47 @@
+# Experiment: both data levers together — Ballroom's extreme-tempo genres repeated
+# (configs/electronic-genres.yaml, which brought Ballroom back from 0.928 to 0.947–0.955,
+# a hair under the 0.956 gate, with Raveform at 0.913 and osu2beat at 0.838 by epoch 16)
+# and time-stretch augmentation (configs/electronic-stretch.yaml), which gives the
+# electronic sets themselves the 75–90 and 200+ BPM examples they lack.
+name: electronic-genres-stretch
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+genre_weights:
+  ballroom:
+    Quickstep: 3          # 204 BPM: 82 clips x 2 x 3
+    VienneseWaltz: 2      # 180 BPM
+    Waltz: 2              # 75–90 BPM
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [0.7, 1.4]
+stretch_prob: 0.6
+max_epochs: 300
+val_every: 2
+patience: 15
+checkpoint_every: 10
+
+val_tracks_per_set: 80
+val_seconds: 120
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2          # this machine's commit limit is ~29 GB above the desktop: two runs
+dbn_workers: 2          # of 2+2 workers fit, four runs of 4+4 did not (all died allocating)
+device: cuda
+limit_tracks: 0

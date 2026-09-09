@@ -37,6 +37,7 @@ import argparse
 import concurrent.futures
 import json
 import platform
+import shlex
 import statistics
 import subprocess
 import sys
@@ -67,7 +68,12 @@ def find_cli(given):
         if not path.is_file():
             raise SystemExit(f"{path}: not found")
         return path
+    # The same order as tools/refeval/common.py, the full build first: the two trees are
+    # built at different times, and on 2026-09-08 the core tree's CLI was a day older than
+    # the tracker being measured — a fine-tune's Ballroom numbers were read off the
+    # particle filter for an evening before the report's `cli` field gave it away.
     candidates = [
+        Path("C:/build/takt4/windows-msvc/bin/Release/takt4-cli.exe"),
         Path("C:/build/takt4/windows-core/bin/Release/takt4-cli.exe"),
         ROOT / "build" / "windows-core" / "bin" / "Release" / "takt4-cli.exe",
         ROOT / "build" / "linux-core" / "bin" / "takt4-cli",
@@ -170,6 +176,7 @@ def track(cli, audio, options, scratch):
     command = [str(cli), "track", str(wav), "--out", str(beats),
                "--bpm", options.bpm, "--weights", options.weights,
                "--seed", str(options.seed), "--confidence", str(options.confidence)]
+    command += shlex.split(options.cli_args) if options.cli_args else []
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{audio.name}: takt4-cli exited {result.returncode}: "
@@ -235,11 +242,16 @@ def main():
                         help="where the annotations are; default: the dataset directory")
     parser.add_argument("--cli", help="takt4-cli to measure; default: the local build")
     parser.add_argument("--weights", default="generic",
-                        choices=["generic", "generic-main", "af-non-percussive"])
+                        help="generic (default here: the committed Ballroom reports are its), "
+                             "electronic (what the app builds in since 0.9.1), generic-main, "
+                             "af-non-percussive, or a path to "
+                             "a .bin from tools/convert_weights.py, as takt4-cli takes it")
     parser.add_argument("--bpm", default="off",
                         help='octave-fold window, "off" (the default) or LO-HI')
     parser.add_argument("--confidence", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--cli-args", default="",
+                        help='more takt4-cli track options, quoted: "--decoder forward"')
     parser.add_argument("--limit", type=int, help="stop after this many files")
     parser.add_argument("--jobs", type=int, default=1,
                         help="files in parallel; each one is a whole takt4-cli run")
@@ -275,7 +287,8 @@ def main():
 
     print(f"{cli}\n{len(pairs)} annotated files"
           + (f", {len(unmatched)} without an annotation" if unmatched else "")
-          + f", fold {options.bpm}, weights {options.weights}\n")
+          + f", fold {options.bpm}, weights {options.weights}"
+          + (f", {options.cli_args}" if options.cli_args else "") + "\n")
 
     results = {}
     failures = {}
@@ -364,6 +377,7 @@ def main():
             "octave_fold": options.bpm,
             "confidence_threshold": options.confidence,
             "seed": options.seed,
+            "cli_args": options.cli_args,
             "platform": platform.platform(),
             "beatnet_plus_trained_on_this": trained_on,
             "files": len(results),

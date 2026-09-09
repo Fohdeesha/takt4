@@ -28,6 +28,7 @@ TracePoint tracePoint(const engine::EngineFrame& frame) {
 void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_bpm(static_cast<float>(state.bpm));
     window.set_raw_bpm(static_cast<float>(state.rawBpm));
+    window.set_called_bpm(static_cast<float>(state.calledBpm));
     window.set_locked(state.locked);
     window.set_pinned(state.pinned);
     window.set_holding(state.holding);
@@ -36,6 +37,7 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_beats_per_bar(static_cast<int>(state.beatsPerBar));
     window.set_beat_in_bar(static_cast<int>(state.beatInBar));
     window.set_bars(static_cast<int>(state.bars));
+    window.set_beat_divisor(static_cast<int>(state.beatDivisor));
 }
 
 void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options) {

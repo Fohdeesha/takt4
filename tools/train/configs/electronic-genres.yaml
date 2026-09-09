@@ -1,0 +1,48 @@
+# Experiment: the electronic fine-tune with Ballroom's extreme-tempo genres repeated.
+#
+# The tempi the fine-tune loses (configs/electronic.yaml, electronic-lr1e-4-br2.yaml) are
+# the ones the electronic sets do not contain: Quickstep at 204 BPM decodes at half time,
+# Waltz at 75–85 at double time. This run keeps them in front of the model: Ballroom
+# twice an epoch as in lr1e-4-br2, and on top of that Quickstep three times over,
+# Viennese Waltz and Waltz twice over — the counter-examples for the narrowed tempo
+# prior, with no other change, so the difference from lr1e-4-br2 is the repeats'.
+name: electronic-genres
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+genre_weights:
+  ballroom:
+    Quickstep: 3          # 204 BPM: 82 clips x 2 x 3
+    VienneseWaltz: 2      # 180 BPM
+    Waltz: 2              # 75–90 BPM
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+max_epochs: 300
+val_every: 2
+patience: 15
+checkpoint_every: 10
+
+val_tracks_per_set: 80
+val_seconds: 120
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2          # this machine's commit limit is ~29 GB above the desktop: two runs
+dbn_workers: 2          # of 2+2 workers fit, four runs of 4+4 did not (all died allocating)
+device: cuda
+limit_tracks: 0

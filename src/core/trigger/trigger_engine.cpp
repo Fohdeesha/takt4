@@ -84,8 +84,10 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context) {
     if (const std::optional<Message> follow = rule.followUpFor(*message)) {
         // Never in the past, however the delay was configured: a follow-up due before the
         // message it follows would be sent in the same round and read as a rule that sends
-        // its release first.
-        const double delay = std::max(0.0, rule.config().followUpDelaySeconds);
+        // its release first. `Rule::followUpDelay` is what turns "two beats" into seconds,
+        // and it does it here — against the tempo the press went out at, not the one playing
+        // when the release comes due.
+        const double delay = std::max(0.0, rule.followUpDelay(context));
         pending_.push_back(Pending{context.now + delay, *follow, rule.id()});
     }
     return true;

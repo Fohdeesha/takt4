@@ -34,6 +34,8 @@ add_library(takt4_ui STATIC
   headless.cpp
   headless.hpp
   model_rows.hpp
+  native_window.cpp
+  native_window.hpp
   rules_controller.cpp
   rules_controller.hpp
   shot.cpp
