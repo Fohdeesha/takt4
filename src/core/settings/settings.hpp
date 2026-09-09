@@ -1,9 +1,11 @@
 #pragma once
 
 #include "core/output/output_target.hpp"
+#include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/rule.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -63,10 +65,44 @@ struct MachineSettings {
     bool oscControlLocalOnly = true;
 };
 
+/// §5.5's tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s
+/// own defaults — one field differs, and only one.
+///
+/// `TempoTracker::Options::octaveFold` defaults to true, because a tracker asked to publish a
+/// tempo into a window should do it: that default belongs to the class, and `takt4-cli`'s
+/// documented 70-140 default and every evaluation run depend on it.
+///
+/// **The application ships with it off.** The fold is a promise about the material, and takt4
+/// is handed a set — one record after another, not one track being tuned for. A window that
+/// suited the last track silently halves or doubles the next one, and the operator's first
+/// experience of the app is a tempo that is wrong by a factor of two for reasons nothing on
+/// screen explains. Reported from a rig on 2026-09-08, having been switched on by a tap:
+/// *"octave fold keeps getting automatically turned on, which then breaks the next track in
+/// the mix"*. Off, the tracker publishes what it hears; the window is there for an operator
+/// who knows what is coming and says so.
+///
+/// This is only the value a settings file that does not mention the field starts from. Once
+/// somebody has switched it on, `save` writes it and it stays on.
+tracking::TempoTracker::Options freshTempoOptions() noexcept;
+
 /// What travels.
 struct Preset {
-    /// §5.5's tuning — the octave-fold window, the confidence gate, the latency offset.
-    tracking::TempoTracker::Options tempo;
+    /// §5.5's tuning — the tempo window, the confidence gate, the latency offset.
+    tracking::TempoTracker::Options tempo = freshTempoOptions();
+    /// Which decoder turns the network's activations into beats: the exact forward filter
+    /// of TRACKING-PROPOSAL.md §2.4, which is the default since it met §5's exit criteria
+    /// (see `tracking::Decoder`), or the particle filter that shipped before it. Tracker
+    /// tuning, so it travels with a preset; written as `"forward"` or `"particle"`, and
+    /// anything else is the default. No control in the window yet — a settings file is
+    /// the way to switch it.
+    tracking::Decoder decoder = tracking::Decoder::Forward;
+    /// The bar lengths the forward filter models — `ForwardFilter::Options::meters`, and
+    /// its default: four alone, which TRACKING-PROPOSAL.md §7.7 measured as the better
+    /// decoder on electronic material and the operator chose for the rig on 2026-09-09.
+    /// Written as `"meters": [4]`; `[3, 4]` puts the waltz back for a set that has one. Up
+    /// to four bar lengths of 1 to 16, zero-filled; a file that names none keeps the
+    /// default. No control in the window yet, like `decoder`.
+    std::array<std::uint8_t, 4> meters{4, 0, 0, 0};
     bool link = false;
     std::string oscPrefix = "/takt4";
 

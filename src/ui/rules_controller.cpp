@@ -3,6 +3,8 @@
 #include "core/features/intensity.hpp"
 #include "core/trigger/generator.hpp"
 #include "ui/model_rows.hpp"
+#include "ui/native_window.hpp"
+#include "ui/window_state.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -263,7 +265,7 @@ Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t see
     Rule::Config rule;
     rule.id = "layer" + std::to_string(layer);
     rule.name = "Layer " + std::to_string(layer) + " — random clip";
-    rule.enabled = false; // built switched off, like every rule the editor makes
+    rule.enabled = true; // armed, like every rule the editor makes — see `add`
     rule.trigger = trigger::Trigger::Bar;
     rule.every = everyBars;
     rule.address = "/composition/layers/{layer}/clips/{clip}/connect";
@@ -310,7 +312,7 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         Rule::Config tempo;
         tempo.id = "tempo";
         tempo.name = "Resolume tempo follows takt4";
-        tempo.enabled = false;
+        tempo.enabled = true;
         tempo.trigger = trigger::Trigger::TempoChange;
         tempo.address = "/composition/tempocontroller/tempo";
         tempo.value.kind = GeneratorKind::Live;
@@ -322,7 +324,7 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         Rule::Config resync;
         resync.id = "resync";
         resync.name = "Resync Resolume when the lock returns";
-        resync.enabled = false;
+        resync.enabled = true;
         resync.trigger = trigger::Trigger::LockChange;
         resync.address = "/composition/tempocontroller/resync";
         resync.value.kind = GeneratorKind::Fixed;
@@ -338,7 +340,7 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         Rule::Config breathe;
         breathe.id = "breathe";
         breathe.name = "Dashboard breathes over 4 bars";
-        breathe.enabled = false;
+        breathe.enabled = true;
         breathe.trigger = trigger::Trigger::Beat;
         breathe.address = "/composition/dashboard/link1";
         breathe.value.kind = GeneratorKind::Ramp;
@@ -356,7 +358,7 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         Rule::Config stabs;
         stabs.id = "stabs";
         stabs.name = "Euclidean stabs — 3 in 8";
-        stabs.enabled = false;
+        stabs.enabled = true;
         stabs.trigger = trigger::Trigger::Euclid;
         stabs.every = 8;
         stabs.pulses = 3;
@@ -378,9 +380,13 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
     }
 }
 
-constexpr std::array<const char*, 5> kRigPresets{
-    "add a preset...", "Resolume: clips on 3 layers", "Resolume: tempo and resync",
-    "Resolume: breathing dashboard", "MIDI: euclidean stabs"};
+/// The labels the preset menu shows, in `rigPresetRules`' order — which counts from **one**,
+/// zero being "no preset". The window's list holds these four and adds the one back on
+/// (`rig-added(i + 1)`); it used to hold a fifth "add a preset..." entry at the front, which
+/// is what a dropdown needs to have something to sit on and what a menu does not.
+constexpr std::array<const char*, 4> kRigPresets{
+    "Resolume: clips on 3 layers", "Resolume: tempo and resync", "Resolume: breathing dashboard",
+    "MIDI: euclidean stabs"};
 
 } // namespace
 
@@ -440,10 +446,20 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_rig_presets(rigs);
 
+    auto units = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::DelayUnit unit : trigger::kDelayUnits) {
+        units->push_back(shared(std::string(trigger::labelOf(unit))));
+    }
+    window_->set_follow_up_units(units);
+
     window_->on_rule_picked([this](int index) { pick(index); });
+    window_->on_rule_picked_with(
+        [this](int index, bool control, bool shift) { pickWith(index, control, shift); });
     window_->on_rule_added([this] { add(); });
     window_->on_rule_removed([this] { remove(); });
     window_->on_rule_duplicated([this] { duplicate(); });
+    window_->on_rule_removed_at([this](int index) { removeAt(index); });
+    window_->on_rule_duplicated_at([this](int index) { duplicateAt(index); });
     window_->on_rig_added([this](int index) { addRig(index); });
     window_->on_rule_enabled_changed([this](bool on) { setEnabled(on); });
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
@@ -475,6 +491,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_follow_up_value_edited(
         [this](const slint::SharedString& t) { setFollowUpValue(std::string(t)); });
     window_->on_follow_up_delay_changed([this](float ms) { setFollowUpMs(ms); });
+    window_->on_follow_up_beats_changed([this](float beats) { setFollowUpBeats(beats); });
+    window_->on_follow_up_unit_picked([this](int unit) { pickFollowUpUnit(unit); });
 
     window_->on_slot_kind_picked([this](int slot, int kind) { pickSlotKind(slot, kind); });
     window_->on_slot_pool_changed([this](int slot, bool list) { setSlotPool(slot, list); });
@@ -493,15 +511,29 @@ RulesController::RulesController(output::OutputRunner& runner,
 
     window_->on_log_cleared([this] { clearLog(); });
 
-    if (!rules_.empty()) {
-        selected_ = 0;
-    }
+    // The size this opens at, set here rather than in the markup: Slint takes a window's
+    // initial size from what its content asks for, not from the Window's own
+    // `preferred-width` — so this window opened at its minimum, 900 x 560, whatever the
+    // markup preferred. See `kRulesWindowWidth`. Before the first `show()`, which is what
+    // makes the backend leave it alone; a later drag is the operator's and is kept.
+    window_->window().set_size(
+        slint::LogicalSize({kRulesWindowWidth, kRulesWindowHeight}));
+
+    resettle(0);
     publishAll();
 }
 
 void RulesController::show() {
     window_->show();
     visible_ = true;
+    // **And brought forward**, which `show()` does not do for a window that is already up: it
+    // leaves it exactly where it was in the Z order, so pressing TRIGGERS with the editor
+    // behind the main window looked like a button that did nothing. Reported from a rig.
+    //
+    // By a substring of the title, which is how `bringWindowToFront` finds a window at all —
+    // "triggers" appears in this window's title and in no other of ours. A no-op away from
+    // Windows and under the testing backend, where there is no platform window to raise.
+    (void)bringWindowToFront("triggers");
 }
 
 void RulesController::hide() {
@@ -584,17 +616,63 @@ void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
     firesSeen_.clear();
     slotsSeen_.clear();
     rules_ = std::move(rules);
-    if (rules_.empty()) {
-        selected_ = -1;
-    } else if (selected_ < 0 || static_cast<std::size_t>(selected_) >= rules_.size()) {
-        selected_ = 0;
-    }
+    resettle(selected_ < 0 ? 0 : selected_);
     publishAll();
 }
 
+std::vector<int> RulesController::chosen() const {
+    std::vector<int> rows;
+    for (std::size_t i = 0; i < chosen_.size(); ++i) {
+        if (chosen_[i]) {
+            rows.push_back(static_cast<int>(i));
+        }
+    }
+    return rows;
+}
+
+void RulesController::resettle(int wanted) {
+    chosen_.assign(rules_.size(), false);
+    if (rules_.empty()) {
+        selected_ = -1;
+        anchor_ = -1;
+        return;
+    }
+    selected_ = std::clamp(wanted, 0, static_cast<int>(rules_.size()) - 1);
+    chosen_[static_cast<std::size_t>(selected_)] = true;
+    anchor_ = selected_;
+}
+
 void RulesController::pick(int index) {
+    pickWith(index, false, false);
+}
+
+void RulesController::pickWith(int index, bool control, bool shift) {
     if (index < 0 || static_cast<std::size_t>(index) >= rules_.size()) {
         return;
+    }
+    chosen_.resize(rules_.size(), false);
+    if (control) {
+        // In or out, one row at a time. Never out of the last one: a selection of nothing has
+        // no editor to show and no rule for the marks to act on, so a control-click that
+        // would empty it simply leaves that row selected.
+        chosen_[static_cast<std::size_t>(index)] = !chosen_[static_cast<std::size_t>(index)];
+        if (chosen().empty()) {
+            chosen_[static_cast<std::size_t>(index)] = true;
+        }
+        anchor_ = index;
+    } else if (shift && anchor_ >= 0 && static_cast<std::size_t>(anchor_) < rules_.size()) {
+        // The run from the anchor to here, replacing whatever was chosen. The anchor stays
+        // put, so shift-clicking again grows or shrinks the same run.
+        const int low = std::min(anchor_, index);
+        const int high = std::max(anchor_, index);
+        chosen_.assign(rules_.size(), false);
+        for (int i = low; i <= high; ++i) {
+            chosen_[static_cast<std::size_t>(i)] = true;
+        }
+    } else {
+        chosen_.assign(rules_.size(), false);
+        chosen_[static_cast<std::size_t>(index)] = true;
+        anchor_ = index;
     }
     selected_ = index;
     // A new selection is a new last-fired line: the old one belonged to another rule and
@@ -603,8 +681,17 @@ void RulesController::pick(int index) {
     lastFiredAt_ = -1.0;
     publishSelected();
     publishSlots();
+    publishList(); // the chosen flags, which are what the rows draw themselves from
     publishFiring();
     window_->set_selected(selected_);
+    // Said out loud, because a selection of six looks like a selection of six only if you
+    // know to count the highlighted rows — and because what × does next depends on it.
+    const std::size_t count = chosen().size();
+    setStatus(count > 1 ? std::to_string(count) + " triggers selected — the marks on any of "
+                                                  "them act on all " +
+                              std::to_string(count)
+                        : std::string{},
+              false);
 }
 
 void RulesController::add() {
@@ -622,19 +709,35 @@ void RulesController::add() {
             break;
         }
     }
+    // A name, rather than the blank the list showed as "(unnamed)". It is the operator's to
+    // change and most of them will, but a list of "(unnamed)" rows is a list that cannot be
+    // read, and "Trigger #5" at least says which one this is. Numbered past anything already
+    // called that, so deleting from the middle and adding again does not make two.
+    for (int n = static_cast<int>(rules_.size()) + 1;; ++n) {
+        const std::string candidate = "Trigger #" + std::to_string(n);
+        const auto clash = [&candidate](const Rule::Config& other) {
+            return other.name == candidate;
+        };
+        if (std::none_of(rules_.begin(), rules_.end(), clash)) {
+            rule.name = candidate;
+            break;
+        }
+    }
     // Distinct seeds, so two rules in a preset do not fire the same clip as each other —
     // `Generator::Config::seed`'s whole reason.
     rule.seed = static_cast<std::uint64_t>(rules_.size()) * 977 + 1;
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = trigger::Value::ofInt(1);
-    // **Switched off until it is finished.** A new rule has no address yet, so it cannot
-    // fire either way — but the moment an operator picks a host preset it *could*, and a
-    // half-built rule firing into somebody's rig while they are still typing is the one
-    // thing an editor must not do. §5.9's [test] button works on a disabled rule for
-    // exactly this reason, so nothing about building one needs it switched on.
-    rule.enabled = false;
+    // **Switched on.** This was off, on the reasoning that a half-built rule must not fire
+    // into somebody's rig while they are still typing — and the reasoning was sound and the
+    // result was wrong. A rule with no address is invalid, so it cannot fire whatever this
+    // says (`Rule::problem`); what "off" actually bought was every new rule and every preset
+    // arriving inert, behind an unlabelled tick box, with nothing on screen saying why
+    // nothing happened. Reported from a rig: "it's not obvious that they're entirely
+    // disabled". The box is labelled now, and a rule an operator asked for is armed.
+    rule.enabled = true;
     rules_.push_back(rule);
-    selected_ = static_cast<int>(rules_.size()) - 1;
+    resettle(static_cast<int>(rules_.size()) - 1);
     commit();
     publishSelected();
     publishFiring();
@@ -642,21 +745,25 @@ void RulesController::add() {
 }
 
 void RulesController::remove() {
-    const Rule::Config* const going = current();
-    if (going == nullptr) {
+    const std::vector<int> going = chosen();
+    if (going.empty()) {
         return;
     }
-    // Forgotten with the rule. `add` recycles ids — delete "rule1" and the next rule added
-    // is called "rule1" again — so a count left behind here would be handed to a rule that
-    // has never fired.
-    firesSeen_.erase(going->id);
-    slotsSeen_.erase(going->id);
-    rules_.erase(rules_.begin() + selected_);
-    if (rules_.empty()) {
-        selected_ = -1;
-    } else if (static_cast<std::size_t>(selected_) >= rules_.size()) {
-        selected_ = static_cast<int>(rules_.size()) - 1;
+    // From the back, so the indices ahead of each erase are still the ones just measured.
+    for (auto row = going.rbegin(); row != going.rend(); ++row) {
+        const auto at = static_cast<std::size_t>(*row);
+        if (at >= rules_.size()) {
+            continue;
+        }
+        // Forgotten with the rule. `add` recycles ids — delete "rule1" and the next rule
+        // added is called "rule1" again — so a count left behind here would be handed to a
+        // rule that has never fired.
+        firesSeen_.erase(rules_[at].id);
+        slotsSeen_.erase(rules_[at].id);
+        rules_.erase(rules_.begin() + static_cast<std::ptrdiff_t>(at));
     }
+    // The row that moved up into the first deleted one's place, which is where the eye is.
+    resettle(going.front());
     commit();
     publishSelected();
     publishFiring();
@@ -664,30 +771,68 @@ void RulesController::remove() {
 }
 
 void RulesController::duplicate() {
-    const Rule::Config* source = current();
-    if (source == nullptr) {
+    const std::vector<int> sources = chosen();
+    if (sources.empty()) {
         return;
     }
-    Rule::Config copy = *source;
-    copy.id += "-copy";
-    for (int n = 2;
-         std::count_if(rules_.begin(), rules_.end(),
-                       [&copy](const Rule::Config& other) { return other.id == copy.id; }) > 0;
-         ++n) {
-        copy.id = source->id + "-copy" + std::to_string(n);
+    // Every copy goes after the last of the originals, in the originals' own order — six
+    // rules duplicated read as six more in the same order, not as six pairs.
+    std::vector<Rule::Config> copies;
+    copies.reserve(sources.size());
+    for (const int row : sources) {
+        const auto at = static_cast<std::size_t>(row);
+        if (at >= rules_.size()) {
+            continue;
+        }
+        const Rule::Config& source = rules_[at];
+        Rule::Config copy = source;
+        copy.id += "-copy";
+        const auto taken = [this, &copies](const std::string& id) {
+            return std::any_of(rules_.begin(), rules_.end(),
+                               [&id](const Rule::Config& o) { return o.id == id; }) ||
+                   std::any_of(copies.begin(), copies.end(),
+                               [&id](const Rule::Config& o) { return o.id == id; });
+        };
+        for (int n = 2; taken(copy.id); ++n) {
+            copy.id = source.id + "-copy" + std::to_string(n);
+        }
+        if (!copy.name.empty()) {
+            copy.name += " copy";
+        }
+        // A different stream, or the copy would fire exactly what the original fires — which
+        // is never what duplicating a rule is for.
+        copy.seed = source.seed + 977;
+        copies.push_back(std::move(copy));
     }
-    if (!copy.name.empty()) {
-        copy.name += " copy";
+    const int after = sources.back() + 1;
+    rules_.insert(rules_.begin() + after, copies.begin(), copies.end());
+    // The copies are what the operator is now looking at, so they are what is selected.
+    chosen_.assign(rules_.size(), false);
+    for (std::size_t i = 0; i < copies.size(); ++i) {
+        chosen_[static_cast<std::size_t>(after) + i] = true;
     }
-    // A different stream, or the copy would fire exactly what the original fires — which is
-    // never what duplicating a rule is for.
-    copy.seed = source->seed + 977;
-    rules_.insert(rules_.begin() + selected_ + 1, copy);
-    ++selected_;
+    selected_ = after;
+    anchor_ = after;
     commit();
     publishSelected();
     publishFiring();
     window_->set_selected(selected_);
+}
+
+void RulesController::removeAt(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= chosen_.size() ||
+        !chosen_[static_cast<std::size_t>(index)]) {
+        pick(index);
+    }
+    remove();
+}
+
+void RulesController::duplicateAt(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= chosen_.size() ||
+        !chosen_[static_cast<std::size_t>(index)]) {
+        pick(index);
+    }
+    duplicate();
 }
 
 void RulesController::addRig(int index) {
@@ -714,7 +859,15 @@ void RulesController::addRig(int index) {
         }
         rules_.push_back(std::move(rule));
     }
-    selected_ = static_cast<int>(rules_.size()) - static_cast<int>(added.size());
+    // The whole rig that was just added, selected — so it can be re-routed or deleted again
+    // in one gesture, which is the other half of a preset being a starting point.
+    chosen_.assign(rules_.size(), false);
+    const int first = static_cast<int>(rules_.size()) - static_cast<int>(added.size());
+    for (std::size_t i = static_cast<std::size_t>(first); i < rules_.size(); ++i) {
+        chosen_[i] = true;
+    }
+    selected_ = first;
+    anchor_ = first;
     commit();
     publishSelected();
     publishFiring();
@@ -1015,6 +1168,25 @@ void RulesController::setFollowUpMs(double milliseconds) {
     }
 }
 
+void RulesController::setFollowUpBeats(double beats) {
+    if (Rule::Config* rule = current()) {
+        rule->followUpDelayBeats = std::max(0.0, beats);
+        commit();
+        publishSelected();
+    }
+}
+
+void RulesController::pickFollowUpUnit(int unit) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || unit < 0 ||
+        static_cast<std::size_t>(unit) >= trigger::kDelayUnits.size()) {
+        return;
+    }
+    rule->followUpUnit = trigger::kDelayUnits[static_cast<std::size_t>(unit)];
+    commit();
+    publishSelected();
+}
+
 void RulesController::pickSlotKind(int slot, int kind) {
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr || kind < 0 ||
@@ -1178,6 +1350,7 @@ void RulesController::publishList() {
         // By id, so a rule deleted from the middle does not hand its count to the one that
         // moves up into its place. See `firesSeen_`.
         row.fires = static_cast<int>(firesOf(config.id));
+        row.chosen = rows.size() < chosen_.size() && chosen_[rows.size()];
         rows.push_back(std::move(row));
     }
     // In place: this runs on the redraw timer whenever a rule fires, and the fire counts
@@ -1236,6 +1409,11 @@ void RulesController::publishSelected() {
     window_->set_follow_up(rule->followUp);
     window_->set_follow_up_value(shared(spellValue(rule->followUpValue)));
     window_->set_follow_up_ms(static_cast<float>(rule->followUpDelaySeconds * 1000.0));
+    window_->set_follow_up_beats(static_cast<float>(rule->followUpDelayBeats));
+    const auto unitIndex =
+        std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), rule->followUpUnit) -
+        trigger::kDelayUnits.begin();
+    window_->set_follow_up_unit(static_cast<int>(unitIndex));
 }
 
 void RulesController::publishOutputChoices() {

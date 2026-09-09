@@ -1,0 +1,68 @@
+# The fine-tune with the operator's own library in the mix (TRACKING-PROPOSAL.md §7.11,
+# step 2), pseudo-labelled by Beat This! through tools/train/distil.py.
+#
+# The library is the target domain — its tempo band and its feel are what every run of
+# 2026-09-08 lacked — so it carries weight 2, its validation split is what selection
+# reads first, and the 23 harness tracks are held out of it by layout.py. Raveform and
+# Ballroom stay in as ballast; osu2beat's fast half is out and everything electronic above
+# 150 is halved (octave.py --all), as in v4.
+#
+# Proportions, 2026-09-09, from the eleven playlists (1,325 tracks, 1,193 train): the
+# library at weight 2 is ~2,300 crops an epoch, Raveform 1,104, osu2beat 218. Ballroom
+# goes to weight 3 (3,075 crops with its genre repeats) so the regression guard keeps
+# about the share it had in v4, where it passed the real gate at epoch 24 (0.9514 on all
+# 698 clips) — with the library in at weight 2 and Ballroom at 2 it would have fallen from
+# 60 % of the data to 36 %.
+#
+# gate_margin is 0.025 rather than the 0.01 the real gate uses because the 70-clip CLI
+# proxy reads about 0.015 harsher than the whole set (§7.11): v4 read 0.930 in the run
+# and 0.9514 on all 698 clips. At 0.01 every validation of v4 failed, best.pt never left
+# epoch 0 and the run early-stopped at 40 with nothing selected. The real gate is still
+# the full evaluate.py run afterwards.
+name: electronic-library
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  library: 2
+  raveform: 1
+  osu2beat: 1
+  ballroom: 3
+max_bpm:
+  osu2beat: 160
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+stretch_min_bpm: 0
+max_epochs: 200
+val_every: 4
+patience: 10
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+cli_jobs: 6
+gate_set: ballroom
+gate_margin: 0.025
+select_sets: [library, raveform, osu2beat]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

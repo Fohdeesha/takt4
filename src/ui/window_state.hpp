@@ -11,6 +11,24 @@
 
 namespace takt4::ui {
 
+/// What each window opens at, in logical pixels.
+///
+/// **Set from C++, not from the markup's `preferred-width`/`preferred-height`.** Slint sizes a
+/// window from what its *content* asks for — `layout_info(...).preferred_bounded()` in the
+/// winit backend — so the Window element's own preferred size does not decide anything, and
+/// the rule editor opened at its `min-width` x `min-height` however large a preference the
+/// markup declared. `Window::set_size` before the first `show()` is what settles it: it marks
+/// the size explicit, and the backend then leaves it alone.
+///
+/// Only the first show. Whatever the operator drags a window to afterwards is theirs.
+inline constexpr float kMainWindowWidth = 1000.0f;
+/// Tall enough for the status bar — which holds the version — to be on screen with a couple
+/// of output rows above it. Short of this the bottom row is simply cut off.
+inline constexpr float kMainWindowHeight = 900.0f;
+/// Measured on a rig: what the editor was dragged to and asked to open at.
+inline constexpr float kRulesWindowWidth = 1164.0f;
+inline constexpr float kRulesWindowHeight = 872.0f;
+
 /// Frames of activation the trace holds: four seconds at the 50 Hz frame rate, which is
 /// two bars at 120 BPM — long enough to see the pattern the network is responding to.
 inline constexpr std::size_t kTraceLength = 200;

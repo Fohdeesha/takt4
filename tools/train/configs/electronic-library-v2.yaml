@@ -1,0 +1,68 @@
+# The library fine-tune, second recipe (TRACKING-PROPOSAL.md §7.13): the library is the
+# objective and Ballroom is no longer a gate.
+#
+# What changed from electronic-library.yaml, and why:
+#   - The labels are the mean of Beat This!'s three seeds (final0, final1, final2; distil.py
+#     --checkpoints), and a track whose seeds disagree with each other below 0.7 beat F is
+#     flagged teacher_disagree by layout.py and left out: where the teacher cannot agree
+#     with itself the label is a guess, and the first run showed the library moving least
+#     of the three sets, which is what noisy labels look like.
+#   - The library carries weight 3 and Ballroom 1 (its genre repeats kept, so the tempo
+#     extremes stay represented): the operator said on 2026-09-09 that Ballroom may drop —
+#     the library is what the rig plays. gate_margin 0.05 keeps Ballroom in the log and out
+#     of the selection; the real Ballroom number is still measured afterwards, for the record.
+#   - Selection reads the library alone, measured the way the rig runs: the window off (the
+#     application ships with it off, settings.hpp) and a bar of four alone (val_meters), the
+#     shipped default since the same day. With the window off the octave the model publishes
+#     is the octave the operator sees, so the selection holds it to the labels' convention.
+#   - The learning rate is 2e-4, twice v2-v4's: the 1e-4 was chosen to slow Ballroom's slide
+#     (§7.9), and Ballroom no longer decides anything here. Still under BeatNet+'s own 5e-4.
+name: electronic-library-v2
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  library: 3
+  raveform: 1
+  osu2beat: 1
+  ballroom: 1
+max_bpm:
+  osu2beat: 160
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting, teacher_disagree]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0002
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+stretch_min_bpm: 0
+max_epochs: 200
+val_every: 4
+patience: 8
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+val_bpm: "off"
+val_meters: "4"
+cli_jobs: 8
+gate_set: ballroom
+gate_margin: 0.05
+select_sets: [library]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

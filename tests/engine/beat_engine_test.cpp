@@ -57,6 +57,14 @@ std::unique_ptr<BeatEngine> makeEngine(BeatEngine::Options options = {}) {
     return std::make_unique<BeatEngine>(weights(), stateSpace(), options);
 }
 
+/// An engine on the particle filter, for the tests that are about it: the Phase 4 parity
+/// with `tools/pf_reference.py`, its meter, its frame count. The default engine is the
+/// forward filter since 2026-09-08 (`tracking::Decoder`), and the rest run on that.
+std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {}) {
+    options.decoder = takt4::tracking::Decoder::ParticleFilter;
+    return makeEngine(options);
+}
+
 } // namespace
 
 TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
@@ -92,7 +100,7 @@ TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
 
     std::size_t total = 0;
     for (const char* name : kExcerpts) {
-        auto engine = makeEngine();
+        auto engine = makeParticleEngine();
         const std::vector<float> samples = excerpt(name);
         const std::size_t hops = samples.size() / kHopSize;
         std::size_t frames = 0;
@@ -193,9 +201,11 @@ TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
 }
 
 TEST_CASE("the engine turns hops into tracked frames and beats", "[engine]") {
+    // On the particle filter, whose frame is the network's: one tracked frame per
+    // activation. The forward filter's two per activation are the test of its own below.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
 
     // Stepped by hand, without either thread: the same code path, deterministic.
     for (std::size_t h = 0; h < hops; ++h) {
@@ -249,7 +259,7 @@ TEST_CASE("the engine gives what composing the parts by hand gives", "[engine]")
     const std::vector<float> signal = excerpt("rale.wav");
     const std::size_t hops = signal.size() / kHopSize;
 
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
     std::vector<EngineFrame> viaEngine;
     for (std::size_t h = 0; h < hops; ++h) {
         engine->processHop(signal.data() + h * kHopSize, h);
@@ -293,21 +303,17 @@ TEST_CASE("the threads give what stepping by hand gives", "[engine]") {
             byHand.push_back(frame);
         }
     }
-    REQUIRE(byHand.size() == hops - 1);
+    // N hops give N - 1 activations; the first is one decoder frame and every later one
+    // `stepsPerActivation()` of them — one for the particle filter, two for the forward
+    // filter, which is the default this runs on.
+    REQUIRE(byHand.size() == 1 + (hops - 2) * stepped->stepsPerActivation());
 
     const std::unique_ptr<BeatEngine> threaded = makeEngine();
     threaded->start();
     CHECK(threaded->running());
     std::vector<EngineFrame> fromThreads;
     std::vector<EngineBeat> beats;
-    for (std::size_t h = 0; h < hops; ++h) {
-        threaded->processHop(signal.data() + h * kHopSize, h);
-        // Faster than real time on purpose, but never far enough ahead to overflow the
-        // model worker's 64-hop queue.
-        while (threaded->activations().hopsPending() >
-               takt4::model::ActivationEngine::kHopQueueCapacity / 2) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+    const auto drain = [&] {
         EngineFrame frame;
         while (threaded->popFrame(frame)) {
             fromThreads.push_back(frame);
@@ -316,6 +322,25 @@ TEST_CASE("the threads give what stepping by hand gives", "[engine]") {
         while (threaded->popBeat(beat)) {
             beats.push_back(beat);
         }
+    };
+    for (std::size_t h = 0; h < hops; ++h) {
+        threaded->processHop(signal.data() + h * kHopSize, h);
+        // Faster than real time on purpose, but never far enough ahead to overflow the
+        // model worker's 64-hop queue.
+        while (threaded->activations().hopsPending() >
+               takt4::model::ActivationEngine::kHopQueueCapacity / 2) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        drain();
+    }
+    // The throttle above watches the model worker's queue, not the inference thread's: a
+    // decoder slower than the network can still be a few hundred activations behind when
+    // the last hop has been handed over, and stop()'s final sweep would then put every
+    // frame it had left onto the ring at once, with nobody draining. Keep draining until
+    // the inference thread has caught up, as a live consumer on a timer does.
+    for (int waited = 0; waited < 5000 && fromThreads.size() < byHand.size(); ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        drain();
     }
     threaded->stop(); // drains what is left before joining
     {
@@ -363,7 +388,7 @@ TEST_CASE("the threads give what stepping by hand gives", "[engine]") {
 TEST_CASE("start() clears everything and reseeds the filter", "[engine]") {
     const std::vector<float> signal = excerpt("vic-acid.wav");
     const std::size_t hops = signal.size() / kHopSize;
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
 
     const auto runOnce = [&] {
         std::vector<std::uint32_t> gatherings;
@@ -391,9 +416,10 @@ TEST_CASE("start() clears everything and reseeds the filter", "[engine]") {
 }
 
 TEST_CASE("a consumer that never drains loses frames instead of blocking", "[engine]") {
+    // On the particle filter, whose 499 frames over this excerpt fit the ring once.
     const std::vector<float> signal = excerpt("winter-now.wav");
     const std::size_t hops = signal.size() / kHopSize;
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
 
     // 499 frames into a 512-slot ring fits; nothing is dropped by accident.
     for (std::size_t h = 0; h < hops; ++h) {
@@ -514,9 +540,13 @@ TEST_CASE("tapping a tempo out on a clock moves what the engine publishes", "[en
     // The whole of what the console's space key does, minus the keypress: taps counted on
     // the thread they arrive on, the tempo they work out posted as a command, the tracker
     // moved onto the operator's octave. Nothing about a wall clock reaches the engine.
+    //
+    // On the particle filter, whose tap is `TempoTracker`'s fold: the window moves and the
+    // number is relabelled into it at once. The forward filter's tap is a prior inside the
+    // decoder and is the test after next.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
 
     std::size_t h = 0;
     for (; h < hops && !engine->state().locked; ++h) {
@@ -551,10 +581,11 @@ TEST_CASE("tapping a tempo out on a clock moves what the engine publishes", "[en
 
 TEST_CASE("a tapped tempo reaches the tracker and moves the window", "[engine]") {
     // The other end of tracking::TapTempo: taps are counted wherever they arrive and only
-    // the tempo travels, so nothing about a wall clock reaches the inference thread.
+    // the tempo travels, so nothing about a wall clock reaches the inference thread. On the
+    // particle filter, as the test above.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
-    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
 
     std::size_t h = 0;
     for (; h < hops && !engine->state().locked; ++h) {
@@ -579,6 +610,62 @@ TEST_CASE("a tapped tempo reaches the tracker and moves the window", "[engine]")
     CHECK(engine->state().bpm == Approx(64.0).margin(2.0));
     CHECK(engine->state().locked);
     CHECK(engine->commandsDropped() == 0);
+}
+
+TEST_CASE("under the forward filter a tap is a prior, and the number stays with the beats",
+          "[engine][forward]") {
+    // TRACKING-PROPOSAL.md §2.6: with the window inside the decoder, a tap moves the window
+    // and the decoder weighs it as evidence — an octave outside it has to keep out-arguing
+    // a per-frame penalty. On a track whose octave is ambiguous that decides it; on a drum
+    // machine playing plain quarter notes at 128 the evidence for 128 outweighs a window
+    // asking for 64, and the readout *stays* at 128, with the beats. What is never
+    // published is the particle filter's old state of a number relabelled to 64 over beats
+    // still firing at 128. The operator who wants half-time beats presses ÷2, which is an
+    // instruction and divides the grid; the operator who wants a tempo held pins the lock.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    REQUIRE(engine->decoderKind() == takt4::tracking::Decoder::Forward);
+
+    std::size_t h = 0;
+    for (; h < hops && !engine->state().locked; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().locked);
+    REQUIRE(engine->state().bpm == Approx(128.0).margin(4.0));
+
+    REQUIRE(engine->post(Command::seedTempo(64.0)));
+    CHECK(engine->step() == 0);
+    // The window moved, and it is the decoder's now.
+    CHECK(engine->tempoOptions().minBpm < 64.0);
+    CHECK(engine->tempoOptions().maxBpm > 64.0);
+    CHECK(engine->tempoOptions().octaveFold);
+    CHECK(engine->tempo().options().foldInDecoder);
+
+    std::vector<EngineBeat> beats;
+    EngineBeat beat;
+    for (; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popBeat(beat)) {
+            beats.push_back(beat);
+        }
+    }
+    // The evidence won: 128, and the beats a quarter note apart under it.
+    CHECK(engine->state().bpm == Approx(128.0).margin(4.0));
+    REQUIRE(beats.size() > 8);
+    for (std::size_t i = 1; i < beats.size(); ++i) {
+        INFO("beat " << i);
+        CHECK(beats[i].event.time - beats[i - 1].event.time == Approx(60.0 / 128.0).margin(0.08));
+    }
+
+    SECTION("the instruction that does halve the grid is the octave shift") {
+        REQUIRE(engine->post(Command::halve()));
+        CHECK(engine->step() == 0);
+        CHECK(engine->state().bpm == Approx(64.0).margin(3.0));
+        CHECK(engine->state().beatDivisor == 2);
+    }
 }
 
 TEST_CASE("a manual downbeat reaches the tracker and moves the bar", "[engine]") {
@@ -660,23 +747,39 @@ TEST_CASE("a command crosses from another thread into the inference thread", "[e
     engine->start();
 
     bool posted = false;
-    for (std::size_t h = 0; h < hops; ++h) {
-        engine->processHop(signal.data() + h * kHopSize, h);
-        while (engine->activations().hopsPending() >
-               takt4::model::ActivationEngine::kHopQueueCapacity / 2) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+    const auto drain = [&] {
         EngineFrame frame;
         while (engine->popFrame(frame)) {
         }
         EngineBeat beat;
         while (engine->popBeat(beat)) {
         }
+    };
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        while (engine->activations().hopsPending() >
+               takt4::model::ActivationEngine::kHopQueueCapacity / 2) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        drain();
         if (!posted && engine->state().locked) {
             REQUIRE(engine->post(Command::halve()));
             posted = true;
         }
     }
+    // The feed above is throttled on the model worker's queue and not on the inference
+    // thread's, so a decoder slower than the network can still be tracking the excerpt when
+    // the last hop has been handed over. Give it the time it is owed.
+    for (int waited = 0; !posted && waited < 2000; ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        drain();
+        if (engine->state().locked) {
+            REQUIRE(engine->post(Command::halve()));
+            posted = true;
+        }
+    }
+    // And for the command itself to be applied before the threads are joined.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     engine->stop();
 
     REQUIRE(posted);
@@ -685,20 +788,104 @@ TEST_CASE("a command crosses from another thread into the inference thread", "[e
     CHECK(engine->commandsDropped() == 0);
 }
 
+TEST_CASE("the forward decoder runs at twice the network's rate and tracks the excerpt",
+          "[engine][forward]") {
+    // TRACKING-PROPOSAL.md §2.4 and §2.5 through the whole engine: the forward filter at
+    // 100 fps, fed the network's activations with the frames between them interpolated,
+    // and the tempo state machine at that rate. Everything a consumer sees is in seconds
+    // or flagged, so nothing above the engine has to know.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    BeatEngine::Options options;
+    options.decoder = takt4::tracking::Decoder::Forward;
+    const std::unique_ptr<BeatEngine> engine = makeEngine(options);
+    CHECK(engine->decoderKind() == takt4::tracking::Decoder::Forward);
+    CHECK(makeEngine()->decoderKind() == takt4::tracking::Decoder::Forward); // the default
+    CHECK(engine->secondsPerFrame() == Approx(0.01));
+    CHECK(engine->stepsPerActivation() == 2);
+    // The window is the decoder's now, not the tracker's.
+    CHECK(engine->tempo().options().foldInDecoder);
+    CHECK_FALSE(makeParticleEngine()->tempo().options().foldInDecoder);
+    CHECK(makeParticleEngine()->secondsPerFrame() == Approx(0.02));
+
+    // Drained as it goes: twice the frames of the particle filter is more than the ring
+    // holds over this excerpt, and a frame left on it is a frame counted as dropped.
+    EngineFrame frame;
+    std::uint64_t expected = 0;
+    std::size_t beatFrames = 0;
+    std::size_t interpolated = 0;
+    std::vector<EngineBeat> beats;
+    EngineBeat beat;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popFrame(frame)) {
+            CHECK(frame.tracked.frameIndex == expected);
+            // Frame 0 is the first activation; from there the odd frames are in between.
+            CHECK(frame.interpolated == (expected % 2 == 1));
+            interpolated += frame.interpolated ? 1 : 0;
+            beatFrames += frame.beat ? 1 : 0;
+            ++expected;
+        }
+        while (engine->popBeat(beat)) {
+            beats.push_back(beat);
+        }
+    }
+    // N hops give N - 1 activations; the first yields one frame and every later one two.
+    const std::size_t activations = hops - 1;
+    CHECK(engine->framesTracked() == 2 * activations - 1);
+    CHECK(engine->framesDropped() == 0);
+    CHECK(expected == 2 * activations - 1);
+    CHECK(interpolated == activations - 1);
+    CHECK(beats.size() == beatFrames);
+    CHECK(beats.size() > 15);
+    // A quarter note apart once locked; before that the posterior is still choosing.
+    std::size_t lockedGaps = 0;
+    for (std::size_t i = 1; i < beats.size(); ++i) {
+        INFO("beat " << i);
+        CHECK(beats[i].event.time > beats[i - 1].event.time);
+        if (beats[i].state.locked && beats[i - 1].state.locked) {
+            CHECK(beats[i].event.time - beats[i - 1].event.time ==
+                  Approx(60.0 / 128.0).margin(0.06));
+            ++lockedGaps;
+        }
+    }
+    CHECK(lockedGaps > 10);
+    CHECK(engine->state().locked);
+    CHECK(engine->state().bpm == Approx(128.0).margin(2.0));
+
+    SECTION("pinning the lock holds the decoder's tempo, and releasing it lets go") {
+        const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+        REQUIRE(forward != nullptr);
+        CHECK(forward->heldBpm() == 0.0);
+        REQUIRE(engine->post(Command::setLockPinned(true)));
+        CHECK(engine->step() == 0);
+        CHECK(engine->state().pinned);
+        CHECK(forward->heldBpm() == Approx(engine->state().bpm));
+        REQUIRE(engine->post(Command::setLockPinned(false)));
+        CHECK(engine->step() == 0);
+        CHECK(forward->heldBpm() == 0.0);
+        // And the direct command, which a control surface may send by name.
+        REQUIRE(engine->post(Command::holdTempo(120.0)));
+        CHECK(engine->step() == 0);
+        CHECK(forward->heldBpm() == Approx(120.0));
+    }
+}
+
 TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {
     BeatEngine::Options options;
     options.tempo.minBpm = 90.0;
     options.tempo.maxBpm = 180.0;
     options.tempo.latencyOffsetSeconds = -0.025;
     options.filter.seed = 20260903;
-    const std::unique_ptr<BeatEngine> engine = makeEngine(options);
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine(options);
 
     CHECK(engine->tempo().options().minBpm == Approx(90.0));
     CHECK(engine->tempo().options().maxBpm == Approx(180.0));
     CHECK(engine->tempo().fold(200.0) == Approx(100.0));
 
     // A different seed is a different run of the same filter, and the engine passed it on.
-    const std::unique_ptr<BeatEngine> other = makeEngine();
+    const std::unique_ptr<BeatEngine> other = makeParticleEngine();
     const std::vector<float> signal = excerpt("pirates.wav");
     const std::size_t hops = signal.size() / kHopSize;
     std::vector<std::uint32_t> a;

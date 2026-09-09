@@ -1,58 +1,15 @@
 #pragma once
 
+#include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/random.hpp"
 #include "core/tracking/state_space.hpp"
+#include "core/tracking/tracked_frame.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace takt4::tracking {
-
-/// What the tracker made of one 50 Hz activation frame.
-struct TrackedFrame {
-    enum class Emitted : std::uint8_t { None = 0, Downbeat = 1, Beat = 2 };
-
-    std::uint64_t frameIndex = 0; ///< frames since the filter was reset
-    Emitted emitted = Emitted::None;
-
-    /// The median of the beat particles, taken before this frame's motion. Every
-    /// decision the filter makes rests on it; the reference calls it `gathering`.
-    std::uint32_t gathering = 0;
-    /// The commonest downbeat particle, updated only on frames that could carry a beat.
-    std::uint32_t downMax = 0;
-
-    std::uint32_t intervalFrames = 0; ///< the cloud's beat period, in whole frames
-    /// The same period without the state space's integer quantisation: the mean over the
-    /// particles sitting on the median's tempo or either neighbour of it. madmom's
-    /// intervals are whole frames, so at 130 BPM the nearest two are 130.43 and 125.00
-    /// and there is nothing in between; a real tempo lands between them and the cloud
-    /// straddles both, which is what this reads.
-    double refinedIntervalFrames = 0.0;
-    double bpm = 0.0;              ///< from refinedIntervalFrames, so it is continuous
-    double phase = 0.0;            ///< how far through the beat the cloud is, 0 to 1
-    std::uint32_t beatsPerBar = 0; ///< the meter the downbeat cloud settled on
-    /// How much of the cloud agrees with the median's tempo, 0 to 1. Not upstream's —
-    /// it publishes no confidence — but the natural one to gate on (§5.5).
-    double tempoAgreement = 0.0;
-
-    /// The network's own opinion of this frame, carried through untouched.
-    ///
-    /// The filter makes no further use of these — they are its *input* — but the layer
-    /// above needs them, and this is the only structure that crosses between the two. When
-    /// `TempoTracker`'s octave fold halves the beat grid it has to decide *which* half of
-    /// the filter's beats are the real ones, and the network already answered that: over
-    /// the double-time passages of `references/audio`'s "03 - Fake Sweat" the sub-sequence
-    /// carrying the kick averages 0.50 against 0.29 for the one between. See
-    /// `Options::foldBeats`.
-    ///
-    /// Their sum is P(this frame is a beat of any kind), because the model's three classes
-    /// are a softmax over beat / downbeat / non-beat: a downbeat frame reads high on
-    /// `downbeatActivation` and *low* on `beatActivation`, so either one alone would call
-    /// every bar start a weak beat.
-    float beatActivation = 0.0f;
-    float downbeatActivation = 0.0f;
-};
 
 /// BeatNet+'s two-stage particle filter cascade (HANDOFF §5.4), ported.
 ///
@@ -74,7 +31,7 @@ struct TrackedFrame {
 /// Allocation happens when the filter is built or reset, never in process(): §4.2 puts
 /// this on the inference thread, which may allocate, but the resampling step is
 /// data-dependent in cost and there is no reason to add a heap to that.
-class ParticleFilter {
+class ParticleFilter final : public BeatDecoder {
 public:
     struct Options {
         std::size_t particles = 1500;        ///< upstream's PARTICLE_SIZE
@@ -92,10 +49,14 @@ public:
     explicit ParticleFilter(const StateSpaceModel& model);
 
     /// Back to the state a freshly built filter is in, same seed and all.
-    void reset() noexcept;
+    void reset() noexcept override;
 
     /// One frame of class probabilities in, one decision out.
-    TrackedFrame process(float beatActivation, float downbeatActivation) noexcept;
+    TrackedFrame process(float beatActivation, float downbeatActivation) noexcept override;
+
+    /// The blob's frame rate: 50 Hz, the network's own.
+    double secondsPerFrame() const noexcept override { return model_->secondsPerFrame(); }
+    const char* name() const noexcept override { return "particle filter"; }
 
     const StateSpaceModel& model() const noexcept { return *model_; }
     const Options& options() const noexcept { return options_; }

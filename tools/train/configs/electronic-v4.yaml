@@ -1,0 +1,58 @@
+# The electronic fine-tune, fourth recipe: the octave convention made consistent
+# (TRACKING-PROPOSAL.md §7.11, step 1).
+#
+# v2 and v3 doubled the operator's 85–95 BPM tracks because the fast tracks that kept
+# their annotated octave — half of Raveform's drum and bass, and osu2beat's game music
+# at 160–280 with a kick on every beat — went on teaching that a grid at 170–190 is a
+# beat grid. Here every electronic track above 150 BPM is halved (`octave.py --all`,
+# the kick choosing which beats are kept) and osu2beat's tracks faster than 160 are
+# left out, so nothing in the electronic data calls a fast grid the beat. Ballroom's
+# Quicksteps and Jives keep their annotated tempi (they are the gate), repeated as
+# before. Run octave.py --all before this; run it without --all to go back.
+name: electronic-v4
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+max_bpm:
+  osu2beat: 160
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+stretch_min_bpm: 0
+max_epochs: 200
+val_every: 4
+patience: 10
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+cli_jobs: 6
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

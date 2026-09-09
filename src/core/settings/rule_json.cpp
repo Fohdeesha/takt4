@@ -282,6 +282,12 @@ json ruleToJson(const Rule::Config& rule) {
         out["followUp"] = true;
         out["followUpValue"] = valueToJson(rule.followUpValue);
         out["followUpDelaySeconds"] = rule.followUpDelaySeconds;
+        // Both, always, so a preset switched between the two units does not lose the number
+        // it is not currently using — the two are different magnitudes of the same idea and
+        // neither is derivable from the other. A file from a build before either existed
+        // reads back as milliseconds, which is what it meant.
+        out["followUpUnit"] = std::string(trigger::nameOf(rule.followUpUnit));
+        out["followUpDelayBeats"] = rule.followUpDelayBeats;
     }
     return out;
 }
@@ -308,6 +314,8 @@ Rule::Config ruleFromJson(const json& node) {
     read(node, "channel", rule.channel);
     read(node, "followUp", rule.followUp);
     read(node, "followUpDelaySeconds", rule.followUpDelaySeconds);
+    readNamed(node, "followUpUnit", rule.followUpUnit, trigger::delayUnitOf);
+    read(node, "followUpDelayBeats", rule.followUpDelayBeats);
     read(node, "seed", rule.seed);
 
     if (node.contains("conditions")) {

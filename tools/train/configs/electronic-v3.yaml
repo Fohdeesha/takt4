@@ -1,0 +1,60 @@
+# The electronic fine-tune, third recipe (TRACKING-PROPOSAL.md §7.9).
+#
+# v2 (halved labels, genre repeats, CLI validation) gained 0.06 on Raveform's and
+# osu2beat's validation tracks through the shipped decoder, but on the operator's 23
+# tracks it doubled every track at 85–95 BPM to 170–184 (Fake Sweat 0.969 -> 0.612,
+# Jensen Interceptor 0.890 -> 0.643): the fast tracks kept at their annotated octave had
+# taught the network that a grid at 170–190 is a beat grid, and nothing in the data said
+# otherwise at 85–95 BPM, a band Raveform barely covers and the operator's library lives
+# in. v2's slow Waltzes also came out 50–70 ms early, and osu2beat's labels were measured
+# a frame earlier than the other sets'. Hence, on top of v2:
+#   - osu2beat's labels moved one frame later (tools/train/shift_labels.py), then re-halved;
+#   - time-stretch of tracks at 100 BPM or faster by 1.0–1.5 with probability 0.5:
+#     128 BPM house becomes 85–128 BPM house whose hi-hat eighths, at 170–256, are
+#     labelled as non-beats — the counter-example; nothing is sped up;
+#   - Waltz three times over instead of twice.
+name: electronic-v3
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.5]
+stretch_prob: 0.5
+stretch_min_bpm: 100
+max_epochs: 200
+val_every: 4
+patience: 10
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+cli_jobs: 6
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

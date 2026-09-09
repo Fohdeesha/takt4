@@ -14,6 +14,7 @@ add_executable(takt4_tests
   audio/host_apis_test.cpp
   audio/input_pipeline_test.cpp
   audio/input_stream_test.cpp
+  audio/playback_stream_test.cpp
   audio/resampler_test.cpp
   control/midi_binding_test.cpp
   control/midi_control_test.cpp
@@ -45,6 +46,8 @@ add_executable(takt4_tests
   settings/settings_test.cpp
   rt/published_test.cpp
   rt/spsc_ring_test.cpp
+  tracking/annotation_test.cpp
+  tracking/forward_filter_test.cpp
   tracking/particle_filter_test.cpp
   tracking/state_space_test.cpp
   tracking/tap_tempo_test.cpp

@@ -7,6 +7,8 @@
 #include "core/model/weights.hpp"
 #include "core/rt/published.hpp"
 #include "core/rt/spsc_ring.hpp"
+#include "core/tracking/beat_decoder.hpp"
+#include "core/tracking/forward_filter.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -21,8 +23,8 @@
 
 namespace takt4::engine {
 
-/// One 50 Hz frame: what the network said, what the filter made of it, and what the
-/// tempo state machine was publishing when it did.
+/// One frame of the decoder's clock: what the network said, what the decoder made of it,
+/// and what the tempo state machine was publishing when it did.
 ///
 /// This is what §5.9's activation trace draws — "the CRNN hands you a 50 Hz probability
 /// signal, and scrolling it live makes the app feel diagnostic rather than magical" — so
@@ -33,6 +35,11 @@ struct EngineFrame {
     tracking::TempoState state;
     /// True on the frames where a beat was called; the beat itself is on the beat ring.
     bool beat = false;
+    /// True when the activation is one the engine made up between two of the network's,
+    /// for a decoder running faster than 50 Hz (see `BeatEngine::stepsPerActivation`). A
+    /// trace drawn at the network's rate skips these — and carries `beat` forward if one
+    /// landed here, because the beat is real even though the activation is interpolated.
+    bool interpolated = false;
 };
 
 /// One beat, with everything an output transport needs and nothing it has to look up.
@@ -73,13 +80,21 @@ struct EngineIntensity {
 ///
 ///     audio thread   processHop -> ActivationEngine's ring        (copies, nothing else)
 ///     model worker   features, BeatNet+                          (ActivationEngine owns it)
-///     inference      particle filter, tempo state machine        (this class owns it)
+///     inference      the decoder, the tempo state machine        (this class owns it)
 ///     consumers      popFrame for the trace, popBeat for output  (lock-free rings)
 ///
 /// §4.2 wants the particle filter off the audio thread because "the particle filter's
 /// resampling step is data-dependent in cost", and off the caller's loop because a UI
 /// timer or a console print must not decide when a beat is noticed. It allocates on
 /// construction and on reset, and nothing on either thread after that.
+///
+/// **The decoder is one of two** (`tracking::Decoder`): the particle filter, which is
+/// upstream's algorithm and runs on the network's 50 Hz frames, or the exact forward
+/// filter, which runs at 100 Hz on activations this class interpolates between the
+/// network's — TRACKING-PROPOSAL.md §2.4 and §2.5. Whichever it is, `TempoTracker` runs at
+/// the decoder's frame rate and every time this class hands out is in seconds, so nothing
+/// outside knows the difference except through `secondsPerFrame()` and
+/// `EngineFrame::interpolated`.
 ///
 /// **What this deliberately does not own: the transports.** Link, OSC and MIDI are the
 /// output thread's business (§4.2 again), and keeping them out means `core/engine` does
@@ -92,7 +107,8 @@ struct EngineIntensity {
 /// About a quarter of a megabyte of rings and weights, so it belongs on the heap.
 class BeatEngine final : public audio::HopProcessor {
 public:
-    /// Frames a consumer may fall behind by: 10 s at 50 Hz, as ActivationEngine's own.
+    /// Frames a consumer may fall behind by: 10 s at 50 Hz, as ActivationEngine's own,
+    /// and 5 s at the forward filter's 100.
     static constexpr std::size_t kFrameQueueCapacity = 512;
     /// Beats a consumer may fall behind by. 256 is a couple of minutes of them.
     static constexpr std::size_t kBeatQueueCapacity = 256;
@@ -101,7 +117,12 @@ public:
     static constexpr std::chrono::microseconds kIdleSleep{2000};
 
     struct Options {
+        /// Which decoder, and each one's own settings; only the chosen one is built. The
+        /// forward filter is the default — see `tracking::Decoder` for the measurements
+        /// that made it so — and the particle filter is a choice.
+        tracking::Decoder decoder = tracking::Decoder::Forward;
         tracking::ParticleFilter::Options filter;
+        tracking::ForwardFilter::Options forward;
         tracking::TempoTracker::Options tempo;
     };
 
@@ -171,6 +192,17 @@ public:
     const model::ActivationEngine& activations() const noexcept { return *activations_; }
     const tracking::StateSpaceModel& stateSpace() const noexcept { return *model_; }
 
+    /// The decoder, for reading. Only safe to write through while stopped, or from the
+    /// inference thread; the commands are the way in otherwise.
+    const tracking::BeatDecoder& decoder() const noexcept { return *decoder_; }
+    tracking::Decoder decoderKind() const noexcept { return decoderKind_; }
+    /// One frame of the decoder's clock, in seconds: what `EngineFrame`s and beats are
+    /// timed in. 0.02 for the particle filter, 0.01 for the forward filter.
+    double secondsPerFrame() const noexcept { return decoder_->secondsPerFrame(); }
+    /// Decoder frames per network activation: one, or two when the decoder runs at twice
+    /// the network's rate, the second being interpolated between the last two activations.
+    std::size_t stepsPerActivation() const noexcept { return stepsPerActivation_; }
+
     std::uint64_t framesTracked() const noexcept {
         return framesTracked_.load(std::memory_order_relaxed);
     }
@@ -183,8 +215,9 @@ public:
     std::uint64_t beatsDropped() const noexcept {
         return beatsDropped_.load(std::memory_order_relaxed);
     }
-    /// The worst and the mean time the inference thread has taken over one frame, in
-    /// microseconds. One frame is 20000 µs of audio.
+    /// The worst and the mean time the inference thread has taken over one activation —
+    /// every decoder step it took for it — in microseconds. One activation is 20000 µs
+    /// of audio.
     double worstFrameMicros() const noexcept {
         return worstFrameMicros_.load(std::memory_order_relaxed);
     }
@@ -192,17 +225,30 @@ public:
 
 private:
     void run() noexcept;
-    /// One activation through the filter and the tempo machine. On the inference thread.
+    /// One activation through the decoder and the tempo machine — as many decoder steps
+    /// as the decoder's rate asks for. On the inference thread.
     void track(const model::FrameActivation& activation) noexcept;
+    /// One decoder step.
+    void trackOne(const model::FrameActivation& activation, bool interpolated) noexcept;
     /// Everything posted since the last frame, in order. On the inference thread, or on
     /// the caller's while the engine is stopped — never on both at once.
     void applyCommands() noexcept;
+    /// Hands the tracker's window to a decoder that takes one. After any command, because
+    /// a tap moves the window.
+    void syncDecoder() noexcept;
 
     const tracking::StateSpaceModel* model_;
     // On the heap: ActivationEngine carries 130 KB of rings and the network's weights.
     std::unique_ptr<model::ActivationEngine> activations_;
-    tracking::ParticleFilter filter_;
+    tracking::Decoder decoderKind_;
+    /// Before `tempo_`, which is built at its frame rate.
+    std::unique_ptr<tracking::BeatDecoder> decoder_;
     tracking::TempoTracker tempo_;
+    std::size_t stepsPerActivation_ = 1;
+    /// The activation before this one, to interpolate from. Only the inference thread
+    /// touches these.
+    model::FrameActivation previous_;
+    bool havePrevious_ = false;
 
     rt::SpscRing<EngineFrame, kFrameQueueCapacity> frames_;
     rt::SpscRing<EngineBeat, kBeatQueueCapacity> beats_;

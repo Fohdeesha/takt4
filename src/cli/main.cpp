@@ -2,6 +2,8 @@
 // channel, print RMS; Phase 2: run the feature front end over a file). Links
 // takt4_core only; never packaged.
 
+#include "cli/annotate.hpp"
+#include "cli/console.hpp"
 #include "core/audio/channel_meter.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
@@ -26,6 +28,8 @@
 #include "core/output/output_runner.hpp"
 #include "core/output/transports.hpp"
 #include "core/rt/alloc_guard.hpp"
+#include "core/tracking/beat_decoder.hpp"
+#include "core/tracking/forward_filter.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tap_tempo.hpp"
@@ -66,6 +70,8 @@
 namespace {
 
 using namespace std::chrono_literals;
+using takt4::cli::KeyReader;
+using takt4::cli::resolveWeights;
 
 std::atomic<bool> g_interrupted{false};
 
@@ -103,8 +109,10 @@ void printUsage(std::ostream& out) {
         << "                  [--weights SET|PATH] [--software] [--rate HZ] [--seconds S]\n"
         << "      Run the feature front end and the BeatNet+ model over a file or a live\n"
         << "      input and print P(beat), P(downbeat) and P(non-beat) as they come.\n"
-        << "      --weights S     generic (default), generic-main, af-non-percussive, or a\n"
-        << "                      path to a .bin from tools/convert_weights.py\n"
+        << "      --weights S     electronic (default: the built-in set, generic fine-tuned on\n"
+        << "                      the operator's library), generic, generic-main,\n"
+        << "                      af-non-percussive, or a path to a .bin from\n"
+        << "                      tools/convert_weights.py\n"
         << "      The other options are the meter's, and mean the same.\n"
         << "\n"
         << "  takt4-cli track (IN.wav | --device N (--channel C | --channels A,B))\n"
@@ -112,7 +120,7 @@ void printUsage(std::ostream& out) {
         << "                  [--confidence T] [--seed N] [--link] [--osc HOST:PORT]\n"
         << "                  [--osc-prefix /NAME] [--midi-clock PORT]\n"
         << "                  [--software] [--rate HZ] [--seconds S]\n"
-        << "      The whole chain: features, model, particle filter, tempo state machine\n"
+        << "      The whole chain: features, model, the decoder, tempo state machine\n"
         << "      and the output transports. Prints a line per beat with the tempo, the\n"
         << "      bar position and the meter, and a status line while it waits.\n"
         << "      --bpm LO-HI     the octave-fold window, default 70-140; \"off\" leaves\n"
@@ -120,13 +128,34 @@ void printUsage(std::ostream& out) {
         << "      --latency MS    added to every beat's timestamp; negative fires early\n"
         << "      --confidence T  hold the last tempo below this, default 0.15\n"
         << "      --seed N        the particle filter's seed, default 1\n"
-        << "      --trace FILE    write every 50 Hz frame as a TSV: the activations, the\n"
+        << "      --decoder D     forward (default): the exact forward filter over madmom's\n"
+        << "                      bar-pointer state space at 100 fps (TRACKING-PROPOSAL.md\n"
+        << "                      §2.4); or pf, BeatNet+'s particle filter at 50 fps\n"
+        << "      --statespace S  the particle filter's state-space blob: a name under\n"
+        << "                      assets/statespace/ (default \"default\") or a path\n"
+        << "      --emission E    forward only: peak (default), the activation's peak in\n"
+        << "                      the beat range; map, the MAP state crossing a beat; or\n"
+        << "                      mean, the posterior's mean phase predicted 60 ms ahead\n"
+        << "      --meters A,B    forward only: the bar lengths modelled, default 4 (3,4 puts\n"
+        << "                      the waltz back; TRACKING-PROPOSAL.md §7.7)\n"
+        << "      --decoder-fps N forward only: its frame rate, default 100\n"
+        << "      --meter-margin M, --meter-change P, --meter-floor S, --floor E,\n"
+        << "      --predict F     forward only, for tuning: the meter's incumbent margin,\n"
+        << "                      the probability of a meter change at a bar, the least\n"
+        << "                      share a meter's chain is kept at, the share of the\n"
+        << "                      posterior spread uniformly each frame, and how many\n"
+        << "                      frames ahead the mean-phase rule commits a beat\n"
+        << "      --hold BPM      pin the decoder to this tempo and track phase only\n"
+        << "                      (forward only; the particle filter cannot)\n"
+        << "      --trace FILE    write every decoder frame as a TSV: the activations, the\n"
         << "                      cloud's tempo and agreement, and what was published. A\n"
         << "                      diagnostic for \"the tempo moved and I want to know\n"
         << "                      which layer moved it\", not an output. `emitted` is the\n"
         << "                      beat the filter called and `published` the one that left\n"
         << "                      the tracker; they differ wherever the fold divides the\n"
-        << "                      grid. tools/trace_stability.py reads both\n"
+        << "                      grid. tools/trace_stability.py reads both. `interp` is 1\n"
+        << "                      on a frame the engine interpolated for a decoder faster\n"
+        << "                      than the network\n"
         << "      --out FILE      write every beat as <seconds> TAB <beat in bar> TAB\n"
         << "                      <BPM>; the first two columns are the format the\n"
         << "                      beat-tracking datasets annotate in\n"
@@ -143,8 +172,9 @@ void printUsage(std::ostream& out) {
         << "      a console: MinTTY, which Git Bash uses, is not one, and the banner says\n"
         << "      so when the keys are unavailable.\n"
         << "      The other options are the meter's and `beats`', and mean the same.\n"
-        << "\n"
-        << "  takt4-cli --version\n";
+        << "\n";
+    takt4::cli::printAnnotateUsage(out);
+    out << "  takt4-cli --version\n";
 }
 
 struct MeterArgs {
@@ -536,7 +566,9 @@ int runFeatures(const std::vector<std::string_view>& args) {
 struct BeatsArgs {
     std::optional<std::filesystem::path> file; // offline instead of a device
     MeterArgs stream;
-    std::string weights = "generic";
+    /// The set the application builds in — so an evaluation with no `--weights` measures
+    /// what ships. `generic` and the other two published sets are there by name.
+    std::string weights = "electronic";
 };
 
 BeatsArgs parseBeatsArgs(const std::vector<std::string_view>& args) {
@@ -573,16 +605,6 @@ BeatsArgs parseBeatsArgs(const std::vector<std::string_view>& args) {
         throw std::invalid_argument("beats tracks one input, not --all");
     }
     return out;
-}
-
-// A bare name is one of the committed sets; anything with a separator or a suffix is
-// taken as a path, so a set converted somewhere else can be tried without a rebuild.
-std::filesystem::path resolveWeights(const std::string& spec) {
-    const std::filesystem::path given(spec);
-    if (given.has_parent_path() || given.has_extension()) {
-        return given;
-    }
-    return std::filesystem::path(TAKT4_WEIGHTS_DIR) / (spec + ".bin");
 }
 
 std::string formatProbability(float value) {
@@ -713,6 +735,14 @@ struct TrackArgs {
     BeatsArgs beats;
     takt4::tracking::TempoTracker::Options tempo;
     std::uint64_t seed = 1;
+    /// Which decoder, and the forward filter's own settings when it is that one. The
+    /// default is the application's, so an evaluation measures what ships.
+    takt4::tracking::Decoder decoder = takt4::tracking::Decoder::Forward;
+    takt4::tracking::ForwardFilter::Options forward;
+    /// The particle filter's state-space blob: a name under assets/statespace/, or a path.
+    std::string stateSpace = "default";
+    /// A tempo to pin the decoder to from the first frame; zero for none.
+    double holdBpm = 0.0;
     bool link = false;
     std::optional<std::filesystem::path> beatsOut;
     /// Every 50 Hz frame, not just the beats: what the cloud said, what was published, and
@@ -768,6 +798,70 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             out.tempo.confidenceThreshold = parseDouble(value(), arg);
         } else if (arg == "--seed") {
             out.seed = static_cast<std::uint64_t>(parseInt(value(), arg));
+        } else if (arg == "--decoder") {
+            const std::string_view which = value();
+            if (which == "pf" || which == "particle") {
+                out.decoder = takt4::tracking::Decoder::ParticleFilter;
+            } else if (which == "forward") {
+                out.decoder = takt4::tracking::Decoder::Forward;
+            } else {
+                throw std::invalid_argument("--decoder expects pf or forward");
+            }
+        } else if (arg == "--statespace") {
+            out.stateSpace = std::string(value());
+        } else if (arg == "--emission") {
+            const std::string_view which = value();
+            if (which == "map") {
+                out.forward.emission = takt4::tracking::ForwardFilter::Emission::MapCrossing;
+            } else if (which == "mean") {
+                out.forward.emission = takt4::tracking::ForwardFilter::Emission::MeanPhase;
+            } else if (which == "peak") {
+                out.forward.emission = takt4::tracking::ForwardFilter::Emission::Peak;
+            } else {
+                throw std::invalid_argument("--emission expects map, mean or peak");
+            }
+        } else if (arg == "--meters") {
+            // "3,4": up to four bar lengths, each a small positive number.
+            const std::string list(value());
+            out.forward.meters.fill(0);
+            std::size_t count = 0;
+            std::size_t from = 0;
+            while (from <= list.size()) {
+                const std::size_t comma = list.find(',', from);
+                const std::string_view item =
+                    std::string_view(list).substr(from, comma == std::string::npos ? std::string::npos
+                                                                                   : comma - from);
+                const int meter = parseInt(item, arg);
+                if (meter < 1 || meter > 16 || count >= out.forward.meters.size()) {
+                    throw std::invalid_argument("--meters expects up to four bar lengths of 1 to 16");
+                }
+                out.forward.meters[count++] = static_cast<std::uint8_t>(meter);
+                if (comma == std::string::npos) {
+                    break;
+                }
+                from = comma + 1;
+            }
+        } else if (arg == "--decoder-fps") {
+            const int fps = parseInt(value(), arg);
+            if (fps < 25 || fps > 400) {
+                throw std::invalid_argument("--decoder-fps expects 25 to 400");
+            }
+            out.forward.fps = static_cast<std::uint32_t>(fps);
+        } else if (arg == "--meter-margin") {
+            out.forward.meterMargin = parseDouble(value(), arg);
+        } else if (arg == "--meter-change") {
+            out.forward.meterChangeProbability = parseDouble(value(), arg);
+        } else if (arg == "--floor") {
+            out.forward.floor = parseDouble(value(), arg);
+        } else if (arg == "--meter-floor") {
+            out.forward.meterFloor = parseDouble(value(), arg);
+        } else if (arg == "--predict") {
+            out.forward.predictFrames = parseDouble(value(), arg);
+        } else if (arg == "--hold") {
+            out.holdBpm = parseDouble(value(), arg);
+            if (!(out.holdBpm > 0.0)) {
+                throw std::invalid_argument("--hold expects a positive tempo");
+            }
         } else if (arg == "--link") {
             out.link = true;
         } else if (arg == "--out") {
@@ -804,8 +898,13 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
     return out;
 }
 
-std::filesystem::path stateSpacePath() {
-    return std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin";
+/// A name under assets/statespace/ — "default", "fps100" — or a path to a blob.
+std::filesystem::path stateSpacePath(const std::string& which = "default") {
+    const std::filesystem::path given(which);
+    if (given.has_extension() || given.has_parent_path()) {
+        return given;
+    }
+    return std::filesystem::path(TAKT4_STATESPACE_DIR) / (which + ".bin");
 }
 
 std::string beatLine(const takt4::tracking::BeatEvent& event,
@@ -830,97 +929,7 @@ std::string beatLine(const takt4::tracking::BeatEvent& event,
     return line.str();
 }
 
-/// Single keys from the terminal, without waiting for one.
-///
-/// §5.5's manual controls — tap, the octave shift, the downbeat snap, the latency slider
-/// — need somewhere to be pressed before there is a UI, and `BeatEngine`'s control queue
-/// needs a producer that is not a test. This is both, and it is the shape a UI's input
-/// handling takes too: read a key, post a command, never touch the tracker.
-///
-/// It does nothing at all unless stdin is something keys can actually come from. CI runs
-/// this binary without a console, and a redirected stdin must never be left in a mode
-/// nobody puts back.
-class KeyReader {
-public:
-    KeyReader() {
-#if defined(_WIN32)
-        // Not `_isatty`: that is true of any character device, and NUL is one — measured,
-        // a run with stdin redirected from /dev/null was called interactive. Only a real
-        // console input handle has a console mode, and a console input handle is the only
-        // thing _kbhit reads from anyway.
-        DWORD mode = 0;
-        const HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
-        interactive_ =
-            in != nullptr && in != INVALID_HANDLE_VALUE && GetConsoleMode(in, &mode) != 0;
-#else
-        interactive_ = isatty(STDIN_FILENO) != 0;
-        if (!interactive_) {
-            return;
-        }
-        if (tcgetattr(STDIN_FILENO, &saved_) != 0) {
-            interactive_ = false;
-            return;
-        }
-        struct termios raw = saved_;
-        // Keys as they are pressed rather than lines, and not echoed back in among the
-        // beats. ISIG is left alone, so Ctrl+C still reaches the signal handler.
-        raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
-        // VMIN 0 with VTIME 0 is what makes read() return at once with whatever is there,
-        // rather than blocking the loop that has a MIDI clock to tick.
-        raw.c_cc[VMIN] = 0;
-        raw.c_cc[VTIME] = 0;
-        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
-            interactive_ = false;
-            return;
-        }
-        restore_ = true;
-#endif
-    }
-
-    ~KeyReader() {
-#if !defined(_WIN32)
-        if (restore_) {
-            (void)tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
-        }
-#endif
-    }
-
-    KeyReader(const KeyReader&) = delete;
-    KeyReader& operator=(const KeyReader&) = delete;
-
-    bool interactive() const noexcept { return interactive_; }
-
-    /// The next key waiting, or 0 when none is.
-    int poll() noexcept {
-        if (!interactive_) {
-            return 0;
-        }
-#if defined(_WIN32)
-        if (_kbhit() == 0) {
-            return 0;
-        }
-        const int key = _getch();
-        // An arrow or function key arrives as a 0 or 0xE0 prefix and then its scan code.
-        // Both bytes are already buffered; leaving the second would hand back a scan code
-        // that collides with a letter on the next poll.
-        if (key == 0 || key == 0xE0) {
-            (void)_getch();
-            return 0;
-        }
-        return key;
-#else
-        char pressed = 0;
-        return read(STDIN_FILENO, &pressed, 1) == 1 ? static_cast<unsigned char>(pressed) : 0;
-#endif
-    }
-
-private:
-    bool interactive_ = false;
-#if !defined(_WIN32)
-    struct termios saved_{};
-    bool restore_ = false;
-#endif
-};
+// The key reader lives in cli/console.hpp now, shared with `annotate`.
 
 void printKeys(std::ostream& out, bool available) {
     if (!available) {
@@ -988,9 +997,37 @@ takt4::output::Transports::Config transportConfig(const TrackArgs& args) {
 /// The engine's options from the console's arguments.
 takt4::engine::BeatEngine::Options engineOptions(const TrackArgs& args) {
     takt4::engine::BeatEngine::Options options;
+    options.decoder = args.decoder;
     options.filter.seed = args.seed;
+    options.forward = args.forward;
     options.tempo = args.tempo;
     return options;
+}
+
+/// What the console says about the decoder it built.
+std::string describeDecoder(const takt4::engine::BeatEngine& engine, const TrackArgs& args) {
+    std::ostringstream out;
+    out << engine.decoder().name() << " at " << fixed1(1.0 / engine.secondsPerFrame()) << " fps";
+    if (args.decoder == takt4::tracking::Decoder::ParticleFilter) {
+        out << ", state space " << engine.stateSpace().path().filename().string() << ", seed "
+            << args.seed;
+    } else {
+        using Emission = takt4::tracking::ForwardFilter::Emission;
+        out << ", emission "
+            << (args.forward.emission == Emission::MapCrossing ? "map"
+                : args.forward.emission == Emission::MeanPhase ? "mean"
+                                                               : "peak")
+            << ", meters";
+        for (const std::uint8_t meter : args.forward.meters) {
+            if (meter != 0) {
+                out << ' ' << static_cast<int>(meter);
+            }
+        }
+    }
+    if (args.holdBpm > 0.0) {
+        out << ", held at " << fixed1(args.holdBpm) << " BPM";
+    }
+    return out.str();
 }
 /// Drains the frame ring, optionally writing every frame out first.
 ///
@@ -1018,7 +1055,7 @@ public:
         // the first of them a trace cannot tell that story at all.
         out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
                 "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
-                "\temitted\tpublished\tflux\tintensity\tonset\n"
+                "\temitted\tpublished\tflux\tintensity\tonset\tinterp\n"
              << std::fixed << std::setprecision(6);
     }
 
@@ -1037,7 +1074,8 @@ public:
              << state.beatsPerBar << '\t' << state.beatInBar << '\t'
              << static_cast<int>(tracked.emitted) << '\t' << (frame.beat ? 1 : 0) << '\t'
              << frame.activation.flux << '\t' << static_cast<int>(frame.activation.intensity)
-             << '\t' << (frame.activation.onset ? 1 : 0) << '\n';
+             << '\t' << (frame.activation.onset ? 1 : 0) << '\t' << (frame.interpolated ? 1 : 0)
+             << '\n';
     }
 
 private:
@@ -1080,6 +1118,9 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
     offline.midiClockPort.reset();
 
     auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
+    if (args.holdBpm > 0.0) {
+        (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
+    }
     takt4::output::Transports transports{transportConfig(offline)};
     FrameTracer tracer;
     if (args.traceOut) {
@@ -1090,8 +1131,10 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
         printer.writeTo(*args.beatsOut);
     }
     std::cout << in.string() << ": " << hops << " hops, weights "
-              << weights.path().filename().string() << ", fold " << fixed1(args.tempo.minBpm) << "-"
-              << fixed1(args.tempo.maxBpm) << " BPM, seed " << args.seed << '\n';
+              << weights.path().filename().string() << ", fold "
+              << (args.tempo.octaveFold ? fixed1(args.tempo.minBpm) + "-" + fixed1(args.tempo.maxBpm)
+                                        : std::string("off"))
+              << " BPM, " << describeDecoder(*engine, args) << '\n';
     if (args.anyOutput()) {
         std::cout << "note: Link, OSC and MIDI clock are driven from a live input only; "
                      "over a file this prints beats and nothing else.\n";
@@ -1099,14 +1142,17 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
 
     // Offline there is no output thread: a file is worked through as fast as it reads, so
     // there is nothing to be punctual for and everything happens on this thread in order.
+    // Times are in the decoder's frames, which are the network's for the particle filter
+    // and half of one for the forward filter.
+    const double secondsPerFrame = engine->secondsPerFrame();
     std::size_t frames = 0;
     for (std::size_t h = 0; h < hops; ++h) {
         engine->processHop(padded.data() + h * kHopSize, h);
         (void)engine->step();
-        frames += drainFrames(*engine, tracer, model.secondsPerFrame());
+        frames += drainFrames(*engine, tracer, secondsPerFrame);
         // The "now" a transport would tick on is the audio's own time; nothing is enabled
         // here, but passing anything else would be a lie in the argument.
-        const double now = static_cast<double>(engine->framesTracked()) * model.secondsPerFrame();
+        const double now = static_cast<double>(engine->framesTracked()) * secondsPerFrame;
         takt4::engine::EngineBeat beat;
         while (engine->popBeat(beat)) {
             transports.publish(beat.event, beat.hostMicros, now);
@@ -1133,6 +1179,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                                                    args.beats.stream.pair->second);
 
     auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
+    if (args.holdBpm > 0.0) {
+        (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
+    }
     takt4::audio::InputStreamOptions options;
     options.sampleRate = args.beats.stream.rate;
     options.forceSoftwareSlice = args.beats.stream.software;
@@ -1162,8 +1211,10 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     }
     std::cout << " (" << takt4::audio::toString(stream.picker().mode()) << " pick)\n"
               << "weights:   " << weights.path().filename().string() << '\n'
-              << "tracker:   " << model.path().filename().string() << ", fold "
-              << fixed1(args.tempo.minBpm) << "-" << fixed1(args.tempo.maxBpm)
+              << "decoder:   " << describeDecoder(*engine, args) << '\n'
+              << "tracker:   fold "
+              << (args.tempo.octaveFold ? fixed1(args.tempo.minBpm) + "-" + fixed1(args.tempo.maxBpm)
+                                        : std::string("off"))
               << " BPM, confidence gate " << fixed1(args.tempo.confidenceThreshold * 100.0)
               << "%, latency offset " << fixed1(args.tempo.latencyOffsetSeconds * 1000.0) << " ms\n"
               << "latency:   " << fixed1(stream.inputLatencySeconds() * 1000.0)
@@ -1316,7 +1367,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         for (int key = keys.poll(); key != 0; key = keys.poll()) {
             onKey(key, elapsed);
         }
-        (void)drainFrames(*engine, tracer, model.secondsPerFrame());
+        (void)drainFrames(*engine, tracer, engine->secondsPerFrame());
         {
             const std::lock_guard<std::mutex> lock(publishedMutex);
             toPrint.swap(published);
@@ -1348,7 +1399,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // sends to. Its stop() drains the last beats and stops the transports.
     runner.stop();
     engine->setHostTimeSource(nullptr);
-    (void)drainFrames(*engine, tracer, model.secondsPerFrame());
+    (void)drainFrames(*engine, tracer, engine->secondsPerFrame());
     {
         const std::lock_guard<std::mutex> lock(publishedMutex);
         toPrint.swap(published);
@@ -1389,7 +1440,7 @@ int runTrack(const std::vector<std::string_view>& args) {
     const takt4::model::ModelWeights weights =
         takt4::model::ModelWeights::fromFile(resolveWeights(parsed.beats.weights));
     const takt4::tracking::StateSpaceModel model =
-        takt4::tracking::StateSpaceModel::fromFile(stateSpacePath());
+        takt4::tracking::StateSpaceModel::fromFile(stateSpacePath(parsed.stateSpace));
     if (parsed.beats.file) {
         return runTrackFile(*parsed.beats.file, weights, model, parsed);
     }
@@ -1439,6 +1490,9 @@ int main(int argc, char** argv) {
             // because its thread is the only thing here that needs a millisecond to mean
             // one — and it holds it for exactly as long as the outputs are running.
             return runTrack({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "annotate") {
+            return takt4::cli::runAnnotate({args.begin() + 1, args.end()});
         }
         std::cerr << "takt4-cli: unknown command: " << args[0] << "\n\n";
         printUsage(std::cerr);

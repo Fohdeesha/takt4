@@ -100,9 +100,12 @@ TEST_CASE("Phase 6's exit criterion, built by clicking", "[ui][trigger]") {
     //    instruction to draw from one.
     editor.setSlotValues(1, "3, 7, 1, 12");
 
-    // 6. And on, which is the last thing rather than the first: a new rule is built
-    //    switched off so a half-finished one cannot fire into the rig.
-    CHECK_FALSE(editor.rules().front().enabled);
+    // 6. And on — which it already is. A new rule arrives armed now: it is invalid until it
+    //    has an address, so it cannot fire while it is half-built whatever this says, and
+    //    every rule and every preset arriving inert behind an unlabelled tick box was the
+    //    thing an operator could not see the reason for. Left as an explicit step because it
+    //    is still the last question §5.9's editor asks.
+    CHECK(editor.rules().front().enabled);
     editor.setEnabled(true);
 
     const Rule::Config& built = editor.rules().front();
@@ -168,6 +171,14 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
     Rig rig;
     RulesController editor(rig.runner, {});
 
+    // The menu offers the presets themselves and nothing else — it used to carry an "add a
+    // preset..." entry at the front because a ComboBox has to sit on something. The window
+    // adds the one back on (`rig-added(i + 1)`), so the two counts have to agree here or a
+    // pick lands on the preset next to the one that was clicked.
+    const auto offered = editor.window().get_rig_presets();
+    REQUIRE(offered->row_count() == 4);
+    CHECK(std::string(*offered->row_data(0)) == "Resolume: clips on 3 layers");
+
     editor.addRig(1); // "Resolume: clips on 3 layers"
     REQUIRE(editor.rules().size() == 3);
 
@@ -184,8 +195,10 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
         // 7.4: connect is a mouse click, and without the release the clip stays held.
         CHECK(rule.followUp);
         CHECK(rule.followUpValue.asInt() == 0);
-        // Off until the operator says so, like every rule the editor makes.
-        CHECK_FALSE(rule.enabled);
+        // Armed, like every rule the editor makes. A preset is a rig somebody asked for by
+        // name; arriving switched off behind an unlabelled tick box was the state nobody
+        // could see the reason for.
+        CHECK(rule.enabled);
         CHECK(Rule(rule).valid());
     }
 
@@ -548,6 +561,131 @@ TEST_CASE("the host preset picker says what the rule is, and custom empties it",
     }
 }
 
+TEST_CASE("a new rule arrives with a name, numbered", "[ui][trigger]") {
+    // A list of "(unnamed)" rows is a list nobody can read, and naming a rule is a step an
+    // operator building one will skip. The number at least says which of them this is.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+
+    editor.add();
+    editor.add();
+    editor.add();
+    REQUIRE(editor.rules().size() == 3);
+    CHECK(editor.rules()[0].name == "Trigger #1");
+    CHECK(editor.rules()[1].name == "Trigger #2");
+    CHECK(editor.rules()[2].name == "Trigger #3");
+
+    SECTION("and the number is not one already taken") {
+        // Deleting from the middle would otherwise make two rules called the same thing,
+        // since the next number comes from how many there are.
+        editor.pick(1);
+        editor.remove();
+        editor.add();
+        REQUIRE(editor.rules().size() == 3);
+        CHECK(editor.rules()[2].name == "Trigger #4");
+    }
+}
+
+TEST_CASE("several rules are chosen at once, and acted on at once", "[ui][trigger]") {
+    // Asked for on 2026-09-08: "you should be able to ctrl click or shift click in this
+    // trigger list to duplicate or kill multiple of them at once".
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    for (int i = 0; i < 5; ++i) {
+        editor.add();
+    }
+    REQUIRE(editor.rules().size() == 5);
+
+    SECTION("a plain click is one row, as it always was") {
+        editor.pick(2);
+        CHECK(editor.chosen() == std::vector<int>{2});
+        CHECK(editor.selected() == 2);
+    }
+
+    SECTION("control adds and removes one row at a time") {
+        editor.pick(1);
+        editor.pickWith(3, true, false);
+        editor.pickWith(4, true, false);
+        CHECK(editor.chosen() == std::vector<int>{1, 3, 4});
+        // The editor follows the row that was clicked, whichever way the click went.
+        CHECK(editor.selected() == 4);
+        editor.pickWith(3, true, false);
+        CHECK(editor.chosen() == std::vector<int>{1, 4});
+    }
+
+    SECTION("control never empties the selection") {
+        // With nothing chosen there is no rule for the editor to show and none for the marks
+        // to act on, so the last one stays.
+        editor.pick(2);
+        editor.pickWith(2, true, false);
+        CHECK(editor.chosen() == std::vector<int>{2});
+    }
+
+    SECTION("shift takes the run from the anchor, and the anchor stays put") {
+        editor.pick(1);
+        editor.pickWith(3, false, true);
+        CHECK(editor.chosen() == std::vector<int>{1, 2, 3});
+        // Again from the same anchor rather than from where the last shift-click landed, so
+        // the run shrinks instead of walking off down the list.
+        editor.pickWith(2, false, true);
+        CHECK(editor.chosen() == std::vector<int>{1, 2});
+        // And backwards over the anchor.
+        editor.pickWith(0, false, true);
+        CHECK(editor.chosen() == std::vector<int>{0, 1});
+    }
+
+    SECTION("deleting takes every chosen rule") {
+        editor.pick(1);
+        editor.pickWith(3, false, true);
+        const std::string kept = editor.rules()[4].id;
+        editor.remove();
+        REQUIRE(editor.rules().size() == 2);
+        CHECK(editor.rules()[1].id == kept);
+        // The row that moved up into the first hole, which is where the eye is.
+        CHECK(editor.selected() == 1);
+        CHECK(editor.chosen() == std::vector<int>{1});
+    }
+
+    SECTION("duplicating takes every chosen rule, in order, after the last of them") {
+        editor.pick(0);
+        editor.pickWith(1, false, true);
+        const std::string first = editor.rules()[0].id;
+        const std::string second = editor.rules()[1].id;
+        editor.duplicate();
+        REQUIRE(editor.rules().size() == 7);
+        CHECK(editor.rules()[2].id == first + "-copy");
+        CHECK(editor.rules()[3].id == second + "-copy");
+        // Distinct ids, or §5.7's /ctl/rule/<id>/enable is ambiguous — including between two
+        // copies made in the same gesture.
+        CHECK(editor.rules()[2].id != editor.rules()[3].id);
+        // The copies are what the operator is looking at now.
+        CHECK(editor.chosen() == std::vector<int>{2, 3});
+    }
+
+    SECTION("a mark on a row outside the selection acts on that row alone") {
+        editor.pick(0);
+        editor.pickWith(1, false, true);
+        REQUIRE(editor.chosen().size() == 2);
+        editor.removeAt(4);
+        CHECK(editor.rules().size() == 4); // one gone, not three
+    }
+
+    SECTION("a mark on a row inside the selection acts on all of it") {
+        editor.pick(0);
+        editor.pickWith(2, false, true);
+        editor.removeAt(1);
+        CHECK(editor.rules().size() == 2);
+    }
+
+    SECTION("a preset arrives selected whole, so it can be undone in one gesture") {
+        editor.addRig(1); // three Resolume layers
+        REQUIRE(editor.rules().size() == 8);
+        CHECK(editor.chosen() == std::vector<int>{5, 6, 7});
+        editor.remove();
+        CHECK(editor.rules().size() == 5);
+    }
+}
+
 TEST_CASE("the rule list is edited by clicking too", "[ui][trigger]") {
     Rig rig;
     RulesController editor(rig.runner, {});
@@ -568,10 +706,11 @@ TEST_CASE("the rule list is edited by clicking too", "[ui][trigger]") {
         CHECK(Rule(editor.rules()[1]).problem().find("id") == std::string::npos);
     }
 
-    SECTION("a new rule is switched off and says what it still needs") {
+    SECTION("a new rule is armed, named, and says what it still needs") {
         // §5.8: an invalid rule is held and shown rather than refused. A brand-new one is
-        // exactly that state, and the list's own dot is where it shows.
-        CHECK_FALSE(editor.rules()[0].enabled);
+        // exactly that state, and the list's own dot is where it shows — which is why being
+        // armed costs nothing: it cannot fire until it has an address.
+        CHECK(editor.rules()[0].enabled);
         const Rule fresh(editor.rules()[0]);
         CHECK_FALSE(fresh.valid());
         CHECK(fresh.problem() == "an OSC rule needs an address");

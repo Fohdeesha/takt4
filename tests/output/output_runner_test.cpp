@@ -48,8 +48,9 @@ const takt4::tracking::StateSpaceModel& stateSpace() {
     return loaded;
 }
 
-/// The committed excerpt, which `takt4-cli track` reports as "499 frames, 21 beats
-/// (5 downbeats)" — so the numbers here are the tracker's own, not this test's invention.
+/// The committed excerpt, which `takt4-cli track --decoder pf` reports as "499 frames, 21
+/// beats (5 downbeats)" — so the numbers here are the tracker's own, not this test's
+/// invention.
 const std::vector<float>& excerpt() {
     static const std::vector<float> samples =
         takt4::io::readWavFile(kTestData / "features" / "synthetic.wav").samples;
@@ -58,6 +59,16 @@ const std::vector<float>& excerpt() {
 
 constexpr std::uint64_t kExpectedBeats = 21;
 constexpr std::uint64_t kExpectedDownbeats = 5;
+
+/// Every engine here runs the particle filter. These tests are about the output thread
+/// — draining, counting, routing — and want a beat stream that never moves; the particle
+/// filter's is held to `tools/pf_reference.py` frame for frame, where the default decoder's
+/// changes with its tuning. See `tracking::Decoder`.
+BeatEngine::Options particleOptions() {
+    BeatEngine::Options options;
+    options.decoder = takt4::tracking::Decoder::ParticleFilter;
+    return options;
+}
 
 /// Feeds the excerpt through a stopped engine on the calling thread.
 ///
@@ -92,7 +103,7 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
     // The whole point of §4.2's output thread: beats reach the transports without the
     // caller's loop deciding when. Nothing is configured to send, so what is under test
     // is the draining and the counting rather than any one transport.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     const Transports& transports = runner.transports();
 
@@ -129,7 +140,7 @@ TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
     // The last beats of a set are still beats. Everything is produced before the runner
     // is ever started, so the ring is full of them and only stop()'s final drain can
     // account for the ones its thread did not reach.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     const Transports& transports = runner.transports();
 
@@ -143,7 +154,7 @@ TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
 }
 
 TEST_CASE("the observer sees every beat, in the order they were called", "[output]") {
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
     std::mutex mutex;
@@ -176,7 +187,7 @@ TEST_CASE("the observer sees every beat, in the order they were called", "[outpu
 TEST_CASE("the output thread runs on its own clock", "[output]") {
     // That the thread exists is one claim and that it drains correctly is another. This
     // is the first, and it is the one a caller doing the draining itself would also pass.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
     runner.start();
@@ -193,7 +204,7 @@ TEST_CASE("the output thread runs on its own clock", "[output]") {
 }
 
 TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     {
         OutputRunner runner(*engine, Transports::Config{});
         runner.stop(); // never started
@@ -211,7 +222,7 @@ TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
 TEST_CASE("a change posted while stopped applies at once", "[output]") {
     // An app is configured before it is started, and an operator ticking Link with nothing
     // running should not have to press Start to find out whether it took.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     REQUIRE_FALSE(runner.running());
 
@@ -225,7 +236,7 @@ TEST_CASE("a change posted while stopped applies at once", "[output]") {
 TEST_CASE("a change posted while running reaches the transports", "[output]") {
     // The other half: the output thread owns them once it is going, so the change has to
     // travel rather than be made by the caller.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     runner.start();
     REQUIRE_FALSE(runner.transports().linkEnabled());
@@ -258,7 +269,7 @@ TEST_CASE("a change posted while running reaches the transports", "[output]") {
 TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "[output]") {
     // The transports keep working — Transports leaves what was open alone — so the only
     // evidence is the message, and an operator has to be given it.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
     runner.post(takt4::output::OutputCommand::midiClockPort(
@@ -279,7 +290,7 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     Transports::Config config;
     config.outputs = takt4::output::oscOutputs({{"127.0.0.1", receiver.port()}});
 
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, config);
 
     Rule::Config rule;
@@ -343,7 +354,7 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
     config.outputs = takt4::output::oscOutputs({{"127.0.0.1", receiver.port()}});
 
     const auto beatsOnTheWire = [&](bool halve) {
-        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
         OutputRunner runner(*engine, config);
         Rule::Config rule;
         rule.id = "flash";
@@ -388,7 +399,7 @@ TEST_CASE("panic reaches the rules through the same queue as everything else",
           "[output][trigger]") {
     // 5.8 calls PANIC "non-negotiable for live use", and 5.7 gives it an address. Both of
     // those land here, on the thread that owns the rules.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
     Rule::Config rule;
@@ -423,7 +434,7 @@ TEST_CASE("a control surface reaches the rules without knowing what a runner is"
     // Driven through the *interface* deliberately, rather than through `post`. A surface
     // holds a `RuleControl*` and never sees an OutputRunner, so what has to be checked is
     // that the two calls it can make do what the commands do.
-    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
     Rule::Config rule;

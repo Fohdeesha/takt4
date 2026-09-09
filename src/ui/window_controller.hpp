@@ -13,6 +13,7 @@
 
 #include "main_window.h" // generated from main_window.slint
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -138,7 +139,27 @@ public:
     /// the moment [+] republishes the list, which is what remembering it prevents.
     void editTarget(int index, const std::string& name, const std::string& address);
     void acceptTarget(int index, const std::string& name, const std::string& address);
-    /// A blank row to type into. Applies nothing: an empty row sends nowhere.
+
+    /// One field of row `index`, the rest of the row left as it was.
+    ///
+    /// A row is four fields now rather than two boxes — a name, a kind, and then either a
+    /// host and a port or a device — and two of them live inside an `if` in the markup, where
+    /// one branch cannot read the other's boxes. So each control reports only itself and the
+    /// merge happens here, against the draft this class already owned.
+    ///
+    /// `apply` is the Enter half: false remembers the keystroke, true rebuilds the sockets.
+    /// The two picked-from-a-list ones have no half-typed state, so they always apply.
+    void setTargetName(int index, const std::string& name, bool apply);
+    void setTargetHost(int index, const std::string& host, bool apply);
+    void setTargetPort(int index, const std::string& port, bool apply);
+    /// OSC or MIDI, as an index into `output::OutputTarget::Kind`'s own order.
+    void setTargetKind(int index, int kind);
+    /// Row `index`'s MIDI device, as an index into the window's `output-devices` — 0 being
+    /// that list's "not chosen yet" label, which leaves the row sending nowhere.
+    void setTargetDevice(int index, int device);
+
+    /// A row to fill in, starting from OSC on this machine at the default port. Applied, so
+    /// the target exists at once and a rule can be routed to it before it has been aimed.
     void addTarget();
     void removeTarget(int index);
     void setTargetEnabled(int index, bool on);
@@ -155,11 +176,17 @@ public:
     void setOscTargets(const std::string& text);
     /// The MIDI output port to send 24 PPQN to, or empty for none.
     void setMidiPort(const std::string& name);
+    /// The same, as an index into the window's `midi-ports` — 0 being its "no MIDI clock"
+    /// entry. What the picker sends: a ComboBox cannot be moved from outside by its value
+    /// (Slint 11970), so the selection is an index in both directions.
+    void pickMidiPort(int index);
 
     /// §5.7's control input. The port is opened at once rather than at Start: an operator
     /// binding buttons is doing it *before* the set, and a learn mode that needs the
     /// tracker running would be a worse tool than a pen and paper.
     void setMidiControlPort(const std::string& name);
+    /// The same, as an index into `midi-in-ports` — 0 being its "select input" entry.
+    void pickMidiControlPort(int index);
 
     /// §5.7's *other* control input: the OSC listening socket, so a Stream Deck or Bitfocus
     /// Companion can drive this without touching the laptop.
@@ -271,6 +298,13 @@ private:
     void publishMidiControl();
     void publishOscControl(bool force);
     void publishSnap();
+    /// One redraw round from inside the platform's own window-drag loop, where Slint's timer
+    /// does not run — `ui::keepPaintingWhileDragged`, which this is registered with. Static
+    /// because it is reached through a C callback; `self` is the controller.
+    static void pumpWhileDragged(void* self);
+    /// Writes this round's number to `tickProbe_` and sweeps the input meter — see that
+    /// member. Called only when the environment asked for it.
+    void writeTickProbe();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
     void setStatus(const std::string& text, bool error);
@@ -311,6 +345,9 @@ private:
     /// The trace as a plain buffer, oldest first, mirrored into the model each tick.
     std::vector<TracePoint> trace_;
     std::shared_ptr<slint::VectorModel<TracePoint>> traceModel_;
+    /// A beat that landed on a frame the engine interpolated, waiting for the next of the
+    /// network's frames to be drawn on. See `EngineFrame::interpolated`.
+    bool traceBeatPending_ = false;
 
     /// §5.6's targets **as they are being typed**, which is not the same list as the one
     /// behind `Transports`: a row half-way through an address is not a target yet, and an
@@ -323,11 +360,34 @@ private:
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
 
+    /// Where to write this window's redraw count each round, from the `TAKT4_TICK_PROBE`
+    /// environment variable, or empty — which is every ordinary run.
+    ///
+    /// **A bench switch that ships**, and that is the point of it being read at run time
+    /// rather than compiled in: the thing it measures is whether the window is still being
+    /// driven and still painting from inside a platform modal loop — a drag, a resize — and
+    /// nothing that can be watched from outside the process survives that loop. Slint's timer
+    /// stops; a Slint property is only pushed to the platform on the update pass that stops
+    /// with it. A file written from `tick()` and a swept input meter do not, so together they
+    /// say whether the round happened *and* whether anything reached the screen.
+    ///
+    /// With it compiled in behind a build flag the test would have measured a binary nobody
+    /// runs. `scripts` for it are not vendored; the shape is: start takt4 with the variable
+    /// set, put the window into the move loop with `WM_SYSCOMMAND`/`SC_MOVE`, and compare
+    /// screenshots a second apart. See the drag pump in `ui::keepPaintingWhileDragged`.
+    std::string tickProbe_;
+
     /// The OSC control port as this controller last wrote it into the field. The field is
     /// bound two-way, so it is also whatever an operator has typed since — which is why the
     /// redraw compares against *this* and not against the widget: the two differing is what
     /// being typed into looks like. See `publishOscControl`.
     std::string oscControlPortShown_;
+
+    /// `settings::Preset::meters` as this window was built with them. The engine was built
+    /// with the same list (`app.cpp`) and nothing in the window changes it yet, so this is
+    /// the value `currentSettings` writes back — kept here rather than read from the
+    /// decoder because the decoder interface does not expose its bars.
+    std::array<std::uint8_t, 4> meters_{4, 0, 0, 0};
 
     /// The tracker's beat count when a downbeat snap was posted, while one is still in
     /// flight. §5.5's snap lands on the *next* beat called, so the count moving is what

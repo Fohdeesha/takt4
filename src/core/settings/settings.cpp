@@ -21,6 +21,15 @@
 #endif
 
 namespace takt4::settings {
+
+tracking::TempoTracker::Options freshTempoOptions() noexcept {
+    tracking::TempoTracker::Options tempo;
+    // The one field a fresh install disagrees with the tracker about. See the header for
+    // why the application ships with the tempo window off and the tracker does not.
+    tempo.octaveFold = false;
+    return tempo;
+}
+
 namespace {
 
 using nlohmann::json;
@@ -111,6 +120,48 @@ void read(const json& object, const char* key, T& out) {
     }
 }
 
+const char* decoderName(tracking::Decoder decoder) noexcept {
+    return decoder == tracking::Decoder::Forward ? "forward" : "particle";
+}
+
+tracking::Decoder decoderFromName(const std::string& name) noexcept {
+    return name == "particle" ? tracking::Decoder::ParticleFilter : tracking::Decoder::Forward;
+}
+
+json metersToJson(const std::array<std::uint8_t, 4>& meters) {
+    json out = json::array();
+    for (const std::uint8_t meter : meters) {
+        if (meter != 0) {
+            out.push_back(static_cast<int>(meter));
+        }
+    }
+    return out;
+}
+
+/// `[4]`, `[3, 4]`: up to four bar lengths of 1 to 16. Anything else — not an array, an
+/// empty one, a value out of range — leaves the default standing, since a decoder with no
+/// bar at all cannot be built and a file is not a caller worth trusting.
+void readMeters(const json& preset, std::array<std::uint8_t, 4>& meters) {
+    if (!preset.is_object() || !preset.contains("meters") || !preset.at("meters").is_array()) {
+        return;
+    }
+    std::array<std::uint8_t, 4> out{0, 0, 0, 0};
+    std::size_t count = 0;
+    for (const json& entry : preset.at("meters")) {
+        if (!entry.is_number_integer()) {
+            return;
+        }
+        const std::int64_t value = entry.get<std::int64_t>();
+        if (value < 1 || value > 16 || count >= out.size()) {
+            return;
+        }
+        out[count++] = static_cast<std::uint8_t>(value);
+    }
+    if (count > 0) {
+        meters = out;
+    }
+}
+
 json tempoToJson(const tracking::TempoTracker::Options& tempo) {
     return json{
         {"minBpm", tempo.minBpm},
@@ -122,9 +173,10 @@ json tempoToJson(const tracking::TempoTracker::Options& tempo) {
 }
 
 tracking::TempoTracker::Options tempoFromJson(const json& object) {
-    // Started from the defaults, so a field the file does not mention keeps the value the
-    // tracker was built to have rather than a zero.
-    tracking::TempoTracker::Options tempo;
+    // Started from the defaults, so a field the file does not mention keeps the value a fresh
+    // install has rather than a zero. `freshTempoOptions` rather than the tracker's own,
+    // because the two differ in exactly one field — see its header.
+    tracking::TempoTracker::Options tempo = freshTempoOptions();
     read(object, "minBpm", tempo.minBpm);
     read(object, "maxBpm", tempo.maxBpm);
     read(object, "octaveFold", tempo.octaveFold);
@@ -246,6 +298,8 @@ std::string toJson(const Settings& settings) {
         {"preset",
          json{
              {"tempo", tempoToJson(settings.preset.tempo)},
+             {"decoder", decoderName(settings.preset.decoder)},
+             {"meters", metersToJson(settings.preset.meters)},
              {"link", settings.preset.link},
              {"oscPrefix", settings.preset.oscPrefix},
              {"outputs", targets},
@@ -316,6 +370,10 @@ Settings fromJson(std::string_view text) {
         const json& preset = document.at("preset");
         read(preset, "link", settings.preset.link);
         read(preset, "oscPrefix", settings.preset.oscPrefix);
+        std::string decoder;
+        read(preset, "decoder", decoder);
+        settings.preset.decoder = decoderFromName(decoder);
+        readMeters(preset, settings.preset.meters);
         if (preset.is_object() && preset.contains("tempo")) {
             settings.preset.tempo = tempoFromJson(preset.at("tempo"));
         }

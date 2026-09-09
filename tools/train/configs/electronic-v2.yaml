@@ -1,0 +1,58 @@
+# The electronic fine-tune, second recipe (TRACKING-PROPOSAL.md §7.9).
+#
+# What the first evening's runs established: the offline DBN that validated them is
+# not the decoder that ships. The genre-repeat run's epoch-30 checkpoint scored +0.07
+# on Raveform by the DBN and -0.06 on the electronic harness through the causal forward
+# filter, which published five of the hard eight near 170-190 BPM: the fast-octave
+# drum-and-bass labels had taught the network that a kick on alternate beats is still
+# the fast grid. So this recipe (a) validates through takt4-cli itself, the same
+# excerpts decoded the way the app decodes them, and selects on that; and (b) trains
+# on labels whose octave the kick decided (tools/train/octave.py: a fast track whose
+# kick is on alternate beats is halved, keeping the kick's beats). Ballroom's
+# extreme-tempo genres are repeated as in configs/electronic-genres.yaml, which was
+# the only lever that brought Ballroom back near its gate; time-stretch is not used
+# (it made Ballroom worse than repeats alone).
+name: electronic-v2
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 2
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+max_epochs: 200
+val_every: 4
+patience: 10            # validations (40 epochs) without a gated improvement
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli        # takt4-cli, the shipped forward filter, over the same excerpts
+cli_jobs: 6
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

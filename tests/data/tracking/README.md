@@ -5,6 +5,17 @@ The reference data for the Phase 4 gate. `tools/pf_reference.py` restates BeatNe
 `tests/tracking/particle_filter_test.cpp` requires `src/core/tracking/` to reproduce
 every row of it exactly.
 
+**The particle filter is no longer the default decoder** (since 2026-09-08 that is the exact
+forward filter, `src/core/tracking/forward_filter.hpp`; `tracking::Decoder` records the
+measurements, and `refeval/README.md` beside this directory holds the electronic-material
+gate the choice was made on). This gate stands unchanged: the particle filter ships as
+`--decoder pf` and the `"particle"` setting, and it is what the tests that need a beat stream
+that never moves run on. The forward filter has no parity gate of this kind — it is a
+deterministic computation over a state space built in C++, and its gate is the two
+evaluations — but it was checked against the numpy prototype it was ported from
+(`tools/refeval/decoders.py`, `fwd100`) to three decimals on every score in Appendix A of
+TRACKING-PROPOSAL.md, and to the millisecond on its timing profile.
+
 | File | Contents |
 |---|---|
 | `<name>.npy` | int32, shape (500, 4), one row per activation frame — see below |

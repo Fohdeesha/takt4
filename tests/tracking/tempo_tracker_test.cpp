@@ -136,7 +136,166 @@ Published feed(TempoTracker& tracker, std::uint64_t& index, std::uint32_t interv
     return out;
 }
 
+/// The same, but with the filter **contradicting itself**: it reports a beat period of
+/// `interval` frames and calls its beats `callEvery` frames apart. That is not a state a
+/// working filter is in, and it is the state "Pogo - Quantum Field - 08 Moonlake" put it in —
+/// interval 15, beats 30 apart. See `Options::beatOctaveBeats`.
+Published feedDisagreeing(TempoTracker& tracker, std::uint64_t& index, std::uint32_t interval,
+                          std::uint32_t callEvery, std::size_t frames, std::uint32_t meter = 4) {
+    Published out;
+    for (std::size_t f = 0; f < frames; ++f) {
+        TrackedFrame frame = frameAt(index, interval, 0.9, meter);
+        if (index % callEvery == 0) {
+            const bool downbeat = (index / callEvery) % meter == 0;
+            frame.emitted =
+                downbeat ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
+            frame.beatActivation = downbeat ? 0.2f : 0.7f;
+            frame.downbeatActivation = downbeat ? 0.5f : 0.0f;
+        }
+        ++index;
+        if (const std::optional<BeatEvent> event = tracker.process(frame)) {
+            ++out.beats;
+            if (event->downbeat) {
+                ++out.downbeats;
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace
+
+TEST_CASE("the published tempo is the one the beats are on", "[tracking][tempo]") {
+    // Reported from a rig on 2026-09-08 about "Pogo - Quantum Field - 08 Moonlake": "the app
+    // said locked and displayed 200bpm, but the beat counter dot lights were moving very
+    // clearly at 100bpm ... everything pointed towards a correct 100bpm detection but the app
+    // said 200bpm". Both numbers were true of what they described — the readout is the cloud's
+    // tempo and the dots move on the beats — and the filter was reporting one while emitting
+    // the other. Measured over the track: 216 of 402 gaps are 30 frames, the cloud says 15.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    // The cloud says 15 frames — 200 BPM — and the beats arrive 30 apart, which is 100.
+    const Published played = feedDisagreeing(tracker, index, 15, 30, 1800);
+    REQUIRE(tracker.state().locked);
+    // Every beat the filter called is published: nothing here divides the grid, and that is
+    // the point — the beats were never wrong.
+    CHECK(played.beats == 60);
+    CHECK(tracker.state().bpm == Approx(bpmOf(30)).margin(2.0));
+    CHECK(tracker.state().rawBpm == Approx(bpmOf(15)).margin(2.0));
+
+    SECTION("and a filter that agrees with itself is left alone") {
+        // The guard that makes this safe: the ratio has to be a clean factor of two held for
+        // several beats, which a working filter never produces.
+        TempoTracker ordinary(kFramePeriod, options);
+        std::uint64_t at = 0;
+        (void)feed(ordinary, at, 15, 1800);
+        REQUIRE(ordinary.state().locked);
+        CHECK(ordinary.state().bpm == Approx(bpmOf(15)).margin(2.0));
+    }
+}
+
+TEST_CASE("the fold and the beat-octave rule do not correct the same octave twice",
+          "[tracking][tempo]") {
+    // TRACKING-PROPOSAL.md §2.10, measured on 2026-09-08 with the 70-140 window on: "02 -
+    // Jamie Lidell - Your Sweet Boom" is a 107 BPM track whose cloud sits at 214 and whose
+    // beats arrive at 107. The fold halved the cloud's 214 to 107, and then the beat-octave
+    // rule halved *that* to 53.5 — for the whole track, at Link, MIDI clock and OSC. With
+    // the fold off it read 107, which is how it went unseen. And the `foldSupportFrames`
+    // latch, seeing the beats sit on the folded tempo, then divided a grid that was already
+    // the music's and threw every other beat away in three windows of the track.
+    //
+    // The fix is that the fold and the lock are given the tempo the beats are *on*, so
+    // there is one correction and nothing left to divide.
+    TempoTracker::Options options; // the default 70-140 window, on
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    // The cloud says 14 frames — 214.3 BPM — and the beats arrive 28 apart, which is 107.1.
+    // Long enough for the beat-octave rule to settle (eight beats) and then for the latch
+    // to have had every chance to fire (foldSupportFrames is 250 frames).
+    Published played = feedDisagreeing(tracker, index, 14, 28, 300);
+    REQUIRE(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(28)).margin(2.0)); // 107, not 53.5
+    // And the lock is carried across the beat-octave rule settling, rather than argued
+    // with about a number that did not move: from here on it never lets go.
+    for (int chunk = 0; chunk < 100; ++chunk) {
+        const Published more = feedDisagreeing(tracker, index, 14, 28, 28);
+        played.beats += more.beats;
+        played.downbeats += more.downbeats;
+        INFO("chunk " << chunk);
+        REQUIRE(tracker.state().locked);
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(28)).margin(2.0));
+    }
+    CHECK(tracker.state().rawBpm == Approx(bpmOf(14)).margin(2.0));    // the cloud, still
+    CHECK(tracker.state().calledBpm == Approx(bpmOf(28)).margin(2.0)); // the beats
+    // Every beat the filter called is published. The grid is the music's already: nothing
+    // divides it, and the divisor says so. (A beat on frame 0 and on every 28th after it,
+    // so one more than the frames divide into.)
+    CHECK(played.beats == (index + 27) / 28);
+    CHECK(tracker.state().beatDivisor == 1);
+
+    SECTION("Moonlake, the other track reported: cloud at 200, beats at 100, read 50") {
+        TempoTracker moonlake(kFramePeriod, options);
+        std::uint64_t at = 0;
+        const Published beats = feedDisagreeing(moonlake, at, 15, 30, 1800);
+        REQUIRE(moonlake.state().locked);
+        CHECK(moonlake.state().bpm == Approx(bpmOf(30)).margin(2.0)); // 100, not 50
+        CHECK(beats.beats == 1800 / 30);
+        CHECK(moonlake.state().beatDivisor == 1);
+    }
+
+    SECTION("a fold that genuinely halves the cloud's grid still does its job") {
+        // The other side: a filter that agrees with itself and double-times a 92 BPM track
+        // — "03 - Fake Sweat" — must still be folded, and its beats still divided once the
+        // cloud has argued for it. This is the test above "the octave fold divides the
+        // beats", in short, to show the fix took nothing from it.
+        TempoTracker fake(kFramePeriod);
+        std::uint64_t at = 0;
+        (void)feed(fake, at, 32, 400);
+        REQUIRE(fake.state().bpm == Approx(bpmOf(32)).margin(1.0));
+        std::uint64_t called = 0;
+        const Published fast = feed(fake, at, 16, 640, 4, &called);
+        CHECK(fake.state().bpm == Approx(bpmOf(32)).margin(2.0));
+        CHECK(fast.beats == called / 2);
+        CHECK(fake.state().beatDivisor == 2);
+    }
+}
+
+TEST_CASE("a tap names the octave the beats are on, not the cloud's", "[tracking][tempo]") {
+    // With the fold off a tap moves the tempo through the manual shift, measured against
+    // what is being tracked. An operator tapping 100 over Moonlake — cloud at 200, beats at
+    // 100, readout already 100 — has confirmed what is showing; measured against the cloud
+    // it would have halved the readout to 50, which is the double correction of
+    // Options::beatOctaveBeats wearing a different hat.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    (void)feedDisagreeing(tracker, index, 15, 30, 900);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(2.0));
+
+    tracker.seedTempo(bpmOf(30));
+    CHECK(tracker.state().bpm == Approx(bpmOf(30)).margin(2.0));
+    CHECK(tracker.state().locked); // a tap that agrees keeps the lock
+    (void)feedDisagreeing(tracker, index, 15, 30, 300);
+    CHECK(tracker.state().bpm == Approx(bpmOf(30)).margin(2.0));
+
+    SECTION("and a tap an octave up from the beats doubles the number, as ×2 would") {
+        tracker.seedTempo(bpmOf(15));
+        CHECK(tracker.state().bpm == Approx(bpmOf(15)).margin(2.0));
+    }
+}
 
 TEST_CASE("the octave fold divides the beats, not only the number", "[tracking][tempo]") {
     // The user's report of 2026-09-06: "the tool kept detecting the bpm as double, when it
@@ -1014,6 +1173,42 @@ TEST_CASE("a tapped tempo moves the fold window onto the octave the operator mea
     }
 }
 
+TEST_CASE("a tap does not switch the fold on behind the operator", "[tracking][tempo]") {
+    // Reported from a rig on 2026-09-08: "octave fold keeps getting automatically turned on,
+    // which then breaks the next track in the mix because it might not need octave folding
+    // ... the tool will always be streamed several tracks in a row". `seedTempo` used to set
+    // `octaveFold = true`, so one tap left a window behind that halved or doubled every
+    // record after it.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    settle(tracker, index, 14, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(14))); // unfolded: 214.3
+
+    // The tap still puts the tempo on the octave it named — through the manual shift, which
+    // is what ÷2 and ×2 use and the only thing an octave instruction can mean with no window.
+    tracker.seedTempo(bpmOf(28));
+    CHECK_FALSE(tracker.options().octaveFold);
+    CHECK(tracker.options().minBpm == Approx(70.0)); // and the window is where it was
+    CHECK(tracker.options().maxBpm == Approx(140.0));
+    CHECK(tracker.state().bpm == Approx(bpmOf(28)));
+
+    SECTION("and the beats go with it, because a shift is an instruction") {
+        // `foldDivisor` does not ask for evidence when the operator has given a shift, so
+        // the published grid halves along with the number — which is the whole difference
+        // between this and a window, where the beats wait on `foldSupportFrames`.
+        settle(tracker, index, 14, 0.9, 10);
+        CHECK(tracker.state().beatDivisor == 2);
+    }
+}
+
 TEST_CASE("changing the fold window only drops the lock when it has to", "[tracking][tempo]") {
     TempoTracker::Options options;
     options.minBpm = 70.0;
@@ -1061,6 +1256,53 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
         std::uint64_t at = 0;
         settle(fenced, at, 21, 0.9, 40); // 142.9, just over the edge
         CHECK(fenced.state().bpm == Approx(bpmOf(21) / 2.0).margin(1.0));
+    }
+}
+
+TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate",
+          "[tracking][tempo]") {
+    // A decoder running at 100 fps hands the tracker twice the frames for the same half
+    // second, so `lockAfter = 25` has to mean fifty of them there. See Options::lockAfter.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.lockAfter = 25;
+    options.confidenceSmoothing = 5.0;
+    // The smoother is scaled too — ten frames here — so the first frame's confidence is
+    // 0.09; below the default gate, and the count would start a frame late. This test is
+    // about the lock's count, so the gate is opened.
+    options.confidenceThreshold = 0.05;
+    TempoTracker fast(0.01, options);
+    std::uint64_t index = 0;
+    const auto frame = [&] {
+        TrackedFrame f;
+        f.frameIndex = index++;
+        f.intervalFrames = 46; // 130.4 BPM at 100 fps
+        f.refinedIntervalFrames = 46.0;
+        f.bpm = 60.0 / (46.0 * 0.01);
+        f.tempoAgreement = 0.9;
+        f.beatsPerBar = 4;
+        return f;
+    };
+    for (int i = 0; i < 49; ++i) {
+        (void)fast.process(frame());
+    }
+    CHECK_FALSE(fast.state().locked);
+    (void)fast.process(frame());
+    CHECK(fast.state().locked);
+    CHECK(fast.state().bpm == Approx(60.0 / (46.0 * 0.01)));
+    // What was set is what is read back: nothing is scaled twice on the way round.
+    CHECK(fast.options().lockAfter == 25);
+    fast.setOptions(fast.options());
+    CHECK(fast.options().lockAfter == 25);
+
+    SECTION("a sub-frame beat offset moves the beat's time by that much") {
+        TrackedFrame f = frame();
+        f.emitted = TrackedFrame::Emitted::Beat;
+        f.beatOffsetFrames = 0.25;
+        const std::optional<BeatEvent> event = fast.process(f);
+        REQUIRE(event.has_value());
+        CHECK(event->frameIndex == f.frameIndex);
+        CHECK(event->time == Approx((static_cast<double>(f.frameIndex) + 0.25) * 0.01));
     }
 }
 

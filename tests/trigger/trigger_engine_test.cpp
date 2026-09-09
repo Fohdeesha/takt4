@@ -295,6 +295,80 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         CHECK(sink.sent.size() == 2);
     }
 
+    SECTION("a delay counted in beats is the same gesture at any tempo") {
+        // Asked for on 2026-09-08: "an optional beats/bars box, so you can have it send
+        // something after 2 beats for example, regardless of bpm". A device's own lag is a
+        // fixed number of milliseconds; a *release* is a length of music, and spelling it in
+        // milliseconds means retyping it whenever the record changes.
+        Recorder musical;
+        TriggerEngine beats(musical);
+        config.followUpUnit = takt4::trigger::DelayUnit::Beats;
+        config.followUpDelayBeats = 2.0;
+        beats.setRules({config});
+
+        // Two beats at 120 BPM is one second.
+        beats.onBeat(beatAt(1, 1, 1, 10.0));
+        REQUIRE(musical.sent.size() == 1);
+        Context later = beatAt(1, 1, 1, 10.99);
+        beats.advance(later);
+        CHECK(musical.sent.size() == 1);
+        later.now = 11.0;
+        beats.advance(later);
+        CHECK(musical.sent.size() == 2);
+
+        SECTION("and at a different tempo it is a different number of seconds") {
+            Recorder faster;
+            TriggerEngine slow(faster);
+            slow.setRules({config});
+            Context at90 = beatAt(1, 1, 1, 10.0);
+            at90.bpm = 90.0; // two beats is 1.333 s
+            slow.onBeat(at90);
+            REQUIRE(faster.sent.size() == 1);
+            at90.now = 11.3;
+            slow.advance(at90);
+            CHECK(faster.sent.size() == 1);
+            at90.now = 11.34;
+            slow.advance(at90);
+            CHECK(faster.sent.size() == 2);
+        }
+
+        SECTION("a bar is the meter the tracker reports, never four") {
+            Recorder waltzed;
+            TriggerEngine waltz(waltzed);
+            config.followUpUnit = takt4::trigger::DelayUnit::Bars;
+            config.followUpDelayBeats = 1.0;
+            waltz.setRules({config});
+            Context three = beatAt(1, 1, 1, 10.0);
+            three.meter = 3; // one bar is three beats, 1.5 s at 120
+            waltz.onBeat(three);
+            REQUIRE(waltzed.sent.size() == 1);
+            three.now = 11.49;
+            waltz.advance(three);
+            CHECK(waltzed.sent.size() == 1);
+            three.now = 11.5;
+            waltz.advance(three);
+            CHECK(waltzed.sent.size() == 2);
+        }
+
+        SECTION("with no tempo tracked it falls back to the milliseconds") {
+            // A follow-up due immediately is a release sent in the same round as its press,
+            // which reads as a rule that does nothing at all.
+            Recorder silent;
+            TriggerEngine nothing(silent);
+            nothing.setRules({config});
+            Context idle = beatAt(1, 1, 1, 10.0);
+            idle.bpm = 0.0;
+            nothing.onBeat(idle);
+            REQUIRE(silent.sent.size() == 1);
+            idle.now = 10.04;
+            nothing.advance(idle);
+            CHECK(silent.sent.size() == 1);
+            idle.now = 10.05; // config.followUpDelaySeconds
+            nothing.advance(idle);
+            CHECK(silent.sent.size() == 2);
+        }
+    }
+
     SECTION("overlapping follow-ups come out in the order they were queued") {
         Recorder many;
         TriggerEngine overlapping(many);

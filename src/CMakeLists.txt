@@ -3,7 +3,7 @@ add_subdirectory(core)
 # takt4-cli: the development console (HANDOFF §8 Phase 1). Core only, built in every
 # configuration including UI-less ones, never packaged. Its allocation guard is on in
 # Debug so a real-time violation found on the bench aborts rather than hides.
-add_executable(takt4-cli cli/main.cpp)
+add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/console.hpp cli/main.cpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
 # `beats` needs a weight set and `track` a state space, and the console is a bench tool
 # that is never packaged and never relocated, so it defaults to the ones in the source
@@ -21,6 +21,20 @@ if(TAKT4_BUILD_UI)
   add_executable(takt4 main.cpp)
   target_link_libraries(takt4 PRIVATE takt4::ui takt4::core takt4::warnings)
   takt4_enable_rt_guard(takt4 DEBUG_ONLY)
+
+  if(WIN32)
+    # **A window application, not a console one.** Launched from Explorer, a console-subsystem
+    # binary is given a console of its own — so takt4 opened a black cmd box beside its window
+    # and left it there for the whole session, filling with whatever Slint felt like logging.
+    # Reported from a rig on 2026-09-08.
+    #
+    # `/ENTRY:mainCRTStartup` keeps `main(argc, argv)` as the entry point, so nothing here has
+    # to grow a `WinMain` or a second argument parser; the linker's subsystem is the only thing
+    # that changes. `--version` and `--help` still print — `main` attaches to the console it
+    # was launched from when there is one. See src/main.cpp.
+    set_target_properties(takt4 PROPERTIES WIN32_EXECUTABLE ON)
+    target_link_options(takt4 PRIVATE "/ENTRY:mainCRTStartup")
+  endif()
 
   # takt4-shot: renders the window to an image with no display involved (src/ui/shot.cpp).
   # A bench tool like takt4-cli, never packaged.

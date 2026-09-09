@@ -1,0 +1,48 @@
+# Experiment: the electronic fine-tune anchored to the pretrained weights.
+#
+# The failure mode at BeatNet+'s own learning rate (configs/electronic.yaml) is a narrowed
+# tempo range: after two epochs Ballroom's Quicksteps at 204 BPM decode at half time and
+# its slow Waltzes at 75–85 at double time — tempi the electronic sets hardly contain —
+# and Ballroom's beat F falls from 0.966 to 0.91, under the gate, while Raveform gains
+# 0.05–0.08. A fifth of the learning rate with Ballroom twice an epoch
+# (configs/electronic-lr1e-4-br2.yaml) only slows the same slide (0.927, 0.922, 0.919 at
+# epochs 2, 4, 6) while Ballroom's *loss* keeps improving: the cross-entropy is learning
+# the new data's tempo prior. This run adds L2-SP (Li, Grandvalet & Davoine, ICML 2018):
+# an L2 penalty towards the *pretrained* weights rather than zero, so the fine-tune can
+# only move as far from what the model knows as the new data pays for. Same mix as
+# lr1e-4-br2 otherwise, so the difference is the anchor's.
+name: electronic-l2sp
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.01
+max_epochs: 300
+val_every: 2
+patience: 15
+checkpoint_every: 10
+
+val_tracks_per_set: 80
+val_seconds: 120
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2          # this machine's commit limit is ~29 GB above the desktop: two runs
+dbn_workers: 2          # of 2+2 workers fit, four runs of 4+4 did not (all died allocating)
+device: cuda
+limit_tracks: 0

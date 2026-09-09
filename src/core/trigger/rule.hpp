@@ -63,6 +63,25 @@ bool takesEvery(Trigger trigger) noexcept;
 /// True where `Trigger::pulses` means anything — `Euclid` alone.
 bool takesPulses(Trigger trigger) noexcept;
 
+/// How §5.8's *"optional follow-up value after a delay"* counts that delay.
+///
+/// Milliseconds was the only answer, and it is the wrong one for what the follow-up is
+/// usually doing. A device's own lag is a fixed number of milliseconds — a media server takes
+/// as long to key a clip at 92 BPM as at 140 — but a *release* is a length of music: "hold it
+/// for two beats" is one gesture at any tempo, and in milliseconds it has to be retyped
+/// whenever the record changes. Both are wanted, so both are offered.
+///
+/// `Bars` is `Beats` times the meter the tracker is reporting, taken at the moment the rule
+/// fires. Nothing here assumes four (§5.5).
+enum class DelayUnit : std::uint8_t { Milliseconds, Beats, Bars };
+
+inline constexpr std::array<DelayUnit, 3> kDelayUnits{DelayUnit::Milliseconds, DelayUnit::Beats,
+                                                      DelayUnit::Bars};
+
+std::string_view labelOf(DelayUnit unit) noexcept;
+std::string_view nameOf(DelayUnit unit) noexcept;
+std::optional<DelayUnit> delayUnitOf(std::string_view name) noexcept;
+
 /// Whether step `step` of a `pulses`-in-`steps` Euclidean pattern is a hit.
 ///
 /// Bjorklund's construction, computed directly rather than by the recursive bit-string
@@ -232,7 +251,17 @@ public:
         /// §5.8's *"optional follow-up value after a delay"* — §5.6's press-then-release.
         bool followUp = false;
         Value followUpValue = Value::ofInt(0);
+        /// The delay in milliseconds, used when `followUpUnit` is `Milliseconds`.
         double followUpDelaySeconds = 0.05;
+        /// The same delay in beats — or in bars — used when `followUpUnit` says so. See
+        /// `DelayUnit` for why both exist, and `Rule::followUpDelay` for the arithmetic.
+        ///
+        /// **Two numbers rather than one converted between units.** They are different
+        /// magnitudes of the same idea — fifty milliseconds against two beats — and a single
+        /// field would turn a 50 into a 0.077 the moment the unit changed, which is a box
+        /// nobody can type in and a preset nobody can read.
+        DelayUnit followUpUnit = DelayUnit::Milliseconds;
+        double followUpDelayBeats = 1.0;
 
         /// Seeds every generator this rule owns, each offset from it, so two rules in a
         /// preset do not fire the same clip as each other. See `Generator::Config::seed`.
@@ -311,6 +340,18 @@ public:
     /// The follow-up for a message just fired, or nothing when the rule has none. §5.6's
     /// release half: the same address and MIDI target, a different value.
     std::optional<Message> followUpFor(const Message& fired) const;
+
+    /// How long that follow-up waits, in seconds, for a fire at this moment.
+    ///
+    /// Resolved here rather than by the scheduler because the answer depends on the rule's
+    /// own unit and on the tempo the fire happened at — and it is settled **at the fire**,
+    /// not when the follow-up comes due: two beats after a press means two beats of the
+    /// tempo that was playing, not of whatever the tracker says a second later.
+    ///
+    /// Falls back to the millisecond figure when the unit is musical and there is no tempo
+    /// to measure against. A follow-up due immediately would be a release sent in the same
+    /// round as its press, which reads as a rule that does nothing at all.
+    double followUpDelay(const Context& context) const noexcept;
 
     /// When this rule last fired, on `Context::now`. Negative before it ever has.
     double lastFired() const noexcept { return lastFired_; }

@@ -5,6 +5,7 @@
 #include "core/model/weights.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/state_space.hpp"
+#include "ui/native_window.hpp"
 #include "ui/window_controller.hpp"
 
 #include <exception>
@@ -29,6 +30,8 @@ int run() {
     const settings::Settings saved = settings::load(settings::existingSettingsFile());
     engine::LiveTracker::Options options;
     options.engine.tempo = saved.preset.tempo;
+    options.engine.decoder = saved.preset.decoder;
+    options.engine.forward.meters = saved.preset.meters;
 
     // The assets come out of the executable itself (`core/assets/embedded.hpp`), so there is
     // no folder to find and nothing to go missing when somebody copies takt4.exe somewhere
@@ -38,11 +41,13 @@ int run() {
     std::unique_ptr<engine::LiveTracker> tracker;
     try {
         tracker = std::make_unique<engine::LiveTracker>(
-            model::ModelWeights::fromBytes(assets::weights(), "generic (built in)"),
+            model::ModelWeights::fromBytes(assets::weights(), "electronic (built in)"),
             tracking::StateSpaceModel::fromBytes(assets::stateSpace(), "default (built in)"),
             options);
     } catch (const std::exception& e) {
-        std::cerr << "takt4: " << e.what() << '\n';
+        // Where somebody will see it: takt4 is a window application on Windows and has no
+        // console to write to unless it was started from one. See `ui::reportFatal`.
+        reportFatal(e.what());
         return 1;
     }
 
@@ -55,8 +60,8 @@ int run() {
     // file sixty times a second. What is lost to a crash is one session's tweaks, which is
     // the right trade for a file nobody is waiting on.
     if (!settingsPath.empty() && !settings::save(controller.currentSettings(), settingsPath)) {
-        std::cerr << "takt4: could not write " << settingsPath.string()
-                  << "; this session's settings were not kept\n";
+        reportFatal("Could not write " + settingsPath.string() +
+                    ", so this session's settings were not kept.");
     }
     return 0;
 }

@@ -38,13 +38,22 @@ struct Command {
         /// §5.7's `/ctl/lock <0|1>`. Deliberately *not* superseded the way SetTempoOptions
         /// is: a pin followed by a release is not a pin, so these have to arrive in the
         /// order they were sent.
+        ///
+        /// On a decoder that can hold a tempo (`BeatDecoder::canHoldTempo`) the pin also
+        /// holds the tempo being published, so the decoder tracks phase and nothing else,
+        /// and the release lets it go — TRACKING-PROPOSAL.md §3.4's *tempo hold*, behind
+        /// the control the window already has. On one that cannot, the pin is the
+        /// tracker's alone, as it always was.
         SetLockPinned,
+        /// §3.4's tempo hold, named directly: pin the decoder to `bpm` and track phase
+        /// only, or release it with zero. Ignored by a decoder that cannot.
+        HoldTempo,
     };
 
     Kind kind;
     /// Read for SetTempoOptions and ignored otherwise.
     tracking::TempoTracker::Options tempo;
-    /// Read for SeedTempo and ignored otherwise.
+    /// Read for SeedTempo and HoldTempo and ignored otherwise.
     double bpm = 0.0;
     /// Read for SetLockPinned and ignored otherwise.
     bool pinned = false;
@@ -61,6 +70,7 @@ struct Command {
     static Command setLockPinned(bool pinned) noexcept {
         return Command{Kind::SetLockPinned, {}, 0.0, pinned};
     }
+    static Command holdTempo(double bpm) noexcept { return Command{Kind::HoldTempo, {}, bpm, false}; }
 };
 
 /// The road into the inference thread: many writers, one reader, bounded, no allocation

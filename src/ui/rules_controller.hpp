@@ -82,20 +82,38 @@ public:
     /// Replaces the set from outside — a preset load. Keeps the selection where it can.
     void setRules(std::vector<trigger::Rule::Config> rules);
 
-    /// Which rule the editor is on, or -1 when the set is empty.
+    /// Which rule the editor is on, or -1 when the set is empty. Always one of `chosen()`.
     int selected() const noexcept { return selected_; }
+    /// Every rule the next duplicate or delete would act on, in row order.
+    ///
+    /// **A set rather than one row**, on the user's ask of 2026-09-08: *"you should be able to
+    /// ctrl click or shift click in this trigger list to duplicate or kill multiple of them at
+    /// once"*. A rig with three layers plus a preset's worth of rules is a list somebody wants
+    /// to prune in one gesture, not six.
+    std::vector<int> chosen() const;
 
     /// What the window's callbacks do, reachable directly as well as through a click —
     /// which is how `takt4_ui_tests` drives them, Slint's element-level testing API being
     /// behind SLINT_FEATURE_EXPERIMENTAL (§6).
     void pick(int index);
+    /// A click with its modifiers, as the list sends them. Control toggles this row in and
+    /// out of the selection; shift takes the run from the anchor — the last row picked
+    /// without shift — to this one. Neither together is a plain pick.
+    void pickWith(int index, bool control, bool shift);
     void add();
+    /// Deletes **every** chosen rule, and duplicates every chosen rule. With one row chosen —
+    /// which is what a plain click leaves — these are what they always were.
     void remove();
     void duplicate();
+    /// The same two from a row's own mark. A row inside the selection acts on the selection;
+    /// a row outside it becomes the selection first, so pressing × on an unselected row does
+    /// what it looks like it does rather than deleting six rules somewhere else.
+    void removeAt(int index);
+    void duplicateAt(int index);
     /// Adds a whole rig at once — §5.6's presets, but several rules rather than one address.
     /// "Random clips on three layers" is three rules with three seeds, and nobody should
-    /// have to build the same rule three times. Index 0 is the picker's own label and adds
-    /// nothing. Every rule it makes is switched off, like every rule the editor makes.
+    /// have to build the same rule three times. Index 0 is "no preset" and adds nothing; the
+    /// menu counts from one. Every rule it makes is armed, like every rule the editor makes.
     void addRig(int index);
     void rename(const std::string& name);
     void setEnabled(bool on);
@@ -129,6 +147,10 @@ public:
     void setFollowUp(bool on);
     void setFollowUpValue(const std::string& text);
     void setFollowUpMs(double milliseconds);
+    /// The same delay counted musically — see `trigger::DelayUnit`. The two numbers are kept
+    /// apart on purpose, so switching units does not rewrite the one being edited.
+    void setFollowUpBeats(double beats);
+    void pickFollowUpUnit(int unit);
 
     /// The generators, one per `{...}` of the address plus the value and the MIDI note.
     /// `slot` indexes what the window is showing, which `slotConfigs()` decides.
@@ -173,9 +195,19 @@ private:
     void publishFiring();
     void setStatus(const std::string& text, bool error);
 
+    /// Puts the selection back in step with `rules_` after the set has changed shape, keeping
+    /// `selected_` inside it and never leaving it empty while there is a rule to choose.
+    void resettle(int wanted);
+
     output::OutputRunner& runner_;
     std::vector<trigger::Rule::Config> rules_;
     int selected_ = -1;
+    /// One flag per rule, parallel to `rules_` — see `chosen()`. `selected_` is the row the
+    /// editor shows and is always one of these; `anchor_` is the last row picked *without*
+    /// shift, which is what a shift-click measures its run from, so that shift-clicking twice
+    /// grows and shrinks one run rather than walking away from where it started.
+    std::vector<bool> chosen_;
+    int anchor_ = -1;
     RulesChanged changed_;
     /// What §5.6's targets are called on this rig, so the editor can say which of a rule's
     /// names reach something. Only the names are needed; the addresses are the main

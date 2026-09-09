@@ -43,11 +43,28 @@ export struct TracePoint {
 /// mistyped character anywhere in it took the parse down. A rig has several outputs — that is
 /// §5.6's premise — so the list is a list, the name a rule aims at is its own box, and the
 /// destination is its own box beside it.
+/// **The destination is asked for as the destination is shaped, not as a string.** This row
+/// used to be one box holding "127.0.0.1:7000   or   midi Device Name", which asks an
+/// operator wanting MIDI to type the exact name their driver enumerated — and nobody knows
+/// what that is. A target is one of two kinds and each kind has its own question, so the kind
+/// is picked first and the row then asks that kind's question: a host and a port for OSC, a
+/// list of this machine's own devices for MIDI.
 export struct OutputRow {
   /// What a rule names it by (`trigger::Rule::Config::outputs`). Left empty, the target is
   /// named after its address, which is what this field meant before names existed.
   name: string,
-  /// "127.0.0.1:7000", or "midi Some Device" — `output::formatOutputAddress`.
+  /// `output::OutputTarget::Kind`: 0 is OSC, 1 is MIDI. The index into `output-kinds`.
+  kind-index: int,
+  /// OSC: where to send it, in two boxes because they are two facts and one of them has a
+  /// sane default (9000) while the other does not.
+  host: string,
+  port: string,
+  /// MIDI: which device, as an index into `output-devices` — 0 being that list's own
+  /// "not chosen yet" label. A name would be the same trap the single address box was.
+  device-index: int,
+  /// "127.0.0.1:7000", or "midi Some Device" — `output::formatOutputAddress`. Not shown any
+  /// more; kept because it is still the one string that says the whole destination, which is
+  /// what a settings file holds and what a pasted rig arrives as.
   address: string,
   /// §5.6's per-target enabled state. Off sends nothing and keeps the address.
   enabled: bool,
@@ -59,9 +76,14 @@ export struct OutputRow {
 
 export component MainWindow inherits Window {
   title: root.version == "" ? "takt4" : "takt4 " + root.version;
-  preferred-width: 900px;
+  // Wider than it was, and the outputs row is why: a target now says its kind before its
+  // destination, which is one more control on the busiest row in the window. At 900 the
+  // delay slider — the one control on that row that is *dragged* — was down to a hundred
+  // pixels for a two-second range. The floor rose with it, because below about 820 the row
+  // has nowhere left to give.
+  preferred-width: 1000px;
   preferred-height: 836px;
-  min-width: 720px;
+  min-width: 820px;
   min-height: 736px;
   background: Theme.background;
   init => {
@@ -91,12 +113,22 @@ export component MainWindow inherits Window {
   in-out property <int> beats-per-bar;
   in-out property <int> beat-in-bar;
   in-out property <int> bars;
+  /// How many of the filter's beats go to one published beat — `TempoState::beatDivisor`.
+  /// One while the tempo below has been halved is the state worth seeing: the readout has
+  /// moved and the beats have not.
+  in-out property <int> beat-divisor: 1;
 
   // --- §5.5's octave fold, made visible (§7 deviation 4) and now settable ---------
   in-out property <bool> fold-on;
   in-out property <float> fold-min;
   in-out property <float> fold-max;
   in-out property <float> raw-bpm;
+  /// The rate the filter is calling beats at — `TempoState::calledBpm`, which is `raw-bpm`
+  /// unless the filter is contradicting itself. What the fold worked on, so what the
+  /// "halved from" note below compares against: a cloud at 214 calling beats at 107 under
+  /// a 70-140 window has been folded from 107 to 107, which is nothing, and saying "halved
+  /// from 214 — beats still at 214" of it would be wrong twice.
+  in-out property <float> called-bpm;
 
   // §5.5's latency offset: "one slider in milliseconds, applied to beat event
   // timestamps so events fire early enough". Negative is the useful direction.
@@ -138,8 +170,21 @@ export component MainWindow inherits Window {
   /// §5.6's targets, one row each. Written by the C++ side whenever the list changes shape
   /// — never while a row is being typed into, which would reset the field under the cursor.
   in-out property <[OutputRow]> outputs-list;
+  /// What kinds of target there are, in `output::OutputTarget::Kind` order.
+  in-out property <[string]> output-kinds;
+  /// Every MIDI output on this machine, with a "pick one" label at index 0 — what a target
+  /// row's device dropdown offers. Separate from `midi-ports` below only in that label:
+  /// leaving the clock unset is a setting, leaving a target's device unset is an unfinished
+  /// row, and the two want different words for the same empty entry.
+  in-out property <[string]> output-devices;
   in-out property <bool> midi-on;
-  in-out property <string> midi-port;
+  /// The MIDI clock port, as an index into `midi-ports` — 0 is "no MIDI clock".
+  ///
+  /// An index rather than the name it used to be. `current-value <=>` on a ComboBox does not
+  /// move the selection when it is written from outside (Slint 11970), so every write from
+  /// `publishOutputs` was silently dropped and the box could sit on a port the transports
+  /// were not using; it also logged a warning on every redraw.
+  in-out property <int> midi-port-index;
   in-out property <[string]> midi-ports;
   in-out property <int> beats-sent;
 
@@ -149,7 +194,9 @@ export component MainWindow inherits Window {
   // what their controller's pad 3 sends and a box asking for a note number is a worse
   // question than "press it now".
   in-out property <[string]> midi-in-ports;
-  in-out property <string> midi-in-port;
+  /// Which of them, as an index — 0 being that list's own "select input" label. See
+  /// `midi-port-index` for why this is not the name.
+  in-out property <int> midi-in-port-index;
   in-out property <bool> control-on;
   /// One per ControlAction, in kControlActions order, as labelOf() writes them.
   in-out property <[string]> learn-actions;
@@ -160,7 +207,7 @@ export component MainWindow inherits Window {
   /// which otherwise looks exactly like a broken cable.
   in-out property <string> control-reading;
 
-  callback midi-in-picked(string);
+  callback midi-in-picked(int);
   callback learn-action-picked(int);
   /// Arms learn mode for the selected action, or disarms it when it already is.
   callback learn-clicked();
@@ -224,21 +271,30 @@ export component MainWindow inherits Window {
   callback latency-changed(float);
 
   callback link-toggled(bool);
-  /// A keystroke in either box of row N: remembered, not applied. Applying opens and closes
-  /// a socket, and doing that once per character would rebuild it halfway through an
-  /// address — but a draft that is only in the widget is lost the moment the list is
-  /// republished, which is what pressing [+] does.
-  callback output-edited(int, string, string);
-  /// Enter, which is where a row is applied.
-  callback output-accepted(int, string, string);
+  /// A keystroke in one box of row N: remembered, not applied. Applying opens and closes a
+  /// socket, and doing that once per character would rebuild it halfway through an address —
+  /// but a draft that is only in the widget is lost the moment the list is republished,
+  /// which is what pressing [+] does. The `-accepted` half is Enter, where a row is applied.
+  callback output-name-edited(int, string);
+  callback output-name-accepted(int, string);
+  callback output-host-edited(int, string);
+  callback output-host-accepted(int, string);
+  callback output-port-edited(int, string);
+  callback output-port-accepted(int, string);
   callback output-added();
   callback output-removed(int);
   callback output-enabled-changed(int, bool);
+  /// Row N is an OSC target or a MIDI one. Applied at once, like the tick and unlike the
+  /// text boxes: it changes which question the row is asking, so nothing is half-typed yet.
+  callback output-kind-changed(int, int);
+  /// Row N's MIDI device, as an index into `output-devices`. Applied at once for the same
+  /// reason: it is a pick from a list, so there is nothing to wait for Enter about.
+  callback output-device-picked(int, int);
   /// Row N's delay slider, in milliseconds. Applied as it moves, like the enabled tick and
   /// unlike the two text boxes: dragging it is how an operator finds the offset by ear, and
   /// a delay that waited for Enter could not be found that way at all.
   callback output-delay-changed(int, float);
-  callback midi-port-picked(string);
+  callback midi-port-picked(int);
 
   VerticalLayout {
     padding: 0;
@@ -452,9 +508,26 @@ export component MainWindow inherits Window {
           // difference also catches the tenth-of-a-BPM gap between the cloud's
           // tempo interval and the refined tempo (§6: 5.4 BPM apart at 130), which
           // is not a fold and must not be announced as one.
-          text: (root.fold-on && root.raw-bpm > 0 && root.bpm > 0
-                 && (root.raw-bpm > root.bpm * 1.5 || root.raw-bpm < root.bpm * 0.67))
-            ? "folded from " + round(root.raw-bpm * 10) / 10 + " BPM"
+          text: (root.fold-on && root.called-bpm > 0 && root.bpm > 0
+                 && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67))
+            // Named as the arithmetic that was done rather than as "folded", for the reason
+            // the row's own label is no longer "octave fold": the operator has to be able to
+            // read what happened to the number without knowing the word for it.
+            //
+            // **And whether the beats came with it.** Halving the number without halving the
+            // grid is a real state — see `TempoState::beatDivisor` — and it is the one thing
+            // on this window that is otherwise invisible: the readout says 92 and every
+            // output fires at 184. It is not a fault to be fixed by looking at it, so this
+            // says what is happening rather than warning; ÷2 with the range switched off is
+            // what moves both together.
+            //
+            // Against `called-bpm`, the grid the filter is actually calling beats on, and
+            // not `raw-bpm`, its cloud: the two differ by an octave on a track like Moonlake
+            // and the fold works on the first.
+            ? (root.called-bpm > root.bpm ? "halved from " : "doubled from ")
+              + round(root.called-bpm * 10) / 10 + " BPM"
+              + (root.called-bpm > root.bpm && root.beat-divisor <= 1
+                 ? " — beats still at " + round(root.called-bpm) : "")
             : "";
           color: Theme.holding;
           font-size: 12px;
@@ -568,7 +641,12 @@ export component MainWindow inherits Window {
           vertical-stretch: 0;
 
           Text {
-            text: "octave fold";
+            // **Not "octave fold"**, which is what this said and which nobody outside the
+            // code knows the meaning of — the user who wrote the feature said so. The label
+            // now describes what the setting *does to the number on screen*: a tempo outside
+            // this range is halved or doubled until it is inside. Read with the readouts
+            // beside it the row says "keep BPM in 70 to 140 BPM", which is the whole of it.
+            text: "keep BPM in";
             color: Theme.dim;
             font-size: 12px;
             width: 74px;
@@ -795,10 +873,10 @@ export component MainWindow inherits Window {
 
         midi-picker := ComboBox {
           model: root.midi-ports;
-          current-value <=> root.midi-port;
+          current-index <=> root.midi-port-index;
           horizontal-stretch: 1;
           selected => {
-            root.midi-port-picked(self.current-value);
+            root.midi-port-picked(self.current-index);
           }
         }
 
@@ -847,33 +925,95 @@ export component MainWindow inherits Window {
           }
         }
 
-        name-field := LineEdit {
+        // **Each box reports only itself.** The row used to be two boxes that each sent both
+        // values, because both halves had to travel together — but a row is four fields now,
+        // and two of them live inside an `if`, where an id in one branch cannot be read from
+        // the other. The C++ side holds the draft and merges, which it was already doing
+        // (`targetDrafts_`); what changed is that it merges a field rather than a whole row.
+        LineEdit {
           text: target.name;
           placeholder-text: "name";
           font-size: 12px;
-          width: 116px;
+          width: 104px;
           horizontal-stretch: 0;
-          // Both boxes report both values: they are one target, and the row is applied
-          // whole, so the half that was not touched has to travel with the half that was.
-          // An id inside a repeater names the sibling in *this* row, not in the first.
           edited(text) => {
-            root.output-edited(index, text, address-field.text);
+            root.output-name-edited(index, text);
           }
           accepted(text) => {
-            root.output-accepted(index, text, address-field.text);
+            root.output-name-accepted(index, text);
           }
         }
 
-        address-field := LineEdit {
-          text: target.address;
-          placeholder-text: "127.0.0.1:7000   or   midi Device Name   — Enter to apply";
-          font-size: 12px;
-          horizontal-stretch: 1;
-          edited(text) => {
-            root.output-edited(index, name-field.text, text);
+        // OSC or MIDI, asked before anything else on the row, because it decides what the
+        // rest of the row is even asking. See `OutputRow`.
+        ComboBox {
+          model: root.output-kinds;
+          current-index: target.kind-index;
+          // Two four-letter words and a chevron. Measured rather than guessed: at 66px the
+          // Fluent ComboBox spent it all on its own padding and drew "O..." and "M...".
+          width: 84px;
+          horizontal-stretch: 0;
+          selected => {
+            root.output-kind-changed(index, self.current-index);
           }
-          accepted(text) => {
-            root.output-accepted(index, name-field.text, text);
+        }
+
+        // The destination, in a fixed-width slot so that the slider beside it starts at the
+        // same x whichever kind the row is — a row switched to MIDI must not shove every
+        // readout below it sideways. A quarter narrower than the single address box it
+        // replaces, the width going to the delay slider, which is dragged and was too short
+        // to find an offset by ear on.
+        HorizontalLayout {
+          // A quarter narrower than the single address box it replaces, which at the window's
+          // own width was 302 px. `max-width` rather than a hard `width` so that it, and not
+          // the row, is what gives when the window is dragged towards its minimum — at the
+          // floor a host and a port still read, and a device name elides as it always did.
+          preferred-width: 226px;
+          max-width: 226px;
+          min-width: 150px;
+          horizontal-stretch: 0;
+          spacing: 6px;
+
+          // `if`, not `visible`: a hidden element still takes its layout space, so the two
+          // shapes would each reserve room for the other and neither would get the slot.
+          // See rules_window.slint's slot rows for the render that found it.
+          if target.kind-index == 0 : LineEdit {
+            text: target.host;
+            placeholder-text: "127.0.0.1";
+            font-size: 12px;
+            horizontal-stretch: 1;
+            edited(text) => {
+              root.output-host-edited(index, text);
+            }
+            accepted(text) => {
+              root.output-host-accepted(index, text);
+            }
+          }
+
+          if target.kind-index == 0 : LineEdit {
+            text: target.port;
+            placeholder-text: "9000";
+            font-size: 12px;
+            width: 62px;
+            horizontal-stretch: 0;
+            edited(text) => {
+              root.output-port-edited(index, text);
+            }
+            accepted(text) => {
+              root.output-port-accepted(index, text);
+            }
+          }
+
+          // The machine's own devices, never a name to be typed. Nobody knows what their
+          // interface enumerated as, and a mistyped one is a target that silently sends
+          // nowhere — which is the whole reason this row stopped being a text box.
+          if target.kind-index != 0 : ComboBox {
+            model: root.output-devices;
+            current-index: target.device-index;
+            horizontal-stretch: 1;
+            selected => {
+              root.output-device-picked(index, self.current-index);
+            }
           }
         }
 
@@ -882,14 +1022,19 @@ export component MainWindow inherits Window {
         // move is far more — so one slider for the whole rig is the one adjustment that
         // cannot help. See `OutputTarget::delaySeconds`, including what "earlier" can mean
         // for a message about a beat that has already been heard.
+        // **The one control on this row that is dragged**, so it is the one that gets the
+        // width. It was 112 px for a range of two seconds — 18 ms a pixel, which is a third
+        // of a frame at 60 Hz and far coarser than the offsets it is used to find. Stretched
+        // rather than widened by a fixed amount: what the destination box gave up is a floor,
+        // and a window dragged wider should spend the rest here too.
         Slider {
           minimum: -root.output-delay-limit-ms;
           maximum: root.output-delay-limit-ms;
           step: 1;
           enabled: target.enabled;
           value: target.delay-ms;
-          width: 112px;
-          horizontal-stretch: 0;
+          min-width: 90px;
+          horizontal-stretch: 1;
           changed(v) => {
             root.output-delay-changed(index, v);
           }
@@ -1030,12 +1175,16 @@ export component MainWindow inherits Window {
           vertical-alignment: center;
         }
 
+        // Index 0 of the model reads "select input" rather than being blank — see
+        // `midi-in-ports`. A ComboBox has no placeholder, so an empty first entry left this
+        // looking like an empty box somebody had failed to fill in rather than like a list
+        // nothing has been picked from yet.
         control-picker := ComboBox {
           model: root.midi-in-ports;
-          current-value <=> root.midi-in-port;
+          current-index <=> root.midi-in-port-index;
           horizontal-stretch: 1;
           selected => {
-            root.midi-in-picked(self.current-value);
+            root.midi-in-picked(self.current-index);
           }
         }
 

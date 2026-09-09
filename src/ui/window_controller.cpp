@@ -10,11 +10,13 @@
 #include "core/engine/control.hpp"
 #include "core/output/midi_ports.hpp"
 #include "ui/model_rows.hpp"
+#include "ui/native_window.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <optional>
@@ -99,6 +101,26 @@ int readPort(const std::string& text) {
     return value;
 }
 
+/// `TAKT4_TICK_PROBE`, or empty. See `WindowController::writeTickProbe`.
+std::string environmentPath(const char* name) {
+#if defined(_MSC_VER)
+    // Not std::getenv: MSVC deprecates it, and the buffer it returns is not ours.
+    std::size_t size = 0;
+    if (getenv_s(&size, nullptr, 0, name) != 0 || size == 0) {
+        return {};
+    }
+    std::string value(size, '\0');
+    if (getenv_s(&size, value.data(), size, name) != 0) {
+        return {};
+    }
+    value.resize(size == 0 ? 0 : size - 1); // getenv_s counts the terminator
+    return value;
+#else
+    const char* const value = std::getenv(name);
+    return value == nullptr ? std::string{} : std::string(value);
+#endif
+}
+
 std::string_view trim(std::string_view text) noexcept {
     while (!text.empty() && (std::isspace(static_cast<unsigned char>(text.front())) != 0)) {
         text.remove_prefix(1);
@@ -132,20 +154,106 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
     return parts;
 }
 
-/// A target as the two boxes of its row hold it.
+/// What a row's port box holds when the operator has not said otherwise.
+///
+/// Not `OutputTarget::port`'s own 7000, which is Resolume's: this is the number the *box* is
+/// pre-filled with when [+ ADD OUTPUT] makes a row, and 9000 is what the person who uses this
+/// asked for. A prefilled port is worth having at all because it is the half of an OSC
+/// destination that has a conventional answer, where the host does not.
+constexpr std::uint16_t kNewTargetPort = 9000;
+
+/// Where a row's MIDI dropdown sits for this device — an index into the window's
+/// `output-devices`, whose entry 0 is its own "not chosen yet" label.
+///
+/// Zero for a device this machine has not got, which is a preset from another rig: the row's
+/// `address` still names it and still tries to open it, so the name is not lost, and the
+/// failure is reported by `applyTargets` rather than hidden behind a dropdown that would
+/// otherwise claim the row had no device at all.
+int deviceIndexOf(const std::vector<std::string>& ports, const std::string& device) {
+    for (std::size_t i = 0; i < ports.size(); ++i) {
+        if (ports[i] == device) {
+            return static_cast<int>(i) + 1;
+        }
+    }
+    return 0;
+}
+
+/// A target as the boxes of its row hold it.
 ///
 /// The name box is left **empty** when the target is named after its own address, which is
 /// what an unnamed one is called (`parseOutputTarget`). Filling it in with the address would
 /// be true and useless: it is the box the operator types a name into, and it would come back
 /// holding a copy of the box beside it every time they did not.
-OutputRow rowOf(const output::OutputTarget& target) {
+OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::string>& midiPorts) {
     OutputRow row{};
     const std::string address = output::formatOutputAddress(target);
     row.name = slint::SharedString(target.name == address ? std::string{} : target.name);
     row.address = slint::SharedString(address);
+    const bool midi = target.kind == output::OutputTarget::Kind::Midi;
+    row.kind_index = midi ? 1 : 0;
+    row.host = slint::SharedString(target.host);
+    row.port = slint::SharedString(std::to_string(target.port));
+    row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
     row.enabled = target.enabled;
     row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
     return row;
+}
+
+/// The one string that says a row's whole destination, from the fields that are now edited
+/// separately — `output::parseOutputTarget`'s own input, which is what `applyTargets` reads
+/// and what a settings file holds.
+///
+/// Empty for a row that is not a destination yet: no host typed, or MIDI with no device
+/// picked. Empty is how `applyTargets` already spells "this row is being filled in", so an
+/// unfinished row costs no error message and sends nothing.
+std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts) {
+    if (row.kind_index != 0) {
+        const auto device = static_cast<std::size_t>(row.device_index);
+        if (row.device_index <= 0 || device > midiPorts.size()) {
+            return {};
+        }
+        return "midi " + midiPorts[device - 1];
+    }
+    const std::string host(row.host);
+    if (host.empty()) {
+        return {};
+    }
+    const std::string port(row.port);
+    return host + ":" + (port.empty() ? std::to_string(kNewTargetPort) : port);
+}
+
+/// A whole destination back into the fields that edit it, as far as the text allows.
+///
+/// The parts are the truth now and `addressOf` composes from them — but two ways in still
+/// carry the destination whole: a line pasted into a row, and a settings file. Both come
+/// through here so the boxes show what arrived rather than staying on whatever they held.
+void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
+    const std::string address(row.address);
+    output::OutputTarget target;
+    if (output::parseOutputTarget(address, target)) {
+        const bool midi = target.kind == output::OutputTarget::Kind::Midi;
+        row.kind_index = midi ? 1 : 0;
+        row.host = slint::SharedString(midi ? std::string{} : target.host);
+        row.port = slint::SharedString(midi ? std::string{} : std::to_string(target.port));
+        row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
+        return;
+    }
+    // Not a target — a row half-way through being typed, or one whose text was refused. The
+    // kind is still readable from the shape of it, and for OSC so is as much of the host and
+    // port as has been typed, which is what the boxes should go on showing.
+    const std::string_view text = trim(address);
+    if (text.rfind("midi ", 0) == 0 || text == "midi") {
+        row.kind_index = 1;
+        return;
+    }
+    row.kind_index = 0;
+    const std::size_t colon = text.rfind(':');
+    if (colon == std::string_view::npos) {
+        row.host = slint::SharedString(std::string(text));
+        return;
+    }
+    row.host = slint::SharedString(std::string(text.substr(0, colon)));
+    row.port = slint::SharedString(std::string(text.substr(colon + 1)));
 }
 
 /// §5.7's listening socket, from the machine half — a port on this box, never a preset's.
@@ -195,6 +303,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
+    tickProbe_ = environmentPath("TAKT4_TICK_PROBE");
+    meters_ = settings.preset.meters;
     tracker_.setHostTimeSource(&runner_.hostTimeClock());
     midiPorts_ = output::listMidiOutputPorts();
     midiInputPorts_ = output::listMidiInputPorts();
@@ -211,7 +321,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
     // times a second while the tracker does and would otherwise replace a row mid-word.
     for (const output::OutputTarget& target : runner_.transports().outputs()) {
-        targetDrafts_.push_back(rowOf(target));
+        targetDrafts_.push_back(rowOf(target, midiPorts_));
     }
     publishTargetRows();
 
@@ -230,23 +340,34 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
 
     window_->on_link_toggled([this](bool on) { setLinkEnabled(on); });
-    window_->on_output_edited(
-        [this](int index, const slint::SharedString& name, const slint::SharedString& address) {
-            editTarget(index, std::string(name), std::string(address));
-        });
-    window_->on_output_accepted(
-        [this](int index, const slint::SharedString& name, const slint::SharedString& address) {
-            acceptTarget(index, std::string(name), std::string(address));
-        });
+    window_->on_output_name_edited([this](int index, const slint::SharedString& name) {
+        setTargetName(index, std::string(name), false);
+    });
+    window_->on_output_name_accepted([this](int index, const slint::SharedString& name) {
+        setTargetName(index, std::string(name), true);
+    });
+    window_->on_output_host_edited([this](int index, const slint::SharedString& host) {
+        setTargetHost(index, std::string(host), false);
+    });
+    window_->on_output_host_accepted([this](int index, const slint::SharedString& host) {
+        setTargetHost(index, std::string(host), true);
+    });
+    window_->on_output_port_edited([this](int index, const slint::SharedString& port) {
+        setTargetPort(index, std::string(port), false);
+    });
+    window_->on_output_port_accepted([this](int index, const slint::SharedString& port) {
+        setTargetPort(index, std::string(port), true);
+    });
+    window_->on_output_kind_changed([this](int index, int kind) { setTargetKind(index, kind); });
+    window_->on_output_device_picked(
+        [this](int index, int device) { setTargetDevice(index, device); });
     window_->on_output_added([this] { addTarget(); });
     window_->on_output_removed([this](int index) { removeTarget(index); });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
-    window_->on_midi_port_picked(
-        [this](const slint::SharedString& name) { setMidiPort(std::string(name)); });
+    window_->on_midi_port_picked([this](int index) { pickMidiPort(index); });
 
-    window_->on_midi_in_picked(
-        [this](const slint::SharedString& name) { setMidiControlPort(std::string(name)); });
+    window_->on_midi_in_picked([this](int index) { pickMidiControlPort(index); });
     window_->on_learn_action_picked([this](int index) { pickLearnAction(index); });
     window_->on_learn_clicked([this] { toggleLearn(); });
     window_->on_forget_clicked([this] { forgetLearned(); });
@@ -268,17 +389,36 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
 
+    // The first entry of each list is "nothing picked". **It says so in words**: it used to
+    // be an empty string, and a dropdown showing nothing at all does not read as a list
+    // nobody has chosen from — it reads as a box the application failed to fill in. Reported
+    // from a rig about the control input, and the clock picker had the same hole.
     auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    // An empty first entry is "none", so turning MIDI clock off is a choice in the same
-    // list rather than a second control.
-    ports->push_back(shared(""));
+    ports->push_back(shared("no MIDI clock"));
     for (const std::string& port : midiPorts_) {
         ports->push_back(shared(port));
     }
     window_->set_midi_ports(ports);
 
+    // The same devices again, under the label a *target* row wants: leaving the clock unset
+    // is a setting, leaving a target's device unset is an unfinished row.
+    auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    devices->push_back(shared(midiPorts_.empty() ? "no MIDI outputs on this machine"
+                                                 : "select a MIDI device"));
+    for (const std::string& port : midiPorts_) {
+        devices->push_back(shared(port));
+    }
+    window_->set_output_devices(devices);
+
+    auto kinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    // In `output::OutputTarget::Kind`'s own order, which is what `OutputRow::kind-index` is.
+    kinds->push_back(shared("OSC"));
+    kinds->push_back(shared("MIDI"));
+    window_->set_output_kinds(kinds);
+
     auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    inputs->push_back(shared("")); // "none", as above
+    inputs->push_back(shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine"
+                                                     : "select input"));
     for (const std::string& port : midiInputPorts_) {
         inputs->push_back(shared(port));
     }
@@ -337,6 +477,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     publishStopped();
     publishOutputs();
     publishControl();
+
+    // Before the first `show()`, which is what makes it stick — see `kMainWindowWidth`. The
+    // markup's `preferred-width` does not size a Slint window; its content does, and with a
+    // couple of output rows the content wanted more height than the window had, so the status
+    // bar — which is where the version lives — was cut off the bottom.
+    window_->window().set_size(
+        slint::LogicalSize({kMainWindowWidth, kMainWindowHeight}));
 
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
@@ -478,6 +625,9 @@ void WindowController::editTarget(int index, const std::string& name, const std:
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
     row.name = shared(name);
     row.address = shared(address);
+    // The boxes that edit the two halves of that address, so a whole destination arriving
+    // this way — a pasted line, a settings file — is shown in the fields it is made of.
+    splitAddress(row, midiPorts_);
     // Deliberately no `applyTargets` and no `publishTargetRows`: this is one keystroke.
     // Applying would rebuild a socket per character, and publishing would re-evaluate the
     // `text:` binding of the box the operator is inside.
@@ -489,13 +639,85 @@ void WindowController::acceptTarget(int index, const std::string& name,
     applyTargets();
 }
 
+void WindowController::setTargetName(int index, const std::string& name, bool apply) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    targetDrafts_[static_cast<std::size_t>(index)].name = shared(name);
+    if (apply) {
+        applyTargets();
+    }
+}
+
+void WindowController::setTargetHost(int index, const std::string& host, bool apply) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    row.host = shared(host);
+    row.address = shared(addressOf(row, midiPorts_));
+    if (apply) {
+        applyTargets();
+    }
+}
+
+void WindowController::setTargetPort(int index, const std::string& port, bool apply) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    row.port = shared(port);
+    row.address = shared(addressOf(row, midiPorts_));
+    if (apply) {
+        applyTargets();
+    }
+}
+
+void WindowController::setTargetKind(int index, int kind) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    if (row.kind_index == kind) {
+        return;
+    }
+    row.kind_index = kind;
+    // A row switched to MIDI has no device picked yet, and one switched back to OSC keeps
+    // whatever host and port it had — so `addressOf` gives an empty destination for the
+    // first and the old one back for the second. Empty is how `applyTargets` spells "still
+    // being filled in", so switching kind never raises an error about an unfinished row.
+    row.address = shared(addressOf(row, midiPorts_));
+    // Applied at once, unlike a keystroke: picking from a list is a finished decision, and
+    // the row has to redraw as the other kind either way.
+    applyTargets();
+}
+
+void WindowController::setTargetDevice(int index, int device) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    row.device_index = device;
+    row.kind_index = 1;
+    row.address = shared(addressOf(row, midiPorts_));
+    applyTargets();
+}
+
 void WindowController::addTarget() {
     OutputRow row{};
     row.enabled = true;
+    // A destination on this machine at the conventional port, rather than the blank row this
+    // used to add. A blank row applies nothing, so the target did not exist until the whole
+    // address had been typed — and a rule cannot be routed to a target that is not there
+    // yet, which is the wrong way round for somebody building a rig. This one is a working
+    // target from the moment it appears; both boxes are then edited like any other.
+    row.kind_index = 0;
+    row.host = shared("127.0.0.1");
+    row.port = shared(std::to_string(kNewTargetPort));
+    row.address = shared(addressOf(row, midiPorts_));
     targetDrafts_.push_back(row);
-    // Nothing to apply: a blank row is a place to type, not an output. Anything already
-    // typed into the rows above survives because `editTarget` kept it here.
-    publishTargetRows();
+    // Anything already typed into the rows above survives because `editTarget` kept it here.
+    applyTargets();
 }
 
 void WindowController::removeTarget(int index) {
@@ -601,7 +823,7 @@ void WindowController::applyTargets() {
             if (i == 0 && target.delaySeconds == 0.0) {
                 target.delaySeconds = static_cast<double>(draft.delay_ms) / 1000.0;
             }
-            rows.push_back(rowOf(target));
+            rows.push_back(rowOf(target, midiPorts_));
             targets.push_back(std::move(target));
         }
     }
@@ -656,6 +878,18 @@ void WindowController::setMidiPort(const std::string& name) {
         setStatus("MIDI clock: " + error, true);
     }
     publishOutputs();
+}
+
+void WindowController::pickMidiPort(int index) {
+    // Index 0 is the list's own "no MIDI clock" entry, so the ports start at 1.
+    const auto port = static_cast<std::size_t>(index);
+    setMidiPort(index <= 0 || port > midiPorts_.size() ? std::string{} : midiPorts_[port - 1]);
+}
+
+void WindowController::pickMidiControlPort(int index) {
+    const auto port = static_cast<std::size_t>(index);
+    setMidiControlPort(index <= 0 || port > midiInputPorts_.size() ? std::string{}
+                                                                   : midiInputPorts_[port - 1]);
 }
 
 void WindowController::setMidiControlPort(const std::string& name) {
@@ -830,6 +1064,10 @@ void WindowController::publishMidiControl() {
     window_->set_control_on(control_.running());
     window_->set_learning(control_.learning().has_value());
     window_->set_learn_action_index(learnAction_);
+    // The picker follows the port rather than being the only record of it: it is written
+    // from a settings file at startup and by `setMidiControlPort` from anywhere else, and
+    // a ComboBox cannot be moved from outside by its value at all (Slint 11970).
+    window_->set_midi_in_port_index(deviceIndexOf(midiInputPorts_, control_.config().port));
 
     if (!control_.running()) {
         window_->set_control_reading(shared(
@@ -1086,6 +1324,8 @@ settings::Settings WindowController::currentSettings() const {
     // The tracker's own, not this window's copy: a tap moves the fold window and the
     // window is only ever showing what the engine has (§7 deviation 8).
     out.preset.tempo = tracker_.engine().tempoOptions();
+    out.preset.decoder = tracker_.engine().decoderKind();
+    out.preset.meters = meters_;
     out.preset.link = transports.linkEnabled();
     out.preset.outputs = transports.outputs();
     out.preset.oscPrefix = transports.oscPrefix();
@@ -1109,7 +1349,8 @@ void WindowController::publishOutputs() {
     // thread and this is the one place already holding a safe snapshot of it.
     editor_.setTargets(transports.outputs());
 
-    window_->set_midi_port(shared(transports.midiClockPort().value_or(std::string{})));
+    window_->set_midi_port_index(
+        deviceIndexOf(midiPorts_, transports.midiClockPort().value_or(std::string{})));
     window_->set_midi_on(transports.midiClock() != nullptr);
     window_->set_beats_sent(static_cast<int>(transports.beats()));
 }
@@ -1201,8 +1442,43 @@ void WindowController::setStatus(const std::string& text, bool error) {
     window_->set_status_is_error(error);
 }
 
+void WindowController::writeTickProbe() {
+    std::FILE* probe = nullptr;
+    if (fopen_s(&probe, tickProbe_.c_str(), "w") == 0 && probe != nullptr) {
+        std::fprintf(probe, "%llu\n", static_cast<unsigned long long>(ticks_));
+        std::fclose(probe);
+    }
+    // And a big, moving mark on screen, because the count in the file only says the round
+    // happened — it says nothing about whether anything reached the screen, which is a
+    // different claim and the one that was wrong. The input meter, swept, because it is wide
+    // and unmistakable in a screenshot.
+    window_->set_input_level(static_cast<float>(ticks_ % 60) / 60.0f);
+    setStatus("tick " + std::to_string(ticks_), false);
+}
+
+void WindowController::pumpWhileDragged(void* self) {
+    // Called from inside Windows' drag loop, on this same thread — see `native_window.hpp`.
+    // One ordinary round plus the redraw the event loop would otherwise have asked for.
+    auto* const controller = static_cast<WindowController*>(self);
+    controller->tick();
+    controller->window_->window().request_redraw();
+    if (controller->editor_.visible()) {
+        controller->editor_.window().window().request_redraw();
+    }
+}
+
 void WindowController::tick() {
     ++ticks_;
+    if (!tickProbe_.empty()) {
+        writeTickProbe();
+    }
+    // Half a second apart rather than every round: this walks the thread's top-level windows
+    // and subclasses any it has not already, which is how the editor gets covered when it is
+    // opened later. Doing it at all is what stops the whole window freezing while it is
+    // dragged; doing it thirty times a second would be a list walk for nothing.
+    if (ticks_ % 15 == 1) {
+        keepPaintingWhileDragged(&WindowController::pumpWhileDragged, this);
+    }
     // Before the early return: a MIDI message arrives on RtMidi's thread, so what it
     // changed — a learn that took, a control that was seen — only reaches the window on a
     // redraw, and binding buttons is something an operator does *before* pressing Start.
@@ -1226,12 +1502,24 @@ void WindowController::tick() {
         return;
     }
 
-    // Every frame since the last tick joins the trace, newest at the right.
+    // Every frame since the last tick joins the trace, newest at the right — every frame of
+    // the network's, that is. A decoder running faster than the network is fed frames the
+    // engine interpolates between the network's (`EngineFrame::interpolated`), and the
+    // trace is a picture of what the network said, one column per 50 Hz frame; those are
+    // skipped, and a beat that landed on one is carried to the next real column so it is
+    // still drawn.
     bool moved = false;
     engine::EngineFrame frame;
     while (tracker_.engine().popFrame(frame)) {
+        if (frame.interpolated) {
+            traceBeatPending_ = traceBeatPending_ || frame.beat;
+            continue;
+        }
         std::rotate(trace_.begin(), trace_.begin() + 1, trace_.end());
-        trace_.back() = tracePoint(frame);
+        TracePoint point = tracePoint(frame);
+        point.called = point.called || traceBeatPending_;
+        traceBeatPending_ = false;
+        trace_.back() = point;
         moved = true;
     }
     if (moved) {

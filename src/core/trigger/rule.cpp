@@ -106,6 +106,39 @@ bool takesPulses(Trigger trigger) noexcept {
     return trigger == Trigger::Euclid;
 }
 
+std::string_view labelOf(DelayUnit unit) noexcept {
+    switch (unit) {
+    case DelayUnit::Milliseconds:
+        return "ms";
+    case DelayUnit::Beats:
+        return "beats";
+    case DelayUnit::Bars:
+        return "bars";
+    }
+    return "";
+}
+
+std::string_view nameOf(DelayUnit unit) noexcept {
+    switch (unit) {
+    case DelayUnit::Milliseconds:
+        return "ms";
+    case DelayUnit::Beats:
+        return "beats";
+    case DelayUnit::Bars:
+        return "bars";
+    }
+    return "";
+}
+
+std::optional<DelayUnit> delayUnitOf(std::string_view name) noexcept {
+    for (const DelayUnit unit : kDelayUnits) {
+        if (nameOf(unit) == name) {
+            return unit;
+        }
+    }
+    return std::nullopt;
+}
+
 bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept {
     if (steps == 0 || pulses == 0) {
         return false; // no pattern, or a pattern of rests
@@ -404,6 +437,24 @@ std::optional<Message> Rule::followUpFor(const Message& fired) const {
         follow.value = std::clamp(config_.followUpValue.asInt(), 0, kMidiMax);
     }
     return follow;
+}
+
+double Rule::followUpDelay(const Context& context) const noexcept {
+    const double milliseconds = std::max(0.0, config_.followUpDelaySeconds);
+    if (config_.followUpUnit == DelayUnit::Milliseconds) {
+        return milliseconds;
+    }
+    if (!(context.bpm > 0.0)) {
+        return milliseconds; // nothing tracked to count beats of; see the header
+    }
+    double beats = std::max(0.0, config_.followUpDelayBeats);
+    if (config_.followUpUnit == DelayUnit::Bars) {
+        // The meter the tracker is reporting, never four (§5.5). Before it has an opinion a
+        // bar is one beat, which is short rather than wrong — the alternative is assuming a
+        // meter and holding a clip for four beats of a waltz.
+        beats *= static_cast<double>(std::max<std::uint32_t>(1, context.meter));
+    }
+    return beats * 60.0 / context.bpm;
 }
 
 } // namespace takt4::trigger

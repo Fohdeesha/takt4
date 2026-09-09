@@ -27,39 +27,52 @@ hops to a lock-free ring and a worker thread runs the front end and the model; o
 those excerpts the worker averages 0.086 ms per hop and has never taken more than
 0.31 ms, out of the 20 ms of audio each hop stands for.
 
-Those probabilities become beats through BeatNet+'s two-stage particle filter cascade.
-madmom's bar-pointer state space and its transition models are precomputed into
-`assets/statespace/default.bin` — 40 KB covering 55 to 215 BPM and 2 to 4 beats to the
-bar — so the C++ implements only the runtime loop. It is deterministic: the generator is
+Those probabilities become beats through an exact forward filter over madmom's joint
+bar-pointer state space: position in the bar, tempo and meter, about 39,000 states at
+100 frames a second with the network's 50 Hz activations interpolated between, one sparse
+transition and one multiply by the observation densities per frame, a few tens of
+microseconds. It is deterministic without a seed, it needs no injection or information
+gate, its confidence is the posterior mass on the tempo it reports, the operator's tempo
+window is evidence *inside* it rather than a relabelling afterwards, and a pinned lock
+holds the tempo and tracks phase alone. The beat is read off the activation's peak inside
+the posterior's beat range, which is where the offline reference systems put theirs. It
+replaced BeatNet+'s two-stage particle filter cascade on 2026-09-08, having been measured
+against it on every yardstick the project has — the working is in
+[TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md) and the numbers in
+[tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md).
+
+The particle filter is still here, as `--decoder pf` and the `"particle"` setting. Its
+state space is precomputed into `assets/statespace/default.bin`, its generator is
 specified rather than inherited, and `src/core/tracking/` reproduces
-`tools/pf_reference.py` frame for frame on all eighteen excerpts. That restatement in
+`tools/pf_reference.py` frame for frame on all eighteen excerpts; that restatement in
 turn has to track the real BeatNet+ filter as closely as it tracks itself across six
-seeds before anything is committed; see
+seeds before anything is committed. See
 [tests/data/tracking/README.md](tests/data/tracking/README.md), which also records what
 that catches and what it cannot.
 
-On top sits the tempo state machine: octave folding into a range you set, a lock that
-needs sustained agreement and sustained disagreement to change, a confidence gate that
-holds the last good tempo rather than publishing a wrong one, a latency offset on every
-beat, and the meter taken from the filter rather than assumed. Tempo is refined from the
-spacing of the beats themselves, because the state space's whole-frame intervals are 5
-BPM apart at 130 and nothing inside the filter can do better.
+On top sits the tempo state machine: a lock that needs sustained agreement and sustained
+disagreement to change, a confidence gate that holds the last good tempo rather than
+publishing a wrong one, a latency offset on every beat, and the meter taken from the
+decoder rather than assumed. Tempo is refined from the spacing of the beats themselves,
+because the state space's whole-frame intervals are 2 BPM apart at 130 and nothing inside
+the decoder can do better.
 
-The fold moves the **beats**, not only the number. A tracker that reads 92 BPM while
-firing 186 beats a minute at OSC and MIDI clock is worse than one that reads 186, and
-that is what folding the label alone amounts to — measured on a 92 BPM track whose filter
-grid is 186, it fired 125 beats a minute under a readout that said 92. So when the fold
-puts the published tempo an octave down, every second of the filter's beats is dropped and
-the bar is divided with them. It does that only once the filter's own cloud has settled on
-the slower octave for five seconds, because a genuinely fast record under a window that
-does not fit it looks identical from the inside and must not be halved; the working is in
-[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
+The tempo range you set — the window labelled "keep BPM in" — is a preference the decoder
+weighs against the music: a tempo outside it has to keep out-arguing a small penalty every
+frame, so on a track whose octave is genuinely ambiguous the window decides, and the beats
+come out on that grid with the posterior's own phase; on a track whose evidence is clear,
+the evidence wins and the readout says so. The number and the beats can no longer
+disagree, which the previous design allowed — a readout of 92 over outputs firing at 186
+was measured, and is the reason the window used to move the beats as well as the number.
+Under the particle filter that older fold is still what the window does; the working is
+in [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
 
 The operator's controls reach all of that while it runs, through a queue the tracking
-thread drains between frames: a tap says which tempo was meant and moves the fold window
-onto it, a downbeat snap says where the bar starts and keeps it there, and ×2, ÷2 and
-the settings take effect without reseeding the filter or giving up the lock. Nothing has
-to be stopped and restarted to change anything.
+thread drains between frames: a tap says which tempo was meant and moves the window onto
+it, a downbeat snap says where the bar starts and keeps it there, ÷2 and ×2 are
+instructions that halve or double the grid at once, a pinned lock holds the tempo and
+tracks phase only, and the settings take effect without reseeding anything or giving up
+the lock. Nothing has to be stopped and restarted to change anything.
 
 The three transports are driven from it: Ableton Link (tempo, and phase with the
 detected meter as the quantum, timed through Link's own regression on the audio thread's
@@ -67,17 +80,24 @@ sample counter), a generic OSC namespace on any number of targets, and MIDI beat
 at 24 PPQN.
 
 Measured on the 698-clip Ballroom set — 6.1 hours, scored with mir_eval at its 70 ms
-tolerance — the whole chain gets **0.894 beat and 0.850 downbeat F-measure**. Ballroom is
-a set BeatNet+ was *trained* on, so that says the port reproduces what the model can do
-and nothing about how the model generalises; it is not comparable to BeatNet+'s published
-GTZAN figures. [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/) has the
-numbers, the per-genre breakdown, what the octave fold costs as well as buys, and why the
-worst cases are BeatNet+'s behaviour rather than this port's.
+tolerance — the whole chain gets **0.956 beat and 0.942 downbeat F-measure** (the particle
+filter: 0.894 and 0.850). Ballroom is a set BeatNet+ was *trained* on, so that says the
+port reproduces what the model can do and nothing about how the model generalises; it is
+not comparable to BeatNet+'s published GTZAN figures.
+[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/) has the numbers, the
+per-genre breakdown and what the window costs as well as buys. On 91 minutes of the
+electronic music the app is for, scored against two offline reference systems, it is
+0.895 beat and 0.708 downbeat F-measure over the tracks the two references agree on
+(the particle filter: 0.864 and 0.602), and eight of the 23 tracks are ones the reference
+systems disagree with *each other* on — the model's limit, not the decoder's, and the
+subject of the proposal's next phase.
 
 `takt4 --version` prints what it was built with. The window shows the tempo, the lock
 and confidence, a bar indicator drawn from the meter the tracker reports, the 50 Hz
 activation trace and an input meter — and drives the tracker: ÷2, ×2, tap, a manual
-downbeat, the octave-fold window and the latency offset. It carries the outputs row too:
+downbeat, the tempo range the reading is kept in — the octave fold, labelled "keep BPM in"
+and **off until you ask for it**, because a window that suited the last record silently
+halves or doubles the next one — and the latency offset. It carries the outputs row too:
 Link, MIDI clock and any number of named OSC and MIDI targets, each with its own enable
 and its own [offset](#offsets), and §5.9's rule editor behind it.
 
@@ -163,17 +183,18 @@ percussion-heavy material, `af-non-percussive` for ambient and classical, or a p
 a `.bin` of your own. A run ends with the mean and the worst time one hop took on the
 worker thread, out of the 20 ms of audio it stands for.
 
-`track` runs everything: the front end, the model, the particle filter and the tempo
-state machine, and drives the outputs. It prints a line per beat with the tempo, the
-position in the bar, the meter, whether the tempo is locked and how confident the
-tracker is, and a status line every two seconds in between.
+`track` runs everything: the front end, the model, the decoder and the tempo state
+machine, and drives the outputs. It prints a line per beat with the tempo, the position
+in the bar, the meter, whether the tempo is locked and how confident the tracker is, and
+a status line every two seconds in between.
 
 | Option | |
 |---|---|
-| `--bpm LO-HI` | the octave-fold window, default `70-140`. An estimate outside it is halved or doubled into it, which is what stops a house set reading 170. Folding *down* takes the beats with it, once the filter has settled on the slower octave for five seconds. |
+| `--bpm LO-HI` | the tempo window, default `70-140`; `off` for none, as an evaluation wants. Under the forward filter it is a prior the decoder weighs every frame; under the particle filter it is the octave fold, which folds the number and, once the filter has settled on the slower octave for five seconds, the beats. |
+| `--decoder D` | `forward` (default), the exact forward filter at 100 fps, or `pf`, BeatNet+'s particle filter at 50 fps. `--emission`, `--meters`, `--decoder-fps` and `--hold BPM` are the forward filter's; `--statespace` and `--seed` the particle filter's. |
 | `--confidence T` | below this the last good tempo is held and the line says so; default 0.15 |
 | `--latency MS` | added to every beat's timestamp and to what all three transports are told; negative fires early, which is the useful direction. See [Offsets](#offsets) for what "early" can mean for OSC. |
-| `--seed N` | the particle filter's seed. The same seed and the same audio give the same beats, every time and on every platform. |
+| `--seed N` | the particle filter's seed. The same seed and the same audio give the same beats, every time and on every platform. The forward filter has none to give: it is exact. |
 | `--link` | join the Ableton Link network as tempo master |
 | `--osc HOST:PORT` | send the generic namespace there; repeat for more targets |
 | `--osc-prefix /NAME` | that namespace's prefix, default `/takt4` |
@@ -341,7 +362,7 @@ src/core/io/        WAV and .npy readers/writers for tests and tools, not the au
 src/core/model/     BeatNet+ through RTNeural: weight loading, the network, the worker
 src/core/output/    Ableton Link, the OSC encoder and sender, MIDI clock
 src/core/rt/        real-time allocation guard, lock-free SPSC ring
-src/core/tracking/  the state space, the particle filter, the tempo state machine
+src/core/tracking/  the forward filter, the particle filter and its state space, the tempo state machine
 src/cli/      takt4-cli, the development console; links takt4_core only
 src/ui/       Slint markup and the C++ that binds it to the engine
 src/main.cpp

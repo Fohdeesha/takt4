@@ -146,6 +146,12 @@ void fillFromSyntheticRun(MainWindow& window,
         (void)beatEngine->step();
         engine::EngineFrame frame;
         while (beatEngine->popFrame(frame)) {
+            // The network's frames only, as the live window draws them; the shot engine is
+            // the particle filter, which interpolates nothing, so this is for the day it is
+            // not.
+            if (frame.interpolated) {
+                continue;
+            }
             std::rotate(trace.begin(), trace.begin() + 1, trace.end());
             trace.back() = tracePoint(frame);
         }
@@ -256,13 +262,20 @@ void fillRules(RulesWindow& window) {
     // picker names the rule in front of it rather than the last thing clicked.
     window.set_host_preset_index(1);
 
+    // No "add a preset..." entry at the front: the control is a menu with a fixed label now,
+    // not a dropdown that has to sit on something. See `RulesController`'s `kRigPresets`.
     auto rigs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* label :
-         {"add a preset...", "Resolume: clips on 3 layers", "Resolume: tempo and resync",
-          "Resolume: breathing dashboard", "MIDI: euclidean stabs"}) {
+    for (const char* label : {"Resolume: clips on 3 layers", "Resolume: tempo and resync",
+                              "Resolume: breathing dashboard", "MIDI: euclidean stabs"}) {
         rigs->push_back(slint::SharedString(label));
     }
     window.set_rig_presets(rigs);
+
+    auto units = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::DelayUnit unit : trigger::kDelayUnits) {
+        units->push_back(slint::SharedString(std::string(trigger::labelOf(unit))));
+    }
+    window.set_follow_up_units(units);
 
     auto shapes = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const char* label : {"saw", "triangle", "sine", "square"}) {
@@ -272,17 +285,21 @@ void fillRules(RulesWindow& window) {
 
     // Three rules, because a list of one says nothing about a list: one firing, one switched
     // off, and one that will not fire — the state §5.8 insists has to be *visible*.
-    const auto rule = [](const char* name, bool enabled, const char* problem, int fires) {
+    const auto rule = [](const char* name, bool enabled, const char* problem, int fires,
+                         bool chosen = false) {
         RuleRow row{};
         row.name = slint::SharedString(name);
         row.enabled = enabled;
         row.problem = slint::SharedString(problem);
         row.fires = fires;
+        row.chosen = chosen;
         return row;
     };
     auto rules = std::make_shared<slint::VectorModel<RuleRow>>();
-    rules->push_back(rule("Layer 1 - random clip", true, "", 37));
-    rules->push_back(rule("Layer 2 - random clip", true, "", 18));
+    // Two chosen rather than one, because the selection is a *set* now and a picture of one
+    // selected row says nothing about that — nor about the marks each chosen row carries.
+    rules->push_back(rule("Layer 1 - random clip", true, "", 37, true));
+    rules->push_back(rule("Layer 2 - random clip", true, "", 18, true));
     rules->push_back(rule("Layer 3 - random clip", false, "", 0));
     rules->push_back(rule("Dashboard breathes over 4 bars", true, "", 296));
     rules->push_back(rule("Euclidean stabs - 3 in 8", true, "", 111));
@@ -433,18 +450,27 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_tap_needs(3);
     fillPickers(*window);
 
-    // The machine's real MIDI outputs, as the window offers them; the empty first entry
-    // is "none", exactly as WindowController builds it.
+    // The machine's real MIDI outputs, as the window offers them; the first entry is the
+    // "nothing picked" label, exactly as WindowController builds it.
     auto midiPorts = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    midiPorts->push_back(slint::SharedString(""));
+    midiPorts->push_back(slint::SharedString("no MIDI clock"));
+    auto midiDevices = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    midiDevices->push_back(slint::SharedString("select a MIDI device"));
     for (const std::string& port : output::listMidiOutputPorts()) {
         midiPorts->push_back(slint::SharedString(port));
+        midiDevices->push_back(slint::SharedString(port));
     }
     window->set_midi_ports(midiPorts);
+    window->set_output_devices(midiDevices);
+
+    auto outputKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    outputKinds->push_back(slint::SharedString("OSC"));
+    outputKinds->push_back(slint::SharedString("MIDI"));
+    window->set_output_kinds(outputKinds);
 
     // §5.7's control row, built the way WindowController builds it.
     auto midiInputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    midiInputs->push_back(slint::SharedString(""));
+    midiInputs->push_back(slint::SharedString("select input"));
     for (const std::string& port : output::listMidiInputPorts()) {
         midiInputs->push_back(slint::SharedString(port));
     }
@@ -476,24 +502,35 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // lighting desk, each of which a rule can be aimed at by name, and one switched off
         // — the state a single field could only spell as "off " in front of an address.
         auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
-        const auto target = [](const char* name, const char* address, bool enabled,
-                               float delayMs = 0.0f) {
+        const auto target = [](const char* name, const char* host, const char* port,
+                               bool enabled, float delayMs = 0.0f) {
             OutputRow row{};
             row.name = slint::SharedString(name);
-            row.address = slint::SharedString(address);
+            row.kind_index = 0;
+            row.host = slint::SharedString(host);
+            row.port = slint::SharedString(port);
+            row.address = slint::SharedString(std::string(host) + ":" + port);
             row.enabled = enabled;
             row.delay_ms = delayMs;
             return row;
         };
-        targets->push_back(target("deck", "192.168.1.40:7000", true));
+        targets->push_back(target("deck", "192.168.1.40", "7000", true));
         // One of each sign, because a rig where every destination shares a lag is the case
         // that never needed §5.6's per-target offset — and because the two directions do
         // different things underneath. The media server is nudged *early*, which for a
         // message about a beat already heard means "just before the next one"; the robot,
         // which has to physically move, is pushed late.
-        targets->push_back(target("wall", "192.168.1.41:7000", true, -80.0f));
-        targets->push_back(target("robot", "192.168.1.42:7000", true, 352.0f));
-        targets->push_back(target("lights", "midi MOTU Midi Out 1", false));
+        targets->push_back(target("wall", "192.168.1.41", "7000", true, -80.0f));
+        targets->push_back(target("robot", "192.168.1.42", "7000", true, 352.0f));
+        // The other kind of destination, so the picture shows both shapes of the row: a MIDI
+        // target picks its device from a list rather than holding a typed name.
+        OutputRow lights{};
+        lights.name = slint::SharedString("lights");
+        lights.kind_index = 1;
+        lights.device_index = midiDevices->row_count() > 1 ? 1 : 0;
+        lights.address = slint::SharedString("midi MOTU Midi Out 1");
+        lights.enabled = false;
+        targets->push_back(lights);
         window->set_outputs_list(targets);
         window->set_beats_sent(21);
         // A control surface bound, so the row shows what a learned binding reads as

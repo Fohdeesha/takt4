@@ -1,0 +1,60 @@
+# The library fine-tune, third recipe: v2 with the teacher's own octave everywhere.
+#
+# Identical to electronic-library-v2.yaml except that nothing is halved: every electronic
+# set is trained and validated at the octave Beat This! (and Raveform's and osu2beat's
+# annotators) put it at — `octave.py --min-bpm 1000` restores every relabelled track before
+# this runs. The operator said the half-time boundary is "whatever works better for
+# accuracy" (2026-09-09); v2 and v3 differ in that one thing, and the harness — scored
+# against Beat This!, which counts the fast beat — plus the library's own validation decide
+# it. Halving a track whose kick has no parity (198 of the 269 the library halves) chooses
+# which half of the fast grid is the beat by a coin toss, and that is a label the network
+# cannot learn from; this recipe finds out what leaving that out is worth.
+name: electronic-library-v3
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  library: 3
+  raveform: 1
+  osu2beat: 1
+  ballroom: 1
+max_bpm:
+  osu2beat: 160
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting, teacher_disagree]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0002
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+stretch_min_bpm: 0
+max_epochs: 200
+val_every: 4
+patience: 8
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+val_bpm: "off"
+val_meters: "4"
+cli_jobs: 8
+gate_set: ballroom
+gate_margin: 0.05
+select_sets: [library]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

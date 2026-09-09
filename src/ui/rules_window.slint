@@ -31,6 +31,10 @@ export struct RuleRow {
   /// fire. §5.8's policy is that an invalid rule is held and shown rather than refused.
   problem: string,
   fires: int,
+  /// Whether this row is part of the selection — which is a *set*, so that duplicating and
+  /// deleting can act on several rules at once (ctrl-click, shift-click). The editor on the
+  /// right shows one of them, `RulesWindow::selected`; this is all of them.
+  chosen: bool,
 }
 
 /// One editable `{...}` of the address, or the rule's value, or its MIDI note number —
@@ -86,8 +90,14 @@ export struct OutputChoice {
 
 export component RulesWindow inherits Window {
   title: "takt4 — triggers";
-  preferred-width: 1180px;
-  preferred-height: 790px;
+  // **These do not decide what the window opens at**, and the comment is here because the
+  // obvious reading is that they do. Slint's winit backend sizes a window from
+  // `layout_info(...).preferred_bounded()` — what the *content* asks for, clamped to the
+  // min/max below — so a window whose content is a list and a scroll view opens at its
+  // minimum however large a preference is written here. `ui::kRulesWindowWidth` is the size
+  // that is actually used; `RulesController` sets it before the first show.
+  preferred-width: 1164px;
+  preferred-height: 872px;
   min-width: 900px;
   min-height: 560px;
   background: Theme.background;
@@ -99,13 +109,16 @@ export component RulesWindow inherits Window {
   // How wide the two side panes are, dragged rather than written down. See `Splitter`:
   // which of the three panes deserves the width is a question that changes during a set,
   // and the answer was a number in this file.
-  in-out property <length> list-width: 244px;
-  in-out property <length> log-width: 264px;
+  // Both narrower than they were, and both measured rather than chosen: this is where a rig
+  // dragged them and asked that they open there. The middle is what the width is worth — the
+  // address, the chips and the conditions all live there — and a rule list is short names.
+  in-out property <length> list-width: 212px;
+  in-out property <length> log-width: 170px;
   /// How narrow a side pane can be dragged, and how wide. Not zero: the divider is what
-  /// drags it back, and a pane dragged to nothing takes its own handle with it. 165px is
-  /// measured rather than chosen: it is where COPY and DELETE still read as words, and an
-  /// ellipsis where a label used to be is a worse pane than a slightly wider one.
-  private property <length> pane-min: 165px;
+  /// drags it back, and a pane dragged to nothing takes its own handle with it. It was 165px
+  /// because that is where COPY and DELETE still read as words; those two buttons are gone —
+  /// each row carries its own — so the floor is now just what a name and its two marks need.
+  private property <length> pane-min: 132px;
   private property <length> pane-max: root.width * 0.4;
 
   // --- the set ---------------------------------------------------------------------
@@ -116,7 +129,17 @@ export component RulesWindow inherits Window {
   in-out property <bool> panicked;
 
   callback rule-picked(int);
+  /// A click carrying its modifiers: control toggles one row in and out of the selection,
+  /// shift takes the run from the anchor to here. Both are what every list an operator has
+  /// used already does, and both are what makes deleting six rules one gesture.
+  callback rule-picked-with(int, bool, bool);
   callback rule-added();
+  /// Row N's own mark. **Not `rule-picked` then `rule-removed`**: that collapsed a selection
+  /// of six to one before deleting it, which is the opposite of what pressing × on one of six
+  /// selected rows means. A row inside the selection acts on the whole selection; a row
+  /// outside it acts on itself.
+  callback rule-removed-at(int);
+  callback rule-duplicated-at(int);
   callback rule-removed();
   callback rule-duplicated();
   callback rule-enabled-changed(bool);
@@ -184,6 +207,15 @@ export component RulesWindow inherits Window {
   in-out property <bool> follow-up;
   in-out property <string> follow-up-value;
   in-out property <float> follow-up-ms;
+  /// The same delay counted in beats, and which of the two the rule is using: 0 is
+  /// milliseconds, 1 beats, 2 bars — `Rule::Config::followUpUnit`.
+  ///
+  /// Two numbers rather than one converted on the way in and out, because they are different
+  /// magnitudes of the same idea — 50 ms and 2 beats — and a box that turned "50" into
+  /// "0.077" the moment the unit changed would be a box nobody could type in.
+  in-out property <float> follow-up-beats: 1;
+  in-out property <int> follow-up-unit;
+  in-out property <[string]> follow-up-units;
 
   in-out property <[string]> generator-kinds;
   in-out property <[string]> live-sources;
@@ -214,6 +246,8 @@ export component RulesWindow inherits Window {
   callback follow-up-changed(bool);
   callback follow-up-value-edited(string);
   callback follow-up-delay-changed(float);
+  callback follow-up-beats-changed(float);
+  callback follow-up-unit-picked(int);
 
   callback slot-kind-picked(int, int);
   callback slot-pool-changed(int, bool);
@@ -290,13 +324,43 @@ export component RulesWindow inherits Window {
           vertical-stretch: 1;
           for row[index] in root.rules: Rectangle {
             height: 46px;
-            background: index == root.selected ? Theme.control : transparent;
+            // Every row of the selection is lit; the one the editor is showing gets an edge
+            // as well, so "which of these six am I editing" is answerable at a glance.
+            background: row.chosen ? Theme.control : transparent;
             border-radius: 4px;
+            border-width: index == root.selected && row.chosen ? 1px : 0px;
+            border-color: Theme.controlEdge;
 
-            HorizontalLayout {
+            // **First, so it is underneath the two marks.** Slint draws later siblings on
+            // top and gives them the pointer, so a row-wide TouchArea declared after the
+            // layout would swallow every click on the marks inside it and all four of them
+            // would merely select the row.
+            pick := TouchArea {
+              // `pointer-event` rather than `clicked`, because `clicked` carries no
+              // modifiers and ctrl/shift are the whole of multiple selection. On the *down*
+              // edge, which is where every list an operator has used already selects.
+              pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.left) {
+                  root.rule-picked-with(index, event.modifiers.control, event.modifiers.shift);
+                }
+              }
+            }
+
+            line := HorizontalLayout {
+              // Duplicating and deleting live **on the row**, not on two buttons under the
+              // list. A button under the list acts on "the selection", which is a second
+              // thing to keep track of — and the gesture is "get rid of that one", pointing
+              // at a row. The marks show on every selected row and on the row under the
+              // pointer, so a selection of six shows six of them and pressing any one acts
+              // on all six. All three terms are needed: moving onto a mark takes the hover
+              // off `pick`, and without its own term the mark would vanish under the pointer.
+              property <bool> showing: row.chosen || pick.has-hover
+                || copy-touch.has-hover || kill-touch.has-hover;
+
               padding-left: 8px;
-              padding-right: 8px;
-              spacing: 8px;
+              padding-right: 6px;
+              spacing: 6px;
 
               // The dot says three things at a glance, which is what a list is for:
               // disabled, broken, or ready. An operator scanning twenty rules needs the
@@ -320,18 +384,86 @@ export component RulesWindow inherits Window {
                 overflow: elide;
               }
 
-              Text {
-                text: row.fires > 0 ? row.fires : "";
+              // Out of the row entirely while the marks are showing rather than blanked:
+              // this pane is narrow, and an empty element still costs the layout's spacing
+              // either side of it — twelve pixels the name would rather have. The count is
+              // what a row says at rest; the marks are what it says when it is pointed at.
+              if !line.showing && row.fires > 0 : Text {
+                text: row.fires;
                 color: Theme.dim;
                 font-size: 11px;
                 font-family: "Consolas";
                 vertical-alignment: center;
               }
-            }
 
-            TouchArea {
-              clicked => {
-                root.rule-picked(index);
+              // Duplicate. **Drawn from two rectangles rather than typed as a glyph**: the
+              // font the software renderer embeds does not carry the symbols this wants, and
+              // a missing glyph renders as nothing at all rather than as a box — measured, in
+              // a shot, when a chevron came out blank (see the "send to" control).
+              //
+              // **The full height of the row**, no `height` set so the layout gives it all of
+              // it. At 22 px in a 46 px row it sat wherever the layout put it, which was the
+              // top — near enough the row above to read as belonging to that one. Reported
+              // from a rig. A full-height button belongs to exactly one row and is a bigger
+              // thing to hit in a booth.
+              copy-mark := Rectangle {
+                width: parent.showing ? 34px : 0px;
+                border-radius: 4px;
+                background: copy-touch.has-hover ? Theme.control.brighter(0.4) : transparent;
+                clip: true;
+
+                Rectangle {
+                  x: (parent.width - 16px) / 2;
+                  y: (parent.height - 19px) / 2;
+                  width: 12px;
+                  height: 15px;
+                  border-radius: 2px;
+                  border-width: 1px;
+                  border-color: copy-touch.has-hover ? Theme.text : Theme.dim;
+                }
+                Rectangle {
+                  // Filled, so it sits *over* the outline behind it and the pair reads as one
+                  // page on top of another. An outline would have crossed it.
+                  x: (parent.width - 16px) / 2 + 4px;
+                  y: (parent.height - 19px) / 2 + 4px;
+                  width: 12px;
+                  height: 15px;
+                  border-radius: 2px;
+                  background: copy-touch.has-hover ? Theme.text : Theme.dim;
+                }
+
+                copy-touch := TouchArea {
+                  clicked => {
+                    root.rule-duplicated-at(index);
+                  }
+                }
+              }
+
+              // Delete. U+00D7, which is Latin-1 and in every font — unlike the ✕ and ⨯ this
+              // would rather have been.
+              kill-mark := Rectangle {
+                width: parent.showing ? 34px : 0px;
+                border-radius: 4px;
+                background: kill-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
+                clip: true;
+
+                Text {
+                  x: 0;
+                  y: 0;
+                  width: parent.width;
+                  height: parent.height;
+                  text: "×";
+                  color: kill-touch.has-hover ? Theme.label : Theme.dim;
+                  font-size: 24px;
+                  horizontal-alignment: center;
+                  vertical-alignment: center;
+                }
+
+                kill-touch := TouchArea {
+                  clicked => {
+                    root.rule-removed-at(index);
+                  }
+                }
               }
             }
           }
@@ -341,42 +473,96 @@ export component RulesWindow inherits Window {
         // three rules, and nobody should build the same rule three times and remember to
         // give each a different seed. Everything it adds is an ordinary rule, editable like
         // any other; nothing downstream asks which preset a rule came from.
-        ComboBox {
-          model: root.rig-presets;
-          current-index: 0;
+        //
+        // **Not a ComboBox**, and the reason is the one thing this control has to get right:
+        // it is a *menu*, not a setting. A ComboBox keeps showing what was last chosen, so
+        // after adding the Resolume rig the pane read "Resolume: clips on 3 layers" as though
+        // that were the state of something — and writing `current-index = 0` back inside
+        // `selected` does not move it (Slint 11970), so the label could not be restored.
+        // Reported from a rig. This says the same words whatever has been picked from it.
+        preset-field := Rectangle {
+          height: 32px;
           vertical-stretch: 0;
-          selected => {
-            root.rig-added(self.current-index);
-            // Back to the label, so picking the same rig twice is two presses rather than
-            // one that appears to do nothing.
-            self.current-index = 0;
-          }
-        }
+          border-radius: 4px;
+          border-width: 1px;
+          border-color: preset-touch.has-hover ? Theme.accent : Theme.controlEdge;
+          background: Theme.control;
 
-        // Tighter than the performance controls, because this pane can be dragged narrow and
-        // these two have to give way when it is — see `Press::pad` and its label's elide.
-        HorizontalLayout {
-          spacing: 6px;
-          vertical-stretch: 0;
+          HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 6px;
 
-          Press {
-            text: "COPY";
-            pad: 8px;
-            font: 13px;
-            enabled: root.selected >= 0;
-            horizontal-stretch: 1;
-            clicked => {
-              root.rule-duplicated();
+            Text {
+              text: "select a preset";
+              color: Theme.dim;
+              font-size: 12px;
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+
+            Text {
+              // U+25BC, for the reason the "send to" control gives: the lighter chevrons are
+              // not in the font the software renderer embeds and come out as nothing at all.
+              text: "▼";
+              color: Theme.dim;
+              font-size: 8px;
+              vertical-alignment: center;
             }
           }
-          Press {
-            text: "DELETE";
-            pad: 8px;
-            font: 13px;
-            enabled: root.selected >= 0;
-            horizontal-stretch: 1;
+
+          preset-touch := TouchArea {
             clicked => {
-              root.rule-removed();
+              preset-popup.show();
+            }
+          }
+
+          preset-popup := PopupWindow {
+            x: 0;
+            y: parent.height + 2px;
+            // Wider than the pane it hangs off, which a popup may be: these are sentences
+            // ("Resolume: breathing dashboard") and a list of ellipses is not a menu.
+            width: 268px;
+
+            Rectangle {
+              background: Theme.panel;
+              border-radius: 5px;
+              border-width: 1px;
+              border-color: Theme.controlEdge;
+
+              VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+
+                for preset[i] in root.rig-presets : Rectangle {
+                  height: 28px;
+                  border-radius: 3px;
+                  background: preset-hover.has-hover ? Theme.control : transparent;
+
+                  HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+
+                    Text {
+                      text: preset;
+                      color: Theme.text;
+                      font-size: 12px;
+                      horizontal-stretch: 1;
+                      vertical-alignment: center;
+                      overflow: elide;
+                    }
+                  }
+
+                  preset-hover := TouchArea {
+                    // One past the index, because `RulesController::addRig` keeps 0 for "no
+                    // preset" — the entry a dropdown needed and a menu does not have.
+                    clicked => {
+                      root.rig-added(i + 1);
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -420,7 +606,13 @@ export component RulesWindow inherits Window {
           padding-bottom: 10px;
           spacing: 10px;
 
+          // **Labelled.** It was a bare box, which beside a text field reads as a divider
+          // rather than as a switch — and since every new rule used to arrive switched off,
+          // the first thing an operator met was a rule that would not fire and a control
+          // that did not say it was the reason. Rules are made switched on now; this says
+          // what the box is either way.
           CheckBox {
+            text: "enabled";
             checked <=> root.rule-enabled;
             enabled: root.selected >= 0;
             toggled => {
@@ -1194,7 +1386,17 @@ export component RulesWindow inherits Window {
               vertical-alignment: center;
             }
 
-            LineEdit {
+            // **Milliseconds or beats, and the difference is musical.** A device's own lag
+            // is a fixed number of milliseconds — a media server takes as long to key a clip
+            // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go two
+            // beats later" is the same gesture at either tempo, and spelling it in
+            // milliseconds means retyping it whenever the record changes. Asked for from a
+            // rig; §5.8 only ever had the milliseconds.
+            //
+            // Two boxes rather than one, chosen by the unit, so that switching units does not
+            // rewrite the number under the operator — see `follow-up-beats`. `if` and not
+            // `visible`, so the one that is not in use takes no width.
+            if root.follow-up-unit == 0 : LineEdit {
               text: root.follow-up-ms;
               enabled: root.selected >= 0 && root.follow-up;
               font-size: 12px;
@@ -1204,11 +1406,24 @@ export component RulesWindow inherits Window {
               }
             }
 
-            Text {
-              text: "ms";
-              color: Theme.dim;
+            if root.follow-up-unit != 0 : LineEdit {
+              text: root.follow-up-beats;
+              enabled: root.selected >= 0 && root.follow-up;
               font-size: 12px;
-              vertical-alignment: center;
+              width: 76px;
+              accepted(text) => {
+                root.follow-up-beats-changed(text.to-float());
+              }
+            }
+
+            ComboBox {
+              model: root.follow-up-units;
+              current-index <=> root.follow-up-unit;
+              enabled: root.selected >= 0 && root.follow-up;
+              width: 96px;
+              selected => {
+                root.follow-up-unit-picked(self.current-index);
+              }
             }
 
             Rectangle { horizontal-stretch: 1; }
@@ -1303,9 +1518,12 @@ export component RulesWindow inherits Window {
           }
           Press {
             text: "CLEAR";
-            pad: 8px;
-            font: 13px;
-            min-width: 56px;
+            // Tight, because this pane is narrow by default now and the heading beside it
+            // was eliding to "EVENT L..." — a truncated column title says less than a
+            // slightly smaller button next to a whole one.
+            pad: 6px;
+            font: 12px;
+            min-width: 44px;
             clicked => {
               root.log-cleared();
             }

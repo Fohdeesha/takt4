@@ -45,6 +45,9 @@ double applyShift(double bpm, std::int64_t shift) noexcept {
 /// the shortest stretch over which "this really is the tempo" means anything.
 constexpr std::size_t kDefenceShare = 8;
 
+/// The frame period every count in `TempoTracker::Options` is stated at: the network's.
+constexpr double kReferenceSecondsPerFrame = 0.02;
+
 } // namespace
 
 TempoTracker::TempoTracker(double secondsPerFrame) : TempoTracker(secondsPerFrame, Options{}) {}
@@ -95,7 +98,24 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
             "measurement and no further than all of it");
     }
     beatFrames_.reserve(options_.refineOverBeats + 1);
+    scaleFrameCounts();
     reset();
+}
+
+void TempoTracker::scaleFrameCounts() noexcept {
+    // Stated at 50 Hz, applied at whatever this tracker runs at: a decoder stepping twice a
+    // hop gets twice the frames for the same half second. Never below one frame, and never
+    // a full-price relock cheaper than an ordinary lock.
+    const double scale = kReferenceSecondsPerFrame / secondsPerFrame_;
+    const auto frames = [scale](std::size_t at50) {
+        return std::max<std::size_t>(
+            1, static_cast<std::size_t>(std::llround(static_cast<double>(at50) * scale)));
+    };
+    lockAfter_ = frames(options_.lockAfter);
+    unlockAfter_ = frames(options_.unlockAfter);
+    relockAfter_ = std::max(frames(options_.relockAfter), lockAfter_);
+    foldSupportFrames_ = frames(options_.foldSupportFrames);
+    confidenceSmoothing_ = std::max(1.0, options_.confidenceSmoothing * scale);
 }
 
 void TempoTracker::reset() noexcept {
@@ -114,6 +134,9 @@ void TempoTracker::reset() noexcept {
     // than surviving as a pin on a tempo that no longer exists.
     lockPinned_ = false;
     octaveShift_ = 0;
+    beatOctave_ = 0;
+    beatOctaveCandidate_ = 0;
+    beatOctaveRun_ = 0;
     filterBeatInBar_ = 0;
     barOffset_ = 0;
     snapPending_ = false;
@@ -240,12 +263,77 @@ double TempoTracker::refinedIntervalFrames(double cloudIntervalFrames) const noe
     return counted >= options_.refineNeedsBeats ? total / static_cast<double>(counted) : 0.0;
 }
 
+void TempoTracker::weighBeatOctave(double cloudIntervalFrames) noexcept {
+    // This beat's own gap against the cloud's period *now*. Not a median over the last
+    // couple of dozen gaps, which is what this was: that window lags a genuine tempo change
+    // by half its length, so when the filter goes to double time — as it does on "03 -
+    // Fake Sweat", legitimately — the stale median read as "the beats are an octave below
+    // the cloud" for eight beats running and this rule fired on a filter that was agreeing
+    // with itself. Measured over the 23 tracks of `references/audio` on 2026-09-08, the
+    // median rule flagged a false octave on nine of them (Fake Sweat 14 % of beats, eight
+    // changes; Jensen 9 %; Alias 8 %) and the per-beat rule on none, while catching Jamie
+    // Lidell (89 %) and Moonlake (85 % against 74 %) at least as well. The run below is
+    // what makes one gap safe to read: a missed or doubled beat gives a ratio no octave
+    // fits and resets it, and nothing moves until `beatOctaveBeats` beats in a row agree.
+    const double gap = beatFrames_.size() >= 2
+                           ? static_cast<double>(beatFrames_.back() -
+                                                 beatFrames_[beatFrames_.size() - 2])
+                           : 0.0;
+    std::int64_t candidate = 0;
+    if (gap > 0.0 && cloudIntervalFrames > 0.0) {
+        // A period twice the cloud's is a tempo half of it, so the sign flips on the way from
+        // frames to BPM: the beats being *slower* is a *negative* octave.
+        const double octaves = std::log2(gap / cloudIntervalFrames);
+        const std::int64_t steps = std::llround(octaves);
+        if (steps != 0 && std::abs(steps) <= 2 &&
+            std::abs(octaves - static_cast<double>(steps)) <= options_.beatOctaveTolerance) {
+            candidate = -steps;
+        }
+    }
+    if (candidate != beatOctaveCandidate_) {
+        beatOctaveCandidate_ = candidate;
+        beatOctaveRun_ = 0;
+    }
+    ++beatOctaveRun_;
+    if (beatOctaveRun_ < options_.beatOctaveBeats || beatOctave_ == beatOctaveCandidate_) {
+        return;
+    }
+    // The beats have moved an octave against the cloud, so the tempo the fold and the lock
+    // have been arguing about has moved with them. Ask the fold again about the beats' new
+    // tempo, and carry the lock across by whatever the two answers add up to — which is
+    // nothing at all when the fold takes back what the beats gave (a 214 cloud calling
+    // beats at 107 under a 70–140 window: folded to 107 before, unfolded 107 now), and a
+    // clean octave with the fold off. Either way the published number does not move for a
+    // reason the operator cannot hear, and the lock is not argued with about it.
+    const std::int64_t before = beatOctave_ + foldOctave_;
+    beatOctave_ = beatOctaveCandidate_;
+    state_.calledBpm = calledBpm(state_.rawBpm);
+    chooseOctave(state_.calledBpm);
+    const std::int64_t moved = (beatOctave_ + foldOctave_) - before;
+    lockedBpm_ = applyShift(lockedBpm_, moved);
+    candidate_ = applyShift(candidate_, moved);
+    // The refinement described the octave that has just been left, the same reason a lock
+    // moving to a different tempo drops it.
+    refinedBpm_ = 0.0;
+}
+
+double TempoTracker::calledBpm(double cloudBpm) const noexcept {
+    return applyShift(cloudBpm, beatOctave_);
+}
+
+double TempoTracker::publishedPeriodFrames() const noexcept {
+    return static_cast<double>(filterIntervalFrames_) * static_cast<double>(foldDivisor()) *
+           applyShift(1.0, -beatOctave_);
+}
+
 void TempoTracker::setOptions(const Options& options) noexcept {
     // A window the operator has moved is a new question, so the octave the fold had
     // settled on under the old one is not an answer to it.
     const bool windowMoved = options.octaveFold != options_.octaveFold ||
+                             options.foldInDecoder != options_.foldInDecoder ||
                              options.minBpm != options_.minBpm || options.maxBpm != options_.maxBpm;
     options_ = options;
+    scaleFrameCounts();
     if (windowMoved) {
         forgetFold();
     }
@@ -260,8 +348,8 @@ void TempoTracker::setOptions(const Options& options) noexcept {
         everLocked_ = false;
         refinedBpm_ = 0.0;
         lockHeld_ = 0;
-        chooseOctave(state_.rawBpm);
-        lockedBpm_ = inChosenOctave(state_.rawBpm);
+        chooseOctave(state_.calledBpm);
+        lockedBpm_ = inChosenOctave(state_.calledBpm);
         state_.bpm = lockedBpm_;
         state_.refined = false;
         candidate_ = lockedBpm_;
@@ -287,7 +375,9 @@ double TempoTracker::inChosenOctave(double bpm) const noexcept {
 }
 
 void TempoTracker::chooseOctave(double bpm) noexcept {
-    if (!options_.octaveFold || !(bpm > 0.0)) {
+    // With the window inside the decoder there is nothing to choose: the tempo arrives in
+    // the octave the posterior settled on, window and all. See Options::foldInDecoder.
+    if (!options_.octaveFold || options_.foldInDecoder || !(bpm > 0.0)) {
         forgetFold();
         return;
     }
@@ -347,10 +437,13 @@ void TempoTracker::halve() noexcept {
     // a lock behind it, because it moved because they asked.
     refinedBpm_ = 0.0;
     lockHeld_ = 0;
-    chooseOctave(state_.rawBpm);
-    lockedBpm_ = inChosenOctave(state_.rawBpm);
+    chooseOctave(state_.calledBpm);
+    lockedBpm_ = inChosenOctave(state_.calledBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
+    // And the grid with it, on the press rather than on the next frame: a reader of the
+    // state between the two would otherwise see the number halved and the divisor not.
+    state_.beatDivisor = foldDivisor();
     candidate_ = lockedBpm_;
     beatFrames_.clear();
 }
@@ -359,10 +452,11 @@ void TempoTracker::redouble() noexcept {
     ++octaveShift_;
     refinedBpm_ = 0.0;
     lockHeld_ = 0;
-    chooseOctave(state_.rawBpm);
-    lockedBpm_ = inChosenOctave(state_.rawBpm);
+    chooseOctave(state_.calledBpm);
+    lockedBpm_ = inChosenOctave(state_.calledBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
+    state_.beatDivisor = foldDivisor();
     candidate_ = lockedBpm_;
     beatFrames_.clear();
 }
@@ -371,20 +465,41 @@ void TempoTracker::seedTempo(double bpm) noexcept {
     if (!(bpm > 0.0)) {
         return;
     }
-    // An octave centred on the tap, so a tap 5 % out — which every human tap is — still
-    // lands the tempo it meant squarely inside, and its neighbours squarely outside.
-    const double half = std::sqrt(2.0);
     const double before = state_.bpm;
-    options_.minBpm = bpm / half;
-    options_.maxBpm = bpm * half;
-    options_.octaveFold = true;
-    octaveShift_ = 0;
-    forgetFold(); // a new window, so a new question about which octave
+    if (options_.octaveFold) {
+        // An octave centred on the tap, so a tap 5 % out — which every human tap is — still
+        // lands the tempo it meant squarely inside, and its neighbours squarely outside.
+        const double half = std::sqrt(2.0);
+        options_.minBpm = bpm / half;
+        options_.maxBpm = bpm * half;
+        octaveShift_ = 0;
+        forgetFold(); // a new window, so a new question about which octave
+    } else if (state_.calledBpm > 0.0) {
+        // **A tap does not switch the fold on**, and that is the whole of this branch.
+        //
+        // It used to: `octaveFold = true` sat here, on the reasoning that an operator naming
+        // a tempo has named a window too. But takt4 is handed a *set* — one record after
+        // another — and the window that a tap set for the record playing then stayed on and
+        // silently halved or doubled the next one. Reported from a rig on 2026-09-08:
+        // "octave fold keeps getting automatically turned on, which then breaks the next
+        // track in the mix because it might not need octave folding". A setting the operator
+        // switched off must not come back on because they tapped.
+        //
+        // So with the fold off, the tap moves the published tempo onto the octave it named
+        // using the manual shift — which is exactly what ÷2 and ×2 do, is the only thing
+        // "the operator said which octave" can mean without a window, and lasts for as long
+        // as the tracker is on this tempo rather than for the rest of the set.
+        //
+        // Against the tempo the beats are on, not the cloud's: an operator tapping 100 over
+        // Moonlake — cloud at 200, beats at 100, readout already 100 — has named the octave
+        // being published and asked for nothing to move.
+        octaveShift_ = std::llround(std::log2(bpm / state_.calledBpm));
+    }
 
     refinedBpm_ = 0.0;
     lockHeld_ = 0;
-    chooseOctave(state_.rawBpm);
-    lockedBpm_ = inChosenOctave(state_.rawBpm);
+    chooseOctave(state_.calledBpm);
+    lockedBpm_ = inChosenOctave(state_.calledBpm);
     state_.bpm = lockedBpm_;
     state_.refined = false;
     candidate_ = lockedBpm_;
@@ -408,10 +523,11 @@ bool TempoTracker::lastBeatIsNearer() const noexcept {
     // comparison is doubled rather than halved so it stays in whole frames.
     //
     // The period is the published one — the filter's, times whatever the fold divides the
-    // grid by. The operator is pointing at a beat they can hear, and under a fold that
-    // halves the grid every second of the filter's beats is silent.
-    const std::uint64_t period = static_cast<std::uint64_t>(filterIntervalFrames_) * foldDivisor();
-    return 2 * framesSinceBeat_ < period;
+    // grid by and whatever octave the filter is emitting on. The operator is pointing at a
+    // beat they can hear, and under a fold that halves the grid every second of the filter's
+    // beats is silent.
+    const double period = publishedPeriodFrames();
+    return 2.0 * static_cast<double>(framesSinceBeat_) < period;
 }
 
 void TempoTracker::snapDownbeat() noexcept {
@@ -550,7 +666,7 @@ void TempoTracker::updateLock(double folded) noexcept {
         // The band is six per cent wide and a run can start anywhere in it, so let the
         // candidate settle on the middle of its own evidence rather than on its first
         // frame. Capped, or a candidate agreed with for a minute would stop moving at all.
-        const double weight = static_cast<double>(std::min(agreeing_, options_.lockAfter));
+        const double weight = static_cast<double>(std::min(agreeing_, lockAfter_));
         candidate_ += (folded - candidate_) / weight;
     } else {
         candidate_ = folded;
@@ -564,7 +680,7 @@ void TempoTracker::updateLock(double folded) noexcept {
             return;
         }
         // Disagreement has to be sustained.
-        if (++disagreeing_ < options_.unlockAfter) {
+        if (++disagreeing_ < unlockAfter_) {
             return;
         }
         if (lockPinned_) {
@@ -572,7 +688,7 @@ void TempoTracker::updateLock(double folded) noexcept {
             // not acted on. Parked at the threshold rather than left to run, so the count
             // keeps meaning "still disagreeing" and not "for how long", which nothing asks
             // and which would overflow given a long enough set.
-            disagreeing_ = options_.unlockAfter;
+            disagreeing_ = unlockAfter_;
             return;
         }
         state_.locked = false;
@@ -598,11 +714,11 @@ void TempoTracker::updateLock(double folded) noexcept {
     // published is not a replacement, so it re-locks at the ordinary price and the operator
     // never sees the number move.
     const bool replacing = everLocked_ && !sameTempo(candidate_, lockedBpm_);
-    std::size_t needed = options_.lockAfter;
+    std::size_t needed = lockAfter_;
     if (replacing) {
         // A share of how long the incumbent has held, between the two bounds. Charging the
         // full price from birth is what made a bad first lock permanent — see relockAfter.
-        needed = std::clamp(lockHeld_ / kDefenceShare, options_.lockAfter, options_.relockAfter);
+        needed = std::clamp(lockHeld_ / kDefenceShare, lockAfter_, relockAfter_);
     }
     if (agreeing_ >= needed) {
         if (replacing) {
@@ -612,6 +728,16 @@ void TempoTracker::updateLock(double folded) noexcept {
             // replaced. See Options::foldSupportFrames.
             foldRun_ = 0;
             foldSupported_ = false;
+            // **`beatOctave_` is deliberately *not* cleared here**, unlike everything above
+            // it. Whether the filter emits on the grid it reports is a property of the
+            // filter, not of the tempo it has just moved to, so a lock move says nothing
+            // about it — and clearing it would cost `beatOctaveBeats` beats of publishing an
+            // octave the beats are not on, every time the lock moved. Nothing is risked by
+            // keeping it: the ratio is re-measured against the new interval on the very next
+            // called beat and falls back to zero within `beatOctaveBeats` if it no longer
+            // holds. (Measured on Moonlake, clearing it and not clearing it give the same
+            // trace to the frame, so the argument above is the reason rather than the
+            // measurement: that track's cloud sits on interval 15 throughout.)
         }
         state_.locked = true;
         everLocked_ = true;
@@ -623,10 +749,11 @@ void TempoTracker::updateLock(double folded) noexcept {
 std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexcept {
     // One-pole smoothing of the cloud's agreement with its own median. The filter's
     // per-frame value is far too jumpy to gate on directly.
-    const double alpha = 1.0 / options_.confidenceSmoothing;
+    const double alpha = 1.0 / confidenceSmoothing_;
     smoothedConfidence_ += alpha * (frame.tempoAgreement - smoothedConfidence_);
     state_.confidence = smoothedConfidence_;
     state_.rawBpm = frame.bpm;
+    state_.calledBpm = calledBpm(frame.bpm);
     state_.beatsPerBar = frame.beatsPerBar;
     // Where in the beat we are, for a snap arriving between two frames to read. Kept even
     // when the interval is zero, because it is the last one known that says how long a beat
@@ -646,6 +773,12 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         frame.intervalFrames > 0
             ? 60.0 / (static_cast<double>(frame.intervalFrames) * secondsPerFrame_)
             : frame.bpm;
+    // Both in the octave the filter's *beats* are on rather than the cloud's, because from
+    // here down everything is about the beats going out — see Options::beatOctaveBeats for
+    // the two tracks published at half their tempo when the fold saw the cloud's octave and
+    // the beats' was applied afterwards, on top of it.
+    const double beatsBpm = calledBpm(frame.bpm > 0.0 ? frame.bpm : discrete);
+    const double beatsDiscrete = calledBpm(discrete);
     const bool confident = smoothedConfidence_ >= options_.confidenceThreshold;
     // Which octave is decided from the cloud's continuous tempo; which tempo interval, from
     // its discrete one. Both used to come from the discrete value, and that is what made a
@@ -654,28 +787,28 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     // decision was being taken on a number that steps by 6.5 BPM, either side of the edge.
     // The continuous value sits at 140.3 and crosses the edge slowly, which is the only
     // thing a hysteresis can do anything with.
-    chooseOctave(frame.bpm > 0.0 ? frame.bpm : discrete);
+    chooseOctave(beatsBpm);
     if (confident) {
         everConfident_ = true;
-        updateLock(inChosenOctave(discrete));
+        updateLock(inChosenOctave(beatsDiscrete));
     } else if (!everConfident_) {
         // Nothing good has been seen yet, so there is nothing to hold: follow the
         // estimate and let the gate take over once it has been believed once.
-        lockedBpm_ = inChosenOctave(discrete);
+        lockedBpm_ = inChosenOctave(beatsDiscrete);
     }
     // Below the gate, state_.bpm keeps whatever it last held (§5.5: "hold the last good
     // tempo, stop emitting new values, and say so").
     state_.holding = !confident && everConfident_;
 
     // Whether the music supports the octave the window asked for: how much of the recent past
-    // the cloud's own continuous tempo has spent *at* the published tempo rather than at a
+    // the beats' own continuous tempo has spent *at* the published tempo rather than at a
     // multiple of it. See Options::foldSupportFrames — this is the whole of what tells a
     // double-timed 92 BPM track from a 204 BPM one, and the activations cannot.
     const bool atPublished =
-        lockedBpm_ > 0.0 && frame.bpm > 0.0 &&
-        std::abs(frame.bpm - lockedBpm_) <= options_.sameTempoTolerance * lockedBpm_;
+        lockedBpm_ > 0.0 && beatsBpm > 0.0 &&
+        std::abs(beatsBpm - lockedBpm_) <= options_.sameTempoTolerance * lockedBpm_;
     foldRun_ = atPublished ? foldRun_ + 1 : 0;
-    if (foldRun_ >= options_.foldSupportFrames) {
+    if (foldRun_ >= foldSupportFrames_) {
         foldSupported_ = true;
     }
 
@@ -688,9 +821,16 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     // accepts them in, and it would reject all of them.
     if (called) {
         rememberBeat(frame.frameIndex);
+        // After the gap has been remembered, so this beat counts towards the measurement.
+        weighBeatOctave(frame.refinedIntervalFrames > 0.0
+                            ? frame.refinedIntervalFrames
+                            : static_cast<double>(frame.intervalFrames));
     }
 
     const std::uint32_t divisor = foldDivisor();
+    // Published so the window can say when the fold moved the number and left the beats
+    // where they were — see `TempoState::beatDivisor`.
+    state_.beatDivisor = divisor;
     if (divisor != foldDivisor_) {
         // Evidence gathered over two sub-grids says nothing about four, and the fold moving
         // octave means the beats being weighed against each other are different beats.
@@ -730,13 +870,17 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     // read 140 then 90. `locked` going false is what says the tracker is unsure; the tempo
     // saying it too, by wandering, tells the operator nothing they can use.
     if (!state_.holding && (state_.locked || !everLocked_)) {
-        state_.bpm = lockedBpm_;
+        // Already in the octave the beats are actually on: the lock was given the beats'
+        // tempo, not the cloud's — see `Options::beatOctaveBeats` — so the refinement below
+        // works in whichever octave the beats turn out to be in without anything more.
+        const double published = lockedBpm_;
+        state_.bpm = published;
         state_.refined = false;
         // Once the tempo is locked, the beats themselves say it more precisely than the
         // state space's whole-frame intervals ever can. Only believe that when it agrees
         // with the lock, so a refinement can sharpen the tempo but never change it.
         if (state_.locked) {
-            const double tolerance = options_.refineTempoTolerance * lockedBpm_;
+            const double tolerance = options_.refineTempoTolerance * published;
             // Only on a frame that brought a beat. Between beats nothing new is known about
             // the spacing — `beatFrames_` has not changed — and yet recomputing gave a
             // different answer every frame anyway, because the band of gaps it accepts is
@@ -749,12 +893,20 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
             // Every beat the *filter* called, not every one published: those are the gaps
             // `beatFrames_` holds, and a beat the fold left out still moved it.
             if (called) {
-                const double gaps = refinedIntervalFrames(
-                    frame.refinedIntervalFrames > 0.0 ? frame.refinedIntervalFrames
-                                                      : static_cast<double>(frame.intervalFrames));
+                const double cloudPeriod =
+                    frame.refinedIntervalFrames > 0.0
+                        ? frame.refinedIntervalFrames
+                        : static_cast<double>(frame.intervalFrames);
+                // Banded around the period the beats are *arriving* at rather than the one
+                // the cloud reports. They are the same number unless the filter is emitting
+                // an octave away from its own tempo, and there the cloud's band rejects every
+                // gap — so the refinement went silent exactly where the tempo needed it most.
+                const double gaps = refinedIntervalFrames(applyShift(cloudPeriod, -beatOctave_));
                 if (gaps > 0.0) {
+                    // `inChosenOctave` and not `published`: the gaps are already in the beats'
+                    // octave, so applying `beatOctave_` again would move it twice.
                     const double refined = inChosenOctave(60.0 / (gaps * secondsPerFrame_));
-                    if (std::abs(refined - lockedBpm_) <= tolerance) {
+                    if (std::abs(refined - published) <= tolerance) {
                         refinedBpm_ = refinedBpm_ > 0.0 ? refinedBpm_ + options_.refineSmoothing *
                                                                             (refined - refinedBpm_)
                                                         : refined;
@@ -766,7 +918,7 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
             // differ by up to 5.4 BPM at 130 because one is a whole-frame interval and the
             // other is not. Alternating between them *is* a jump, so the last refinement
             // is kept until the lock itself moves away from it.
-            if (refinedBpm_ > 0.0 && std::abs(refinedBpm_ - lockedBpm_) <= tolerance) {
+            if (refinedBpm_ > 0.0 && std::abs(refinedBpm_ - published) <= tolerance) {
                 state_.bpm = refinedBpm_;
                 state_.refined = true;
             }
@@ -784,8 +936,10 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
 
     BeatEvent event;
     event.frameIndex = frame.frameIndex;
-    event.time =
-        static_cast<double>(frame.frameIndex) * secondsPerFrame_ + options_.latencyOffsetSeconds;
+    // Where inside the frame the decoder put the beat, when it can say — see
+    // `TrackedFrame::beatOffsetFrames`. Zero for the particle filter.
+    event.time = (static_cast<double>(frame.frameIndex) + frame.beatOffsetFrames) * secondsPerFrame_ +
+                 options_.latencyOffsetSeconds;
     // What the operator sees as the downbeat, which without a snap is the filter's.
     event.downbeat = state_.beatInBar == 1;
     event.snapped = snapped;

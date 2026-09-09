@@ -25,6 +25,8 @@ add_library(takt4_core STATIC
   audio/input_pipeline.hpp
   audio/input_stream.cpp
   audio/input_stream.hpp
+  audio/playback_stream.cpp
+  audio/playback_stream.hpp
   audio/portaudio_session.cpp
   audio/portaudio_session.hpp
   audio/rates.hpp
@@ -101,6 +103,11 @@ add_library(takt4_core STATIC
   settings/rule_json.hpp
   settings/settings.cpp
   settings/settings.hpp
+  tracking/annotation.cpp
+  tracking/annotation.hpp
+  tracking/beat_decoder.hpp
+  tracking/forward_filter.cpp
+  tracking/forward_filter.hpp
   tracking/particle_filter.cpp
   tracking/particle_filter.hpp
   tracking/random.hpp
@@ -110,6 +117,7 @@ add_library(takt4_core STATIC
   tracking/tap_tempo.hpp
   tracking/tempo_tracker.cpp
   tracking/tempo_tracker.hpp
+  tracking/tracked_frame.hpp
   trigger/context.hpp
   trigger/generator.cpp
   trigger/generator.hpp
@@ -170,7 +178,10 @@ if(TAKT4_BUILD_UI)
   # (function name, asset file) pairs. The script rewrites its output only when the bytes
   # change, so an incremental build does not recompile a multi-megabyte translation unit
   # every time something else moves.
-  foreach(entry "weights|${PROJECT_SOURCE_DIR}/assets/weights/generic.bin"
+  # `electronic` is the built-in set since 0.9.1: BeatNet+'s `generic` fine-tuned on the
+  # operator's own library (TRACKING-PROPOSAL.md §7.13). The three published sets stay in
+  # assets/weights/ for the console and the tests.
+  foreach(entry "weights|${PROJECT_SOURCE_DIR}/assets/weights/electronic.bin"
                 "stateSpace|${PROJECT_SOURCE_DIR}/assets/statespace/default.bin")
     string(REPLACE "|" ";" parts "${entry}")
     list(GET parts 0 fn)

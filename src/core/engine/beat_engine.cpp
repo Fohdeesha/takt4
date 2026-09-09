@@ -1,6 +1,10 @@
 #include "core/engine/beat_engine.hpp"
 
+#include "core/audio/rates.hpp"
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -17,12 +21,45 @@ double microsSince(Clock::time_point start) noexcept {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
 
+/// The chosen decoder, and nothing else built.
+std::unique_ptr<tracking::BeatDecoder> makeDecoder(const tracking::StateSpaceModel& model,
+                                                   const BeatEngine::Options& options) {
+    switch (options.decoder) {
+    case tracking::Decoder::Forward:
+        return std::make_unique<tracking::ForwardFilter>(options.forward);
+    case tracking::Decoder::ParticleFilter:
+        break;
+    }
+    return std::make_unique<tracking::ParticleFilter>(model, options.filter);
+}
+
+/// The tracker's options as the decoder wants them: the window is the decoder's to apply
+/// when it can, and the tracker's otherwise. See `TempoTracker::Options::foldInDecoder`.
+tracking::TempoTracker::Options forDecoder(tracking::TempoTracker::Options options,
+                                           const tracking::BeatDecoder& decoder) noexcept {
+    options.foldInDecoder = decoder.honoursTempoWindow();
+    return options;
+}
+
+/// How many decoder frames one network activation is worth. The network's hop is 20 ms;
+/// a decoder at 100 Hz takes two steps for it, the first on an activation interpolated
+/// between the last two.
+std::size_t stepsFor(const tracking::BeatDecoder& decoder) noexcept {
+    const double activationPeriod =
+        static_cast<double>(audio::kHopSize) / audio::kInternalSampleRate;
+    const double steps = activationPeriod / decoder.secondsPerFrame();
+    return static_cast<std::size_t>(std::max(1.0, std::round(steps)));
+}
+
 } // namespace
 
 BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::StateSpaceModel& model,
                        Options options)
     : model_(&model), activations_(std::make_unique<model::ActivationEngine>(weights)),
-      filter_(model, options.filter), tempo_(model.secondsPerFrame(), options.tempo) {
+      decoderKind_(options.decoder), decoder_(makeDecoder(model, options)),
+      tempo_(decoder_->secondsPerFrame(), forDecoder(options.tempo, *decoder_)),
+      stepsPerActivation_(stepsFor(*decoder_)) {
+    syncDecoder();
     state_.publish(tempo_.state());
     options_.publish(tempo_.options());
 }
@@ -47,8 +84,9 @@ void BeatEngine::start() {
     EngineBeat beat;
     while (beats_.tryPop(beat)) {
     }
-    filter_.reset();
+    decoder_->reset();
     tempo_.reset();
+    havePrevious_ = false;
     // Anything posted while the engine was stopped applies to the run about to start, not
     // to the one that ended: a latency offset set on a settings screen has to survive the
     // operator then pressing start. The reset above clears tracking state, never options.
@@ -116,6 +154,11 @@ void BeatEngine::run() noexcept {
     }
 }
 
+void BeatEngine::syncDecoder() noexcept {
+    const tracking::TempoTracker::Options& options = tempo_.options();
+    decoder_->setTempoWindow(options.minBpm, options.maxBpm, options.octaveFold);
+}
+
 void BeatEngine::applyCommands() noexcept {
     controls_.drain(commands_);
     if (commands_.empty()) {
@@ -124,7 +167,7 @@ void BeatEngine::applyCommands() noexcept {
     for (const Command& command : commands_) {
         switch (command.kind) {
         case Command::Kind::SetTempoOptions:
-            tempo_.setOptions(command.tempo);
+            tempo_.setOptions(forDecoder(command.tempo, *decoder_));
             break;
         case Command::Kind::Halve:
             tempo_.halve();
@@ -140,9 +183,21 @@ void BeatEngine::applyCommands() noexcept {
             break;
         case Command::Kind::SetLockPinned:
             tempo_.setLockPinned(command.pinned);
+            // And on a decoder that can, the pin is also the tempo hold — the tempo being
+            // published, which is what the operator is looking at when they press it. See
+            // Command::Kind::SetLockPinned.
+            if (decoder_->canHoldTempo()) {
+                decoder_->holdTempo(command.pinned ? tempo_.state().bpm : 0.0);
+            }
+            break;
+        case Command::Kind::HoldTempo:
+            decoder_->holdTempo(command.bpm);
             break;
         }
     }
+    // A tap moves the window, so the decoder is told again after every batch rather than
+    // after the one command that is known to move it.
+    syncDecoder();
     // A command changes what the tracker is saying, and a reader of state() may not be
     // draining frames at all — so publish rather than wait for the next frame to do it.
     // The settings go with it: this is the only place they ever change, and a caller has
@@ -154,9 +209,50 @@ void BeatEngine::applyCommands() noexcept {
 void BeatEngine::track(const model::FrameActivation& activation) noexcept {
     const Clock::time_point started = Clock::now();
 
+    // A decoder running faster than the network is fed the frames in between, made by
+    // linear interpolation from the previous activation to this one — TRACKING-PROPOSAL.md
+    // §2.5, which measured the finer grid with exactly that interpolation. Nothing is
+    // interpolated before there is a previous activation, so the first hop yields one
+    // frame and every later hop `stepsPerActivation_`; decoder frame k is at k times the
+    // decoder's period, the network's activation i at decoder frame i * steps.
+    if (stepsPerActivation_ > 1 && havePrevious_) {
+        for (std::size_t k = 1; k < stepsPerActivation_; ++k) {
+            const float t = static_cast<float>(k) / static_cast<float>(stepsPerActivation_);
+            model::FrameActivation between = activation;
+            between.beat = previous_.beat + (activation.beat - previous_.beat) * t;
+            between.downbeat = previous_.downbeat + (activation.downbeat - previous_.downbeat) * t;
+            between.nonBeat = previous_.nonBeat + (activation.nonBeat - previous_.nonBeat) * t;
+            between.flux = previous_.flux + (activation.flux - previous_.flux) * t;
+            // The host time of the audio the interpolated frame stands for is between the
+            // two as well; an onset is a fact about one of the network's frames, not this.
+            between.hostMicros =
+                previous_.hostMicros +
+                static_cast<std::int64_t>(std::llround(
+                    static_cast<double>(activation.hostMicros - previous_.hostMicros) * t));
+            between.onset = false;
+            trackOne(between, true);
+        }
+    }
+    trackOne(activation, false);
+    previous_ = activation;
+    havePrevious_ = true;
+
+    const double micros = microsSince(started);
+    double worst = worstFrameMicros_.load(std::memory_order_relaxed);
+    while (micros > worst &&
+           !worstFrameMicros_.compare_exchange_weak(worst, micros, std::memory_order_relaxed)) {
+    }
+    // Only this thread writes these, so a plain load-add-store is enough.
+    totalFrameMicros_.store(totalFrameMicros_.load(std::memory_order_relaxed) + micros,
+                            std::memory_order_relaxed);
+    framesTimed_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpolated) noexcept {
     EngineFrame frame;
     frame.activation = activation;
-    frame.tracked = filter_.process(activation.beat, activation.downbeat);
+    frame.interpolated = interpolated;
+    frame.tracked = decoder_->process(activation.beat, activation.downbeat);
     const std::optional<tracking::BeatEvent> event = tempo_.process(frame.tracked);
     frame.state = tempo_.state();
     frame.beat = event.has_value();
@@ -179,16 +275,6 @@ void BeatEngine::track(const model::FrameActivation& activation) noexcept {
     } else {
         framesDropped_.fetch_add(1, std::memory_order_relaxed);
     }
-
-    const double micros = microsSince(started);
-    double worst = worstFrameMicros_.load(std::memory_order_relaxed);
-    while (micros > worst &&
-           !worstFrameMicros_.compare_exchange_weak(worst, micros, std::memory_order_relaxed)) {
-    }
-    // Only this thread writes these, so a plain load-add-store is enough.
-    totalFrameMicros_.store(totalFrameMicros_.load(std::memory_order_relaxed) + micros,
-                            std::memory_order_relaxed);
-    framesTimed_.fetch_add(1, std::memory_order_relaxed);
 }
 
 double BeatEngine::meanFrameMicros() const noexcept {

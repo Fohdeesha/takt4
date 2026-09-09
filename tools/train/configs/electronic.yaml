@@ -1,0 +1,43 @@
+# The "electronic" weight set: BeatNet+'s generic weights fine-tuned on Raveform,
+# osu2beat2025 and Harmonix's Dance/Electronic share, with Ballroom in the mix so the
+# model does not forget what it knows (TRACKING-PROPOSAL.md §3.1, §7.5).
+#
+#   python tools/train/finetune.py --config tools/train/configs/electronic.yaml
+#
+# Hyperparameters are BeatNet+'s own (configs/guided_finetuning.yaml): 15 s crops at
+# 50 fps, batch 40, Adam at 5e-4, class weights [60, 200, 1]. One crop per track per
+# epoch; a set's number below is how many times its tracks go into an epoch.
+name: electronic
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 1
+harmonix_genres: ["Dance/Electronic"]     # metadata.csv's genre column: the EDM share (§7.4)
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]                  # check.py: its audio is a different edit unless shown otherwise
+alignment_exempt_sets: [ballroom]         # the model's own training set: its annotations are the truth
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0005
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+max_epochs: 300
+val_every: 2
+patience: 15            # validations (not epochs) without a gated improvement
+checkpoint_every: 10
+
+val_tracks_per_set: 80
+val_seconds: 120        # the middle two minutes of each validation track (Ballroom: whole)
+gate_set: ballroom
+gate_margin: 0.01       # Ballroom beat F may not drop more than this below epoch 0's
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 4
+dbn_workers: 4
+device: cuda
+limit_tracks: 0         # >0: a smoke test on that many tracks per set

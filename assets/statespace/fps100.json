@@ -1,0 +1,43 @@
+{
+  "name": "fps100",
+  "format_version": 1,
+  "config": {
+    "fps": 100,
+    "min_bpm": 55.0,
+    "max_bpm": 215.0,
+    "num_tempi": 300,
+    "lambda_beat": 60.0,
+    "lambda_down": 0.1,
+    "min_beats_per_bar": 2,
+    "max_beats_per_bar": 4,
+    "observation_lambda_beat": 56,
+    "observation_lambda_down": 56
+  },
+  "bytes": 152244,
+  "sha256": "2497095f02326001e72e505a396eaced990455bdfa2067e31e7e684df54c68e3",
+  "madmom": "0.17.dev0",
+  "numpy": "2.5.2",
+  "beat_states": 5617,
+  "beat_interval_range": [
+    28,
+    109
+  ],
+  "beat_interval_count": 82,
+  "beat_bpm_range": [
+    55.046,
+    214.286
+  ],
+  "beat_transitions_madmom": 10594,
+  "beat_transitions_stored": 5059,
+  "beat_pointer_counts": {
+    "0": 5482,
+    "2": 135
+  },
+  "down_states": 9,
+  "down_intervals": [
+    2,
+    3,
+    4
+  ],
+  "payload_bytes": 152148
+}

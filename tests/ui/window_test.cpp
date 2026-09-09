@@ -134,6 +134,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     TempoState state;
     state.bpm = 128.25;
     state.rawBpm = 256.5;
+    state.calledBpm = 128.25; // a filter calling beats an octave below its cloud
     state.locked = true;
     state.pinned = true;
     state.holding = false;
@@ -146,6 +147,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
 
     CHECK_THAT(window->get_bpm(), WithinAbs(128.25, 1e-4));
     CHECK_THAT(window->get_raw_bpm(), WithinAbs(256.5, 1e-4));
+    CHECK_THAT(window->get_called_bpm(), WithinAbs(128.25, 1e-4));
     CHECK(window->get_locked());
     CHECK(window->get_pinned());
     CHECK_FALSE(window->get_holding());
@@ -1008,11 +1010,13 @@ TEST_CASE("the window comes up sending nothing", "[ui]") {
     CHECK_FALSE(controller.window().get_midi_on());
 
     // The picker always offers "none" first, so switching MIDI off is a choice in the
-    // same list rather than a second control.
+    // same list rather than a second control — and it says so in words rather than being an
+    // empty entry, which reads as a box the application failed to fill in.
     const auto ports = controller.window().get_midi_ports();
     REQUIRE(ports);
     REQUIRE(ports->row_count() == controller.midiPorts().size() + 1);
-    CHECK(std::string(*ports->row_data(0)).empty());
+    CHECK(std::string(*ports->row_data(0)) == "no MIDI clock");
+    CHECK(controller.window().get_midi_port_index() == 0);
 }
 
 TEST_CASE("the Link tick reaches the transports and shows its peers", "[ui]") {
@@ -1183,17 +1187,56 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("a keystroke is remembered and not applied") {
         // Applying opens and closes a socket. Doing that per character would rebuild it
-        // halfway through an address — but the draft still has to survive the list being
-        // republished, which is what [+] does.
+        // halfway through an address.
         controller.editTarget(1, "wall", "127.0.0.1:7009");
         CHECK(transports().outputs()[1].port == 7001);
+
+        // And the draft still has to survive the list being republished, which is what [+]
+        // does — the row is drawn from the model, so a draft kept only in the widget would go.
         controller.addTarget();
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 3);
         CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7009");
-        CHECK(std::string(rows->row_data(2)->address).empty());
-        // The blank row is a place to type, not an output that sends nowhere.
-        CHECK(transports().outputs().size() == 2);
+        CHECK(transports().outputs()[1].port == 7009);
+    }
+
+    SECTION("an added row is a target already") {
+        // It used to be blank, and a blank row applies nothing — so a target did not exist
+        // until its whole address had been typed and entered, which is the wrong way round
+        // for somebody building a rig: a rule cannot be routed to a target that is not there.
+        controller.addTarget();
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 3);
+        CHECK(rows->row_data(2)->kind_index == 0);
+        CHECK(std::string(rows->row_data(2)->host) == "127.0.0.1");
+        CHECK(std::string(rows->row_data(2)->port) == "9000");
+        REQUIRE(transports().outputs().size() == 3);
+        CHECK(transports().outputs()[2].host == "127.0.0.1");
+        CHECK(transports().outputs()[2].port == 9000);
+    }
+
+    SECTION("a row asks for a host and a port, not for one string holding both") {
+        // The two boxes are edited one at a time and merged here — see `setTargetHost`.
+        controller.setTargetHost(0, "192.168.1.40", false);
+        CHECK(transports().outputs()[0].host == "127.0.0.1"); // a keystroke, not applied
+        controller.setTargetPort(0, "7010", true);
+        REQUIRE(transports().outputs().size() == 2);
+        CHECK(transports().outputs()[0].host == "192.168.1.40");
+        CHECK(transports().outputs()[0].port == 7010);
+        CHECK(transports().outputs()[0].name == "deck");
+    }
+
+    SECTION("switching a row to MIDI leaves it unfinished rather than broken") {
+        // Nothing is sent until a device is picked, and that is not an error to report: the
+        // row is being filled in. Naming a device it cannot open is a different thing, and
+        // is reported — see "a MIDI target is a row like any other".
+        controller.setTargetKind(0, 1);
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 2);
+        CHECK(rows->row_data(0)->kind_index == 1);
+        CHECK(std::string(rows->row_data(0)->address).empty());
+        CHECK(transports().outputs().size() == 1);
+        CHECK_FALSE(controller.statusIsError());
     }
 
     SECTION("a row removed is a target removed") {
@@ -1255,7 +1298,10 @@ TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
-    controller.window().invoke_midi_port_picked(slint::SharedString("takt4 test - no such port"));
+    // Straight to the controller, not through the picker: the picker sends an *index* into
+    // the machine's own port list now (a ComboBox cannot be moved by its value — Slint
+    // 11970), and no index on this machine names a port that does not exist.
+    controller.setMidiPort("takt4 test - no such port");
     CHECK(controller.outputs().transports().midiClock() == nullptr);
     CHECK(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
@@ -1435,9 +1481,9 @@ TEST_CASE("the program carries its own weights and state space", "[ui]") {
     // embedded by mistake would sail through it. Only comparing against the committed
     // asset catches that.
     const takt4::model::ModelWeights built =
-        takt4::model::ModelWeights::fromBytes(takt4::assets::weights(), "generic (built in)");
+        takt4::model::ModelWeights::fromBytes(takt4::assets::weights(), "electronic (built in)");
     const takt4::model::ModelWeights onDisk = takt4::model::ModelWeights::fromFile(
-        std::filesystem::path(TAKT4_WEIGHTS_DIR) / "generic.bin");
+        std::filesystem::path(TAKT4_WEIGHTS_DIR) / "electronic.bin");
 
     REQUIRE(built.convWeight().size() == onDisk.convWeight().size());
     CHECK(std::equal(built.convWeight().begin(), built.convWeight().end(),
@@ -1463,10 +1509,10 @@ TEST_CASE("the program carries its own weights and state space", "[ui]") {
     // And a tracker really starts on them, which is what app.cpp does and the only proof
     // that matters: no path was consulted to get here.
     LiveTracker tracker(takt4::model::ModelWeights::fromBytes(takt4::assets::weights(),
-                                                             "generic (built in)"),
+                                                             "electronic (built in)"),
                         takt4::tracking::StateSpaceModel::fromBytes(takt4::assets::stateSpace(),
                                                                     "default (built in)"),
                         LiveTracker::Options{});
-    CHECK(tracker.weightsPath() == "generic (built in)");
+    CHECK(tracker.weightsPath() == "electronic (built in)");
     CHECK(tracker.stateSpace().beat().numStates() == spaceOnDisk.beat().numStates());
 }

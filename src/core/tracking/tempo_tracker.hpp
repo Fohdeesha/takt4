@@ -13,6 +13,13 @@ namespace takt4::tracking {
 struct TempoState {
     double bpm = 0.0;    ///< after octave folding, and held while unconfident
     double rawBpm = 0.0; ///< what the particle filter's cloud says, unfolded
+    /// The rate the filter is *calling* beats at: `rawBpm` moved by the octave the called
+    /// beats sit from the cloud's tempo, which is the same number for a filter that agrees
+    /// with itself and half of it for one that does not (`Options::beatOctaveBeats`). This
+    /// and not `rawBpm` is what the fold and the lock work on, because it is the grid the
+    /// outputs are fed from; `rawBpm` is kept for the readout that says what the cloud is
+    /// doing.
+    double calledBpm = 0.0;
     /// True once `bpm` is coming from the spacing of the beats themselves rather than
     /// from the particle cloud's tempo interval. See TempoTracker's header.
     bool refined = false;
@@ -27,6 +34,20 @@ struct TempoState {
     std::uint32_t beatInBar = 0;   ///< 1 on the downbeat, counting up; 0 before the first beat
     std::uint64_t bars = 0;        ///< downbeats seen since the last reset
     std::uint64_t beats = 0;       ///< beats seen since the last reset, downbeats included
+    /// How many of the filter's beats go to one published beat — `foldDivisor`. One unless
+    /// the fold has put the published tempo below the filter's grid *and* is dividing it.
+    ///
+    /// Published because the case where it is **one while `bpm` is below `calledBpm`** is
+    /// the one an operator cannot otherwise see: the readout says 92, the outputs fire at
+    /// 184, and nothing on screen says the two disagree. That happens whenever the window
+    /// folds a track the filter is double-timing and `Options::foldSupportFrames` has not
+    /// been satisfied — which is every track whose cloud never visits the slower octave.
+    /// Three were reported on 2026-09-08 and all three are that state; see
+    /// `foldSupportFrames` for why no threshold separates them from a record that is
+    /// genuinely fast. (`calledBpm` rather than `rawBpm`: a filter calling beats an octave
+    /// below its own cloud is publishing exactly the grid it calls, and that is not this
+    /// state — see `Options::beatOctaveBeats`.)
+    std::uint32_t beatDivisor = 1;
 };
 
 /// One beat, as the output transports want it.
@@ -124,6 +145,15 @@ public:
         double minBpm = 70.0;
         double maxBpm = 140.0;
         bool octaveFold = true;
+        /// **The decoder is applying the window itself**, as evidence inside its posterior
+        /// (`BeatDecoder::setTempoWindow`), so nothing is folded here: the octave stays
+        /// where the decoder put it, and the latch and the sub-grid vote below never run.
+        /// The window and `octaveFold` are still the operator's settings and still travel
+        /// through these options — the engine reads them out and hands them on. Set by
+        /// `BeatEngine` for a decoder that `honoursTempoWindow()`, never by an operator;
+        /// TRACKING-PROPOSAL.md §2.6 is why the window belongs in the decoder when the
+        /// decoder can take it.
+        bool foldInDecoder = false;
         /// How far outside the window an estimate may stray before the fold picks a
         /// different octave, as a fraction of the window's edges.
         ///
@@ -263,8 +293,64 @@ public:
         /// and evidence is wanted in place of an instruction, not in spite of one.
         std::size_t foldSupportFrames = 250;
 
+        /// **When the filter's own beats disagree with the filter's own tempo**, how much of
+        /// a run it takes to believe the beats, and how clean the ratio has to be.
+        ///
+        /// These describe a state the particle filter should not be in and sometimes is: it
+        /// reports a beat period of 15 frames — 200 BPM — and then *calls* its beats 30 frames
+        /// apart. Measured on `references/audio`'s "Pogo - Quantum Field - 08 Moonlake": 216
+        /// of its 402 beat-to-beat gaps are exactly 30 frames and only 59 are 15, while the
+        /// cloud's interval sits at 15 for the whole track. Reported from a rig on 2026-09-08,
+        /// and reported exactly right: *"the app said locked and displayed 200bpm, but the beat
+        /// counter dot lights were moving very clearly at 100bpm"*.
+        ///
+        /// Both numbers were true of what they described. The readout is the cloud's tempo;
+        /// the dots move on the beats. **The published tempo has to be the one the beats are
+        /// on** — Link's tempo, the MIDI clock's rate, `<prefix>/bpm` and every "BPM in range"
+        /// condition are all statements about the beats going out — so when the beats are
+        /// consistently a clean octave away from the cloud, the beats win.
+        ///
+        /// This cannot fire on a filter that agrees with itself, which is what makes it safe:
+        /// each called beat's own gap has to be within `beatOctaveTolerance` of a factor of
+        /// two or four off the cloud's period at that beat, for `beatOctaveBeats` beats in a
+        /// row. Anything else leaves it at zero and nothing about the published tempo
+        /// changes. (Each beat's own gap, and not a median over the last two dozen: see the
+        /// implementation for what the median did on a track that genuinely changed tempo.)
+        ///
+        /// It is a **symptom fix and says so**. The disagreement is the filter's, and belongs
+        /// to the particle filter rather than here; until that is looked at, an operator
+        /// should at least not be shown a tempo that nothing else in the app agrees with.
+        ///
+        /// **The octave the beats are on is where everything below the filter works.** The
+        /// fold, the lock, the `foldSupportFrames` latch and the operator's tap all take the
+        /// tempo the beats are *arriving* at (`TempoState::calledBpm`) and never the cloud's
+        /// own — because the first version of this applied the beats' octave to the
+        /// published number *after* the fold had already folded the cloud's, and the two
+        /// corrected the same octave twice. Measured on 2026-09-08 with the 70–140 window
+        /// on: "02 - Jamie Lidell - Your Sweet Boom", a 107 BPM track whose cloud sits at
+        /// 214 and whose beats arrive at 107, was published at **53.5** for the whole track
+        /// (the fold halved 214 to 107, then this halved it again), and "Pogo - Quantum
+        /// Field - 08 Moonlake" (100, cloud at 200) at **50.0**; Link, MIDI clock and every
+        /// `<prefix>/bpm` carried it. With the fold off both read correctly, which is how
+        /// it went unseen. And having folded, the latch above then had every reason to
+        /// fire — the beats *were* on the folded tempo — and divided a grid that was
+        /// already the music's, dropping every other beat of Jamie Lidell in three windows
+        /// of the track. Folding the rate the beats are on, there is nothing to divide:
+        /// TRACKING-PROPOSAL.md §2.10.
+        std::size_t beatOctaveBeats = 8;
+        double beatOctaveTolerance = 0.12;
+
         /// Frames of agreement before the tempo is called locked, and of disagreement
         /// before that is given up. At 50 Hz these are 0.5 s and 1.5 s.
+        ///
+        /// **Every frame count in these options is stated at the network's 50 Hz**, which
+        /// is the rate the particle filter runs at and the rate every number in this header
+        /// was measured at. A decoder may run faster — the forward filter takes the
+        /// activations at 100 Hz — and the constructor scales these five (`lockAfter`,
+        /// `unlockAfter`, `relockAfter`, `foldSupportFrames`, `confidenceSmoothing`) to the
+        /// frame period it is given, so half a second is half a second whichever decoder
+        /// is underneath. The values here are never rewritten: `options()` hands back what
+        /// was set, and a round trip through `setOptions` scales nothing twice.
         std::size_t lockAfter = 25;
         std::size_t unlockAfter = 75;
         /// The *most* agreement a tempo can ever be asked for before it replaces the one
@@ -392,6 +478,12 @@ public:
     /// §5.5's tap tempo, as a *seed*: the operator has said which tempo they mean, so the
     /// octave-fold window moves to an octave centred on it and any manual ×2 / ÷2 is
     /// cleared. `tracking::TapTempo` turns the taps themselves into this number.
+    ///
+    /// **Only when the fold is already on.** A tap does not switch it on — it used to, and
+    /// the window it left behind then halved or doubled the *next* record of a set (see the
+    /// implementation for the report). With the fold off a tap moves the published tempo onto
+    /// the octave it named through the manual shift instead, which is what ÷2 and ×2 do and
+    /// is the only thing an octave instruction can mean when there is no window.
     ///
     /// This is the half of §5.5's "seeds or overrides the tracker" that costs nothing and
     /// is unambiguously right. It is what fixes the failure §7 deviation 4 measured: a
@@ -539,10 +631,33 @@ private:
     /// The mean beat-to-beat gap in frames, over the gaps within `refineGapTolerance` of
     /// `cloudIntervalFrames`. Zero when there are not enough of them.
     double refinedIntervalFrames(double cloudIntervalFrames) const noexcept;
+    /// Watches for the filter contradicting itself and settles `beatOctave_`: this beat's
+    /// own gap against the cloud's period, unbanded, because this is the one measurement
+    /// that has to be able to disagree with the cloud — see `Options::beatOctaveBeats`.
+    /// Called once per beat the filter calls, after the gap has been remembered. When the
+    /// octave moves, the fold is asked again about the beats' new tempo and the lock is
+    /// carried across, so the published number does not move unless the beats did.
+    void weighBeatOctave(double cloudIntervalFrames) noexcept;
+    /// A tempo of the cloud's, moved onto the octave the filter's beats are on. What the
+    /// fold and the lock are given, continuous or discrete: see `Options::beatOctaveBeats`.
+    double calledBpm(double cloudBpm) const noexcept;
+    /// The period the *published* beats arrive at, in frames — the filter's own, times what
+    /// the fold divides the grid by, times the octave the filter is emitting on. What a snap
+    /// is judged against, because the operator is pointing at a beat they can hear.
+    double publishedPeriodFrames() const noexcept;
+
+    /// The frame counts of `options_` at this tracker's own frame rate. See
+    /// `Options::lockAfter` for why they are kept apart from what was set.
+    void scaleFrameCounts() noexcept;
 
     double secondsPerFrame_;
     Options options_;
     TempoState state_;
+    std::size_t lockAfter_ = 0;
+    std::size_t unlockAfter_ = 0;
+    std::size_t relockAfter_ = 0;
+    std::size_t foldSupportFrames_ = 0;
+    double confidenceSmoothing_ = 1.0;
 
     double lockedBpm_ = 0.0;   ///< the discrete tempo the lock is on; state_.bpm may refine it
     double candidate_ = 0.0;   ///< the tempo currently being agreed with
@@ -567,6 +682,14 @@ private:
     bool foldChosen_ = false;
     bool lockPinned_ = false;      ///< the operator is holding the lock up; see setLockPinned
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
+    /// How many octaves the beats the filter *calls* sit away from the tempo it *reports* —
+    /// negative when the beats are slower, which is the case that has been seen. Applied to
+    /// the cloud's tempo before the fold and the lock ever see it (`calledBpm`), so that
+    /// both argue about the grid the outputs are actually on. See `Options::beatOctaveBeats`
+    /// for what applying it *after* the fold instead did.
+    std::int64_t beatOctave_ = 0;
+    std::int64_t beatOctaveCandidate_ = 0;
+    std::size_t beatOctaveRun_ = 0;
 
     /// The most the fold will divide the beat grid by. Two octaves: a filter reading four
     /// times the published tempo is already a tracking failure rather than an octave

@@ -1,0 +1,46 @@
+# Experiment: the electronic fine-tune with time-stretch augmentation.
+#
+# What the fine-tune loses on Ballroom is tempo range (see configs/electronic-l2sp.yaml's
+# note): the electronic sets sit at 120–140 and 160–180 BPM, and the model learns their
+# prior. This run widens the *data* instead of restraining the model: with probability
+# 0.6 a crop is read from seq_len * s source frames and resampled to seq_len, s
+# log-uniform in [0.7, 1.4] — 128 BPM house becomes anything from 91 to 183, 174 BPM drum
+# and bass from 124 to 249 — with the beats re-placed to match (finetune.stretch_crop).
+# Otherwise the lr1e-4-br2 recipe, so the difference is the augmentation's.
+name: electronic-stretch
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  raveform: 1
+  osu2beat: 1
+  harmonix: 1
+  ballroom: 2
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
+exclude_flags_per_set:
+  harmonix: [unverified]
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0001
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [0.7, 1.4]
+stretch_prob: 0.6
+max_epochs: 300
+val_every: 2
+patience: 15
+checkpoint_every: 10
+
+val_tracks_per_set: 80
+val_seconds: 120
+gate_set: ballroom
+gate_margin: 0.01
+select_sets: [raveform, osu2beat, harmonix]
+
+seed: 42
+num_workers: 2          # this machine's commit limit is ~29 GB above the desktop: two runs
+dbn_workers: 2          # of 2+2 workers fit, four runs of 4+4 did not (all died allocating)
+device: cuda
+limit_tracks: 0
