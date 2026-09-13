@@ -17,9 +17,9 @@ is a script that hands the next one files:
                   fetched audio file is the one that was annotated.
     finetune.py   WORK/runs/<name>/: checkpoints, log.csv, val.json, status.json.
 
-WORK defaults to C:/build/takt4/training, beside the build trees and on the SSD: an
-epoch reads a random fifteen-second crop out of every one of ~3,000 tracks, and the
-datasets themselves live on D:. Override with TAKT4_TRAIN_WORK.
+WORK defaults to <repo>/build/training, beside the build trees and on the same volume as
+the datasets: an epoch reads a random fifteen-second crop out of every one of ~3,000
+tracks. Override with TAKT4_TRAIN_WORK.
 """
 import json
 import os
@@ -36,7 +36,7 @@ BALLROOM_ANNOTATIONS = ROOT / "references" / "ballroom-annotations"
 BEATNET_SRC = ROOT / "references" / "beatnet-plus" / "src"
 GENERIC_WEIGHTS = BEATNET_SRC / "BeatNetPlus" / "models" / "generic_weights.pt"
 
-WORK = Path(os.environ.get("TAKT4_TRAIN_WORK", "C:/build/takt4/training"))
+WORK = Path(os.environ.get("TAKT4_TRAIN_WORK", ROOT / "build" / "training"))
 FEATURES = WORK / "features"
 RUNS = WORK / "runs"
 MANIFEST = WORK / "manifest.json"

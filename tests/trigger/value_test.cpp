@@ -3,8 +3,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <limits>
 #include <string>
+#include <string_view>
 
 using Catch::Approx;
 using takt4::trigger::Value;
@@ -111,4 +113,69 @@ TEST_CASE("two values are equal when an operator would call them the same", "[tr
     CHECK(Value::ofInt(1) != Value::ofBool(true));
     CHECK(Value::ofInt(1) != Value::ofText("1"));
     CHECK(Value::ofInt(1) != Value::ofFloat(1.0f));
+}
+
+TEST_CASE("text is cut on a character boundary, never through one", "[trigger][value]") {
+    // **A byte-count truncation is not enough, and what it broke was saving the file.**
+    // These are written out through nlohmann, whose `dump()` refuses a string that is not
+    // valid UTF-8 by throwing — so a text value with a multi-byte character straddling the
+    // cut came back with a lead byte and no continuation, and `settings::save` threw
+    // `type_error.316` into a Slint callback and into `ui::run`'s save on the way out.
+    // Neither can catch it: the process goes and the session's settings go with it.
+    //
+    // U+00E9 is two bytes, U+20AC three and U+1F3B5 four, so between them they cut at every
+    // offset a boundary can fall on.
+    const auto valid = [](std::string_view text) {
+        // A whole number of well-formed sequences and nothing dangling — the property
+        // nlohmann checks, spelled out here rather than inferred from a throw.
+        for (std::size_t i = 0; i < text.size();) {
+            const auto lead = static_cast<unsigned char>(text[i]);
+            const std::size_t length = lead < 0x80    ? 1
+                                       : lead >= 0xF0 ? 4
+                                       : lead >= 0xE0 ? 3
+                                       : lead >= 0xC0 ? 2
+                                                      : 0; // a continuation byte cannot lead
+            if (length == 0 || i + length > text.size()) {
+                return false;
+            }
+            for (std::size_t k = 1; k < length; ++k) {
+                if ((static_cast<unsigned char>(text[i + k]) & 0xC0) != 0x80) {
+                    return false;
+                }
+            }
+            i += length;
+        }
+        return true;
+    };
+
+    for (const std::string_view character : {"\xC3\xA9", "\xE2\x82\xAC", "\xF0\x9F\x8E\xB5"}) {
+        // Every offset at which the character can straddle the cut, and a few either side.
+        for (std::size_t before = Value::kTextCapacity - 4; before <= Value::kTextCapacity;
+             ++before) {
+            std::string text(before, 'a');
+            text.append(character);
+            text.append(8, 'b'); // and enough after it that there is certainly a cut
+            const Value value = Value::ofText(text);
+            INFO("a " << character.size() << "-byte character after " << before << " bytes");
+            CHECK(value.truncated());
+            CHECK(value.text().size() <= Value::kTextCapacity);
+            CHECK(valid(value.text()));
+            // And it gives up at most the one character it could not fit: three bytes for a
+            // four-byte character, and nothing at all for an ASCII cut.
+            CHECK(value.text().size() + 3 >= Value::kTextCapacity);
+        }
+    }
+
+    SECTION("text that fits is untouched, whatever is in it") {
+        const std::string fits = "drop \xE2\x82\xAC \xF0\x9F\x8E\xB5";
+        const Value value = Value::ofText(fits);
+        CHECK_FALSE(value.truncated());
+        CHECK(value.text() == fits);
+    }
+
+    SECTION("and an ASCII cut still fills the buffer") {
+        const Value value = Value::ofText(std::string(Value::kTextCapacity + 5, 'x'));
+        CHECK(value.truncated());
+        CHECK(value.text().size() == Value::kTextCapacity);
+    }
 }

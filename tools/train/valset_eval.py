@@ -1,7 +1,7 @@
 """Score weight sets on a set's validation excerpts the way the app runs — window on or
 off, bars of four or of three and four — through takt4-cli.
 
-    python tools/train/valset_eval.py --set library --weights generic C:/build/takt4/training/weights/electronic-library-e24.bin
+    python tools/train/valset_eval.py --set library --weights generic build/training/weights/electronic-library-e24.bin
     python tools/train/valset_eval.py --set library --weights generic --bpm off 70-140 --meters 3,4 4
     python tools/train/valset_eval.py --set library --weights generic --config tools/train/configs/electronic-library.yaml
 
@@ -42,7 +42,11 @@ def score_one(args):
                "--weights", str(weights), "--seed", "1", "--confidence", "0.15"]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0 or not out.exists():
-            return tid, None
+            # Why, not just that. A weight set named rather than pathed is the mistake that
+            # gets made here, and every track then fails for the same reason — which used to
+            # come out as a KeyError on the summary line, twelve minutes later, with the
+            # actual complaint discarded. See `summary`.
+            return tid, {"error": (r.stderr or r.stdout or "no output file").strip()[:200]}
         rows = np.loadtxt(out, ndmin=2)
     if rows.size == 0:
         return tid, {"F": 0.0, "dF": 0.0, "a1": 0, "a2": 0, "ratio": 0.0, "published": 0.0, "ref_bpm": 0.0, "beats": 0}
@@ -66,11 +70,17 @@ def score_one(args):
 
 
 def summary(rows):
-    ok = [r for r in rows.values() if r is not None]
+    ok = [r for r in rows.values() if r is not None and "error" not in r]
+    bad = [r for r in rows.values() if r is None or "error" in r]
     if not ok:
-        return {}
+        # Every track failed, which means one thing went wrong rather than eighty. Carry the
+        # first complaint out so the caller can print it: this used to return an empty dict
+        # and the caller then died on `s['n']`, discarding the only useful information in the
+        # run. A weight set named where a path was wanted is how that happens.
+        first = next((r["error"] for r in bad if r and "error" in r), "no reason reported")
+        return {"n": 0, "failed": len(rows), "error": first}
     ratios = np.array([r["ratio"] for r in ok])
-    return {"n": len(ok), "failed": sum(1 for r in rows.values() if r is None),
+    return {"n": len(ok), "failed": len(bad),
             "F": float(np.mean([r["F"] for r in ok])), "dF": float(np.mean([r["dF"] for r in ok])),
             "a1": float(np.mean([r["a1"] for r in ok])), "a2": float(np.mean([r["a2"] for r in ok])),
             "doubled": int(np.sum(np.abs(ratios - 2.0) <= 0.08)),
@@ -119,6 +129,13 @@ def main(argv):
                     results[tag] = s
                     save_json(WORK / "valset" / f"{a.set}.{tag}.json",
                               {"weights": weights, "bpm": bpm, "meters": meters, "cli": str(cli), "summary": s, "tracks": rows})
+                    if s["n"] == 0:
+                        # Said here and the run carried on, rather than a traceback out of the
+                        # format string below. One weight set that cannot be loaded must not
+                        # cost the others their scores.
+                        print(f"{wname:<28} bpm {bpm:<7} meters {meters:<4} ALL {s['failed']} FAILED"
+                              f"  — {s['error']}", flush=True)
+                        continue
                     print(f"{wname:<28} bpm {bpm:<7} meters {meters:<4} n={s['n']:3d}  beat F {s['F']:.4f} (median {s['F_median']:.3f})"
                           f"  dF {s['dF']:.4f}  acc1 {s['a1']:.3f}  acc2 {s['a2']:.3f}  doubled {s['doubled']:3d}  halved {s['halved']:3d}"
                           + (f"  ({s['failed']} failed)" if s["failed"] else ""), flush=True)

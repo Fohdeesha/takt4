@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace takt4::trigger {
@@ -117,6 +118,16 @@ public:
     void release() noexcept { panicked_ = false; }
     bool panicked() const noexcept { return panicked_; }
 
+    /// Sends every follow-up still owed, now rather than when it comes due, and latches
+    /// nothing. `panic` without the halt.
+    ///
+    /// **For a stop.** A note on whose note off has not yet come due is a laser still lit, and
+    /// an operator pressing Stop has said the opposite — so the release goes out on the way
+    /// down rather than being dropped with the thread that owed it. It is the same argument
+    /// `panic` and `setRules` already make, and the same one the operator met as a clip that
+    /// would not let go.
+    void flushFollowUps() { flushPending(); }
+
     /// Every generator back to the start, every cooldown cleared, every follow-up dropped.
     /// For a preset load; not for panic, which owes its follow-ups.
     void reset() noexcept;
@@ -157,6 +168,9 @@ private:
     FireObserver observer_;
     std::vector<Rule> rules_;
     std::vector<Pending> pending_;
+    /// What `Rule::followUpsFor` filled in for the fire being dispatched, reused so that a
+    /// rule owing several messages allocates nothing after its first fire.
+    std::vector<std::pair<std::size_t, Message>> owed_;
     bool panicked_ = false;
     std::uint64_t sent_ = 0;
     std::uint64_t dropped_ = 0;

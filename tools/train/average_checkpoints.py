@@ -1,8 +1,8 @@
 """Average the weights of several checkpoints of one run into one — a "model soup".
 
-    python tools/train/average_checkpoints.py C:/build/takt4/training/runs/electronic-library-v2/epoch_016.pt \
-        C:/build/takt4/training/runs/electronic-library-v2/epoch_024.pt \
-        C:/build/takt4/training/runs/electronic-library-v2/epoch_032.pt --out .../soup-16-32.pt
+    python tools/train/average_checkpoints.py build/training/runs/electronic-library-v2/epoch_016.pt \
+        build/training/runs/electronic-library-v2/epoch_024.pt \
+        build/training/runs/electronic-library-v2/epoch_032.pt --out .../soup-16-32.pt
 
 Checkpoints of one fine-tune, a few epochs apart, sit in one basin; the mean of their
 weights is usually a little better than any of them on held-out data and a lot steadier

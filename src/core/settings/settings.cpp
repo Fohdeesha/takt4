@@ -310,7 +310,13 @@ std::string toJson(const Settings& settings) {
              {"rules", json::parse(rulesToJson(settings.preset.rules))},
          }},
     };
-    return document.dump(2) + "\n";
+    // `replace` rather than nlohmann's default `strict`, for `rulesToJson`' reason and one
+    // more of its own: the machine half carries names this program did not choose. PortAudio
+    // hands over a device name as the driver spelled it and RtMidi a port name as the
+    // platform did, and neither promises UTF-8 — an ASIO driver with an accented character
+    // in its name is enough. Refusing to write the file over one byte would lose the whole
+    // of an operator's configuration; U+FFFD loses the byte.
+    return document.dump(2, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace) + "\n";
 }
 
 Settings fromJson(std::string_view text) {
@@ -426,7 +432,7 @@ Settings load(const std::filesystem::path& path) {
     return fromJson(text.str());
 }
 
-bool save(const Settings& settings, const std::filesystem::path& path) {
+bool save(const Settings& settings, const std::filesystem::path& path) try {
     if (path.empty()) {
         return false;
     }
@@ -442,6 +448,16 @@ bool save(const Settings& settings, const std::filesystem::path& path) {
     }
     out << toJson(settings);
     return out.good();
+} catch (...) {
+    // A function-try-block, so the header's "false when it could not be written" is true of
+    // *every* way it could fail rather than only of the file system. `toJson` is not
+    // supposed to throw any more — see the `error_handler_t::replace` above — and this is
+    // what makes that a belt rather than the only strap: both callers are places an
+    // exception cannot go. `ui::run` saves after the event loop has returned, where nothing
+    // would catch it, and `WindowController::saveNow` is a Slint callback, where an
+    // exception crossing back into the toolkit takes the process with it. Either way the
+    // operator loses the session they were trying to keep.
+    return false;
 }
 
 } // namespace takt4::settings

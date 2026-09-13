@@ -33,9 +33,14 @@ private:
 /// `takt4_ui_tests`, which drives the window's callbacks and its redraw timer without one
 /// ever reaching a screen.
 ///
-/// Slint's own `slint::testing::init()` would also do this, but it is behind
-/// `SLINT_FEATURE_EXPERIMENTAL`, which this build deliberately leaves off; everything here
-/// is stable API.
+/// Slint's own `slint::testing::init()` would also do this, and would additionally let a test
+/// *find* an element by name. It is behind `SLINT_FEATURE_EXPERIMENTAL`, which this build
+/// deliberately leaves off; everything here is stable API.
+///
+/// **What that does not cost is driving the window.** `dispatch_pointer_press_event`,
+/// `dispatch_key_press_event` and the rest are stable, and they work against this platform —
+/// so a test can click into a text box, type into it and tab away, which is the only way to
+/// test behaviour that lives in the markup rather than in a controller.
 ///
 /// **Call once, before any Slint component is created** — Slint permits one platform per
 /// process and creating a component installs the default one. The returned pointer is

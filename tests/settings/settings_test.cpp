@@ -6,6 +6,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -328,4 +329,78 @@ TEST_CASE("settings left by an older build are still read", "[settings]") {
         CHECK(takt4::settings::load(takt4::settings::existingSettingsFile())
                   .machine.deviceName.empty());
     }
+}
+
+TEST_CASE("a name this program did not choose cannot stop the file being written", "[settings]") {
+    // **The whole of a crash on Stop.** nlohmann refuses to write a string that is not valid
+    // UTF-8 by throwing, and half the strings in this file are names takt4 was handed rather
+    // than names it made: PortAudio gives a device name as the driver spelled it, RtMidi a
+    // port name as the platform did, and neither promises UTF-8. The throw came out of
+    // `settings::save` into `ui::run`'s save on the way out, where nothing catches it — so
+    // the process died and the operator's whole configuration went with it.
+    //
+    // `error_handler_t::replace` is the fix: the byte nothing can decode becomes U+FFFD and
+    // every other setting in the file survives. 0xB5 is 'µ' in Latin-1 and is not a legal
+    // UTF-8 byte on its own; a driver with it in its name is all it took.
+    Settings in;
+    in.machine.deviceName = "Focusrite \xB5 Interface";
+    in.machine.midiClockPort = "Bad \xFF Port";
+    in.preset.oscPrefix = "/takt4";
+
+    std::string json;
+    REQUIRE_NOTHROW(json = takt4::settings::toJson(in));
+    CHECK_FALSE(json.empty());
+
+    // And it is still a settings file: what round-trips is everything but the bytes that
+    // could not be decoded.
+    const Settings back = takt4::settings::fromJson(json);
+    CHECK(back.machine.deviceName.find("Focusrite") != std::string::npos);
+    CHECK(back.machine.deviceName.find("Interface") != std::string::npos);
+    CHECK(back.preset.oscPrefix == "/takt4");
+
+    SECTION("and it really reaches the disk") {
+        const TempDir dir;
+        const std::filesystem::path path = dir.path() / "settings.json";
+        CHECK(takt4::settings::save(in, path));
+        CHECK(std::filesystem::exists(path));
+    }
+
+    SECTION("the same for a rule carrying one") {
+        // A text value is cut to `Value::kTextCapacity`, and a cut through the middle of a
+        // character used to make the same throw from the other end. `Value::ofText` cuts on
+        // a boundary now; this holds the two halves of that together.
+        Settings withRule;
+        takt4::trigger::Rule::Config rule;
+        rule.id = "r";
+        rule.address = "/deck/{name}";
+        takt4::trigger::Generator::Config segment;
+        segment.kind = takt4::trigger::GeneratorKind::Fixed;
+        segment.fixed = takt4::trigger::Value::ofText(std::string(46, 'a') + "\xC3\xA9");
+        rule.segments.push_back(segment);
+        withRule.preset.rules.push_back(rule);
+
+        std::string text;
+        REQUIRE_NOTHROW(text = takt4::settings::toJson(withRule));
+        const Settings read = takt4::settings::fromJson(text);
+        REQUIRE(read.preset.rules.size() == 1);
+        REQUIRE(read.preset.rules.front().segments.size() == 1);
+        // The accented character was the one thing that did not fit, so what comes back is
+        // the 46 that did — not a replacement character, because nothing was ever malformed.
+        CHECK(read.preset.rules.front().segments.front().fixed.text() == std::string(46, 'a'));
+    }
+}
+
+TEST_CASE("save reports a failure rather than raising one", "[settings]") {
+    // The header promises "false when it could not be written", and both callers depend on
+    // it literally: `ui::run` saves after the event loop has returned, where an exception
+    // has nowhere to go, and `WindowController::saveNow` is a Slint callback, where one
+    // crossing back into the toolkit takes the process with it.
+    const Settings in;
+    CHECK_FALSE(takt4::settings::save(in, {}));
+    // A directory where a file should be: `create_directories` makes the parent, the open
+    // then fails, and nothing is raised.
+    const TempDir dir;
+    const std::filesystem::path occupied = dir.path() / "settings.json";
+    std::filesystem::create_directories(occupied);
+    CHECK_FALSE(takt4::settings::save(in, occupied));
 }
