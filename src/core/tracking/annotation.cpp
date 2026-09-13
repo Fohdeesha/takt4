@@ -82,9 +82,11 @@ std::optional<double> nearestPeak(const std::vector<float>& activation, double f
         return std::nullopt;
     }
     const std::size_t b = static_cast<std::size_t>(*best);
-    const double left = activation[b - 1];
-    const double centre = activation[b];
-    const double right = activation[b + 1];
+    // Widened explicitly: the parabola is fitted in double, and GCC and Clang refuse the
+    // implicit float-to-double promotion under -Wdouble-promotion -Werror.
+    const double left = static_cast<double>(activation[b - 1]);
+    const double centre = static_cast<double>(activation[b]);
+    const double right = static_cast<double>(activation[b + 1]);
     const double curvature = left - 2.0 * centre + right;
     const double offset = curvature < 0.0 ? std::clamp(0.5 * (left - right) / curvature, -0.5, 0.5) : 0.0;
     const double at = (static_cast<double>(*best) + offset) / fps;
