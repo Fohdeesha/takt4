@@ -35,7 +35,7 @@ if (-not (Test-Path $tidy)) { Write-Error "clang-tidy not found at $tidy"; exit 
 
 $repo = Split-Path -Parent $PSScriptRoot
 $slashed = $repo.Replace('\', '/')
-$build = 'C:\build\takt4\windows-core'
+$build = Join-Path $repo 'build\windows-core'
 if (-not (Test-Path "$build\generated")) {
     Write-Error "configure the local-core preset first: no $build\generated"
     exit 2

@@ -1,139 +1,21 @@
 {
   "name": "electronic",
   "use_case": "the operator's library: electronic music at 85-140 BPM, breakbeat, electro, IDM, house; drum and bass at half time",
-  "source": "C:\\build\\takt4\\training\\runs\\electronic-library-v2\\best-e76.pt",
-  "source_bytes": 3073002,
-  "source_sha256": "18dc40febb3c55c20dd77bdfca5c9ddf50ecd65131b8533503b610566a49174d",
+  "source": "C:\\build\\takt4\\training\\runs\\electronic-library-v2\\soup-48-80.pt",
+  "source_bytes": 3075445,
+  "source_sha256": "de0f3bf2cc01d97fa1bffd7fa8fcf1363d31e24d6f53ed4e259bec8b036f7f06",
   "upstream": "https://github.com/mjhydri/BeatNet-Plus",
   "upstream_commit": "bb90eb0a9065b101a4b4c4cb2b2061950266cb4b",
   "format_version": 1,
   "parameters": 767125,
   "bytes": 3068548,
-  "sha256": "c4cc143a56cbb6baebeee43d8dbf917c9551acee4ec6e377d0839dfa3680b104",
+  "sha256": "abd5d0bd91cb317241d6ef3fd9d64f9e4e696fd68e41dc571242e7b25f09bfe0",
   "torch": "2.14.0+cu130",
   "numpy": "2.5.2",
-  "training": {
-    "argv": [
-      "--config",
-      "tools/train/configs/electronic-library-v2.yaml"
-    ],
-    "config": {
-      "alignment_exempt_sets": [
-        "ballroom"
-      ],
-      "batch_size": 40,
-      "checkpoint_every": 8,
-      "class_weights": [
-        60,
-        200,
-        1
-      ],
-      "cli_jobs": 8,
-      "dbn_workers": 2,
-      "device": "cuda",
-      "exclude_flags": [
-        "held_out",
-        "duration_mismatch",
-        "few_beats",
-        "misaligned",
-        "drifting",
-        "teacher_disagree"
-      ],
-      "exclude_flags_per_set": {
-        "harmonix": [
-          "unverified"
-        ]
-      },
-      "gate_margin": 0.05,
-      "gate_set": "ballroom",
-      "genre_weights": {
-        "ballroom": {
-          "Quickstep": 3,
-          "VienneseWaltz": 2,
-          "Waltz": 3
-        }
-      },
-      "grad_clip": 0.0,
-      "harmonix_genres": [
-        "Dance/Electronic"
-      ],
-      "l2sp": 0.0,
-      "learning_rate": 0.0002,
-      "limit_tracks": 0,
-      "max_bpm": {
-        "osu2beat": 160
-      },
-      "max_epochs": 200,
-      "name": "electronic-library-v2",
-      "num_workers": 2,
-      "patience": 8,
-      "pretrained": "references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt",
-      "seed": 42,
-      "select_sets": [
-        "library"
-      ],
-      "seq_len": 750,
-      "sets": {
-        "ballroom": 1,
-        "library": 3,
-        "osu2beat": 1,
-        "raveform": 1
-      },
-      "stretch": [
-        1.0,
-        1.0
-      ],
-      "stretch_min_bpm": 0,
-      "stretch_prob": 0.0,
-      "val_bpm": "off",
-      "val_decoder": "cli",
-      "val_every": 4,
-      "val_meters": "4",
-      "val_seconds": 120,
-      "val_tracks_per_set": 80
-    },
-    "data": {
-      "ballroom": {
-        "excluded": {},
-        "train_crops_per_epoch": 1025,
-        "train_tracks": 1025,
-        "val_tracks": 70
-      },
-      "library": {
-        "excluded": {
-          "drifting": 37,
-          "held_out": 25,
-          "misaligned": 80,
-          "no_features": 1,
-          "teacher_disagree": 117
-        },
-        "train_crops_per_epoch": 2901,
-        "train_tracks": 967,
-        "val_tracks": 80
-      },
-      "osu2beat": {
-        "excluded": {
-          "drifting": 9,
-          "faster_than_160": 434,
-          "misaligned": 28
-        },
-        "train_crops_per_epoch": 218,
-        "train_tracks": 218,
-        "val_tracks": 24
-      },
-      "raveform": {
-        "excluded": {
-          "drifting": 96,
-          "duration_mismatch": 5,
-          "held_out": 1,
-          "misaligned": 52
-        },
-        "train_crops_per_epoch": 1104,
-        "train_tracks": 1104,
-        "val_tracks": 80
-      }
-    },
-    "device": "cuda",
-    "torch": "2.14.0+cu130"
+  "training": {},
+  "replaces": {
+    "source": "C:\\build\\takt4\\training\\runs\\electronic-library-v2\\best-e76.pt",
+    "sha256": "c4cc143a56cbb6baebeee43d8dbf917c9551acee4ec6e377d0839dfa3680b104",
+    "why": "checkpoint average of the same run; measured better on the operator's library and on GiantSteps, level on Ballroom beat F"
   }
 }

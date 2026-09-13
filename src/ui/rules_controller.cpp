@@ -178,6 +178,67 @@ std::string describeRouting(const std::vector<std::string>& names,
     return "no output called " + missing;
 }
 
+/// What a kind calls the number it carries — "note 96" and "program 96" are different
+/// instructions, and the label beside the box is the only thing that says which is about to
+/// go out. Used by the generator chips and by the THEN SEND rows, so the two cannot disagree.
+const char* numberLabelOf(trigger::Message::Kind kind) {
+    switch (kind) {
+    case trigger::Message::Kind::MidiCc:
+        return "cc";
+    case trigger::Message::Kind::MidiProgramChange:
+        return "program";
+    default:
+        return "note"; // note on and note off are both a note
+    }
+}
+
+/// And what it calls the value — a velocity, a bend, or just a value.
+const char* valueLabelOf(trigger::Message::Kind kind) {
+    switch (kind) {
+    case trigger::Message::Kind::MidiNote:
+    case trigger::Message::Kind::MidiNoteOff:
+        return "velocity";
+    case trigger::Message::Kind::MidiPitchBend:
+        return "bend";
+    default:
+        return "value"; // OSC's argument and a CC's value are both just a value
+    }
+}
+
+/// What a follow-up row will *really* send, beside the row that configures it.
+///
+/// A release is the whole reason this exists. The row says "release", and what that means
+/// depends on the rule it hangs off — a note off on the note that was drawn, the same address
+/// with a different argument, the same CC with a different value. Without this the editor
+/// looked like it made note on and note off exclusive, which is how it was read on a rig:
+/// *"you made note on and note off exclusive!? that will not work."* They are not, and this
+/// is the line that says so.
+///
+/// Blank for an explicit kind, whose own row already spells out everything it sends.
+std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config& rule) {
+    if (entry.kind) {
+        return trigger::followUpFits(*entry.kind, rule.sendKind)
+                   ? std::string{}
+                   : "not sent — " + std::string(trigger::labelOf(*entry.kind)) +
+                         " cannot follow " + std::string(trigger::labelOf(rule.sendKind));
+    }
+    switch (rule.sendKind) {
+    case trigger::Message::Kind::MidiNote:
+        return "note off, same note, ch " + std::to_string(rule.channel);
+    case trigger::Message::Kind::MidiNoteOff:
+        return "note off again, same note";
+    case trigger::Message::Kind::MidiCc:
+        return "the same CC, ch " + std::to_string(rule.channel);
+    case trigger::Message::Kind::MidiProgramChange:
+        return "the same program — nothing to release";
+    case trigger::Message::Kind::MidiPitchBend:
+        return "pitch bend, ch " + std::to_string(rule.channel);
+    case trigger::Message::Kind::Osc:
+        break;
+    }
+    return "the same address";
+}
+
 /// A Euclidean pattern as something a person can hear before it plays: "x..x..x.".
 ///
 /// Two numbers are not a rhythm anybody can read, and this is the cheapest way to make them
@@ -260,6 +321,16 @@ int presetOf(std::string_view address) {
 // code path". Every one of these produces ordinary `Rule::Config`s that the editor then edits
 // like any other, and nothing downstream ever asks which preset a rule came from.
 
+/// A release — the fired message again with a different value — after a delay in
+/// milliseconds. What §5.6's press-then-release is, and what every preset here wants.
+trigger::FollowUp releaseAfterMs(std::int32_t value, double milliseconds) {
+    trigger::FollowUp entry;
+    entry.value = trigger::Value::ofInt(value);
+    entry.unit = trigger::DelayUnit::Milliseconds;
+    entry.delaySeconds = milliseconds / 1000.0;
+    return entry;
+}
+
 /// One clip-launching rule for one Resolume layer.
 Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t seed) {
     Rule::Config rule;
@@ -284,9 +355,7 @@ Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t see
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = trigger::Value::ofInt(1);
     // §7.4: connect is a mouse click. Without the release the clip stays held.
-    rule.followUp = true;
-    rule.followUpValue = trigger::Value::ofInt(0);
-    rule.followUpDelaySeconds = 0.05;
+    rule.followUps.push_back(releaseAfterMs(0, 50));
     rule.seed = seed;
     return rule;
 }
@@ -303,7 +372,13 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         // Staggered periods rather than three identical ones: 4, 8 and 16 bars means the
         // three layers change at different times and the combination keeps moving. Three
         // layers all changing on the same downbeat is one event, not three.
-        return {resolumeLayer(1, 4, 101), resolumeLayer(2, 8, 202), resolumeLayer(3, 16, 303)};
+        //
+        // **Highest layer first, because that is the way Resolume draws them.** Resolume
+        // stacks layer 3 above 2 above 1, so a list running 1, 2, 3 down the screen is the
+        // operator's rig upside down — reported on 2026-09-12 as "the order it adds them is
+        // backwards, which can be confusing". The layer *numbers*, their periods and their
+        // seeds are unchanged; only the order they are added in is.
+        return {resolumeLayer(3, 16, 303), resolumeLayer(2, 8, 202), resolumeLayer(1, 4, 101)};
     }
     case 2: {
         // Resolume's own tempo, kept in step with the tracker. §5.6 and §A.4 verified both
@@ -369,9 +444,9 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         stabs.number.high = 43;
         stabs.value.kind = GeneratorKind::Fixed;
         stabs.value.fixed = trigger::Value::ofInt(110);
-        stabs.followUp = true;
-        stabs.followUpValue = trigger::Value::ofInt(0); // velocity 0 is a note-off
-        stabs.followUpDelaySeconds = 0.08;
+        // A real Note Off eighty milliseconds later, on whichever note the shuffle drew —
+        // which is what a release inherits and nobody could type. See `trigger::FollowUp`.
+        stabs.followUps.push_back(releaseAfterMs(0, 80));
         stabs.seed = 707;
         return {stabs};
     }
@@ -396,10 +471,12 @@ RulesController::RulesController(output::OutputRunner& runner,
       listModel_(std::make_shared<slint::VectorModel<RuleRow>>()),
       choiceModel_(std::make_shared<slint::VectorModel<OutputChoice>>()),
       slotModel_(std::make_shared<slint::VectorModel<SlotRow>>()),
+      followModel_(std::make_shared<slint::VectorModel<FollowRow>>()),
       logModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()) {
     window_->set_rules(listModel_);
     window_->set_output_choices(choiceModel_);
     window_->set_slots(slotModel_);
+    window_->set_follow_ups(followModel_);
     window_->set_log(logModel_);
 
     // The dropdowns, filled from the enums themselves so a kind added to `core/trigger`
@@ -479,7 +556,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_bpm_range_edited(
         [this](const slint::SharedString& t) { setBpmRange(std::string(t)); });
     window_->on_probability_changed([this](float v) { setProbability(v); });
-    window_->on_cooldown_changed([this](float ms) { setCooldownMs(ms); });
+    window_->on_cooldown_changed(
+        [this](const slint::SharedString& t) { setCooldown(std::string(t)); });
 
     window_->on_send_picked([this](int index) { pickSend(index); });
     window_->on_address_edited(
@@ -487,12 +565,17 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_channel_changed([this](int channel) { setChannel(channel); });
     window_->on_host_preset_picked([this](int index) { pickHostPreset(index); });
     window_->on_send_value_changed([this](bool on) { setSendValue(on); });
-    window_->on_follow_up_changed([this](bool on) { setFollowUp(on); });
-    window_->on_follow_up_value_edited(
-        [this](const slint::SharedString& t) { setFollowUpValue(std::string(t)); });
-    window_->on_follow_up_delay_changed([this](float ms) { setFollowUpMs(ms); });
-    window_->on_follow_up_beats_changed([this](float beats) { setFollowUpBeats(beats); });
-    window_->on_follow_up_unit_picked([this](int unit) { pickFollowUpUnit(unit); });
+
+    window_->on_follow_up_added([this] { addFollowUp(); });
+    window_->on_follow_up_removed([this](int index) { removeFollowUp(index); });
+    window_->on_follow_kind_picked(
+        [this](int index, int choice) { pickFollowKind(index, choice); });
+    window_->on_follow_number_changed([this](int index, int n) { setFollowNumber(index, n); });
+    window_->on_follow_value_edited(
+        [this](int index, const slint::SharedString& t) { setFollowValue(index, std::string(t)); });
+    window_->on_follow_delay_edited(
+        [this](int index, const slint::SharedString& t) { setFollowDelay(index, std::string(t)); });
+    window_->on_follow_unit_picked([this](int index, int unit) { pickFollowUnit(index, unit); });
 
     window_->on_slot_kind_picked([this](int slot, int kind) { pickSlotKind(slot, kind); });
     window_->on_slot_pool_changed([this](int slot, bool list) { setSlotPool(slot, list); });
@@ -516,8 +599,7 @@ RulesController::RulesController(output::OutputRunner& runner,
     // `preferred-width` — so this window opened at its minimum, 900 x 560, whatever the
     // markup preferred. See `kRulesWindowWidth`. Before the first `show()`, which is what
     // makes the backend leave it alone; a later drag is the operator's and is kept.
-    window_->window().set_size(
-        slint::LogicalSize({kRulesWindowWidth, kRulesWindowHeight}));
+    window_->window().set_size(slint::LogicalSize({kRulesWindowWidth, kRulesWindowHeight}));
 
     resettle(0);
     publishAll();
@@ -573,7 +655,12 @@ Generator::Config* RulesController::slotConfig(int slot) noexcept {
         }
         return index == rule->segments.size() ? &rule->value : nullptr;
     }
-    // MIDI: the note or controller number first, then the velocity or value.
+    // MIDI: the note or controller number first, then the velocity or value. Pitch bend has
+    // no number at all, so its value is slot 0 — `publishSlots` builds the rows in exactly
+    // this order and the two must not drift apart.
+    if (!trigger::sendsNumber(rule->sendKind)) {
+        return index == 0 ? &rule->value : nullptr;
+    }
     return index == 0 ? &rule->number : index == 1 ? &rule->value : nullptr;
 }
 
@@ -589,6 +676,9 @@ void RulesController::commit() {
     }
     publishList();
     publishSlots();
+    // With the slots, because these rows describe the same rule and read from the same fields
+    // — a release's summary names the channel, so changing the channel has to move it.
+    publishFollowUps();
 }
 
 void RulesController::matchSegmentsToAddress(Rule::Config& rule) {
@@ -674,7 +764,31 @@ void RulesController::pickWith(int index, bool control, bool shift) {
         chosen_[static_cast<std::size_t>(index)] = true;
         anchor_ = index;
     }
-    selected_ = index;
+    // **The editor always shows a row that is in the selection**, and this used to be a plain
+    // `selected_ = index`. Control-clicking a chosen row takes it *out* of the selection, so
+    // that assignment left the card on screen showing a rule the marks would not act on: press
+    // × on any lit row and six other rules go while the one being read stays. Found by the
+    // soak test below rather than by anybody using it, which is the only reason it is written
+    // down here and not in a bug report.
+    //
+    // The nearest row that is still chosen, because a selection is a run more often than not
+    // and the eye is where the click was.
+    if (chosen_[static_cast<std::size_t>(index)]) {
+        selected_ = index;
+    } else {
+        const int last = static_cast<int>(rules_.size()) - 1;
+        selected_ = index;
+        for (int away = 1; away <= last; ++away) {
+            if (index - away >= 0 && chosen_[static_cast<std::size_t>(index - away)]) {
+                selected_ = index - away;
+                break;
+            }
+            if (index + away <= last && chosen_[static_cast<std::size_t>(index + away)]) {
+                selected_ = index + away;
+                break;
+            }
+        }
+    }
     // A new selection is a new last-fired line: the old one belonged to another rule and
     // leaving it up would credit this one with what that one sent.
     lastFired_.clear();
@@ -687,8 +801,9 @@ void RulesController::pickWith(int index, bool control, bool shift) {
     // Said out loud, because a selection of six looks like a selection of six only if you
     // know to count the highlighted rows — and because what × does next depends on it.
     const std::size_t count = chosen().size();
-    setStatus(count > 1 ? std::to_string(count) + " triggers selected — the marks on any of "
-                                                  "them act on all " +
+    setStatus(count > 1 ? std::to_string(count) +
+                              " triggers selected — the marks on any of "
+                              "them act on all " +
                               std::to_string(count)
                         : std::string{},
               false);
@@ -849,13 +964,18 @@ void RulesController::addRig(int index) {
         // An id already in use would make §5.7's `/ctl/rule/<id>/enable` ambiguous, and
         // `TriggerEngine::find` takes the first. Numbered up rather than refused: adding the
         // same rig twice is a reasonable thing to do with three more layers in mind.
+        std::uint64_t copies = 0;
         std::string id = rule.id;
-        for (int n = 2; findRule(id) != nullptr; ++n) {
-            id = rule.id + "-" + std::to_string(n);
+        while (findRule(id) != nullptr) {
+            ++copies;
+            id = rule.id + "-" + std::to_string(copies + 1);
         }
-        if (id != rule.id) {
-            rule.seed += 977; // a different stream too, or the copy fires what the first does
-            rule.id = id;
+        if (copies > 0) {
+            // A different stream too, or the copy fires exactly what the first does — and
+            // stepped by *which* copy this is rather than by a flat amount, or the third rig
+            // added would share the second's seed and the two would draw the same clips.
+            rule.seed += 977 * copies;
+            rule.id = std::move(id);
         }
         rules_.push_back(std::move(rule));
     }
@@ -895,8 +1015,14 @@ void RulesController::test() {
 }
 
 void RulesController::panic() {
-    runner_.panic(!runner_.panicked());
-    window_->set_panicked(runner_.panicked());
+    const bool wanted = !runner_.panicked();
+    runner_.panic(wanted);
+    // **Shown from what was asked for, not read back.** `panic` *posts*: the output thread
+    // applies it about a millisecond later, so reading the flag here returns the state the
+    // press was leaving, and the button lit the wrong way for a frame. On a PANIC button that
+    // is the worst possible place for a flicker. `tick` puts it back in step if the change
+    // somehow did not take.
+    window_->set_panicked(wanted);
 }
 
 void RulesController::pickTrigger(int index) {
@@ -1063,12 +1189,27 @@ void RulesController::setProbability(double value) {
     }
 }
 
-void RulesController::setCooldownMs(double milliseconds) {
-    if (Rule::Config* rule = current()) {
-        rule->conditions.cooldownSeconds = std::max(0.0, milliseconds) / 1000.0;
-        commit();
-        publishSelected();
+void RulesController::setCooldown(const std::string& text) {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
     }
+    const std::string_view trimmed = trim(text);
+    // An empty box is no cooldown, which is what an operator clears it to mean. Anything else
+    // that is not a number is said rather than silently read as zero — `text.to-float()` used
+    // to do that in the markup, so a typo turned a two-second cooldown off without a word.
+    if (trimmed.empty()) {
+        rule->conditions.cooldownSeconds = 0.0;
+    } else {
+        const std::optional<double> number = readNumber(trimmed);
+        if (!number) {
+            setStatus("A cooldown is a number of milliseconds, like 250.", true);
+            return;
+        }
+        rule->conditions.cooldownSeconds = std::max(0.0, *number) / 1000.0;
+    }
+    commit();
+    publishSelected();
 }
 
 void RulesController::pickSend(int index) {
@@ -1078,8 +1219,29 @@ void RulesController::pickSend(int index) {
         return;
     }
     rule->sendKind = trigger::kMessageKinds[static_cast<std::size_t>(index)];
+    // A follow-up left on the far side of the OSC/MIDI divide would be **silently dropped** at
+    // fire time (`trigger::followUpFits`) — a clip pressed and never released, which is the
+    // worst failure this editor has. Turned into releases instead, which is what an operator
+    // switching a rule's send kind means by the rows they already had: let go of what was
+    // pressed. An explicit number goes with the kind that carried it; there is nowhere to put
+    // one on the other side.
+    int stranded = 0;
+    for (trigger::FollowUp& owed : rule->followUps) {
+        if (owed.kind && !trigger::followUpFits(*owed.kind, rule->sendKind)) {
+            owed.kind.reset();
+            ++stranded;
+        }
+    }
     commit();
     publishSelected();
+    if (stranded > 0) {
+        setStatus(
+            std::to_string(stranded) +
+                (stranded == 1 ? " follow-up became a release" : " follow-ups became releases") +
+                ", because what they sent cannot follow a " +
+                std::string(trigger::labelOf(rule->sendKind)) + ".",
+            false);
+    }
 }
 
 void RulesController::setAddress(const std::string& address) {
@@ -1113,7 +1275,7 @@ void RulesController::pickHostPreset(int index) {
         // operator is about to type, which is what the entry has always claimed to be.
         rule->address.clear();
         matchSegmentsToAddress(*rule);
-        rule->followUp = false;
+        rule->followUps.clear();
         commit();
         publishSelected();
         setStatus("Cleared the address. Type one, or pick a host to start from.", false);
@@ -1130,9 +1292,10 @@ void RulesController::pickHostPreset(int index) {
         rule->address.find("connect") != std::string::npos) {
         rule->value.kind = GeneratorKind::Fixed;
         rule->value.fixed = trigger::Value::ofInt(1);
-        rule->followUp = true;
-        rule->followUpValue = trigger::Value::ofInt(0);
-        rule->followUpDelaySeconds = 0.05;
+        // Replaced rather than added to: picking a host preset is choosing that host's whole
+        // gesture, and appending a second release to one an operator already had would send
+        // the 0 twice.
+        rule->followUps.assign(1, releaseAfterMs(0, 50));
     }
     commit();
     publishSelected();
@@ -1145,44 +1308,110 @@ void RulesController::setSendValue(bool on) {
     }
 }
 
-void RulesController::setFollowUp(bool on) {
-    if (Rule::Config* rule = current()) {
-        rule->followUp = on;
-        commit();
-    }
-}
-
-void RulesController::setFollowUpValue(const std::string& text) {
-    if (Rule::Config* rule = current()) {
-        rule->followUpValue = parseValue(text);
-        commit();
-        publishSelected();
-    }
-}
-
-void RulesController::setFollowUpMs(double milliseconds) {
-    if (Rule::Config* rule = current()) {
-        rule->followUpDelaySeconds = std::max(0.0, milliseconds) / 1000.0;
-        commit();
-        publishSelected();
-    }
-}
-
-void RulesController::setFollowUpBeats(double beats) {
-    if (Rule::Config* rule = current()) {
-        rule->followUpDelayBeats = std::max(0.0, beats);
-        commit();
-        publishSelected();
-    }
-}
-
-void RulesController::pickFollowUpUnit(int unit) {
+trigger::FollowUp* RulesController::followConfig(int index) noexcept {
     Rule::Config* rule = current();
-    if (rule == nullptr || unit < 0 ||
+    if (rule == nullptr || index < 0 || static_cast<std::size_t>(index) >= rule->followUps.size()) {
+        return nullptr;
+    }
+    return &rule->followUps[static_cast<std::size_t>(index)];
+}
+
+void RulesController::addFollowUp() {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    if (rule->followUps.size() >= trigger::kMaxFollowUps) {
+        setStatus("A trigger can send " + std::to_string(trigger::kMaxFollowUps) +
+                      " follow-ups at most.",
+                  true);
+        return;
+    }
+    trigger::FollowUp entry;
+    // **A release, one beat later.** What an operator adding a row nearly always means is
+    // "let go of what was just pressed" — a note off for a note, a 0 for Resolume's connect —
+    // and the length they mean it for is musical rather than a number of milliseconds. A
+    // first row of "release after 1 beat" is the laser rig's whole ask, ready to test.
+    entry.unit = trigger::DelayUnit::Beats;
+    entry.delayBeats = 1.0;
+    // Except on a pitch bend, where letting go is the **centre** and not the bottom. Zero is
+    // hard left on a 14-bit bend; 8192 is the wheel released, which is what a release means.
+    if (rule->sendKind == trigger::Message::Kind::MidiPitchBend) {
+        entry.value = trigger::Value::ofInt(8192);
+    }
+    rule->followUps.push_back(entry);
+    commit();
+    publishSelected();
+}
+
+void RulesController::removeFollowUp(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 || static_cast<std::size_t>(index) >= rule->followUps.size()) {
+        return;
+    }
+    rule->followUps.erase(rule->followUps.begin() + index);
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickFollowKind(int index, int choice) {
+    trigger::FollowUp* entry = followConfig(index);
+    if (entry == nullptr || choice < 0 || static_cast<std::size_t>(choice) > followKinds_.size()) {
+        return;
+    }
+    // Zero is "release" — no kind at all, which is what makes the follow-up *be* the message
+    // that fired. Everything past it indexes the kinds this rule is allowed to reach.
+    entry->kind = choice == 0 ? std::optional<trigger::Message::Kind>{}
+                              : followKinds_[static_cast<std::size_t>(choice) - 1];
+    commit();
+    publishSelected();
+}
+
+void RulesController::setFollowNumber(int index, int number) {
+    if (trigger::FollowUp* entry = followConfig(index)) {
+        entry->number = std::clamp(number, 0, 127);
+        commit();
+        publishSelected();
+    }
+}
+
+void RulesController::setFollowValue(int index, const std::string& text) {
+    if (trigger::FollowUp* entry = followConfig(index)) {
+        entry->value = parseValue(text);
+        commit();
+        publishSelected();
+    }
+}
+
+void RulesController::setFollowDelay(int index, const std::string& text) {
+    trigger::FollowUp* entry = followConfig(index);
+    if (entry == nullptr) {
+        return;
+    }
+    const std::optional<double> number = readNumber(trim(text));
+    if (!number) {
+        setStatus("A delay is a number, like 1 or 50.", true);
+        return;
+    }
+    // Into whichever of the two numbers the row is showing, leaving the other alone: they are
+    // different magnitudes of the same idea, and a single field would turn "50" into "0.077"
+    // the moment the unit changed. See `trigger::FollowUp::delayBeats`.
+    if (entry->unit == trigger::DelayUnit::Milliseconds) {
+        entry->delaySeconds = std::max(0.0, *number) / 1000.0;
+    } else {
+        entry->delayBeats = std::max(0.0, *number);
+    }
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickFollowUnit(int index, int unit) {
+    trigger::FollowUp* entry = followConfig(index);
+    if (entry == nullptr || unit < 0 ||
         static_cast<std::size_t>(unit) >= trigger::kDelayUnits.size()) {
         return;
     }
-    rule->followUpUnit = trigger::kDelayUnits[static_cast<std::size_t>(unit)];
+    entry->unit = trigger::kDelayUnits[static_cast<std::size_t>(unit)];
     commit();
     publishSelected();
 }
@@ -1254,10 +1483,30 @@ void RulesController::setSlotValues(int slot, const std::string& text) {
 }
 
 void RulesController::setSlotNoRepeat(int slot, int within) {
-    if (Generator::Config* config = slotConfig(slot)) {
-        config->noRepeatWithin = static_cast<std::size_t>(std::max(0, within));
-        commit();
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr) {
+        return;
     }
+    const GeneratorKind kind = config->kind;
+    config->noRepeatWithin = static_cast<std::size_t>(std::max(0, within));
+    commit();
+    // **Said out loud, because it has been asked twice.** A number beside the word "no
+    // repeat" does not say what it guards, and what it guards is different on the two kinds
+    // an operator is choosing between. On shuffle it is *not* redundant — a bag of eight
+    // cannot repeat inside itself, but the last draw of one bag and the first of the next are
+    // independent, so it repeats at the seam one time in eight, and that is the repeat an
+    // audience sees. See `Generator::Config::noRepeatWithin`.
+    if (within <= 0) {
+        setStatus("Repeats allowed — including the same value twice in a row.", false);
+        return;
+    }
+    const std::string draws = std::to_string(within) + (within == 1 ? " draw" : " draws");
+    setStatus(kind == GeneratorKind::Shuffle
+                  ? "Never the same as the last " + draws +
+                        ". A shuffle cannot repeat inside one pass of its values; this is what "
+                        "closes the join between one pass and the next."
+                  : "Never the same as the last " + draws + ".",
+              false);
 }
 
 void RulesController::setSlotFixed(int slot, const std::string& text) {
@@ -1283,6 +1532,11 @@ void RulesController::clearLog() {
 }
 
 void RulesController::tick() {
+    // First, and outside every widget callback: a publisher found a row it could not honestly
+    // update in place, and this is where the repeater is built again. See `rowsDirty_`.
+    if (rowsDirty_) {
+        rebuildRows();
+    }
     // Drained whether or not the window is up: the buffer is bounded and dropping the
     // oldest, so a log that is never drained would quietly lose the start of a set. It is
     // also the cheapest possible call when nothing has fired.
@@ -1390,10 +1644,13 @@ void RulesController::publishSelected() {
     window_->set_allow_calm(rule->conditions.allows(features::Intensity::Calm));
     window_->set_allow_normal(rule->conditions.allows(features::Intensity::Normal));
     window_->set_allow_intense(rule->conditions.allows(features::Intensity::Intense));
-    window_->set_min_bpm(static_cast<float>(rule->conditions.minBpm));
-    window_->set_max_bpm(static_cast<float>(rule->conditions.maxBpm));
     window_->set_probability(static_cast<float>(rule->conditions.probability));
-    window_->set_cooldown_ms(static_cast<float>(rule->conditions.cooldownSeconds * 1000.0));
+    // Spelled here rather than by the markup, because both boxes are two-way bound and so the
+    // property holds *text* — see `bpm-field`, where the one-way version's failure is written
+    // down. `spellNumber` so a range reads "70 - 140" and not "70.000000 - 140.000000".
+    window_->set_bpm_range(shared(spellNumber(rule->conditions.minBpm) + " - " +
+                                  spellNumber(rule->conditions.maxBpm)));
+    window_->set_cooldown_ms(shared(spellNumber(rule->conditions.cooldownSeconds * 1000.0)));
 
     const auto sendIndex =
         std::find(trigger::kMessageKinds.begin(), trigger::kMessageKinds.end(), rule->sendKind) -
@@ -1406,14 +1663,88 @@ void RulesController::publishSelected() {
     window_->set_host_preset_index(presetOf(rule->address));
     window_->set_channel(rule->channel);
     window_->set_send_value(rule->sendValue);
-    window_->set_follow_up(rule->followUp);
-    window_->set_follow_up_value(shared(spellValue(rule->followUpValue)));
-    window_->set_follow_up_ms(static_cast<float>(rule->followUpDelaySeconds * 1000.0));
-    window_->set_follow_up_beats(static_cast<float>(rule->followUpDelayBeats));
-    const auto unitIndex =
-        std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), rule->followUpUnit) -
-        trigger::kDelayUnits.begin();
-    window_->set_follow_up_unit(static_cast<int>(unitIndex));
+    publishFollowUps();
+}
+
+void RulesController::publishFollowUps() {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        followModel_->clear();
+        followKinds_.clear();
+        window_->set_can_add_follow_up(false);
+        return;
+    }
+
+    // What a follow-up on *this* rule may be, and the two things left out of it.
+    //
+    // Kinds on the far side of the OSC/MIDI divide go, because `Rule::followUpsFor` would
+    // drop them — a MIDI follow-up to an OSC rule has no channel or note to inherit — and
+    // offering a choice that does nothing is worse than not offering it. `pickSend` turns any
+    // that a change of send kind stranded into releases, so no row can name one.
+    //
+    // And OSC goes, because on an OSC rule it *is* the first entry: the same address with a
+    // different argument is what a release means, so the two would behave identically. A MIDI
+    // kind matching the rule's own is a different matter and stays — it carries a number of
+    // its own where a release inherits the one that fired, which is a real second gesture.
+    std::vector<trigger::Message::Kind> allowed;
+    for (const trigger::Message::Kind kind : trigger::kMessageKinds) {
+        if (kind != trigger::Message::Kind::Osc && trigger::followUpFits(kind, rule->sendKind)) {
+            allowed.push_back(kind);
+        }
+    }
+    if (allowed != followKinds_) {
+        followKinds_ = allowed;
+        auto labels = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        // "release" first and always: it is the default, and the only entry that can follow a
+        // drawn number, since the note to let go of is the one the shuffle picked.
+        labels->push_back(slint::SharedString("release"));
+        for (const trigger::Message::Kind kind : followKinds_) {
+            labels->push_back(shared(std::string(trigger::labelOf(kind))));
+        }
+        window_->set_follow_kinds(labels);
+    }
+    window_->set_can_add_follow_up(rule->followUps.size() < trigger::kMaxFollowUps);
+
+    std::vector<FollowRow> rows;
+    rows.reserve(rule->followUps.size());
+    for (const trigger::FollowUp& entry : rule->followUps) {
+        FollowRow row{};
+        int choice = 0;
+        if (entry.kind) {
+            const auto at = std::find(followKinds_.begin(), followKinds_.end(), *entry.kind);
+            // A kind the rule can no longer reach — the send kind was changed under it — reads
+            // as a release, which is what it will actually behave as (`followUpFits` drops it,
+            // and a release is what the row then means). The configuration is left alone until
+            // the operator touches the row, so switching kinds back restores what they had.
+            choice = at == followKinds_.end() ? 0 : static_cast<int>(at - followKinds_.begin()) + 1;
+        }
+        row.kind_index = choice;
+        // A release inherits the fired message's number, so it has none of its own to show.
+        row.takes_number = entry.kind && trigger::sendsNumber(*entry.kind);
+        row.number_label = shared(row.takes_number ? numberLabelOf(*entry.kind) : "");
+        row.number = entry.number;
+        row.takes_value = !entry.kind || trigger::sendsValue(*entry.kind) ||
+                          *entry.kind == trigger::Message::Kind::Osc;
+        row.value = shared(spellValue(entry.value));
+        const auto unitIndex =
+            std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), entry.unit) -
+            trigger::kDelayUnits.begin();
+        row.unit = static_cast<int>(unitIndex);
+        row.delay = shared(entry.unit == trigger::DelayUnit::Milliseconds
+                               ? spellNumber(entry.delaySeconds * 1000.0)
+                               : spellNumber(entry.delayBeats));
+        row.summary = shared(describeFollowUp(entry, *rule));
+        rows.push_back(std::move(row));
+    }
+
+    // Nothing on these rows moves on its own — no live readout — so any change at all is one
+    // the controller made and has to get back into a box that may have gone deaf. See
+    // `rowsNeedRebuild` and `rowsDirty_`.
+    if (rowsNeedRebuild(*followModel_, rows,
+                        [](const FollowRow& was, const FollowRow& now) { return was != now; })) {
+        rowsDirty_ = true;
+    }
+    writeRows(*followModel_, rows);
 }
 
 void RulesController::publishOutputChoices() {
@@ -1451,6 +1782,21 @@ void RulesController::publishOutputChoices() {
             rows.push_back(std::move(row));
         }
     }
+
+    // **These are tick boxes, and a tick box drops its binding the moment it is clicked.**
+    //
+    // The same mechanism the generator chips and the THEN SEND rows are rebuilt for, on the
+    // one publisher that did not take part in it. A `CheckBox` bound `checked: choice.chosen`
+    // stops following the model as soon as somebody ticks it — so after routing one rule to
+    // "lights", every rule selected afterwards showed "lights" already ticked, and clicking
+    // it to route *that* rule un-ticked it and did nothing. Nothing on this row moves on its
+    // own, so any change at all is one the controller made and has to get back into a box
+    // that may have gone deaf.
+    if (rowsNeedRebuild(*choiceModel_, rows, [](const OutputChoice& was, const OutputChoice& now) {
+            return was != now;
+        })) {
+        rowsDirty_ = true;
+    }
     writeRows(*choiceModel_, rows);
 
     window_->set_outputs_all(names.empty());
@@ -1461,7 +1807,33 @@ void RulesController::publishSlots() {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
         slotModel_->clear();
+        slotsBuiltFor_.clear();
         return;
+    }
+
+    // **Rebuild from scratch when the rule or its send kind changes, and only then.**
+    //
+    // `writeRows` updates rows in place so that a box being typed into is not destroyed under
+    // the cursor — see its header, which is right about that and did not go far enough. The
+    // consequence it records is that a `LineEdit` (or a `ComboBox`) loses its `text:` binding
+    // the moment somebody types into it, because Slint drops a binding when the property is
+    // assigned. Within one rule that is harmless: what was typed is what is meant.
+    //
+    // Across rules it is not. Selecting a different rule updates the model rows, the dead
+    // widget ignores them, and the operator sees the *previous* rule's range, list and mode
+    // on every rule they click — which reads exactly like one edit having changed them all.
+    // It was reported that way on 2026-09-12, and the giveaway was that toggling the `list`
+    // checkbox "fixed" it: that flips an `if`, so the element is destroyed and the new one
+    // comes up bound.
+    //
+    // Clearing first makes the repeater build fresh items, so every box is bound again. It
+    // costs the focus, which is right here — the operator just clicked another rule — and it
+    // never happens on the `tick` path, where the id and kind are unchanged.
+    const bool rebuild = rule->id != slotsBuiltFor_ || rule->sendKind != slotsKind_;
+    if (rebuild) {
+        slotModel_->clear();
+        slotsBuiltFor_ = rule->id;
+        slotsKind_ = rule->sendKind;
     }
 
     // What this rule's generators produced last time it fired, in the order the chips are
@@ -1534,17 +1906,51 @@ void RulesController::publishSlots() {
         for (std::size_t i = 0; i < rule->segments.size(); ++i) {
             push(i < names.size() ? names[i] : "{?}", rule->segments[i]);
         }
-    } else {
-        push(rule->sendKind == trigger::Message::Kind::MidiNote ? "note" : "cc", rule->number);
+    } else if (trigger::sendsNumber(rule->sendKind)) {
+        push(numberLabelOf(rule->sendKind), rule->number);
     }
-    if (rule->sendValue) {
-        push("value", rule->value);
+    // Program change has nowhere to put a value; pitch bend is nothing but one. `slotConfig`
+    // indexes the rows in this same order.
+    if (rule->sendKind == trigger::Message::Kind::Osc ? rule->sendValue
+                                                      : trigger::sendsValue(rule->sendKind)) {
+        push(valueLabelOf(rule->sendKind), rule->value);
     }
     // In place, and this is the one that mattered: these rows are the generator chips, they
     // are full of text boxes, and `tick` republishes them every time a rule fires. See
-    // `writeRows`. Nothing here moves between fires, so the common case writes no rows at
-    // all and the boxes are left entirely alone.
+    // `writeRows`. Nothing here moves between fires *except* the last-produced readout, so
+    // the common case writes no rows at all and the boxes are left entirely alone.
+    //
+    // And when something else moves — a range this clamped back the right way round, a list
+    // seeded from a range, another rule's values — the row has to come back as a new element
+    // or a box that has been typed into will go on showing what was typed. That readout is
+    // the field to exclude: it ticks over on every beat, and rebuilding for it would tear the
+    // boxes down under the operator's hands.
+    if (rowsNeedRebuild(*slotModel_, rows, [](const SlotRow& was, const SlotRow& now) {
+            SlotRow ignoring = was;
+            ignoring.last = now.last;
+            return ignoring != now;
+        })) {
+        rowsDirty_ = true;
+    }
     writeRows(*slotModel_, rows);
+}
+
+void RulesController::rebuildRows() {
+    rowsDirty_ = false;
+    // Emptied, so the repeaters throw their items away and build new ones — which is the only
+    // way a `LineEdit` that has been typed into, or a `CheckBox` that has been clicked,
+    // starts following its model again. Publishing straight afterwards leaves nothing on
+    // screen for a frame.
+    slotModel_->clear();
+    followModel_->clear();
+    choiceModel_->clear();
+    publishSlots();
+    publishFollowUps();
+    publishOutputChoices();
+    // Every publisher compares against an empty model, so none can find a surviving row that
+    // moved. Asserting that here rather than trusting it: a rebuild that set the flag again
+    // would spin at thirty frames a second, tearing every box down as fast as it drew.
+    rowsDirty_ = false;
 }
 
 void RulesController::publishFiring() {
@@ -1553,9 +1959,12 @@ void RulesController::publishFiring() {
         window_->set_last_fired_ago(slint::SharedString(""));
         return;
     }
-    const double ago =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count() -
-        lastFiredAt_;
+    // **The runner's clock, because that is the clock the timestamp was taken on.** This used
+    // to subtract `Fired::when` from seconds since *this controller* was built, which are two
+    // clocks with no shared origin: the runner's began at Start and this one at launch, so
+    // "just now" read as however long the operator had spent setting up. Both halves of a
+    // subtraction have to come off one clock, and `OutputRunner::elapsed` is it.
+    const double ago = runner_.elapsed() - lastFiredAt_;
     // Seconds, coarsely. A message that landed a moment ago and one that landed a minute ago
     // are different facts; a tenth of a second between them is not.
     window_->set_last_fired_ago(

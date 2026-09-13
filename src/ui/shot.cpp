@@ -332,16 +332,42 @@ void fillRules(RulesWindow& window) {
     window.set_every(4);
     window.set_min_confidence(0.70f);
     window.set_probability(0.9f);
-    window.set_min_bpm(120);
-    window.set_max_bpm(140);
-    window.set_cooldown_ms(500);
+    // Text, not numbers: both boxes are two-way bound so that they keep following the model
+    // after somebody has typed into one. See `bpm-field` in the markup.
+    window.set_bpm_range(slint::SharedString("120 - 140"));
+    window.set_cooldown_ms(slint::SharedString("500"));
     window.set_allow_calm(false);
     window.set_send_index(0);
     window.set_sends_osc(true);
     window.set_address(slint::SharedString("/composition/layers/{layer}/clips/{clip}/connect"));
-    window.set_follow_up(true);
-    window.set_follow_up_value(slint::SharedString("0"));
-    window.set_follow_up_ms(50);
+
+    // THEN SEND: two entries, because one would say nothing about it being a list. The first
+    // is §5.6's release — the shape that used to be a tick box — and the second is the thing
+    // the tick box could not say at all.
+    auto followKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* label :
+         {"release", "MIDI note", "MIDI note off", "MIDI CC", "MIDI program", "MIDI pitch bend"}) {
+        followKinds->push_back(slint::SharedString(label));
+    }
+    window.set_follow_kinds(followKinds);
+    const auto owed = [](int kind, const char* numberLabel, int number, const char* value, int unit,
+                         const char* delay, const char* summary) {
+        FollowRow row{};
+        row.kind_index = kind;
+        row.takes_number = *numberLabel != '\0';
+        row.number_label = slint::SharedString(numberLabel);
+        row.number = number;
+        row.takes_value = true;
+        row.value = slint::SharedString(value);
+        row.unit = unit;
+        row.delay = slint::SharedString(delay);
+        row.summary = slint::SharedString(summary);
+        return row;
+    };
+    auto follows = std::make_shared<slint::VectorModel<FollowRow>>();
+    follows->push_back(owed(0, "", 0, "0", 1, "1", "the same address"));
+    follows->push_back(owed(3, "cc", 21, "64", 2, "2", ""));
+    window.set_follow_ups(follows);
 
     // The two chips of that address, and the value. The middle one is the sequence the whole
     // of `trigger::Pool` exists for: four clips the operator picked, shuffled.
@@ -502,8 +528,8 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // lighting desk, each of which a rule can be aimed at by name, and one switched off
         // — the state a single field could only spell as "off " in front of an address.
         auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
-        const auto target = [](const char* name, const char* host, const char* port,
-                               bool enabled, float delayMs = 0.0f) {
+        const auto target = [](const char* name, const char* host, const char* port, bool enabled,
+                               float delayMs = 0.0f) {
             OutputRow row{};
             row.name = slint::SharedString(name);
             row.kind_index = 0;

@@ -170,7 +170,12 @@ public:
     void setBeatObserver(BeatObserver observer);
 
     /// Enables the transports and starts the thread. `start()` on a running runner does
-    /// nothing. The seconds-since-start clock the transports are given begins here.
+    /// nothing.
+    ///
+    /// **The clock does not restart.** `elapsed()` runs from construction and only ever goes
+    /// forwards, across as many stops and starts as an operator makes — see the note in the
+    /// definition, which is a bug report. Throws what `Transports` throws, having put back
+    /// anything it raised.
     void start();
 
     /// Stops the thread, drains whatever was still on the ring on the calling thread —
@@ -188,13 +193,49 @@ public:
     /// target can go away mid-set — but it must not be silent either.
     std::uint64_t errors() const noexcept { return errors_.load(std::memory_order_relaxed); }
 
-    /// Seconds since `start()`, on the steady clock the transports are driven from.
+    /// Seconds since this runner was **constructed**, on the steady clock the transports are
+    /// driven from — and the clock `trigger::Context::now` is, so §5.8's cooldowns and
+    /// follow-up delays are measured on it.
+    ///
+    /// Monotonic for the runner's whole life, stops and starts included. Anything comparing a
+    /// remembered instant against "now" has to use this one and no other: a second clock with
+    /// a different origin is what made §5.9's "12s ago" read minutes wrong. Safe from any
+    /// thread, because nothing writes the origin after construction.
     double elapsed() const noexcept;
 
-    /// The transports, for reading. Their counters are atomic and Link's own state is
-    /// safe to query, so a UI may call this while the thread is sending; the members that
-    /// change what is sent are not reachable through it, and that is deliberate.
+    /// The transports, for reading their **counters** and Link's own state, which are atomic
+    /// and thread-safe respectively.
+    ///
+    /// **Not for anything else while the thread is running.** The mutating members are not
+    /// reachable through a const reference, which is deliberate — but the *readable* ones are
+    /// not safe either: `outputs()` hands back a reference to a vector of strings that the
+    /// output thread replaces whole on an `Outputs` command, and `midiClockPort()` an optional
+    /// string it reassigns. A 30 Hz reader copying that vector while a delay-slider drag posts
+    /// sixty replacements through it is a data race with a freed buffer in the middle of it,
+    /// not merely a number read half-written. Use `snapshot()`, which is taken under a lock.
     const Transports& transports() const noexcept { return transports_; }
+
+    /// What the transports are set to, copied under a lock — everything a UI reads at redraw
+    /// rate that `transports()` cannot safely hand it.
+    ///
+    /// Taken again by the output thread after every command it applies, so it is at worst one
+    /// round — a millisecond — behind what is really being sent.
+    struct Snapshot {
+        /// §5.6's targets, in the order a rule's routing mask indexes them.
+        std::vector<OutputTarget> outputs;
+        bool link = false;
+        /// The port MIDI clock is going down, and whether it is actually open. The two differ
+        /// exactly when a device has been named that this machine has not got, which is the
+        /// one failure an operator has to be told about.
+        std::optional<std::string> midiClockPort;
+        bool midiClockOpen = false;
+        /// §5.6's namespace prefix. Fixed at construction and never reassigned, so reading it
+        /// off the transports would in fact be safe — it is here so that the rule can be the
+        /// simple one: a thread that is not the output thread reads the snapshot and nothing
+        /// else. `WindowController::currentSettings` is the caller that has to save it.
+        std::string oscPrefix;
+    };
+    Snapshot snapshot() const;
 
     /// Link's clock, for `engine::BeatEngine::setHostTimeSource`.
     ///
@@ -281,13 +322,26 @@ public:
 
 private:
     void run() noexcept;
-    /// One round: every beat waiting, then the clock. On the output thread, or on the
-    /// caller's in `stop()` once the thread has been joined — never on both at once.
+    /// One round: every beat waiting, then the clock. **The caller must hold `ownerMutex_`.**
     void drainOnce(double now);
-    /// Everything posted since the last round, in order. On whichever thread owns the
-    /// transports at the time.
+    /// Everything posted since the last round, in order, under `ownerMutex_` — so this is
+    /// the way in for a thread that is not the output thread, and the output thread's own
+    /// way in as well.
     void applyCommands() noexcept;
     void apply(const OutputCommand& command);
+    /// Copies what the transports are set to into `snapshot_`. Called by whichever thread
+    /// owns them, at the end of every `apply`, so a reader never has to touch the live ones.
+    void takeSnapshot();
+    /// Replaces §5.6's targets and resolves every rule's routing against the new list.
+    ///
+    /// **The routing is resolved even when the replacement failed**, and that is the whole
+    /// reason this is a function rather than two lines in `apply`. `Transports::setOutputs`
+    /// swaps its list in and *then* raises whatever would not open, so the bit a rule's name
+    /// resolves to has moved either way — and a rule left holding the old bit fires at
+    /// whichever target now occupies it. One unplugged MIDI device was enough to send a
+    /// rule's clips to the lighting desk. Rethrows what `Transports` raised, so the failure
+    /// still reaches `lastError`.
+    void setTargets(const std::vector<OutputTarget>& targets);
     /// Turns every rule's output *names* into the bit mask its messages carry. Run after the
     /// rules change and after the targets do, because either moves the answer.
     void resolveRouting() noexcept;
@@ -307,12 +361,30 @@ private:
     std::uint64_t onsetsSeen_ = 0;
     BeatObserver observer_;
 
+    /// **Who may touch the transports and the rules right now.** Held for a whole round by
+    /// the output thread, and by whichever thread applies a command while that thread is not
+    /// running.
+    ///
+    /// It exists because `post` applies on the *caller's* thread while the runner is
+    /// stopped — which is what lets an app be configured before it is started — and there is
+    /// more than one caller. §5.7's `panic` and `rule/<id>/enable` are documented safe from
+    /// RtMidi's callback and from the OSC receiver's loop, and the window opens both of
+    /// those ports before Start on purpose, so an inbound message and a keystroke in the rule
+    /// editor really can be inside `apply` at the same time. Both mutate the same vector of
+    /// rules. Nothing else here can be reached that way: `snapshot`, `lastError`, `takeFired`
+    /// and `panicked` have their own locks or are atomic, so a UI at redraw rate never waits
+    /// behind a round.
+    mutable std::mutex ownerMutex_;
     mutable std::mutex commandMutex_;
     std::vector<OutputCommand> pending_;
     /// Drained into, and reused, so applying commands allocates nothing after the first.
     std::vector<OutputCommand> applying_;
     mutable std::mutex errorMutex_;
     std::string lastError_;
+    /// See `snapshot()`. Its own lock rather than `errorMutex_`'s, so a UI reading it at 30 Hz
+    /// never waits behind a command reporting what went wrong.
+    mutable std::mutex snapshotMutex_;
+    Snapshot snapshot_;
     /// §5.9's fired messages, written by the output thread and drained by a UI. A mutex
     /// rather than a ring because the entries hold strings and both sides are far from the
     /// audio thread — the output thread already takes two of these every round.
@@ -324,7 +396,10 @@ private:
     std::atomic<bool> panicked_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
-    std::chrono::steady_clock::time_point started_{};
+    /// Where `elapsed()` counts from. Const, so the monotonicity `start()` depends on is
+    /// structural rather than a thing to remember — and so no thread can read it while
+    /// another writes.
+    const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
     /// Whether this runner is the one holding the platform's timer resolution up.
     bool raisedTimer_ = false;
 };

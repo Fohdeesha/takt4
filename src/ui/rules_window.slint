@@ -73,6 +73,39 @@ export struct SlotRow {
   last: string,
 }
 
+/// One of the messages a rule sends *after* the one it fired — `trigger::FollowUp`.
+///
+/// **This replaced a tick box called "then send" and a number.** That box could say one
+/// thing: send this value again, that many milliseconds later. A rig asked for what it
+/// cannot say — a note on to start a laser clip and a real note off to stop it, from the one
+/// trigger — so each entry now says *what* it sends as well as when.
+export struct FollowRow {
+  /// 0 is "release"; 1 and up index the kinds the rule's own send kind allows, which is what
+  /// `RulesWindow::follow-kinds` holds. See `RulesController::followKinds_`.
+  kind-index: int,
+  /// Whether this entry puts a note or controller number of its own on the wire. False for a
+  /// release, which inherits the number that fired — the whole point of one, since a rule
+  /// that shuffles its note has to let go of the note it drew.
+  takes-number: bool,
+  /// What that number *is* on this kind — "note", "cc", "program". The generator rows say it
+  /// the same way and for the same reason: "note 96" and "program 96" are different
+  /// instructions, and the label is the only thing that says which is about to go out.
+  number-label: string,
+  number: int,
+  /// False for a program change, which is two bytes and has nowhere to put a value.
+  takes-value: bool,
+  value: string,
+  /// 0 ms, 1 beats, 2 bars — `trigger::DelayUnit`, shared with the SEND section's own list.
+  unit: int,
+  /// The delay in whichever unit `unit` names. One box rather than two, because the row is
+  /// rebuilt when the unit changes and comes back holding the other number — the controller
+  /// keeps both, so switching units does not rewrite what was typed.
+  delay: string,
+  /// What this entry will really send, in words: "note off, same note". A release is the
+  /// default and is the one thing a row cannot show by listing its own fields.
+  summary: string,
+}
+
 /// One line of the "send to" list: an output this rule may be routed to, and whether it is.
 ///
 /// §5.6's *"rule subset"* was a field of comma-separated names, which asks an operator to
@@ -176,16 +209,19 @@ export component RulesWindow inherits Window {
   in-out property <bool> allow-calm: true;
   in-out property <bool> allow-normal: true;
   in-out property <bool> allow-intense: true;
-  in-out property <float> min-bpm;
-  in-out property <float> max-bpm: 1000;
   in-out property <float> probability: 1;
-  in-out property <float> cooldown-ms;
+  /// The two boxes here hold **text the controller writes**, not numbers the markup formats.
+  /// Both are two-way bound, which is what stops them going deaf after the first keystroke —
+  /// see `bpm-field`. So the controller spells them (`RulesController::publishSelected`) and
+  /// parses them back, and the markup never does arithmetic on either.
+  in-out property <string> bpm-range;
+  in-out property <string> cooldown-ms;
 
   callback min-confidence-changed(float);
   callback intensity-changed(int, bool);
   callback bpm-range-edited(string);
   callback probability-changed(float);
-  callback cooldown-changed(float);
+  callback cooldown-changed(string);
 
   // --- SEND ------------------------------------------------------------------------
   in-out property <[string]> send-kinds;
@@ -202,20 +238,18 @@ export component RulesWindow inherits Window {
   /// preset the address no longer matches.
   in-out property <int> host-preset-index;
   in-out property <bool> send-value: true;
-  /// §5.8's "optional follow-up value after a delay" — §5.6's press-then-release, without
-  /// which a Resolume clip stays latched on.
-  in-out property <bool> follow-up;
-  in-out property <string> follow-up-value;
-  in-out property <float> follow-up-ms;
-  /// The same delay counted in beats, and which of the two the rule is using: 0 is
-  /// milliseconds, 1 beats, 2 bars — `Rule::Config::followUpUnit`.
-  ///
-  /// Two numbers rather than one converted on the way in and out, because they are different
-  /// magnitudes of the same idea — 50 ms and 2 beats — and a box that turned "50" into
-  /// "0.077" the moment the unit changed would be a box nobody could type in.
-  in-out property <float> follow-up-beats: 1;
-  in-out property <int> follow-up-unit;
+
+  /// §5.8's "optional follow-up value after a delay" — §5.6's press-then-release, and
+  /// everything past it. See `FollowRow`.
+  in-out property <[FollowRow]> follow-ups;
+  /// What a follow-up may be, for this rule: "release" first, then whichever kinds sit on the
+  /// same side of the OSC/MIDI divide as the rule's own. Rebuilt when the send kind changes,
+  /// so the list can never offer one that would be silently dropped.
+  in-out property <[string]> follow-kinds;
+  /// ms · beats · bars, shared by every row — `trigger::DelayUnit`.
   in-out property <[string]> follow-up-units;
+  /// Whether another entry may be added, so the button says so rather than doing nothing.
+  in-out property <bool> can-add-follow-up: true;
 
   in-out property <[string]> generator-kinds;
   in-out property <[string]> live-sources;
@@ -243,11 +277,14 @@ export component RulesWindow inherits Window {
   callback channel-changed(int);
   callback host-preset-picked(int);
   callback send-value-changed(bool);
-  callback follow-up-changed(bool);
-  callback follow-up-value-edited(string);
-  callback follow-up-delay-changed(float);
-  callback follow-up-beats-changed(float);
-  callback follow-up-unit-picked(int);
+
+  callback follow-up-added();
+  callback follow-up-removed(int);
+  callback follow-kind-picked(int, int);
+  callback follow-number-changed(int, int);
+  callback follow-value-edited(int, string);
+  callback follow-delay-edited(int, string);
+  callback follow-unit-picked(int, int);
 
   callback slot-kind-picked(int, int);
   callback slot-pool-changed(int, bool);
@@ -629,6 +666,13 @@ export component RulesWindow inherits Window {
             edited(text) => {
               root.rule-renamed(text);
             }
+            // The name is already committed on every keystroke, so this is only the release —
+            // and the release is the whole point. Reported from a rig: *"when I click a box to
+            // edit it, once I'm done and hit enter, nothing happens, it stays in edit mode"*.
+            // Every other box in this window had it; this one did not.
+            accepted(text) => {
+              self.clear-focus();
+            }
           }
 
           Press {
@@ -866,14 +910,35 @@ export component RulesWindow inherits Window {
               vertical-alignment: center;
             }
 
+            // **Two-way, and that is the whole of a bug.** This was
+            // `text: root.min-bpm + " - " + root.max-bpm`, a one-way binding — and Slint drops
+            // a binding the moment the property is assigned, which typing into a LineEdit
+            // does. So after one edit this box stopped following the model *for ever*: it went
+            // on showing the first rule's range over every rule selected after it, which is
+            // exactly what was reported as "when I edit the value range on trigger 1, it
+            // changes all the triggers". A `<=>` binding survives, because the widget writes
+            // back into the property instead of over the binding.
+            //
+            // The consequence is that the controller owns the text rather than the numbers:
+            // see `RulesController::publishSelected`, which spells it.
             bpm-field := LineEdit {
-              text: root.min-bpm + " - " + root.max-bpm;
+              text <=> root.bpm-range;
               placeholder-text: "any";
               enabled: root.selected >= 0;
               font-size: 12px;
               width: 116px;
               accepted(text) => {
+                self.clear-focus();
                 root.bpm-range-edited(text);
+              }
+              // And when the operator clicks away instead of pressing
+              // Enter, which is finishing rather than cancelling. Without
+              // this, what they typed sat in the box until the next
+              // publish wrote over it, and the edit was silently lost.
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.bpm-range-edited(self.text);
+                }
               }
             }
 
@@ -886,13 +951,25 @@ export component RulesWindow inherits Window {
               vertical-alignment: center;
             }
 
+            // Two-way, for the reason the BPM field above gives at length.
             cooldown-field := LineEdit {
-              text: root.cooldown-ms;
+              text <=> root.cooldown-ms;
+              placeholder-text: "0";
               enabled: root.selected >= 0;
               font-size: 12px;
               width: 76px;
               accepted(text) => {
-                root.cooldown-changed(text.to-float());
+                self.clear-focus();
+                root.cooldown-changed(text);
+              }
+              // And when the operator clicks away instead of pressing
+              // Enter, which is finishing rather than cancelling. Without
+              // this, what they typed sat in the box until the next
+              // publish wrote over it, and the edit was silently lost.
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.cooldown-changed(self.text);
+                }
               }
             }
 
@@ -1157,7 +1234,17 @@ export component RulesWindow inherits Window {
             enabled: root.selected >= 0;
             font-size: 13px;
             accepted(text) => {
+              self.clear-focus();
               root.address-edited(text);
+            }
+            // And when the operator clicks away instead of pressing
+            // Enter, which is finishing rather than cancelling. Without
+            // this, what they typed sat in the box until the next
+            // publish wrote over it, and the edit was silently lost.
+            changed has-focus => {
+              if (!self.has-focus) {
+                root.address-edited(self.text);
+              }
             }
           }
 
@@ -1217,7 +1304,17 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 horizontal-stretch: 1;
                 accepted(text) => {
+                  self.clear-focus();
                   root.slot-range-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.slot-range-edited(index, self.text);
+                  }
                 }
               }
 
@@ -1227,7 +1324,17 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 horizontal-stretch: 1;
                 accepted(text) => {
+                  self.clear-focus();
                   root.slot-values-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.slot-values-edited(index, self.text);
+                  }
                 }
               }
 
@@ -1237,7 +1344,17 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 horizontal-stretch: 1;
                 accepted(text) => {
+                  self.clear-focus();
                   root.slot-fixed-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.slot-fixed-edited(index, self.text);
+                  }
                 }
               }
 
@@ -1268,7 +1385,17 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 horizontal-stretch: 1;
                 accepted(text) => {
+                  self.clear-focus();
                   root.slot-range-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.slot-range-edited(index, self.text);
+                  }
                 }
               }
 
@@ -1358,75 +1485,204 @@ export component RulesWindow inherits Window {
               }
             }
 
-            CheckBox {
-              // §7.4: Resolume's connect takes 1 for press and 0 for release, and a rule
-              // that sends only the 1 leaves the clip held. This is that release.
-              text: "then send";
-              checked <=> root.follow-up;
-              enabled: root.selected >= 0;
-              toggled => {
-                root.follow-up-changed(self.checked);
-              }
-            }
+            Rectangle { horizontal-stretch: 1; }
+          }
 
-            LineEdit {
-              text <=> root.follow-up-value;
-              enabled: root.selected >= 0 && root.follow-up;
-              font-size: 12px;
-              width: 76px;
-              accepted(text) => {
-                root.follow-up-value-edited(text);
-              }
-            }
+          Rectangle { height: 1px; background: Theme.line; }
+
+          // --- THEN SEND -------------------------------------------------------
+          //
+          // **A list, where there was a tick box.** §7.4: Resolume's connect takes 1 for
+          // press and 0 for release, and a rule that sends only the 1 leaves the clip held —
+          // so the editor had "then send [0] after [50] [ms]". That says the one thing, and a
+          // rig needed the other: *"I need a note on trigger to trigger Liberation laser
+          // clips. when the beat is done, I need the option to send a note off. in the same
+          // trigger"*, and then, exactly right, *"we should just replace the 'then send'
+          // machinery with a more fleshed out second send box, so each trigger can send
+          // multiple things, spaced by time or beats/bars"*. This is that.
+          //
+          // Every delay is counted from the fire, never from the row above — see
+          // `trigger::FollowUp`, which says why.
+          HorizontalLayout {
+            spacing: 10px;
 
             Text {
-              text: "after";
+              text: "THEN SEND";
               color: Theme.dim;
               font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
               vertical-alignment: center;
             }
 
-            // **Milliseconds or beats, and the difference is musical.** A device's own lag
-            // is a fixed number of milliseconds — a media server takes as long to key a clip
-            // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go two
-            // beats later" is the same gesture at either tempo, and spelling it in
-            // milliseconds means retyping it whenever the record changes. Asked for from a
-            // rig; §5.8 only ever had the milliseconds.
-            //
-            // Two boxes rather than one, chosen by the unit, so that switching units does not
-            // rewrite the number under the operator — see `follow-up-beats`. `if` and not
-            // `visible`, so the one that is not in use takes no width.
-            if root.follow-up-unit == 0 : LineEdit {
-              text: root.follow-up-ms;
-              enabled: root.selected >= 0 && root.follow-up;
-              font-size: 12px;
-              width: 76px;
-              accepted(text) => {
-                root.follow-up-delay-changed(text.to-float());
-              }
+            Text {
+              text: root.follow-ups.length == 0
+                ? "nothing — this trigger sends once and is done"
+                : "";
+              color: Theme.dim;
+              font-size: 11px;
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
             }
 
-            if root.follow-up-unit != 0 : LineEdit {
-              text: root.follow-up-beats;
-              enabled: root.selected >= 0 && root.follow-up;
-              font-size: 12px;
-              width: 76px;
-              accepted(text) => {
-                root.follow-up-beats-changed(text.to-float());
+            Press {
+              text: "+ ADD";
+              pad: 8px;
+              font: 12px;
+              min-width: 62px;
+              min-height: 26px;
+              enabled: root.selected >= 0 && root.can-add-follow-up;
+              clicked => {
+                root.follow-up-added();
               }
             }
+          }
 
-            ComboBox {
-              model: root.follow-up-units;
-              current-index <=> root.follow-up-unit;
-              enabled: root.selected >= 0 && root.follow-up;
-              width: 96px;
-              selected => {
-                root.follow-up-unit-picked(self.current-index);
+          for owed[index] in root.follow-ups : Rectangle {
+            background: Theme.panel;
+            border-radius: 5px;
+            vertical-stretch: 0;
+            height: 48px;
+
+            HorizontalLayout {
+              padding: 8px;
+              spacing: 6px;
+
+              ComboBox {
+                // "release" first, then whatever fits this rule. An OSC rule gets the one
+                // entry, because a MIDI follow-up to an OSC rule has no channel to inherit —
+                // `trigger::followUpFits`. Offering one that would be dropped is worse than
+                // not offering it.
+                model: root.follow-kinds;
+                current-index: owed.kind-index;
+                width: 132px;
+                selected => {
+                  root.follow-kind-picked(index, self.current-index);
+                }
+              }
+
+              // `if`, not `visible`, for the reason the generator rows give at length: a
+              // hidden element still takes its width in a layout, and these are alternatives.
+              if owed.takes-number : Text {
+                text: owed.number-label;
+                color: Theme.accent;
+                font-size: 12px;
+                font-family: "Consolas";
+                vertical-alignment: center;
+              }
+
+              if owed.takes-number : SpinBox {
+                value: owed.number;
+                minimum: 0;
+                maximum: 127;
+                width: 84px;
+                edited(v) => {
+                  root.follow-number-changed(index, v);
+                }
+              }
+
+              if owed.takes-value : LineEdit {
+                text: owed.value;
+                placeholder-text: "0";
+                font-size: 12px;
+                width: 72px;
+                accepted(text) => {
+                  // Focus first, callback second. The callback rebuilds these rows — that is
+                  // how a box comes back showing a value the controller normalised — and a
+                  // handler that touched `self` afterwards would be touching an element on
+                  // its way out.
+                  self.clear-focus();
+                  root.follow-value-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.follow-value-edited(index, self.text);
+                  }
+                }
+              }
+
+              Text {
+                text: "after";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              // **Milliseconds or beats, and the difference is musical.** A device's own lag
+              // is a fixed number of milliseconds — a media server takes as long to key a clip
+              // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go
+              // two beats later" is the same gesture at either tempo, and spelling it in
+              // milliseconds means retyping it whenever the record changes.
+              LineEdit {
+                text: owed.delay;
+                font-size: 12px;
+                width: 68px;
+                accepted(text) => {
+                  self.clear-focus();
+                  root.follow-delay-edited(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.follow-delay-edited(index, self.text);
+                  }
+                }
+              }
+
+              ComboBox {
+                model: root.follow-up-units;
+                current-index: owed.unit;
+                width: 88px;
+                selected => {
+                  root.follow-unit-picked(index, self.current-index);
+                }
+              }
+
+              Text {
+                // What a release actually resolves to, which is the one thing the row cannot
+                // show by listing its own fields — and the answer to "you made note on and
+                // note off exclusive", which is what the old tick box looked like.
+                text: owed.summary;
+                color: Theme.dim;
+                font-size: 11px;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+              }
+
+              // U+00D7, which is Latin-1 and in every font — see the rule list's own mark.
+              kill-owed := Rectangle {
+                width: 28px;
+                border-radius: 4px;
+                background: owed-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
+
+                Text {
+                  x: 0;
+                  y: 0;
+                  width: parent.width;
+                  height: parent.height;
+                  text: "×";
+                  color: owed-touch.has-hover ? Theme.label : Theme.dim;
+                  font-size: 20px;
+                  horizontal-alignment: center;
+                  vertical-alignment: center;
+                }
+
+                owed-touch := TouchArea {
+                  clicked => {
+                    root.follow-up-removed(index);
+                  }
+                }
               }
             }
-
-            Rectangle { horizontal-stretch: 1; }
           }
         }
       }

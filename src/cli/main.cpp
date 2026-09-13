@@ -1182,14 +1182,29 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     if (args.holdBpm > 0.0) {
         (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
     }
+
+    // **The declaration order from here down is the destruction order reversed, and all of
+    // it is load-bearing.** Everything below runs to completion in the ordinary path, which
+    // is why this went unnoticed; what it is for is the path where something throws between
+    // here and the stop sequence at the end, and the scope unwinds instead.
+    //
+    // The beats the output thread hands over, first, so they outlive the runner: its
+    // observer holds a reference to both and its destructor joins the thread.
+    std::mutex publishedMutex;
+    std::vector<takt4::engine::EngineBeat> published;
+    // Then the runner, which owns the transports (§4.2): one thread touches them, and that
+    // is structural rather than a comment now.
+    takt4::output::OutputRunner runner(*engine, transportConfig(args));
+    const takt4::output::Transports& transports = runner.transports();
+    // Then the stream, so it is torn down *first*. The audio thread stamps every hop through
+    // Link's regression (§4.3), and Link belongs to the runner — so a runner destroyed while
+    // the stream is still open would leave the audio callback reading a session that has
+    // gone. `LiveTracker` and `Transports` both go to some length to make that impossible;
+    // this is the console's copy of the same ordering.
     takt4::audio::InputStreamOptions options;
     options.sampleRate = args.beats.stream.rate;
     options.forceSoftwareSlice = args.beats.stream.software;
     takt4::audio::InputStream stream(session, device, selection, *engine, options);
-    // The runner owns the transports (§4.2): one thread touches them, and that is
-    // structural rather than a comment now.
-    takt4::output::OutputRunner runner(*engine, transportConfig(args));
-    const takt4::output::Transports& transports = runner.transports();
     FrameTracer tracer;
     if (args.traceOut) {
         tracer.writeTo(*args.traceOut);
@@ -1337,14 +1352,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // The output thread hands its beats over rather than printing them: stdout already has
     // a writer in this loop, and `operator<<` chains from two threads interleave inside a
     // line. It also keeps the beats file off the output thread, where writing it would
-    // land as jitter on the clock it is trying to keep.
+    // land as jitter on the clock it is trying to keep. `publishedMutex` and `published` are
+    // declared above the runner for that reason; see the note there.
     //
-    // Declared *before* the runner so they outlive it: the runner's observer holds
-    // references to both, and a destructor joins its thread. Reversing these two would
-    // leave the thread running against a destroyed queue if the scope unwound.
-    std::mutex publishedMutex;
-    std::vector<takt4::engine::EngineBeat> published;
-
     // §4.2's output thread. It is the single consumer of the engine's beat ring, so this
     // loop must not drain it: it polls keys, prints, and drains the *frame* ring, which
     // nothing else wants. The tracking waits on neither — the inference thread runs at the

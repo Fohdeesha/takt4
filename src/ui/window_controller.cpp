@@ -9,6 +9,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
 #include "core/output/midi_ports.hpp"
+#include "ui/file_dialog.hpp"
 #include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
 
@@ -320,6 +321,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
     // times a second while the tracker does and would otherwise replace a row mid-word.
+    // Safe to read the live list here and nowhere else: the runner has not been started, so
+    // there is no other thread to race. Everywhere after this uses `OutputRunner::snapshot`.
     for (const output::OutputTarget& target : runner_.transports().outputs()) {
         targetDrafts_.push_back(rowOf(target, midiPorts_));
     }
@@ -362,6 +365,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_output_device_picked(
         [this](int index, int device) { setTargetDevice(index, device); });
     window_->on_output_added([this] { addTarget(); });
+    window_->on_save_now([this] { saveNow(); });
+    window_->on_export_settings([this] {
+        // The dialog runs its own message loop, so this must be the UI thread — which a
+        // Slint callback is. An empty path is a cancel and `exportTo` does nothing with it.
+        exportTo(askSaveFile("Export takt4 settings", "takt4-settings.json"));
+    });
+    window_->on_import_settings([this] { importFrom(askOpenFile("Import takt4 settings", "")); });
     window_->on_output_removed([this](int index) { removeTarget(index); });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
@@ -403,8 +413,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // The same devices again, under the label a *target* row wants: leaving the clock unset
     // is a setting, leaving a target's device unset is an unfinished row.
     auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    devices->push_back(shared(midiPorts_.empty() ? "no MIDI outputs on this machine"
-                                                 : "select a MIDI device"));
+    devices->push_back(
+        shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
     for (const std::string& port : midiPorts_) {
         devices->push_back(shared(port));
     }
@@ -417,8 +427,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->set_output_kinds(kinds);
 
     auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    inputs->push_back(shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine"
-                                                     : "select input"));
+    inputs->push_back(
+        shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "select input"));
     for (const std::string& port : midiInputPorts_) {
         inputs->push_back(shared(port));
     }
@@ -478,12 +488,22 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     publishOutputs();
     publishControl();
 
+    // **Closing this window closes takt4.** Slint's event loop runs until the *last* window
+    // is hidden, and §5.9's editor is a window of its own — so closing the main window with
+    // the editor up left the process alive with nothing but the editor on screen, and the
+    // settings unwritten, since `ui::run` only saves once the loop has returned. An operator
+    // who has just closed the app and been told nothing was kept has met the one failure the
+    // SAVE button was added for.
+    window_->window().on_close_requested([this] {
+        editor_.hide();
+        return slint::CloseRequestResponse::HideWindow;
+    });
+
     // Before the first `show()`, which is what makes it stick — see `kMainWindowWidth`. The
     // markup's `preferred-width` does not size a Slint window; its content does, and with a
     // couple of output rows the content wanted more height than the window had, so the status
     // bar — which is where the version lives — was cut off the bottom.
-    window_->window().set_size(
-        slint::LogicalSize({kMainWindowWidth, kMainWindowHeight}));
+    window_->window().set_size(slint::LogicalSize({kMainWindowWidth, kMainWindowHeight}));
 
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
@@ -608,7 +628,20 @@ void WindowController::toggleRun() {
     publishTrace();
     peak_ = 0.0f;
     // After the tracker, so nothing is sent for a run that failed to open.
-    runner_.start();
+    //
+    // Caught, because `Transports::startOutputs` opens a MIDI port — a device that was on the
+    // machine when it was chosen and has since been unplugged throws here. This is a Slint
+    // callback, and an exception leaving one takes the process with it: the app would vanish
+    // on Start rather than say which cable had gone. The tracker is wound back so the button
+    // does not read as running against a rig that is not.
+    try {
+        runner_.start();
+    } catch (const std::exception& e) {
+        tracker_.stop();
+        setStatus(std::string("Cannot start the outputs: ") + e.what(), true);
+        publishStopped();
+        return;
+    }
     window_->set_running(true);
     publishOpenStream();
 }
@@ -740,8 +773,9 @@ void WindowController::setTargetDelay(int index, float ms) {
     if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
         return;
     }
-    const float clamped = std::clamp(ms, static_cast<float>(output::kMinOutputDelaySeconds * 1000.0),
-                                     static_cast<float>(output::kMaxOutputDelaySeconds * 1000.0));
+    const float clamped =
+        std::clamp(ms, static_cast<float>(output::kMinOutputDelaySeconds * 1000.0),
+                   static_cast<float>(output::kMaxOutputDelaySeconds * 1000.0));
     OutputRow& draft = targetDrafts_[static_cast<std::size_t>(index)];
     if (draft.delay_ms == clamped) {
         return; // the slider resending where it already is; see the fold sliders
@@ -845,7 +879,11 @@ void WindowController::applyTargets() {
 
     targetDrafts_ = std::move(rows);
     runner_.post(output::OutputCommand::outputs(targets));
+    // Only meaningful while the tracker is stopped, where `post` applies on this thread. While
+    // it runs the answer has not arrived yet, and `tick` is what notices it — see
+    // `outputErrorShown_`.
     const std::string error = runner_.lastError();
+    outputErrorShown_ = error;
     if (!bad.empty()) {
         setStatus("outputs: \"" + bad + "\" is not a target, so it was left out.", true);
     } else if (!duplicate.empty()) {
@@ -867,6 +905,22 @@ void WindowController::publishTargetRows() {
     // In place. `applyTargets` calls this, and `setTargetDelay` calls `applyTargets` on every
     // step of a drag — so replacing the model here destroyed and rebuilt the very slider the
     // pointer was holding, and the drag ended on the first pixel of movement. See `writeRows`.
+    //
+    // But updating in place also keeps a *dead* `text:` binding, and these rows are three text
+    // boxes each. Delete the first of three outputs and every row below moves up one: the
+    // rows are rewritten, and any box that had been typed into goes on showing the name that
+    // belonged to the target above it. The same failure the rule editor's chips had, on the
+    // same mechanism — Slint drops a binding the moment the property is assigned.
+    //
+    // So a row whose *text* moved is rebuilt, and a row where only the slider or the tick
+    // moved is not. That keeps the drag alive, which is what this comment started as.
+    if (rowsNeedRebuild(
+            *targetModel_, targetDrafts_, [](const OutputRow& was, const OutputRow& now) {
+                return was.name != now.name || was.host != now.host || was.port != now.port ||
+                       was.kind_index != now.kind_index || was.device_index != now.device_index;
+            })) {
+        targetRowsDirty_ = true;
+    }
     writeRows(*targetModel_, targetDrafts_);
 }
 
@@ -874,6 +928,7 @@ void WindowController::setMidiPort(const std::string& name) {
     runner_.post(output::OutputCommand::midiClockPort(
         name.empty() ? std::optional<std::string>{} : std::optional<std::string>{name}));
     const std::string error = runner_.lastError();
+    outputErrorShown_ = error;
     if (!error.empty()) {
         setStatus("MIDI clock: " + error, true);
     }
@@ -1302,8 +1357,13 @@ settings::Settings WindowController::currentSettings() const {
         out.machine.hostApiName = device.hostApiName;
         out.machine.channel = channel_;
     }
-    const output::Transports& transports = runner_.transports();
-    out.machine.midiClockPort = transports.midiClockPort().value_or(std::string{});
+    // **The snapshot, not the live transports.** SAVE and EXPORT are pressed while a set is
+    // running, and `OutputRunner::transports()` hands back references the output thread
+    // replaces whole — a vector of targets, an optional port. Copying one while that thread
+    // reassigns it is a freed buffer, not a stale reading. `publishOutputs` already reads
+    // this way; this was the one place left that did not.
+    const output::OutputRunner::Snapshot live = runner_.snapshot();
+    out.machine.midiClockPort = live.midiClockPort.value_or(std::string{});
 
     // §5.7's control surface, which is machine-local for the same reason and more so: what
     // was learned describes the box of buttons on this desk.
@@ -1326,33 +1386,115 @@ settings::Settings WindowController::currentSettings() const {
     out.preset.tempo = tracker_.engine().tempoOptions();
     out.preset.decoder = tracker_.engine().decoderKind();
     out.preset.meters = meters_;
-    out.preset.link = transports.linkEnabled();
-    out.preset.outputs = transports.outputs();
-    out.preset.oscPrefix = transports.oscPrefix();
+    out.preset.link = live.link;
+    out.preset.outputs = live.outputs;
+    out.preset.oscPrefix = live.oscPrefix;
     // This window's copy, not the runner's: the runner's belong to the output thread and
     // reading them while it runs is what `rules()` explains is unsafe.
     out.preset.rules = rules_;
     return out;
 }
 
+bool WindowController::saveNow() {
+    const std::filesystem::path path = settings::settingsFile();
+    if (path.empty()) {
+        setStatus("There is nowhere to save settings on this machine.", true);
+        return false;
+    }
+    if (!settings::save(currentSettings(), path)) {
+        setStatus("Could not write " + path.string(), true);
+        return false;
+    }
+    setStatus("Saved to " + path.string(), false);
+    return true;
+}
+
+bool WindowController::exportTo(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return false; // cancelled
+    }
+    if (!settings::save(currentSettings(), path)) {
+        setStatus("Could not write " + path.string(), true);
+        return false;
+    }
+    setStatus("Exported to " + path.string(), false);
+    return true;
+}
+
+bool WindowController::importFrom(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return false; // cancelled
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        setStatus("No such file: " + path.string(), true);
+        return false;
+    }
+    // `settings::load` is documented never to fail: anything it cannot read gives defaults.
+    // That is right for startup and wrong here — importing a JPEG would silently wipe the
+    // rules — so the file is checked for being *settings* before any of it is applied.
+    const settings::Settings loaded = settings::load(path);
+    const settings::Settings defaults;
+    if (loaded.preset.rules.empty() && loaded.preset.outputs.empty() &&
+        loaded.preset.oscPrefix == defaults.preset.oscPrefix &&
+        loaded.preset.meters == defaults.preset.meters) {
+        setStatus(path.filename().string() + " has no preset in it, so nothing was changed.", true);
+        return false;
+    }
+
+    // Q7's portable half only. The device, the MIDI clock port and the learned bindings are
+    // this desk's and are deliberately untouched — see the header.
+    setRules(loaded.preset.rules);
+    meters_ = loaded.preset.meters;
+    postOptions(loaded.preset.tempo);
+    runner_.post(output::OutputCommand::linkEnabled(loaded.preset.link));
+    // Not the OSC prefix: `Transports` takes it at construction and there is no command to
+    // change one that is running. It is saved and it is loaded at startup, so a preset that
+    // carries a different prefix needs a restart to take it — which is worth a command of
+    // its own later rather than a half-applied import now.
+
+    // The rows the operator edits, not just the transports: these are the window's copy from
+    // construction onwards (see the constructor), so an import that changed only the
+    // transports would leave the boxes showing the old rig.
+    targetDrafts_.clear();
+    for (const output::OutputTarget& target : loaded.preset.outputs) {
+        targetDrafts_.push_back(rowOf(target, midiPorts_));
+    }
+    publishTargetRows();
+    applyTargets();
+
+    setStatus("Imported " + path.filename().string() + ": " +
+                  std::to_string(loaded.preset.rules.size()) + " rules, " +
+                  std::to_string(loaded.preset.outputs.size()) + " outputs.",
+              false);
+    return true;
+}
+
 void WindowController::publishOutputs() {
-    const output::Transports& transports = runner_.transports();
-    window_->set_link_on(transports.linkEnabled());
-    window_->set_link_peers(static_cast<int>(transports.link().numPeers()));
+    // **A snapshot, not the live transports.** This runs on the redraw timer and the output
+    // thread owns what it is reading: `outputs()` is a vector of strings that thread replaces
+    // whole whenever a target changes, and `applyTargets` posts one of those and then calls
+    // this — so on a running rig the two overlap by design, sixty times through a delay-slider
+    // drag. Copying a vector while another thread reassigns it is a freed buffer, not a stale
+    // number. `OutputRunner::snapshot` is taken under a lock and is at worst a millisecond old.
+    const output::OutputRunner::Snapshot live = runner_.snapshot();
+    window_->set_link_on(live.link);
+    // Link's own, and safe to ask from any thread — as is the beat count, which is atomic.
+    window_->set_link_peers(static_cast<int>(runner_.transports().link().numPeers()));
 
     // The rows themselves are **not** written here. They are what is being typed into, this
     // runs on the redraw timer, and a row replaced under the cursor is a row that cannot be
     // edited while the tracker runs. `applyTargets` owns them; see `targetDrafts_`.
-    window_->set_osc_on(!transports.outputs().empty());
+    window_->set_osc_on(!live.outputs.empty());
     // The editor names these when it routes a rule, so it has to know what there is. Told
-    // here rather than read from the runner, because `Transports` belongs to the output
-    // thread and this is the one place already holding a safe snapshot of it.
-    editor_.setTargets(transports.outputs());
+    // here rather than read from the runner, because this is the one place already holding a
+    // safe copy.
+    editor_.setTargets(live.outputs);
 
     window_->set_midi_port_index(
-        deviceIndexOf(midiPorts_, transports.midiClockPort().value_or(std::string{})));
-    window_->set_midi_on(transports.midiClock() != nullptr);
-    window_->set_beats_sent(static_cast<int>(transports.beats()));
+        deviceIndexOf(midiPorts_, live.midiClockPort.value_or(std::string{})));
+    window_->set_midi_on(live.midiClockOpen);
+    window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
 }
 
 void WindowController::publishStopped() {
@@ -1469,6 +1611,14 @@ void WindowController::pumpWhileDragged(void* self) {
 
 void WindowController::tick() {
     ++ticks_;
+    // First, and outside every widget callback: `publishTargetRows` found a row it could not
+    // honestly update in place, so the repeater is built again here rather than from inside
+    // the × that was pressed on the row being destroyed. One redraw later is 33 ms.
+    if (targetRowsDirty_) {
+        targetRowsDirty_ = false;
+        targetModel_->clear();
+        writeRows(*targetModel_, targetDrafts_);
+    }
     if (!tickProbe_.empty()) {
         writeTickProbe();
     }
@@ -1484,6 +1634,18 @@ void WindowController::tick() {
     // redraw, and binding buttons is something an operator does *before* pressing Start.
     // Unforced, so the port field is left alone unless the port itself has moved.
     publishControl(false);
+    // And what the output thread made of the last change posted to it. **Here rather than at
+    // the post**, because `post` is asynchronous while the tracker runs: the thread applies a
+    // command about a millisecond later, so `lastError()` read straight after posting one
+    // gives what the *previous* command left, which is empty. A MIDI device that is not on
+    // this machine was therefore reported while the tracker was stopped and silently ignored
+    // while it ran — the wrong way round, since a set is when it matters.
+    if (const std::string error = runner_.lastError(); error != outputErrorShown_) {
+        outputErrorShown_ = error;
+        if (!error.empty()) {
+            setStatus("outputs: " + error, true);
+        }
+    }
     // Above the early return with it, and for a related reason: what these two watch is
     // the engine's own state, which moves whether or not a device is open. A test drives
     // the engine directly without one, and holding the button lit forever there would be

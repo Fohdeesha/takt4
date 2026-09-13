@@ -52,8 +52,7 @@ def cli_path():
     """The takt4-cli to measure: TAKT4_CLI, or the local Release build."""
     given = os.environ.get("TAKT4_CLI")
     candidates = [Path(given)] if given else [
-        Path("C:/build/takt4/windows-msvc/bin/Release/takt4-cli.exe"),
-        Path("C:/build/takt4/windows-core/bin/Release/takt4-cli.exe"),
+        ROOT / "build" / "windows-msvc" / "bin" / "Release" / "takt4-cli.exe",
         ROOT / "build" / "windows-core" / "bin" / "Release" / "takt4-cli.exe",
         ROOT / "build" / "linux-core" / "bin" / "takt4-cli",
     ]

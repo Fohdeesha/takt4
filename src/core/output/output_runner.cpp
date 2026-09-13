@@ -51,9 +51,30 @@ std::string describe(const trigger::Message& message) {
         }
         return text;
     }
-    const bool note = message.kind == trigger::Message::Kind::MidiNote;
-    return std::string(note ? "note " : "cc ") + std::to_string(message.number) + " ch " +
-           std::to_string(message.channel) + " = " + std::to_string(message.value);
+    // Every kind by its own name. This said "note" for one of them and "cc" for the other
+    // five, so a Note Off logged as a CC and the one line §5.9 calls "what turns a config
+    // screen into an instrument" was describing a message that had not been sent.
+    const std::string channel = " ch " + std::to_string(message.channel);
+    switch (message.kind) {
+    case trigger::Message::Kind::MidiNote:
+        return "note on " + std::to_string(message.number) + channel + " = " +
+               std::to_string(message.value);
+    case trigger::Message::Kind::MidiNoteOff:
+        return "note off " + std::to_string(message.number) + channel;
+    case trigger::Message::Kind::MidiCc:
+        return "cc " + std::to_string(message.number) + channel + " = " +
+               std::to_string(message.value);
+    case trigger::Message::Kind::MidiProgramChange:
+        // Two bytes, and no value to print: printing one would say a number went out that
+        // did not. See `Message::Kind`.
+        return "program " + std::to_string(message.number) + channel;
+    case trigger::Message::Kind::MidiPitchBend:
+        // 14-bit, centre 8192, and no number at all.
+        return "bend" + channel + " = " + std::to_string(message.value);
+    case trigger::Message::Kind::Osc:
+        break; // handled above
+    }
+    return {};
 }
 
 } // namespace
@@ -78,6 +99,24 @@ OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config&
         }
         fired_.push_back(std::move(entry));
     });
+    // Before anything else can read it, and on this thread, where nothing else is running.
+    takeSnapshot();
+}
+
+void OutputRunner::takeSnapshot() {
+    Snapshot taken;
+    taken.outputs = transports_.outputs();
+    taken.link = transports_.linkEnabled();
+    taken.midiClockPort = transports_.midiClockPort();
+    taken.midiClockOpen = transports_.midiClock() != nullptr;
+    taken.oscPrefix = transports_.oscPrefix();
+    const std::lock_guard<std::mutex> lock(snapshotMutex_);
+    snapshot_ = std::move(taken);
+}
+
+OutputRunner::Snapshot OutputRunner::snapshot() const {
+    const std::lock_guard<std::mutex> lock(snapshotMutex_);
+    return snapshot_;
 }
 
 std::vector<OutputRunner::Fired> OutputRunner::takeFired() {
@@ -103,13 +142,59 @@ void OutputRunner::start() {
     if (running()) {
         return;
     }
-    started_ = std::chrono::steady_clock::now();
+    // **The clock is not restarted here, and that is the whole of a bug reported from a rig
+    // on 2026-09-12**: *"when hitting stop on the main window, when I hit start again, none of
+    // the triggers started firing again."*
+    //
+    // `started_` used to be taken here, so `elapsed()` — which is `Context::now` — went back
+    // to zero on every Start while the state measured against it did not. `Rule::lastFired_`
+    // still held the time of the last fire of the previous run, so §5.8's cooldown test read
+    // `now - lastFired < cooldown` as a large *negative* number, which is below even a zero
+    // cooldown. Every rule that had ever fired was then blocked until the clock climbed back
+    // past where it had been — five minutes of playing, for a rig stopped five minutes in.
+    //
+    // A clock that only goes forwards is the fix, and it is the fix for the whole class:
+    // pending follow-ups, the log's timestamps and §5.9's "12s ago" were all measured against
+    // it too. `started_` is taken once, at construction, and nothing writes it again — which
+    // also takes the reader on the UI thread out of a race with `start()`.
     raisedTimer_ = raiseTimerResolution();
-    // Before the thread: startOutputs enables Link and starts the MIDI clock, and the
-    // thread's first round must not find them half up.
-    transports_.startOutputs(0.0);
+    // A count from the run that just ended means nothing to the run beginning: `BeatEngine::
+    // start` zeroes its own, so a stale one here made the first round after a restart see a
+    // count that had "moved" and fire every onset rule once for nothing.
+    onsetsSeen_ = 0;
+    try {
+        // Before the thread: startOutputs enables Link and starts the MIDI clock, and the
+        // thread's first round must not find them half up. On the same clock the rounds use,
+        // so the MIDI clock's tick spacing is measured from where the loop actually is.
+        //
+        // Under `ownerMutex_` like everything else that touches them: a control surface can
+        // be inside `apply` on its own thread at this moment, and this is the transition
+        // that would otherwise have no lock on either side of it.
+        const std::lock_guard<std::mutex> owner(ownerMutex_);
+        transports_.startOutputs(elapsed());
+    } catch (...) {
+        // A MIDI port that went away between one run and the next. Nothing is running, so
+        // put back what was raised rather than leaving the platform timer held by a runner
+        // that never started.
+        restoreTimerResolution(raisedTimer_);
+        raisedTimer_ = false;
+        throw;
+    }
     running_.store(true, std::memory_order_release);
-    worker_ = std::thread([this] { run(); });
+    try {
+        worker_ = std::thread([this] { run(); });
+    } catch (...) {
+        // A thread that could not be created leaves the transports up and the flag set, and
+        // `stop()` would return early on a worker that is not joinable — so nothing would
+        // ever put them back. Wound all the way down instead, as the failed `startOutputs`
+        // above is.
+        running_.store(false, std::memory_order_release);
+        const std::lock_guard<std::mutex> owner(ownerMutex_);
+        transports_.stopOutputs();
+        restoreTimerResolution(raisedTimer_);
+        raisedTimer_ = false;
+        throw;
+    }
 }
 
 void OutputRunner::stop() noexcept {
@@ -120,34 +205,50 @@ void OutputRunner::stop() noexcept {
     worker_.join();
 
     // Anything posted in the moments before the stop still meant something, and the
-    // transports are this thread's now.
+    // transports are this thread's now. (It takes `ownerMutex_` itself, so the block below
+    // takes it again rather than one call holding it across both — two functions agreeing
+    // about who locks is how a lock ends up held twice or not at all.)
     applyCommands();
 
-    // The last beats of a set are still beats: the engine may have called one between the
-    // final round and the join. Safe on this thread now — the only other consumer of that
-    // ring has been joined.
-    try {
-        drainOnce(elapsed());
-    } catch (...) {
-        // Nothing useful to do while shutting down, and letting it out of a noexcept
-        // function would call std::terminate.
-        errors_.fetch_add(1, std::memory_order_relaxed);
+    {
+        const std::lock_guard<std::mutex> owner(ownerMutex_);
+        // The last beats of a set are still beats: the engine may have called one between
+        // the final round and the join. Safe on this thread now — the only other consumer of
+        // that ring has been joined.
+        try {
+            drainOnce(elapsed());
+            // Every release still owed, now rather than when it was due. A note on whose
+            // note off had not yet come round is a laser still lit and a clip still held,
+            // and an operator pressing Stop has said the opposite. Same argument as `panic`
+            // and `setRules`; this is the third place that owed a flush and did not have one.
+            triggers_.flushFollowUps();
+        } catch (...) {
+            // Nothing useful to do while shutting down, and letting it out of a noexcept
+            // function would call std::terminate.
+            errors_.fetch_add(1, std::memory_order_relaxed);
+        }
+        transports_.stopOutputs();
     }
-    transports_.stopOutputs();
     restoreTimerResolution(raisedTimer_);
     raisedTimer_ = false;
 }
 
 void OutputRunner::post(OutputCommand command) {
-    if (!running()) {
-        // Nothing else is touching the transports, so there is no reason to make an
-        // operator press Start before a setting takes: this is how an app is configured
-        // before it is running at all.
-        apply(command);
-        return;
+    // **Queued first, always.** Applying it here would be a command that is lost if the
+    // output thread starts between the test and the call, and applied twice if it stops;
+    // on the queue it is taken exactly once, by whichever thread gets to it.
+    {
+        const std::lock_guard<std::mutex> lock(commandMutex_);
+        pending_.push_back(std::move(command));
     }
-    const std::lock_guard<std::mutex> lock(commandMutex_);
-    pending_.push_back(std::move(command));
+    if (running()) {
+        return; // the output thread takes it at the top of its next round, a millisecond off
+    }
+    // Nothing is draining it, so this thread is the one that applies it: there is no reason
+    // to make an operator press Start before a setting takes, and this is how an app is
+    // configured before it is running at all. Under `ownerMutex_` — see its declaration —
+    // because there is more than one thread that can be here.
+    applyCommands();
 }
 
 std::string OutputRunner::lastError() const {
@@ -162,12 +263,10 @@ void OutputRunner::apply(const OutputCommand& command) {
             transports_.setLinkEnabled(command.enabled);
             break;
         case OutputCommand::Kind::OscTargets:
-            transports_.setOscTargets(command.targets);
-            resolveRouting();
+            setTargets(oscOutputs(command.targets));
             break;
         case OutputCommand::Kind::Outputs:
-            transports_.setOutputs(command.outputTargets);
-            resolveRouting();
+            setTargets(command.outputTargets);
             break;
         case OutputCommand::Kind::MidiClockPort:
             transports_.setMidiClockPort(command.port);
@@ -206,6 +305,21 @@ void OutputRunner::apply(const OutputCommand& command) {
         const std::lock_guard<std::mutex> lock(errorMutex_);
         lastError_ = e.what();
     }
+    // Whether it worked or not: what a reader must see is what the transports are *now*, and
+    // a command that threw part-way through has still changed some of them.
+    takeSnapshot();
+}
+
+void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
+    // The routing is resolved either way — see the declaration. A target that would not open
+    // still took its place in the list, so every bit below it has moved.
+    try {
+        transports_.setOutputs(targets);
+    } catch (...) {
+        resolveRouting();
+        throw;
+    }
+    resolveRouting();
 }
 
 void OutputRunner::resolveRouting() noexcept {
@@ -220,6 +334,9 @@ void OutputRunner::resolveRouting() noexcept {
 }
 
 void OutputRunner::applyCommands() noexcept {
+    // `applying_` is a member reused across calls, and `apply` touches the transports and
+    // the rules, so both want `ownerMutex_` rather than only the queue's own lock.
+    const std::lock_guard<std::mutex> owner(ownerMutex_);
     {
         const std::lock_guard<std::mutex> lock(commandMutex_);
         if (pending_.empty()) {
@@ -236,13 +353,16 @@ void OutputRunner::applyCommands() noexcept {
 void OutputRunner::run() noexcept {
     while (running_.load(std::memory_order_acquire)) {
         applyCommands();
-        try {
-            drainOnce(elapsed());
-        } catch (...) {
-            // A transport that throws must not take the process down with it: an OSC
-            // target can go away mid-set, and Link's networking has its own opinions
-            // about sockets. Counted rather than swallowed, so it is visible.
-            errors_.fetch_add(1, std::memory_order_relaxed);
+        {
+            const std::lock_guard<std::mutex> owner(ownerMutex_);
+            try {
+                drainOnce(elapsed());
+            } catch (...) {
+                // A transport that throws must not take the process down with it: an OSC
+                // target can go away mid-set, and Link's networking has its own opinions
+                // about sockets. Counted rather than swallowed, so it is visible.
+                errors_.fetch_add(1, std::memory_order_relaxed);
+            }
         }
         rounds_.fetch_add(1, std::memory_order_relaxed);
         std::this_thread::sleep_for(kPeriod);

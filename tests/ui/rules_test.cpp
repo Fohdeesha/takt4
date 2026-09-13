@@ -1,21 +1,28 @@
-#include "ui/rules_controller.hpp"
-
 #include "core/engine/beat_engine.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/tracking/random.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
 #include "ui/model_watch.hpp"
+#include "ui/rules_controller.hpp"
+#include "ui/window_state.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 using Catch::Approx;
@@ -126,8 +133,9 @@ TEST_CASE("Phase 6's exit criterion, built by clicking", "[ui][trigger]") {
 
     // §7.4: connect takes 1 then 0, and a rule that sends only the 1 leaves the clip held.
     // The preset brings the release with it rather than leaving the trap to be found live.
-    CHECK(built.followUp);
-    CHECK(built.followUpValue.asInt() == 0);
+    REQUIRE(built.followUps.size() == 1);
+    CHECK_FALSE(built.followUps.front().kind.has_value()); // a release: the same address again
+    CHECK(built.followUps.front().value.asInt() == 0);
     CHECK(built.value.fixed.asInt() == 1);
 
     // And it is a rule that will actually fire.
@@ -182,9 +190,14 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
     editor.addRig(1); // "Resolume: clips on 3 layers"
     REQUIRE(editor.rules().size() == 3);
 
-    for (int layer = 1; layer <= 3; ++layer) {
-        const Rule::Config& rule = editor.rules()[static_cast<std::size_t>(layer - 1)];
-        INFO("layer " << layer);
+    // **Highest layer first**, because that is the way Resolume stacks them: 3 above 2 above
+    // 1, so a list running 1, 2, 3 down the screen is the operator's rig upside down.
+    // Reported on 2026-09-12 as "the order it adds them is backwards, which can be
+    // confusing"; the layer numbers, the periods and the seeds are unchanged.
+    for (int row = 0; row < 3; ++row) {
+        const int layer = 3 - row;
+        const Rule::Config& rule = editor.rules()[static_cast<std::size_t>(row)];
+        INFO("row " << row << " should be layer " << layer);
         CHECK(rule.address == "/composition/layers/{layer}/clips/{clip}/connect");
         REQUIRE(rule.segments.size() == 2);
         // The layer is fixed and the clip is shuffled, which is what "randomly trigger clips
@@ -193,8 +206,9 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
         CHECK(rule.segments[0].fixed.asInt() == layer);
         CHECK(rule.segments[1].kind == GeneratorKind::Shuffle);
         // 7.4: connect is a mouse click, and without the release the clip stays held.
-        CHECK(rule.followUp);
-        CHECK(rule.followUpValue.asInt() == 0);
+        REQUIRE(rule.followUps.size() == 1);
+        CHECK_FALSE(rule.followUps.front().kind.has_value());
+        CHECK(rule.followUps.front().value.asInt() == 0);
         // Armed, like every rule the editor makes. A preset is a rig somebody asked for by
         // name; arriving switched off behind an unlabelled tick box was the state nobody
         // could see the reason for.
@@ -520,7 +534,7 @@ TEST_CASE("the host preset picker says what the rule is, and custom empties it",
     REQUIRE(editor.rules().front().address ==
             "/composition/layers/{layer}/clips/{clip}/connect");
     REQUIRE(editor.rules().front().segments.size() == 2);
-    CHECK(editor.rules().front().followUp);
+    CHECK(editor.rules().front().followUps.size() == 1);
     // The picker names the preset the address is, rather than whatever was last clicked.
     CHECK(editor.window().get_host_preset_index() == 1);
 
@@ -529,7 +543,7 @@ TEST_CASE("the host preset picker says what the rule is, and custom empties it",
         CHECK(editor.rules().front().address.empty());
         CHECK(editor.rules().front().segments.empty());
         // §7.4's press-then-release is a fact about Resolume's `connect`, not about OSC.
-        CHECK_FALSE(editor.rules().front().followUp);
+        CHECK(editor.rules().front().followUps.empty());
         CHECK(editor.window().get_host_preset_index() == 0);
         CHECK(std::string(editor.window().get_address()).empty());
         // And it says so, on a status line that until now nothing drew.
@@ -782,10 +796,15 @@ TEST_CASE("the conditions an operator types are read leniently", "[ui][trigger]"
     }
 
     SECTION("milliseconds on screen, seconds in the rule") {
-        editor.setCooldownMs(500);
+        editor.setCooldown("500");
         CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.5));
-        editor.setFollowUpMs(50);
-        CHECK(editor.rules().front().followUpDelaySeconds == Approx(0.05));
+        // The same for a follow-up's own delay, which is two numbers rather than one — see
+        // `trigger::FollowUp::delayBeats` — so the unit is picked before the number is typed.
+        editor.addFollowUp();
+        editor.pickFollowUnit(0, 0); // milliseconds
+        editor.setFollowDelay(0, "50");
+        REQUIRE(editor.rules().front().followUps.size() == 1);
+        CHECK(editor.rules().front().followUps.front().delaySeconds == Approx(0.05));
     }
 
     SECTION("intensity is a set, indexed by §5.6's own wire numbers") {
@@ -1054,5 +1073,525 @@ TEST_CASE("the panes either side of the editor are dragged to size", "[ui]") {
         const float was = window->get_list_width();
         drag(was + 2.0f, 0.0f);
         CHECK(window->get_list_width() >= 100.0f);
+    }
+}
+
+TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
+    // The other half of "a rule firing does not rebuild the boxes being typed into".
+    //
+    // Updating a row in place keeps the element — and keeps its *dead* binding with it,
+    // because Slint drops a `text:` binding the moment somebody types into the box. Within
+    // one edit that is right: what was typed is what is meant. Across an edit the controller
+    // made *itself* — a range swapped back the right way round, a guard cut to what can be
+    // satisfied, another rule's values — the box would go on showing the last thing anybody
+    // typed anywhere, which is what a rig met as "when I edit the value range on trigger 1,
+    // it changes all the triggers".
+    //
+    // So a surviving row whose content moved is rebuilt, and the rebuild is deferred to the
+    // next `tick`: a publisher runs inside the callback of the very widget it would destroy.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/deck/{clip}");
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+    editor.setSlotRange(0, "1 - 8");
+    editor.tick();
+
+    const auto slots = editor.window().get_slots();
+    REQUIRE(slots->row_count() == 2);
+    const auto watch = std::make_shared<ModelWatch>();
+    slots->attach_peer(watch);
+
+    // A guard wider than the pool can satisfy. §5.8 clamps rather than refuses, so what the
+    // rule holds is not what was typed — and the box has to be told, or it goes on offering
+    // a number the generator is not using.
+    editor.setSlotNoRepeat(0, 40);
+    CHECK(slots->row_data(0)->no_repeat == 7); // one less than the eight distinct values
+    CHECK(watch->resets == 0);                 // not from inside the callback that caused it
+    editor.tick();
+    CHECK(watch->resets > 0);
+
+    SECTION("and so does picking another rule, whose chips are different boxes entirely") {
+        editor.add();
+        editor.tick();
+        const auto second = std::make_shared<ModelWatch>();
+        editor.window().get_slots()->attach_peer(second);
+        editor.pick(0);
+        editor.tick();
+        CHECK(second->resets > 0);
+        CHECK(editor.window().get_slots()->row_count() == 2);
+    }
+}
+
+TEST_CASE("the BPM range and the cooldown follow the rule that is selected", "[ui][trigger]") {
+    // Both boxes are two-way bound, so the *property* is the box: the controller spells the
+    // text (`publishSelected`) and parses it back. A one-way binding died on the first
+    // keystroke and left rule 1's range showing over every rule picked after it.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.add();
+
+    editor.pick(0);
+    editor.setBpmRange("120 - 140");
+    editor.setCooldown("500");
+    CHECK(std::string(editor.window().get_bpm_range()) == "120 - 140");
+    CHECK(std::string(editor.window().get_cooldown_ms()) == "500");
+    CHECK(editor.rules().front().conditions.minBpm == Approx(120.0));
+    CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.5));
+
+    // The second rule has neither, and has to say so rather than showing the first's.
+    editor.pick(1);
+    CHECK(std::string(editor.window().get_bpm_range()) == "0 - 1000");
+    CHECK(std::string(editor.window().get_cooldown_ms()) == "0");
+    CHECK(editor.rules().back().conditions.cooldownSeconds == Approx(0.0));
+
+    // And back, unchanged by the excursion.
+    editor.pick(0);
+    CHECK(std::string(editor.window().get_bpm_range()) == "120 - 140");
+    CHECK(std::string(editor.window().get_cooldown_ms()) == "500");
+
+    SECTION("a range given backwards is read the way round it was meant") {
+        editor.setBpmRange("140 - 120");
+        CHECK(editor.rules().front().conditions.minBpm == Approx(120.0));
+        CHECK(editor.rules().front().conditions.maxBpm == Approx(140.0));
+    }
+
+    SECTION("and an empty box undoes it") {
+        editor.setBpmRange("");
+        CHECK(editor.rules().front().conditions.minBpm == Approx(0.0));
+        CHECK(editor.rules().front().conditions.maxBpm == Approx(1000.0));
+    }
+}
+
+TEST_CASE("the editor never shows a rule the marks would not act on", "[ui][trigger]") {
+    // Control-clicking a chosen row takes it *out* of the selection. The editor used to stay
+    // on it anyway, so the card on screen was a rule the × and copy marks would not touch:
+    // press × on any lit row and the others go while the one being read stays. Found by the
+    // soak test below, which is the only reason it is written down rather than reported.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    for (int i = 0; i < 4; ++i) {
+        editor.add();
+    }
+    REQUIRE(editor.rules().size() == 4);
+
+    // Rows 1, 2 and 3 chosen, the editor on 3.
+    editor.pick(1);
+    editor.pickWith(2, /*control=*/true, false);
+    editor.pickWith(3, /*control=*/true, false);
+    REQUIRE(editor.chosen() == std::vector<int>{1, 2, 3});
+    REQUIRE(editor.selected() == 3);
+
+    // Take 3 back out. The selection is 1 and 2, so the editor has to be on one of them.
+    editor.pickWith(3, /*control=*/true, false);
+    CHECK(editor.chosen() == std::vector<int>{1, 2});
+    CHECK(editor.selected() == 2); // the nearest still chosen, which is where the eye is
+
+    SECTION("and a control-click that would empty the selection leaves that row selected") {
+        editor.pick(0);
+        REQUIRE(editor.chosen() == std::vector<int>{0});
+        editor.pickWith(0, /*control=*/true, false);
+        CHECK(editor.chosen() == std::vector<int>{0});
+        CHECK(editor.selected() == 0);
+    }
+
+    SECTION("and the marks act on the whole selection, from any row in it") {
+        editor.removeAt(1); // row 1 is chosen, so this is "delete 1 and 2"
+        CHECK(editor.rules().size() == 2);
+        CHECK(editor.selected() >= 0);
+        CHECK(editor.chosen().size() == 1);
+    }
+
+    SECTION("and a mark on a row outside the selection acts on that row alone") {
+        editor.removeAt(0); // row 0 is not chosen
+        CHECK(editor.rules().size() == 3);
+    }
+}
+
+TEST_CASE("the editor survives being hammered", "[ui][trigger]") {
+    // A soak, seeded so a failure is reproducible. It is not looking for a particular bug —
+    // it is looking for the class of them: an index kept across an edit that moved it, a
+    // selection left pointing at a rule that no longer exists, a slot addressed on a rule
+    // whose send kind changed underneath it. Every one of those is a crash rather than a
+    // wrong answer, so the assertions are the invariants and the test is the exercise.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    takt4::tracking::Xoshiro256pp random(20260913);
+
+    const auto invariants = [&editor] {
+        const std::vector<int> chosen = editor.chosen();
+        const auto rules = static_cast<int>(editor.rules().size());
+        if (rules == 0) {
+            REQUIRE(editor.selected() == -1);
+            REQUIRE(chosen.empty());
+            return;
+        }
+        // Something is always selected, it is always in range, and it is always one of the
+        // rows the marks would act on — see the test above.
+        REQUIRE(editor.selected() >= 0);
+        REQUIRE(editor.selected() < rules);
+        REQUIRE_FALSE(chosen.empty());
+        for (const int row : chosen) {
+            REQUIRE(row >= 0);
+            REQUIRE(row < rules);
+        }
+        REQUIRE(std::find(chosen.begin(), chosen.end(), editor.selected()) != chosen.end());
+        // §5.7 addresses a rule by id, and `TriggerEngine::find` takes the first of a pair,
+        // so the editor must never make two the same.
+        std::set<std::string> ids;
+        for (const auto& rule : editor.rules()) {
+            ids.insert(rule.id);
+        }
+        REQUIRE(ids.size() == editor.rules().size());
+    };
+
+    for (int step = 0; step < 400; ++step) {
+        const auto rules = static_cast<int>(editor.rules().size());
+        const int row =
+            rules == 0 ? 0 : static_cast<int>(random.bounded(static_cast<std::uint64_t>(rules)));
+        switch (random.bounded(16)) {
+        case 0:
+            editor.add();
+            break;
+        case 1:
+            editor.addRig(static_cast<int>(random.bounded(4)) + 1);
+            break;
+        case 2:
+            editor.remove();
+            break;
+        case 3:
+            editor.duplicate();
+            break;
+        case 4:
+            editor.removeAt(row);
+            break;
+        case 5:
+            editor.duplicateAt(row);
+            break;
+        case 6:
+            editor.pickWith(row, random.bounded(2) != 0, random.bounded(2) != 0);
+            break;
+        case 7:
+            editor.pickTrigger(static_cast<int>(random.bounded(takt4::trigger::kTriggers.size())));
+            break;
+        case 8:
+            editor.pickSend(static_cast<int>(random.bounded(takt4::trigger::kMessageKinds.size())));
+            break;
+        case 9:
+            editor.setAddress(random.bounded(2) != 0 ? "/deck/{a}/{b}" : "/deck/go");
+            break;
+        case 10:
+            editor.pickSlotKind(
+                static_cast<int>(random.bounded(3)),
+                static_cast<int>(random.bounded(takt4::trigger::kGeneratorKinds.size())));
+            break;
+        case 11:
+            editor.setSlotRange(static_cast<int>(random.bounded(3)), "9 - 2");
+            break;
+        case 12:
+            editor.addFollowUp();
+            break;
+        case 13:
+            editor.removeFollowUp(static_cast<int>(random.bounded(3)));
+            break;
+        case 14:
+            editor.pickHostPreset(static_cast<int>(random.bounded(5)));
+            break;
+        default:
+            editor.tick();
+            break;
+        }
+        invariants();
+    }
+
+    // And it is still a working editor rather than merely an intact one.
+    editor.tick();
+    if (editor.rules().empty()) {
+        editor.add();
+    }
+    editor.pick(0);
+    editor.rename("after the storm");
+    CHECK(editor.rules().front().name == "after the storm");
+    CHECK(rig.runner.triggers().ruleCount() == editor.rules().size());
+}
+
+TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][trigger]") {
+    // The rig's ask, built by clicking: *"I need a note on trigger to trigger Liberation
+    // laser clips. when the beat is done, I need the option to send a note off. in the same
+    // trigger"* — and then, exactly right, *"we should just replace the 'then send' machinery
+    // with a more fleshed out second send box"*.
+    //
+    // A **real** 0x80. The velocity-zero convention is widely understood and not universal;
+    // that controller holds its clip until a note off arrives, so the rig never released.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.pickSend(1); // MIDI note, in `kMessageKinds` order
+    editor.setChannel(10);
+    REQUIRE(editor.rules().front().sendKind == takt4::trigger::Message::Kind::MidiNote);
+
+    // Slot 0 is the note number for a MIDI rule, slot 1 the velocity — `slotConfig`'s order.
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Fixed));
+    editor.setSlotFixed(0, "36");
+    editor.pickSlotKind(1, static_cast<int>(GeneratorKind::Fixed));
+    editor.setSlotFixed(1, "110");
+
+    // One follow-up: a release, which for a note is a note off on the note that fired.
+    editor.addFollowUp();
+    editor.pickFollowUnit(0, 0); // milliseconds
+    editor.setFollowDelay(0, "1");
+    REQUIRE(editor.rules().front().followUps.size() == 1);
+    CHECK_FALSE(editor.rules().front().followUps.front().kind.has_value());
+
+    // What the row says it will do, which is the line the editor added for the rig that read
+    // the old tick box as making note on and note off exclusive.
+    const auto follows = editor.window().get_follow_ups();
+    REQUIRE(follows->row_count() == 1);
+    CHECK(std::string(follows->row_data(0)->summary) == "note off, same note, ch 10");
+
+    // And what really leaves. The runner has to be going for a follow-up to come due, since
+    // it is a clock rather than a beat that pays it out.
+    rig.runner.start();
+    editor.test();
+    std::vector<std::string> lines;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until && lines.size() < 2) {
+        editor.tick();
+        const auto log = editor.window().get_log();
+        lines.clear();
+        for (std::size_t i = 0; i < log->row_count(); ++i) {
+            lines.push_back(std::string(*log->row_data(i)));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    rig.runner.stop();
+
+    // Newest first, so the release is line 0 and the press line 1.
+    REQUIRE(lines.size() >= 2);
+    INFO("log: " << lines[0] << " | " << lines[1]);
+    CHECK(lines[0].find("note off 36 ch 10") != std::string::npos);
+    CHECK(lines[1].find("note on 36 ch 10 = 110") != std::string::npos);
+
+    // The status byte the two put on the wire, which is the half a counter cannot see: a
+    // rule can decide to release and still send 0x90.
+    CHECK(takt4::output::midiStatusFor(takt4::trigger::Message::Kind::MidiNote, 10) == 0x99);
+    CHECK(takt4::output::midiStatusFor(takt4::trigger::Message::Kind::MidiNoteOff, 10) == 0x89);
+}
+
+TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]") {
+    // **Driven by real pointer and key events**, not by calling the callback: what is under
+    // test is the markup, and the markup is where the bug was.
+    //
+    // Every box here commits on Enter. That is the ordinary contract and it hides a trap: an
+    // operator who types and then clicks something else has *finished*, not cancelled, and
+    // until now what they typed sat in the box until the next publish wrote over it and the
+    // edit was gone without a word. Reported alongside "when I hit enter, nothing happens, it
+    // stays in edit mode", which is the same box seen from the other side.
+    //
+    // The cooldown box, because it holds one number: a digit typed at whatever position the
+    // click leaves the caret in still makes a number, so the test does not depend on where
+    // inside the box it landed.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    // The size `takt4_ui_tests`' headless platform reports, said out loud so the sweep below
+    // is over the layout an operator would get.
+    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 520.0f}));
+    window.window().dispatch_window_active_changed_event(true);
+    REQUIRE(std::string(window.get_cooldown_ms()) == "0");
+
+    // **Found rather than written down.** A coordinate in this file would be a number that
+    // rots the first time a row moves, and a test that then clicked on nothing would go on
+    // passing for ever. This sweeps the conditions block until a typed digit lands in the
+    // cooldown box, which is proof that box has the keyboard.
+    std::string typed;
+    for (float y = 250.0f; y < 345.0f && typed.empty(); y += 2.0f) {
+        for (float x = 540.0f; x < 660.0f && typed.empty(); x += 20.0f) {
+            const slint::LogicalPosition at({x, y});
+            window.window().dispatch_pointer_move_event(at);
+            window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+            window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+            window.window().dispatch_key_press_event(slint::SharedString("5"));
+            window.window().dispatch_key_release_event(slint::SharedString("5"));
+            if (std::string(window.get_cooldown_ms()) != "0") {
+                typed = std::string(window.get_cooldown_ms());
+            }
+        }
+    }
+    INFO("the cooldown box never took a keystroke — the sweep found no text field");
+    REQUIRE_FALSE(typed.empty());
+
+    // The box has it and the **rule has not**: a box commits when the edit is finished, not
+    // on every keystroke.
+    CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.0));
+
+    // Tab away, which is finishing rather than cancelling.
+    const slint::SharedString tab(std::string(1, '\t'));
+    window.window().dispatch_key_press_event(tab);
+    window.window().dispatch_key_release_event(tab);
+
+    INFO("box held \"" << typed << "\"");
+    CHECK(editor.rules().front().conditions.cooldownSeconds > 0.0);
+    CHECK_FALSE(window.get_status_is_error());
+}
+
+TEST_CASE("the send-to ticks follow the rule that is selected", "[ui][trigger]") {
+    // **Driven by real clicks**, because what is under test is a `CheckBox` losing its
+    // binding — a fact about the markup and the toolkit rather than about the controller,
+    // whose model rows were right the whole time.
+    //
+    // A tick box drops `checked: choice.chosen` the moment somebody clicks it, and the
+    // routing popup was the one repeater no publisher rebuilt. So after routing one rule to
+    // an output, every rule selected afterwards showed that output already ticked — and
+    // clicking it to route *that* rule un-ticked it and did nothing at all. Measured: with
+    // the rebuild taken out, the second rule below stays unrouted.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    takt4::output::OutputTarget wall;
+    wall.name = "wall";
+    wall.host = "127.0.0.1";
+    wall.port = 7000;
+    editor.setTargets({wall});
+    editor.add(); // rule 0
+    editor.add(); // rule 1
+    REQUIRE(editor.rules().size() == 2);
+
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+    window.window().dispatch_window_active_changed_event(true);
+
+    const auto click = [&window](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+    };
+
+    // **Found rather than written down**, for the reason the cooldown sweep gives: a
+    // coordinate in this file rots the first time a row moves, and a test that then clicked
+    // on nothing would go on passing for ever.
+    //
+    // The control is a closed field that opens a popup, so a candidate is only the opener if
+    // a click just below it lands on the popup's first row — "every output", which clears
+    // the rule's routing and is what says both clicks landed. Anything already open is
+    // closed first, or a stray click from the last candidate would be credited to this one.
+    editor.pick(0);
+    float openX = -1.0f;
+    float openY = -1.0f;
+    float everyOutputY = -1.0f;
+    for (float y = 250.0f; y < 760.0f && everyOutputY < 0.0f; y += 4.0f) {
+        for (float x = 150.0f; x < 420.0f && everyOutputY < 0.0f; x += 10.0f) {
+            editor.setOutputs("wall"); // something for "every output" to clear
+            click(700.0f, 40.0f);      // close whatever is open; outside every popup
+            click(x, y);
+            for (float row = y + 20.0f; row < y + 80.0f && everyOutputY < 0.0f; row += 3.0f) {
+                click(x + 30.0f, row);
+                if (editor.rules().front().outputs.empty()) {
+                    openX = x;
+                    openY = y;
+                    everyOutputY = row;
+                }
+            }
+        }
+    }
+    INFO("no pair of clicks reached the popup's \"every output\" row");
+    REQUIRE(everyOutputY >= 0.0f);
+    INFO("opener at " << openX << "," << openY << ", every-output row at " << everyOutputY);
+
+    // The popup is still open — the last click was inside it — so the ticks are below the
+    // separator under that row. The one for "wall" is the one that routes the rule.
+    const float tickX = openX + 30.0f;
+    float tickY = -1.0f;
+    for (float row = everyOutputY + 4.0f; row < everyOutputY + 90.0f && tickY < 0.0f; row += 2.0f) {
+        click(tickX, row);
+        if (!editor.rules().front().outputs.empty()) {
+            tickY = row;
+        }
+    }
+    INFO("no tick below the \"every output\" row routed the rule");
+    REQUIRE(tickY >= 0.0f);
+    REQUIRE(editor.rules().front().outputs == std::vector<std::string>{"wall"});
+
+    // And now the question. Rule 1 names no output, so the box has to come up clear — one
+    // click on it, in the same place, routes this rule rather than un-ticking the last.
+    editor.pick(1);
+    editor.tick(); // the rebuild is deferred by a round, as every other one is
+    REQUIRE(editor.rules().back().outputs.empty());
+    click(tickX, tickY);
+    INFO("tick at " << tickX << "," << tickY);
+    CHECK(editor.rules().back().outputs == std::vector<std::string>{"wall"});
+
+    // And the first rule is untouched by any of it.
+    CHECK(editor.rules().front().outputs == std::vector<std::string>{"wall"});
+}
+
+TEST_CASE("a rig preset added again brings its own streams", "[ui][trigger]") {
+    // `Generator::Config::seed` exists so that two rules in a preset do not fire the same
+    // clip as each other. A renamed copy stepped its seed by a flat amount, so the *third*
+    // rig added shared the second's — two layers drawing the same clips, which is the one
+    // thing the seed is for.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.addRig(1);
+    editor.addRig(1);
+    editor.addRig(1);
+    REQUIRE(editor.rules().size() == 9);
+
+    std::set<std::string> ids;
+    std::set<std::uint64_t> seeds;
+    for (const Rule::Config& rule : editor.rules()) {
+        INFO(rule.id << "  seed " << rule.seed);
+        ids.insert(rule.id);
+        seeds.insert(rule.seed);
+    }
+    CHECK(ids.size() == editor.rules().size());
+    CHECK(seeds.size() == editor.rules().size());
+}
+
+TEST_CASE("a text value too long for its buffer still reaches the window", "[ui][trigger]") {
+    // **Every string the window is given goes through `slint::SharedString`, and Slint's own
+    // `slint_shared_string_from_bytes` is `core::str::from_utf8(..).unwrap()`** — a Rust
+    // panic across the C ABI, which is an abort rather than an exception.
+    //
+    // So a `Value` cut through the middle of a UTF-8 character did not merely fail to save:
+    // it killed the process. Measured on the real takt4.exe with a settings file carrying
+    // one, before the fix: dead 1.1 s after launch with FAST_FAIL_FATAL_APP_EXIT and nothing
+    // on screen to say why. `Value::ofText` cuts on a character boundary now; this is the
+    // path that would abort if it stopped.
+    //
+    // The assertion is almost beside the point — if the cut came back malformed this test
+    // would not fail, it would take the binary with it, which Catch2 reports as a crash.
+    Rig rig;
+    Rule::Config config;
+    config.id = "clip";
+    config.address = "/deck/{label}";
+    takt4::trigger::Generator::Config segment;
+    segment.kind = GeneratorKind::Fixed;
+    // 46 ASCII bytes then U+00E9, so the 47-byte cut falls inside the accented character.
+    segment.fixed = takt4::trigger::Value::ofText(std::string(46, 'a') + "\xC3\xA9");
+    config.segments.push_back(segment);
+    config.value.kind = GeneratorKind::Fixed;
+    config.value.fixed = takt4::trigger::Value::ofInt(1);
+
+    RulesController editor(rig.runner, {config});
+    editor.tick();
+    const auto slots = editor.window().get_slots();
+    REQUIRE(slots->row_count() == 2);
+    CHECK(std::string(slots->row_data(0)->fixed) == std::string(46, 'a'));
+
+    SECTION("and a value that fits keeps every byte of itself") {
+        // The other direction: nothing is given up that did not have to be.
+        Rule::Config keeps = config;
+        keeps.segments.front().fixed = takt4::trigger::Value::ofText("drop \xE2\x82\xAC");
+        RulesController other(rig.runner, {keeps});
+        other.tick();
+        CHECK(std::string(other.window().get_slots()->row_data(0)->fixed) == "drop \xE2\x82\xAC");
     }
 }

@@ -92,9 +92,14 @@ public:
     /// to prune in one gesture, not six.
     std::vector<int> chosen() const;
 
-    /// What the window's callbacks do, reachable directly as well as through a click —
-    /// which is how `takt4_ui_tests` drives them, Slint's element-level testing API being
-    /// behind SLINT_FEATURE_EXPERIMENTAL (§6).
+    /// What the window's callbacks do, reachable directly as well as through a click — which
+    /// is how `takt4_ui_tests` drives most of them, Slint's element-*finding* API being behind
+    /// SLINT_FEATURE_EXPERIMENTAL (§6).
+    ///
+    /// Dispatching real pointer and key events is **not** behind that flag and works against
+    /// the headless platform, so anything that is about the markup rather than about these
+    /// functions is tested that way instead — see "what was typed is kept when the operator
+    /// clicks away", which clicks into a box, types into it and tabs out.
     void pick(int index);
     /// A click with its modifiers, as the list sends them. Control toggles this row in and
     /// out of the selection; shift takes the run from the anchor — the last row picked
@@ -137,20 +142,31 @@ public:
     void setIntensity(int which, bool allowed);
     void setBpmRange(const std::string& text);
     void setProbability(double value);
-    void setCooldownMs(double milliseconds);
+    void setCooldown(const std::string& text);
 
     void pickSend(int index);
     void setAddress(const std::string& address);
     void setChannel(int channel);
     void pickHostPreset(int index);
     void setSendValue(bool on);
-    void setFollowUp(bool on);
-    void setFollowUpValue(const std::string& text);
-    void setFollowUpMs(double milliseconds);
-    /// The same delay counted musically — see `trigger::DelayUnit`. The two numbers are kept
-    /// apart on purpose, so switching units does not rewrite the one being edited.
-    void setFollowUpBeats(double beats);
-    void pickFollowUpUnit(int unit);
+
+    /// §5.8's follow-ups, which are now a list — see `trigger::FollowUp`. `index` is a row of
+    /// the selected rule's own `Config::followUps`; anything outside it does nothing.
+    ///
+    /// A new entry is a **release** at one beat, because that is what an operator adding one
+    /// nearly always means: let go of what was just pressed, a beat later. §5.6's
+    /// press-then-release with the delay spelled musically.
+    void addFollowUp();
+    void removeFollowUp(int index);
+    /// 0 is a release; 1 and up index `followKinds_`, which holds only the kinds this rule's
+    /// own send kind allows.
+    void pickFollowKind(int index, int choice);
+    void setFollowNumber(int index, int number);
+    void setFollowValue(int index, const std::string& text);
+    /// The delay, in whichever unit the row is on. The two numbers are kept apart on purpose,
+    /// so switching units does not rewrite the one being edited.
+    void setFollowDelay(int index, const std::string& text);
+    void pickFollowUnit(int index, int unit);
 
     /// The generators, one per `{...}` of the address plus the value and the MIDI note.
     /// `slot` indexes what the window is showing, which `slotConfigs()` decides.
@@ -177,6 +193,8 @@ private:
     /// The generator a slot index names, in the order `publishSlots` lists them: the
     /// address's placeholders, then the value, then the MIDI number.
     trigger::Generator::Config* slotConfig(int slot) noexcept;
+    /// The selected rule's follow-up at this row, or null.
+    trigger::FollowUp* followConfig(int index) noexcept;
 
     /// Hands the set to the output thread and tells the owner. Every edit ends here.
     void commit();
@@ -192,7 +210,13 @@ private:
     /// any name the rule carries that this rig has not got.
     void publishOutputChoices();
     void publishSlots();
+    /// The THEN SEND rows, and the list of kinds this rule's send kind allows one to be.
+    void publishFollowUps();
     void publishFiring();
+    /// Builds the two repeaters from nothing, so every text box in them comes back *bound*.
+    /// Called by `tick` when a publisher found a row it could not honestly update in place —
+    /// see `rowsDirty_`.
+    void rebuildRows();
     void setStatus(const std::string& text, bool error);
 
     /// Puts the selection back in step with `rules_` after the set has changed shape, keeping
@@ -218,6 +242,7 @@ private:
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
     std::shared_ptr<slint::VectorModel<OutputChoice>> choiceModel_;
     std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
+    std::shared_ptr<slint::VectorModel<FollowRow>> followModel_;
     std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
     bool visible_ = false;
 
@@ -237,6 +262,26 @@ private:
     /// kept per rule so selecting another card shows *its* last values rather than nothing
     /// until it happens to fire again.
     std::unordered_map<std::string, std::vector<trigger::Value>> slotsSeen_;
+
+    /// Which rule, and which send kind, the generator rows currently on screen were built
+    /// for. When either changes the rows are rebuilt rather than updated in place, so the
+    /// text boxes come back *bound* — see `publishSlots`, which explains why a box that has
+    /// been typed into stops following the model and what that looked like to the operator.
+    std::string slotsBuiltFor_;
+    trigger::Message::Kind slotsKind_ = trigger::Message::Kind::Osc;
+
+    /// Set by a publisher that found a row it could not honestly update in place, and
+    /// consumed by `tick`, which rebuilds both repeaters.
+    ///
+    /// **Deferred rather than done there and then**, because a publisher runs *inside* the
+    /// callback of the very widget being replaced: the dropdown just picked from, the box
+    /// Enter was pressed in. One redraw later is 33 ms, which nobody sees, and it means no
+    /// element is ever destroyed from within its own handler.
+    bool rowsDirty_ = false;
+    /// What a follow-up row's kind dropdown offers past "release", in its own order — only
+    /// the kinds on the same side of the OSC/MIDI divide as the rule (`trigger::
+    /// followUpFits`). Rebuilt by `publishFollowUps` whenever the rule's send kind changes.
+    std::vector<trigger::Message::Kind> followKinds_;
     std::vector<std::string> log_;
     /// What the selected rule last sent and when, on this controller's own clock.
     std::string lastFired_;
@@ -245,7 +290,6 @@ private:
     /// `lastFired_` because that one is the *selected* rule's and goes blank when a card
     /// that has never fired is picked, which is right there and wrong on a status row.
     std::string lastFiredAnywhere_;
-    const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
 };
 
 } // namespace takt4::ui

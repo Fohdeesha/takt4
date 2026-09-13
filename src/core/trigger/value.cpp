@@ -12,6 +12,38 @@ namespace takt4::trigger {
 
 namespace {
 
+/// How much of `text` fits in `kTextCapacity` **without cutting a character in half**.
+///
+/// A byte-count truncation is not enough, and it took the application down twice over. A
+/// text value of 48 bytes with a two-byte character straddling byte 47 came back holding a
+/// lead byte with no continuation, and both of the things that then happen to it refuse
+/// invalid UTF-8:
+///
+///   * **§5.9's editor kills the process.** Every string reaching the window goes through
+///     `slint::SharedString`, and Slint's own `slint_shared_string_from_bytes` is
+///     `core::str::from_utf8(..).unwrap()` — a Rust panic across the C ABI, which is an
+///     abort. Measured: a settings file carrying one made takt4.exe die 1.1 seconds after
+///     launch with `FAST_FAIL_FATAL_APP_EXIT` and no message at all, before the window
+///     appeared. Nothing an operator could have diagnosed.
+///   * **And saving throws.** nlohmann's `dump()` refuses it with `type_error.316`, out of
+///     `settings::save` — into a Slint callback (the SAVE button) and into `ui::run`'s save
+///     on the way out, neither of which can handle one.
+///
+/// UTF-8 continuation bytes are `10xxxxxx` and no other byte is, so the cut is walked back
+/// to the first byte that starts a character. Only when there is a cut at all, so a value
+/// that fits is never touched — and only backwards, so this can shorten the result by at
+/// most three bytes.
+std::size_t utf8Fit(std::string_view text, std::size_t capacity) noexcept {
+    if (text.size() <= capacity) {
+        return text.size();
+    }
+    std::size_t length = capacity;
+    while (length > 0 && (static_cast<unsigned char>(text[length]) & 0xC0) == 0x80) {
+        --length;
+    }
+    return length;
+}
+
 /// A float as an address segment or a settings file should spell it, into `out`.
 ///
 /// `snprintf` rather than `std::to_chars`, which for *floating point* is the one part of
@@ -54,7 +86,7 @@ Value Value::ofBool(bool value) noexcept {
 Value Value::ofText(std::string_view value) noexcept {
     Value made;
     made.kind_ = Kind::Text;
-    const std::size_t length = std::min(value.size(), kTextCapacity);
+    const std::size_t length = utf8Fit(value, kTextCapacity);
     made.truncated_ = length < value.size();
     if (length > 0) {
         std::memcpy(made.text_.data(), value.data(), length);

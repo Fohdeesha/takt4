@@ -38,7 +38,10 @@ public:
     static Value ofInt(std::int32_t value) noexcept;
     static Value ofFloat(float value) noexcept;
     static Value ofBool(bool value) noexcept;
-    /// Truncated to `kTextCapacity`. `truncated()` says whether it was.
+    /// Truncated to `kTextCapacity`, **on a character boundary**: text that is valid UTF-8
+    /// going in is valid UTF-8 coming out, because a cut through the middle of a character
+    /// is a value nlohmann refuses to write and a settings file that cannot be saved. See
+    /// `utf8Fit` in the implementation. `truncated()` says whether it was cut at all.
     static Value ofText(std::string_view value) noexcept;
 
     Kind kind() const noexcept { return kind_; }

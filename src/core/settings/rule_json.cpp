@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <string>
+#include <utility>
 
 namespace takt4::settings {
 namespace {
@@ -278,18 +279,56 @@ json ruleToJson(const Rule::Config& rule) {
         out["channel"] = rule.channel;
         out["number"] = generatorToJson(rule.number);
     }
-    if (rule.followUp) {
-        out["followUp"] = true;
-        out["followUpValue"] = valueToJson(rule.followUpValue);
-        out["followUpDelaySeconds"] = rule.followUpDelaySeconds;
-        // Both, always, so a preset switched between the two units does not lose the number
-        // it is not currently using — the two are different magnitudes of the same idea and
-        // neither is derivable from the other. A file from a build before either existed
-        // reads back as milliseconds, which is what it meant.
-        out["followUpUnit"] = std::string(trigger::nameOf(rule.followUpUnit));
-        out["followUpDelayBeats"] = rule.followUpDelayBeats;
+    if (!rule.followUps.empty()) {
+        json owed = json::array();
+        for (const trigger::FollowUp& entry : rule.followUps) {
+            json one{
+                {"value", valueToJson(entry.value)},
+                {"delaySeconds", entry.delaySeconds},
+                // Both delays, always, so a preset switched between the two units does not
+                // lose the number it is not currently using — they are different magnitudes
+                // of the same idea and neither is derivable from the other.
+                {"unit", std::string(trigger::nameOf(entry.unit))},
+                {"delayBeats", entry.delayBeats},
+            };
+            // Left out for a release, which is the default and what most entries are. Its
+            // absence is what says "the message that fired, with a new value" — see
+            // `FollowUp::kind` — so writing a name here would be writing down a decision the
+            // operator did not make.
+            if (entry.kind) {
+                one["send"] = std::string(trigger::nameOf(*entry.kind));
+                if (trigger::sendsNumber(*entry.kind)) {
+                    one["number"] = entry.number;
+                }
+            }
+            owed.push_back(std::move(one));
+        }
+        out["followUps"] = std::move(owed);
     }
     return out;
+}
+
+/// The one follow-up a file written before 2026-09-12 could hold, as an entry of the list
+/// that replaced it.
+///
+/// Kept because a settings file is an operator's rig and upgrading takt4 must not empty it.
+/// Read only when there is no `followUps` array, so a file written by this build is never
+/// read twice. It comes back as a **release**, which is what the old fields meant: the
+/// message that fired, with a different value.
+void readLegacyFollowUp(const json& node, Rule::Config& rule) {
+    bool had = false;
+    read(node, "followUp", had);
+    if (!had) {
+        return;
+    }
+    trigger::FollowUp entry;
+    if (node.contains("followUpValue")) {
+        entry.value = valueFromJson(node.at("followUpValue"));
+    }
+    read(node, "followUpDelaySeconds", entry.delaySeconds);
+    readNamed(node, "followUpUnit", entry.unit, trigger::delayUnitOf);
+    read(node, "followUpDelayBeats", entry.delayBeats);
+    rule.followUps.push_back(entry);
 }
 
 Rule::Config ruleFromJson(const json& node) {
@@ -312,10 +351,6 @@ Rule::Config ruleFromJson(const json& node) {
     read(node, "address", rule.address);
     read(node, "sendValue", rule.sendValue);
     read(node, "channel", rule.channel);
-    read(node, "followUp", rule.followUp);
-    read(node, "followUpDelaySeconds", rule.followUpDelaySeconds);
-    readNamed(node, "followUpUnit", rule.followUpUnit, trigger::delayUnitOf);
-    read(node, "followUpDelayBeats", rule.followUpDelayBeats);
     read(node, "seed", rule.seed);
 
     if (node.contains("conditions")) {
@@ -327,8 +362,29 @@ Rule::Config ruleFromJson(const json& node) {
     if (node.contains("number")) {
         rule.number = generatorFromJson(node.at("number"));
     }
-    if (node.contains("followUpValue")) {
-        rule.followUpValue = valueFromJson(node.at("followUpValue"));
+    if (node.contains("followUps") && node.at("followUps").is_array()) {
+        for (const json& one : node.at("followUps")) {
+            if (!one.is_object() || rule.followUps.size() >= trigger::kMaxFollowUps) {
+                continue;
+            }
+            trigger::FollowUp entry;
+            if (one.contains("value")) {
+                entry.value = valueFromJson(one.at("value"));
+            }
+            // Absent is a release, and an unreadable name is too — the alternative is
+            // dropping the entry, and a rule that has lost its release is a clip that stays
+            // held. See `FollowUp::kind`.
+            if (one.contains("send") && one.at("send").is_string()) {
+                entry.kind = trigger::messageKindOf(one.at("send").get<std::string>());
+            }
+            read(one, "number", entry.number);
+            read(one, "delaySeconds", entry.delaySeconds);
+            readNamed(one, "unit", entry.unit, trigger::delayUnitOf);
+            read(one, "delayBeats", entry.delayBeats);
+            rule.followUps.push_back(entry);
+        }
+    } else {
+        readLegacyFollowUp(node, rule);
     }
     if (node.contains("segments") && node.at("segments").is_array()) {
         for (const json& segment : node.at("segments")) {
@@ -349,7 +405,13 @@ std::string rulesToJson(const std::vector<trigger::Rule::Config>& rules) {
     for (const Rule::Config& rule : rules) {
         out.push_back(ruleToJson(rule));
     }
-    return out.dump(2);
+    // `error_handler_t::replace`, not the default `strict`. nlohmann refuses to write a
+    // string that is not valid UTF-8 by *throwing* — and this is reached from
+    // `settings::save`, which a Slint callback and `ui::run`'s save on the way out both
+    // call, and neither can handle an exception: the process goes and the operator's
+    // settings go with it. A byte nothing can decode becomes U+FFFD, which costs that byte
+    // and keeps every rule in the file.
+    return out.dump(2, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace);
 }
 
 std::vector<trigger::Rule::Config> rulesFromJson(std::string_view text) {

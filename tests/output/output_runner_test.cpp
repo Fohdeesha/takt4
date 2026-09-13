@@ -3,6 +3,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
+#include "core/output/midi_ports.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/output/transports.hpp"
 #include "core/tracking/state_space.hpp"
@@ -13,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -95,6 +97,20 @@ void waitForBeats(const OutputRunner& runner, std::uint64_t beats) {
     while (std::chrono::steady_clock::now() < until && runner.transports().beats() < beats) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
+}
+
+/// The same for a rule's own count, which is what a test about firing rather than about
+/// draining wants. Returns what it reached, so a caller can say how many rather than only
+/// that it waited. Safe to read here for `triggers()`' own reason — the count is a plain
+/// integer the output thread only ever increments, and the assertions that matter are made
+/// after the stop.
+std::uint64_t waitForFires(const OutputRunner& runner, std::uint64_t fires) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < until && runner.triggers().ruleCount() > 0 &&
+           runner.triggers().rule(0).fires() < fires) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    return runner.triggers().ruleCount() > 0 ? runner.triggers().rule(0).fires() : 0;
 }
 
 } // namespace
@@ -266,6 +282,43 @@ TEST_CASE("a change posted while running reaches the transports", "[output]") {
     runner.stop();
 }
 
+TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output]") {
+    // `transports()` hands back references the output thread replaces whole — a vector of
+    // targets, an optional port — so a reader at redraw rate races with a freed buffer
+    // rather than merely with a stale number. `snapshot()` is taken under a lock, and is
+    // taken again after every command, so it is at worst one round behind.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    // Filled at construction rather than at the first command: a reader must never find it
+    // uninitialised.
+    CHECK(runner.snapshot().outputs.empty());
+    CHECK_FALSE(runner.snapshot().link);
+    CHECK_FALSE(runner.snapshot().midiClockOpen);
+
+    takt4::output::OutputTarget deck;
+    deck.name = "deck";
+    deck.host = "127.0.0.1";
+    deck.port = 7000;
+    runner.post(OutputCommand::outputs({deck}));
+    runner.post(OutputCommand::linkEnabled(true));
+
+    const OutputRunner::Snapshot live = runner.snapshot();
+    CHECK(live.outputs.size() == 1);
+    CHECK(live.outputs.front().name == "deck");
+    CHECK(live.link);
+
+    const std::vector<std::string> ports = takt4::output::listMidiOutputPorts();
+    if (ports.empty()) {
+        SKIP("no MIDI output on this machine");
+    }
+    runner.post(OutputCommand::midiClockPort(ports.front()));
+    const OutputRunner::Snapshot withClock = runner.snapshot();
+    INFO("lastError: " << runner.lastError());
+    CHECK(withClock.midiClockPort == ports.front());
+    CHECK(withClock.midiClockOpen);
+}
+
 TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "[output]") {
     // The transports keep working — Transports leaves what was open alone — so the only
     // evidence is the message, and an operator has to be given it.
@@ -395,6 +448,96 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
     CHECK(halved <= kExpectedBeats / 2 + 1);
 }
 
+TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
+    // Reported from a rig on 2026-09-12: *"when hitting stop on the main window, when I hit
+    // start again, none of the triggers started firing again."*
+    //
+    // `elapsed()` — which is `Context::now` — used to be taken from `start()`, so it went
+    // back to zero on every Start while `Rule::lastFired_` kept the time of the last fire of
+    // the previous run. §5.8's cooldown test then read `now - lastFired` as a large
+    // *negative* number, which is below even a zero cooldown, and every rule that had ever
+    // fired was blocked until the clock climbed back past where it had been.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    Rule::Config rule;
+    rule.id = "lasers";
+    rule.trigger = takt4::trigger::Trigger::Downbeat;
+    rule.address = "/lasers";
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().ruleCount() == 1);
+
+    runner.start();
+    feedExcerpt(*engine);
+    const std::uint64_t before = waitForFires(runner, 1);
+    runner.stop();
+    REQUIRE(before >= 1);
+
+    // The clock only ever goes forwards, which is the fix itself and the one thing a rule's
+    // cooldown depends on.
+    const double stopped = runner.elapsed();
+    runner.start();
+    CHECK(runner.elapsed() >= stopped);
+
+    // The rules are deliberately **not** posted again: re-posting rebuilds every `Rule` and
+    // clears `lastFired_` with it, which is exactly what would hide the bug. What the
+    // operator does is press Start.
+    feedExcerpt(*engine);
+    waitForFires(runner, before + 1);
+    runner.stop();
+
+    const std::uint64_t after = runner.triggers().rule(0).fires() - before;
+    INFO(runner.rounds() << " rounds, elapsed " << runner.elapsed());
+    CHECK(after >= 1);
+    CHECK(runner.errors() == 0);
+}
+
+TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
+    // A note on whose note off has not yet come round is a laser still lit, and an operator
+    // pressing Stop has said the opposite. `TriggerEngine::flushFollowUps` on the way down —
+    // the same argument `panic` and `setRules` already make.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    Rule::Config rule;
+    rule.id = "laser";
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    rule.channel = 1;
+    rule.number.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.number.fixed = takt4::trigger::Value::ofInt(60);
+    rule.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.value.fixed = takt4::trigger::Value::ofInt(100);
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 600.0; // never due within the test; only the stop can pay it out
+    rule.followUps.push_back(release);
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().rule(0).valid());
+
+    runner.start();
+    runner.post(OutputCommand::testRule("laser"));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until && runner.triggers().pending() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    runner.stop();
+
+    std::vector<OutputRunner::Fired> owed;
+    for (const OutputRunner::Fired& entry : runner.takeFired()) {
+        if (entry.followUp) {
+            owed.push_back(entry);
+        }
+    }
+    REQUIRE(owed.size() == 1);
+    CHECK(owed[0].followUp);
+    CHECK(owed[0].ruleId == "laser");
+    // A real Note Off, not the Note On with velocity zero the rig's laser controller
+    // ignores. See `trigger::Message::Kind`.
+    CHECK(owed[0].message == "note off 60 ch 1");
+    CHECK(runner.triggers().pending() == 0);
+}
+
 TEST_CASE("panic reaches the rules through the same queue as everything else",
           "[output][trigger]") {
     // 5.8 calls PANIC "non-negotiable for live use", and 5.7 gives it an address. Both of
@@ -481,4 +624,123 @@ TEST_CASE("a control surface reaches the rules without knowing what a runner is"
         CHECK(runner.triggers().rule(0).fires() == 0);
         CHECK(runner.errors() == 0);
     }
+}
+
+TEST_CASE("a target list that would not open still moves the routing with it",
+          "[output][trigger]") {
+    // `Transports::setOutputs` replaces its list and *then* raises whatever would not open,
+    // so the bit a rule's name resolves to has already moved when it throws. Resolving the
+    // routing only on the way out of a successful call left every rule holding the bit its
+    // old neighbour used to occupy — one unplugged MIDI device was enough to send a rule's
+    // clips to the lighting desk instead.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+
+    takt4::output::OutputTarget wall;
+    wall.name = "wall";
+    wall.host = "127.0.0.1";
+    wall.port = 7000;
+
+    Transports::Config config;
+    config.outputs = {wall};
+    OutputRunner runner(*engine, config);
+
+    Rule::Config rule;
+    rule.id = "wall-rule";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/wall";
+    rule.outputs = {"wall"};
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().ruleCount() == 1);
+    REQUIRE(runner.triggers().rule(0).outputMask() == 1); // "wall" is target 0
+
+    // A new list where "wall" has moved to index 1 and index 0 is a device this machine has
+    // not got, so the replacement reports a failure part-way through.
+    takt4::output::OutputTarget broken;
+    broken.name = "lights";
+    broken.kind = takt4::output::OutputTarget::Kind::Midi;
+    broken.device = "takt4 test - no such MIDI device exists";
+    runner.post(OutputCommand::outputs({broken, wall}));
+
+    INFO("lastError: " << runner.lastError());
+    CHECK_FALSE(runner.lastError().empty());            // the failure is still reported
+    CHECK(runner.triggers().rule(0).outputMask() == 2); // and "wall" is target 1 now
+
+    SECTION("and the targets that did open are still there") {
+        const OutputRunner::Snapshot live = runner.snapshot();
+        REQUIRE(live.outputs.size() == 2);
+        CHECK(live.outputs[1].name == "wall");
+    }
+}
+
+TEST_CASE("two control surfaces can post to a stopped runner at once", "[output][trigger]") {
+    // `post` applies on the *caller's* thread while the runner is stopped — which is what
+    // lets an app be configured before it is started, and is the state an operator binding
+    // buttons before a set is in. §5.7's `panic` and `rule/<id>/enable` are documented safe
+    // from RtMidi's callback and from the OSC receiver's loop, so two of them really can be
+    // inside `apply` at once, and the rules editor commits the whole set on every keystroke
+    // from a third. All of it mutates one vector of rules.
+    //
+    // A soak rather than a proof: a race is not something a test can observe directly, so
+    // what this does is run the shapes that would collide and check that what comes out is
+    // intact. Under `ownerMutex_` it is; without it, it is a vector being cleared under a
+    // walk.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    std::vector<Rule::Config> set;
+    for (int i = 0; i < 32; ++i) {
+        Rule::Config rule;
+        // Long enough to be a heap allocation rather than a small string, so a walk over a
+        // set being rebuilt would be reading freed memory rather than a stale byte.
+        rule.id = "a-rule-id-past-the-small-string-buffer-" + std::to_string(i);
+        rule.trigger = takt4::trigger::Trigger::Manual;
+        rule.address = "/r" + std::to_string(i);
+        set.push_back(rule);
+    }
+    const std::string last = set.back().id;
+    runner.post(OutputCommand::rules(set));
+    REQUIRE(runner.triggers().ruleCount() == set.size());
+
+    std::atomic<bool> go{false};
+    const auto wait = [&go] {
+        while (!go.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    };
+    // The editor: the whole set again on every keystroke.
+    std::thread editing([&] {
+        wait();
+        for (int i = 0; i < 2000; ++i) {
+            set.front().name = std::string(static_cast<std::size_t>(i % 24) + 1, 'x');
+            runner.post(OutputCommand::rules(set));
+        }
+    });
+    // A Stream Deck on the OSC socket, and a pad on RtMidi's callback thread.
+    std::thread surface([&] {
+        wait();
+        for (int i = 0; i < 20000; ++i) {
+            runner.setRuleEnabled(last, i % 2 == 0);
+        }
+    });
+    std::thread pad([&] {
+        wait();
+        for (int i = 0; i < 20000; ++i) {
+            runner.panic(i % 2 == 0);
+        }
+    });
+    go.store(true, std::memory_order_release);
+    editing.join();
+    surface.join();
+    pad.join();
+
+    // Intact, and still the set that was posted: every id in place and readable, which is
+    // what a walk over a vector being rebuilt underneath would not have left.
+    REQUIRE(runner.triggers().ruleCount() == set.size());
+    for (std::size_t i = 0; i < set.size(); ++i) {
+        INFO("rule " << i);
+        REQUIRE(runner.triggers().rule(i).id() == set[i].id);
+    }
+    CHECK(runner.triggers().rule(set.size() - 1).id() == last);
+    runner.panic(false);
+    CHECK_FALSE(runner.panicked());
 }

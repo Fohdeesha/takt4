@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace takt4::trigger {
@@ -128,7 +129,29 @@ struct Conditions {
 /// them in a queue and a queue of one type is the difference between a `std::vector` and a
 /// hierarchy. `kind` says which fields mean anything.
 struct Message {
-    enum class Kind : std::uint8_t { Osc, MidiNote, MidiCc };
+    /// **Note On and Note Off are separate kinds, and that is not tidiness.** Until
+    /// 2026-09-12 the only note status on the wire was `0x90`, and a release was that with
+    /// velocity zero — which `rule_sink.cpp` justified as "a note-off on every device made
+    /// since 1983". It is not: the operator's laser controller (Pangolin Liberation) holds
+    /// its clip until a real `0x80` arrives, so a rig built on the velocity-zero convention
+    /// never released. The convention is common, not universal, and a sender cannot tell
+    /// which end it has. So takt4 sends what the standard says, and a release of a `MidiNote`
+    /// is a `MidiNoteOff` (`Rule::followUpsFor`).
+    ///
+    /// `number` and `value` mean different things per kind, and `sendsNumber` /
+    /// `sendsValue` say which are live so the editor can label and hide accordingly:
+    ///   - `MidiNote` / `MidiNoteOff`: note, velocity
+    ///   - `MidiCc`: controller, value
+    ///   - `MidiProgramChange`: program, and nothing else — it is a two-byte message
+    ///   - `MidiPitchBend`: no number, and a **14-bit** value (0-16383, centre 8192)
+    enum class Kind : std::uint8_t {
+        Osc,
+        MidiNote,
+        MidiNoteOff,
+        MidiCc,
+        MidiProgramChange,
+        MidiPitchBend,
+    };
 
     Kind kind = Kind::Osc;
     /// Osc: the address, with every `{...}` segment already filled in. Owned, because the
@@ -160,13 +183,96 @@ struct Message {
     std::uint64_t outputs = ~std::uint64_t{0};
 };
 
-inline constexpr std::array<Message::Kind, 3> kMessageKinds{
-    Message::Kind::Osc, Message::Kind::MidiNote, Message::Kind::MidiCc};
+inline constexpr std::array<Message::Kind, 6> kMessageKinds{
+    Message::Kind::Osc,    Message::Kind::MidiNote,          Message::Kind::MidiNoteOff,
+    Message::Kind::MidiCc, Message::Kind::MidiProgramChange, Message::Kind::MidiPitchBend};
+
+/// True for everything but `Osc` — the test every MIDI-shaped branch wants, written once so
+/// adding a seventh kind does not mean finding every `!= Osc` in the tree.
+constexpr bool isMidi(Message::Kind kind) noexcept {
+    return kind != Message::Kind::Osc;
+}
+
+/// Whether the kind puts `Message::number` on the wire. False for pitch bend, which is all
+/// value, and for OSC, which has neither.
+constexpr bool sendsNumber(Message::Kind kind) noexcept {
+    return kind == Message::Kind::MidiNote || kind == Message::Kind::MidiNoteOff ||
+           kind == Message::Kind::MidiCc || kind == Message::Kind::MidiProgramChange;
+}
+
+/// Whether the kind puts `Message::value` on the wire. False for program change, which is a
+/// two-byte message and has nowhere to put one.
+constexpr bool sendsValue(Message::Kind kind) noexcept {
+    return isMidi(kind) && kind != Message::Kind::MidiProgramChange;
+}
+
+/// The inclusive ceiling on `Message::value` for a kind: pitch bend is 14-bit, everything
+/// else is a data byte. `Rule` clamps to this and §5.9's editor reads it for its own range.
+constexpr int valueCeiling(Message::Kind kind) noexcept {
+    return kind == Message::Kind::MidiPitchBend ? 16383 : 127;
+}
 
 /// What §5.9's SEND dropdown offers, and what a preset spells the choice with.
 std::string_view labelOf(Message::Kind kind) noexcept;
 std::string_view nameOf(Message::Kind kind) noexcept;
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept;
+
+/// One of the messages a rule sends *after* the one it fired — §5.8's *"optional follow-up
+/// value after a delay"*, grown into a list.
+///
+/// **It was one value and a delay, and that was not enough.** §5.6's press-then-release is
+/// the case it was written for, and it reads as a tick box with a number beside it: send a 1,
+/// send a 0 fifty milliseconds later. A rig then asked for the thing a tick box cannot say —
+/// *"I need a note on trigger to trigger Liberation laser clips. when the beat is done, I
+/// need the option to send a note off. in the same trigger"* — and the honest answer is that
+/// a rule sends a **sequence**, of which press-then-release is the shortest interesting one.
+/// So each entry says what it sends rather than only what value it carries.
+///
+/// Every delay is measured **from the fire**, never from the entry above it. Two entries at
+/// one beat and two beats are a note held for a beat and something else on the next, which is
+/// how an operator counts them; chaining them would make each one's timing depend on edits
+/// made to the one before.
+struct FollowUp {
+    /// What to send, or nothing for a **release** — the message that fired, with a new value,
+    /// and `MidiNote` turned into `MidiNoteOff`.
+    ///
+    /// Release is the default and the only thing that can follow a *drawn* number: a rule
+    /// that shuffles its note has to let go of the note it drew, which nobody can type in
+    /// advance. An explicit kind is for a second gesture rather than the release of the first
+    /// — a note on, then a CC a bar later.
+    ///
+    /// **An explicit kind must be on the same side of the OSC/MIDI divide as the rule.** One
+    /// that is not is skipped rather than sent: a MIDI follow-up to an OSC rule has no channel
+    /// or note to inherit, and an OSC follow-up to a MIDI rule has no address.
+    std::optional<Message::Kind> kind;
+    /// The release velocity, controller value, bend, or OSC argument.
+    Value value = Value::ofInt(0);
+    /// The note or controller number, when `kind` names one that takes one. A release inherits
+    /// the fired message's instead, which is the whole point of a release.
+    int number = 0;
+
+    DelayUnit unit = DelayUnit::Milliseconds;
+    /// The delay in milliseconds, used when `unit` is `Milliseconds`.
+    double delaySeconds = 0.05;
+    /// The same delay in beats — or in bars — used when `unit` says so. See `DelayUnit` for
+    /// why both exist, and `Rule::followUpDelay` for the arithmetic.
+    ///
+    /// **Two numbers rather than one converted between units.** They are different magnitudes
+    /// of the same idea — fifty milliseconds against two beats — and a single field would turn
+    /// a 50 into a 0.077 the moment the unit changed, which is a box nobody can type in and a
+    /// preset nobody can read.
+    double delayBeats = 1.0;
+};
+
+/// How many follow-ups one rule may carry. Not a limit anybody should meet: it is here so a
+/// settings file hand-edited into nonsense cannot make one fire queue thousands of messages.
+inline constexpr std::size_t kMaxFollowUps = 8;
+
+/// Whether `kind` can follow a rule that sends `sent` — the OSC/MIDI divide `FollowUp::kind`
+/// describes. A release (no kind) always can, since it *is* the fired message.
+constexpr bool followUpFits(Message::Kind kind, Message::Kind sent) noexcept {
+    return isMidi(kind) == isMidi(sent);
+}
 
 /// Where a fired rule's messages go.
 ///
@@ -248,20 +354,10 @@ public:
         /// it shuffles clips.
         Generator::Config number;
 
-        /// §5.8's *"optional follow-up value after a delay"* — §5.6's press-then-release.
-        bool followUp = false;
-        Value followUpValue = Value::ofInt(0);
-        /// The delay in milliseconds, used when `followUpUnit` is `Milliseconds`.
-        double followUpDelaySeconds = 0.05;
-        /// The same delay in beats — or in bars — used when `followUpUnit` says so. See
-        /// `DelayUnit` for why both exist, and `Rule::followUpDelay` for the arithmetic.
-        ///
-        /// **Two numbers rather than one converted between units.** They are different
-        /// magnitudes of the same idea — fifty milliseconds against two beats — and a single
-        /// field would turn a 50 into a 0.077 the moment the unit changed, which is a box
-        /// nobody can type in and a preset nobody can read.
-        DelayUnit followUpUnit = DelayUnit::Milliseconds;
-        double followUpDelayBeats = 1.0;
+        /// §5.8's *"optional follow-up value after a delay"*, as many as the rule needs.
+        /// Empty is a rule that sends one message and is done. See `FollowUp`, and
+        /// `Rule::followUpsFor` for what each entry turns into.
+        std::vector<FollowUp> followUps;
 
         /// Seeds every generator this rule owns, each offset from it, so two rules in a
         /// preset do not fire the same clip as each other. See `Generator::Config::seed`.
@@ -337,33 +433,47 @@ public:
     /// depends on what the generators produced.
     std::optional<Message> fire(const Context& context);
 
-    /// The follow-up for a message just fired, or nothing when the rule has none. §5.6's
-    /// release half: the same address and MIDI target, a different value.
-    std::optional<Message> followUpFor(const Message& fired) const;
+    /// The messages this rule owes after `fired`, appended to `out` in configuration order.
+    ///
+    /// §5.6's release half and everything past it: each is the fired message with whatever
+    /// the matching `FollowUp` overrides. An entry whose kind does not fit the rule's own —
+    /// see `followUpFits` — contributes nothing, so `out` can come back shorter than the
+    /// configuration, and the index of an appended message is **not** its index in
+    /// `Config::followUps`. `followUpDelay` takes the configuration's index, so the two are
+    /// paired by `followUpsFor` returning them together rather than by the caller counting.
+    ///
+    /// Appended rather than assigned: the scheduler calls this once per fire on the output
+    /// thread and reuses one buffer, so a rule that sends two messages allocates nothing
+    /// after the first fire.
+    void followUpsFor(const Message& fired,
+                      std::vector<std::pair<std::size_t, Message>>& out) const;
 
-    /// How long that follow-up waits, in seconds, for a fire at this moment.
+    /// How long follow-up `index` of `Config::followUps` waits, in seconds, for a fire now.
     ///
-    /// Resolved here rather than by the scheduler because the answer depends on the rule's
+    /// Resolved here rather than by the scheduler because the answer depends on that entry's
     /// own unit and on the tempo the fire happened at — and it is settled **at the fire**,
-    /// not when the follow-up comes due: two beats after a press means two beats of the
-    /// tempo that was playing, not of whatever the tracker says a second later.
+    /// not when the follow-up comes due: two beats after a press means two beats of the tempo
+    /// that was playing, not of whatever the tracker says a second later.
     ///
-    /// Falls back to the millisecond figure when the unit is musical and there is no tempo
-    /// to measure against. A follow-up due immediately would be a release sent in the same
-    /// round as its press, which reads as a rule that does nothing at all.
-    double followUpDelay(const Context& context) const noexcept;
+    /// Falls back to the millisecond figure when the unit is musical and there is no tempo to
+    /// measure against. A follow-up due immediately would be a release sent in the same round
+    /// as its press, which reads as a rule that does nothing at all. Zero for an index the
+    /// rule has not got.
+    double followUpDelay(const Context& context, std::size_t index) const noexcept;
 
     /// When this rule last fired, on `Context::now`. Negative before it ever has.
     double lastFired() const noexcept { return lastFired_; }
     std::uint64_t fires() const noexcept { return fires_; }
 
     /// What each generator produced on the last fire, **in the order §5.9's editor draws
-    /// the chips**: the address segments and then the value for OSC, the note or CC number
-    /// and then the value for MIDI, with the value left out when the rule sends none.
+    /// the chips**: for OSC the address segments and then the value, the value left out when
+    /// `sendValue` is false; for MIDI the number and then the value, each left out where the
+    /// kind does not carry one — a pitch bend has no number and a program change no value,
+    /// so each of those has a single entry.
     ///
-    /// That ordering is the contract. The editor pairs these with its rows by position, and
-    /// a generator that produced a value nobody can see beside the box that configures it is
-    /// a rule an operator has to read the event log to debug.
+    /// That ordering is the contract. The editor pairs these with its rows by position
+    /// (`RulesController::slotConfig` indexes them the same way), and one extra entry moves
+    /// every chip after it onto the wrong generator.
     ///
     /// Empty before the rule has fired, and cleared by a fire that could not build its
     /// message — there is nothing to show for a fire that did not happen.

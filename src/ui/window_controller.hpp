@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -249,6 +250,30 @@ public:
     /// saves it; this class does not know where settings live and does not want to.
     settings::Settings currentSettings() const;
 
+    /// Write `currentSettings()` to the usual place, now, rather than on the way out.
+    ///
+    /// **Why this exists.** `app.cpp` saves when the window closes and nowhere else, on the
+    /// reasoning that a slider drag would otherwise write the file sixty times a second —
+    /// which is right, and leaves an operator who has spent an hour building rules with no
+    /// way to commit them and nothing to do but trust a clean exit. They said so on
+    /// 2026-09-12: *"I am scared of closing it"*. A button is the answer; the automatic
+    /// save on exit stays exactly as it was.
+    bool saveNow();
+
+    /// The same bytes to a file of the operator's choosing, for a backup or a second rig.
+    bool exportTo(const std::filesystem::path& path);
+
+    /// Load a file and apply **the portable half** — Q7's preset: the rules, the outputs,
+    /// the fold window and the rest of `TempoTracker::Options`, the meters, Link and the OSC
+    /// prefix. The machine-local half is deliberately left alone: the audio device, the MIDI
+    /// clock port and the learned bindings describe *this* desk, and a preset carried from
+    /// another one naming a device that is not here would silently stop the tracker.
+    ///
+    /// False only when the file could not be read as settings at all. Note that
+    /// `settings::load` never fails, so this reports on the file existing and parsing rather
+    /// than on the contents being sensible.
+    bool importFrom(const std::filesystem::path& path);
+
     /// What is being sent, for the row that draws it.
     const output::OutputRunner& outputs() const noexcept { return runner_; }
     /// Every MIDI output port on the machine, as offered in the picker.
@@ -355,6 +380,15 @@ private:
     /// window's copy and the one the rows are drawn from; `applyTargets` is what turns it
     /// into the transports' list.
     std::vector<OutputRow> targetDrafts_;
+    /// Set when `publishTargetRows` found a row whose *text* moved — a delete that shifted
+    /// every row below it up one, most often — and consumed by `tick`, which builds the
+    /// repeater again so each box comes back **bound**. Deferred rather than done there and
+    /// then, because the publisher runs inside the callback of the row being destroyed.
+    bool targetRowsDirty_ = false;
+    /// The last thing the output thread said went wrong, as this window has already shown it.
+    /// Watched in `tick` because `post` is asynchronous while the tracker runs — see the note
+    /// there, which is a bug report about MIDI ports that failed to open in silence.
+    std::string outputErrorShown_;
     std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
     float peak_ = 0.0f;
     bool statusIsError_ = false;

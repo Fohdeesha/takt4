@@ -31,7 +31,17 @@ Then WORK/manifest.json: every track with audio, its duration, tempo, meter, a s
                          length tracks.jsonl records, so it is not the video annotated
     few_beats            fewer than four beats or two downbeats — prepare_data.py's rule
 
-check.py adds the activation-based flags later; finetune.py honours all of them.
+...and, on a pseudo-labelled set, three about whether the label can be believed:
+
+    teacher_disagree        Beat This!'s own three seeds agree below 0.7 beat F
+    teacher_disagree_cross  a second teacher of another lineage (madmom, teacher_agree.py)
+                            agrees with the label below 0.7 beat F
+    teacher_octave_cross    ...and reads a whole octave from it, which is §7.13.2's central
+                            failure mode and the one the seed filter is blindest to
+
+check.py adds the activation-based flags later. A flag only records what was measured:
+`finetune.py` drops a track when the recipe's `exclude_flags` names the flag, so adding
+one changes no existing run until a config asks for it.
 """
 import argparse
 import csv
@@ -235,6 +245,17 @@ def _harness_titles():
 #: share, and the track is flagged `teacher_disagree` rather than taught.
 MIN_TEACHER_AGREEMENT = 0.7
 
+#: The same question asked of a *different lineage* — madmom's RNN + DBN, from
+#: teacher_agree.py's teacher_cross.tsv. Seeds of one model share that model's bias, so
+#: their agreement measures variance and not correctness: on 2026-09-09 the sampled tracks
+#: where madmom sat a whole octave from the teacher had a mean seed agreement of 0.806, and
+#: the seed filter caught three of ten. The two filters correlate only 0.681.
+#:
+#: madmom is *weaker* than Beat This! on electronic music, so a disagreement does not mean
+#: the label is wrong — it means the label has no independent confirmation. These flags are
+#: for **excluding or downweighting, never for relabelling** (TRACKING-PROPOSAL.md §7.15).
+MIN_TEACHER_AGREEMENT_CROSS = 0.7
+
 
 def read_agreement(path):
     """{stem: (min, mean, ensemble tempo, [seed tempi])} from distil.py's agreement.tsv."""
@@ -250,19 +271,53 @@ def read_agreement(path):
     return out
 
 
-def layout_own(set_name, source, min_agreement=MIN_TEACHER_AGREEMENT):
+def read_teacher_cross(path):
+    """{stem: (madmom bpm, teacher bpm, beat F, downbeat F, bpm ratio)} from
+    teacher_agree.py's teacher_cross.tsv. Skips the header and any line a killed run
+    truncated; the file is written as the run goes, so a partial one is expected."""
+    out = {}
+    if not path.exists():
+        return out
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 6:
+                try:
+                    out[parts[0]] = tuple(float(p) for p in parts[1:6])
+                except ValueError:
+                    continue                           # the header, or a truncated tail
+    return out
+
+
+def is_octave(ratio):
+    """madmom a whole octave from the teacher — teacher_agree.py's own test. These are the
+    labels worth dropping first: the octave is §7.13.2's central failure mode, and the seed
+    filter is at its blindest exactly here."""
+    return abs(ratio - 2.0) < 0.1 or abs(ratio - 0.5) < 0.05
+
+
+def layout_own(set_name, source, min_agreement=MIN_TEACHER_AGREEMENT,
+               min_agreement_cross=MIN_TEACHER_AGREEMENT_CROSS):
     """A set of the operator's own — the library distil.py labelled, or the tracks tapped in
     through tools/annotate.py — as audio/<stem>.wav and annotations/<stem>.beats. Any track
     that is one of references/audio's, the 23 the harness scores, is flagged held_out,
     matched by title (`_harness_titles`); a pseudo-labelled track whose teacher seeds
-    disagree below `min_agreement` is flagged `teacher_disagree`."""
+    disagree below `min_agreement` is flagged `teacher_disagree`.
+
+    Two further flags come from teacher_agree.py's second teacher, when it has been run:
+    `teacher_disagree_cross` below `min_agreement_cross`, and `teacher_octave_cross` where
+    madmom reads a whole octave from the label. They are *separate* from the seed flag
+    because they catch different tracks — the two filters correlate 0.681 — and separate
+    from each other because the octave ones are the ones to drop first."""
     base = DATASETS / SETS[set_name][0]
     audio, ann = base / SETS[set_name][1], base / SETS[set_name][2]
     if not audio.is_dir():
         return [], {"note": f"{audio} does not exist; nothing laid out"}
     harness = _harness_titles()
     agreement = read_agreement(base / "agreement.tsv")
+    cross = read_teacher_cross(base / "teacher_cross.tsv")
     tracks, missing, disagree = [], 0, 0
+    disagree_cross, octave_cross = 0, 0
     for wav in sorted(audio.glob("*.wav")):
         beats = ann / f"{wav.stem}.beats"
         if not beats.exists():
@@ -282,11 +337,27 @@ def layout_own(set_name, source, min_agreement=MIN_TEACHER_AGREEMENT):
             if low < min_agreement:
                 rec["flags"].append("teacher_disagree")
                 disagree += 1
+        if wav.stem in cross:
+            mad_bpm, _, beat_f, _, ratio = cross[wav.stem]
+            rec["teacher_cross_f"] = round(beat_f, 4)
+            rec["teacher_cross_ratio"] = round(ratio, 3)
+            rec["teacher_cross_bpm"] = round(mad_bpm, 2)
+            if beat_f < min_agreement_cross:
+                rec["flags"].append("teacher_disagree_cross")
+                disagree_cross += 1
+            if is_octave(ratio):
+                rec["flags"].append("teacher_octave_cross")
+                octave_cross += 1
         tracks.append(rec)
     notes = {"audio_without_annotation": missing}
     if agreement:
         notes["teacher_disagree"] = disagree
         notes["min_teacher_agreement"] = min_agreement
+    if cross:
+        notes["teacher_cross_scored"] = len(cross)
+        notes["teacher_disagree_cross"] = disagree_cross
+        notes["teacher_octave_cross"] = octave_cross
+        notes["min_teacher_agreement_cross"] = min_agreement_cross
     return tracks, notes
 
 

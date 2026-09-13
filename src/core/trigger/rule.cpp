@@ -169,8 +169,14 @@ std::string_view labelOf(Message::Kind kind) noexcept {
         return "OSC address";
     case Message::Kind::MidiNote:
         return "MIDI note";
+    case Message::Kind::MidiNoteOff:
+        return "MIDI note off";
     case Message::Kind::MidiCc:
         return "MIDI CC";
+    case Message::Kind::MidiProgramChange:
+        return "MIDI program";
+    case Message::Kind::MidiPitchBend:
+        return "MIDI pitch bend";
     }
     return "";
 }
@@ -181,8 +187,14 @@ std::string_view nameOf(Message::Kind kind) noexcept {
         return "osc";
     case Message::Kind::MidiNote:
         return "midi-note";
+    case Message::Kind::MidiNoteOff:
+        return "midi-note-off";
     case Message::Kind::MidiCc:
         return "midi-cc";
+    case Message::Kind::MidiProgramChange:
+        return "midi-program";
+    case Message::Kind::MidiPitchBend:
+        return "midi-pitch-bend";
     }
     return "";
 }
@@ -408,13 +420,27 @@ std::optional<Message> Rule::fire(const Context& context) {
         }
     } else {
         message.channel = std::clamp(config_.channel, 1, kMidiChannels);
-        message.number = std::clamp(number_.next(context).asInt(), 0, kMidiMax);
-        message.value = std::clamp(value_.next(context).asInt(), 0, kMidiMax);
-        // The clamped numbers, not what the generator offered: what went on the wire is what
-        // the chip beside the generator should say, or a note pushed back into range would
-        // read on screen as the note that was sent.
-        lastSlots_.push_back(Value::ofInt(message.number));
-        if (config_.sendValue) {
+        // **Only the fields the kind actually puts on the wire**, and in the order
+        // `lastSlots` documents — which is the order §5.9's editor draws the chips and the
+        // order `RulesController::slotConfig` indexes them by. A pitch bend has no number
+        // and a program change no value, so neither has a chip; recording one anyway paired
+        // every chip with the wrong generator. Measured: a bend of 12000 read as 9 on
+        // screen, because slot 0 held the number generator nothing had sent.
+        //
+        // Not drawn either, for the same reason: a generator whose value never leaves should
+        // not be spending a shuffle's bag on it.
+        if (sendsNumber(config_.sendKind)) {
+            // The clamped number, not what the generator offered: what went on the wire is
+            // what the chip beside the generator should say, or a note pushed back into
+            // range would read on screen as the note that was sent.
+            message.number = std::clamp(number_.next(context).asInt(), 0, kMidiMax);
+            lastSlots_.push_back(Value::ofInt(message.number));
+        }
+        if (sendsValue(config_.sendKind)) {
+            // Pitch bend is 14-bit and everything else is a data byte, so the ceiling is the
+            // kind's rather than a constant — clamping a bend to 127 would pin it hard left.
+            message.value =
+                std::clamp(value_.next(context).asInt(), 0, valueCeiling(config_.sendKind));
             lastSlots_.push_back(Value::ofInt(message.value));
         }
     }
@@ -423,32 +449,63 @@ std::optional<Message> Rule::fire(const Context& context) {
     return message;
 }
 
-std::optional<Message> Rule::followUpFor(const Message& fired) const {
-    if (!config_.followUp) {
-        return std::nullopt;
+void Rule::followUpsFor(const Message& fired,
+                        std::vector<std::pair<std::size_t, Message>>& out) const {
+    const std::size_t many = std::min(config_.followUps.size(), kMaxFollowUps);
+    for (std::size_t i = 0; i < many; ++i) {
+        const FollowUp& owed = config_.followUps[i];
+        // A kind on the wrong side of the OSC/MIDI divide has nothing to inherit — no address
+        // one way, no channel or note the other — so it is skipped rather than sent as
+        // whatever the defaults happen to be. The editor does not offer one; a hand-edited
+        // preset can still hold one, and silence beats a note on channel 1 nobody asked for.
+        if (owed.kind && !followUpFits(*owed.kind, fired.kind)) {
+            continue;
+        }
+        // The same address and the same MIDI target: §5.6's release is the press again with a
+        // different value, which is what makes it a release rather than a second event. An
+        // entry that names a kind changes that one field and keeps the rest, so "note on then
+        // CC" still goes to the channel and the outputs the note went to.
+        Message follow = fired;
+        if (owed.kind) {
+            follow.kind = *owed.kind;
+        } else if (fired.kind == Message::Kind::MidiNote) {
+            // **A note's release is a real Note Off**, not the same Note On with velocity
+            // zero. The velocity-zero convention is widely understood and not universal: the
+            // operator's laser controller holds its clip until `0x80` arrives, so the rig
+            // never released. See the note on `Message::Kind`. The configured value rides
+            // along as the *release* velocity, which is a real field of Note Off.
+            follow.kind = Message::Kind::MidiNoteOff;
+        }
+        if (follow.kind == Message::Kind::Osc) {
+            follow.argument = owed.value;
+            follow.hasArgument = true;
+        } else {
+            // Only an explicit kind brings its own number. A release inherits the fired
+            // message's, which is the whole point of one: the note to let go of is the note
+            // that was drawn, and a shuffled rule draws a different one every time.
+            if (owed.kind && sendsNumber(*owed.kind)) {
+                follow.number = std::clamp(owed.number, 0, kMidiMax);
+            }
+            follow.value = std::clamp(owed.value.asInt(), 0, valueCeiling(follow.kind));
+        }
+        out.emplace_back(i, std::move(follow));
     }
-    // The same address and the same MIDI target: §5.6's release is the press again with a
-    // different value, which is what makes it a release rather than a second event.
-    Message follow = fired;
-    if (fired.kind == Message::Kind::Osc) {
-        follow.argument = config_.followUpValue;
-        follow.hasArgument = true;
-    } else {
-        follow.value = std::clamp(config_.followUpValue.asInt(), 0, kMidiMax);
-    }
-    return follow;
 }
 
-double Rule::followUpDelay(const Context& context) const noexcept {
-    const double milliseconds = std::max(0.0, config_.followUpDelaySeconds);
-    if (config_.followUpUnit == DelayUnit::Milliseconds) {
+double Rule::followUpDelay(const Context& context, std::size_t index) const noexcept {
+    if (index >= config_.followUps.size()) {
+        return 0.0;
+    }
+    const FollowUp& owed = config_.followUps[index];
+    const double milliseconds = std::max(0.0, owed.delaySeconds);
+    if (owed.unit == DelayUnit::Milliseconds) {
         return milliseconds;
     }
     if (!(context.bpm > 0.0)) {
         return milliseconds; // nothing tracked to count beats of; see the header
     }
-    double beats = std::max(0.0, config_.followUpDelayBeats);
-    if (config_.followUpUnit == DelayUnit::Bars) {
+    double beats = std::max(0.0, owed.delayBeats);
+    if (owed.unit == DelayUnit::Bars) {
         // The meter the tracker is reporting, never four (§5.5). Before it has an opinion a
         // bar is one beat, which is short rather than wrong — the alternative is assuming a
         // meter and holding a clip for four beats of a waltz.

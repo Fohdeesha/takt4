@@ -3,13 +3,17 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Catch::Approx;
 using takt4::features::Intensity;
 using takt4::trigger::Context;
+using takt4::trigger::DelayUnit;
+using takt4::trigger::FollowUp;
 using takt4::trigger::Generator;
 using takt4::trigger::GeneratorKind;
 using takt4::trigger::Message;
@@ -28,6 +32,30 @@ Generator::Config fixedAt(std::int32_t value) {
     return config;
 }
 
+/// A release — the fired message again with a different value — after a delay in ms.
+FollowUp releaseAfterMs(std::int32_t value, double milliseconds) {
+    FollowUp entry;
+    entry.value = Value::ofInt(value);
+    entry.unit = DelayUnit::Milliseconds;
+    entry.delaySeconds = milliseconds / 1000.0;
+    return entry;
+}
+
+/// What a rule owes after `fired`, as the messages alone. `Rule::followUpsFor` pairs each
+/// with the index of the `FollowUp` that produced it — which the scheduler needs and a test
+/// asserting what went on the wire does not.
+std::vector<Message> followUps(const Rule& rule, const Message& fired) {
+    std::vector<std::pair<std::size_t, Message>> owed;
+    rule.followUpsFor(fired, owed);
+    std::vector<Message> messages;
+    messages.reserve(owed.size());
+    for (auto& [index, message] : owed) {
+        (void)index;
+        messages.push_back(std::move(message));
+    }
+    return messages;
+}
+
 /// §5.6's own Resolume example: "/composition/layers/{L}/clips/{C}/connect — int 1 (press)
 /// then 0 (release)".
 Rule::Config resolumeClip() {
@@ -36,9 +64,7 @@ Rule::Config resolumeClip() {
     config.address = "/composition/layers/{L}/clips/{C}/connect";
     config.segments = {fixedAt(2), fixedAt(5)};
     config.value = fixedAt(1);
-    config.followUp = true;
-    config.followUpValue = Value::ofInt(0);
-    config.followUpDelaySeconds = 0.05;
+    config.followUps.push_back(releaseAfterMs(0, 50));
     return config;
 }
 
@@ -117,18 +143,30 @@ TEST_CASE("a rule sends what the Resolume example in 5.6 describes", "[trigger][
     CHECK(rule.lastFired() == Approx(10.0));
 
     // "then 0 (release)" — the same address, a different value.
-    const std::optional<Message> follow = rule.followUpFor(*fired);
-    REQUIRE(follow.has_value());
-    CHECK(follow->address == fired->address);
-    CHECK(follow->argument.asInt() == 0);
+    const std::vector<Message> follow = followUps(rule, *fired);
+    REQUIRE(follow.size() == 1);
+    CHECK(follow[0].address == fired->address);
+    CHECK(follow[0].argument.asInt() == 0);
 
     SECTION("a rule with no follow-up has none") {
         Rule::Config config = resolumeClip();
-        config.followUp = false;
+        config.followUps.clear();
         Rule once(config);
         const std::optional<Message> only = once.fire(context);
         REQUIRE(only.has_value());
-        CHECK_FALSE(once.followUpFor(*only).has_value());
+        CHECK(followUps(once, *only).empty());
+    }
+
+    SECTION("an OSC rule cannot be given a MIDI follow-up") {
+        // A MIDI follow-up to an OSC rule has no channel or note to inherit, so it is
+        // skipped rather than sent as whatever the defaults happen to be. The editor does
+        // not offer one; a hand-edited preset can still hold one.
+        Rule::Config config = resolumeClip();
+        config.followUps.front().kind = Message::Kind::MidiNote;
+        Rule mixed(config);
+        const std::optional<Message> only = mixed.fire(context);
+        REQUIRE(only.has_value());
+        CHECK(followUps(mixed, *only).empty());
     }
 
     SECTION("an address that takes no argument sends none") {
@@ -164,21 +202,74 @@ TEST_CASE("a MIDI rule clamps to what MIDI can carry", "[trigger][rule]") {
     CHECK(fired->number == 127); // clamped, not wrapped to 44
     CHECK(fired->value == 0);
 
-    SECTION("a follow-up on a note is the release") {
+    SECTION("a follow-up on a note is a real note off, on the note that fired") {
+        // **Not the same note on with velocity zero.** That convention is widely understood
+        // and not universal: the operator's laser controller holds its clip until 0x80
+        // arrives, so a rig built on it never released. See `trigger::Message::Kind`.
         config.number = fixedAt(36);
         config.value = fixedAt(100);
-        config.followUp = true;
-        config.followUpValue = Value::ofInt(0);
+        config.followUps.push_back(releaseAfterMs(0, 50));
         Rule pressed(config);
         const std::optional<Message> press = pressed.fire(context);
         REQUIRE(press.has_value());
         CHECK(press->number == 36);
         CHECK(press->value == 100);
-        const std::optional<Message> release = pressed.followUpFor(*press);
-        REQUIRE(release.has_value());
-        CHECK(release->number == 36); // the same note, or it is not a release
-        CHECK(release->channel == 10);
-        CHECK(release->value == 0);
+        const std::vector<Message> release = followUps(pressed, *press);
+        REQUIRE(release.size() == 1);
+        CHECK(release[0].kind == Message::Kind::MidiNoteOff);
+        CHECK(release[0].number == 36); // the same note, or it is not a release
+        CHECK(release[0].channel == 10);
+        CHECK(release[0].value == 0);
+    }
+
+    SECTION("a shuffled note is released on the note that was drawn") {
+        // The whole point of a release inheriting the fired message's number: nobody can
+        // type in advance which note a shuffle will pick.
+        config.number.kind = GeneratorKind::Shuffle;
+        config.number.low = 36;
+        config.number.high = 43;
+        config.value = fixedAt(100);
+        config.followUps.push_back(releaseAfterMs(0, 80));
+        Rule shuffled(config);
+        const std::optional<Message> press = shuffled.fire(context);
+        REQUIRE(press.has_value());
+        const std::vector<Message> release = followUps(shuffled, *press);
+        REQUIRE(release.size() == 1);
+        CHECK(release[0].number == press->number);
+    }
+
+    SECTION("a rule can send several things, each timed from the fire") {
+        // §5.8's follow-up grown into a list: a note held for a beat, and a CC a beat after
+        // that. Every delay is measured from the fire, never from the entry above it.
+        config.number = fixedAt(48);
+        config.value = fixedAt(100);
+        FollowUp release;
+        release.unit = DelayUnit::Beats;
+        release.delayBeats = 1.0;
+        FollowUp cc;
+        cc.kind = Message::Kind::MidiCc;
+        cc.number = 21;
+        cc.value = Value::ofInt(64);
+        cc.unit = DelayUnit::Beats;
+        cc.delayBeats = 2.0;
+        config.followUps = {release, cc};
+        Rule several(config);
+        const std::optional<Message> press = several.fire(context);
+        REQUIRE(press.has_value());
+
+        const std::vector<Message> owed = followUps(several, *press);
+        REQUIRE(owed.size() == 2);
+        CHECK(owed[0].kind == Message::Kind::MidiNoteOff);
+        CHECK(owed[0].number == 48); // the release inherits the note that fired
+        CHECK(owed[1].kind == Message::Kind::MidiCc);
+        CHECK(owed[1].number == 21); // an explicit kind brings its own
+        CHECK(owed[1].value == 64);
+        CHECK(owed[1].channel == 10); // and keeps the channel the note went to
+
+        Context playing;
+        playing.bpm = 120.0; // a beat is half a second
+        CHECK(several.followUpDelay(playing, 0) == Approx(0.5));
+        CHECK(several.followUpDelay(playing, 1) == Approx(1.0));
     }
 
     SECTION("a channel outside 1 to 16 is a rule that says why rather than one that sends") {
@@ -454,4 +545,85 @@ TEST_CASE("every trigger has a name that reads back", "[trigger][rule]") {
     CHECK(takt4::trigger::takesEvery(Trigger::Bar));
     CHECK_FALSE(takt4::trigger::takesEvery(Trigger::Downbeat));
     CHECK_FALSE(takt4::trigger::takesEvery(Trigger::Manual));
+}
+
+TEST_CASE("what a fire records is what the kind actually sends", "[trigger][rule]") {
+    // `lastSlots` is paired with §5.9's generator chips **by position**, and the editor
+    // builds a chip only for a field the kind puts on the wire — `RulesController::
+    // slotConfig` indexes them the same way. One extra entry moves every chip after it onto
+    // the wrong generator, which is not a cosmetic difference: it is a readout naming a
+    // number that was never sent.
+    Context context;
+
+    SECTION("a pitch bend is all value and has no number") {
+        // The one that was wrong. `sendsNumber` is false for a bend, so the editor draws a
+        // single chip — the bend — and slot 0 is it. Recording the number generator's draw
+        // first put a value nothing had sent under that chip: a bend of 12000 read as 9.
+        Rule::Config config;
+        config.id = "bend";
+        config.sendKind = Message::Kind::MidiPitchBend;
+        config.number = fixedAt(9);    // never sent: a bend is two data bytes of value
+        config.value = fixedAt(12000); // 14-bit, so far past a data byte's ceiling
+        Rule rule(config);
+        REQUIRE(rule.valid());
+
+        const std::optional<Message> sent = rule.fire(context);
+        REQUIRE(sent.has_value());
+        CHECK(sent->value == 12000);
+        REQUIRE(rule.lastSlots().size() == 1);
+        CHECK(rule.lastSlots()[0].asInt() == 12000);
+    }
+
+    SECTION("a program change is all number and has no value") {
+        Rule::Config config;
+        config.id = "program";
+        config.sendKind = Message::Kind::MidiProgramChange;
+        config.number = fixedAt(42);
+        config.value = fixedAt(100); // never sent: it is a two-byte message
+        Rule rule(config);
+        REQUIRE(rule.valid());
+
+        const std::optional<Message> sent = rule.fire(context);
+        REQUIRE(sent.has_value());
+        CHECK(sent->number == 42);
+        REQUIRE(rule.lastSlots().size() == 1);
+        CHECK(rule.lastSlots()[0].asInt() == 42);
+    }
+
+    SECTION("a note has both, in the order the chips are drawn") {
+        Rule::Config config;
+        config.id = "note";
+        config.sendKind = Message::Kind::MidiNote;
+        config.number = fixedAt(36);
+        config.value = fixedAt(100);
+        Rule rule(config);
+        const std::optional<Message> sent = rule.fire(context);
+        REQUIRE(sent.has_value());
+        REQUIRE(rule.lastSlots().size() == 2);
+        CHECK(rule.lastSlots()[0].asInt() == 36);
+        CHECK(rule.lastSlots()[1].asInt() == 100);
+    }
+
+    SECTION("and an OSC rule is its segments, then its argument") {
+        Rule::Config config;
+        config.id = "clip";
+        config.address = "/deck/{a}/{b}";
+        config.segments = {fixedAt(2), fixedAt(5)};
+        config.value = fixedAt(1);
+        Rule rule(config);
+        const std::optional<Message> sent = rule.fire(context);
+        REQUIRE(sent.has_value());
+        REQUIRE(rule.lastSlots().size() == 3);
+        CHECK(rule.lastSlots()[0].asInt() == 2);
+        CHECK(rule.lastSlots()[1].asInt() == 5);
+        CHECK(rule.lastSlots()[2].asInt() == 1);
+
+        // And nothing at all when the address takes no argument, which is the other half of
+        // `sendValue` and the only case where an OSC rule has fewer chips than placeholders
+        // plus one.
+        config.sendValue = false;
+        Rule bare(config);
+        REQUIRE(bare.fire(context).has_value());
+        CHECK(bare.lastSlots().size() == 2);
+    }
 }

@@ -1,0 +1,72 @@
+# The library fine-tune, fifth recipe: v2 with the labels a second teacher will not confirm
+# at the octave *downweighted* rather than dropped.
+#
+# Why, and this is the whole of it. v4 excluded those 160 tracks outright and **lost**: on the
+# 23-track harness, beat F 0.8409 -> 0.8106 and tempo accuracy 1 0.913 -> 0.783 against the
+# shipped set, with three octaves broken (808 State 125 -> 62, Alias 90 -> 179, Moonlake
+# 100 -> 200) and none fixed; the soup of epochs 48-96 was closer, -0.012, and still broke two.
+# Meanwhile the library's own validation went *up*, 0.8133 -> 0.9084 on the tracks v2 and v4
+# both scored. The selection metric pointed the wrong way, which is §7.15's warning arriving:
+# fitting one teacher is not becoming correct.
+#
+# The reading that fits: an octave-ambiguous track is the only thing that teaches octave
+# resolution, so dropping all 160 removed the lesson along with the noise. Downweighting keeps
+# the lesson and cuts the influence of a label nothing independent confirms. `downweight_flags`
+# (new) trains a marked track once instead of the library's three times.
+#
+# If this also loses, the honest conclusion is that the second teacher's octave disagreements
+# are not a usable training signal at all, and the next thing to try is the sub-0.7 arm
+# (teacher_disagree_cross, a different 126 tracks) or nothing.
+#
+# Everything else is v2's, unchanged, so that this and v4 differ from v2 in one thing each.
+name: electronic-library-v5
+pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
+sets:
+  library: 3
+  raveform: 1
+  osu2beat: 1
+  ballroom: 1
+max_bpm:
+  osu2beat: 160
+genre_weights:
+  ballroom:
+    Quickstep: 3
+    VienneseWaltz: 2
+    Waltz: 3
+harmonix_genres: ["Dance/Electronic"]
+exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting, teacher_disagree]
+exclude_flags_per_set:
+  harmonix: [unverified]
+downweight_flags:
+  teacher_octave_cross: 1
+alignment_exempt_sets: [ballroom]
+
+seq_len: 750
+batch_size: 40
+learning_rate: 0.0002
+class_weights: [60, 200, 1]
+grad_clip: 0.0
+l2sp: 0.0
+stretch: [1.0, 1.0]
+stretch_prob: 0.0
+stretch_min_bpm: 0
+max_epochs: 200
+val_every: 4
+patience: 8
+checkpoint_every: 8
+
+val_tracks_per_set: 80
+val_seconds: 120
+val_decoder: cli
+val_bpm: "off"
+val_meters: "4"
+cli_jobs: 8
+gate_set: ballroom
+gate_margin: 0.05
+select_sets: [library]
+
+seed: 42
+num_workers: 2
+dbn_workers: 2
+device: cuda
+limit_tracks: 0

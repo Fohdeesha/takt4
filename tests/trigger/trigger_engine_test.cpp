@@ -57,6 +57,15 @@ Generator::Config fixedAt(std::int32_t value) {
     return config;
 }
 
+/// A release — the fired message again with a different value — after a delay in ms.
+takt4::trigger::FollowUp releaseAfterMs(std::int32_t value, double milliseconds) {
+    takt4::trigger::FollowUp entry;
+    entry.value = Value::ofInt(value);
+    entry.unit = takt4::trigger::DelayUnit::Milliseconds;
+    entry.delaySeconds = milliseconds / 1000.0;
+    return entry;
+}
+
 /// A rule that sends one fixed address, so a test can count fires by counting messages.
 Rule::Config simple(std::string id, Trigger trigger, std::uint32_t every = 1) {
     Rule::Config config;
@@ -266,9 +275,7 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
     Rule::Config config = simple("clip", Trigger::Downbeat);
     config.address = "/composition/layers/{L}/clips/{C}/connect";
     config.segments = {fixedAt(2), fixedAt(5)};
-    config.followUp = true;
-    config.followUpValue = Value::ofInt(0);
-    config.followUpDelaySeconds = 0.05;
+    config.followUps.push_back(releaseAfterMs(0, 50));
     engine.setRules({config});
 
     engine.onBeat(beatAt(1, 1, 1, 10.0));
@@ -302,8 +309,8 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         // milliseconds means retyping it whenever the record changes.
         Recorder musical;
         TriggerEngine beats(musical);
-        config.followUpUnit = takt4::trigger::DelayUnit::Beats;
-        config.followUpDelayBeats = 2.0;
+        config.followUps[0].unit = takt4::trigger::DelayUnit::Beats;
+        config.followUps[0].delayBeats = 2.0;
         beats.setRules({config});
 
         // Two beats at 120 BPM is one second.
@@ -335,8 +342,8 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         SECTION("a bar is the meter the tracker reports, never four") {
             Recorder waltzed;
             TriggerEngine waltz(waltzed);
-            config.followUpUnit = takt4::trigger::DelayUnit::Bars;
-            config.followUpDelayBeats = 1.0;
+            config.followUps[0].unit = takt4::trigger::DelayUnit::Bars;
+            config.followUps[0].delayBeats = 1.0;
             waltz.setRules({config});
             Context three = beatAt(1, 1, 1, 10.0);
             three.meter = 3; // one bar is three beats, 1.5 s at 120
@@ -363,7 +370,7 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
             idle.now = 10.04;
             nothing.advance(idle);
             CHECK(silent.sent.size() == 1);
-            idle.now = 10.05; // config.followUpDelaySeconds
+            idle.now = 10.05; // the entry's own delaySeconds
             nothing.advance(idle);
             CHECK(silent.sent.size() == 2);
         }
@@ -372,7 +379,7 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
     SECTION("overlapping follow-ups come out in the order they were queued") {
         Recorder many;
         TriggerEngine overlapping(many);
-        config.followUpDelaySeconds = 1.2; // longer than the gap between beats
+        config.followUps[0].delaySeconds = 1.2; // longer than the gap between beats
         config.segments = {fixedAt(1), fixedAt(1)};
         engine.setRules({config});
         overlapping.setRules({config});
@@ -460,9 +467,7 @@ TEST_CASE("panic halts every rule and hands back what it owes", "[trigger][engin
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Beat);
-    config.followUp = true;
-    config.followUpValue = Value::ofInt(0);
-    config.followUpDelaySeconds = 10.0; // a long way off, so panic has something to owe
+    config.followUps.push_back(releaseAfterMs(0, 10000)); // a long way off, so panic owes
     engine.setRules({config});
 
     engine.onBeat(beatAt(1, 1, 1, 0.0));
@@ -500,8 +505,7 @@ TEST_CASE("replacing the rules pays out the old ones' follow-ups", "[trigger][en
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Beat);
-    config.followUp = true;
-    config.followUpDelaySeconds = 5.0;
+    config.followUps.push_back(releaseAfterMs(0, 5000));
     engine.setRules({config});
     engine.onBeat(beatAt(1, 1, 1, 0.0));
     REQUIRE(engine.pending() == 1);
@@ -636,9 +640,7 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
     config.sendValue = true;
     config.value = fixedAt(1);
     // §7.4's release, on a timer — the thing that would double a naive fire count.
-    config.followUp = true;
-    config.followUpValue = Value::ofInt(0);
-    config.followUpDelaySeconds = 0.05;
+    config.followUps.push_back(releaseAfterMs(0, 50));
     engine.setRules({config});
 
     struct Seen {
@@ -649,8 +651,8 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
     std::vector<Seen> seen;
     engine.setFireObserver([&seen](std::string_view ruleId, const Message&, bool followUp,
                                    std::span<const Value> slots) {
-        seen.push_back(Seen{std::string(ruleId), followUp,
-                            std::vector<Value>(slots.begin(), slots.end())});
+        seen.push_back(
+            Seen{std::string(ruleId), followUp, std::vector<Value>(slots.begin(), slots.end())});
     });
 
     engine.onBeat(beatAt(1, 1, 1, 0.0));
@@ -683,10 +685,10 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
             engine.onBeat(beatAt(beat, static_cast<std::uint32_t>(i % 4) + 1, 1, now));
             engine.advance(beatAt(beat, static_cast<std::uint32_t>(i % 4) + 1, 1, now + 0.06));
         }
-        const auto fires = std::count_if(seen.begin(), seen.end(),
-                                         [](const Seen& s) { return !s.followUp; });
-        const auto releases = std::count_if(seen.begin(), seen.end(),
-                                            [](const Seen& s) { return s.followUp; });
+        const auto fires =
+            std::count_if(seen.begin(), seen.end(), [](const Seen& s) { return !s.followUp; });
+        const auto releases =
+            std::count_if(seen.begin(), seen.end(), [](const Seen& s) { return s.followUp; });
         // One from the top of the test and four here, each with exactly one release.
         CHECK(fires == 5);
         CHECK(releases == 5);

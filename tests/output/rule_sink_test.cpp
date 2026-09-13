@@ -7,7 +7,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <cstddef>
 #include <string>
+#include <utility>
+#include <vector>
 
 using Catch::Matchers::ContainsSubstring;
 using takt4::output::RuleSink;
@@ -101,4 +104,77 @@ TEST_CASE("a rule with nowhere to send is counted, not silent", "[output][trigge
 
     CHECK(sink.delivered() == 0);
     CHECK(sink.undeliverable() == 2);
+}
+
+TEST_CASE("a released note puts a real note off on the wire, not a note on of zero",
+          "[output][trigger][midi]") {
+    // The operator's laser controller (Pangolin Liberation) holds its clip until 0x80
+    // arrives. This file used to assert the opposite in a comment — "a note with velocity
+    // zero is a note-off on every device made since 1983" — and the rig never released.
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNote, 1) == 0x90);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNoteOff, 1) == 0x80);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiCc, 1) == 0xB0);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiProgramChange, 1) == 0xC0);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiPitchBend, 1) == 0xE0);
+
+    // The channel is the low nibble, counted from one by people and from zero on the wire.
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNoteOff, 3) == 0x82);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNoteOff, 16) == 0x8F);
+    // Out of range is clamped rather than wrapped into another channel's status.
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNoteOff, 0) == 0x80);
+    CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNoteOff, 99) == 0x8F);
+
+    // Program change is two bytes; there is nowhere to put a value.
+    CHECK(takt4::output::midiLengthFor(Message::Kind::MidiProgramChange) == 2);
+    CHECK(takt4::output::midiLengthFor(Message::Kind::MidiNote) == 3);
+    CHECK(takt4::output::midiLengthFor(Message::Kind::MidiPitchBend) == 3);
+}
+
+TEST_CASE("a note rule's follow-up is a note off, carrying the same note and channel",
+          "[trigger][midi]") {
+    // §5.8's press-then-release, which is what turns a clip off. The follow-up must name the
+    // same note on the same channel or it releases something else.
+    takt4::trigger::Rule::Config config;
+    config.id = "lasers";
+    config.sendKind = Message::Kind::MidiNote;
+    config.channel = 3;
+    config.followUps.push_back(takt4::trigger::FollowUp{});
+    takt4::trigger::Rule rule(config);
+
+    Message fired;
+    fired.kind = Message::Kind::MidiNote;
+    fired.channel = 3;
+    fired.number = 96;
+    fired.value = 127;
+
+    std::vector<std::pair<std::size_t, Message>> owed;
+    rule.followUpsFor(fired, owed);
+    REQUIRE(owed.size() == 1);
+    const Message& follow = owed[0].second;
+    CHECK(follow.kind == Message::Kind::MidiNoteOff);
+    CHECK(follow.number == 96);
+    CHECK(follow.channel == 3);
+    CHECK(follow.value == 0);
+    // ...and that really is a note off on the cable, which is the half a kind alone does not
+    // say. Channel 3 is wire channel 2, so 0x80 | 0x02.
+    CHECK(takt4::output::midiStatusFor(follow.kind, follow.channel) == 0x82);
+}
+
+TEST_CASE("a CC follow-up stays a CC, because a controller has no off message", "[trigger][midi]") {
+    takt4::trigger::Rule::Config config;
+    config.id = "dimmer";
+    config.sendKind = Message::Kind::MidiCc;
+    config.followUps.push_back(takt4::trigger::FollowUp{});
+    takt4::trigger::Rule rule(config);
+
+    Message fired;
+    fired.kind = Message::Kind::MidiCc;
+    fired.number = 21;
+    fired.value = 127;
+
+    std::vector<std::pair<std::size_t, Message>> owed;
+    rule.followUpsFor(fired, owed);
+    REQUIRE(owed.size() == 1);
+    CHECK(owed[0].second.kind == Message::Kind::MidiCc);
+    CHECK(owed[0].second.value == 0);
 }

@@ -3,9 +3,23 @@
 #include "core/output/transports.hpp"
 #include "core/trigger/rule.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace takt4::output {
+
+/// The status byte a kind and a channel put on the wire: `0x80` note off, `0x90` note on,
+/// `0xB0` control change, `0xC0` program change, `0xE0` pitch bend, with the channel counted
+/// from one by people and from zero on the wire.
+///
+/// Out here rather than inside the .cpp so a test can state the mapping directly. It is the
+/// half of the note-off fix that a counter cannot see: a rule can decide to release and
+/// still put `0x90` on the cable, which is exactly the bug that left the operator's laser
+/// clip latched on.
+unsigned char midiStatusFor(trigger::Message::Kind kind, int channel) noexcept;
+
+/// How many bytes that kind occupies. Program change is two; everything else is three.
+std::size_t midiLengthFor(trigger::Message::Kind kind) noexcept;
 
 /// The adapter between §5.8's rules and §5.6's transports: one `trigger::Message` becomes
 /// one OSC datagram or one MIDI message.

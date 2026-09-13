@@ -60,6 +60,13 @@ DEFAULTS = {
     "max_bpm": {},           # {set: bpm}: leave out a set's tracks annotated faster than this
     "exclude_flags": ["held_out", "duration_mismatch", "few_beats", "misaligned", "drifting"],
     "exclude_flags_per_set": {"harmonix": ["unverified"]},
+    # {flag: repeats}: a track carrying the flag is trained on this many times instead of its
+    # set's weight, rather than being dropped. For a label a second teacher will not confirm,
+    # where dropping it also removes what it had to teach — see §7.16, where excluding the
+    # octave disagreements outright cost the harness 0.03 beat F and broke three octaves.
+    # Carrying several such flags takes the lowest. It never *raises* a weight, and a flag
+    # named in exclude_flags is excluded, not downweighted.
+    "downweight_flags": {},
     "alignment_exempt_sets": ["ballroom"],
     "seq_len": 750,
     "batch_size": 40,
@@ -113,12 +120,14 @@ def load_config(path, overrides):
 # ---------------------------------------------------------------------------------------
 
 class Entry:
-    __slots__ = ("set", "id", "feat", "gt", "frames", "beats", "seconds", "genre", "bpm")
+    __slots__ = ("set", "id", "feat", "gt", "frames", "beats", "seconds", "genre", "bpm",
+                 "flags")
 
     def __init__(self, set_name, track, frames):
         self.set, self.id = set_name, track["id"]
         self.feat, self.gt = feature_paths(set_name, track["id"])
         self.frames = frames
+        self.flags = tuple(track["flags"])      # for cfg["downweight_flags"]
         self.beats = track["beats"]
         self.seconds = track["seconds"]
         self.genre = track.get("genre", "")
@@ -130,6 +139,7 @@ class Entry:
 def select_tracks(cfg, manifest, alignment):
     """(train entries, {set: val entries}, report) honouring every flag and filter."""
     excluded = {}
+    downweighted, kept_train = {}, {}
     train, val = [], {}
     for set_name in cfg["sets"]:
         info = manifest["sets"].get(set_name)
@@ -168,12 +178,21 @@ def select_tracks(cfg, manifest, alignment):
         rng.shuffle(kept["val"])
         kept["val"] = sorted(kept["val"][:cfg["val_tracks_per_set"]], key=lambda e: e.id)
         genre_w = cfg.get("genre_weights", {}).get(set_name, {})
+        down = cfg.get("downweight_flags", {})
         for e in kept["train"]:
-            train.extend([e] * int(cfg["sets"][set_name]) * int(genre_w.get(e.genre, 1)))
+            repeats = int(cfg["sets"][set_name]) * int(genre_w.get(e.genre, 1))
+            marked = [int(down[f]) for f in e.flags if f in down]
+            if marked:
+                repeats = min(repeats, min(marked))   # downweight, never promote
+                downweighted[set_name] = downweighted.get(set_name, 0) + 1
+            train.extend([e] * repeats)
         val[set_name] = kept["val"]
-    report = {s: {"train_tracks": sum(1 for e in train if e.set == s) // max(1, int(cfg["sets"][s])),
+        kept_train[set_name] = len(kept["train"])
+    report = {s: {"train_tracks": kept_train.get(s, 0),
                   "train_crops_per_epoch": sum(1 for e in train if e.set == s),
-                  "val_tracks": len(val[s]), "excluded": excluded.get(s, {})} for s in cfg["sets"]}
+                  "val_tracks": len(val[s]), "excluded": excluded.get(s, {}),
+                  **({"downweighted": downweighted[s]} if s in downweighted else {})}
+              for s in cfg["sets"]}
     return train, val, report
 
 

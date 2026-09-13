@@ -73,8 +73,7 @@ def find_cli(given):
     # the tracker being measured — a fine-tune's Ballroom numbers were read off the
     # particle filter for an evening before the report's `cli` field gave it away.
     candidates = [
-        Path("C:/build/takt4/windows-msvc/bin/Release/takt4-cli.exe"),
-        Path("C:/build/takt4/windows-core/bin/Release/takt4-cli.exe"),
+        ROOT / "build" / "windows-msvc" / "bin" / "Release" / "takt4-cli.exe",
         ROOT / "build" / "windows-core" / "bin" / "Release" / "takt4-cli.exe",
         ROOT / "build" / "linux-core" / "bin" / "takt4-cli",
         ROOT / "build" / "macos-core" / "bin" / "takt4-cli",

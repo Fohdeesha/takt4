@@ -1,5 +1,4 @@
 #include "core/settings/rule_json.hpp"
-
 #include "core/settings/settings.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
@@ -56,9 +55,10 @@ Rule::Config resolumeClip() {
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = Value::ofInt(1);
     // §5.6's press-then-release: without the second half a clip stays latched on.
-    rule.followUp = true;
-    rule.followUpValue = Value::ofInt(0);
-    rule.followUpDelaySeconds = 0.05;
+    takt4::trigger::FollowUp release;
+    release.value = Value::ofInt(0);
+    release.delaySeconds = 0.05;
+    rule.followUps.push_back(release);
     rule.seed = 4242;
     return rule;
 }
@@ -103,9 +103,10 @@ TEST_CASE("a rule survives being written down and read back", "[settings][trigge
     CHECK(out.segments[1].values[0].asInt() == 3);
     CHECK(out.segments[1].values[3].asInt() == 12);
 
-    CHECK(out.followUp);
-    CHECK(out.followUpValue.asInt() == 0);
-    CHECK(out.followUpDelaySeconds == Approx(0.05));
+    REQUIRE(out.followUps.size() == 1);
+    CHECK_FALSE(out.followUps[0].kind.has_value()); // a release, which is what none means
+    CHECK(out.followUps[0].value.asInt() == 0);
+    CHECK(out.followUps[0].delaySeconds == Approx(0.05));
 
     SECTION("and what comes back fires the same messages as what went in") {
         // The claim that actually matters. Every field above could round-trip and the rule
@@ -229,6 +230,77 @@ TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {
         const Rule built(out);
         CHECK_FALSE(built.valid()); // one placeholder, no segments
         CHECK_FALSE(built.problem().empty());
+    }
+}
+
+TEST_CASE("a rule file written before follow-ups were a list still opens", "[settings][trigger]") {
+    // An operator's settings file is their rig, and upgrading takt4 must not empty it. Until
+    // 2026-09-12 a rule carried one follow-up as four loose fields; it is a list now, and the
+    // old spelling is read as the single **release** it always meant.
+    SECTION("the old fields become one release") {
+        const Rule::Config out = first(R"([{
+            "id": "clip",
+            "address": "/composition/layers/3/clips/2/connect",
+            "followUp": true,
+            "followUpValue": 0,
+            "followUpDelaySeconds": 0.05,
+            "followUpUnit": "beats",
+            "followUpDelayBeats": 2.0
+        }])");
+        REQUIRE(out.followUps.size() == 1);
+        CHECK_FALSE(out.followUps[0].kind.has_value()); // a release, which is what none means
+        CHECK(out.followUps[0].value.asInt() == 0);
+        CHECK(out.followUps[0].delaySeconds == Approx(0.05));
+        CHECK(out.followUps[0].unit == takt4::trigger::DelayUnit::Beats);
+        CHECK(out.followUps[0].delayBeats == Approx(2.0));
+    }
+
+    SECTION("and `followUp: false` is a rule that sends once") {
+        CHECK(first(R"([{"id":"x","followUp":false,"followUpValue":0}])").followUps.empty());
+    }
+
+    SECTION("a new file is not read twice") {
+        // Both spellings in one entry — which only a hand-edit produces — takes the list and
+        // leaves the legacy fields alone, or the rule would send its release twice.
+        const Rule::Config out = first(R"([{
+            "id": "x",
+            "followUp": true,
+            "followUpValue": 0,
+            "followUps": [{"value": 3, "delaySeconds": 0.25}]
+        }])");
+        REQUIRE(out.followUps.size() == 1);
+        CHECK(out.followUps[0].value.asInt() == 3);
+    }
+
+    SECTION("an entry that names a kind keeps it, and a number with it") {
+        const Rule::Config out = first(R"([{
+            "id": "x",
+            "send": "midi-note",
+            "followUps": [{"send": "midi-cc", "number": 21, "value": 64, "delayBeats": 1}]
+        }])");
+        REQUIRE(out.followUps.size() == 1);
+        REQUIRE(out.followUps[0].kind.has_value());
+        CHECK(*out.followUps[0].kind == Message::Kind::MidiCc);
+        CHECK(out.followUps[0].number == 21);
+    }
+
+    SECTION("a kind this build has never heard of reads as a release, not as a lost row") {
+        // A rule that has quietly lost its release is a clip that stays held, which is the
+        // worst failure this file has. See `FollowUp::kind`.
+        const Rule::Config out =
+            first(R"([{"id":"x","followUps":[{"send":"smoke-signal","value":0}]}])");
+        REQUIRE(out.followUps.size() == 1);
+        CHECK_FALSE(out.followUps[0].kind.has_value());
+    }
+
+    SECTION("a hand-edited file cannot make one fire queue thousands of messages") {
+        std::string many = R"([{"id":"x","followUps":[)";
+        for (int i = 0; i < 400; ++i) {
+            many += i == 0 ? "" : ",";
+            many += R"({"value":0})";
+        }
+        many += "]}]";
+        CHECK(first(many).followUps.size() == takt4::trigger::kMaxFollowUps);
     }
 }
 

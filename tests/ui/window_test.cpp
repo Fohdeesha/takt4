@@ -17,6 +17,8 @@
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
+#include "support/temp_dir.hpp"
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -27,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -38,8 +41,8 @@ using takt4::audio::InputDevice;
 using takt4::engine::LiveTracker;
 using takt4::tracking::TempoState;
 using Options = takt4::tracking::TempoTracker::Options;
-using takt4::ui::WindowController;
 using takt4::tests::ModelWatch;
+using takt4::ui::WindowController;
 
 namespace {
 
@@ -315,10 +318,16 @@ TEST_CASE("the run callback opens a device and closes it again", "[ui][hardware]
     // The path a click takes once it has left the button: the window's own toggle-run
     // callback, through the controller, into a real device. Nothing below it is mocked.
     //
-    // What this cannot reach is the one line of markup that binds the Button's `clicked`
-    // to this callback. Clicking an element needs Slint's testing API, which is behind
-    // SLINT_FEATURE_EXPERIMENTAL and off in this build; the button is named
-    // `run-button` in main_window.slint so the test can be written the day that changes.
+    // What this cannot reach is the one line of markup that binds the Button's `clicked` to
+    // this callback. Finding an element *by name* needs Slint's testing API, which is behind
+    // SLINT_FEATURE_EXPERIMENTAL and off in this build; the button is named `run-button` in
+    // main_window.slint so the test can be written the day that changes.
+    //
+    // Real gestures are a different matter and are not behind that flag: `dispatch_pointer_*`
+    // and `dispatch_key_*` work against the headless platform, and two tests here use them —
+    // the splitter drags, and rules_test.cpp's "what was typed is kept when the operator
+    // clicks away" clicks into a box, types, and tabs out. What they cost is coordinates, so
+    // they suit a control worth the trouble rather than every one.
     LiveTracker tracker(kWeights, kStateSpace);
     const std::optional<InputDevice> device = bestInputDevice(tracker);
     if (!device) {
@@ -1246,6 +1255,32 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(controller.window().get_outputs_list()->row_count() == 1);
     }
 
+    SECTION("deleting a row rebuilds the ones that moved up into its place") {
+        // The other half of the drag test above, and the case it could not cover. Updating a
+        // row in place keeps its elements — which is what saves the drag — and keeps any
+        // *dead* `text:` binding with them: Slint drops a binding the moment somebody types
+        // into the box. Delete the first of two outputs and the second's name moves up a row,
+        // so a box that had been typed into would go on showing the name of the target that
+        // used to be above it. Reported in the trigger editor as "editing one changes them
+        // all"; this is the same mechanism in the main window.
+        const auto rows = controller.window().get_outputs_list();
+        const auto watch = std::make_shared<ModelWatch>();
+        rows->attach_peer(watch);
+
+        controller.removeTarget(0);
+        controller.tick(); // the rebuild is deferred out of the × that was pressed
+        CHECK(watch->resets == 1);
+        REQUIRE(rows->row_count() == 1);
+        CHECK(std::string(rows->row_data(0)->name) == "wall");
+
+        // And a tick that changed nothing does not keep rebuilding them: that would tear a
+        // box down thirty times a second, which is the failure this started as.
+        const int settled = watch->resets;
+        controller.tick();
+        controller.tick();
+        CHECK(watch->resets == settled);
+    }
+
     SECTION("a port outside the range is not a port") {
         controller.setOscTargets("127.0.0.1:99999");
         CHECK(transports().osc().targetCount() == 0);
@@ -1508,11 +1543,90 @@ TEST_CASE("the program carries its own weights and state space", "[ui]") {
 
     // And a tracker really starts on them, which is what app.cpp does and the only proof
     // that matters: no path was consulted to get here.
-    LiveTracker tracker(takt4::model::ModelWeights::fromBytes(takt4::assets::weights(),
-                                                             "electronic (built in)"),
-                        takt4::tracking::StateSpaceModel::fromBytes(takt4::assets::stateSpace(),
-                                                                    "default (built in)"),
-                        LiveTracker::Options{});
+    LiveTracker tracker(
+        takt4::model::ModelWeights::fromBytes(takt4::assets::weights(), "electronic (built in)"),
+        takt4::tracking::StateSpaceModel::fromBytes(takt4::assets::stateSpace(),
+                                                    "default (built in)"),
+        LiveTracker::Options{});
     CHECK(tracker.weightsPath() == "electronic (built in)");
     CHECK(tracker.stateSpace().beat().numStates() == spaceOnDisk.beat().numStates());
+}
+
+TEST_CASE("settings export and import carry the rules and the outputs", "[ui][settings]") {
+    // The operator, 2026-09-12: "how do I force takt4 to save out the config? I made a lot
+    // of changes, but I am scared of closing it." Until then the only save was on the way
+    // out. This is the round trip the buttons do.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    takt4::trigger::Rule::Config lasers;
+    lasers.id = "lasers";
+    lasers.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    lasers.channel = 3;
+    lasers.followUps.push_back(takt4::trigger::FollowUp{});
+    lasers.outputs = {"Lasers"};
+    takt4::trigger::Rule::Config clips;
+    clips.id = "clips";
+    clips.address = "/composition/layers/1/clips/{}/connect";
+    controller.setRules({lasers, clips});
+
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "show.json";
+    REQUIRE(controller.exportTo(file));
+    REQUIRE(std::filesystem::exists(file));
+
+    // A second window, with nothing in it, reads the file back.
+    LiveTracker other(kWeights, kStateSpace);
+    WindowController fresh(other);
+    REQUIRE(fresh.rules().empty());
+    REQUIRE(fresh.importFrom(file));
+
+    REQUIRE(fresh.rules().size() == 2);
+    CHECK(fresh.rules()[0].id == "lasers");
+    CHECK(fresh.rules()[0].sendKind == takt4::trigger::Message::Kind::MidiNote);
+    CHECK(fresh.rules()[0].channel == 3);
+    CHECK(fresh.rules()[0].followUps.size() == 1);
+    REQUIRE(fresh.rules()[0].outputs.size() == 1);
+    CHECK(fresh.rules()[0].outputs[0] == "Lasers");
+    CHECK(fresh.rules()[1].id == "clips");
+    CHECK(fresh.rules()[1].address == "/composition/layers/1/clips/{}/connect");
+}
+
+TEST_CASE("closing the main window closes the editor with it", "[ui]") {
+    // Slint's event loop runs until the **last** window is hidden, and §5.9's editor is a
+    // window of its own — so closing the main window with the editor up left takt4 running
+    // with nothing but the editor on screen. `ui::run` writes the settings only after the
+    // loop returns, so the operator had closed the app, been left with a stray window, and
+    // had nothing written. That is the exact failure the SAVE button was added for.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.openEditor();
+    REQUIRE(controller.editor().visible());
+
+    // The real gesture, dispatched into the window — not the handler called directly.
+    controller.window().window().dispatch_close_requested_event();
+    CHECK_FALSE(controller.editor().visible());
+}
+
+TEST_CASE("importing something that is not a preset changes nothing", "[ui][settings]") {
+    // `settings::load` never fails — anything it cannot read gives the defaults — which is
+    // right at startup and would silently wipe an hour's work here.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config keep;
+    keep.id = "keep-me";
+    controller.setRules({keep});
+
+    const takt4::test::TempDir dir;
+    const std::filesystem::path junk = dir.path() / "not-settings.json";
+    std::ofstream(junk) << "{\"something\":\"else\"}";
+
+    CHECK_FALSE(controller.importFrom(junk));
+    REQUIRE(controller.rules().size() == 1);
+    CHECK(controller.rules()[0].id == "keep-me");
+
+    // A cancelled dialog is an empty path, and is not an error to report.
+    CHECK_FALSE(controller.importFrom(std::filesystem::path{}));
+    CHECK(controller.rules().size() == 1);
 }

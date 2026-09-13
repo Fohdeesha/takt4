@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace takt4::output {
@@ -12,21 +13,44 @@ namespace {
 
 /// MIDI status bytes. The low nibble is the channel, counted from zero on the wire and from
 /// one by every person who has ever read a manual.
+constexpr unsigned char kNoteOff = 0x80;
 constexpr unsigned char kNoteOn = 0x90;
 constexpr unsigned char kControlChange = 0xB0;
-
-unsigned char statusFor(trigger::Message::Kind kind, int channel) noexcept {
-    const auto wire = static_cast<unsigned char>(std::clamp(channel, 1, 16) - 1);
-    return static_cast<unsigned char>(kind == trigger::Message::Kind::MidiCc ? kControlChange
-                                                                             : kNoteOn) |
-           wire;
-}
+constexpr unsigned char kProgramChange = 0xC0;
+constexpr unsigned char kPitchBend = 0xE0;
 
 unsigned char sevenBits(int value) noexcept {
     return static_cast<unsigned char>(std::clamp(value, 0, 127));
 }
 
 } // namespace
+
+unsigned char midiStatusFor(trigger::Message::Kind kind, int channel) noexcept {
+    const auto wire = static_cast<unsigned char>(std::clamp(channel, 1, 16) - 1);
+    unsigned char status = kNoteOn;
+    switch (kind) {
+    case trigger::Message::Kind::MidiNoteOff:
+        status = kNoteOff;
+        break;
+    case trigger::Message::Kind::MidiCc:
+        status = kControlChange;
+        break;
+    case trigger::Message::Kind::MidiProgramChange:
+        status = kProgramChange;
+        break;
+    case trigger::Message::Kind::MidiPitchBend:
+        status = kPitchBend;
+        break;
+    case trigger::Message::Kind::Osc:
+    case trigger::Message::Kind::MidiNote:
+        break;
+    }
+    return static_cast<unsigned char>(status | wire);
+}
+
+std::size_t midiLengthFor(trigger::Message::Kind kind) noexcept {
+    return kind == trigger::Message::Kind::MidiProgramChange ? 2 : 3;
+}
 
 RuleSink::RuleSink(Transports& transports) noexcept : transports_(transports) {}
 
@@ -75,11 +99,25 @@ void RuleSink::sendMidi(const trigger::Message& message) {
     // — a rig with a lighting desk and a hardware sequencer on it is two — and which may be
     // the same device the 24 PPQN clock uses. `Transports` opens each device once.
     //
-    // A note with velocity zero is a note-off on every device made since 1983, which is
-    // exactly what a follow-up of 0 should be, so the release half of §5.8's press-then-
-    // release needs no separate status byte.
-    const std::array<unsigned char, 3> bytes{statusFor(message.kind, message.channel),
-                                             sevenBits(message.number), sevenBits(message.value)};
+    // **Not every message is three bytes**, which is why this builds a length rather than a
+    // fixed array. Program change is two. And the release half of §5.8's press-then-release
+    // is a real Note Off: this file used to claim "a note with velocity zero is a note-off on
+    // every device made since 1983", and the operator's laser controller is the counter
+    // example that cost a show — it holds the clip until `0x80` arrives. See
+    // `trigger::Message::Kind`.
+    std::array<unsigned char, 3> bytes{midiStatusFor(message.kind, message.channel), 0, 0};
+    const std::size_t length = midiLengthFor(message.kind);
+    if (message.kind == trigger::Message::Kind::MidiProgramChange) {
+        bytes[1] = sevenBits(message.number);
+    } else if (message.kind == trigger::Message::Kind::MidiPitchBend) {
+        // 14 bits, low seven first. 8192 is centre; the generator's range is the operator's.
+        const int bend = std::clamp(message.value, 0, 16383);
+        bytes[1] = static_cast<unsigned char>(bend & 0x7F);
+        bytes[2] = static_cast<unsigned char>((bend >> 7) & 0x7F);
+    } else {
+        bytes[1] = sevenBits(message.number);
+        bytes[2] = sevenBits(message.value);
+    }
     bool sent = false;
     const std::vector<OutputTarget>& targets = transports_.outputs();
     for (std::size_t i = 0; i < targets.size() && i < kMaxRoutableTargets; ++i) {
@@ -87,7 +125,7 @@ void RuleSink::sendMidi(const trigger::Message& message) {
             continue; // routed away from this one
         }
         if (MidiOutput* const port = transports_.midiTarget(i)) {
-            port->send(bytes);
+            port->send(std::span<const unsigned char>(bytes.data(), length));
             sent = true;
         }
     }

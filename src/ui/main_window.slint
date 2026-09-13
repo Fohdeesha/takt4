@@ -282,6 +282,12 @@ export component MainWindow inherits Window {
   callback output-port-edited(int, string);
   callback output-port-accepted(int, string);
   callback output-added();
+
+  /// Write the settings now rather than on the way out, and the two file-picker routes
+  /// beside it. See `WindowController::saveNow` for why a button had to exist.
+  callback save-now();
+  callback export-settings();
+  callback import-settings();
   callback output-removed(int);
   callback output-enabled-changed(int, bool);
   /// Row N is an OSC target or a MIDI one. Applied at once, like the tick and unlike the
@@ -940,7 +946,17 @@ export component MainWindow inherits Window {
             root.output-name-edited(index, text);
           }
           accepted(text) => {
+            self.clear-focus();
             root.output-name-accepted(index, text);
+          }
+          // And when the operator clicks away instead of pressing
+          // Enter, which is finishing rather than cancelling. Without
+          // this, what they typed sat in the box until the next
+          // publish wrote over it, and the edit was silently lost.
+          changed has-focus => {
+            if (!self.has-focus) {
+              root.output-name-accepted(index, self.text);
+            }
           }
         }
 
@@ -986,7 +1002,17 @@ export component MainWindow inherits Window {
               root.output-host-edited(index, text);
             }
             accepted(text) => {
+              self.clear-focus();
               root.output-host-accepted(index, text);
+            }
+            // And when the operator clicks away instead of pressing
+            // Enter, which is finishing rather than cancelling. Without
+            // this, what they typed sat in the box until the next
+            // publish wrote over it, and the edit was silently lost.
+            changed has-focus => {
+              if (!self.has-focus) {
+                root.output-host-accepted(index, self.text);
+              }
             }
           }
 
@@ -1000,7 +1026,17 @@ export component MainWindow inherits Window {
               root.output-port-edited(index, text);
             }
             accepted(text) => {
+              self.clear-focus();
               root.output-port-accepted(index, text);
+            }
+            // And when the operator clicks away instead of pressing
+            // Enter, which is finishing rather than cancelling. Without
+            // this, what they typed sat in the box until the next
+            // publish wrote over it, and the edit was silently lost.
+            changed has-focus => {
+              if (!self.has-focus) {
+                root.output-port-accepted(index, self.text);
+              }
             }
           }
 
@@ -1121,6 +1157,36 @@ export component MainWindow inherits Window {
           min-width: 168px;
           clicked => {
             root.output-added();
+          }
+        }
+
+        // Saving, which until 2026-09-12 happened only when the window closed. An operator
+        // who had spent an hour on rules had no way to commit them and said so: "I am
+        // scared of closing it". SAVE writes now; the save on exit is unchanged.
+        Press {
+          text: "SAVE";
+          min-height: 30px;
+          min-width: 82px;
+          clicked => {
+            root.save-now();
+          }
+        }
+
+        Press {
+          text: "EXPORT";
+          min-height: 30px;
+          min-width: 90px;
+          clicked => {
+            root.export-settings();
+          }
+        }
+
+        Press {
+          text: "IMPORT";
+          min-height: 30px;
+          min-width: 90px;
+          clicked => {
+            root.import-settings();
           }
         }
 
@@ -1269,7 +1335,17 @@ export component MainWindow inherits Window {
           // `accepted`, not `edited`, for the reason the OSC target field gives: a
           // keystroke at a time would rebind the socket on every digit.
           accepted(text) => {
+            self.clear-focus();
             root.osc-control-port-edited(text);
+          }
+          // And when the operator clicks away instead of pressing
+          // Enter, which is finishing rather than cancelling. Without
+          // this, what they typed sat in the box until the next
+          // publish wrote over it, and the edit was silently lost.
+          changed has-focus => {
+            if (!self.has-focus) {
+              root.osc-control-port-edited(self.text);
+            }
           }
         }
 
