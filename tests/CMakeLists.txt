@@ -105,6 +105,7 @@ if(TAKT4_BUILD_UI)
     ui/main.cpp
     ui/model_watch.hpp
     ui/rules_test.cpp
+    ui/shot.hpp
     ui/window_test.cpp
     support/crt_dialogs.cpp
   )

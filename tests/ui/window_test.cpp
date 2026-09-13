@@ -14,6 +14,7 @@
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
 #include "ui/model_watch.hpp"
+#include "ui/shot.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
@@ -189,6 +190,185 @@ TEST_CASE("the build's version is on screen and stays there", "[ui]") {
     controller.window().set_status(slint::SharedString("outputs: OSC 127.0.0.1:7000"));
     CHECK(std::string(controller.window().get_version()) == version);
     CHECK(std::string(controller.window().get_status()).find(version) == std::string::npos);
+}
+
+TEST_CASE("a short window scrolls rather than losing its bottom row", "[ui]") {
+    // Measured, not reasoned about: the window is rendered at each height and the pixels
+    // at the bottom of it are read.
+    //
+    // 0.9.4 shipped with this broken. At the size the app opens at — 1000x900, see
+    // `kMainWindowHeight` — with four outputs configured, the status bar was not on screen
+    // at all and PANIC was cut in half, because the layout had nowhere to put them and
+    // nothing to scroll. Every height below 1105 or so lost something, and a 1366x768
+    // laptop could not show the window at all.
+    //
+    // What is asserted is what an operator would look for: the status bar is the bottom of
+    // the window, and PANIC is a whole button. Both are pinned below the scroll view now,
+    // so both hold at every height down to the window's own floor.
+    auto window = MainWindow::create();
+    window->set_version(slint::SharedString("0.0.0-test"));
+    window->set_status(slint::SharedString("In 7 of MOTU Pro Audio"));
+
+    // Four of them, which is what made the content taller than the window. A rig with one
+    // output fits at 900 and would not have found this.
+    auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+    for (const char* name : {"deck", "wall", "robot", "lights"}) {
+        OutputRow row{};
+        row.name = slint::SharedString(name);
+        row.host = slint::SharedString("192.168.1.40");
+        row.port = slint::SharedString("7000");
+        row.enabled = true;
+        targets->push_back(row);
+    }
+    window->set_outputs_list(targets);
+
+    // Theme.line, Theme.panel and Theme.control, from theme.slint.
+    constexpr std::uint8_t kLine[3] = {0x2b, 0x2f, 0x36};
+    constexpr std::uint8_t kPanel[3] = {0x19, 0x1b, 0x1f};
+    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
+
+    // 420 is the window's own `min-height`; 1200 is taller than the content needs, which is
+    // the case that must keep working exactly as it did before there was a scroll view.
+    for (const int height : {1200, 900, 800, 700, 600, 500, 420}) {
+        CAPTURE(height);
+        const takt4::tests::Shot shot = takt4::tests::render(*window, 1000, height);
+
+        // The status bar is 34px of Theme.panel with the 1px separator above it. Read at
+        // x=8, which is inside the bar's left padding and so clear of the status text.
+        CHECK(shot.is(8, height - 35, kLine[0], kLine[1], kLine[2]));
+        for (int y = height - 34; y < height; ++y) {
+            CAPTURE(y);
+            REQUIRE(shot.is(8, y, kPanel[0], kPanel[1], kPanel[2]));
+        }
+
+        // And PANIC is a whole button: 40px tall less its 1px border, in a column inside
+        // its right-hand end and clear of the label. Cut in half, this read 30.
+        int face = 0;
+        int y = height - 36;
+        while (y > 0 && !shot.is(966, y, kControl[0], kControl[1], kControl[2])) {
+            --y;
+        }
+        while (y > 0 && shot.is(966, y, kControl[0], kControl[1], kControl[2])) {
+            ++face;
+            --y;
+        }
+        CHECK(face == 38);
+    }
+}
+
+TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
+    // The other half of the scroll view, and the half that a picture of one height cannot
+    // show: that the wheel actually scrolls, that what is pinned stays pinned, and — the
+    // one most likely to break quietly — that a click after scrolling lands on the row that
+    // is now under the pointer rather than the one that used to be there.
+    auto window = MainWindow::create();
+    window->set_status(slint::SharedString("scrolling"));
+
+    auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+    for (const char* name : {"deck", "wall", "robot", "lights"}) {
+        OutputRow row{};
+        row.name = slint::SharedString(name);
+        row.host = slint::SharedString("192.168.1.40");
+        row.port = slint::SharedString("7000");
+        row.enabled = true;
+        targets->push_back(row);
+    }
+    window->set_outputs_list(targets);
+
+    std::vector<int> removed;
+    window->on_output_removed([&removed](int index) { removed.push_back(index); });
+    int panics = 0;
+    window->on_panic_clicked([&panics] { ++panics; });
+
+    constexpr int kWidth = 1000;
+    constexpr int kHeight = 760;
+    // Inside the "−" button at the end of each target row, ten pixels short of its right
+    // edge: the middle of that button is where the "−" is drawn, which splits the run.
+    constexpr int kRemoveX = 966;
+    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
+    // The pinned footer: a line, the 60px triggers row, a line, and the 34px status bar.
+    constexpr int kFooter = 96;
+
+    // The runs of button face down a column, which is how a row is found without hardcoding
+    // a y that a font change would move. Bounded below the trace and above the footer, so
+    // neither START at the top nor PANIC at the bottom is mistaken for a target row.
+    const auto rowsDown = [&](const takt4::tests::Shot& shot) {
+        std::vector<std::pair<int, int>> spans; // first row, last row
+        int start = -1;
+        for (int y = 400; y < shot.height - kFooter; ++y) {
+            const bool face = shot.is(kRemoveX, y, kControl[0], kControl[1], kControl[2]);
+            if (face && start < 0) {
+                start = y;
+            } else if (!face && start >= 0) {
+                if (y - start > 20) {
+                    spans.emplace_back(start, y - 1);
+                }
+                start = -1;
+            }
+        }
+        return spans;
+    };
+
+    const takt4::tests::Shot before = takt4::tests::render(*window, kWidth, kHeight);
+    const auto rowsBefore = rowsDown(before);
+    REQUIRE(!rowsBefore.empty());
+
+    // Clicking the first one takes target 0 away — the baseline, before anything scrolls.
+    const int firstY = (rowsBefore.front().first + rowsBefore.front().second) / 2;
+    const slint::LogicalPosition first({static_cast<float>(kRemoveX), static_cast<float>(firstY)});
+    window->window().dispatch_pointer_move_event(first);
+    window->window().dispatch_pointer_press_event(first, slint::PointerEventButton::Left);
+    window->window().dispatch_pointer_release_event(first, slint::PointerEventButton::Left);
+    REQUIRE(removed == std::vector<int>{0});
+    removed.clear();
+
+    // Now the wheel, over the middle of the body. Slint animates a wheel scroll, so the
+    // timers have to run for it to land.
+    window->window().dispatch_pointer_scroll_event(slint::LogicalPosition({500.0f, 300.0f}), 0.0f,
+                                                   -120.0f);
+    pumpTimers(std::chrono::milliseconds(250));
+    const takt4::tests::Shot after = takt4::tests::render(*window, kWidth, kHeight);
+
+    // The body moved.
+    const auto rowsAfter = rowsDown(after);
+    REQUIRE(!rowsAfter.empty());
+    const int moved = rowsBefore.front().first - rowsAfter.front().first;
+    CAPTURE(rowsBefore.front().first, rowsAfter.front().first);
+    CHECK(moved > 0);
+
+    // PANIC did not. It is below the scroll view, so every pixel of the footer — the
+    // triggers row, the status bar and the two separators — is exactly where it was.
+    // Reported as one result naming the first pixel that moved, rather than as forty
+    // thousand assertions.
+    std::string firstMoved;
+    for (int y = kHeight - kFooter; y < kHeight && firstMoved.empty(); ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const slint::Rgb8Pixel a = before.at(x, y);
+            const slint::Rgb8Pixel b = after.at(x, y);
+            if (a.r != b.r || a.g != b.g || a.b != b.b) {
+                firstMoved = "the footer moved at " + std::to_string(x) + "," + std::to_string(y);
+                break;
+            }
+        }
+    }
+    CHECK(firstMoved.empty());
+    const slint::LogicalPosition panic(
+        {static_cast<float>(kRemoveX), static_cast<float>(kHeight - 65)});
+    window->window().dispatch_pointer_move_event(panic);
+    window->window().dispatch_pointer_press_event(panic, slint::PointerEventButton::Left);
+    window->window().dispatch_pointer_release_event(panic, slint::PointerEventButton::Left);
+    CHECK(panics == 1);
+
+    // And the click follows the scroll: the row now at the top of the column is the one
+    // that answers, at its new position and not its old one.
+    const int nowY = (rowsAfter.front().first + rowsAfter.front().second) / 2;
+    const slint::LogicalPosition now({static_cast<float>(kRemoveX), static_cast<float>(nowY)});
+    window->window().dispatch_pointer_move_event(now);
+    window->window().dispatch_pointer_press_event(now, slint::PointerEventButton::Left);
+    window->window().dispatch_pointer_release_event(now, slint::PointerEventButton::Left);
+    REQUIRE(removed.size() == 1);
+    CHECK(removed.front() >= 0);
+    CHECK(removed.front() <= 3);
 }
 
 TEST_CASE("the fold window reaches the window unchanged", "[ui]") {

@@ -18,7 +18,7 @@
 // Nothing in this file assumes a meter of four. `beats-per-bar` comes from the particle
 // filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
 
-import { CheckBox, ComboBox, LineEdit, Palette, Slider } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider } from "std-widgets.slint";
 import { Bar, Press, Setting, Theme } from "theme.slint";
 
 // §5.9's rule editor is a window of its own (rules_window.slint), re-exported through here
@@ -84,7 +84,13 @@ export component MainWindow inherits Window {
   preferred-width: 1000px;
   preferred-height: 836px;
   min-width: 820px;
-  min-height: 736px;
+  // The floor is what has to be *on screen*, not what the window holds: the body scrolls,
+  // so everything below this height is reachable rather than lost. 736px was the whole
+  // content's own minimum, which put the floor above what fits on a 1366x768 laptop once
+  // a title bar and a taskbar are taken off — the one size where being able to shrink the
+  // window matters most. What is left is the pinned footer, the top bar with the device
+  // pickers and START, and a useful amount of scrollable body between them.
+  min-height: 420px;
   background: Theme.background;
   init => {
     Palette.color-scheme = ColorScheme.dark;
@@ -306,1074 +312,1101 @@ export component MainWindow inherits Window {
     padding: 0;
     spacing: 0;
 
-    // --- top bar: what we are listening to --------------------------------------
-    Rectangle {
-      background: Theme.panel;
-      vertical-stretch: 0;
-
-      HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: 12px;
-        padding-bottom: 12px;
-        spacing: 10px;
-
-        // Named so `takt4_ui_tests` can find them: Slint's testing backend addresses
-        // elements as "MainWindow::<id>", and a test that clicks the real button is what
-        // proves the callback below is wired to the controller at all.
-        device-picker := ComboBox {
-          model: root.devices;
-          current-index <=> root.device-index;
-          enabled: !root.running;
-          horizontal-stretch: 2;
-          selected => {
-            root.device-picked(self.current-index);
-          }
-        }
-
-        channel-picker := ComboBox {
-          model: root.channels;
-          current-index <=> root.channel-index;
-          enabled: !root.running;
-          horizontal-stretch: 1;
-          selected => {
-            root.channel-picked(self.current-index);
-          }
-        }
-
-        run-button := Press {
-          text: root.running ? "STOP" : "START";
-          primary: !root.running;
-          enabled: root.devices.length > 0;
-          min-width: 116px;
-          clicked => {
-            root.toggle-run();
-          }
-        }
-      }
-    }
-
-    Rectangle {
-      height: 1px;
-      background: Theme.line;
-      vertical-stretch: 0;
-    }
-
-    // --- the readouts ------------------------------------------------------------
-    // The readouts take the height they need; the trace below gets the rest, because
-    // it is the one thing here that is worth more when it is bigger.
-    HorizontalLayout {
-      padding: 24px;
-      spacing: 24px;
-      vertical-stretch: 0;
-
-      // tempo, and the bar. Centred rather than stretched: a VerticalLayout's
-      // default alignment spreads the leftover height *between* children that
-      // cannot stretch, which pushed these forty pixels apart.
-      VerticalLayout {
-        spacing: 4px;
-        horizontal-stretch: 1;
-        alignment: center;
-
-        HorizontalLayout {
-          spacing: 8px;
-          alignment: start;
-          vertical-stretch: 0;
-
-          Text {
-            // Two decimals: the refined tempo resolves to a fraction of a BPM,
-            // and rounding it to a whole number would throw that away.
-            text: root.bpm > 0 ? round(root.bpm * 100) / 100 : "--";
-            color: Theme.text;
-            font-size: 64px;
-            font-weight: 300;
-            font-family: "Consolas";
-          }
-
-          Text {
-            // Sat on the baseline of the number beside it. A layout owns its
-            // children's y, so this is vertical-alignment and not a y binding —
-            // that one was silently ignored and left the label up in the air.
-            text: "BPM";
-            color: Theme.dim;
-            font-size: 14px;
-            vertical-alignment: bottom;
-          }
-        }
-
-        Text {
-          // Where the number comes from. Before the lock it is the particle
-          // cloud's tempo interval, which steps in whole 20 ms frames — 5.4 BPM
-          // apart at 130. After it, the spacing of the beats themselves.
-          text: root.bpm <= 0 ? ""
-            : root.refined ? "from beat spacing"
-            : "from the filter's tempo interval";
-          color: Theme.dim;
-          font-size: 11px;
-          vertical-stretch: 0;
-        }
-
-        Rectangle { height: 12px; vertical-stretch: 0; }
-
-        // The bar indicator. However many beats the tracker reports — three,
-        // four, five, seven. §5.5: nothing here hardcodes four.
-        HorizontalLayout {
-          spacing: 10px;
-          alignment: start;
-          vertical-stretch: 0;
-          height: 20px;
-
-          for beat in root.beats-per-bar : Rectangle {
-            width: 16px;
-            height: 16px;
-            border-radius: 8px;
-            border-width: 2px;
-            border-color: beat == 0 ? Theme.text : Theme.dim;
-            background: beat + 1 == root.beat-in-bar
-              ? (beat == 0 ? Theme.text : Theme.accent)
-              : transparent;
-          }
-
-          Rectangle { width: 8px; }
-
-          Text {
-            text: root.beats-per-bar > 0 ? root.beats-per-bar + "/4" : "--";
-            color: Theme.dim;
-            font-size: 14px;
-            font-family: "Consolas";
-            vertical-alignment: center;
-          }
-
-          Text {
-            text: root.bars > 0 ? "bar " + root.bars : "";
-            color: Theme.dim;
-            font-size: 12px;
-            vertical-alignment: center;
-          }
-        }
-      }
-
-      // lock, confidence, and the fold window
-      VerticalLayout {
-        spacing: 10px;
-        horizontal-stretch: 1;
-        alignment: center;
-
-        HorizontalLayout {
-          spacing: 8px;
-          alignment: end;
-          vertical-stretch: 0;
-
-          Rectangle {
-            width: 10px;
-            height: 10px;
-            y: 6px;
-            border-radius: 5px;
-            background: !root.running ? Theme.line
-              : root.holding ? Theme.holding
-              : root.locked ? Theme.locked
-              : Theme.dim;
-          }
-
-          Text {
-            text: !root.running ? "STOPPED"
-              : root.holding ? "HOLDING"
-              : root.locked ? "LOCKED"
-              : "HUNTING";
-            color: !root.running ? Theme.dim
-              : root.holding ? Theme.holding
-              : root.locked ? Theme.locked
-              : Theme.dim;
-            font-size: 18px;
-            letter-spacing: 2px;
-          }
-        }
-
-        Bar {
-          label: "confidence";
-          value: root.confidence;
-          reading: round(root.confidence * 100) / 100;
-          // §5.5's confidence gate: below it the tempo above is the last good
-          // one being held, not a fresh reading, and the colour says so.
-          fill: root.holding ? Theme.holding : Theme.accent;
-        }
-
-        Rectangle { height: 4px; vertical-stretch: 0; }
-
-        // §7 deviation 4: the fold window is measured to help inside it and to fail
-        // hard outside it, so an operator has to be able to see it and see what it
-        // did to the number above. The window itself is on the sliders below — this
-        // is the half of that they cannot show, which is the fold having *moved*
-        // the reading.
-        Text {
-          // Only when folding actually moved the number, which is exactly when an
-          // operator would otherwise mistrust the readout.
-          //
-          // The test is the *ratio*, not the difference. A fold is a halving or a
-          // doubling, so it leaves the two numbers a factor of two apart; a plain
-          // difference also catches the tenth-of-a-BPM gap between the cloud's
-          // tempo interval and the refined tempo (§6: 5.4 BPM apart at 130), which
-          // is not a fold and must not be announced as one.
-          text: (root.fold-on && root.called-bpm > 0 && root.bpm > 0
-                 && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67))
-            // Named as the arithmetic that was done rather than as "folded", for the reason
-            // the row's own label is no longer "octave fold": the operator has to be able to
-            // read what happened to the number without knowing the word for it.
-            //
-            // **And whether the beats came with it.** Halving the number without halving the
-            // grid is a real state — see `TempoState::beatDivisor` — and it is the one thing
-            // on this window that is otherwise invisible: the readout says 92 and every
-            // output fires at 184. It is not a fault to be fixed by looking at it, so this
-            // says what is happening rather than warning; ÷2 with the range switched off is
-            // what moves both together.
-            //
-            // Against `called-bpm`, the grid the filter is actually calling beats on, and
-            // not `raw-bpm`, its cloud: the two differ by an octave on a track like Moonlake
-            // and the fold works on the first.
-            ? (root.called-bpm > root.bpm ? "halved from " : "doubled from ")
-              + round(root.called-bpm * 10) / 10 + " BPM"
-              + (root.called-bpm > root.bpm && root.beat-divisor <= 1
-                 ? " — beats still at " + round(root.called-bpm) : "")
-            : "";
-          color: Theme.holding;
-          font-size: 12px;
-          horizontal-alignment: right;
-          vertical-stretch: 0;
-        }
-      }
-    }
-
-    Rectangle {
-      height: 1px;
-      background: Theme.line;
-      vertical-stretch: 0;
-    }
-
-    // --- the controls -----------------------------------------------------------
-    // §5.9 draws ÷2, ×2 and TAP beside the bar indicator; they are gathered here
-    // instead, with §5.5's manual downbeat beside them and its octave-fold window and
-    // latency offset below. The sketch predates all three, and the four buttons read
-    // as one row of things the operator presses rather than as an afterthought to the
-    // readouts.
-    Rectangle {
-      background: Theme.panel;
-      vertical-stretch: 0;
-
-      VerticalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-top: 14px;
-        padding-bottom: 14px;
-        spacing: 12px;
-
-        // The performance controls. Live only while the tracker is running: every one
-        // of them corrects a tempo or a bar phase that is being tracked *now*, and a
-        // ÷2 with nothing to halve is a button that lies about doing something.
-        HorizontalLayout {
-          spacing: 10px;
-          alignment: start;
-          vertical-stretch: 0;
-
-          Press {
-            text: "÷2";
-            enabled: root.running;
-            min-width: 72px;
-            clicked => {
-              root.halve();
-            }
-          }
-
-          Press {
-            text: "×2";
-            enabled: root.running;
-            min-width: 72px;
-            clicked => {
-              root.redouble();
-            }
-          }
-
-          // Counts the operator in: three taps before there is a tempo, and a press
-          // that registered has to look different from one that did not.
-          Press {
-            text: root.tap-count > 0 ? "TAP  " + root.tap-count + "/" + root.tap-needs : "TAP";
-            enabled: root.running;
-            min-width: 128px;
-            clicked => {
-              root.tap();
-            }
-          }
-
-          // §5.7's lock, pinned rather than set: the tracker goes on tracking and simply
-          // is not allowed to let go of the tempo. Lit while held, because a tempo that
-          // has stopped following the audio is alarming when nothing says why.
-          Press {
-            text: "LOCK";
-            active: root.pinned;
-            enabled: root.running;
-            min-width: 96px;
-            clicked => {
-              root.pin-changed(!root.pinned);
-            }
-          }
-
-          Rectangle { width: 16px; }
-
-          // §5.5: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable — the best
-          // online downbeat tracker in the world scores 56% F1, and being two beats out
-          // is worse than one tap." So it is the widest thing in the row.
-          // Lit from the press until the next beat, which is when the correction reaches
-          // the outputs — up to nine hundred milliseconds at 70 BPM. A press on the beat
-          // moves the bar dots immediately (the tracker takes the nearer beat, so it names
-          // the one just heard), but a press between beats still has to wait for one, and a
-          // button that does nothing for most of a second, then shifts a bar phase that is
-          // hard to see moving, reads as a button that does nothing at all.
-          Press {
-            text: "DOWNBEAT";
-            primary: root.running;
-            active: root.snap-pending;
-            enabled: root.running;
-            min-width: 196px;
-            clicked => {
-              root.snap-downbeat();
-            }
-          }
-        }
-
-        // The settings, live whether or not anything is running: an operator sets the
-        // fold window for their material before pressing Start, and the engine applies
-        // what was posted while it was stopped to the run about to begin.
-        HorizontalLayout {
-          spacing: 10px;
-          vertical-stretch: 0;
-
-          Text {
-            // **Not "octave fold"**, which is what this said and which nobody outside the
-            // code knows the meaning of — the user who wrote the feature said so. The label
-            // now describes what the setting *does to the number on screen*: a tempo outside
-            // this range is halved or doubled until it is inside. Read with the readouts
-            // beside it the row says "keep BPM in 70 to 140 BPM", which is the whole of it.
-            text: "keep BPM in";
-            color: Theme.dim;
-            font-size: 12px;
-            width: 74px;
-            vertical-alignment: center;
-          }
-
-          // Unlabelled, because the column to its left is the label — which is what
-          // lines this row's slider up with the latency row's.
-          CheckBox {
-            checked <=> root.fold-on;
-            width: 36px;
-            // The new state, not a flip: what the operator sees is what gets sent.
-            toggled => {
-              root.fold-on-changed(self.checked);
-            }
-          }
-
-          Slider {
-            minimum: root.fold-limit-min;
-            // The two cannot cross. `foldInto` quietly returns the tempo unfolded when
-            // the window is inverted, which would look like the fold having no effect
-            // rather than like a setting being wrong.
-            maximum: root.fold-max - root.fold-least-span;
-            step: 1;
-            enabled: root.fold-on;
-            value <=> root.fold-min;
-            changed(v) => {
-              root.fold-min-changed(v);
-            }
-          }
-
-          Text {
-            text: round(root.fold-min) + " to";
-            color: root.fold-on ? Theme.text : Theme.dim;
-            font-size: 12px;
-            font-family: "Consolas";
-            width: 66px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-          }
-
-          Slider {
-            minimum: root.fold-min + root.fold-least-span;
-            maximum: root.fold-limit-max;
-            step: 1;
-            enabled: root.fold-on;
-            value <=> root.fold-max;
-            changed(v) => {
-              root.fold-max-changed(v);
-            }
-          }
-
-          Text {
-            text: round(root.fold-max) + " BPM";
-            color: root.fold-on ? Theme.text : Theme.dim;
-            font-size: 12px;
-            font-family: "Consolas";
-            width: 76px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-          }
-        }
-
-        Setting {
-          label: "latency";
-          // The width of the fold row's switch, so the two sliders share a left edge.
-          indent: 36px;
-          value <=> root.latency-ms;
-          minimum: -root.latency-limit-ms;
-          maximum: root.latency-limit-ms;
-          // The sign is the whole point of this control — negative fires early — so it
-          // is shown rather than left to be inferred from a thumb position. "all outputs"
-          // because this one moves the whole rig and each output row has its own beside it;
-          // the row readouts show the sum, so moving this visibly moves all of them.
-          reading: (root.latency-ms > 0 ? "+" : "") + round(root.latency-ms) + " ms"
-              + (root.latency-ms == 0 ? "" : "  all");
-          moved(v) => {
-            root.latency-changed(v);
-          }
-        }
-      }
-    }
-
-    Rectangle {
-      height: 1px;
-      background: Theme.line;
-      vertical-stretch: 0;
-    }
-
-    // --- the activation trace ------------------------------------------------------
-    VerticalLayout {
-      padding-left: 24px;
-      padding-right: 24px;
-      padding-top: 8px;
-      padding-bottom: 8px;
-      spacing: 8px;
+    // Everything above the triggers row scrolls — HANDOFF §5.9's window is taller than
+    // some of the screens it is opened on, and until this was here the bottom of it was
+    // simply cut off. Measured at the launch size of 1000x900 with four outputs
+    // configured: the status bar was gone and PANIC was sliced in half, with no way to
+    // reach either. There is no cliff now; there is a scroll bar.
+    //
+    // `viewport-height` is Slint's own `max(this height, the content's *minimum*)`, so
+    // this scrolls only once the content can no longer fit at its minimum, and above that
+    // the trace still takes the slack exactly as it did before.
+    body := ScrollView {
       vertical-stretch: 1;
+      // Vertically only. Without this a ScrollView sizes its viewport to whatever its
+      // content asks for, and this window's rows are full of fixed widths — so it would
+      // scroll sideways and half of every row would be off screen. The rule editor's own
+      // scroller found this first; see `scroller` in rules_window.slint.
+      viewport-width: self.visible-width;
 
-      HorizontalLayout {
-        spacing: 10px;
-        vertical-stretch: 1;
+      VerticalLayout {
+        padding: 0;
+        spacing: 0;
 
-        Text {
-          text: "activation";
-          color: Theme.dim;
-          font-size: 12px;
-          width: 74px;
-          vertical-alignment: center;
+        // --- top bar: what we are listening to --------------------------------------
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+
+          HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 10px;
+
+            // Named so `takt4_ui_tests` can find them: Slint's testing backend addresses
+            // elements as "MainWindow::<id>", and a test that clicks the real button is what
+            // proves the callback below is wired to the controller at all.
+            device-picker := ComboBox {
+              model: root.devices;
+              current-index <=> root.device-index;
+              enabled: !root.running;
+              horizontal-stretch: 2;
+              selected => {
+                root.device-picked(self.current-index);
+              }
+            }
+
+            channel-picker := ComboBox {
+              model: root.channels;
+              current-index <=> root.channel-index;
+              enabled: !root.running;
+              horizontal-stretch: 1;
+              selected => {
+                root.channel-picked(self.current-index);
+              }
+            }
+
+            run-button := Press {
+              text: root.running ? "STOP" : "START";
+              primary: !root.running;
+              enabled: root.devices.length > 0;
+              min-width: 116px;
+              clicked => {
+                root.toggle-run();
+              }
+            }
+          }
         }
 
         Rectangle {
-          background: Theme.panel;
-          border-radius: 3px;
-          min-height: 88px;
-          clip: true;
-
-          // One column per 50 Hz frame, oldest at the left. One repeater, not two,
-          // so the model is tracked once however many marks a column carries.
-          for point[i] in root.trace : Rectangle {
-            width: parent.width / root.trace.length;
-            x: i * self.width;
-            height: 100%;
-            y: 0;
-
-            // P(beat), from the bottom — and in the lock colour on the frames the
-            // filter actually called a beat, which is the difference between the
-            // network seeing something and the filter agreeing.
-            Rectangle {
-              width: 100%;
-              height: parent.height * clamp(point.beat, 0.0, 1.0);
-              y: parent.height - self.height;
-              background: point.called ? Theme.locked : Theme.trace;
-            }
-
-            // P(downbeat), as a mark at its own height. This is the weakest signal
-            // in the whole chain — 56.51 F1 in §A.1, the reason §5.5 calls a manual
-            // downbeat non-negotiable — so it is worth being able to watch it.
-            Rectangle {
-              width: 100%;
-              height: 2px;
-              y: (parent.height - 2px) * (1.0 - clamp(point.downbeat, 0.0, 1.0));
-              background: point.downbeat > 0.02 ? Theme.accent.with-alpha(0.7) : transparent;
-            }
-          }
-        }
-      }
-
-      Bar {
-        label: "input";
-        value: root.input-level;
-        reading: root.input-reading;
-        // Peaking is the one thing an input meter must not be quiet about.
-        fill: root.input-peak >= 0.99 ? Theme.holding : Theme.accent;
-      }
-    }
-
-    Rectangle {
-      height: 1px;
-      background: Theme.line;
-      vertical-stretch: 0;
-    }
-
-    // --- §5.9's OUTPUTS row ---------------------------------------------------------
-    // "Link ✓ · OSC 192.168.1.40:7000 ✓ · MIDI clock ✓", and settable rather than only
-    // shown: Phase 5's exit is a new user going from launch to synced output without a
-    // text editor or a restart, so this is where that happens.
-    //
-    // The tick and the reading are deliberately different things. A box says what the
-    // operator asked for; the peer count and the beat counter say what is actually
-    // happening, and an output that is on with nothing at the other end is exactly the
-    // failure somebody needs to see at a gig.
-    Rectangle {
-      background: Theme.panel;
-      vertical-stretch: 0;
-
-      // A layout, not two loose children: a Rectangle positions its children itself, so the
-      // second row would be drawn on top of the first — silently (§6).
-      VerticalLayout {
-
-      HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-top: 12px;
-        padding-bottom: 8px;
-        spacing: 10px;
-
-        Text {
-          text: "outputs";
-          color: Theme.dim;
-          font-size: 12px;
-          width: 74px;
-          vertical-alignment: center;
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
         }
 
-        CheckBox {
-          text: "Link";
-          checked <=> root.link-on;
-          width: 74px;
-          toggled => {
-            root.link-toggled(self.checked);
-          }
-        }
-
-        Text {
-          // Peers are the whole point of Link, and "on with nobody there" is the state
-          // worth being able to see.
-          text: !root.link-on ? ""
-            : root.link-peers == 0 ? "no peers"
-            : root.link-peers == 1 ? "1 peer"
-            : root.link-peers + " peers";
-          color: root.link-peers > 0 ? Theme.locked : Theme.dim;
-          font-size: 12px;
-          width: 72px;
-          vertical-alignment: center;
-        }
-
-        Text {
-          text: "MIDI clock";
-          color: root.midi-on ? Theme.text : Theme.dim;
-          font-size: 12px;
-          width: 72px;
-          vertical-alignment: center;
-        }
-
-        midi-picker := ComboBox {
-          model: root.midi-ports;
-          current-index <=> root.midi-port-index;
-          horizontal-stretch: 1;
-          selected => {
-            root.midi-port-picked(self.current-index);
-          }
-        }
-
-        Text {
-          // What has actually gone out. Nothing else on screen distinguishes a transport
-          // that is configured from one that is working.
-          text: root.beats-sent > 0 ? root.beats-sent + " beats sent" : "";
-          color: Theme.dim;
-          font-size: 12px;
-          font-family: "Consolas";
-          width: 104px;
-          horizontal-alignment: right;
-          vertical-alignment: center;
-        }
-      }
-
-      // §5.6's targets, a row each. They used to be one field among four on the row
-      // above, then one field of their own holding a comma-separated line — and the whole
-      // point of naming them is that a rig has several, so a rig's worth of them is a
-      // list. The name a rule routes to and the place the message goes are two facts, so
-      // they get two boxes: `output::formatOutputAddress` is what the second one holds.
-      for target[index] in root.outputs-list: HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-bottom: 6px;
-        spacing: 10px;
-
-        Text {
-          // The column label, on the first row only. Repeated down the side it would read
-          // as four separate settings rather than as one list.
-          text: index == 0 ? "targets" : "";
-          color: root.osc-on ? Theme.text : Theme.dim;
-          font-size: 12px;
-          width: 74px;
-          vertical-alignment: center;
-        }
-
-        CheckBox {
-          // §5.6's per-target enabled state: a switch rather than deleting the row, because
-          // an operator killing one feed mid-set wants it back afterwards with its address
-          // intact. Applied at once — a tick box that waited for Enter would be a lie.
-          checked: target.enabled;
-          width: 28px;
-          toggled => {
-            root.output-enabled-changed(index, self.checked);
-          }
-        }
-
-        // **Each box reports only itself.** The row used to be two boxes that each sent both
-        // values, because both halves had to travel together — but a row is four fields now,
-        // and two of them live inside an `if`, where an id in one branch cannot be read from
-        // the other. The C++ side holds the draft and merges, which it was already doing
-        // (`targetDrafts_`); what changed is that it merges a field rather than a whole row.
-        LineEdit {
-          text: target.name;
-          placeholder-text: "name";
-          font-size: 12px;
-          width: 104px;
-          horizontal-stretch: 0;
-          edited(text) => {
-            root.output-name-edited(index, text);
-          }
-          accepted(text) => {
-            self.clear-focus();
-            root.output-name-accepted(index, text);
-          }
-          // And when the operator clicks away instead of pressing
-          // Enter, which is finishing rather than cancelling. Without
-          // this, what they typed sat in the box until the next
-          // publish wrote over it, and the edit was silently lost.
-          changed has-focus => {
-            if (!self.has-focus) {
-              root.output-name-accepted(index, self.text);
-            }
-          }
-        }
-
-        // OSC or MIDI, asked before anything else on the row, because it decides what the
-        // rest of the row is even asking. See `OutputRow`.
-        ComboBox {
-          model: root.output-kinds;
-          current-index: target.kind-index;
-          // Two four-letter words and a chevron. Measured rather than guessed: at 66px the
-          // Fluent ComboBox spent it all on its own padding and drew "O..." and "M...".
-          width: 84px;
-          horizontal-stretch: 0;
-          selected => {
-            root.output-kind-changed(index, self.current-index);
-          }
-        }
-
-        // The destination, in a fixed-width slot so that the slider beside it starts at the
-        // same x whichever kind the row is — a row switched to MIDI must not shove every
-        // readout below it sideways. A quarter narrower than the single address box it
-        // replaces, the width going to the delay slider, which is dragged and was too short
-        // to find an offset by ear on.
+        // --- the readouts ------------------------------------------------------------
+        // The readouts take the height they need; the trace below gets the rest, because
+        // it is the one thing here that is worth more when it is bigger.
         HorizontalLayout {
-          // A quarter narrower than the single address box it replaces, which at the window's
-          // own width was 302 px. `max-width` rather than a hard `width` so that it, and not
-          // the row, is what gives when the window is dragged towards its minimum — at the
-          // floor a host and a port still read, and a device name elides as it always did.
-          preferred-width: 226px;
-          max-width: 226px;
-          min-width: 150px;
-          horizontal-stretch: 0;
-          spacing: 6px;
+          padding: 24px;
+          spacing: 24px;
+          vertical-stretch: 0;
 
-          // `if`, not `visible`: a hidden element still takes its layout space, so the two
-          // shapes would each reserve room for the other and neither would get the slot.
-          // See rules_window.slint's slot rows for the render that found it.
-          if target.kind-index == 0 : LineEdit {
-            text: target.host;
-            placeholder-text: "127.0.0.1";
-            font-size: 12px;
+          // tempo, and the bar. Centred rather than stretched: a VerticalLayout's
+          // default alignment spreads the leftover height *between* children that
+          // cannot stretch, which pushed these forty pixels apart.
+          VerticalLayout {
+            spacing: 4px;
             horizontal-stretch: 1;
-            edited(text) => {
-              root.output-host-edited(index, text);
+            alignment: center;
+
+            HorizontalLayout {
+              spacing: 8px;
+              alignment: start;
+              vertical-stretch: 0;
+
+              Text {
+                // Two decimals: the refined tempo resolves to a fraction of a BPM,
+                // and rounding it to a whole number would throw that away.
+                text: root.bpm > 0 ? round(root.bpm * 100) / 100 : "--";
+                color: Theme.text;
+                font-size: 64px;
+                font-weight: 300;
+                font-family: "Consolas";
+              }
+
+              Text {
+                // Sat on the baseline of the number beside it. A layout owns its
+                // children's y, so this is vertical-alignment and not a y binding —
+                // that one was silently ignored and left the label up in the air.
+                text: "BPM";
+                color: Theme.dim;
+                font-size: 14px;
+                vertical-alignment: bottom;
+              }
             }
-            accepted(text) => {
-              self.clear-focus();
-              root.output-host-accepted(index, text);
+
+            Text {
+              // Where the number comes from. Before the lock it is the particle
+              // cloud's tempo interval, which steps in whole 20 ms frames — 5.4 BPM
+              // apart at 130. After it, the spacing of the beats themselves.
+              text: root.bpm <= 0 ? ""
+                : root.refined ? "from beat spacing"
+                : "from the filter's tempo interval";
+              color: Theme.dim;
+              font-size: 11px;
+              vertical-stretch: 0;
             }
-            // And when the operator clicks away instead of pressing
-            // Enter, which is finishing rather than cancelling. Without
-            // this, what they typed sat in the box until the next
-            // publish wrote over it, and the edit was silently lost.
-            changed has-focus => {
-              if (!self.has-focus) {
-                root.output-host-accepted(index, self.text);
+
+            Rectangle { height: 12px; vertical-stretch: 0; }
+
+            // The bar indicator. However many beats the tracker reports — three,
+            // four, five, seven. §5.5: nothing here hardcodes four.
+            HorizontalLayout {
+              spacing: 10px;
+              alignment: start;
+              vertical-stretch: 0;
+              height: 20px;
+
+              for beat in root.beats-per-bar : Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: beat == 0 ? Theme.text : Theme.dim;
+                background: beat + 1 == root.beat-in-bar
+                  ? (beat == 0 ? Theme.text : Theme.accent)
+                  : transparent;
+              }
+
+              Rectangle { width: 8px; }
+
+              Text {
+                text: root.beats-per-bar > 0 ? root.beats-per-bar + "/4" : "--";
+                color: Theme.dim;
+                font-size: 14px;
+                font-family: "Consolas";
+                vertical-alignment: center;
+              }
+
+              Text {
+                text: root.bars > 0 ? "bar " + root.bars : "";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
               }
             }
           }
 
-          if target.kind-index == 0 : LineEdit {
-            text: target.port;
-            placeholder-text: "9000";
-            font-size: 12px;
-            width: 62px;
-            horizontal-stretch: 0;
-            edited(text) => {
-              root.output-port-edited(index, text);
-            }
-            accepted(text) => {
-              self.clear-focus();
-              root.output-port-accepted(index, text);
-            }
-            // And when the operator clicks away instead of pressing
-            // Enter, which is finishing rather than cancelling. Without
-            // this, what they typed sat in the box until the next
-            // publish wrote over it, and the edit was silently lost.
-            changed has-focus => {
-              if (!self.has-focus) {
-                root.output-port-accepted(index, self.text);
+          // lock, confidence, and the fold window
+          VerticalLayout {
+            spacing: 10px;
+            horizontal-stretch: 1;
+            alignment: center;
+
+            HorizontalLayout {
+              spacing: 8px;
+              alignment: end;
+              vertical-stretch: 0;
+
+              Rectangle {
+                width: 10px;
+                height: 10px;
+                y: 6px;
+                border-radius: 5px;
+                background: !root.running ? Theme.line
+                  : root.holding ? Theme.holding
+                  : root.locked ? Theme.locked
+                  : Theme.dim;
+              }
+
+              Text {
+                text: !root.running ? "STOPPED"
+                  : root.holding ? "HOLDING"
+                  : root.locked ? "LOCKED"
+                  : "HUNTING";
+                color: !root.running ? Theme.dim
+                  : root.holding ? Theme.holding
+                  : root.locked ? Theme.locked
+                  : Theme.dim;
+                font-size: 18px;
+                letter-spacing: 2px;
               }
             }
-          }
 
-          // The machine's own devices, never a name to be typed. Nobody knows what their
-          // interface enumerated as, and a mistyped one is a target that silently sends
-          // nowhere — which is the whole reason this row stopped being a text box.
-          if target.kind-index != 0 : ComboBox {
-            model: root.output-devices;
-            current-index: target.device-index;
-            horizontal-stretch: 1;
-            selected => {
-              root.output-device-picked(index, self.current-index);
+            Bar {
+              label: "confidence";
+              value: root.confidence;
+              reading: round(root.confidence * 100) / 100;
+              // §5.5's confidence gate: below it the tempo above is the last good
+              // one being held, not a fresh reading, and the colour says so.
+              fill: root.holding ? Theme.holding : Theme.accent;
             }
-          }
-        }
 
-        // §5.5's latency offset, per target. The thing on the end of each cable has its own
-        // lag — a media server is a frame or two behind and a robot that has to physically
-        // move is far more — so one slider for the whole rig is the one adjustment that
-        // cannot help. See `OutputTarget::delaySeconds`, including what "earlier" can mean
-        // for a message about a beat that has already been heard.
-        // **The one control on this row that is dragged**, so it is the one that gets the
-        // width. It was 112 px for a range of two seconds — 18 ms a pixel, which is a third
-        // of a frame at 60 Hz and far coarser than the offsets it is used to find. Stretched
-        // rather than widened by a fixed amount: what the destination box gave up is a floor,
-        // and a window dragged wider should spend the rest here too.
-        Slider {
-          minimum: -root.output-delay-limit-ms;
-          maximum: root.output-delay-limit-ms;
-          step: 1;
-          enabled: target.enabled;
-          value: target.delay-ms;
-          min-width: 90px;
-          horizontal-stretch: 1;
-          changed(v) => {
-            root.output-delay-changed(index, v);
-          }
-        }
+            Rectangle { height: 4px; vertical-stretch: 0; }
 
-        // Two readouts, not one string, and the difference between them is the point.
-        //
-        // **The milliseconds are the setting.** A device's lag is a fixed number of
-        // milliseconds — a media server takes as long to key a clip at 92 BPM as at 140 —
-        // and this is where an operator types what they measured. It does not move when the
-        // music does.
-        //
-        // The beat fraction beside it is a *consequence*, which is why it is dim: it is the
-        // same offset expressed against the tempo now playing, useful for the other way of
-        // thinking about this ("put the robot half a beat late") and misleading if read as
-        // the thing being set. One offset shows as 0.46♩ at 92 BPM and 0.64♩ at 128, and
-        // nothing about the rig has changed.
-        HorizontalLayout {
-          spacing: 6px;
-          width: 116px;
-          horizontal-stretch: 0;
-
-          Text {
-            // The row's **total** offset: this target's own plus the whole-rig slider above,
-            // because that is what actually happens to this feed and a reader should not
-            // have to add two numbers on two sides of the window to find it.
-            property <float> total: target.delay-ms + root.latency-ms;
-            text: (total > 0 ? "+" : "") + round(total) + " ms";
-            color: total != 0 ? Theme.text : Theme.dim;
-            font-size: 12px;
-            font-family: "Consolas";
-            width: 64px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-          }
-
-          Text {
-            property <float> total: target.delay-ms + root.latency-ms;
-            // Blank rather than a fraction of nothing when no tempo is being published.
-            text: total != 0 && root.bpm > 0
-                ? round(total * root.bpm / 600.0) / 100.0 + "♩"
+            // §7 deviation 4: the fold window is measured to help inside it and to fail
+            // hard outside it, so an operator has to be able to see it and see what it
+            // did to the number above. The window itself is on the sliders below — this
+            // is the half of that they cannot show, which is the fold having *moved*
+            // the reading.
+            Text {
+              // Only when folding actually moved the number, which is exactly when an
+              // operator would otherwise mistrust the readout.
+              //
+              // The test is the *ratio*, not the difference. A fold is a halving or a
+              // doubling, so it leaves the two numbers a factor of two apart; a plain
+              // difference also catches the tenth-of-a-BPM gap between the cloud's
+              // tempo interval and the refined tempo (§6: 5.4 BPM apart at 130), which
+              // is not a fold and must not be announced as one.
+              text: (root.fold-on && root.called-bpm > 0 && root.bpm > 0
+                     && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67))
+                // Named as the arithmetic that was done rather than as "folded", for the reason
+                // the row's own label is no longer "octave fold": the operator has to be able to
+                // read what happened to the number without knowing the word for it.
+                //
+                // **And whether the beats came with it.** Halving the number without halving the
+                // grid is a real state — see `TempoState::beatDivisor` — and it is the one thing
+                // on this window that is otherwise invisible: the readout says 92 and every
+                // output fires at 184. It is not a fault to be fixed by looking at it, so this
+                // says what is happening rather than warning; ÷2 with the range switched off is
+                // what moves both together.
+                //
+                // Against `called-bpm`, the grid the filter is actually calling beats on, and
+                // not `raw-bpm`, its cloud: the two differ by an octave on a track like Moonlake
+                // and the fold works on the first.
+                ? (root.called-bpm > root.bpm ? "halved from " : "doubled from ")
+                  + round(root.called-bpm * 10) / 10 + " BPM"
+                  + (root.called-bpm > root.bpm && root.beat-divisor <= 1
+                     ? " — beats still at " + round(root.called-bpm) : "")
                 : "";
-            color: Theme.dim;
-            font-size: 12px;
-            font-family: "Consolas";
-            // Wide enough for "-0.46♩", which is the longest this gets: the slider stops at
-            // a second and the beat it is measured against never exceeds 1.1 s.
-            width: 46px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-          }
-        }
-        Press {
-          text: "−";
-          // Shorter than a Press usually is: a row of these is a list, not a row of things
-          // to hit in a hurry, and forty pixels each would push the trace off the window.
-          min-height: 30px;
-          min-width: 44px;
-          clicked => {
-            root.output-removed(index);
-          }
-        }
-      }
-
-      HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-bottom: 12px;
-        spacing: 10px;
-
-        Text {
-          // The label lives on the first target row; with no rows there is none, and this
-          // is the only line the word can be on.
-          text: root.outputs-list.length == 0 ? "targets" : "";
-          color: Theme.dim;
-          font-size: 12px;
-          width: 74px;
-          vertical-alignment: center;
-        }
-
-        Press {
-          text: "+ ADD OUTPUT";
-          min-height: 30px;
-          min-width: 168px;
-          clicked => {
-            root.output-added();
-          }
-        }
-
-        // Saving, which until 2026-09-12 happened only when the window closed. An operator
-        // who had spent an hour on rules had no way to commit them and said so: "I am
-        // scared of closing it". SAVE writes now; the save on exit is unchanged.
-        Press {
-          text: "SAVE";
-          min-height: 30px;
-          min-width: 82px;
-          clicked => {
-            root.save-now();
-          }
-        }
-
-        Press {
-          text: "EXPORT";
-          min-height: 30px;
-          min-width: 90px;
-          clicked => {
-            root.export-settings();
-          }
-        }
-
-        Press {
-          text: "IMPORT";
-          min-height: 30px;
-          min-width: 90px;
-          clicked => {
-            root.import-settings();
-          }
-        }
-
-        Text {
-          text: root.outputs-list.length == 0
-              ? "nothing is being sent — add a media server or a lighting desk"
-              : "";
-          color: Theme.dim;
-          font-size: 12px;
-          horizontal-stretch: 1;
-          vertical-alignment: center;
-          overflow: elide;
-        }
-      }
-
-      }
-    }
-
-    Rectangle {
-      height: 1px;
-      background: Theme.line;
-      vertical-stretch: 0;
-    }
-
-    // --- §5.7's control row ---------------------------------------------------------
-    // The mirror of the outputs row: that one says what is being sent, this one says what
-    // is allowed to drive us. Two lines, because §5.7 has two surfaces — a box of buttons
-    // on this desk, and a socket anything on the network can reach. Learn mode carries the
-    // first: an operator picks the thing they want a button for, presses LEARN, then
-    // presses the button.
-    Rectangle {
-      background: Theme.panel;
-      vertical-stretch: 0;
-
-      // A layout, not two loose children: a Rectangle positions its children itself, so a
-      // second HorizontalLayout beside the first would be drawn on top of it rather than
-      // under it — silently, which is §6's standing warning about Slint layout bugs.
-      VerticalLayout {
-
-      HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-top: 10px;
-        padding-bottom: 10px;
-        spacing: 10px;
-
-        Text {
-          text: "control";
-          color: root.control-on ? Theme.text : Theme.dim;
-          font-size: 12px;
-          width: 56px;
-          vertical-alignment: center;
-        }
-
-        // Index 0 of the model reads "select input" rather than being blank — see
-        // `midi-in-ports`. A ComboBox has no placeholder, so an empty first entry left this
-        // looking like an empty box somebody had failed to fill in rather than like a list
-        // nothing has been picked from yet.
-        control-picker := ComboBox {
-          model: root.midi-in-ports;
-          current-index <=> root.midi-in-port-index;
-          horizontal-stretch: 1;
-          selected => {
-            root.midi-in-picked(self.current-index);
-          }
-        }
-
-        learn-picker := ComboBox {
-          model: root.learn-actions;
-          current-index <=> root.learn-action-index;
-          enabled: root.control-on;
-          horizontal-stretch: 1;
-          selected => {
-            root.learn-action-picked(self.current-index);
-          }
-        }
-
-        // Lit while armed, in the green a held LOCK uses: both mean "this is waiting on
-        // you". Pressing it again gives up rather than stranding the operator in a mode
-        // with no way out.
-        learn-button := Press {
-          text: root.learning ? "PRESS IT" : "LEARN";
-          active: root.learning;
-          enabled: root.control-on;
-          min-width: 116px;
-          clicked => {
-            root.learn-clicked();
-          }
-        }
-
-        forget-button := Press {
-          text: "FORGET";
-          enabled: root.control-on;
-          min-width: 96px;
-          clicked => {
-            root.forget-clicked();
-          }
-        }
-
-        Text {
-          text: root.control-reading;
-          color: Theme.dim;
-          font-size: 12px;
-          font-family: "Consolas";
-          horizontal-stretch: 1;
-          vertical-alignment: center;
-          overflow: elide;
-        }
-      }
-
-      // The OSC half of the same row, on its own line: a socket rather than a port, and
-      // three separate decisions — listen at all, on which port, and whether past this
-      // machine. Kept visually inside the control panel because it answers the same
-      // question the line above does: what is allowed to drive us.
-      HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-bottom: 10px;
-        spacing: 10px;
-
-        Text {
-          text: "OSC in";
-          color: root.osc-control-on ? Theme.text : Theme.dim;
-          font-size: 12px;
-          width: 56px;
-          vertical-alignment: center;
-        }
-
-        osc-control-check := CheckBox {
-          checked <=> root.osc-control-on;
-          text: "listen";
-          toggled => {
-            root.osc-control-toggled(self.checked);
-          }
-        }
-
-        osc-control-port-field := LineEdit {
-          text <=> root.osc-control-port;
-          placeholder-text: "port";
-          font-size: 12px;
-          // A port is five characters. Fixed rather than stretched so the reading beside
-          // it — which is the part that changes and the part an operator is watching —
-          // gets the room instead.
-          width: 84px;
-          horizontal-stretch: 0;
-          // `accepted`, not `edited`, for the reason the OSC target field gives: a
-          // keystroke at a time would rebind the socket on every digit.
-          accepted(text) => {
-            self.clear-focus();
-            root.osc-control-port-edited(text);
-          }
-          // And when the operator clicks away instead of pressing
-          // Enter, which is finishing rather than cancelling. Without
-          // this, what they typed sat in the box until the next
-          // publish wrote over it, and the edit was silently lost.
-          changed has-focus => {
-            if (!self.has-focus) {
-              root.osc-control-port-edited(self.text);
+              color: Theme.holding;
+              font-size: 12px;
+              horizontal-alignment: right;
+              vertical-stretch: 0;
             }
           }
         }
 
-        osc-control-network-check := CheckBox {
-          checked <=> root.osc-control-network;
-          // Spelled as what it *allows* rather than as "local only", so the checked state
-          // is the permissive one. A negative box that is safe when ticked reads backwards
-          // in a hurry, and this is a decision worth reading correctly.
-          text: "allow other machines";
-          toggled => {
-            root.osc-control-network-toggled(self.checked);
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
+        }
+
+        // --- the controls -----------------------------------------------------------
+        // §5.9 draws ÷2, ×2 and TAP beside the bar indicator; they are gathered here
+        // instead, with §5.5's manual downbeat beside them and its octave-fold window and
+        // latency offset below. The sketch predates all three, and the four buttons read
+        // as one row of things the operator presses rather than as an afterthought to the
+        // readouts.
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+
+          VerticalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 14px;
+            padding-bottom: 14px;
+            spacing: 12px;
+
+            // The performance controls. Live only while the tracker is running: every one
+            // of them corrects a tempo or a bar phase that is being tracked *now*, and a
+            // ÷2 with nothing to halve is a button that lies about doing something.
+            HorizontalLayout {
+              spacing: 10px;
+              alignment: start;
+              vertical-stretch: 0;
+
+              Press {
+                text: "÷2";
+                enabled: root.running;
+                min-width: 72px;
+                clicked => {
+                  root.halve();
+                }
+              }
+
+              Press {
+                text: "×2";
+                enabled: root.running;
+                min-width: 72px;
+                clicked => {
+                  root.redouble();
+                }
+              }
+
+              // Counts the operator in: three taps before there is a tempo, and a press
+              // that registered has to look different from one that did not.
+              Press {
+                text: root.tap-count > 0 ? "TAP  " + root.tap-count + "/" + root.tap-needs : "TAP";
+                enabled: root.running;
+                min-width: 128px;
+                clicked => {
+                  root.tap();
+                }
+              }
+
+              // §5.7's lock, pinned rather than set: the tracker goes on tracking and simply
+              // is not allowed to let go of the tempo. Lit while held, because a tempo that
+              // has stopped following the audio is alarming when nothing says why.
+              Press {
+                text: "LOCK";
+                active: root.pinned;
+                enabled: root.running;
+                min-width: 96px;
+                clicked => {
+                  root.pin-changed(!root.pinned);
+                }
+              }
+
+              Rectangle { width: 16px; }
+
+              // §5.5: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable — the best
+              // online downbeat tracker in the world scores 56% F1, and being two beats out
+              // is worse than one tap." So it is the widest thing in the row.
+              // Lit from the press until the next beat, which is when the correction reaches
+              // the outputs — up to nine hundred milliseconds at 70 BPM. A press on the beat
+              // moves the bar dots immediately (the tracker takes the nearer beat, so it names
+              // the one just heard), but a press between beats still has to wait for one, and a
+              // button that does nothing for most of a second, then shifts a bar phase that is
+              // hard to see moving, reads as a button that does nothing at all.
+              Press {
+                text: "DOWNBEAT";
+                primary: root.running;
+                active: root.snap-pending;
+                enabled: root.running;
+                min-width: 196px;
+                clicked => {
+                  root.snap-downbeat();
+                }
+              }
+            }
+
+            // The settings, live whether or not anything is running: an operator sets the
+            // fold window for their material before pressing Start, and the engine applies
+            // what was posted while it was stopped to the run about to begin.
+            HorizontalLayout {
+              spacing: 10px;
+              vertical-stretch: 0;
+
+              Text {
+                // **Not "octave fold"**, which is what this said and which nobody outside the
+                // code knows the meaning of — the user who wrote the feature said so. The label
+                // now describes what the setting *does to the number on screen*: a tempo outside
+                // this range is halved or doubled until it is inside. Read with the readouts
+                // beside it the row says "keep BPM in 70 to 140 BPM", which is the whole of it.
+                text: "keep BPM in";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 74px;
+                vertical-alignment: center;
+              }
+
+              // Unlabelled, because the column to its left is the label — which is what
+              // lines this row's slider up with the latency row's.
+              CheckBox {
+                checked <=> root.fold-on;
+                width: 36px;
+                // The new state, not a flip: what the operator sees is what gets sent.
+                toggled => {
+                  root.fold-on-changed(self.checked);
+                }
+              }
+
+              Slider {
+                minimum: root.fold-limit-min;
+                // The two cannot cross. `foldInto` quietly returns the tempo unfolded when
+                // the window is inverted, which would look like the fold having no effect
+                // rather than like a setting being wrong.
+                maximum: root.fold-max - root.fold-least-span;
+                step: 1;
+                enabled: root.fold-on;
+                value <=> root.fold-min;
+                changed(v) => {
+                  root.fold-min-changed(v);
+                }
+              }
+
+              Text {
+                text: round(root.fold-min) + " to";
+                color: root.fold-on ? Theme.text : Theme.dim;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 66px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+
+              Slider {
+                minimum: root.fold-min + root.fold-least-span;
+                maximum: root.fold-limit-max;
+                step: 1;
+                enabled: root.fold-on;
+                value <=> root.fold-max;
+                changed(v) => {
+                  root.fold-max-changed(v);
+                }
+              }
+
+              Text {
+                text: round(root.fold-max) + " BPM";
+                color: root.fold-on ? Theme.text : Theme.dim;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 76px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+            }
+
+            Setting {
+              label: "latency";
+              // The width of the fold row's switch, so the two sliders share a left edge.
+              indent: 36px;
+              value <=> root.latency-ms;
+              minimum: -root.latency-limit-ms;
+              maximum: root.latency-limit-ms;
+              // The sign is the whole point of this control — negative fires early — so it
+              // is shown rather than left to be inferred from a thumb position. "all outputs"
+              // because this one moves the whole rig and each output row has its own beside it;
+              // the row readouts show the sum, so moving this visibly moves all of them.
+              reading: (root.latency-ms > 0 ? "+" : "") + round(root.latency-ms) + " ms"
+                  + (root.latency-ms == 0 ? "" : "  all");
+              moved(v) => {
+                root.latency-changed(v);
+              }
+            }
           }
         }
 
-        Text {
-          text: root.osc-control-reading;
-          color: Theme.dim;
-          font-size: 12px;
-          font-family: "Consolas";
-          horizontal-stretch: 1;
-          vertical-alignment: center;
-          overflow: elide;
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
         }
-      }
 
+        // --- the activation trace ------------------------------------------------------
+        VerticalLayout {
+          padding-left: 24px;
+          padding-right: 24px;
+          padding-top: 8px;
+          padding-bottom: 8px;
+          spacing: 8px;
+          vertical-stretch: 1;
+
+          HorizontalLayout {
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            Text {
+              text: "activation";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 74px;
+              vertical-alignment: center;
+            }
+
+            Rectangle {
+              background: Theme.panel;
+              border-radius: 3px;
+              min-height: 88px;
+              clip: true;
+
+              // One column per 50 Hz frame, oldest at the left. One repeater, not two,
+              // so the model is tracked once however many marks a column carries.
+              for point[i] in root.trace : Rectangle {
+                width: parent.width / root.trace.length;
+                x: i * self.width;
+                height: 100%;
+                y: 0;
+
+                // P(beat), from the bottom — and in the lock colour on the frames the
+                // filter actually called a beat, which is the difference between the
+                // network seeing something and the filter agreeing.
+                Rectangle {
+                  width: 100%;
+                  height: parent.height * clamp(point.beat, 0.0, 1.0);
+                  y: parent.height - self.height;
+                  background: point.called ? Theme.locked : Theme.trace;
+                }
+
+                // P(downbeat), as a mark at its own height. This is the weakest signal
+                // in the whole chain — 56.51 F1 in §A.1, the reason §5.5 calls a manual
+                // downbeat non-negotiable — so it is worth being able to watch it.
+                Rectangle {
+                  width: 100%;
+                  height: 2px;
+                  y: (parent.height - 2px) * (1.0 - clamp(point.downbeat, 0.0, 1.0));
+                  background: point.downbeat > 0.02 ? Theme.accent.with-alpha(0.7) : transparent;
+                }
+              }
+            }
+          }
+
+          Bar {
+            label: "input";
+            value: root.input-level;
+            reading: root.input-reading;
+            // Peaking is the one thing an input meter must not be quiet about.
+            fill: root.input-peak >= 0.99 ? Theme.holding : Theme.accent;
+          }
+        }
+
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
+        }
+
+        // --- §5.9's OUTPUTS row ---------------------------------------------------------
+        // "Link ✓ · OSC 192.168.1.40:7000 ✓ · MIDI clock ✓", and settable rather than only
+        // shown: Phase 5's exit is a new user going from launch to synced output without a
+        // text editor or a restart, so this is where that happens.
+        //
+        // The tick and the reading are deliberately different things. A box says what the
+        // operator asked for; the peer count and the beat counter say what is actually
+        // happening, and an output that is on with nothing at the other end is exactly the
+        // failure somebody needs to see at a gig.
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+
+          // A layout, not two loose children: a Rectangle positions its children itself, so the
+          // second row would be drawn on top of the first — silently (§6).
+          VerticalLayout {
+
+          HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 12px;
+            padding-bottom: 8px;
+            spacing: 10px;
+
+            Text {
+              text: "outputs";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 74px;
+              vertical-alignment: center;
+            }
+
+            CheckBox {
+              text: "Link";
+              checked <=> root.link-on;
+              width: 74px;
+              toggled => {
+                root.link-toggled(self.checked);
+              }
+            }
+
+            Text {
+              // Peers are the whole point of Link, and "on with nobody there" is the state
+              // worth being able to see.
+              text: !root.link-on ? ""
+                : root.link-peers == 0 ? "no peers"
+                : root.link-peers == 1 ? "1 peer"
+                : root.link-peers + " peers";
+              color: root.link-peers > 0 ? Theme.locked : Theme.dim;
+              font-size: 12px;
+              width: 72px;
+              vertical-alignment: center;
+            }
+
+            Text {
+              text: "MIDI clock";
+              color: root.midi-on ? Theme.text : Theme.dim;
+              font-size: 12px;
+              width: 72px;
+              vertical-alignment: center;
+            }
+
+            midi-picker := ComboBox {
+              model: root.midi-ports;
+              current-index <=> root.midi-port-index;
+              horizontal-stretch: 1;
+              selected => {
+                root.midi-port-picked(self.current-index);
+              }
+            }
+
+            Text {
+              // What has actually gone out. Nothing else on screen distinguishes a transport
+              // that is configured from one that is working.
+              text: root.beats-sent > 0 ? root.beats-sent + " beats sent" : "";
+              color: Theme.dim;
+              font-size: 12px;
+              font-family: "Consolas";
+              width: 104px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+          }
+
+          // §5.6's targets, a row each. They used to be one field among four on the row
+          // above, then one field of their own holding a comma-separated line — and the whole
+          // point of naming them is that a rig has several, so a rig's worth of them is a
+          // list. The name a rule routes to and the place the message goes are two facts, so
+          // they get two boxes: `output::formatOutputAddress` is what the second one holds.
+          for target[index] in root.outputs-list: HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-bottom: 6px;
+            spacing: 10px;
+
+            Text {
+              // The column label, on the first row only. Repeated down the side it would read
+              // as four separate settings rather than as one list.
+              text: index == 0 ? "targets" : "";
+              color: root.osc-on ? Theme.text : Theme.dim;
+              font-size: 12px;
+              width: 74px;
+              vertical-alignment: center;
+            }
+
+            CheckBox {
+              // §5.6's per-target enabled state: a switch rather than deleting the row, because
+              // an operator killing one feed mid-set wants it back afterwards with its address
+              // intact. Applied at once — a tick box that waited for Enter would be a lie.
+              checked: target.enabled;
+              width: 28px;
+              toggled => {
+                root.output-enabled-changed(index, self.checked);
+              }
+            }
+
+            // **Each box reports only itself.** The row used to be two boxes that each sent both
+            // values, because both halves had to travel together — but a row is four fields now,
+            // and two of them live inside an `if`, where an id in one branch cannot be read from
+            // the other. The C++ side holds the draft and merges, which it was already doing
+            // (`targetDrafts_`); what changed is that it merges a field rather than a whole row.
+            LineEdit {
+              text: target.name;
+              placeholder-text: "name";
+              font-size: 12px;
+              width: 104px;
+              horizontal-stretch: 0;
+              edited(text) => {
+                root.output-name-edited(index, text);
+              }
+              accepted(text) => {
+                self.clear-focus();
+                root.output-name-accepted(index, text);
+              }
+              // And when the operator clicks away instead of pressing
+              // Enter, which is finishing rather than cancelling. Without
+              // this, what they typed sat in the box until the next
+              // publish wrote over it, and the edit was silently lost.
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.output-name-accepted(index, self.text);
+                }
+              }
+            }
+
+            // OSC or MIDI, asked before anything else on the row, because it decides what the
+            // rest of the row is even asking. See `OutputRow`.
+            ComboBox {
+              model: root.output-kinds;
+              current-index: target.kind-index;
+              // Two four-letter words and a chevron. Measured rather than guessed: at 66px the
+              // Fluent ComboBox spent it all on its own padding and drew "O..." and "M...".
+              width: 84px;
+              horizontal-stretch: 0;
+              selected => {
+                root.output-kind-changed(index, self.current-index);
+              }
+            }
+
+            // The destination, in a fixed-width slot so that the slider beside it starts at the
+            // same x whichever kind the row is — a row switched to MIDI must not shove every
+            // readout below it sideways. A quarter narrower than the single address box it
+            // replaces, the width going to the delay slider, which is dragged and was too short
+            // to find an offset by ear on.
+            HorizontalLayout {
+              // A quarter narrower than the single address box it replaces, which at the window's
+              // own width was 302 px. `max-width` rather than a hard `width` so that it, and not
+              // the row, is what gives when the window is dragged towards its minimum — at the
+              // floor a host and a port still read, and a device name elides as it always did.
+              preferred-width: 226px;
+              max-width: 226px;
+              min-width: 150px;
+              horizontal-stretch: 0;
+              spacing: 6px;
+
+              // `if`, not `visible`: a hidden element still takes its layout space, so the two
+              // shapes would each reserve room for the other and neither would get the slot.
+              // See rules_window.slint's slot rows for the render that found it.
+              if target.kind-index == 0 : LineEdit {
+                text: target.host;
+                placeholder-text: "127.0.0.1";
+                font-size: 12px;
+                horizontal-stretch: 1;
+                edited(text) => {
+                  root.output-host-edited(index, text);
+                }
+                accepted(text) => {
+                  self.clear-focus();
+                  root.output-host-accepted(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.output-host-accepted(index, self.text);
+                  }
+                }
+              }
+
+              if target.kind-index == 0 : LineEdit {
+                text: target.port;
+                placeholder-text: "9000";
+                font-size: 12px;
+                width: 62px;
+                horizontal-stretch: 0;
+                edited(text) => {
+                  root.output-port-edited(index, text);
+                }
+                accepted(text) => {
+                  self.clear-focus();
+                  root.output-port-accepted(index, text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.output-port-accepted(index, self.text);
+                  }
+                }
+              }
+
+              // The machine's own devices, never a name to be typed. Nobody knows what their
+              // interface enumerated as, and a mistyped one is a target that silently sends
+              // nowhere — which is the whole reason this row stopped being a text box.
+              if target.kind-index != 0 : ComboBox {
+                model: root.output-devices;
+                current-index: target.device-index;
+                horizontal-stretch: 1;
+                selected => {
+                  root.output-device-picked(index, self.current-index);
+                }
+              }
+            }
+
+            // §5.5's latency offset, per target. The thing on the end of each cable has its own
+            // lag — a media server is a frame or two behind and a robot that has to physically
+            // move is far more — so one slider for the whole rig is the one adjustment that
+            // cannot help. See `OutputTarget::delaySeconds`, including what "earlier" can mean
+            // for a message about a beat that has already been heard.
+            // **The one control on this row that is dragged**, so it is the one that gets the
+            // width. It was 112 px for a range of two seconds — 18 ms a pixel, which is a third
+            // of a frame at 60 Hz and far coarser than the offsets it is used to find. Stretched
+            // rather than widened by a fixed amount: what the destination box gave up is a floor,
+            // and a window dragged wider should spend the rest here too.
+            Slider {
+              minimum: -root.output-delay-limit-ms;
+              maximum: root.output-delay-limit-ms;
+              step: 1;
+              enabled: target.enabled;
+              value: target.delay-ms;
+              min-width: 90px;
+              horizontal-stretch: 1;
+              changed(v) => {
+                root.output-delay-changed(index, v);
+              }
+            }
+
+            // Two readouts, not one string, and the difference between them is the point.
+            //
+            // **The milliseconds are the setting.** A device's lag is a fixed number of
+            // milliseconds — a media server takes as long to key a clip at 92 BPM as at 140 —
+            // and this is where an operator types what they measured. It does not move when the
+            // music does.
+            //
+            // The beat fraction beside it is a *consequence*, which is why it is dim: it is the
+            // same offset expressed against the tempo now playing, useful for the other way of
+            // thinking about this ("put the robot half a beat late") and misleading if read as
+            // the thing being set. One offset shows as 0.46♩ at 92 BPM and 0.64♩ at 128, and
+            // nothing about the rig has changed.
+            HorizontalLayout {
+              spacing: 6px;
+              width: 116px;
+              horizontal-stretch: 0;
+
+              Text {
+                // The row's **total** offset: this target's own plus the whole-rig slider above,
+                // because that is what actually happens to this feed and a reader should not
+                // have to add two numbers on two sides of the window to find it.
+                property <float> total: target.delay-ms + root.latency-ms;
+                text: (total > 0 ? "+" : "") + round(total) + " ms";
+                color: total != 0 ? Theme.text : Theme.dim;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 64px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+
+              Text {
+                property <float> total: target.delay-ms + root.latency-ms;
+                // Blank rather than a fraction of nothing when no tempo is being published.
+                text: total != 0 && root.bpm > 0
+                    ? round(total * root.bpm / 600.0) / 100.0 + "♩"
+                    : "";
+                color: Theme.dim;
+                font-size: 12px;
+                font-family: "Consolas";
+                // Wide enough for "-0.46♩", which is the longest this gets: the slider stops at
+                // a second and the beat it is measured against never exceeds 1.1 s.
+                width: 46px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+            }
+            Press {
+              text: "−";
+              // Shorter than a Press usually is: a row of these is a list, not a row of things
+              // to hit in a hurry, and forty pixels each would push the trace off the window.
+              min-height: 30px;
+              min-width: 44px;
+              clicked => {
+                root.output-removed(index);
+              }
+            }
+          }
+
+          HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-bottom: 12px;
+            spacing: 10px;
+
+            Text {
+              // The label lives on the first target row; with no rows there is none, and this
+              // is the only line the word can be on.
+              text: root.outputs-list.length == 0 ? "targets" : "";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 74px;
+              vertical-alignment: center;
+            }
+
+            Press {
+              text: "+ ADD OUTPUT";
+              min-height: 30px;
+              min-width: 168px;
+              clicked => {
+                root.output-added();
+              }
+            }
+
+            // Saving, which until 2026-09-12 happened only when the window closed. An operator
+            // who had spent an hour on rules had no way to commit them and said so: "I am
+            // scared of closing it". SAVE writes now; the save on exit is unchanged.
+            Press {
+              text: "SAVE";
+              min-height: 30px;
+              min-width: 82px;
+              clicked => {
+                root.save-now();
+              }
+            }
+
+            Press {
+              text: "EXPORT";
+              min-height: 30px;
+              min-width: 90px;
+              clicked => {
+                root.export-settings();
+              }
+            }
+
+            Press {
+              text: "IMPORT";
+              min-height: 30px;
+              min-width: 90px;
+              clicked => {
+                root.import-settings();
+              }
+            }
+
+            Text {
+              text: root.outputs-list.length == 0
+                  ? "nothing is being sent — add a media server or a lighting desk"
+                  : "";
+              color: Theme.dim;
+              font-size: 12px;
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+          }
+
+          }
+        }
+
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
+        }
+
+        // --- §5.7's control row ---------------------------------------------------------
+        // The mirror of the outputs row: that one says what is being sent, this one says what
+        // is allowed to drive us. Two lines, because §5.7 has two surfaces — a box of buttons
+        // on this desk, and a socket anything on the network can reach. Learn mode carries the
+        // first: an operator picks the thing they want a button for, presses LEARN, then
+        // presses the button.
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+
+          // A layout, not two loose children: a Rectangle positions its children itself, so a
+          // second HorizontalLayout beside the first would be drawn on top of it rather than
+          // under it — silently, which is §6's standing warning about Slint layout bugs.
+          VerticalLayout {
+
+          HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 10px;
+
+            Text {
+              text: "control";
+              color: root.control-on ? Theme.text : Theme.dim;
+              font-size: 12px;
+              width: 56px;
+              vertical-alignment: center;
+            }
+
+            // Index 0 of the model reads "select input" rather than being blank — see
+            // `midi-in-ports`. A ComboBox has no placeholder, so an empty first entry left this
+            // looking like an empty box somebody had failed to fill in rather than like a list
+            // nothing has been picked from yet.
+            control-picker := ComboBox {
+              model: root.midi-in-ports;
+              current-index <=> root.midi-in-port-index;
+              horizontal-stretch: 1;
+              selected => {
+                root.midi-in-picked(self.current-index);
+              }
+            }
+
+            learn-picker := ComboBox {
+              model: root.learn-actions;
+              current-index <=> root.learn-action-index;
+              enabled: root.control-on;
+              horizontal-stretch: 1;
+              selected => {
+                root.learn-action-picked(self.current-index);
+              }
+            }
+
+            // Lit while armed, in the green a held LOCK uses: both mean "this is waiting on
+            // you". Pressing it again gives up rather than stranding the operator in a mode
+            // with no way out.
+            learn-button := Press {
+              text: root.learning ? "PRESS IT" : "LEARN";
+              active: root.learning;
+              enabled: root.control-on;
+              min-width: 116px;
+              clicked => {
+                root.learn-clicked();
+              }
+            }
+
+            forget-button := Press {
+              text: "FORGET";
+              enabled: root.control-on;
+              min-width: 96px;
+              clicked => {
+                root.forget-clicked();
+              }
+            }
+
+            Text {
+              text: root.control-reading;
+              color: Theme.dim;
+              font-size: 12px;
+              font-family: "Consolas";
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+          }
+
+          // The OSC half of the same row, on its own line: a socket rather than a port, and
+          // three separate decisions — listen at all, on which port, and whether past this
+          // machine. Kept visually inside the control panel because it answers the same
+          // question the line above does: what is allowed to drive us.
+          HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-bottom: 10px;
+            spacing: 10px;
+
+            Text {
+              text: "OSC in";
+              color: root.osc-control-on ? Theme.text : Theme.dim;
+              font-size: 12px;
+              width: 56px;
+              vertical-alignment: center;
+            }
+
+            osc-control-check := CheckBox {
+              checked <=> root.osc-control-on;
+              text: "listen";
+              toggled => {
+                root.osc-control-toggled(self.checked);
+              }
+            }
+
+            osc-control-port-field := LineEdit {
+              text <=> root.osc-control-port;
+              placeholder-text: "port";
+              font-size: 12px;
+              // A port is five characters. Fixed rather than stretched so the reading beside
+              // it — which is the part that changes and the part an operator is watching —
+              // gets the room instead.
+              width: 84px;
+              horizontal-stretch: 0;
+              // `accepted`, not `edited`, for the reason the OSC target field gives: a
+              // keystroke at a time would rebind the socket on every digit.
+              accepted(text) => {
+                self.clear-focus();
+                root.osc-control-port-edited(text);
+              }
+              // And when the operator clicks away instead of pressing
+              // Enter, which is finishing rather than cancelling. Without
+              // this, what they typed sat in the box until the next
+              // publish wrote over it, and the edit was silently lost.
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.osc-control-port-edited(self.text);
+                }
+              }
+            }
+
+            osc-control-network-check := CheckBox {
+              checked <=> root.osc-control-network;
+              // Spelled as what it *allows* rather than as "local only", so the checked state
+              // is the permissive one. A negative box that is safe when ticked reads backwards
+              // in a hurry, and this is a decision worth reading correctly.
+              text: "allow other machines";
+              toggled => {
+                root.osc-control-network-toggled(self.checked);
+              }
+            }
+
+            Text {
+              text: root.osc-control-reading;
+              color: Theme.dim;
+              font-size: 12px;
+              font-family: "Consolas";
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+          }
+
+          }
+        }
       }
     }
 
+    // The top edge of what does not scroll. Below it the triggers row and the status bar
+    // are pinned: PANIC is pressed in a hurry — §5.9 keeps it out of the editor for that
+    // reason, and having to find it by scrolling would give the reason back — and the
+    // status line is where an error and the build number are said.
     Rectangle {
       height: 1px;
       background: Theme.line;

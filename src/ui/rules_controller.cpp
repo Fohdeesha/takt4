@@ -551,11 +551,16 @@ RulesController::RulesController(output::OutputRunner& runner,
     });
     window_->on_all_outputs_chosen([this] { chooseAllOutputs(); });
 
-    window_->on_min_confidence_changed([this](float v) { setMinConfidence(v); });
+    // Widened explicitly, here and on `probability` below: Slint hands a slider's value over
+    // as a float and both settings are held as double. GCC and Clang refuse the implicit
+    // promotion under -Wdouble-promotion -Werror, and MSVC accepts it silently — which is
+    // why these two were still here after the same fix went in for the engine.
+    window_->on_min_confidence_changed(
+        [this](float v) { setMinConfidence(static_cast<double>(v)); });
     window_->on_intensity_changed([this](int which, bool on) { setIntensity(which, on); });
     window_->on_bpm_range_edited(
         [this](const slint::SharedString& t) { setBpmRange(std::string(t)); });
-    window_->on_probability_changed([this](float v) { setProbability(v); });
+    window_->on_probability_changed([this](float v) { setProbability(static_cast<double>(v)); });
     window_->on_cooldown_changed(
         [this](const slint::SharedString& t) { setCooldown(std::string(t)); });
 

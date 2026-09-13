@@ -15,6 +15,13 @@ public:
     slint::platform::AbstractRenderer& renderer() override { return renderer_; }
     slint::PhysicalSize size() override { return size_; }
 
+    /// What the adapter reports from here on. Slint permits one platform per process, and
+    /// the platform fixes this size when it builds the adapter — so without a way to change
+    /// it afterwards, a test could only ever see the window at one size. Rendering the same
+    /// window at several heights is the only way to test that a short one is not cut off.
+    /// Dispatch a resize event to the window as well; this half only moves the buffer.
+    void resize(slint::PhysicalSize size) noexcept { size_ = size; }
+
     /// Draws into a buffer of the caller's. `takt4-shot` writes that out as an image;
     /// a test that only needs the window to exist never calls it.
     slint::platform::SoftwareRenderer& software() noexcept { return renderer_; }
