@@ -225,10 +225,13 @@ void BeatEngine::track(const model::FrameActivation& activation) noexcept {
             between.flux = previous_.flux + (activation.flux - previous_.flux) * t;
             // The host time of the audio the interpolated frame stands for is between the
             // two as well; an onset is a fact about one of the network's frames, not this.
+            // `t` is widened explicitly: the multiplication is in double either way, and
+            // GCC and Clang refuse the implicit promotion under -Wdouble-promotion -Werror.
             between.hostMicros =
                 previous_.hostMicros +
-                static_cast<std::int64_t>(std::llround(
-                    static_cast<double>(activation.hostMicros - previous_.hostMicros) * t));
+                static_cast<std::int64_t>(
+                    std::llround(static_cast<double>(activation.hostMicros - previous_.hostMicros) *
+                                 static_cast<double>(t)));
             between.onset = false;
             trackOne(between, true);
         }
