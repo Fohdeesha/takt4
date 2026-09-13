@@ -17,12 +17,14 @@
 // window_test.cpp.
 
 #include "ui/headless.hpp"
+#include "ui/shot.hpp"
 
 #include <catch2/catch_session.hpp>
 
 int main(int argc, char** argv) {
     // The window's own preferred size, so any layout the tests provoke is the one an
-    // operator would get.
-    (void)takt4::ui::installHeadlessPlatform(900, 520);
+    // operator would get. Kept rather than discarded: a test that renders the window needs
+    // the adapter, and this is the only call that can hand one over. See tests/ui/shot.hpp.
+    takt4::tests::headlessPlatform() = takt4::ui::installHeadlessPlatform(900, 520);
     return Catch::Session().run(argc, argv);
 }
