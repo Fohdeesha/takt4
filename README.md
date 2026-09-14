@@ -1,381 +1,177 @@
 # takt4
 
-A desktop application that listens to one selectable channel of a multi-channel audio
-interface, tracks beat, downbeat, tempo and meter in real time, and broadcasts that
-timing over Ableton Link, OSC and MIDI clock — with a GUI-configurable rule engine for
-firing events on the beat.
+takt4 listens to one channel of your audio interface, works out where the beat, the
+downbeat, the tempo and the meter are, and tells the rest of the rig — over **Ableton
+Link, OSC, MIDI beat clock and MIDI notes** — with a rule engine for firing events on the
+music.
 
-Aimed at live production in general: VJ software, lighting desks, media servers, DAWs,
-generative visuals. Windows, macOS and Linux.
+It is built for playing out: VJ software (Resolume, TouchDesigner, MadMapper), lighting
+desks, media servers, lasers, DAWs. No click track, no tapping along, nothing to line up
+beforehand — point it at the sound coming out of the mixer and it follows.
 
-## Status
+**[Download the latest release](https://github.com/Fohdeesha/takt4/releases/latest).**
+`takt4.exe` is one file: the neural network and the state space are compiled in, so you
+copy the executable anywhere and run it. It keeps a `settings.json` beside itself, which
+makes two copies in two folders two rigs — a rehearsal setup and a show setup.
 
-Early. The build system, dependencies and CI are in place, and the audio path exists:
-one channel (or a summed pair) of any input device is opened, resampled to the engine's
-22050 Hz and cut into 20 ms hops. The feature front end that feeds the beat tracker —
-madmom's log-filterbank spectrogram and its positive differences, 288 values per hop —
-is implemented in C++ and verified against madmom itself on eighteen excerpts under
-`tests/data/features/`: no filterbank value anywhere differs by more than one float32
-ulp.
+Windows today. The macOS and Linux presets are in the tree and the code is kept portable,
+but Windows is the only platform currently built and tested.
 
-The BeatNet+ neural network runs on top of that: convolution block, a dense layer, four
-stacked LSTMs and a softmax over beat / downbeat / non-beat, 50 times a second, through
-RTNeural. All three published weight sets are converted into `assets/weights/` and
-checked against PyTorch on the same eighteen excerpts (`tests/data/model/`), where the
-largest difference in the probabilities is 3.6e-6. Live, the audio callback only hands
-hops to a lock-free ring and a worker thread runs the front end and the model; over
-those excerpts the worker averages 0.086 ms per hop and has never taken more than
-0.31 ms, out of the 20 ms of audio each hop stands for.
+## What it does
 
-Those probabilities become beats through an exact forward filter over madmom's joint
-bar-pointer state space: position in the bar, tempo and meter, about 39,000 states at
-100 frames a second with the network's 50 Hz activations interpolated between, one sparse
-transition and one multiply by the observation densities per frame, a few tens of
-microseconds. It is deterministic without a seed, it needs no injection or information
-gate, its confidence is the posterior mass on the tempo it reports, the operator's tempo
-window is evidence *inside* it rather than a relabelling afterwards, and a pinned lock
-holds the tempo and tracks phase alone. The beat is read off the activation's peak inside
-the posterior's beat range, which is where the offline reference systems put theirs. It
-replaced BeatNet+'s two-stage particle filter cascade on 2026-09-08, having been measured
-against it on every yardstick the project has — the working is in
-[TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md) and the numbers in
-[tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md).
+- **Follows the music.** A neural network reads the audio 50 times a second; an exact
+  forward filter over madmom's bar-pointer state space turns that into beats, downbeats,
+  a tempo and a meter — with a confidence you can see and gate on. It costs 40 ms, which
+  is what a centred analysis window costs and nothing more.
+- **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
+  the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, and MIDI notes, CC,
+  program change and pitch bend. Any number of named targets, each with its own enable and
+  its own offset.
+- **Fires events on the music.** A rule is *when → only if → send*: every 4 bars, only
+  above 0.6 confidence and only in a drop, send a Resolume clip drawn from a shuffle bag.
+  Edited by clicking, not by typing JSON.
+- **Stays hands-on while it plays.** Tap the tempo, snap the downbeat, ÷2, ×2, pin the
+  lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
+  stops the tracker, reseeds anything or drops the lock.
+- **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
+  your controller and it is bound.
 
-The particle filter is still here, as `--decoder pf` and the `"particle"` setting. Its
-state space is precomputed into `assets/statespace/default.bin`, its generator is
-specified rather than inherited, and `src/core/tracking/` reproduces
-`tools/pf_reference.py` frame for frame on all eighteen excerpts; that restatement in
-turn has to track the real BeatNet+ filter as closely as it tracks itself across six
-seeds before anything is committed. See
-[tests/data/tracking/README.md](tests/data/tracking/README.md), which also records what
-that catches and what it cannot.
+## How well it tracks
 
-On top sits the tempo state machine: a lock that needs sustained agreement and sustained
-disagreement to change, a confidence gate that holds the last good tempo rather than
-publishing a wrong one, a latency offset on every beat, and the meter taken from the
-decoder rather than assumed. Tempo is refined from the spacing of the beats themselves,
-because the state space's whole-frame intervals are 2 BPM apart at 130 and nothing inside
-the decoder can do better.
+Beat and downbeat F-measure, scored with `mir_eval` at its 70 ms tolerance, on the weights
+that ship:
 
-The tempo range you set — the window labelled "keep BPM in" — is a preference the decoder
-weighs against the music: a tempo outside it has to keep out-arguing a small penalty every
-frame, so on a track whose octave is genuinely ambiguous the window decides, and the beats
-come out on that grid with the posterior's own phase; on a track whose evidence is clear,
-the evidence wins and the readout says so. The number and the beats can no longer
-disagree, which the previous design allowed — a readout of 92 over outputs firing at 186
-was measured, and is the reason the window used to move the beats as well as the number.
-Under the particle filter that older fold is still what the window does; the working is
-in [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
+| measured on | beat F | downbeat F |
+|---|---|---|
+| **23 electronic tracks**, 91 minutes — the material the app is for, against Beat This! | **0.84**, and **0.92** over the fifteen of them where two independent reference systems agree with each other | 0.66 |
+| **Ballroom** — 698 clips, 6.1 hours, with bars of three and four | **0.95** | 0.93 |
+| **GiantSteps** — 664 Beatport previews, tempo annotations only | tempo right within 4 % on **86 %** of them | — |
 
-The operator's controls reach all of that while it runs, through a queue the tracking
-thread drains between frames: a tap says which tempo was meant and moves the window onto
-it, a downbeat snap says where the bar starts and keeps it there, ÷2 and ×2 are
-instructions that halve or double the grid at once, a pinned lock holds the tempo and
-tracks phase only, and the settings take effect without reseeding anything or giving up
-the lock. Nothing has to be stopped and restarted to change anything.
+Read honestly: Ballroom is a set the underlying model was **trained** on, so that row says
+the engine reproduces what the model can do over six hours of real audio and nothing about
+how it generalises. The other two were held out, and they are the rows that mean
+something — though there is no human ground truth for the 23, so on the eight where the
+reference systems disagree with each other a score is agreement with a convention. Every
+number, including what was tried and rejected, is in
+[tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md) and
+[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
 
-The three transports are driven from it: Ableton Link (tempo, and phase with the
-detected meter as the quantum, timed through Link's own regression on the audio thread's
-sample counter), a generic OSC namespace on any number of targets, and MIDI beat clock
-at 24 PPQN.
+Underneath, the engine is held to the reference implementations it was ported from: the
+feature front end matches madmom to within one float32 ulp and the network matches PyTorch
+to 3.6e-6, on eighteen excerpts that ship with the test suite.
 
-Measured on the 698-clip Ballroom set — 6.1 hours, scored with mir_eval at its 70 ms
-tolerance — the whole chain gets **0.956 beat and 0.942 downbeat F-measure** (the particle
-filter: 0.894 and 0.850). Ballroom is a set BeatNet+ was *trained* on, so that says the
-port reproduces what the model can do and nothing about how the model generalises; it is
-not comparable to BeatNet+'s published GTZAN figures.
-[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/) has the numbers, the
-per-genre breakdown and what the window costs as well as buys. On 91 minutes of the
-electronic music the app is for, scored against two offline reference systems, it is
-0.895 beat and 0.708 downbeat F-measure over the tracks the two references agree on
-(the particle filter: 0.864 and 0.602), and eight of the 23 tracks are ones the reference
-systems disagree with *each other* on — the model's limit, not the decoder's, and the
-subject of the proposal's next phase.
+## The model, and what it was trained on
 
-`takt4 --version` prints what it was built with. The window shows the tempo, the lock
-and confidence, a bar indicator drawn from the meter the tracker reports, the 50 Hz
-activation trace and an input meter — and drives the tracker: ÷2, ×2, tap, a manual
-downbeat, the tempo range the reading is kept in — the octave fold, labelled "keep BPM in"
-and **off until you ask for it**, because a window that suited the last record silently
-halves or doubles the next one — and the latency offset. It carries the outputs row too:
-Link, MIDI clock and any number of named OSC and MIDI targets, each with its own enable
-and its own [offset](#offsets), and §5.9's rule editor behind it.
+The network is BeatNet+'s architecture — a convolution block, a dense layer, four stacked
+LSTMs and a softmax over beat / downbeat / non-beat — run through RTNeural on a worker
+thread, well inside the 20 ms of audio each step stands for. The weights that ship,
+`electronic`, are BeatNet+'s published `generic` set **fine-tuned on
+the operator's own library** — 1,325 tracks of breakbeat, electro, IDM and house at 85–140,
+with drum and bass labelled at half time because that is how it is counted. The labels come
+from an ensemble of Beat This!'s three seeds, with the tracks its own seeds disagree about
+left out, trained at triple weight beside Raveform, osu2beat2025 and Ballroom so the model
+does not forget what it already knew. Against the stock weights on the same decoder: the
+eight hardest tracks in the harness went **0.62 → 0.69** beat F, GiantSteps tempo **0.77 →
+0.86**, and the tempo readout is right on 19 of the 23 tracks where it was right on 16.
 
-**`takt4` is one file.** The BeatNet+ weights and the state space are compiled into the
-executable (`tools/embed_asset.py`, `src/core/assets/`), so copying `takt4.exe` anywhere
-copies a working program — there is no folder beside it to find and nothing to leave
-behind. Settings go in a `settings.json` **next to the executable**, created on first
-exit; two copies in two folders are two rigs, which is what an operator with a rehearsal
-setup and a show setup wants. A `settings.json` left by an older build under
-`%APPDATA%\takt4` (or `~/.config/takt4`) is still read once, so a rig keeps its device,
-its outputs and its MIDI bindings across the move.
+BeatNet+'s three published sets are still there — `--weights generic`, `generic-main` for
+percussion-heavy material, `af-non-percussive` for ambient and classical. The pipeline
+that built the fine-tune is `tools/train/`, and
+[TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md) is the full record of what was measured,
+including everything that was tried and rejected.
 
-### Offsets
+## Outputs
 
-Nothing downstream is ready at the instant a beat is detected. A media server is a frame
-or two behind, a robot that has to physically move is far more, and takt4's own pipeline
-costs 40 ms of centred framing before any of that. Two controls move things around the
-beat, and they add up:
+Each output has a name, a kind, a destination, an enable and an offset, and rules can be
+routed to any subset of them. Link and MIDI clock are their own rows.
 
-- **latency**, one slider for the whole rig (`--latency`, §5.5).
-- **a slider per output**, because the lag being compensated does not belong to takt4 —
-  it belongs to the thing on the end of each cable, and one number cannot describe a rig
-  with a media server and a robot on it.
+The generic OSC namespace goes to every OSC target, whatever else is configured:
 
-Both are signed, and both mean the same thing: **positive is later, negative is earlier.**
-What differs is what each transport can do with a negative one.
-
-Ableton Link and the MIDI clock carry a running grid, so its phase moves either way and a
-negative offset really does shift them earlier. An OSC message is one datagram about a
-beat that has already been heard, and it cannot be sent into the past — so "earlier"
-there is measured from the **next** beat instead: the message is held for what is left of
-a beat after the offset, and arrives that far ahead of the beat it lands on. Downstream
-cannot tell the difference, and it is the number an operator actually has in their head —
-*this device is 300 ms slow, take 300 ms off it.*
-
-**The number you set is a fixed number of milliseconds and has nothing to do with the
-tempo.** A media server takes as long to key a clip at 92 BPM as at 140; you measure your
-device's lag once and type it in, and it stays right as the music changes.
-
-What varies with tempo is the *wait*, and it has to, because the thing being aimed at moves.
-A device 300 ms slow, told −300 ms, is held 352 ms at 92 BPM and 169 ms at 128 — in both
-cases landing on screen exactly on a beat. That arithmetic is the app's, not yours. Each
-row's readout shows the milliseconds you set in full brightness and, dimmed beside them,
-the same offset as a fraction of the beat now playing — a consequence, for the times you
-would rather think in beats ("put the robot half a beat late") than in milliseconds.
-
-In a settings file an offset is a suffix on the target —
-`robot = 192.168.1.42:7000 +352ms`, `wall = 192.168.1.41:7000 -80ms`.
-
-### Development console
-
-`takt4-cli` is built alongside the application (in `bin/` next to it) but never
-packaged. It exercises the engine without the UI:
-
-```sh
-takt4-cli devices                       # host APIs, then every input device and its channels
-takt4-cli meter --device 1 --channel 7  # open input 7 of device 1, print RMS/peak at 10 Hz
-takt4-cli meter --device 1 --channels 7,8
-takt4-cli meter --device 1 --all        # every channel of the device, unresampled
-takt4-cli features in.wav out.npy --compare golden.npy   # feature front end on a file
-takt4-cli beats in.wav                                   # front end + model on a file
-takt4-cli beats --device 1 --channel 7                   # ... and on a live input
-takt4-cli track in.wav --bpm 80-160                      # the whole chain, over a file
-takt4-cli track --device 1 --channel 7 --link --osc 192.168.1.40:7000 --midi-clock "MOTU"
+```
+/takt4/bpm         float   the published tempo
+/takt4/beat        int     1, on every beat
+/takt4/beat/bar    int     which beat of the bar it was, 1..N
+/takt4/downbeat    int     1, on downbeats only
+/takt4/confidence  float   0 to 1
+/takt4/locked      int     0 or 1
+/takt4/meter       int     the detected beats per bar
+/takt4/resync      int     1, when the tracker has just re-found itself
 ```
 
-Channel numbers count from 1, as printed on the interface. On ASIO and CoreAudio the
-selected channel is opened natively (the stream carries only that channel); elsewhere,
-or with `--software`, the whole device is opened and the channel is sliced out in
-software. `--rate HZ` overrides the device's default rate and `--seconds S` stops
-without Ctrl-C. Debug builds carry a real-time allocation guard that aborts on any heap
-use from the audio callback; `meter` reports whether it is on.
+The state addresses repeat on every beat, so anything that starts late is right again
+within a beat. `/takt4` is a default you can change, so two instances on one network can
+be told apart.
 
-`features` runs a mono 22050 Hz WAV through the C++ feature front end and writes the
-result as a numpy `.npy` file; with `--compare` it reports the largest difference to a
-reference file and fails above 1e-5, the same check the test suite makes against the
-golden excerpts (see [tests/data/features/README.md](tests/data/features/README.md)).
+## Rules
 
-`beats` adds the neural network and prints P(beat), P(downbeat) and P(non-beat) per
-20 ms frame, either over a file or from a live input — the device options are the
-meter's. `--weights` picks the weight set: `generic` (the default), `generic-main` for
-percussion-heavy material, `af-non-percussive` for ambient and classical, or a path to
-a `.bin` of your own. A run ends with the mean and the worst time one hop took on the
-worker thread, out of the 20 ms of audio it stands for.
+Open **triggers**. A rule is three columns:
 
-`track` runs everything: the front end, the model, the decoder and the tempo state
-machine, and drives the outputs. It prints a line per beat with the tempo, the position
-in the bar, the meter, whether the tempo is locked and how confident the tracker is, and
-a status line every two seconds in between.
+- **when** — every beat, every N beats, every bar, every N bars, on the downbeat, on a
+  tempo change, on lock or unlock, when the intensity changes (takt4 tells a breakdown
+  from a drop out of the audio it is already analysing), on a manual hotkey, or on a
+  Euclidean pattern: 3-in-8 is the tresillo, 5-in-16 the bossa, locked to the tracker's
+  own beat rather than a clock of its own.
+- **only if** — confidence above a threshold, intensity in a set, BPM in a range, a
+  probability, a cooldown.
+- **send** — an OSC message or a MIDI note, note off, CC, program change or pitch bend,
+  to whichever outputs you tick. Any number in it can be a generator: shuffle, random,
+  round-robin, weighted, fixed, a live value (BPM, bar, confidence, meter, intensity), or
+  a ramp that sweeps over a whole number of bars, locked to the downbeat. Then a
+  sequence of follow-ups — a release, or something else entirely — each delayed in
+  milliseconds, beats or bars from the moment the rule fired.
 
-| Option | |
-|---|---|
-| `--bpm LO-HI` | the tempo window, default `70-140`; `off` for none, as an evaluation wants. Under the forward filter it is a prior the decoder weighs every frame; under the particle filter it is the octave fold, which folds the number and, once the filter has settled on the slower octave for five seconds, the beats. |
-| `--decoder D` | `forward` (default), the exact forward filter at 100 fps, or `pf`, BeatNet+'s particle filter at 50 fps. `--emission`, `--meters`, `--decoder-fps` and `--hold BPM` are the forward filter's; `--statespace` and `--seed` the particle filter's. |
-| `--confidence T` | below this the last good tempo is held and the line says so; default 0.15 |
-| `--latency MS` | added to every beat's timestamp and to what all three transports are told; negative fires early, which is the useful direction. See [Offsets](#offsets) for what "early" can mean for OSC. |
-| `--seed N` | the particle filter's seed. The same seed and the same audio give the same beats, every time and on every platform. The forward filter has none to give: it is exact. |
-| `--link` | join the Ableton Link network as tempo master |
-| `--osc HOST:PORT` | send the generic namespace there; repeat for more targets |
-| `--osc-prefix /NAME` | that namespace's prefix, default `/takt4` |
-| `--midi-clock PORT` | 24 PPQN to a MIDI output port, named by any part of its name or by its index. A wrong name lists the ports that are there. |
+Rig presets build a working setup in one pick: clips on three Resolume layers, Resolume's
+tempo and resync, a breathing dashboard, Euclidean MIDI stabs. Everything a preset writes
+is ordinary editable data, and a preset can be exported to another machine. **PANIC** stops
+every rule instantly.
 
-The OSC namespace is `/takt4/bpm`, `/takt4/beat`, `/takt4/beat/bar`, `/takt4/downbeat`,
-`/takt4/confidence`, `/takt4/locked`, `/takt4/meter` and `/takt4/resync`. The state
-addresses repeat on every beat, so anything that starts late is right again within a
-beat.
+## Offsets
 
-The outputs need a live input: a file is worked through as fast as it reads, so its
-beats do not happen in real time and there is no host clock to align a transport to.
-Over a file `track` prints the beats and nothing else.
+Nothing downstream is ready at the instant a beat is detected: a media server is a frame
+or two behind, a robot that has to physically move is far more. Two sliders move things
+around the beat and they add up — one **latency** for the whole rig, and one **per
+output**, because the lag belongs to the thing on the end of each cable and one number
+cannot describe a rig with a media server and a laser on it.
 
-On a live input the manual controls are on the keyboard, which is where they live until
-there is an interface. None of them stops the tracker or reseeds the filter.
+Both are signed, and **positive is later, negative is earlier**. Link and MIDI clock carry
+a running grid, so a negative offset really does shift them earlier; an OSC message is one
+datagram about a beat that has already happened and cannot be sent into the past, so
+"earlier" there is measured from the **next** beat — the message is held and arrives that
+far ahead of the beat it lands on, which downstream cannot tell apart.
 
-| Key | |
-|---|---|
-| `space` | tap the tempo. Three taps are enough; the fold window moves onto what you tapped, so the readout and the setting agree on why the tempo is what it is. |
-| `d` | downbeat now — the beat nearest the press starts the bar, and goes on starting it. Press it *on* the downbeat you can hear: the beat just gone is the one it takes. With `--link`, the new phase is placed with `forceBeatAtTime`, so peers move too. |
-| `h` / `x` | halve and double the published tempo, keeping the lock. |
-| `[` / `]` | move the latency offset by 5 ms, on the beat timestamps and the transports alike. |
-| `f` | turn the octave fold off and on. |
-| `q` | stop. |
-
-The keys need a console. MinTTY, which Git Bash uses, connects stdin as a pipe rather
-than as one, so they are unavailable there and the banner says so on startup; `cmd`,
-PowerShell and Windows Terminal all give a real console, as does any POSIX terminal.
-
-### Python tooling
-
-`tools/` holds the build-time Python that produces committed artifacts — the filterbank
-table in `src/core/features/filterbank_table.cpp`, the golden feature files under
-`tests/data/features/`, the weight blobs in `assets/weights/`, the state space in
-`assets/statespace/`, and the reference activations and tracker traces under
-`tests/data/model/` and `tests/data/tracking/` — by running madmom and PyTorch, the
-reference implementations, at pinned versions. Nothing in it is needed to build, test or
-run takt4, and CI never installs it. It is needed when adding golden excerpts or bumping
-the pinned numpy/scipy/madmom:
-
-```sh
-python -m venv .venv
-.venv\Scripts\activate                                     # . .venv/bin/activate elsewhere
-pip install -r tools/requirements-build.txt
-pip install --no-build-isolation -r tools/requirements.txt
-python tools/make_golden.py path/to/track.flac --auto       # 10 s excerpt + madmom features
-python tools/dump_filterbank.py                             # regenerate the table
-python tools/dump_statespace.py                             # regenerate the state space
-python tools/pf_reference.py                                # regenerate the tracker traces
-```
-
-`pf_reference.py` also needs a BeatNet+ checkout, because it refuses to write anything
-until this project's restatement of the particle filter has been held against the real
-one.
-
-`tools/evaluate.py` measures beat and downbeat F-measure, and tempo accuracy, against an
-annotated dataset — by running every file through `takt4-cli track` and scoring with
-mir_eval, so the number is the shipped C++ scored by the reference implementation the
-published figures come from. No dataset is vendored — they are large and their licences
-are their own — and the layouts of Ballroom, SMC and GTZAN work as they come:
-
-```sh
-pip install -r tools/requirements-eval.txt
-python tools/evaluate.py path/to/audio --annotations path/to/annotations --report eval.json
-```
-
-It warns when the dataset it was pointed at is one BeatNet+ was trained on, because a
-score on those cannot be compared with the published ones. The trimmed reports of the
-runs behind the numbers above are committed in
-[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/), which also says
-exactly where to get the Ballroom audio and annotations.
-
-Two steps because madmom builds from source and its `setup.py` imports numpy and
-Cython. Full-length source tracks belong outside git; `references/` is ignored for
-that purpose.
-
-The two tools that need PyTorch are separate, because it is a 250 MB install nothing
-else here wants, and they also need BeatNet+'s published weight files, which are not
-vendored (see [tests/data/model/README.md](tests/data/model/README.md)):
-
-```sh
-pip install -r tools/requirements-torch.txt
-python tools/convert_weights.py references/beatnet-plus/src/BeatNetPlus/models
-python tools/model_reference.py
-```
+**What you type is milliseconds and has nothing to do with the tempo**: measure your
+device's lag once and it stays right as the music changes. What varies is the wait — a
+device told −300 ms is held 352 ms at 92 BPM and 169 ms at 128, landing on a beat both
+times — and each row also shows the offset as a fraction of the beat now playing, for when
+you would rather think in beats.
 
 ## Building
 
-Requirements:
+You do not need to build anything to use takt4 — the release is one file. To build it
+anyway:
 
-- CMake 3.28 or newer
-- A C++20 compiler — Visual Studio 2022 or 2026, Apple Clang, or GCC
-- A Rust toolchain, 1.92 or newer, on `PATH` (Slint is built from source through cargo),
-  and `curl` on `PATH` (Slint's Skia renderer is not built from source: its bindings
-  crate downloads a prebuilt Skia archive, 17–26 MB depending on the platform, with
-  `curl` during the build). Only needed when the UI is built; see `TAKT4_BUILD_UI` below.
-- Ninja on macOS and Linux
-- Linux packages, Debian/Ubuntu names: `pkg-config libasound2-dev libjack-jackd2-dev
-  libfontconfig-dev libfreetype-dev`. Everything else Slint needs on Linux (X11, xcb,
-  xkbcommon, Wayland, EGL/GLX) is loaded at run time.
-
-On Linux the binary links `libjack.so.0` directly, so it needs that library at run time
-even when no JACK server is running (without one, JACK devices are simply not offered).
-jackd2's `libjack-jackd2-0` puts it on the default library path. PipeWire's
-`pipewire-jack` installs it under `/usr/lib/<triplet>/pipewire-0.3/jack/` instead, which
-is reached by running takt4 through `pw-jack` or by enabling the `ld.so.conf.d` snippet
-that package ships under `/usr/share/doc/pipewire/examples/`.
-
-PortAudio, Ableton Link and the Steinberg ASIO SDK are in `third_party/` (see
-[third_party/README.md](third_party/README.md)); the first two are submodules, so clone
-with them:
+- CMake 3.28+, a C++20 compiler (Visual Studio 2022 or 2026), and `git clone
+  --recurse-submodules` (PortAudio and Ableton Link are submodules).
+- A Rust toolchain 1.92+ and `curl` on `PATH`, for the Slint UI. `TAKT4_BUILD_UI=OFF` —
+  the `windows-core` preset — builds the engine, the console and the tests without either.
+- Network access on the first configure: the remaining dependencies are fetched from
+  pinned, hash-checked archives.
 
 ```sh
-git clone --recurse-submodules https://github.com/Fohdeesha/takt4.git
-cd takt4
+cmake --preset windows-msvc
+cmake --build --preset windows-msvc
+ctest --preset windows-msvc
 ```
 
-Everything else is fetched at configure time from pinned, hash-checked release
-archives, so the first configure needs network access. So does the first build of the
-UI: cargo fetches Slint's crate dependencies (checksummed by cargo) and the Skia
-archive described above (which rust-skia's build script does not checksum).
+The executable lands in `build/windows-msvc/bin/Release/`. `takt4 --version` prints what
+it was built with.
 
-Configure, build and test with the presets for your platform — `windows-msvc`, `macos`
-or `linux`:
+## Development console
 
-```sh
-cmake --preset linux
-cmake --build --preset linux
-ctest --preset linux
-```
-
-The build tree is `build/<preset>/`; the executable is `build/<preset>/bin/takt4`
-(`bin/Release/takt4.exe` with Visual Studio). The `windows-msvc` preset names no
-generator on purpose: CMake picks the newest Visual Studio it knows and finds, x64, so
-the same preset serves a 2022 install and the 2026-only CI image.
-
-CI (`.github/workflows/`) builds and tests the `*-core` presets on every push and the
-full presets with the UI weekly, on demand, and whenever `src/ui/`, `cmake/` or the
-CMake files change.
-
-The UI is drawn by Slint's Skia renderer: Metal on macOS, OpenGL on Windows and Linux,
-falling back to Skia's software rasteriser when no GPU context can be created. Setting
-`SLINT_BACKEND=winit-skia-software` in the environment forces the software path, and
-`SLINT_DEBUG_PERFORMANCE=refresh_lazy,console` makes takt4 report the surface it is
-using on stderr. Skia is about 8 MB of the 18 MB Windows executable.
-
-### Options
-
-| Option | Default | Effect |
-|---|---|---|
-| `TAKT4_BUILD_UI` | `ON` | Build the Slint UI and the `takt4` executable. `OFF` builds the engine library, `takt4-cli` and the tests only, needs no Rust toolchain, and never fetches Slint. The `windows-core`, `macos-core` and `linux-core` presets set this. |
-| `TAKT4_BUILD_TESTS` | `ON` when top-level | Build the Catch2 test suite. |
-| `TAKT4_WARNINGS_AS_ERRORS` | `ON` | `/WX` or `-Werror` for takt4's own sources. Third-party code is compiled as system headers and is never subject to these flags. |
-
-## Layout
-
-```
-src/core/     the engine — no UI dependency, must always build without Slint
-src/core/assets/    the weights and state space, compiled into the application
-src/core/audio/     devices, channel picking, resampling, hop accumulation
-src/core/dsp/       real FFT (KissFFT)
-src/core/features/  madmom-equivalent feature front end: STFT, filterbank, log, diff
-src/core/io/        WAV and .npy readers/writers for tests and tools, not the audio path
-src/core/model/     BeatNet+ through RTNeural: weight loading, the network, the worker
-src/core/output/    Ableton Link, the OSC encoder and sender, MIDI clock
-src/core/rt/        real-time allocation guard, lock-free SPSC ring
-src/core/tracking/  the forward filter, the particle filter and its state space, the tempo state machine
-src/cli/      takt4-cli, the development console; links takt4_core only
-src/ui/       Slint markup and the C++ that binds it to the engine
-src/main.cpp
-assets/weights/    the three BeatNet+ weight sets, converted (tools/convert_weights.py)
-assets/statespace/ madmom's bar-pointer state space, precomputed (tools/dump_statespace.py)
-                   generic.bin and default.bin are compiled into takt4 at build time
-                   (tools/embed_asset.py); takt4-cli and the tests read them from here
-tests/        Catch2; links takt4_core only
-tests/data/   golden excerpts: audio, madmom's features for it, PyTorch's activations
-tools/        Python that generates committed artifacts from madmom and torch (above)
-third_party/  PortAudio, Ableton Link (+ Kohlhoff asio), Steinberg ASIO SDK
-cmake/        dependency wiring, warning flags, ASIO SDK handling, the MSVC alloca shim
-```
+`takt4-cli` ships beside the app and exercises the engine without the UI — listing
+devices, metering an input, dumping the network's activations, running the whole chain
+over a file or a live input, and tapping a track's beats out by hand. `takt4-cli` with no
+arguments lists everything it takes.
 
 ## License
 
@@ -384,17 +180,17 @@ GPLv3 — see [LICENSE](LICENSE).
 | Component | Used for | License |
 |---|---|---|
 | [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |
-| [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | Resampling the input to 22050 Hz | MIT |
+| [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | Resampling the input | MIT |
 | [KissFFT](https://github.com/mborgerding/kissfft) | The STFT behind the feature front end | BSD-3-Clause |
 | [Ableton Link](https://github.com/Ableton/link) | Tempo sync | GPLv2 or later |
 | [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
 | [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |
 | [RTNeural](https://github.com/jatinchowdhury18/RTNeural) | Neural inference | BSD-3-Clause |
-| [BeatNet+](https://github.com/mjhydri/BeatNet-Plus) weights (`assets/weights/`) | Beat, downbeat and meter detection | **None stated upstream** |
+| [BeatNet+](https://github.com/mjhydri/BeatNet-Plus) weights | The model the shipped set is fine-tuned from | **None stated upstream** |
 | [Eigen](https://eigen.tuxfamily.org) (bundled by RTNeural) | RTNeural's math backend | MPL-2.0 |
 | [RtMidi](https://github.com/thestk/rtmidi) | MIDI clock and notes | MIT-style |
-| [madmom](https://github.com/CPJKU/madmom) | Build-time only, never linked or shipped: `tools/` runs it to compute the filterbank table and the state space blob, and to produce the golden features the C++ front end is checked against | 2-clause BSD for its source, which is all that is used. Its *pretrained data and model files* are CC BY-NC-SA 4.0; takt4 loads none of them — every table here is computed from configuration, not copied from a `.npy` or a pickled model. |
+| [madmom](https://github.com/CPJKU/madmom) | Build-time only, never linked or shipped: `tools/` runs it to compute the filterbank table and the state space, and the golden features the C++ is checked against | 2-clause BSD for its source, which is all that is used. Its pretrained data and models are CC BY-NC-SA 4.0 and none of them is loaded here — every table is computed from configuration |
 | [nlohmann/json](https://github.com/nlohmann/json) | Settings and presets | MIT |
 | [Slint](https://slint.dev) | User interface | GPLv3 (triple-licensed) |
-| [Skia](https://skia.org) (prebuilt by [rust-skia](https://github.com/rust-skia/rust-skia), pulled in by Slint) | UI rendering | BSD-3-Clause; the archive bundles libpng, zlib, libjpeg-turbo, expat, HarfBuzz, ICU and wuffs under their own permissive licenses |
+| [Skia](https://skia.org) (prebuilt by [rust-skia](https://github.com/rust-skia/rust-skia)) | UI rendering | BSD-3-Clause, plus the permissive licenses of what its archive bundles |
 | [Catch2](https://github.com/catchorg/Catch2) | Tests only, not shipped | Boost Software License |
