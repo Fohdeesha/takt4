@@ -1379,6 +1379,112 @@ TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][
     CHECK(takt4::output::midiStatusFor(takt4::trigger::Message::Kind::MidiNoteOff, 10) == 0x89);
 }
 
+TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigger]") {
+    // The rig's second report, which is the first one's other half: *"its making me set a
+    // static note number to send note off to. I need it to send a note off to whatever note it
+    // just sent a note on to, which will change every trigger because its set to
+    // shuffle/random."* The rule above sends a fixed 36, so it could not tell these apart.
+    //
+    // It was never missing — it is what "release" has always meant — but the editor let them
+    // pick the explicit *MIDI note off* instead, which comes with a box demanding one number,
+    // and nothing on that row said the number would be wrong. So this checks the behaviour
+    // **and** the three labels that now point at it.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.pickSend(1); // MIDI note
+    editor.setChannel(3);
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+    editor.setSlotRange(0, "73 - 104");
+    editor.pickSlotKind(1, static_cast<int>(GeneratorKind::Fixed));
+    editor.setSlotFixed(1, "127");
+
+    editor.addFollowUp();
+    editor.pickFollowUnit(0, 0); // milliseconds, so the release comes due without a tempo
+    editor.setFollowDelay(0, "1");
+
+    // The dropdown's first entry names what it inherits, rather than the bare "release" that
+    // was read as some other gesture entirely.
+    const auto kinds = editor.window().get_follow_kinds();
+    REQUIRE(kinds->row_count() >= 1);
+    CHECK(std::string(*kinds->row_data(0)) == "release (same note)");
+
+    // And the row's own boxes say what they are. The value box held a bare 0 and nothing else:
+    // *"theres an unlabled box next to it with 0 in the field? wtf is that?"* — it is the
+    // release velocity, and now it says so.
+    {
+        const auto rows = editor.window().get_follow_ups();
+        REQUIRE(rows->row_count() == 1);
+        const auto row = *rows->row_data(0);
+        CHECK_FALSE(row.takes_number); // a release has no number of its own — that is the point
+        CHECK(row.takes_value);
+        CHECK(std::string(row.value_label) == "velocity");
+        CHECK(std::string(row.summary) == "note off, same note, ch 3");
+    }
+
+    // Picking the explicit note off instead is the trap that was reported. It is still allowed
+    // — a second, deliberate note off is a real thing to want — but the row now says what it
+    // will really do, beside the fixed number it is asking for.
+    editor.pickFollowKind(0, 2); // "MIDI note off" in `followKinds_` order, past release
+    {
+        const auto rows = editor.window().get_follow_ups();
+        REQUIRE(rows->row_count() == 1);
+        const auto row = *rows->row_data(0);
+        CHECK(row.takes_number);
+        CHECK(std::string(row.number_label) == "note");
+        CHECK(std::string(row.value_label) == "velocity");
+        const std::string summary(row.summary);
+        INFO("summary: " << summary);
+        CHECK(summary.find("the trigger sends a different one each time") != std::string::npos);
+        CHECK(summary.find("release") != std::string::npos);
+    }
+    editor.pickFollowKind(0, 0); // back to the release, which is what the rig wants
+    REQUIRE_FALSE(editor.rules().front().followUps.front().kind.has_value());
+
+    // Now the behaviour itself: fire it several times and check every release names the note
+    // its own press drew. One fire proves nothing — a shuffle can draw the number a stale
+    // field happened to hold.
+    rig.runner.start();
+    std::vector<std::string> lines;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    for (int i = 0; i < 6; ++i) {
+        editor.test();
+        while (std::chrono::steady_clock::now() < until &&
+               lines.size() < static_cast<std::size_t>(i + 1) * 2) {
+            editor.tick();
+            const auto log = editor.window().get_log();
+            lines.clear();
+            for (std::size_t j = 0; j < log->row_count(); ++j) {
+                lines.push_back(std::string(*log->row_data(j)));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{2});
+        }
+    }
+    rig.runner.stop();
+
+    // The log is newest first, so walking it in pairs gives release then press.
+    const auto noteIn = [](const std::string& line, const std::string& after) {
+        const std::size_t at = line.find(after);
+        if (at == std::string::npos) {
+            return -1;
+        }
+        return std::atoi(line.c_str() + at + after.size());
+    };
+    REQUIRE(lines.size() >= 12);
+    int drawn = 0;
+    for (std::size_t i = 0; i + 1 < 12; i += 2) {
+        const int off = noteIn(lines[i], "note off ");
+        const int on = noteIn(lines[i + 1], "note on ");
+        INFO("pair " << i << ": " << lines[i] << " | " << lines[i + 1]);
+        REQUIRE(on >= 73);
+        REQUIRE(on <= 104);
+        CHECK(off == on); // the whole ask: let go of the note that was actually played
+        drawn = drawn == 0 || drawn == on ? on : -1;
+    }
+    // And it really was shuffling, or the check above passes on a rule that sends one note.
+    CHECK(drawn == -1);
+}
+
 TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]") {
     // **Driven by real pointer and key events**, not by calling the callback: what is under
     // test is the markup, and the markup is where the bug was.

@@ -345,19 +345,22 @@ void fillRules(RulesWindow& window) {
     // is §5.6's release — the shape that used to be a tick box — and the second is the thing
     // the tick box could not say at all.
     auto followKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* label :
-         {"release", "MIDI note", "MIDI note off", "MIDI CC", "MIDI program", "MIDI pitch bend"}) {
+    // The first entry names what it inherits — `RulesController::releaseLabelOf`. A picture
+    // that still said the bare "release" would be a picture of the thing that misread.
+    for (const char* label : {"release (same address)", "MIDI note", "MIDI note off", "MIDI CC",
+                              "MIDI program", "MIDI pitch bend"}) {
         followKinds->push_back(slint::SharedString(label));
     }
     window.set_follow_kinds(followKinds);
-    const auto owed = [](int kind, const char* numberLabel, int number, const char* value, int unit,
-                         const char* delay, const char* summary) {
+    const auto owed = [](int kind, const char* numberLabel, int number, const char* valueLabel,
+                         const char* value, int unit, const char* delay, const char* summary) {
         FollowRow row{};
         row.kind_index = kind;
         row.takes_number = *numberLabel != '\0';
         row.number_label = slint::SharedString(numberLabel);
         row.number = number;
         row.takes_value = true;
+        row.value_label = slint::SharedString(valueLabel);
         row.value = slint::SharedString(value);
         row.unit = unit;
         row.delay = slint::SharedString(delay);
@@ -365,8 +368,8 @@ void fillRules(RulesWindow& window) {
         return row;
     };
     auto follows = std::make_shared<slint::VectorModel<FollowRow>>();
-    follows->push_back(owed(0, "", 0, "0", 1, "1", "the same address"));
-    follows->push_back(owed(3, "cc", 21, "64", 2, "2", ""));
+    follows->push_back(owed(0, "", 0, "value", "0", 1, "1", "the same address"));
+    follows->push_back(owed(3, "cc", 21, "value", "64", 2, "2", ""));
     window.set_follow_ups(follows);
 
     // The two chips of that address, and the value. The middle one is the sequence the whole

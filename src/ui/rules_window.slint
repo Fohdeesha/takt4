@@ -94,6 +94,11 @@ export struct FollowRow {
   number: int,
   /// False for a program change, which is two bytes and has nowhere to put a value.
   takes-value: bool,
+  /// And what the value *is* on whatever this row resolves to — "velocity", "bend", "value".
+  /// It went unlabelled until a rig asked what the box was: *"theres an unlabled box next to
+  /// it with 0 in the field? wtf is that?"*. A release's 0 is a release velocity, which is
+  /// not a guess anybody should have to make from an empty box.
+  value-label: string,
   value: string,
   /// 0 ms, 1 beats, 2 bars — `trigger::DelayUnit`, shared with the SEND section's own list.
   unit: int,
@@ -1556,7 +1561,12 @@ export component RulesWindow inherits Window {
                 // not offering it.
                 model: root.follow-kinds;
                 current-index: owed.kind-index;
-                width: 132px;
+                // Wide enough for "release (same note)". The first entry names what it
+                // inherits rather than just saying "release", because "release" alone did not
+                // read as *the dynamic one* — a rig shuffling its note picked the explicit
+                // note off instead, got a box demanding one fixed number, and reported the
+                // feature missing. It was not missing; it was the entry above.
+                width: 176px;
                 selected => {
                   root.follow-kind-picked(index, self.current-index);
                 }
@@ -1580,6 +1590,18 @@ export component RulesWindow inherits Window {
                 edited(v) => {
                   root.follow-number-changed(index, v);
                 }
+              }
+
+              // Labelled like the number beside it and like the generator chips above, for the
+              // same reason: a bare box holding 0 says nothing about whether that 0 is a
+              // velocity, a bend or an OSC argument, and on a release it is the one field the
+              // row does not inherit.
+              if owed.takes-value : Text {
+                text: owed.value-label;
+                color: Theme.accent;
+                font-size: 12px;
+                font-family: "Consolas";
+                vertical-alignment: center;
               }
 
               if owed.takes-value : LineEdit {

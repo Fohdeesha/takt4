@@ -205,6 +205,35 @@ const char* valueLabelOf(trigger::Message::Kind kind) {
     }
 }
 
+/// What kind a *release* of `sent` actually goes out as — the one place the inheritance is
+/// spelled, so the label, the value label and `Rule::followUpsFor` cannot drift apart. A note
+/// on releases as a real Note Off (see `trigger::Message::Kind`); everything else releases as
+/// itself with a different value.
+constexpr trigger::Message::Kind releasedAs(trigger::Message::Kind sent) noexcept {
+    return sent == trigger::Message::Kind::MidiNote ? trigger::Message::Kind::MidiNoteOff : sent;
+}
+
+/// The first entry of a follow-up row's kind dropdown, naming what it inherits: "release (same
+/// note)" rather than "release". The parenthetical is the whole point of the entry — it is the
+/// one choice that follows a number the rule *drew*, and a rig shuffling its notes could not
+/// tell that from the word alone.
+std::string releaseLabelOf(trigger::Message::Kind sent) {
+    switch (sent) {
+    case trigger::Message::Kind::MidiNote:
+    case trigger::Message::Kind::MidiNoteOff:
+        return "release (same note)";
+    case trigger::Message::Kind::MidiCc:
+        return "release (same cc)";
+    case trigger::Message::Kind::MidiProgramChange:
+        return "release (same program)";
+    case trigger::Message::Kind::MidiPitchBend:
+        return "release (centre)";
+    case trigger::Message::Kind::Osc:
+        break;
+    }
+    return "release (same address)";
+}
+
 /// What a follow-up row will *really* send, beside the row that configures it.
 ///
 /// A release is the whole reason this exists. The row says "release", and what that means
@@ -214,13 +243,32 @@ const char* valueLabelOf(trigger::Message::Kind kind) {
 /// *"you made note on and note off exclusive!? that will not work."* They are not, and this
 /// is the line that says so.
 ///
-/// Blank for an explicit kind, whose own row already spells out everything it sends.
+/// Blank for an explicit kind, whose own row already spells out everything it sends — except
+/// for the one explicit kind that is a release with the inheritance taken out. A rule that
+/// *draws* its note and is followed by a hand-typed note off releases a note it never played,
+/// and the row cannot show that by listing its fields: both boxes are filled in and look
+/// right. Reported from a rig, which read the fixed box as the feature being absent — *"its
+/// making me set a static note number ... I need it to send a note off to whatever note it
+/// just sent a note on to"*. It is not absent; it is the entry above, and this says so.
 std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config& rule) {
     if (entry.kind) {
-        return trigger::followUpFits(*entry.kind, rule.sendKind)
-                   ? std::string{}
-                   : "not sent — " + std::string(trigger::labelOf(*entry.kind)) +
-                         " cannot follow " + std::string(trigger::labelOf(rule.sendKind));
+        if (!trigger::followUpFits(*entry.kind, rule.sendKind)) {
+            return "not sent — " + std::string(trigger::labelOf(*entry.kind)) +
+                   " cannot follow " + std::string(trigger::labelOf(rule.sendKind));
+        }
+        const bool releasesTheSameThing =
+            (rule.sendKind == trigger::Message::Kind::MidiNote &&
+             *entry.kind == trigger::Message::Kind::MidiNoteOff) ||
+            *entry.kind == rule.sendKind;
+        // Only worth saying where the number moves. A fixed note followed by a fixed note off
+        // is two spellings of the same thing and neither is wrong.
+        if (releasesTheSameThing && trigger::sendsNumber(*entry.kind) &&
+            rule.number.kind != trigger::GeneratorKind::Fixed) {
+            return "fixed " + std::string(numberLabelOf(*entry.kind)) + " " +
+                   std::to_string(entry.number) + " — the trigger sends a different one each " +
+                   "time. Pick \"release\" to follow it.";
+        }
+        return {};
     }
     switch (rule.sendKind) {
     case trigger::Message::Kind::MidiNote:
@@ -1676,6 +1724,7 @@ void RulesController::publishFollowUps() {
     if (rule == nullptr) {
         followModel_->clear();
         followKinds_.clear();
+        followRelease_.clear();
         window_->set_can_add_follow_up(false);
         return;
     }
@@ -1697,12 +1746,18 @@ void RulesController::publishFollowUps() {
             allowed.push_back(kind);
         }
     }
-    if (allowed != followKinds_) {
+    // **"release", and what it releases.** It is the default, and the only entry that can
+    // follow a *drawn* number, since the note to let go of is the one the shuffle picked —
+    // which is exactly the thing a rig went looking for and did not find: it read the bare
+    // word "release" as some other gesture, picked the explicit note off, and found a box
+    // demanding one fixed note. The entry now says what it inherits, so the dynamic one is the
+    // one that looks dynamic.
+    const std::string release = releaseLabelOf(rule->sendKind);
+    if (allowed != followKinds_ || release != followRelease_) {
         followKinds_ = allowed;
+        followRelease_ = release;
         auto labels = std::make_shared<slint::VectorModel<slint::SharedString>>();
-        // "release" first and always: it is the default, and the only entry that can follow a
-        // drawn number, since the note to let go of is the one the shuffle picked.
-        labels->push_back(slint::SharedString("release"));
+        labels->push_back(shared(release));
         for (const trigger::Message::Kind kind : followKinds_) {
             labels->push_back(shared(std::string(trigger::labelOf(kind))));
         }
@@ -1730,6 +1785,11 @@ void RulesController::publishFollowUps() {
         row.number = entry.number;
         row.takes_value = !entry.kind || trigger::sendsValue(*entry.kind) ||
                           *entry.kind == trigger::Message::Kind::Osc;
+        // Named for whatever the row resolves to, which for a release is the *released* kind
+        // and not the rule's: a note on's release carries a release velocity, and a box
+        // holding a bare 0 had an operator asking what it was.
+        row.value_label =
+            shared(valueLabelOf(entry.kind ? *entry.kind : releasedAs(rule->sendKind)));
         row.value = shared(spellValue(entry.value));
         const auto unitIndex =
             std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), entry.unit) -
