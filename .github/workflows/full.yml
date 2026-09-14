@@ -4,14 +4,20 @@ name: full
 # (7–25 minutes), so this runs only when something that can affect the UI build changes,
 # once a week to catch drift, and on demand. core.yml covers the engine on every push.
 #
-# This workflow is DISABLED (`gh workflow list --all` says `disabled_manually`, by the user
-# on 2026-09-04). Nothing here runs until `gh workflow enable full.yml`.
+# This workflow is ENABLED, by the user on 2026-09-14. It had been `disabled_manually` since
+# 2026-09-04, which meant a UI change was covered by nothing: core.yml builds with the UI off
+# and does not compile a line of src/ui/. That was noticed while releasing 0.9.6 — a release
+# whose every changed file was under src/ui/ — and the answer was to turn this back on rather
+# than to keep dispatching it by hand and forgetting to.
 #
-# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries. That is worth
-# knowing before re-enabling this: it used to cost ≈150 billable minutes because macOS is
+# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries, and the reason
+# this is affordable to leave on: it used to cost ≈150 billable minutes because macOS is
 # billed at 10× and Slint takes 7–25 minutes to build; with one Windows job it is a small
 # fraction of that. The macOS and Linux entries are commented out rather than deleted so
-# bringing them back is uncommenting.
+# bringing them back is uncommenting — but bring them back knowing what they used to cost.
+#
+# Note the concurrency group below cancels in-progress runs for the same ref: a second push
+# to main while this is building kills the first run rather than queueing behind it.
 
 on:
   push:

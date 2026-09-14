@@ -313,8 +313,25 @@ TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output]") {
         SKIP("no MIDI output on this machine");
     }
     runner.post(OutputCommand::midiClockPort(ports.front()));
+
+    // **A port that enumerates is not a port that opens**, and this test asserted the first
+    // while needing the second. A hosted Windows runner lists the Microsoft GS Wavetable
+    // Synth and then refuses to open it — `MidiOutWinMM::openPort: error creating Windows MM
+    // MIDI output port` — so the guard above passed and the two checks below failed on a
+    // machine that simply has no MIDI hardware. It went unseen because no CI run reached the
+    // test step between this test being written and 2026-09-14: every one before that was
+    // stopped at the billing gate seconds after starting, and every developer machine here
+    // has a real port.
+    //
+    // So the environment is skipped on the error the open actually reported, carrying it in
+    // the message. A regression that stops a *working* port opening does not become a silent
+    // pass: it becomes a skip on a machine where the rest of the suite opens ports happily,
+    // and the reason is printed rather than guessed at.
+    if (const std::string failed = runner.lastError(); !failed.empty()) {
+        SKIP("a MIDI output is listed but will not open here: " << failed);
+    }
+
     const OutputRunner::Snapshot withClock = runner.snapshot();
-    INFO("lastError: " << runner.lastError());
     CHECK(withClock.midiClockPort == ports.front());
     CHECK(withClock.midiClockOpen);
 }
