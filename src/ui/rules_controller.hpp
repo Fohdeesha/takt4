@@ -282,6 +282,12 @@ private:
     /// the kinds on the same side of the OSC/MIDI divide as the rule (`trigger::
     /// followUpFits`). Rebuilt by `publishFollowUps` whenever the rule's send kind changes.
     std::vector<trigger::Message::Kind> followKinds_;
+    /// What that dropdown's first entry currently reads as — "release (same note)" and the
+    /// rest. It names what a release inherits, which depends on the rule's send kind and *not*
+    /// on `followKinds_`: every MIDI kind allows the same followers, so a rule switched from
+    /// note to CC leaves that list identical and would keep a first entry naming the wrong
+    /// thing. Held so the labels are rebuilt when either moves.
+    std::string followRelease_;
     std::vector<std::string> log_;
     /// What the selected rule last sent and when, on this controller's own clock.
     std::string lastFired_;
