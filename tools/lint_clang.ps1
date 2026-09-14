@@ -18,8 +18,9 @@
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1 src/core/control
 #
 # `src/core` and `tests` by default, which is exactly what core.yml compiles with -Werror.
-# `src/ui` is left out: it needs Slint's headers and the generated `main_window.h`, and
-# full.yml — the only workflow that builds it — is disabled anyway.
+# `src/ui` is left out: it needs Slint's headers and the generated `main_window.h`. full.yml
+# is the workflow that builds it, and since 2026-09-14 it is enabled and runs on every push
+# touching src/ui/ — so that gap is now covered by CI rather than by nothing.
 #
 # Exits 1 if clang reports anything, 0 if not.
 

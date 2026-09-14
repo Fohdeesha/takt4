@@ -827,7 +827,17 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
     // has not been started — which is what `rules()` documents as the only time it is.
     REQUIRE(controller.outputs().triggers().ruleCount() == 1);
     CHECK(controller.outputs().triggers().rule(0).valid());
-    CHECK_FALSE(controller.statusIsError()); // a valid rule says nothing
+    // A valid rule says nothing — but only the *rule's* silence is being claimed here. On a
+    // machine with no audio input the controller has already set an error of its own at
+    // construction ("No input device. Connect an interface and start takt4 again."), which is
+    // about the hardware and not about the preset this test loaded. Asserting into that was a
+    // false failure on any headless machine, and it went unseen until 2026-09-14 because CI
+    // had not reached the test step since the test was written: every run before then stopped
+    // at the billing gate. The rest of the test is device-independent and still runs, so this
+    // is narrowed rather than skipped.
+    if (!tracker.devices().empty()) {
+        CHECK_FALSE(controller.statusIsError());
+    }
 
     SECTION("and they go back into the file they came from") {
         const takt4::settings::Settings saved = controller.currentSettings();
