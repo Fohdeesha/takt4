@@ -23,10 +23,19 @@ std::int64_t toMicros(double seconds) noexcept {
 
 Transports::Transports(const Config& config)
     : latencyMicros_(toMicros(config.latencySeconds)), link_(std::make_unique<LinkSession>(120.0)),
-      osc_(std::make_unique<OscPublisher>(config.oscPrefix)), oscPrefix_(config.oscPrefix) {
+      osc_(std::make_unique<OscPublisher>(config.oscPrefix)),
+      dmx_(std::make_unique<dmx::DmxEngine>()), artnet_(std::make_unique<dmx::ArtNetPublisher>()),
+      oscPrefix_(config.oscPrefix) {
+    // The patch first: `setOutputs` points every Art-Net target at the universes the patch
+    // uses, so a node configured for "everything" has to know what everything is.
+    dmx_->setPatch(config.patch);
     setOutputs(config.outputs);
     setMidiClockPort(config.midiClockPort);
     linkEnabled_ = config.link;
+}
+
+void Transports::setPatch(std::vector<dmx::Fixture> patch) {
+    dmx_->setPatch(std::move(patch));
 }
 
 void Transports::startOutputs(double now) {
@@ -102,6 +111,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
     outputs_ = targets;
     outputPorts_.assign(outputs_.size(), nullptr);
     osc_->clearTargets();
+    artnet_->clearTargets();
 
     // The bit a rule's routing mask uses is the target's index in *this* list, so an OSC
     // publisher that only holds the OSC ones still has to be told which bit each is.
@@ -114,6 +124,13 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
         try {
             if (target.kind == OutputTarget::Kind::Osc) {
                 osc_->addTarget(target.host, target.port, i, target.delaySeconds);
+            } else if (target.kind == OutputTarget::Kind::ArtNet) {
+                dmx::ArtNetPublisher::TargetConfig node;
+                node.host = target.host;
+                node.port = target.port;
+                node.universes = target.universes;
+                node.bit = i;
+                artnet_->addTarget(node);
             } else {
                 outputPorts_[i] = openDevice(target.device);
             }
@@ -207,6 +224,17 @@ void Transports::advance(double now, const tracking::TempoState& state) {
     // must never reorder a target against itself.
     osc_->flushDue();
     osc_->publishState(state);
+
+    // The lighting half, and the reason it is here rather than in `publish`: a fade is not
+    // waiting for a beat, it is waiting for a clock. Every running effect is advanced and the
+    // frames that are due go out — at most 44 times a second per universe, and at least once
+    // per keep-alive, both of which `ArtNetPublisher` decides.
+    //
+    // Ticked even with no Art-Net target configured. It costs nothing with no patch, and with
+    // a patch and no node it keeps the levels a UI shows honest, so that an operator building
+    // a rig can watch the numbers move before the node arrives.
+    dmx_->tick(now);
+    artnet_->publish(*dmx_, now);
 }
 
 void Transports::setOscOffsets(double bpm) noexcept {

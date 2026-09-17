@@ -47,6 +47,20 @@ add_library(takt4_core STATIC
   control/osc_receiver.cpp
   control/osc_receiver.hpp
   control/rule_control.hpp
+  dmx/artnet_packet.cpp
+  dmx/artnet_packet.hpp
+  dmx/artnet_publisher.cpp
+  dmx/artnet_publisher.hpp
+  dmx/artnet_sender.cpp
+  dmx/artnet_sender.hpp
+  dmx/color.cpp
+  dmx/color.hpp
+  dmx/dmx_engine.cpp
+  dmx/dmx_engine.hpp
+  dmx/effect.cpp
+  dmx/effect.hpp
+  dmx/fixture.cpp
+  dmx/fixture.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   engine/beat_engine.cpp

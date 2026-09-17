@@ -2,8 +2,8 @@
 
 takt4 listens to one channel of your audio interface, works out where the beat, the
 downbeat, the tempo and the meter are, and tells the rest of the rig — over **Ableton
-Link, OSC, MIDI beat clock and MIDI notes** — with a rule engine for firing events on the
-music.
+Link, OSC, MIDI beat clock and MIDI notes, and Art-Net DMX** — with a rule engine for
+firing events on the music.
 
 It is built for playing out: VJ software (Resolume, TouchDesigner, MadMapper), lighting
 desks, media servers, lasers, DAWs. No click track, no tapping along, nothing to line up
@@ -24,9 +24,13 @@ but Windows is the only platform currently built and tested.
   a tempo and a meter — with a confidence you can see and gate on. It costs 40 ms, which
   is what a centred analysis window costs and nothing more.
 - **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
-  the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, and MIDI notes, CC,
-  program change and pitch bend. Any number of named targets, each with its own enable and
-  its own offset.
+  the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, MIDI notes, CC,
+  program change and pitch bend, and Art-Net DMX to lighting nodes. Any number of named
+  targets, each with its own enable and its own offset.
+- **Runs the lights.** Patch your fixtures once — an RGB par, a moving head — and rules
+  aim at them by name: fade, flash, pulse, strobe, a color or a hue sweep, a random
+  pan/tilt or a circle, each over a duration you can spell in bars. The movement window is
+  a safety limit, so a random position can never send a head into the audience.
 - **Fires events on the music.** A rule is *when → only if → send*: every 4 bars, only
   above 0.6 confidence and only in a drop, send a Resolume clip drawn from a shuffle bag.
   Edited by clicking, not by typing JSON.
@@ -34,7 +38,8 @@ but Windows is the only platform currently built and tested.
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
   stops the tracker, reseeds anything or drops the lock.
 - **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
-  your controller and it is bound.
+  your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
+  often from a Stream Deck, mid-set.
 
 ## How well it tracks
 
@@ -113,17 +118,141 @@ Open **triggers**. A rule is three columns:
   own beat rather than a clock of its own.
 - **only if** — confidence above a threshold, intensity in a set, BPM in a range, a
   probability, a cooldown.
-- **send** — an OSC message or a MIDI note, note off, CC, program change or pitch bend,
-  to whichever outputs you tick. Any number in it can be a generator: shuffle, random,
-  round-robin, weighted, fixed, a live value (BPM, bar, confidence, meter, intensity), or
-  a ramp that sweeps over a whole number of bars, locked to the downbeat. Then a
-  sequence of follow-ups — a release, or something else entirely — each delayed in
-  milliseconds, beats or bars from the moment the rule fired.
+- **send** — an OSC message; a MIDI note, note off, CC, program change or pitch bend; or a
+  lighting effect aimed at your fixtures. OSC and MIDI go to whichever outputs you tick.
+  Any number in it can be a generator: shuffle, random, round-robin, weighted, fixed, a
+  live value (BPM, bar, confidence, meter, intensity), or a ramp that sweeps over a whole
+  number of bars, locked to the downbeat. Then a sequence of follow-ups — a release, or
+  something else entirely — each delayed in milliseconds, beats or bars from the moment the
+  rule fired.
+
+Two live controls sit beside each rule and are **not** saved with it, because they are
+performance gestures rather than configuration: **mute**, which leaves the rule running and
+stops it sending — so unmuting rejoins the music in phase instead of restarting its shuffle
+bag — and **÷2 / ×2**, which makes it fire twice as often or half as often. Both are
+reachable from OSC, so a Stream Deck can drop a layer out for eight bars.
 
 Rig presets build a working setup in one pick: clips on three Resolume layers, Resolume's
 tempo and resync, a breathing dashboard, Euclidean MIDI stabs. Everything a preset writes
 is ordinary editable data, and a preset can be exported to another machine. **PANIC** stops
 every rule instantly.
+
+## Taking orders
+
+Switch **OSC in** on and takt4 listens — loopback only unless you tick the box that opens
+it to the network. Every address hangs off the same prefix as the outputs:
+
+```
+/takt4/ctl/tap                      tap the tempo
+/takt4/ctl/downbeat                 snap the downbeat to now
+/takt4/ctl/tempo/halve              ÷2
+/takt4/ctl/tempo/double             ×2
+/takt4/ctl/lock            <0|1>    pin the lock, or release it
+/takt4/ctl/panic           [0|1]    halt every rule; bare engages
+/takt4/ctl/rule/<id>/enable <0|1>   arm a rule, or take it out of the show
+/takt4/ctl/rule/<id>/mute   <0|1>   keep it running, stop it sending
+/takt4/ctl/rule/<id>/double         fire half as often — press twice for a quarter
+/takt4/ctl/rule/<id>/halve          fire twice as often
+/takt4/ctl/rule/<id>/rate   <f>     set the multiplier outright, for a fader
+/takt4/ctl/rule/<id>/reset          back to the rate the rule was written with
+```
+
+`<id>` is the rule's id, and **`all`** means every rule at once. `lock`, `enable` and
+`mute` insist on their `<0|1>` rather than toggling, and `rate` insists on its number: a
+toggle depends on a state the sender cannot see, so a surface that missed one message would
+be inverted for the rest of the set. The rest are buttons and are sent bare.
+
+Every one of these is also bindable to a MIDI note or CC through **LEARN** — except the
+ones that name a rule, because pressing a pad says which button and never which rule.
+
+## Lights
+
+takt4 speaks **Art-Net** (the DMX-over-Ethernet protocol, *Art-Net™ Designed by and
+Copyright Artistic Licence*). Add an output of kind **Art-Net**, type your node's IP —
+port 6454 is filled in for you — and open **fixtures**.
+
+DMX is not like the other outputs, and it is worth knowing why before you build a rule.
+OSC and MIDI are *events*: a rule fires, one message leaves, nothing is owed afterwards. A
+DMX universe is *state* — 512 levels that a controller re-sends continuously — so a fade is
+not a message, it is takt4 sending a slightly different frame forty times a second until it
+arrives. takt4 does that for you; what it means in practice is that a rule says **what the
+lights should become and over how long**, not what to transmit.
+
+### The patch
+
+A fixture has a name, an optional **group**, a universe, the start address printed on the
+back of it, and a channel map saying what each of its channels does. Pick the nearest of
+the ready-made shapes — dimmer, RGB, RGBW, dimmer + RGB, LED par, and an 8-bit or 16-bit
+moving head — and edit from there. Those come with sensible parked levels, which matters
+more than it sounds: a moving head with its shutter channel at zero emits nothing however
+hard a rule drives its dimmer. **IDENTIFY** flashes one fixture so you can find it in the
+truss; **TEST** beside a channel holds that one channel at a value of your choice for three
+seconds and then puts it back, which is how you check the map is right without unplugging
+anything; and a bar beside every channel shows what takt4 is sending on it right now.
+
+A moving head also gets a **movement window** — how much of its pan and tilt travel a rule
+may use, in percent. Set it once from the stage. Every random position and every path is a
+fraction of *that* window, so one rule means the same gesture on six differently-rigged
+heads and none of them can be sent into the audience.
+
+### The effects
+
+A rule aims at fixtures or groups by name, picks one effect, and gives it a duration in
+milliseconds, beats or bars:
+
+| effect | what it does |
+|---|---|
+| **level** | one channel to a level. With a duration it is a fade, with none a snap — "fade in" and "fade out" are this, at full and at zero. A level aimed at **dimmer** on a par that has no dimmer channel scales its color instead, which is what brightness *is* on an LED par |
+| **color** | the color channels to one color. On an RGBW fixture a neutral white uses the white LED |
+| **flash** | straight to a peak and decay back over the duration — the beat hit |
+| **pulse** | a cosine between two levels, N times over the duration |
+| **strobe** | on and off between two levels, N times over the duration, with a duty cycle |
+| **hue sweep** | round the color wheel from one angle to another |
+| **position** | pan and tilt to one place, over a move time. Random is a `random` generator on pan |
+| **path** | a circle, figure-8, sweep or square around the middle of the movement window |
+| **home** | back to the middle of the window |
+| **blackout** | every light-emitting channel to zero |
+
+Every effect is **bounded by its duration**, deliberately: a strobe that ran until
+something stopped it is a fixture left strobing because the rule that would have stopped it
+was disabled, edited, or never fired. A strobe for two bars, re-fired every two bars, is
+both the natural gesture and the one that cannot get stuck.
+
+The level, the color and the pan/tilt are ordinary generators, so everything the clip
+triggers can do they can do too, and a slow sweep across the room is a ramp on pan over four
+bars.
+
+A color effect asks where its color comes from, and there are two answers:
+
+- **pick colors** — a row of swatches under the rule. Click one to open a hue / saturation /
+  brightness picker, `+` adds another, and the chip above them says how they are drawn:
+  *shuffle* for a palette that never repeats, *cycle* to walk them in order, *fixed* for one
+  color. The picker sends the color to that rule's fixtures **as you drag it**, so you are
+  choosing against the light coming out of the lamp rather than against a square on a screen.
+- **mix red, green, blue** — one generator per component, 0 to 255 each. *Random* over
+  0–255, 0–40 and 200–255 is "a random color, keep the green out of it and the blue up".
+  Every other generator works here too: a ramp on red over four bars, or a green that
+  follows the intensity.
+
+Fade in and fade out is one rule: a level to full over a beat, and a follow-up two bars
+later that fades to zero over a beat. The *delay* is when the follow-up starts; the
+*duration* is how long it takes.
+
+**PANIC** halts every rule and cancels every running effect, and then **keeps sending the
+last frame**. The lights freeze rather than going dark — if takt4 is one source among
+several, or your node is merging it with a desk, a panic button that drove everything to
+zero would black out a stage that was not takt4's to black out. A deliberate blackout is an
+effect a rule can fire.
+
+### Notes on the wire
+
+Art-Net 4 requires **unicast**, so takt4 sends to the address you typed and does not
+discover nodes: a show rig has a fixed address written on the back of it, and broadcasting
+ArtPoll twenty times a minute onto a venue's network is worse manners than asking once. A
+broadcast address works if your rig is built that way. Frames are paced at the
+specification's ceiling of 44 Hz per universe and re-sent every 900 ms when nothing is
+moving, which is what tells a node takt4 is still alive. One Art-Net target carries every
+universe your patch uses unless you list which ones it should carry.
 
 ## Offsets
 
@@ -165,6 +294,18 @@ ctest --preset windows-msvc
 
 The executable lands in `build/windows-msvc/bin/Release/`. `takt4 --version` prints what
 it was built with.
+
+There is a second set of presets that builds the same tree with the runtime checks turned
+on. `windows-asan` is AddressSanitizer, which is all Windows has; `linux-asan` adds the
+undefined-behaviour checks and `linux-tsan` looks for races between the audio, output and
+UI threads. The suite is meant to pass clean under each of them, and it reports when the
+tests *run*, so the build alone proves nothing:
+
+```sh
+cmake --preset windows-asan
+cmake --build --preset windows-asan
+ctest --preset windows-asan
+```
 
 ## Development console
 

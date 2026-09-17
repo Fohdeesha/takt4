@@ -20,6 +20,11 @@ add_executable(takt4_tests
   control/midi_control_test.cpp
   control/osc_control_test.cpp
   control/osc_parse_test.cpp
+  dmx/artnet_live_test.cpp
+  dmx/artnet_test.cpp
+  dmx/dmx_engine_test.cpp
+  dmx/dmx_rule_test.cpp
+  dmx/fixture_test.cpp
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
   engine/control_test.cpp
@@ -102,6 +107,7 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST)
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests
+    ui/fixtures_test.cpp
     ui/main.cpp
     ui/model_watch.hpp
     ui/rules_test.cpp

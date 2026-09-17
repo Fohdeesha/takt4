@@ -650,7 +650,7 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
     };
     std::vector<Seen> seen;
     engine.setFireObserver([&seen](std::string_view ruleId, const Message&, bool followUp,
-                                   std::span<const Value> slots) {
+                                   std::span<const Value> slots, bool) {
         seen.push_back(
             Seen{std::string(ruleId), followUp, std::vector<Value>(slots.begin(), slots.end())});
     });

@@ -46,7 +46,9 @@ FollowUp releaseAfterMs(std::int32_t value, double milliseconds) {
 /// asserting what went on the wire does not.
 std::vector<Message> followUps(const Rule& rule, const Message& fired) {
     std::vector<std::pair<std::size_t, Message>> owed;
-    rule.followUpsFor(fired, owed);
+    // The context is read only by the DMX kinds, whose follow-ups carry a duration as well as
+    // a delay. A default one is the right thing for the OSC and MIDI cases here.
+    rule.followUpsFor(takt4::trigger::Context{}, fired, owed);
     std::vector<Message> messages;
     messages.reserve(owed.size());
     for (auto& [index, message] : owed) {

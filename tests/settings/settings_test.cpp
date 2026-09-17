@@ -8,6 +8,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 using Catch::Matchers::WithinAbs;
@@ -403,4 +404,205 @@ TEST_CASE("save reports a failure rather than raising one", "[settings]") {
     const std::filesystem::path occupied = dir.path() / "settings.json";
     std::filesystem::create_directories(occupied);
     CHECK_FALSE(takt4::settings::save(in, occupied));
+}
+
+TEST_CASE("the lighting patch survives the round trip", "[settings][dmx]") {
+    Settings in;
+    takt4::dmx::Fixture wash = takt4::dmx::fixtureFromMode("wash L", 1, 0, 1);
+    wash.group = "washes";
+    takt4::dmx::Fixture head = takt4::dmx::fixtureFromMode("head 1", 6, 4, 100);
+    head.group = "heads";
+    // Aimed at the floor and away from the audience, which is the whole reason the window
+    // exists and the one part of a patch that must not be lost in a file.
+    head.panMin = 0.2;
+    head.panMax = 0.8;
+    head.tiltMin = 0.45;
+    head.tiltMax = 0.65;
+    head.enabled = false;
+    in.preset.fixtures = {wash, head};
+
+    const Settings out = roundTrip(in);
+    REQUIRE(out.preset.fixtures.size() == 2);
+    CHECK(out.preset.fixtures[0] == wash);
+    CHECK(out.preset.fixtures[1] == head);
+
+    SECTION("an unknown role keeps its channel rather than re-addressing everything below it") {
+        // Dropping it would move every channel after it up one, silently re-patching the
+        // fixture. `Unused` keeps the footprint honest.
+        const std::string text = R"({"preset":{"fixtures":[
+            {"name":"x","universe":0,"address":1,
+             "channels":["red","iris-from-the-future","blue"]}]}})";
+        const Settings read = takt4::settings::fromJson(text);
+        REQUIRE(read.preset.fixtures.size() == 1);
+        REQUIRE(read.preset.fixtures[0].channels.size() == 3);
+        CHECK(read.preset.fixtures[0].channels[1] == takt4::dmx::Role::Unused);
+        CHECK(takt4::dmx::channelOf(read.preset.fixtures[0], takt4::dmx::Role::Blue) == 3);
+    }
+
+    SECTION("a hand-edited address out of range is clamped, not a file that will not open") {
+        const std::string text =
+            R"({"preset":{"fixtures":[{"name":"x","universe":99999,"address":900,
+                "channels":["red"]}]}})";
+        const Settings read = takt4::settings::fromJson(text);
+        REQUIRE(read.preset.fixtures.size() == 1);
+        CHECK(read.preset.fixtures[0].address == 512);
+        CHECK(read.preset.fixtures[0].universe == 32767);
+    }
+}
+
+TEST_CASE("a DMX rule survives the round trip", "[settings][dmx]") {
+    Settings in;
+    takt4::trigger::Rule::Config rule;
+    rule.id = "drop-swing";
+    rule.name = "heads on the drop";
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.fixtures = {"heads", "wash L"};
+    rule.dmx.effect = takt4::dmx::EffectKind::Position;
+    rule.dmx.curve = takt4::dmx::Curve::EaseInOut;
+    rule.dmx.unit = takt4::trigger::DelayUnit::Bars;
+    rule.dmx.durationBeats = 4.0;
+    rule.dmx.pan.kind = takt4::trigger::GeneratorKind::Random;
+    rule.dmx.pan.low = 20;
+    rule.dmx.pan.high = 80;
+    rule.dmx.tilt.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.tilt.fixed = takt4::trigger::Value::ofInt(40);
+
+    // A fade out two bars later, which is the operator's own first example.
+    takt4::trigger::FollowUp down;
+    down.unit = takt4::trigger::DelayUnit::Bars;
+    down.delayBeats = 2.0;
+    takt4::trigger::DmxFollow fade;
+    fade.effect = takt4::dmx::EffectKind::Blackout;
+    fade.color = takt4::dmx::Color{16, 32, 48};
+    fade.unit = takt4::trigger::DelayUnit::Beats;
+    fade.durationBeats = 2.0;
+    down.dmx = fade;
+    rule.followUps.push_back(down);
+    in.preset.rules.push_back(rule);
+
+    const Settings out = roundTrip(in);
+    REQUIRE(out.preset.rules.size() == 1);
+    const takt4::trigger::Rule::Config& back = out.preset.rules[0];
+    CHECK(back.sendKind == takt4::trigger::Message::Kind::Dmx);
+    CHECK(back.dmx.fixtures == rule.dmx.fixtures);
+    CHECK(back.dmx.effect == takt4::dmx::EffectKind::Position);
+    CHECK(back.dmx.curve == takt4::dmx::Curve::EaseInOut);
+    CHECK(back.dmx.unit == takt4::trigger::DelayUnit::Bars);
+    CHECK(back.dmx.durationBeats == 4.0);
+    CHECK(back.dmx.pan.kind == takt4::trigger::GeneratorKind::Random);
+    CHECK(back.dmx.pan.low == 20);
+    CHECK(back.dmx.pan.high == 80);
+    CHECK(back.dmx.tilt.fixed.asInt() == 40);
+    REQUIRE(back.followUps.size() == 1);
+    REQUIRE(back.followUps[0].dmx.has_value());
+    CHECK(back.followUps[0].dmx->effect == takt4::dmx::EffectKind::Blackout);
+    CHECK(back.followUps[0].dmx->color == fade.color);
+    CHECK(back.followUps[0].dmx->durationBeats == 2.0);
+
+    SECTION("a color palette is a shuffle over a list of hex strings, and nothing more") {
+        // The point of reusing the generator machinery: "a random color from my palette,
+        // never the same one twice" needed no code of its own, and the file says so.
+        Settings palette;
+        takt4::trigger::Rule::Config colorful;
+        colorful.id = "colors";
+        colorful.sendKind = takt4::trigger::Message::Kind::Dmx;
+        colorful.dmx.fixtures = {"washes"};
+        colorful.dmx.effect = takt4::dmx::EffectKind::Color;
+        colorful.dmx.color.kind = takt4::trigger::GeneratorKind::Shuffle;
+        colorful.dmx.color.pool = takt4::trigger::Pool::List;
+        colorful.dmx.color.values = {takt4::trigger::Value::ofText("#ff2040"),
+                                       takt4::trigger::Value::ofText("#20ff80"),
+                                       takt4::trigger::Value::ofText("#2040ff")};
+        palette.preset.rules.push_back(colorful);
+
+        const std::string text = takt4::settings::toJson(palette);
+        CHECK(text.find("#20ff80") != std::string::npos);
+        const Settings read = takt4::settings::fromJson(text);
+        REQUIRE(read.preset.rules.size() == 1);
+        REQUIRE(read.preset.rules[0].dmx.color.values.size() == 3);
+        CHECK(read.preset.rules[0].dmx.color.values[1].text() == "#20ff80");
+    }
+}
+
+TEST_CASE("an Art-Net output survives the round trip through its own text line",
+          "[settings][dmx]") {
+    Settings in;
+    takt4::output::OutputTarget node;
+    node.name = "truss";
+    node.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    node.host = "10.0.0.20";
+    node.port = takt4::dmx::kArtNetPort;
+    node.universes = {0, 1, 4};
+    in.preset.outputs.push_back(node);
+
+    const std::string text = takt4::settings::toJson(in);
+    CHECK(text.find("artnet 10.0.0.20:6454 u0,1,4") != std::string::npos);
+
+    const Settings out = roundTrip(in);
+    REQUIRE(out.preset.outputs.size() == 1);
+    CHECK(out.preset.outputs[0] == node);
+
+    SECTION("a node fed everything writes no universe list at all") {
+        Settings all = in;
+        all.preset.outputs[0].universes.clear();
+        const Settings back = roundTrip(all);
+        REQUIRE(back.preset.outputs.size() == 1);
+        CHECK(back.preset.outputs[0].universes.empty());
+        CHECK(takt4::settings::toJson(all).find(" u") == std::string::npos);
+    }
+}
+
+TEST_CASE("a preset written with the British spelling still loads", "[settings][dmx]") {
+    // takt4 said "colour" everywhere until a rig asked for the other spelling on 2026-09-16.
+    // Three things in a saved preset carried that word — the effect name, a channel's role,
+    // and the generator's own key — and a name that does not read back does not fail loudly:
+    // it silently becomes the default. A colour rule would have come back as a *fade*, and a
+    // fixture's colour wheel as an unused channel. This is the file a rig actually had.
+    const TempDir dir;
+    const std::filesystem::path path = dir.path() / "settings.json";
+    {
+        std::ofstream out(path);
+        out << R"({
+  "version": 1,
+  "preset": {
+    "fixtures": [
+      { "name": "Bedroom RGB", "universe": 5, "address": 70,
+        "channels": ["red", "green", "blue", "colour-wheel"],
+        "parked": [0, 0, 0, 0], "enabled": true }
+    ],
+    "rules": [
+      { "id": "rule1", "name": "bedroom rgb", "send": "dmx", "trigger": "bar",
+        "dmx": { "effect": "colour", "fixtures": ["Bedroom RGB"], "unit": "bars",
+                 "durationBeats": 2.0,
+                 "colour": { "kind": "fixed", "fixed": "#ff2040", "seed": 1 } } }
+    ]
+  }
+})";
+    }
+
+    const takt4::settings::Settings loaded = takt4::settings::load(path);
+    REQUIRE(loaded.preset.fixtures.size() == 1);
+    CHECK(loaded.preset.fixtures.front().channels.size() == 4);
+    CHECK(loaded.preset.fixtures.front().channels.back() == takt4::dmx::Role::ColorWheel);
+
+    REQUIRE(loaded.preset.rules.size() == 1);
+    const takt4::trigger::DmxSend& send = loaded.preset.rules.front().dmx;
+    CHECK(send.effect == takt4::dmx::EffectKind::Color);
+    CHECK(send.color.kind == takt4::trigger::GeneratorKind::Fixed);
+    CHECK(send.color.fixed.text() == "#ff2040");
+
+    SECTION("and saving it writes the spelling this build uses") {
+        const std::filesystem::path again = dir.path() / "again.json";
+        REQUIRE(takt4::settings::save(loaded, again));
+        std::ifstream in(again);
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        CHECK(text.find("colour") == std::string::npos);
+        CHECK(text.find("\"color\"") != std::string::npos);
+        // And it round-trips, which is the half a spelling check cannot say.
+        const takt4::settings::Settings twice = takt4::settings::load(again);
+        REQUIRE(twice.preset.rules.size() == 1);
+        CHECK(twice.preset.rules.front().dmx.effect == takt4::dmx::EffectKind::Color);
+        CHECK(twice.preset.fixtures.front().channels.back() == takt4::dmx::Role::ColorWheel);
+    }
 }

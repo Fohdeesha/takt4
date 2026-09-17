@@ -33,6 +33,8 @@ add_library(takt4_ui STATIC
   app.hpp
   file_dialog.cpp
   file_dialog.hpp
+  fixtures_controller.cpp
+  fixtures_controller.hpp
   headless.cpp
   headless.hpp
   model_rows.hpp
