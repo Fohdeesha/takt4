@@ -37,6 +37,30 @@
       "cacheVariables": { "TAKT4_BUILD_UI": "OFF" }
     },
     {
+      "name": "windows-asan",
+      "displayName": "Windows — AddressSanitizer over the whole tree",
+      "inherits": "windows-msvc",
+      "cacheVariables": { "TAKT4_SANITIZE": "address" }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux — AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TAKT4_SANITIZE": "address+undefined"
+      }
+    },
+    {
+      "name": "linux-tsan",
+      "displayName": "Linux — ThreadSanitizer (the audio, output and UI threads)",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TAKT4_SANITIZE": "thread"
+      }
+    },
+    {
       "name": "macos-core",
       "displayName": "macOS — engine and tests only (no Slint, no Rust toolchain needed)",
       "inherits": "macos",
@@ -56,7 +80,10 @@
     { "name": "linux", "configurePreset": "linux" },
     { "name": "windows-core", "configurePreset": "windows-core", "configuration": "Release" },
     { "name": "macos-core", "configurePreset": "macos-core" },
-    { "name": "linux-core", "configurePreset": "linux-core" }
+    { "name": "linux-core", "configurePreset": "linux-core" },
+    { "name": "windows-asan", "configurePreset": "windows-asan", "configuration": "Release" },
+    { "name": "linux-asan", "configurePreset": "linux-asan" },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan" }
   ],
   "testPresets": [
     {
@@ -80,6 +107,14 @@
       "output": { "outputOnFailure": true }
     },
     { "name": "macos-core", "configurePreset": "macos-core", "output": { "outputOnFailure": true } },
-    { "name": "linux-core", "configurePreset": "linux-core", "output": { "outputOnFailure": true } }
+    { "name": "linux-core", "configurePreset": "linux-core", "output": { "outputOnFailure": true } },
+    {
+      "name": "windows-asan",
+      "configurePreset": "windows-asan",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "linux-asan", "configurePreset": "linux-asan", "output": { "outputOnFailure": true } },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true } }
   ]
 }

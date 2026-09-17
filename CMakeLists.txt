@@ -33,7 +33,23 @@ option(TAKT4_BUILD_UI "Build the Slint user interface and the takt4 executable" 
 option(TAKT4_BUILD_TESTS "Build the test suite" "${PROJECT_IS_TOP_LEVEL}")
 option(TAKT4_WARNINGS_AS_ERRORS "Treat warnings in takt4's own sources as errors" ON)
 
+# A release build that keeps its symbols.
+#
+# takt4 crashed on a rig on 2026-09-16 and left a minidump, and the dump named the faulting
+# instruction as `takt4.exe+0xf80723` and could say no more, because the shipped build had no
+# PDB to name it with. The optimisation is unchanged — `/Zi` only writes the symbols to a
+# file beside the exe, and `/OPT:REF /OPT:ICF` put back the two folding passes that `/DEBUG`
+# would otherwise turn off. Nothing about the binary changes; it just becomes readable when
+# it falls over.
+if(MSVC)
+  add_compile_options($<$<CONFIG:Release>:/Zi>)
+  add_link_options($<$<CONFIG:Release>:/DEBUG>
+                   $<$<CONFIG:Release>:/OPT:REF>
+                   $<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
 include("${PROJECT_SOURCE_DIR}/cmake/warnings.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/sanitizers.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/deps.cmake")
 
 add_subdirectory(src)
