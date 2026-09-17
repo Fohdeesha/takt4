@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/dmx/fixture.hpp"
 #include "core/output/output_target.hpp"
 #include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -126,6 +127,19 @@ struct Preset {
     /// Held as configuration rather than as live `trigger::Rule`s, which is what makes them
     /// storable at all — see `Rule::Config`, which is plain data for exactly this.
     std::vector<trigger::Rule::Config> rules;
+
+    /// The lighting patch — what fixtures there are, where they are addressed and what each
+    /// of their channels does.
+    ///
+    /// **Portable, and the judgement is the same one the outputs make.** A patch is a fact
+    /// about a *rig* rather than about a machine: the same three moving heads at the same
+    /// addresses are the same three heads whichever laptop is driving them, and a rule that
+    /// says "the heads" is meaningless without the patch that says what those are. Carrying
+    /// the two together is what makes a preset a show somebody can hand over.
+    ///
+    /// A patch opened on a rig that has not got those fixtures costs nothing: the universes
+    /// are still built and the frames are still sent, into a node that is not there.
+    std::vector<dmx::Fixture> fixtures;
 };
 
 struct Settings {

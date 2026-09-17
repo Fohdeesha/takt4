@@ -27,7 +27,24 @@ int run() {
     // reads the old per-user file and, on the way out, leaves a settings.json next to
     // takt4.exe. See `settings::existingSettingsFile`.
     const std::filesystem::path settingsPath = settings::settingsFile();
-    const settings::Settings saved = settings::load(settings::existingSettingsFile());
+    const std::filesystem::path readFrom = settings::existingSettingsFile();
+    const settings::Settings saved = settings::load(readFrom);
+
+    // **A read from the old per-user file is a migration, so it is finished here rather than
+    // on the way out.** `existingSettingsFile` falls back to `%APPDATA%\takt4\settings.json`
+    // when there is none beside the executable, and until this the fallback was live: every
+    // build into a fresh tree, and every session that ended in a crash rather than a clean
+    // exit, read that file again. On this machine it was five days stale and had the octave
+    // fold switched on with a window a tap had set — so "keep BPM in range" kept coming back
+    // on with a window nobody had chosen, which is exactly what a rig reported on 2026-09-16.
+    //
+    // Writing it here means the fallback is taken once per install location and never again.
+    // Nothing is moved or deleted: the old file stays where an older build still finds it,
+    // which is the decision `existingSettingsFile` already documents.
+    if (!settingsPath.empty() && readFrom != settingsPath) {
+        (void)settings::save(saved, settingsPath);
+    }
+
     engine::LiveTracker::Options options;
     options.engine.tempo = saved.preset.tempo;
     options.engine.decoder = saved.preset.decoder;

@@ -48,6 +48,10 @@ int main(int argc, char** argv) {
             options.running = false;
         } else if (arg == "--rules") {
             options.rules = true;
+        } else if (arg == "--fixtures") {
+            options.fixtures = true;
+        } else if (arg == "--dmx") {
+            options.dmx = true;
         } else if (arg == "--size") {
             sized = true;
             if (i + 1 >= argc) {
@@ -89,6 +93,10 @@ int main(int argc, char** argv) {
     if (options.rules && !sized) {
         width = takt4::ui::kRulesShotWidth;
         height = takt4::ui::kRulesShotHeight;
+    }
+    if (options.fixtures && !sized) {
+        width = takt4::ui::kFixturesShotWidth;
+        height = takt4::ui::kFixturesShotHeight;
     }
     options.width = width;
     options.height = height;

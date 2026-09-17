@@ -19,11 +19,14 @@
 // filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
 
 import { CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider } from "std-widgets.slint";
-import { Bar, Press, Setting, Theme } from "theme.slint";
+import { Bar, FocusSink, Press, Setting, Theme } from "theme.slint";
 
 // §5.9's rule editor is a window of its own (rules_window.slint), re-exported through here
 // so the Slint compiler produces one generated header for both. See src/ui/CMakeLists.txt.
 export { RulesWindow, RuleRow, SlotRow } from "rules_window.slint";
+// And the patch editor, for the same reason — see src/ui/CMakeLists.txt on why there is one
+// generated header rather than one per window.
+export { FixturesWindow, FixtureRow, ChannelRow } from "fixtures_window.slint";
 
 /// One 50 Hz frame of the activation trace. The network's two probabilities, and
 /// whether the tracker actually called a beat on this frame — which is the difference
@@ -53,15 +56,20 @@ export struct OutputRow {
   /// What a rule names it by (`trigger::Rule::Config::outputs`). Left empty, the target is
   /// named after its address, which is what this field meant before names existed.
   name: string,
-  /// `output::OutputTarget::Kind`: 0 is OSC, 1 is MIDI. The index into `output-kinds`.
+  /// `output::OutputTarget::Kind`: 0 is OSC, 1 is MIDI, 2 is Art-Net. The index into
+  /// `output-kinds`.
   kind-index: int,
-  /// OSC: where to send it, in two boxes because they are two facts and one of them has a
-  /// sane default (9000) while the other does not.
+  /// OSC and Art-Net: where to send it, in two boxes because they are two facts and one of
+  /// them has a sane default (9000, or Art-Net's own 6454) while the other does not.
   host: string,
   port: string,
   /// MIDI: which device, as an index into `output-devices` — 0 being that list's own
   /// "not chosen yet" label. A name would be the same trap the single address box was.
   device-index: int,
+  /// Art-Net: which universes this node carries, as typed — "0, 1, 4". **Empty means every
+  /// universe the fixture patch uses**, which is what one node on one rig wants and the
+  /// reason the box can be left alone until there are two nodes.
+  universes: string,
   /// "127.0.0.1:7000", or "midi Some Device" — `output::formatOutputAddress`. Not shown any
   /// more; kept because it is still the one string that says the whole destination, which is
   /// what a settings file holds and what a pasted rig arrives as.
@@ -173,6 +181,12 @@ export component MainWindow inherits Window {
   in-out property <bool> link-on;
   in-out property <int> link-peers;
   in-out property <bool> osc-on;
+  /// Whether any target is an Art-Net node, which is what decides whether the destination
+  /// column is wide enough for three fields and whether there is a "universes" heading over
+  /// the third. A property rather than a search through `outputs-list` in the markup, because
+  /// Slint has no fold and the C++ side already walks the list to build it.
+  in-out property <bool> outputs-any-artnet;
+
   /// §5.6's targets, one row each. Written by the C++ side whenever the list changes shape
   /// — never while a row is being typed into, which would reset the field under the cursor.
   in-out property <[OutputRow]> outputs-list;
@@ -247,6 +261,10 @@ export component MainWindow inherits Window {
   in-out property <bool> panicked;
 
   callback rules-clicked();
+  /// How many fixtures are patched, for the button that opens the patch editor. Zero is a rig
+  /// with no lights on it, and the button says "PATCH LIGHTS" rather than "0 FIXTURES".
+  in-out property <int> fixtures-total;
+  callback fixtures-clicked();
   callback panic-clicked();
 
   in-out property <string> status;
@@ -299,6 +317,10 @@ export component MainWindow inherits Window {
   /// Row N is an OSC target or a MIDI one. Applied at once, like the tick and unlike the
   /// text boxes: it changes which question the row is asking, so nothing is half-typed yet.
   callback output-kind-changed(int, int);
+  /// Row N's Art-Net universe list, as typed. Edited keeps the keystroke; accepted rebuilds
+  /// the sockets — the same split every other text box on this row makes.
+  callback output-universes-edited(int, string);
+  callback output-universes-accepted(int, string);
   /// Row N's MIDI device, as an index into `output-devices`. Applied at once for the same
   /// reason: it is a pick from a list, so there is nothing to wait for Enter about.
   callback output-device-picked(int, int);
@@ -307,6 +329,22 @@ export component MainWindow inherits Window {
   /// a delay that waited for Enter could not be found that way at all.
   callback output-delay-changed(int, float);
   callback midi-port-picked(int);
+
+  // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
+  // commits when it loses the keyboard, and a click on a heading, a panel or the space
+  // between two rows used to move the focus nowhere — so the box stayed lit and what was
+  // typed in it stayed uncommitted until something else happened to take the focus.
+  //
+  // First in the window, so it is *behind* everything: a click that any real control wants
+  // is taken by that control and never reaches here, and what does reach here is a click on
+  // nothing. `Press` does the same thing for itself, since a button's own touch area would
+  // otherwise swallow the click before this saw it.
+  defocus := FocusSink { }
+  TouchArea {
+    clicked => {
+      defocus.take();
+    }
+  }
 
   VerticalLayout {
     padding: 0;
@@ -521,7 +559,7 @@ export component MainWindow inherits Window {
               value: root.confidence;
               reading: round(root.confidence * 100) / 100;
               // §5.5's confidence gate: below it the tempo above is the last good
-              // one being held, not a fresh reading, and the colour says so.
+              // one being held, not a fresh reading, and the color says so.
               fill: root.holding ? Theme.holding : Theme.accent;
             }
 
@@ -804,7 +842,7 @@ export component MainWindow inherits Window {
                 height: 100%;
                 y: 0;
 
-                // P(beat), from the bottom — and in the lock colour on the frames the
+                // P(beat), from the bottom — and in the lock color on the frames the
                 // filter actually called a beat, which is the difference between the
                 // network seeing something and the filter agreeing.
                 Rectangle {
@@ -926,6 +964,113 @@ export component MainWindow inherits Window {
             }
           }
 
+          // **The column headings, and they are not decoration.**
+          //
+          // A row of this is a tick box, two or three text boxes, a dropdown, a slider and two
+          // numbers, and every one of them was bare: the boxes only said what they were while
+          // they were *empty*, because the answer was in their placeholder, and a rig that had
+          // filled them in was looking at "RDM10", "127.0.0.1", "6454" and "all" with nothing
+          // saying which was which. Reported on 2026-09-16: *"which of the entry boxes is the
+          // IP and which is the name? wtf is the box that just says 'all'? LABEL UI ELEMENTS!!
+          // humans arent psychcic."*
+          //
+          // Drawn once above the list rather than per row, because repeated down the side they
+          // would read as four separate settings rather than as one table — the same argument
+          // the "targets" label already makes. The widths are the rows' own, so the headings
+          // sit over what they name; the `if` on the Art-Net pair is the same test the rows
+          // use, so a rig with no node has no column for one.
+          if root.outputs-list.length > 0 : HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-bottom: 3px;
+            spacing: 10px;
+
+            Rectangle { width: 74px; horizontal-stretch: 0; }
+
+            Text {
+              text: "on";
+              color: Theme.dim;
+              font-size: 10px;
+              width: 28px;
+              horizontal-stretch: 0;
+              horizontal-alignment: center;
+            }
+
+            Text {
+              text: "name";
+              color: Theme.dim;
+              font-size: 10px;
+              width: 104px;
+              horizontal-stretch: 0;
+            }
+
+            Text {
+              text: "protocol";
+              color: Theme.dim;
+              font-size: 10px;
+              width: 84px;
+              horizontal-stretch: 0;
+            }
+
+            // The destination slot, which is a host and a port — and on Art-Net a universe
+            // list as well, and on MIDI a device picker instead. One heading per shape, over
+            // the same widths the row uses.
+            HorizontalLayout {
+              preferred-width: root.outputs-any-artnet ? 288px : 226px;
+              max-width: root.outputs-any-artnet ? 288px : 226px;
+              min-width: 150px;
+              horizontal-stretch: 0;
+              spacing: 6px;
+
+              Text {
+                text: "host / device";
+                color: Theme.dim;
+                font-size: 10px;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+
+              Text {
+                text: "port";
+                color: Theme.dim;
+                font-size: 10px;
+                width: 62px;
+                horizontal-stretch: 0;
+              }
+
+              if root.outputs-any-artnet : Text {
+                // The box that said "all" and nothing else. "all" is its *value* — every
+                // universe the patch uses — and a value is not a label.
+                text: "universes";
+                color: Theme.dim;
+                font-size: 10px;
+                width: 56px;
+                horizontal-stretch: 0;
+                overflow: elide;
+              }
+            }
+
+            Text {
+              text: "this target's own delay";
+              color: Theme.dim;
+              font-size: 10px;
+              min-width: 90px;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+
+            Text {
+              text: "total";
+              color: Theme.dim;
+              font-size: 10px;
+              width: 116px;
+              horizontal-stretch: 0;
+              horizontal-alignment: right;
+            }
+
+            Rectangle { width: 44px; horizontal-stretch: 0; }
+          }
+
           // §5.6's targets, a row each. They used to be one field among four on the row
           // above, then one field of their own holding a comma-separated line — and the whole
           // point of naming them is that a rig has several, so a rig's worth of them is a
@@ -1011,8 +1156,13 @@ export component MainWindow inherits Window {
               // own width was 302 px. `max-width` rather than a hard `width` so that it, and not
               // the row, is what gives when the window is dragged towards its minimum — at the
               // floor a host and a port still read, and a device name elides as it always did.
-              preferred-width: 226px;
-              max-width: 226px;
+              //
+              // An Art-Net row is one field wider — a host, a port *and* a universe list — so
+              // it takes the extra rather than squeezing all three into a slot sized for two.
+              // The delay slider beside it gives it up; that slider stretches, and this does
+              // not, so every readout to the right of it still starts at the same x.
+              preferred-width: target.kind-index == 2 ? 288px : 226px;
+              max-width: target.kind-index == 2 ? 288px : 226px;
               min-width: 150px;
               horizontal-stretch: 0;
               spacing: 6px;
@@ -1020,7 +1170,7 @@ export component MainWindow inherits Window {
               // `if`, not `visible`: a hidden element still takes its layout space, so the two
               // shapes would each reserve room for the other and neither would get the slot.
               // See rules_window.slint's slot rows for the render that found it.
-              if target.kind-index == 0 : LineEdit {
+              if target.kind-index != 1 : LineEdit {
                 text: target.host;
                 placeholder-text: "127.0.0.1";
                 font-size: 12px;
@@ -1043,9 +1193,9 @@ export component MainWindow inherits Window {
                 }
               }
 
-              if target.kind-index == 0 : LineEdit {
+              if target.kind-index != 1 : LineEdit {
                 text: target.port;
-                placeholder-text: "9000";
+                placeholder-text: target.kind-index == 2 ? "6454" : "9000";
                 font-size: 12px;
                 width: 62px;
                 horizontal-stretch: 0;
@@ -1067,10 +1217,39 @@ export component MainWindow inherits Window {
                 }
               }
 
+              // Art-Net's third field: which universes this node carries. Empty is every
+              // universe the patch uses, which is the ordinary rig of one node — so the
+              // placeholder says what leaving it alone means rather than showing a value the
+              // operator would then have to maintain.
+              if target.kind-index == 2 : LineEdit {
+                text: target.universes;
+                placeholder-text: "all";
+                font-size: 12px;
+                width: 56px;
+                horizontal-stretch: 0;
+                edited(text) => {
+                  root.output-universes-edited(index, text);
+                }
+                accepted(text) => {
+                  self.clear-focus();
+                  root.output-universes-accepted(index, text);
+                }
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.output-universes-accepted(index, self.text);
+                  }
+                }
+              }
+
               // The machine's own devices, never a name to be typed. Nobody knows what their
               // interface enumerated as, and a mistyped one is a target that silently sends
               // nowhere — which is the whole reason this row stopped being a text box.
-              if target.kind-index != 0 : ComboBox {
+              //
+              // `== 1` and not `!= 0`, which is what it was: with two kinds those were the
+              // same test, and the day a third arrived an Art-Net row drew its host, its port,
+              // its universe list *and* a MIDI device picker, all in a slot sized for two of
+              // them. Caught in a render; nothing in the markup would have said so.
+              if target.kind-index == 1 : ComboBox {
                 model: root.output-devices;
                 current-index: target.device-index;
                 horizontal-stretch: 1;
@@ -1442,6 +1621,19 @@ export component MainWindow inherits Window {
           min-width: 176px;
           clicked => {
             root.rules-clicked();
+          }
+        }
+
+        // The lighting patch, beside the rules because a DMX rule is meaningless without one
+        // — it aims at fixtures by name, and the names live there. The button says how many
+        // there are so an operator can tell "no patch" from "patch not open", which is the
+        // difference between a rule that cannot work and one that is simply idle.
+        Press {
+          text: root.fixtures-total == 0 ? "PATCH LIGHTS"
+            : root.fixtures-total + (root.fixtures-total == 1 ? " FIXTURE" : " FIXTURES");
+          min-width: 148px;
+          clicked => {
+            root.fixtures-clicked();
           }
         }
 

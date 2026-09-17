@@ -1,5 +1,8 @@
 #include "core/settings/rule_json.hpp"
 
+#include "core/dmx/color.hpp"
+#include "core/dmx/effect.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/value.hpp"
 
@@ -235,6 +238,120 @@ trigger::Conditions conditionsFromJson(const json& node) {
     return conditions;
 }
 
+// --- DmxSend ----------------------------------------------------------------------------
+//
+// Only what the effect actually reads, like `generatorToJson` above and for the same reason:
+// a preset should say what a rule does rather than restate every field the struct happens to
+// have. A fade writes a level and a duration; it does not write a strobe's duty cycle.
+
+json dmxToJson(const trigger::DmxSend& send) {
+    json out{
+        {"effect", std::string(dmx::nameOf(send.effect))},
+        {"curve", std::string(dmx::nameOf(send.curve))},
+        {"unit", std::string(trigger::nameOf(send.unit))},
+        {"durationSeconds", send.durationSeconds},
+        {"durationBeats", send.durationBeats},
+    };
+    json fixtures = json::array();
+    for (const std::string& name : send.fixtures) {
+        fixtures.push_back(name);
+    }
+    out["fixtures"] = std::move(fixtures);
+
+    if (dmx::takesRole(send.effect)) {
+        out["role"] = std::string(dmx::nameOf(send.role));
+        out["level"] = generatorToJson(send.level);
+    }
+    if (dmx::takesBase(send.effect)) {
+        out["base"] = send.base;
+    }
+    if (dmx::takesColor(send.effect)) {
+        out["colorMode"] = std::string(trigger::nameOf(send.colorMode));
+        // **Both, whichever mode is on.** A rule switched from a palette to a mix and saved
+        // would otherwise come back with the palette the operator spent a minute building
+        // replaced by white — the editor keeps both halves alive precisely so switching back
+        // costs nothing, and a file that kept only one would throw that away on every save.
+        out["color"] = generatorToJson(send.color);
+        out["red"] = generatorToJson(send.red);
+        out["green"] = generatorToJson(send.green);
+        out["blue"] = generatorToJson(send.blue);
+    }
+    if (send.effect == dmx::EffectKind::HueSweep) {
+        out["hueFrom"] = send.hueFrom;
+        out["hueTo"] = send.hueTo;
+    }
+    if (dmx::takesCycles(send.effect)) {
+        out["cycles"] = send.cycles;
+    }
+    if (send.effect == dmx::EffectKind::Strobe) {
+        out["duty"] = send.duty;
+    }
+    if (send.effect == dmx::EffectKind::Position) {
+        out["pan"] = generatorToJson(send.pan);
+        out["tilt"] = generatorToJson(send.tilt);
+    }
+    if (send.effect == dmx::EffectKind::Path) {
+        out["shape"] = std::string(dmx::nameOf(send.shape));
+        out["size"] = send.size;
+    }
+    return out;
+}
+
+trigger::DmxSend dmxFromJson(const json& node) {
+    trigger::DmxSend send;
+    if (!node.is_object()) {
+        return send;
+    }
+    readNamed(node, "effect", send.effect, dmx::effectKindOf);
+    readNamed(node, "role", send.role, dmx::roleOf);
+    readNamed(node, "curve", send.curve, dmx::curveOf);
+    readNamed(node, "shape", send.shape, dmx::pathShapeOf);
+    readNamed(node, "unit", send.unit, trigger::delayUnitOf);
+    read(node, "durationSeconds", send.durationSeconds);
+    read(node, "durationBeats", send.durationBeats);
+    read(node, "base", send.base);
+    read(node, "cycles", send.cycles);
+    read(node, "duty", send.duty);
+    read(node, "hueFrom", send.hueFrom);
+    read(node, "hueTo", send.hueTo);
+    read(node, "size", send.size);
+    if (node.contains("fixtures") && node.at("fixtures").is_array()) {
+        for (const json& name : node.at("fixtures")) {
+            if (name.is_string()) {
+                send.fixtures.push_back(name.get<std::string>());
+            }
+        }
+    }
+    if (node.contains("level")) {
+        send.level = generatorFromJson(node.at("level"));
+    }
+    readNamed(node, "colorMode", send.colorMode, trigger::colorModeOf);
+    // `colour` was the key until a rig asked for the other spelling on 2026-09-16. A preset
+    // written before that holds it, and a color that does not read back is a rule that fires
+    // white — which is exactly the failure this whole change was about. Read, never written.
+    if (node.contains("color")) {
+        send.color = generatorFromJson(node.at("color"));
+    } else if (node.contains("colour")) {
+        send.color = generatorFromJson(node.at("colour"));
+    }
+    if (node.contains("red")) {
+        send.red = generatorFromJson(node.at("red"));
+    }
+    if (node.contains("green")) {
+        send.green = generatorFromJson(node.at("green"));
+    }
+    if (node.contains("blue")) {
+        send.blue = generatorFromJson(node.at("blue"));
+    }
+    if (node.contains("pan")) {
+        send.pan = generatorFromJson(node.at("pan"));
+    }
+    if (node.contains("tilt")) {
+        send.tilt = generatorFromJson(node.at("tilt"));
+    }
+    return send;
+}
+
 // --- Rule -------------------------------------------------------------------------------
 
 json ruleToJson(const Rule::Config& rule) {
@@ -275,6 +392,8 @@ json ruleToJson(const Rule::Config& rule) {
             segments.push_back(generatorToJson(segment));
         }
         out["segments"] = segments;
+    } else if (rule.sendKind == trigger::Message::Kind::Dmx) {
+        out["dmx"] = dmxToJson(rule.dmx);
     } else {
         out["channel"] = rule.channel;
         out["number"] = generatorToJson(rule.number);
@@ -300,6 +419,19 @@ json ruleToJson(const Rule::Config& rule) {
                 if (trigger::sendsNumber(*entry.kind)) {
                     one["number"] = entry.number;
                 }
+            }
+            // A DMX follow-up that brings its own effect. Left out for a release, like the
+            // kind above and for the same reason: its absence is what says "the fired effect
+            // again, dimmed to this level".
+            if (entry.dmx) {
+                one["dmxFollow"] = json{
+                    {"effect", std::string(dmx::nameOf(entry.dmx->effect))},
+                    {"color", dmx::formatColor(entry.dmx->color)},
+                    {"curve", std::string(dmx::nameOf(entry.dmx->curve))},
+                    {"unit", std::string(trigger::nameOf(entry.dmx->unit))},
+                    {"durationSeconds", entry.dmx->durationSeconds},
+                    {"durationBeats", entry.dmx->durationBeats},
+                };
             }
             owed.push_back(std::move(one));
         }
@@ -362,6 +494,9 @@ Rule::Config ruleFromJson(const json& node) {
     if (node.contains("number")) {
         rule.number = generatorFromJson(node.at("number"));
     }
+    if (node.contains("dmx")) {
+        rule.dmx = dmxFromJson(node.at("dmx"));
+    }
     if (node.contains("followUps") && node.at("followUps").is_array()) {
         for (const json& one : node.at("followUps")) {
             if (!one.is_object() || rule.followUps.size() >= trigger::kMaxFollowUps) {
@@ -381,6 +516,22 @@ Rule::Config ruleFromJson(const json& node) {
             read(one, "delaySeconds", entry.delaySeconds);
             readNamed(one, "unit", entry.unit, trigger::delayUnitOf);
             read(one, "delayBeats", entry.delayBeats);
+            if (one.contains("dmxFollow") && one.at("dmxFollow").is_object()) {
+                const json& follow = one.at("dmxFollow");
+                trigger::DmxFollow next;
+                readNamed(follow, "effect", next.effect, dmx::effectKindOf);
+                readNamed(follow, "curve", next.curve, dmx::curveOf);
+                readNamed(follow, "unit", next.unit, trigger::delayUnitOf);
+                read(follow, "durationSeconds", next.durationSeconds);
+                read(follow, "durationBeats", next.durationBeats);
+                std::string color;
+                read(follow, "color", color);
+                read(follow, "colour", color); // what this key was called before 2026-09-16
+                if (const auto parsed = dmx::parseColor(color)) {
+                    next.color = *parsed;
+                }
+                entry.dmx = next;
+            }
             rule.followUps.push_back(entry);
         }
     } else {

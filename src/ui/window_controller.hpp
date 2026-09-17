@@ -8,6 +8,7 @@
 #include "core/settings/settings.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "ui/fixtures_controller.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
 
@@ -153,11 +154,14 @@ public:
     void setTargetName(int index, const std::string& name, bool apply);
     void setTargetHost(int index, const std::string& host, bool apply);
     void setTargetPort(int index, const std::string& port, bool apply);
-    /// OSC or MIDI, as an index into `output::OutputTarget::Kind`'s own order.
+    /// OSC, MIDI or Art-Net, as an index into `output::OutputTarget::Kind`'s own order.
     void setTargetKind(int index, int kind);
     /// Row `index`'s MIDI device, as an index into the window's `output-devices` — 0 being
     /// that list's "not chosen yet" label, which leaves the row sending nowhere.
     void setTargetDevice(int index, int device);
+    /// Row `index`'s Art-Net universe list, as typed: "0, 1, 4". Empty means every universe
+    /// the fixture patch uses, which is what one node on one rig wants.
+    void setTargetUniverses(int index, const std::string& universes, bool apply);
 
     /// A row to fill in, starting from OSC on this machine at the default port. Applied, so
     /// the target exists at once and a rule can be routed to it before it has been aimed.
@@ -233,6 +237,9 @@ public:
     /// operator who never writes a rule never sees it, and one who does keeps their place
     /// in it across opening and closing.
     RulesController& editor() noexcept { return editor_; }
+    /// The lighting patch editor, for `takt4_ui_tests` to drive the way it drives the rule
+    /// editor — Slint's element-finding API being behind SLINT_FEATURE_EXPERIMENTAL (§6).
+    FixturesController& patchEditor() noexcept { return patch_; }
     /// Opens the editor, or brings it forward.
     void openEditor();
     /// §5.8's PANIC from the main window's own row, so a halt never waits on a window.
@@ -431,6 +438,9 @@ private:
 
     /// §5.8's rules as this window has them; see `rules()`.
     std::vector<trigger::Rule::Config> rules_;
+    /// The lighting patch, as this class has it for saving. `patch_` owns the editing; this is
+    /// the copy that goes into a settings file, kept in step by its changed callback.
+    std::vector<dmx::Fixture> fixtures_;
 
     /// §5.7's control input. Which action LEARN would bind, as an index into
     /// `learnActions_`; the binding table itself lives in `control_`.
@@ -464,6 +474,10 @@ private:
     /// §5.9's editor. **After the two surfaces**, so it is destroyed before them and long
     /// before `runner_` — it posts to the runner like they do, though only from this thread.
     RulesController editor_;
+    /// The lighting patch editor, built with the window and shown on demand — the same shape
+    /// as `editor_`, and for the same reason: a patch is set up once and then not touched,
+    /// while the rules are edited during the set.
+    FixturesController patch_;
 };
 
 } // namespace takt4::ui

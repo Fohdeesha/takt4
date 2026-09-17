@@ -1,0 +1,712 @@
+// The lighting patch — what fixtures there are, where they are addressed, and what each of
+// their channels does.
+//
+// **A window of its own, for the reason the rule editor is one.** A patch is set up once and
+// then not touched for the rest of the night, while the rules are edited during the set; one
+// screen holding both would make the thing that changes hourly share space with the thing
+// that changes monthly. It also means the patch can sit on a second monitor while a fixture
+// is being addressed from the truss.
+//
+// **Master-detail, like the rule editor**, and for the same reason: a list of fixtures down
+// the left scales to a rig, and one editor on the right can afford to be a channel map rather
+// than a summary.
+//
+// Nothing here talks to the lighting engine. `ui::FixturesController` owns the patch, edits
+// its own copy and posts it whole — see its header, and `RulesController`'s, for why the
+// output thread's copy cannot be the one being edited.
+
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { FocusSink, Press, Splitter, Theme } from "theme.slint";
+
+/// One row of the fixture list — everything it shows without the editor being open.
+export struct FixtureRow {
+  name: string,
+  /// "0 · 1-3", the universe and the channels it occupies. What an operator checks against
+  /// the display on the back of the fixture, so it is spelled the way that display is.
+  where: string,
+  group: string,
+  enabled: bool,
+  /// Empty when the fixture is usable; otherwise `dmx::problemWith`, which is why it is not.
+  /// Held and shown rather than refused — the same policy a rule follows.
+  problem: string,
+}
+
+/// One channel of the fixture being edited.
+export struct ChannelRow {
+  /// The DMX number this channel really is — the fixture's start address plus its offset.
+  /// Shown because it is the number on the fixture's own display and in its manual, and
+  /// because an off-by-one here is a rig where every color is on the wrong component.
+  number: int,
+  /// Which `dmx::Role`, as an index into `roles`.
+  role-index: int,
+  /// Where this channel sits when nothing is driving it — `dmx::Fixture::parked`. The
+  /// shutter that has to be open before a dimmer means anything lives here, and a rig where
+  /// "the dimmer rule does nothing" is nearly always this.
+  parked: int,
+  /// What takt4 is sending on this channel right now, 0-255. The one thing in this window
+  /// that moves on its own, and the only way to see a fade actually happening without a
+  /// fixture plugged in.
+  live: int,
+}
+
+export component FixturesWindow inherits Window {
+  title: "takt4 — fixtures";
+  // See `RulesWindow`: these do not decide what the window opens at. `ui::kFixturesWindowWidth`
+  // is the size actually used, set before the first show.
+  preferred-width: 1000px;
+  preferred-height: 760px;
+  min-width: 820px;
+  min-height: 520px;
+  background: Theme.background;
+  init => {
+    Palette.color-scheme = ColorScheme.dark;
+  }
+
+  in-out property <length> list-width: 300px;
+
+  in-out property <[FixtureRow]> fixtures;
+  /// Which fixture the editor is on, or -1 when the patch is empty.
+  in-out property <int> selected: -1;
+
+  // --- the selected fixture ----------------------------------------------------------
+  in-out property <string> name;
+  in-out property <string> group;
+  in-out property <string> universe;
+  in-out property <int> address: 1;
+  in-out property <bool> enabled: true;
+  /// Every `dmx::Role`, in `kRoles` order — what a channel's dropdown offers.
+  in-out property <[string]> roles;
+  /// The ready-made channel maps, with "custom" at index 0 so that picking nothing is a
+  /// state rather than a fixture nobody meant.
+  in-out property <[string]> modes;
+  in-out property <int> mode-index;
+  in-out property <[ChannelRow]> channels;
+
+  /// What a channel's TEST holds it at, and for how long. Two-way on the level, because the
+  /// SpinBox is the thing that sets it — see `bpm-field` in the main window for what a
+  /// one-way binding does to a box somebody types in.
+  in-out property <int> test-level: 255;
+  in-out property <int> test-seconds: 3;
+
+  /// The movement window, as percentages — the numbers an operator sets from the stage.
+  /// Only shown for a fixture that can move, because on a wash they mean nothing.
+  in-out property <bool> moves;
+  in-out property <float> pan-min: 0;
+  in-out property <float> pan-max: 100;
+  in-out property <float> tilt-min: 0;
+  in-out property <float> tilt-max: 100;
+
+  /// A line under the list: how many fixtures, how many universes, and what the Art-Net
+  /// targets are doing with them. What tells "nothing is patched" from "nothing is plugged
+  /// in", which look the same from the truss.
+  in-out property <string> summary;
+  in-out property <string> status;
+  in-out property <bool> status-error;
+
+  // One selection, not a set — unlike the rule list, which gained ctrl- and shift-click
+  // because a preset's worth of rules is something somebody prunes in one gesture. A patch is
+  // built once, fixture by fixture, and is short: a rig with more fixtures than rules is not
+  // a rig anybody has described.
+  callback picked(int);
+  callback added();
+  callback duplicated();
+  callback removed();
+  callback removed-at(int);
+  callback enabled-changed(int, bool);
+
+  callback name-edited(string);
+  callback group-edited(string);
+  callback universe-edited(string);
+  callback address-changed(int);
+  callback fixture-enabled-changed(bool);
+  callback mode-picked(int);
+  callback channel-added();
+  callback channel-removed(int);
+  callback channel-role-picked(int, int);
+  callback channel-parked-changed(int, int);
+  /// Holds one channel of the selected fixture at `test-level` for `test-seconds` — which
+  /// channel, by index into `channels`. See `DmxEngine::holdChannel`.
+  callback channel-tested(int);
+  callback test-level-changed(int);
+  callback pan-range-changed(float, float);
+  callback tilt-range-changed(float, float);
+  /// Drives every channel of the selected fixture to full for a moment, so an operator in
+  /// the truss can see which lamp they are patching. The one control in this window that
+  /// sends anything.
+  callback identify();
+
+  // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
+  // commits when it loses the keyboard, and a click on a heading, a panel or the space
+  // between two rows used to move the focus nowhere — so the box stayed lit and what was
+  // typed in it stayed uncommitted until something else happened to take the focus.
+  //
+  // First in the window, so it is *behind* everything: a click that any real control wants
+  // is taken by that control and never reaches here, and what does reach here is a click on
+  // nothing. `Press` does the same thing for itself, since a button's own touch area would
+  // otherwise swallow the click before this saw it.
+  defocus := FocusSink { }
+  TouchArea {
+    clicked => {
+      defocus.take();
+    }
+  }
+
+  HorizontalLayout {
+    padding: 0px;
+    spacing: 0px;
+
+    // --- the list ------------------------------------------------------------------
+    VerticalLayout {
+      width: root.list-width;
+      padding: 14px;
+      spacing: 10px;
+
+      Text {
+        text: "FIXTURES";
+        color: Theme.dim;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+      }
+
+      ListView {
+        vertical-stretch: 1;
+        for fixture[index] in root.fixtures: Rectangle {
+          height: 52px;
+          background: index == root.selected ? Theme.control : transparent;
+          border-radius: 4px;
+
+          TouchArea {
+            clicked => {
+              root.picked(index);
+            }
+          }
+
+          HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            // Vertical padding, and it is not decoration: without it the × below stretches to
+            // the row's full 52px, because `Press` carries a `min-height` for the performance
+            // controls it was written for and a layout with nothing to push against gives it
+            // everything. Measured in a shot, where it read as a second panel over the row.
+            padding-top: 9px;
+            padding-bottom: 9px;
+            spacing: 8px;
+
+            CheckBox {
+              checked: fixture.enabled;
+              width: 28px;
+              toggled => {
+                root.enabled-changed(index, self.checked);
+              }
+            }
+
+            VerticalLayout {
+              horizontal-stretch: 1;
+
+              Text {
+                text: fixture.name == "" ? "(unnamed)" : fixture.name;
+                color: fixture.enabled ? Theme.text : Theme.dim;
+                font-size: 14px;
+                overflow: elide;
+              }
+              Text {
+                // The problem takes the line when there is one: a fixture that cannot be
+                // driven should say so where its address would be, because the address is
+                // usually what is wrong with it.
+                text: fixture.problem != "" ? fixture.problem
+                  : fixture.group != "" ? fixture.where + "  ·  " + fixture.group
+                  : fixture.where;
+                color: fixture.problem != "" ? Theme.holding : Theme.dim;
+                font-size: 11px;
+                overflow: elide;
+              }
+            }
+
+            Press {
+              text: "×";
+              font: 13px;
+              pad: 8px;
+              width: 30px;
+              // Explicit, for the reason the padding above gives: `Press` has a `min-height`
+              // and would otherwise take the row.
+              height: 30px;
+              y: 2px;
+              clicked => {
+                root.removed-at(index);
+              }
+            }
+          }
+        }
+      }
+
+      Text {
+        text: root.summary;
+        color: Theme.dim;
+        font-size: 11px;
+        wrap: word-wrap;
+      }
+
+      HorizontalLayout {
+        spacing: 8px;
+        Press {
+          text: "ADD";
+          primary: true;
+          font: 14px;
+          pad: 12px;
+          clicked => { root.added(); }
+        }
+        Press {
+          text: "COPY";
+          font: 14px;
+          pad: 12px;
+          enabled: root.selected >= 0;
+          clicked => { root.duplicated(); }
+        }
+        Press {
+          text: "DELETE";
+          font: 14px;
+          pad: 12px;
+          enabled: root.selected >= 0;
+          clicked => { root.removed(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+      }
+    }
+
+    Splitter {
+      dragged(by) => {
+        root.list-width = clamp(root.list-width + by, 220px, 460px);
+      }
+    }
+
+    // --- the editor ----------------------------------------------------------------
+    ScrollView {
+      horizontal-stretch: 1;
+      // Scrolls vertically only. Without this a ScrollView sizes its viewport to whatever its
+      // content asks for, and a column of rows full of fixed widths asks for more than the
+      // pane has — so the editor scrolls sideways and the right-hand end of every row is
+      // simply not on screen. The rule editor's own scroller carries the same line and the
+      // same note; this one was measured in a shot with IDENTIFY hanging off the edge.
+      viewport-width: self.visible-width;
+
+      VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        alignment: start;
+
+        if root.selected < 0 : Text {
+          text: "No fixtures patched. ADD one, pick the shape it is — an RGB par, a moving head — and set the start address to whatever is on the back of the fixture.";
+          color: Theme.dim;
+          font-size: 13px;
+          wrap: word-wrap;
+        }
+
+        if root.selected >= 0 : VerticalLayout {
+          spacing: 12px;
+          // **`start`, and it is not decoration.** Without it this column stretches its rows
+          // to fill whatever height the pane has, and a fixture with three channels — the
+          // ordinary RGB par — drew its universe, address and mode boxes eighty pixels tall
+          // with canyons of grey between the headings. The outer column says `start` and that
+          // settles the outer column; a nested one distributes its own share all over again.
+          // Reported from a rig on 2026-09-16 and reproduced in a shot at 1067x1500.
+          alignment: start;
+
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+
+            LineEdit {
+              text: root.name;
+              placeholder-text: "name — what a rule aims at";
+              font-size: 13px;
+              horizontal-stretch: 1;
+              // A name is a name. Left to stretch it took half a wide window, which makes the
+              // row read as one enormous box and two afterthoughts.
+              max-width: 420px;
+              edited(t) => { root.name-edited(t); }
+              accepted(t) => { self.clear-focus(); root.name-edited(t); }
+              changed has-focus => {
+                if (!self.has-focus) { root.name-edited(self.text); }
+              }
+            }
+
+            LineEdit {
+              // A second name any number of fixtures share, so a rule can say "heads" and a
+              // re-rig is an edit to the patch rather than to every rule.
+              text: root.group;
+              placeholder-text: "group (optional)";
+              font-size: 13px;
+              width: 180px;
+              edited(t) => { root.group-edited(t); }
+              accepted(t) => { self.clear-focus(); root.group-edited(t); }
+              changed has-focus => {
+                if (!self.has-focus) { root.group-edited(self.text); }
+              }
+            }
+
+            CheckBox {
+              text: "on";
+              checked: root.enabled;
+              toggled => { root.fixture-enabled-changed(self.checked); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+
+            Text {
+              text: "universe";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 72px;
+              vertical-alignment: center;
+            }
+            LineEdit {
+              // A flat number, which is how every desk and node front panel spells it. The
+              // three-part "net:sub:uni" form is accepted too, for a rig that has left the
+              // first Net — see `dmx::parsePortAddress`.
+              text: root.universe;
+              placeholder-text: "0";
+              font-size: 13px;
+              width: 90px;
+              edited(t) => { root.universe-edited(t); }
+              accepted(t) => { self.clear-focus(); root.universe-edited(t); }
+              changed has-focus => {
+                if (!self.has-focus) { root.universe-edited(self.text); }
+              }
+            }
+
+            Text {
+              text: "address";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 64px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+            SpinBox {
+              // 1-based, because that is the number printed on the back of the fixture and
+              // set on its display. Everything inside a universe buffer counts from zero and
+              // exactly one function knows it.
+              value <=> root.address;
+              minimum: 1;
+              maximum: 512;
+              width: 104px;
+              edited(v) => { root.address-changed(v); }
+            }
+
+            Text {
+              text: "mode";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 48px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
+            ComboBox {
+              // Not a fixture library — there are thousands of fixtures and takt4 does not
+              // ship a database of them. These are the shapes nearly every LED fixture takes,
+              // so patching an RGB par is one pick and patching something unusual is picking
+              // the nearest and editing the map below.
+              model: root.modes;
+              current-index: root.mode-index;
+              horizontal-stretch: 1;
+              // The longest entry is "moving head 16-bit (12ch)"; past that the box is only
+              // wider, and a wide window should not spend all of itself on one dropdown.
+              max-width: 240px;
+              selected => { root.mode-picked(self.current-index); }
+            }
+
+            Press {
+              // Wide enough for its own label. Left to the layout it was elided to
+              // "IDENTI…" — measured in a shot, and a button whose label is cut is a button
+              // an operator has to guess at.
+              text: "IDENTIFY";
+              font: 13px;
+              pad: 10px;
+              min-width: 104px;
+              horizontal-stretch: 0;
+              clicked => { root.identify(); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          Rectangle { height: 1px; background: Theme.line; }
+
+          Text {
+            text: "CHANNELS";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+          }
+
+          Text {
+            text: "What each channel does, from the fixture's start address. A channel nothing aims at is \"unused\" — leave it there so the ones after it stay where the manual says.";
+            color: Theme.dim;
+            font-size: 11px;
+            wrap: word-wrap;
+          }
+
+          // What TEST holds a channel at, and for how long. **One box for the column rather
+          // than one per row**: an operator poking channels to find out which is which pokes
+          // them all at the same level, and a value box on every row would double the width
+          // of a map that is meant to be read top to bottom.
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+
+            Text {
+              text: "TEST sends";
+              color: Theme.dim;
+              font-size: 11px;
+              width: 72px;
+              vertical-alignment: center;
+            }
+            SpinBox {
+              value <=> root.test-level;
+              minimum: 0;
+              maximum: 255;
+              width: 104px;
+              edited(v) => { root.test-level-changed(v); }
+            }
+            Text {
+              text: "to one channel for " + root.test-seconds + " s, then puts it back. Nothing else on the fixture moves.";
+              color: Theme.dim;
+              font-size: 11px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+          }
+
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+            Text { text: "ch"; color: Theme.dim; font-size: 11px; width: 40px; }
+            Text { text: "does"; color: Theme.dim; font-size: 11px; width: 168px; }
+            Text { text: "parked at"; color: Theme.dim; font-size: 11px; width: 104px; }
+            Text { text: "sending"; color: Theme.dim; font-size: 11px; width: 64px; }
+            Text { text: "test"; color: Theme.dim; font-size: 11px; width: 60px; }
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // A row per channel, and they are **tight on purpose**: a twelve-channel head is
+          // twelve of these, and at the widget set's own spacing only nine fit the window.
+          // The one thing an operator does here is read the map top to bottom against the
+          // fixture's manual, which wants all of it on screen at once.
+          for channel[index] in root.channels: HorizontalLayout {
+            spacing: 8px;
+            height: 36px;
+            vertical-stretch: 0;
+
+            Text {
+              text: channel.number;
+              color: Theme.text;
+              font-size: 12px;
+              font-family: "Consolas";
+              width: 40px;
+              vertical-alignment: center;
+            }
+
+            ComboBox {
+              model: root.roles;
+              current-index: channel.role-index;
+              width: 168px;
+              height: 32px;
+              y: 2px;
+              selected => { root.channel-role-picked(index, self.current-index); }
+            }
+
+            SpinBox {
+              value: channel.parked;
+              minimum: 0;
+              maximum: 255;
+              width: 104px;
+              height: 32px;
+              y: 2px;
+              edited(v) => { root.channel-parked-changed(index, v); }
+            }
+
+            // The live level. A bar as well as a number, because what an operator is
+            // checking here is *movement* — that a fade is happening — and a number changing
+            // forty times a second is harder to read than a bar doing the same.
+            Rectangle {
+              width: 64px;
+              height: 22px;
+              y: 7px;
+              background: Theme.panel;
+              border-radius: 3px;
+              border-width: 1px;
+              border-color: Theme.line;
+
+              Rectangle {
+                x: 1px;
+                y: 1px;
+                width: (parent.width - 2px) * channel.live / 255;
+                height: parent.height - 2px;
+                background: Theme.accent;
+                border-radius: 2px;
+              }
+
+              Text {
+                text: channel.live;
+                // Dark on the filled part of the bar and light on the empty part would need
+                // two texts and a clip. One color that reads on both is the accent's own
+                // dark counterpart, which is what the bar is drawn over.
+                color: channel.live > 140 ? Theme.background : Theme.text;
+                font-size: 10px;
+                font-family: "Consolas";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+              }
+            }
+
+            // **One channel, on its own, for a moment.** The bar to the left says what takt4
+            // is sending; this is what says *which lamp that is*. IDENTIFY flashes the whole
+            // fixture, which answers "where is it on the truss" and not "is channel 72 really
+            // the blue one" — and the second question is the one a channel map is wrong
+            // about. It puts the channel back by itself, so it is safe to press during a set.
+            Press {
+              text: "TEST";
+              font: 11px;
+              pad: 6px;
+              width: 60px;
+              height: 28px;
+              y: 4px;
+              clicked => { root.channel-tested(index); }
+            }
+
+            Press {
+              text: "×";
+              font: 12px;
+              pad: 8px;
+              width: 28px;
+              height: 28px;
+              y: 4px;
+              clicked => { root.channel-removed(index); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+            Press {
+              text: "ADD CHANNEL";
+              font: 13px;
+              pad: 10px;
+              clicked => { root.channel-added(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // --- the movement window ---------------------------------------------------
+          //
+          // Only for a fixture that can move. It is a *safety* limit rather than a
+          // preference: a head told to pan at random across its whole travel will at some
+          // point point straight at the audience, and at a small venue that is a beam in
+          // somebody's eyes. Set once from the stage, and every random position and every
+          // path stays inside it.
+          if root.moves : Rectangle { height: 1px; background: Theme.line; }
+
+          if root.moves : Text {
+            text: "MOVEMENT LIMITS";
+            color: Theme.dim;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+          }
+
+          if root.moves : Text {
+            text: "How much of this head's travel a rule may use. Every random position and every path is a fraction of *this* window, so one rule means the same gesture on six differently-rigged heads — and none of them can be sent into the audience.";
+            color: Theme.dim;
+            font-size: 11px;
+            wrap: word-wrap;
+          }
+
+          if root.moves : HorizontalLayout {
+            spacing: 8px;
+            Text {
+              text: "pan";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 44px;
+              vertical-alignment: center;
+            }
+            Slider {
+              minimum: 0;
+              maximum: 100;
+              value: root.pan-min;
+              horizontal-stretch: 1;
+              changed(v) => { root.pan-range-changed(v, root.pan-max); }
+            }
+            Slider {
+              minimum: 0;
+              maximum: 100;
+              value: root.pan-max;
+              horizontal-stretch: 1;
+              changed(v) => { root.pan-range-changed(root.pan-min, v); }
+            }
+            Text {
+              text: round(root.pan-min) + "% – " + round(root.pan-max) + "%";
+              color: Theme.text;
+              font-size: 12px;
+              width: 108px;
+              vertical-alignment: center;
+            }
+          }
+
+          if root.moves : HorizontalLayout {
+            spacing: 8px;
+            Text {
+              text: "tilt";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 44px;
+              vertical-alignment: center;
+            }
+            Slider {
+              minimum: 0;
+              maximum: 100;
+              value: root.tilt-min;
+              horizontal-stretch: 1;
+              changed(v) => { root.tilt-range-changed(v, root.tilt-max); }
+            }
+            Slider {
+              minimum: 0;
+              maximum: 100;
+              value: root.tilt-max;
+              horizontal-stretch: 1;
+              changed(v) => { root.tilt-range-changed(root.tilt-min, v); }
+            }
+            Text {
+              text: round(root.tilt-min) + "% – " + round(root.tilt-max) + "%";
+              color: Theme.text;
+              font-size: 12px;
+              width: 108px;
+              vertical-alignment: center;
+            }
+          }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        if root.status != "" : Text {
+          text: root.status;
+          color: root.status-error ? Theme.holding : Theme.dim;
+          font-size: 12px;
+          wrap: word-wrap;
+        }
+      }
+    }
+  }
+}

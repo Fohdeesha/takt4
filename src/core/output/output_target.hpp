@@ -27,6 +27,15 @@ struct OutputTarget {
         /// notes and CCs; §5.6's 24 PPQN clock is a separate setting and may name the same
         /// device — `Transports` opens each device once and shares it.
         Midi,
+        /// An Art-Net node: a UDP host and port carrying some set of DMX universes.
+        ///
+        /// **Nothing routes to it by name, and that is the difference from the other two.** A
+        /// rule sending OSC or MIDI picks its targets; a rule sending DMX picks its
+        /// *fixtures*, and a fixture already says which universe it lives in. So the routing
+        /// question is answered by the patch, and what a target says is only which universes
+        /// this particular node is fed — which is a fact about the cabling, not about the
+        /// show. `universes` is that, and it is usually left empty.
+        ArtNet,
     };
 
     /// What a rule names it by, and what a UI shows. Unique within a set: two targets with
@@ -34,12 +43,21 @@ struct OutputTarget {
     std::string name;
     Kind kind = Kind::Osc;
 
-    /// `Osc`: where to send. Ignored for `Midi`.
+    /// `Osc` and `ArtNet`: where to send. Ignored for `Midi`.
     std::string host = "127.0.0.1";
     std::uint16_t port = 7000;
 
-    /// `Midi`: which device. Ignored for `Osc`.
+    /// `Midi`: which device. Ignored for the other two.
     std::string device;
+
+    /// `ArtNet`: which universes this node is fed, as flat Port-Addresses.
+    ///
+    /// **Empty means every universe the fixture patch uses**, which is the right answer for
+    /// the ordinary rig of one node and the reason the field can be left alone until there
+    /// are two. It is only worth filling in when a rig has several nodes and each carries a
+    /// different slice — sending a node universes it does not own is harmless but wasteful,
+    /// and on a node that merges it is worse than wasteful.
+    std::vector<std::uint16_t> universes;
 
     /// Switched off sends nothing at all — neither §5.6's namespace nor a rule's message.
     /// A switch rather than deleting it, because an operator killing one feed mid-set wants
@@ -77,6 +95,14 @@ struct OutputTarget {
     /// Held on the output thread and sent when it comes due (`OscPublisher::flushDue`), so
     /// the resolution is that thread's round — 1 ms, which is why it raises Windows' timer
     /// granularity. Nothing is reordered: one target's queue is FIFO.
+    ///
+    /// **Ignored for `ArtNet`**, and the reason is what DMX is rather than an omission. The
+    /// other two send *events*, and an event can be held in a queue and let go later. A DMX
+    /// universe is a continuous stream of frames that is never not being sent, so there is no
+    /// message to hold back — what would need moving is the moment an *effect starts*, which
+    /// belongs to the rule that fired it and not to the cable it goes down. §5.5's rig-wide
+    /// latency already moves that, because it moves when beats are published and so when rules
+    /// fire.
     double delaySeconds = 0.0;
 
     friend bool operator==(const OutputTarget&, const OutputTarget&) = default;

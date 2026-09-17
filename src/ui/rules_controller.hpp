@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/trigger/rule.hpp"
 
@@ -10,9 +11,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace takt4::ui {
@@ -51,6 +54,11 @@ public:
     /// The outputs a rule may be routed to, for the editor to show and check names against.
     /// Set again whenever the main window's outputs field changes.
     void setTargets(std::vector<output::OutputTarget> targets);
+
+    /// The fixtures and groups a DMX rule may be aimed at. Set again whenever the patch
+    /// changes, or the editor goes on offering a fixture that has been renamed out from under
+    /// it — and a rule aiming at the old name would quietly stop reaching anything.
+    void setPatch(std::vector<dmx::Fixture> patch);
 
     RulesController(const RulesController&) = delete;
     RulesController& operator=(const RulesController&) = delete;
@@ -122,6 +130,15 @@ public:
     void addRig(int index);
     void rename(const std::string& name);
     void setEnabled(bool on);
+    /// §5.7's per-rule mute, from the window rather than from a control surface. **Live state,
+    /// not configuration**: it goes straight to the output thread and is never saved, for the
+    /// reason `trigger::Rule::muted` gives — a preset that loaded silent would look exactly
+    /// like a preset that did not load.
+    void setMuted(bool on);
+    /// A relative multiplier on the selected rule's interval — the ÷2 and ×2 buttons. Live
+    /// like the mute, and mirrored here so the readout can say what the rule is doing without
+    /// reading the output thread's rules, which is unsafe while it runs.
+    void nudgeRate(double factor);
     void test();
     void panic();
 
@@ -150,6 +167,71 @@ public:
     void pickHostPreset(int index);
     void setSendValue(bool on);
 
+    // --- the lighting half, for a rule whose send kind is DMX --------------------------
+    //
+    // One fixture or group named or un-named, and "none" — which for a DMX rule is a rule
+    // that reaches nothing and says so, unlike an empty *output* list. See
+    // `dmx::resolveFixtures` for why the two defaults are opposites.
+    void setFixtureChosen(const std::string& name, bool chosen);
+    void chooseNoFixtures();
+    /// Which effect — an index into `dmx::kEffectKinds`.
+    void pickEffect(int index);
+    /// Which channel it drives, for the effects that aim at one — an index into
+    /// `dmx::kAimableRoles`.
+    void pickRole(int index);
+    void pickCurve(int index);
+    void pickPathShape(int index);
+    /// How long the effect runs, in whichever unit the row is on. Two numbers are kept apart
+    /// on purpose, so switching units does not rewrite the one being edited — the same reason
+    /// `FollowUp::delayBeats` gives.
+    void setDuration(const std::string& text);
+    void pickDurationUnit(int unit);
+    /// The low end of a flash, pulse or strobe.
+    void setBase(int level);
+    /// How many times a repeating effect repeats within its duration.
+    void setCycles(const std::string& text);
+    /// A strobe's on-fraction, as a percentage.
+    void setDuty(float percent);
+    /// A hue sweep's two ends, in degrees.
+    void setHueRange(const std::string& text);
+    /// A path's radius, as a percentage of the movement window's half-width.
+    void setSize(float percent);
+    /// Whether the color comes from a palette or from three component generators — an index
+    /// into `trigger::kColorModes`. See `trigger::ColorMode`.
+    void pickColorMode(int index);
+
+    // --- the palette, for a color rule in `ColorMode::Palette` ------------------------
+    //
+    // The entries of the color generator's list, each a swatch with a picker behind it.
+    // **A palette is a `List` of text values and nothing more** — see `DmxSend::color` —
+    // so these edit `values` and the generator machinery does the rest.
+    void addPaletteColor();
+    void removePaletteColor(int index);
+    /// One entry from its picker: hue in degrees, saturation and brightness as percentages.
+    void setPaletteColor(int index, float hue, float saturation, float brightness);
+    /// And from the hex box beside it, which is how a color gets pasted in from anywhere.
+    void setPaletteHex(int index, const std::string& text);
+
+    /// Sends one color to the fixtures this rule names, right now and with no fade — what
+    /// the pickers do as they are dragged, so an operator is choosing against the light
+    /// coming out of the fixture rather than against a square on a screen. Nothing when the
+    /// rule is not a lighting rule or names no fixture.
+    void previewColor(dmx::Color color);
+
+    /// Told by each picker's `PopupWindow` as it opens and closes, and the whole of it is
+    /// this: **a repeater is not rebuilt while one of its items owns an open popup.**
+    ///
+    /// A picker lives inside the repeated item its swatch belongs to, so rebuilding that
+    /// repeater destroys the popup — and the slider the operator is holding goes with it.
+    /// That is the crash of 2026-09-16; `pickingColor_` is the other half. A rebuild asked
+    /// for while one is open is not dropped, it waits: `rowsDirty_` stays set and `tick`
+    /// takes it on the first redraw after the picker closes.
+    void setPickerOpen(bool open);
+    /// Whether one is open, which is what `rebuildRows` asks. Public so a test can find a
+    /// swatch by clicking until a picker opens rather than by holding a coordinate that would
+    /// rot the first time a row moved.
+    bool pickerOpen() const noexcept { return pickerOpen_; }
+
     /// §5.8's follow-ups, which are now a list — see `trigger::FollowUp`. `index` is a row of
     /// the selected rule's own `Config::followUps`; anything outside it does nothing.
     ///
@@ -176,6 +258,10 @@ public:
     void setSlotValues(int slot, const std::string& text);
     void setSlotNoRepeat(int slot, int within);
     void setSlotFixed(int slot, const std::string& text);
+    /// A color slot from the picker: hue in degrees, saturation and brightness as
+    /// percentages. Written back to the generator as the `#rrggbb` the effect parses, so the
+    /// hex box and the sliders are two views of one value rather than two settings.
+    void setSlotColor(int slot, float hue, float saturation, float brightness);
     void pickSlotLive(int slot, int source);
     void pickSlotShape(int slot, int shape);
     void setSlotRampBars(int slot, int bars);
@@ -209,7 +295,26 @@ private:
     /// The "send to" list: every output this rig has, ticked where the rule names it, plus
     /// any name the rule carries that this rig has not got.
     void publishOutputChoices();
+    /// The same for fixtures: every fixture and group this rig has, ticked where the rule
+    /// names it, plus any name the rule carries that this rig has not got.
+    void publishFixtureChoices();
+    /// The DMX effect's own controls — which effect, which channel, how long, and the handful
+    /// of numbers each effect uses.
+    void publishDmx();
+    /// What the "on <channel>" dropdown should say underneath itself: whether the channel the
+    /// effect is aimed at exists on the fixtures the rule names, and what happens where it
+    /// does not. Empty when there is nothing worth saying.
+    std::string describeRoleReach(const trigger::DmxSend& send) const;
     void publishSlots();
+    /// The palette swatches, for a color rule whose generator draws from a list.
+    void publishPalette();
+    /// The selected rule's color generator, or null when it has not got one — the palette
+    /// editor's target, which is `DmxSend::color` and never one of the three components.
+    trigger::Generator::Config* paletteConfig() noexcept;
+    /// The whole range this slot's value can take, where that is a fact about the value rather
+    /// than the operator's choice: a DMX level is a byte, a pan is a percentage. Nothing for an
+    /// OSC segment or a MIDI value. What a slot switched to shuffle seeds its range from.
+    std::optional<std::pair<int, int>> slotRange(int slot) noexcept;
     /// The THEN SEND rows, and the list of kinds this rule's send kind allows one to be.
     void publishFollowUps();
     void publishFiring();
@@ -237,11 +342,20 @@ private:
     /// names reach something. Only the names are needed; the addresses are the main
     /// window's business.
     std::vector<output::OutputTarget> targets_;
+    /// What fixtures and groups this rig has, so the editor can say which of a rule's names
+    /// reach something. Only the names and groups are needed; the addressing is the patch
+    /// editor's business.
+    std::vector<dmx::Fixture> patch_;
 
     slint::ComponentHandle<RulesWindow> window_;
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
     std::shared_ptr<slint::VectorModel<OutputChoice>> choiceModel_;
+    std::shared_ptr<slint::VectorModel<OutputChoice>> fixtureModel_;
     std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
+    /// The palette swatches. A model of its own rather than a field of `SlotRow`, because a
+    /// rule has at most one color generator and a repeater nested inside a repeater's own
+    /// struct is not a thing Slint models do.
+    std::shared_ptr<slint::VectorModel<PaletteEntry>> paletteModel_;
     std::shared_ptr<slint::VectorModel<FollowRow>> followModel_;
     std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
     bool visible_ = false;
@@ -262,6 +376,17 @@ private:
     /// kept per rule so selecting another card shows *its* last values rather than nothing
     /// until it happens to fire again.
     std::unordered_map<std::string, std::vector<trigger::Value>> slotsSeen_;
+    /// The live per-rule gestures, by rule id: muted, and the interval multiplier.
+    ///
+    /// **Mirrored here rather than read back from the rules**, for the reason `firesSeen_`
+    /// gives: the live rules belong to the output thread and are safe to read only while it
+    /// is stopped. Keyed by id so that deleting a rule from the middle does not shift every
+    /// state below it onto a different rule.
+    ///
+    /// Not saved. A preset load brings new ids, which is exactly when these should start
+    /// again — see `trigger::Rule::reset`, which clears the same two on the other side.
+    std::unordered_map<std::string, bool> mutedSeen_;
+    std::unordered_map<std::string, double> rateSeen_;
 
     /// Which rule, and which send kind, the generator rows currently on screen were built
     /// for. When either changes the rows are rebuilt rather than updated in place, so the
@@ -269,6 +394,27 @@ private:
     /// been typed into stops following the model and what that looked like to the operator.
     std::string slotsBuiltFor_;
     trigger::Message::Kind slotsKind_ = trigger::Message::Kind::Osc;
+    /// And which DMX effect, which decides *which* generators a rule has — see
+    /// `publishSlots`, where changing it counts as changing the kind.
+    dmx::EffectKind slotsEffect_ = dmx::EffectKind::Level;
+    /// And the color mode, for the same reason: one color chip or three component chips.
+    trigger::ColorMode slotsColorMode_ = trigger::ColorMode::Palette;
+
+    /// Where a color picker's three sliders are, by slot.
+    ///
+    /// **Held rather than derived from the color**, because the derivation is lossy at both
+    /// ends: black has no hue and a grey has no saturation, so re-reading them off the swatch
+    /// would snap the sliders to red the moment somebody dragged brightness to zero. Cleared
+    /// with the rows, so a different rule's picker starts from that rule's own color.
+    struct Hsv {
+        float hue = 0.0f;
+        float saturation = 100.0f;
+        float brightness = 100.0f;
+    };
+    std::unordered_map<int, Hsv> pickedColors_;
+    /// And the same for the palette's own swatches, by entry. Same reasoning, same lifetime:
+    /// cleared with the rows.
+    std::unordered_map<int, Hsv> pickedPalette_;
 
     /// Set by a publisher that found a row it could not honestly update in place, and
     /// consumed by `tick`, which rebuilds both repeaters.
@@ -278,6 +424,30 @@ private:
     /// Enter was pressed in. One redraw later is 33 ms, which nobody sees, and it means no
     /// element is ever destroyed from within its own handler.
     bool rowsDirty_ = false;
+    /// Set while a color picker's own slider is what is changing the row, and read by
+    /// `publishSlots` and `publishPalette` when they decide whether the repeater has to be
+    /// built again.
+    ///
+    /// **This is the 2026-09-16 crash.** *"I moved the hue slider and it completely
+    /// crashed."* The picker is a `PopupWindow` belonging to a repeated item, so rebuilding
+    /// the repeater destroys the popup — and the row the drag changes is, of course, a row
+    /// that changed, so `rowsNeedRebuild` said yes on every pixel of the drag and the next
+    /// redraw tore down the popup and the slider inside it while the pointer still had it.
+    /// Measured: ninety resets for a ninety-pixel drag, on both pickers.
+    ///
+    /// A rebuild exists to re-bind a box somebody typed into (see `model_rows.hpp`). A slider
+    /// the operator is holding is the opposite case: the value in the row came *from* that
+    /// element, so the element is already showing it and there is nothing to restore. Hence a
+    /// flag rather than a comparator that ignores the color fields — `SlotRow::fixed` is a
+    /// text box on every slot that is not a color, and that box does need the rebuild.
+    bool pickingColor_ = false;
+    /// Whether a color picker's popup is on the screen, from `PopupWindow::is-open`.
+    ///
+    /// The second half of the same crash, and the part that holds for causes this controller
+    /// has not thought of: **no repeater is rebuilt while one of its items owns an open
+    /// popup.** `rowsDirty_` stays set, so the rebuild happens on the first redraw after the
+    /// picker closes rather than being lost.
+    bool pickerOpen_ = false;
     /// What a follow-up row's kind dropdown offers past "release", in its own order — only
     /// the kinds on the same side of the OSC/MIDI divide as the rule (`trigger::
     /// followUpFits`). Rebuilt by `publishFollowUps` whenever the rule's send kind changes.

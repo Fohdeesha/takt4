@@ -169,6 +169,59 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         CHECK(rules.enables().empty());
     }
 
+    SECTION("mute is its own verb, because it is its own state") {
+        // Not a second spelling of enable: a disabled rule stops running and restarts when it
+        // comes back, a muted one keeps running and stops sending. Dropping a layer out for
+        // eight bars is the second; taking a rule out of the show is the first.
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/mute", 1.0));
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/mute", 0.0));
+        const std::vector<std::pair<std::string, bool>> expected{{"stabs", true}, {"stabs", false}};
+        CHECK(rules.mutes() == expected);
+        CHECK(rules.enables().empty()); // and it did not reach the other one
+    }
+
+    SECTION("double and halve are bare, relative buttons") {
+        // Relative, so a Stream Deck button can be pressed twice and mean four times the
+        // interval. Bare, because a button is not a state anybody can hold.
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/double", std::nullopt));
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/halve", std::nullopt));
+        const auto rates = rules.rates();
+        REQUIRE(rates.size() == 2);
+        CHECK(rates[0].id == "stabs");
+        CHECK(rates[0].factor == 2.0);
+        CHECK(rates[0].relative);
+        CHECK(rates[1].factor == 0.5);
+        CHECK(rates[1].relative);
+    }
+
+    SECTION("rate is absolute, so a fader that repeats itself does not compound") {
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/rate", 4.0));
+        const auto rates = rules.rates();
+        REQUIRE(rates.size() == 1);
+        CHECK(rates[0].factor == 4.0);
+        CHECK_FALSE(rates[0].relative);
+
+        SECTION("and it insists on being told what to, like every other state verb") {
+            CHECK_FALSE(control.dispatch("/takt4/ctl/rule/stabs/rate", std::nullopt));
+        }
+    }
+
+    SECTION("reset is rate 1, spelled the way an operator would reach for it") {
+        CHECK(control.dispatch("/takt4/ctl/rule/stabs/reset", std::nullopt));
+        const auto rates = rules.rates();
+        REQUIRE(rates.size() == 1);
+        CHECK(rates[0].factor == 1.0);
+        CHECK_FALSE(rates[0].relative);
+    }
+
+    SECTION("\"all\" is passed through as an id, for the implementation to expand") {
+        // The surface does not know what rules exist — only the thing behind `RuleControl`
+        // does — so "all" travels as a name and `OutputRunner` is where it means every rule.
+        CHECK(control.dispatch("/takt4/ctl/rule/all/mute", 1.0));
+        const std::vector<std::pair<std::string, bool>> expected{{"all", true}};
+        CHECK(rules.mutes() == expected);
+    }
+
     SECTION("an address that is nearly the rule address is not one") {
         CHECK_FALSE(control.dispatch("/takt4/ctl/rule", 1.0));
         CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro", 1.0));

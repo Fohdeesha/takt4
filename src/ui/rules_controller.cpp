@@ -23,6 +23,22 @@ using trigger::Generator;
 using trigger::GeneratorKind;
 using trigger::Rule;
 
+/// Holds `RulesController::pickingColor_` up for one call, so that everything a picker's own
+/// slider publishes is marked as coming from that slider. Scoped rather than a pair of
+/// assignments because the publishers it guards can raise a status, throw, or return early.
+class PickingColor {
+public:
+    explicit PickingColor(bool& flag) noexcept : flag_(flag), was_(flag) { flag_ = true; }
+    ~PickingColor() { flag_ = was_; }
+
+    PickingColor(const PickingColor&) = delete;
+    PickingColor& operator=(const PickingColor&) = delete;
+
+private:
+    bool& flag_;
+    bool was_;
+};
+
 slint::SharedString shared(const std::string& text) {
     return slint::SharedString(text);
 }
@@ -131,6 +147,22 @@ std::string spellNumber(double value) {
     return text;
 }
 
+/// The live interval multiplier in the words an operator thinks in, or **empty** at 1.
+///
+/// The multiplier is on the *interval*, so 2 is half as often — which is exactly backwards
+/// from how it reads as a number, and is why this says "half as often" rather than "×2". A
+/// rule nobody has touched says nothing at all, because a permanent "×1" beside every rule in
+/// the list would be noise.
+std::string describeRate(double factor) {
+    if (factor == 1.0) {
+        return {};
+    }
+    if (factor > 1.0) {
+        return spellNumber(factor) + "× slower";
+    }
+    return spellNumber(1.0 / factor) + "× faster";
+}
+
 /// A comma-separated list, as the routing field shows it back.
 std::string join(const std::vector<std::string>& names) {
     std::string text;
@@ -151,31 +183,85 @@ std::string join(const std::vector<std::string>& names) {
 /// nothing is the one real mistake here — and is *kept* rather than corrected, because a
 /// preset from another rig should still say what it meant (`Rule::Config::outputs`), so
 /// saying so is the only way it gets noticed.
-std::string describeRouting(const std::vector<std::string>& names,
+/// Whether a rule that sends `kind` can reach a target of `target`'s kind **at all**.
+///
+/// **A UI question with a wire answer.** `RuleSink::sendMidi` walks the targets and asks each
+/// for a MIDI port; `sendOsc` asks `OscPublisher` which of them are OSC. So a MIDI rule routed
+/// to an OSC target already sends nothing, and an Art-Net target is named by no rule at
+/// all — `OutputTarget::Kind::ArtNet` says so: a lighting rule picks its *fixtures*, and the
+/// fixture says which universe it is in, so the node never has to be chosen.
+///
+/// The editor did not know any of that and offered all three lists to all three kinds.
+/// Reported from a rig on 2026-09-16: *"why is my rdm10 artnet destination showing up as an
+/// option for midi and OSC output!?"* A choice that cannot do anything is worse than no
+/// choice: ticking it looks like routing and is silence.
+bool targetTakes(trigger::Message::Kind kind, const output::OutputTarget& target) noexcept {
+    if (trigger::isDmx(kind)) {
+        return false; // the patch routes these; the editor hides the list entirely
+    }
+    return trigger::isMidi(kind) ? target.kind == output::OutputTarget::Kind::Midi
+                                 : target.kind == output::OutputTarget::Kind::Osc;
+}
+
+std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::string>& names,
                             const std::vector<output::OutputTarget>& targets) {
-    if (targets.empty()) {
-        return "no outputs yet";
+    // Only what this kind can reach — the same filter the tick list uses, because a line
+    // reading "every output: RDM10" over a MIDI rule names a node the rule can never send to.
+    std::vector<const output::OutputTarget*> reachable;
+    for (const output::OutputTarget& target : targets) {
+        if (targetTakes(kind, target)) {
+            reachable.push_back(&target);
+        }
+    }
+    if (reachable.empty()) {
+        return targets.empty()
+                   ? "no outputs yet"
+                   : std::string("no ") + (trigger::isMidi(kind) ? "MIDI" : "OSC") + " output yet";
     }
     if (names.empty()) {
         std::string all = "every output: ";
-        for (std::size_t i = 0; i < targets.size(); ++i) {
+        for (std::size_t i = 0; i < reachable.size(); ++i) {
             all += i == 0 ? "" : ", ";
-            all += targets[i].name;
+            all += reachable[i]->name;
         }
         return all;
     }
+    // Two ways a named output can reach nothing, and they are different mistakes. A name this
+    // rig has not got is a preset from somewhere else and the answer is "plug it in". A name
+    // it *has* on the wrong kind of target — a MIDI rule still routed to an OSC feed after the
+    // send kind was changed — is a routing the operator has to undo, and saying "no output
+    // called wall" over an output plainly called wall would read as a bug in takt4.
     std::string missing;
+    std::string wrongKind;
+    std::size_t reached = 0;
     for (const std::string& name : names) {
-        if (output::findTarget(targets, name) == nullptr) {
+        const output::OutputTarget* const target = output::findTarget(targets, name);
+        if (target != nullptr && targetTakes(kind, *target)) {
+            ++reached;
+        } else if (target != nullptr) {
+            wrongKind += wrongKind.empty() ? "" : ", ";
+            wrongKind += name;
+        } else {
             missing += missing.empty() ? "" : ", ";
             missing += name;
         }
     }
-    if (missing.empty()) {
-        return "reaches " + std::to_string(names.size()) +
-               (names.size() == 1 ? " output" : " outputs");
+    std::string trouble;
+    if (!missing.empty()) {
+        trouble = "no output called " + missing;
     }
-    return "no output called " + missing;
+    if (!wrongKind.empty()) {
+        trouble += trouble.empty() ? "" : "; ";
+        trouble += wrongKind +
+                   (wrongKind.find(',') == std::string::npos ? " is not " : " are not ") +
+                   (trigger::isMidi(kind) ? "MIDI" : "OSC");
+    }
+    if (trouble.empty()) {
+        return "reaches " + std::to_string(reached) + (reached == 1 ? " output" : " outputs");
+    }
+    return reached == 0 ? trouble
+                        : "reaches " + std::to_string(reached) +
+                              (reached == 1 ? " output; " : " outputs; ") + trouble;
 }
 
 /// What a kind calls the number it carries — "note 96" and "program 96" are different
@@ -253,13 +339,12 @@ std::string releaseLabelOf(trigger::Message::Kind sent) {
 std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config& rule) {
     if (entry.kind) {
         if (!trigger::followUpFits(*entry.kind, rule.sendKind)) {
-            return "not sent — " + std::string(trigger::labelOf(*entry.kind)) +
-                   " cannot follow " + std::string(trigger::labelOf(rule.sendKind));
+            return "not sent — " + std::string(trigger::labelOf(*entry.kind)) + " cannot follow " +
+                   std::string(trigger::labelOf(rule.sendKind));
         }
-        const bool releasesTheSameThing =
-            (rule.sendKind == trigger::Message::Kind::MidiNote &&
-             *entry.kind == trigger::Message::Kind::MidiNoteOff) ||
-            *entry.kind == rule.sendKind;
+        const bool releasesTheSameThing = (rule.sendKind == trigger::Message::Kind::MidiNote &&
+                                           *entry.kind == trigger::Message::Kind::MidiNoteOff) ||
+                                          *entry.kind == rule.sendKind;
         // Only worth saying where the number moves. A fixed note followed by a fixed note off
         // is two spellings of the same thing and neither is wrong.
         if (releasesTheSameThing && trigger::sendsNumber(*entry.kind) &&
@@ -518,12 +603,16 @@ RulesController::RulesController(output::OutputRunner& runner,
     : runner_(runner), rules_(std::move(rules)), window_(RulesWindow::create()),
       listModel_(std::make_shared<slint::VectorModel<RuleRow>>()),
       choiceModel_(std::make_shared<slint::VectorModel<OutputChoice>>()),
+      fixtureModel_(std::make_shared<slint::VectorModel<OutputChoice>>()),
       slotModel_(std::make_shared<slint::VectorModel<SlotRow>>()),
+      paletteModel_(std::make_shared<slint::VectorModel<PaletteEntry>>()),
       followModel_(std::make_shared<slint::VectorModel<FollowRow>>()),
       logModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()) {
     window_->set_rules(listModel_);
     window_->set_output_choices(choiceModel_);
+    window_->set_fixture_choices(fixtureModel_);
     window_->set_slots(slotModel_);
+    window_->set_palette(paletteModel_);
     window_->set_follow_ups(followModel_);
     window_->set_log(logModel_);
 
@@ -577,6 +666,38 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_follow_up_units(units);
 
+    // The lighting dropdowns, filled from `core/dmx`'s own tables for the same reason the
+    // others are: an effect added there appears here without anyone remembering to add it.
+    auto effects = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::EffectKind kind : dmx::kEffectKinds) {
+        effects->push_back(shared(std::string(dmx::labelOf(kind))));
+    }
+    window_->set_effect_kinds(effects);
+
+    auto roles = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::Role role : dmx::kAimableRoles) {
+        roles->push_back(shared(std::string(dmx::labelOf(role))));
+    }
+    window_->set_effect_roles(roles);
+
+    auto curves = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::Curve curve : dmx::kCurves) {
+        curves->push_back(shared(std::string(dmx::labelOf(curve))));
+    }
+    window_->set_effect_curves(curves);
+
+    auto paths = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::PathShape shape : dmx::kPathShapes) {
+        paths->push_back(shared(std::string(dmx::labelOf(shape))));
+    }
+    window_->set_effect_shapes(paths);
+
+    auto colorModes = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::ColorMode mode : trigger::kColorModes) {
+        colorModes->push_back(shared(std::string(trigger::labelOf(mode))));
+    }
+    window_->set_color_modes(colorModes);
+
     window_->on_rule_picked([this](int index) { pick(index); });
     window_->on_rule_picked_with(
         [this](int index, bool control, bool shift) { pickWith(index, control, shift); });
@@ -587,6 +708,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_duplicated_at([this](int index) { duplicateAt(index); });
     window_->on_rig_added([this](int index) { addRig(index); });
     window_->on_rule_enabled_changed([this](bool on) { setEnabled(on); });
+    window_->on_rule_muted_changed([this](bool on) { setMuted(on); });
+    window_->on_rule_rate_changed([this](float factor) { nudgeRate(factor); });
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
     window_->on_rule_tested([this] { test(); });
     window_->on_panic_clicked([this] { panic(); });
@@ -598,6 +721,34 @@ RulesController::RulesController(output::OutputRunner& runner,
         setOutputChosen(std::string(name), chosen);
     });
     window_->on_all_outputs_chosen([this] { chooseAllOutputs(); });
+    window_->on_fixture_chosen([this](const slint::SharedString& name, bool chosen) {
+        setFixtureChosen(std::string(name), chosen);
+    });
+    window_->on_no_fixtures_chosen([this] { chooseNoFixtures(); });
+    window_->on_effect_picked([this](int index) { pickEffect(index); });
+    window_->on_effect_role_picked([this](int index) { pickRole(index); });
+    window_->on_effect_curve_picked([this](int index) { pickCurve(index); });
+    window_->on_effect_shape_picked([this](int index) { pickPathShape(index); });
+    window_->on_effect_duration_edited(
+        [this](const slint::SharedString& text) { setDuration(std::string(text)); });
+    window_->on_effect_unit_picked([this](int unit) { pickDurationUnit(unit); });
+    window_->on_effect_base_changed([this](int level) { setBase(level); });
+    window_->on_effect_cycles_edited(
+        [this](const slint::SharedString& text) { setCycles(std::string(text)); });
+    window_->on_effect_duty_changed([this](float percent) { setDuty(percent); });
+    window_->on_effect_hue_edited(
+        [this](const slint::SharedString& text) { setHueRange(std::string(text)); });
+    window_->on_effect_size_changed([this](float percent) { setSize(percent); });
+    window_->on_color_mode_picked([this](int index) { pickColorMode(index); });
+    window_->on_palette_added([this] { addPaletteColor(); });
+    window_->on_palette_removed([this](int index) { removePaletteColor(index); });
+    window_->on_palette_color_changed([this](int index, float hue, float sat, float val) {
+        setPaletteColor(index, hue, sat, val);
+    });
+    window_->on_palette_hex_edited([this](int index, const slint::SharedString& text) {
+        setPaletteHex(index, std::string(text));
+    });
+    window_->on_picker_open_changed([this](bool open) { setPickerOpen(open); });
 
     // Widened explicitly, here and on `probability` below: Slint hands a slider's value over
     // as a float and both settings are held as double. GCC and Clang refuse the implicit
@@ -637,6 +788,9 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_slot_values_edited(
         [this](int slot, const slint::SharedString& t) { setSlotValues(slot, std::string(t)); });
     window_->on_slot_no_repeat_changed([this](int slot, int n) { setSlotNoRepeat(slot, n); });
+    window_->on_slot_color_changed([this](int slot, float hue, float saturation, float bright) {
+        setSlotColor(slot, hue, saturation, bright);
+    });
     window_->on_slot_fixed_edited(
         [this](int slot, const slint::SharedString& t) { setSlotFixed(slot, std::string(t)); });
     window_->on_slot_live_picked([this](int slot, int source) { pickSlotLive(slot, source); });
@@ -674,6 +828,13 @@ void RulesController::show() {
 void RulesController::hide() {
     window_->hide();
     visible_ = false;
+    // A picker goes with the window, and nothing in the markup will say so — a popup reports
+    // that it closed, not that the window under it went away. Left set, it would hold every
+    // repeater rebuild for the rest of the session (see `pickerOpen_`), which is the "editing
+    // one changes them all" bug coming back by the side door. Nothing is on screen and nothing
+    // has a pointer grab, so clearing it here is safe in a way that clearing it anywhere else
+    // would not be.
+    pickerOpen_ = false;
 }
 
 const trigger::Rule::Config* RulesController::findRule(std::string_view id) const noexcept {
@@ -707,6 +868,49 @@ Generator::Config* RulesController::slotConfig(int slot) noexcept {
             return &rule->segments[index];
         }
         return index == rule->segments.size() ? &rule->value : nullptr;
+    }
+    if (rule->sendKind == trigger::Message::Kind::Dmx) {
+        // The order `publishSlots` builds them in, and the order `Rule::lastSlots` promises:
+        // the level for the kinds that take one, then the color, then pan and tilt. Only the
+        // slots the effect actually uses are built, so the indices shift with the effect —
+        // which is why this walks the same conditions rather than indexing a fixed table.
+        std::size_t at = 0;
+        if (dmx::takesRole(rule->dmx.effect)) {
+            if (index == at) {
+                return &rule->dmx.level;
+            }
+            ++at;
+        }
+        if (dmx::takesColor(rule->dmx.effect)) {
+            // One slot for a palette, three for a mix — `trigger::ColorMode`, and the same
+            // branch `Rule::buildPayload` takes when it draws them.
+            if (rule->dmx.colorMode == trigger::ColorMode::Mix) {
+                if (index == at) {
+                    return &rule->dmx.red;
+                }
+                if (index == at + 1) {
+                    return &rule->dmx.green;
+                }
+                if (index == at + 2) {
+                    return &rule->dmx.blue;
+                }
+                at += 3;
+            } else {
+                if (index == at) {
+                    return &rule->dmx.color;
+                }
+                ++at;
+            }
+        }
+        if (rule->dmx.effect == dmx::EffectKind::Position) {
+            if (index == at) {
+                return &rule->dmx.pan;
+            }
+            if (index == at + 1) {
+                return &rule->dmx.tilt;
+            }
+        }
+        return nullptr;
     }
     // MIDI: the note or controller number first, then the velocity or value. Pitch bend has
     // no number at all, so its value is slot 0 — `publishSlots` builds the rows in exactly
@@ -1061,6 +1265,34 @@ void RulesController::setEnabled(bool on) {
     }
 }
 
+void RulesController::setMuted(bool on) {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    // Straight to the output thread, and **not** through `commit()`: this is not part of the
+    // rule's configuration and must not be saved. `commit` would also republish the whole rule
+    // set, which resets every live gesture on every other rule — the thing this is trying to
+    // set on one of them.
+    mutedSeen_[rule->id] = on;
+    runner_.post(output::OutputCommand::ruleMuted(rule->id, on));
+    publishSelected();
+    publishList();
+}
+
+void RulesController::nudgeRate(double factor) {
+    const Rule::Config* rule = current();
+    if (rule == nullptr || !(factor > 0.0)) {
+        return;
+    }
+    // The same clamp the rule itself applies, mirrored so the readout cannot claim a rate the
+    // output thread refused. `Rule::setRate` is the authority; this has to agree with it.
+    const double current = rateSeen_.count(rule->id) != 0 ? rateSeen_[rule->id] : 1.0;
+    rateSeen_[rule->id] = std::clamp(current * factor, 0.0625, 64.0);
+    runner_.post(output::OutputCommand::ruleRate(rule->id, factor, /*relative=*/true));
+    publishSelected();
+}
+
 void RulesController::test() {
     if (const Rule::Config* rule = current()) {
         runner_.post(output::OutputCommand::testRule(rule->id));
@@ -1157,6 +1389,48 @@ void RulesController::chooseAllOutputs() {
         return;
     }
     rule->outputs.clear();
+    commit();
+    publishSelected();
+}
+
+void RulesController::setPatch(std::vector<dmx::Fixture> patch) {
+    // Only when they have actually changed, for the reason `setTargets` gives at length: this
+    // is told from the main window's redraw timer, and republishing the selected rule thirty
+    // times a second would make it impossible to type into.
+    if (patch == patch_) {
+        return;
+    }
+    patch_ = std::move(patch);
+    publishSelected();
+}
+
+void RulesController::setFixtureChosen(const std::string& name, bool chosen) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || name.empty()) {
+        return;
+    }
+    std::vector<std::string>& names = rule->dmx.fixtures;
+    const auto at = std::find(names.begin(), names.end(), name);
+    if (chosen) {
+        if (at == names.end()) {
+            names.push_back(name);
+        }
+    } else if (at != names.end()) {
+        names.erase(at);
+    }
+    // Un-ticking the last one leaves the rule reaching **nothing**, which is the opposite of
+    // what un-ticking the last output does. `Rule::validate` reports it as a problem, so the
+    // card says so rather than the rig doing something nobody asked for.
+    commit();
+    publishSelected();
+}
+
+void RulesController::chooseNoFixtures() {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    rule->dmx.fixtures.clear();
     commit();
     publishSelected();
 }
@@ -1311,6 +1585,159 @@ void RulesController::setAddress(const std::string& address) {
 void RulesController::setChannel(int channel) {
     if (Rule::Config* rule = current()) {
         rule->channel = std::clamp(channel, 1, 16);
+        commit();
+    }
+}
+
+// --- the lighting half ------------------------------------------------------------------
+
+void RulesController::pickEffect(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= dmx::kEffectKinds.size()) {
+        return;
+    }
+    const dmx::EffectKind effect = dmx::kEffectKinds[static_cast<std::size_t>(index)];
+    if (rule->dmx.effect == effect) {
+        return;
+    }
+    rule->dmx.effect = effect;
+    // A curve that suits the effect, but only where the operator has not chosen one — which
+    // cannot be told apart from the default here, so this only moves the two that are
+    // *wrong* rather than merely unfashionable. A movement wants to ease at both ends so the
+    // head does not jerk; a fade wants to ease out because the eye's response to light is
+    // not linear either. Neither is a preference: linear movement visibly snaps.
+    if (dmx::takesMovement(effect) && rule->dmx.curve == dmx::Curve::EaseOut) {
+        rule->dmx.curve = dmx::Curve::EaseInOut;
+    }
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickRole(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= dmx::kAimableRoles.size()) {
+        return;
+    }
+    rule->dmx.role = dmx::kAimableRoles[static_cast<std::size_t>(index)];
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickCurve(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 || static_cast<std::size_t>(index) >= dmx::kCurves.size()) {
+        return;
+    }
+    rule->dmx.curve = dmx::kCurves[static_cast<std::size_t>(index)];
+    commit();
+}
+
+void RulesController::pickPathShape(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= dmx::kPathShapes.size()) {
+        return;
+    }
+    rule->dmx.shape = dmx::kPathShapes[static_cast<std::size_t>(index)];
+    commit();
+}
+
+void RulesController::setDuration(const std::string& text) {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    const std::optional<double> number = readNumber(trim(text));
+    if (!number || *number < 0.0) {
+        setStatus("A duration is a number, and not a negative one.", true);
+        publishSelected();
+        return;
+    }
+    // Into whichever field the row's unit names, so switching units does not rewrite the
+    // number the operator is not currently looking at — the same reasoning
+    // `trigger::FollowUp::delayBeats` gives for holding two.
+    if (rule->dmx.unit == trigger::DelayUnit::Milliseconds) {
+        rule->dmx.durationSeconds = *number / 1000.0;
+    } else {
+        rule->dmx.durationBeats = *number;
+    }
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickDurationUnit(int unit) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || unit < 0 ||
+        static_cast<std::size_t>(unit) >= trigger::kDelayUnits.size()) {
+        return;
+    }
+    rule->dmx.unit = trigger::kDelayUnits[static_cast<std::size_t>(unit)];
+    commit();
+    publishSelected();
+}
+
+void RulesController::setBase(int level) {
+    if (Rule::Config* rule = current()) {
+        rule->dmx.base = std::clamp(level, 0, 255);
+        commit();
+    }
+}
+
+void RulesController::setCycles(const std::string& text) {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    const std::optional<double> number = readNumber(trim(text));
+    if (!number || !(*number > 0.0)) {
+        setStatus("A number of cycles is a number above zero.", true);
+        publishSelected();
+        return;
+    }
+    rule->dmx.cycles = std::min(*number, 1024.0);
+    commit();
+    publishSelected();
+}
+
+void RulesController::setDuty(float percent) {
+    if (Rule::Config* rule = current()) {
+        rule->dmx.duty = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
+        commit();
+    }
+}
+
+void RulesController::setHueRange(const std::string& text) {
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    const std::vector<std::string_view> parts = split(trim(text), "-–to ");
+    if (parts.size() != 2) {
+        setStatus("A hue sweep is two angles in degrees, like 0 - 360.", true);
+        publishSelected();
+        return;
+    }
+    const std::optional<double> low = readNumber(parts[0]);
+    const std::optional<double> high = readNumber(parts[1]);
+    if (!low || !high) {
+        setStatus("A hue sweep is two angles in degrees, like 0 - 360.", true);
+        publishSelected();
+        return;
+    }
+    // **Not sorted**, unlike a BPM range. A sweep from 360 to 0 goes round the wheel the other
+    // way, and a sweep from 0 to 720 goes round twice — both are instructions somebody means,
+    // and putting them in order would silently turn them into something else.
+    rule->dmx.hueFrom = std::clamp(*low, -3600.0, 3600.0);
+    rule->dmx.hueTo = std::clamp(*high, -3600.0, 3600.0);
+    commit();
+    publishSelected();
+}
+
+void RulesController::setSize(float percent) {
+    if (Rule::Config* rule = current()) {
+        rule->dmx.size = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
         commit();
     }
 }
@@ -1476,7 +1903,46 @@ void RulesController::pickSlotKind(int slot, int kind) {
         return;
     }
     config->kind = trigger::kGeneratorKinds[static_cast<std::size_t>(kind)];
+
+    // **A color switched to shuffle gets a palette, not a range.**
+    //
+    // `Generator::Config` draws from the integers 1 to 8 by default, which is §5.8's own
+    // reading and right for a clip index. On a color it is nonsense in both directions: the
+    // draws are numbers `dmx::parseColor` cannot read, so every fire fell back to white, and
+    // the editor drew a box saying "1 - 8" over a generator whose values are `#ff2040`.
+    // Reported from a rig on 2026-09-16: *"I define a range 1-9 which maps to what!? it just
+    // stays the same #ffff color code"*.
+    //
+    // So picking shuffle, random or cycle on the color chip seeds six colors the operator
+    // can then edit, which is what picking them meant.
+    // **And a DMX number switched to shuffle gets that number's range.** The same default,
+    // the same nonsense: a level shuffled over 1 to 8 is a lamp between 0.4 % and 3 % of full,
+    // and a pan over 1 to 8 is the extreme edge of the head's own window. Only when the range
+    // is still the untouched 1-8 — a range the operator has narrowed on purpose is theirs.
+    if (const auto natural = slotRange(slot);
+        natural && trigger::takesPool(config->kind) && config->low == 1 && config->high == 8) {
+        config->low = natural->first;
+        config->high = natural->second;
+    }
+
+    if (config == paletteConfig() && trigger::takesPool(config->kind)) {
+        config->pool = trigger::Pool::List;
+        if (config->values.empty()) {
+            std::string text;
+            config->fixed.appendTo(text);
+            const std::optional<dmx::Color> was = dmx::parseColor(text);
+            config->values = trigger::defaultPalette();
+            if (was && *was != dmx::kWhite) {
+                // The color they had stays, at the front — switching to a shuffle should add
+                // colors rather than replace the one already chosen.
+                config->values.insert(config->values.begin(),
+                                      trigger::Value::ofText(dmx::formatColor(*was)));
+            }
+        }
+        pickedPalette_.clear();
+    }
     commit();
+    publishSelected();
 }
 
 void RulesController::setSlotPool(int slot, bool list) {
@@ -1567,6 +2033,257 @@ void RulesController::setSlotFixed(int slot, const std::string& text) {
         config->fixed = parseValue(text);
         commit();
     }
+}
+
+void RulesController::setSlotColor(int slot, float hue, float saturation, float brightness) {
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr) {
+        return;
+    }
+    const dmx::Color picked =
+        dmx::fromHsv(static_cast<double>(hue), static_cast<double>(saturation) / 100.0,
+                     static_cast<double>(brightness) / 100.0);
+    config->fixed = trigger::Value::ofText(dmx::formatColor(picked));
+    // The three numbers the picker moved, kept as they were moved rather than re-derived from
+    // the color they produced. Dragging brightness to zero makes a black, and black has no
+    // hue to read back — so a picker that re-derived would snap to red under the operator's
+    // hand the moment they dimmed it, and again when they desaturated it.
+    pickedColors_[slot] = Hsv{hue, saturation, brightness};
+    // And out to the fixtures as it is dragged — see `previewColor`, which is the whole
+    // difference between choosing a color and choosing a swatch.
+    previewColor(picked);
+    // The publishing `commit` does is the controller echoing a drag back at the element that
+    // caused it, which must not be read as a row the operator has to have rebuilt under them.
+    // See `pickingColor_`: this is the crash.
+    const PickingColor picking(pickingColor_);
+    commit();
+}
+
+void RulesController::setPickerOpen(bool open) {
+    pickerOpen_ = open;
+}
+
+void RulesController::previewColor(dmx::Color color) {
+    // **The color goes to the lamp while it is being chosen.**
+    //
+    // Asked for on 2026-09-16, and the reason is one nobody who has programmed lights will
+    // argue with: `#20ff80` on a screen and `#20ff80` out of a fixture are not the same
+    // color. Three LEDs, a diffuser and a wall between them, and what an operator is
+    // choosing is what comes out of the *fixture* — so the picker sends it as they drag and
+    // they pick against the real thing rather than against a swatch.
+    //
+    // The same fixtures the rule names, so the preview lands where the rule will. A rule that
+    // names none is a rule that reaches nothing, which the editor already says beside the
+    // fixture picker; there is nothing to preview on and nothing is sent.
+    //
+    // A snap, not a fade: a preview that took two bars to arrive would be a preview of
+    // whatever the slider was doing two bars ago. And it is **left showing** afterwards, which
+    // is what programming a light means — the next rule to fire on those fixtures takes them
+    // back, and PANIC or a blackout clears it.
+    const Rule::Config* rule = current();
+    if (rule == nullptr || rule->sendKind != trigger::Message::Kind::Dmx) {
+        return;
+    }
+    const std::uint64_t mask = dmx::resolveFixtures(patch_, rule->dmx.fixtures);
+    if (mask == 0) {
+        return;
+    }
+    dmx::Payload payload;
+    payload.kind = dmx::EffectKind::Color;
+    payload.color = color;
+    payload.durationSeconds = 0.0f;
+    runner_.post(output::OutputCommand::effect(mask, payload));
+}
+
+void RulesController::pickColorMode(int index) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= trigger::kColorModes.size()) {
+        return;
+    }
+    rule->dmx.colorMode = trigger::kColorModes[static_cast<std::size_t>(index)];
+    commit();
+    publishSelected();
+}
+
+std::optional<std::pair<int, int>> RulesController::slotRange(int slot) noexcept {
+    // What the whole of this slot's range *is*, for the slots where that is a fact rather than
+    // a preference: a DMX level is a byte and a pan is a percentage of the fixture's own
+    // window. Nothing for an OSC segment or a MIDI value, where the operator's range is the
+    // only one that means anything.
+    Rule::Config* rule = current();
+    if (rule == nullptr || rule->sendKind != trigger::Message::Kind::Dmx || slot < 0) {
+        return std::nullopt;
+    }
+    const auto index = static_cast<std::size_t>(slot);
+    std::size_t at = 0;
+    if (dmx::takesRole(rule->dmx.effect)) {
+        if (index == at) {
+            return std::pair{0, 255};
+        }
+        ++at;
+    }
+    if (dmx::takesColor(rule->dmx.effect)) {
+        if (rule->dmx.colorMode == trigger::ColorMode::Mix) {
+            if (index >= at && index < at + 3) {
+                return std::pair{0, 255};
+            }
+            at += 3;
+        } else {
+            ++at; // the palette, which is a list of colors and has no range
+        }
+    }
+    if (rule->dmx.effect == dmx::EffectKind::Position && index >= at && index < at + 2) {
+        return std::pair{0, 100};
+    }
+    return std::nullopt;
+}
+
+trigger::Generator::Config* RulesController::paletteConfig() noexcept {
+    Rule::Config* rule = current();
+    if (rule == nullptr || rule->sendKind != trigger::Message::Kind::Dmx ||
+        !dmx::takesColor(rule->dmx.effect) || rule->dmx.colorMode != trigger::ColorMode::Palette) {
+        return nullptr;
+    }
+    return &rule->dmx.color;
+}
+
+void RulesController::addPaletteColor() {
+    Generator::Config* config = paletteConfig();
+    if (config == nullptr) {
+        return;
+    }
+    // Adding a color is saying the color comes from a list, so the pool follows — the same
+    // reasoning `setSlotValues` gives, and without it the first + on a fixed color would add
+    // an entry to a list nothing draws from.
+    config->pool = trigger::Pool::List;
+    if (config->kind == GeneratorKind::Fixed) {
+        // The color that was showing becomes the palette's first entry rather than being
+        // thrown away, and the kind becomes the one an operator adding a second color means.
+        config->values.clear();
+        std::string text;
+        config->fixed.appendTo(text);
+        if (const auto parsed = dmx::parseColor(text)) {
+            config->values.push_back(trigger::Value::ofText(dmx::formatColor(*parsed)));
+        }
+        config->kind = GeneratorKind::Shuffle;
+    }
+    if (config->values.empty()) {
+        config->values = trigger::defaultPalette();
+    } else {
+        // A new swatch is white, which is unmistakably "I have not picked this yet" — a
+        // duplicate of the last one would look like the + had done nothing.
+        config->values.push_back(trigger::Value::ofText(dmx::formatColor(dmx::kWhite)));
+    }
+    commit();
+    rowsDirty_ = true;
+    publishSelected();
+}
+
+void RulesController::removePaletteColor(int index) {
+    Generator::Config* config = paletteConfig();
+    if (config == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= config->values.size()) {
+        return;
+    }
+    config->values.erase(config->values.begin() + index);
+    pickedPalette_.clear(); // every entry after this one has moved
+    commit();
+    rowsDirty_ = true;
+    publishSelected();
+}
+
+void RulesController::setPaletteColor(int index, float hue, float saturation, float brightness) {
+    Generator::Config* config = paletteConfig();
+    if (config == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= config->values.size()) {
+        return;
+    }
+    const dmx::Color picked =
+        dmx::fromHsv(static_cast<double>(hue), static_cast<double>(saturation) / 100.0,
+                     static_cast<double>(brightness) / 100.0);
+    config->values[static_cast<std::size_t>(index)] =
+        trigger::Value::ofText(dmx::formatColor(picked));
+    // The sliders as they were dragged, for the reason `setSlotColor` gives at length: a
+    // black has no hue to read back, so re-deriving them would snap the picker to red.
+    pickedPalette_[index] = Hsv{hue, saturation, brightness};
+    previewColor(picked);
+    // As in `setSlotColor`, and for the same reason: a row a slider is driving is a row whose
+    // element must survive. See `pickingColor_`.
+    const PickingColor picking(pickingColor_);
+    commit();
+    publishSelected();
+}
+
+void RulesController::setPaletteHex(int index, const std::string& text) {
+    Generator::Config* config = paletteConfig();
+    if (config == nullptr || index < 0 ||
+        static_cast<std::size_t>(index) >= config->values.size()) {
+        return;
+    }
+    const std::optional<dmx::Color> parsed = dmx::parseColor(text);
+    if (!parsed) {
+        setStatus("A color is #ff2040, ff2040, #f24, or 255, 32, 64.", true);
+        publishSelected();
+        return;
+    }
+    config->values[static_cast<std::size_t>(index)] =
+        trigger::Value::ofText(dmx::formatColor(*parsed));
+    pickedPalette_.erase(index); // typed, so the sliders should follow what was typed
+    commit();
+    publishSelected();
+}
+
+void RulesController::publishPalette() {
+    const Generator::Config* config = paletteConfig();
+    if (config == nullptr || !trigger::takesPool(config->kind)) {
+        // A fixed color has its own swatch on the slot row; there is no palette to show.
+        paletteModel_->clear();
+        window_->set_palette_shown(false);
+        return;
+    }
+    window_->set_palette_shown(true);
+
+    std::vector<PaletteEntry> rows;
+    rows.reserve(config->values.size());
+    for (std::size_t i = 0; i < config->values.size(); ++i) {
+        std::string text;
+        config->values[i].appendTo(text);
+        // What could not be read is shown as white and says so in its own box, which is the
+        // same answer `Rule::buildPayload` gives the wire — the editor must not show a color
+        // the fire would not send.
+        const dmx::Color color = dmx::parseColor(text).value_or(dmx::kWhite);
+        PaletteEntry row{};
+        row.swatch = slint::Color::from_rgb_uint8(color.r, color.g, color.b);
+        row.hex = shared(dmx::formatColor(color));
+        const auto held = pickedPalette_.find(static_cast<int>(i));
+        if (held != pickedPalette_.end()) {
+            row.hue = held->second.hue;
+            row.sat = held->second.saturation;
+            row.val = held->second.brightness;
+        } else {
+            double hue = 0.0;
+            double saturation = 1.0;
+            double value = 1.0;
+            dmx::toHsv(color, hue, saturation, value);
+            row.hue = static_cast<float>(hue);
+            row.sat = static_cast<float>(saturation * 100.0);
+            row.val = static_cast<float>(value * 100.0);
+        }
+        rows.push_back(std::move(row));
+    }
+    // **Not while a slider is driving it.** A swatch the operator is dragging is a swatch
+    // whose row moved on every pixel, and rebuilding the repeater would destroy the popup
+    // holding the slider they are still holding. See `pickingColor_` — this is the crash of
+    // 2026-09-16, and taking this condition out makes the test below it fail with ninety
+    // resets for a ninety-pixel drag.
+    if (!pickingColor_ &&
+        rowsNeedRebuild(*paletteModel_, rows, [](const PaletteEntry& was, const PaletteEntry& now) {
+            return was != now;
+        })) {
+        rowsDirty_ = true;
+    }
+    writeRows(*paletteModel_, rows);
 }
 
 void RulesController::pickSlotLive(int slot, int source) {
@@ -1691,7 +2408,8 @@ void RulesController::publishSelected() {
     // the rule names and the second is whether this rig has it, which is the one question a
     // preset from another rig raises.
     publishOutputChoices();
-    window_->set_outputs_available(shared(describeRouting(rule->outputs, targets_)));
+    window_->set_outputs_available(
+        shared(describeRouting(rule->sendKind, rule->outputs, targets_)));
 
     window_->set_min_confidence(static_cast<float>(rule->conditions.minConfidence));
     window_->set_allow_calm(rule->conditions.allows(features::Intensity::Calm));
@@ -1710,12 +2428,25 @@ void RulesController::publishSelected() {
         trigger::kMessageKinds.begin();
     window_->set_send_index(static_cast<int>(sendIndex));
     window_->set_sends_osc(rule->sendKind == trigger::Message::Kind::Osc);
+    // Three families now rather than two, so "not OSC" is no longer "MIDI": the channel
+    // spinner has to stay off a lighting rule, which has no channel at all.
+    window_->set_sends_midi(trigger::isMidi(rule->sendKind));
+    publishDmx();
     window_->set_address(shared(rule->address));
     // Which preset this address is, so the picker describes the rule in front of it rather
     // than the last thing anybody clicked in it.
     window_->set_host_preset_index(presetOf(rule->address));
     window_->set_channel(rule->channel);
     window_->set_send_value(rule->sendValue);
+
+    // The live gestures, from this class's own mirror — the output thread's rules are not safe
+    // to read while it runs. See `mutedSeen_`.
+    const auto muted = mutedSeen_.find(rule->id);
+    window_->set_rule_muted(muted != mutedSeen_.end() && muted->second);
+    const auto rate = rateSeen_.find(rule->id);
+    const double factor = rate == rateSeen_.end() ? 1.0 : rate->second;
+    window_->set_rule_rate(shared(describeRate(factor)));
+
     publishFollowUps();
 }
 
@@ -1829,6 +2560,14 @@ void RulesController::publishOutputChoices() {
     std::vector<OutputChoice> rows;
     rows.reserve(targets_.size() + names.size());
     for (const output::OutputTarget& target : targets_) {
+        // **Only the targets this rule's kind can actually reach.** See `targetTakes`: a MIDI
+        // rule ticked against an OSC target sends nothing, and nothing routes to an Art-Net
+        // node by name at all. A target this rule *names* but cannot reach is still listed,
+        // below, as a name that reaches nothing — which is the truth and is how it gets
+        // un-ticked.
+        if (!targetTakes(rule->sendKind, target)) {
+            continue;
+        }
         OutputChoice row{};
         row.name = shared(target.name);
         row.chosen = named(target.name);
@@ -1838,8 +2577,13 @@ void RulesController::publishOutputChoices() {
     // Names this rule carries that the rig has no target for — a preset written elsewhere.
     // Listed rather than dropped, for `Rule::Config::outputs`' own reason: plugging that
     // output back in should restore the routing, so the name has to survive not being here.
+    //
+    // And names it carries that this rig *has* but this kind cannot reach — a rule switched
+    // from OSC to MIDI while still routed to an OSC target. Same treatment, because the
+    // outcome is the same: the rule names it and it reaches nothing.
     for (const std::string& name : names) {
-        if (output::findTarget(targets_, name) == nullptr) {
+        const output::OutputTarget* const target = output::findTarget(targets_, name);
+        if (target == nullptr || !targetTakes(rule->sendKind, *target)) {
             OutputChoice row{};
             row.name = shared(name);
             row.chosen = true;
@@ -1868,6 +2612,204 @@ void RulesController::publishOutputChoices() {
     window_->set_outputs_summary(shared(names.empty() ? "every output" : join(names)));
 }
 
+void RulesController::publishFixtureChoices() {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        fixtureModel_->clear();
+        window_->set_fixtures_summary(slint::SharedString(""));
+        window_->set_fixtures_available(slint::SharedString(""));
+        window_->set_fixtures_reaches_nothing(false);
+        return;
+    }
+
+    const std::vector<std::string>& names = rule->dmx.fixtures;
+    const auto named = [&names](const std::string& name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+
+    std::vector<OutputChoice> rows;
+    rows.reserve(patch_.size() + names.size());
+    // Groups first, because aiming at "heads" is what an operator reaches for and a list that
+    // buried it under six fixture names would hide the useful half. Each group once, in the
+    // order the patch introduces it.
+    std::vector<std::string> groups;
+    for (const dmx::Fixture& fixture : patch_) {
+        if (fixture.group.empty() ||
+            std::find(groups.begin(), groups.end(), fixture.group) != groups.end()) {
+            continue;
+        }
+        groups.push_back(fixture.group);
+        OutputChoice row{};
+        row.name = shared(fixture.group);
+        row.chosen = named(fixture.group);
+        row.missing = false;
+        rows.push_back(std::move(row));
+    }
+    for (const dmx::Fixture& fixture : patch_) {
+        OutputChoice row{};
+        row.name = shared(fixture.name);
+        row.chosen = named(fixture.name);
+        row.missing = false;
+        rows.push_back(std::move(row));
+    }
+    // Names this rule carries that the patch has no fixture or group for — a preset written
+    // on another rig. Listed rather than dropped, for `DmxSend::fixtures`' own reason.
+    for (const std::string& name : names) {
+        const bool here =
+            std::find(groups.begin(), groups.end(), name) != groups.end() ||
+            std::any_of(patch_.begin(), patch_.end(),
+                        [&name](const dmx::Fixture& fixture) { return fixture.name == name; });
+        if (!here) {
+            OutputChoice row{};
+            row.name = shared(name);
+            row.chosen = true;
+            row.missing = true;
+            rows.push_back(std::move(row));
+        }
+    }
+
+    // Tick boxes, which drop their binding the moment they are clicked — see
+    // `publishOutputChoices`, which found that the hard way.
+    if (rowsNeedRebuild(*fixtureModel_, rows, [](const OutputChoice& was, const OutputChoice& now) {
+            return was != now;
+        })) {
+        rowsDirty_ = true;
+    }
+    writeRows(*fixtureModel_, rows);
+
+    window_->set_fixtures_summary(
+        shared(names.empty() ? "nothing — this rule sends nowhere" : join(names)));
+    // What the names actually reach on *this* rig, in fixtures. The count matters: "heads"
+    // reaching three fixtures and "heads" reaching none look identical in a list of ticks.
+    const std::uint64_t mask = dmx::resolveFixtures(patch_, names);
+    std::size_t reached = 0;
+    for (std::size_t i = 0; i < patch_.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+        if ((mask & (std::uint64_t{1} << i)) != 0) {
+            ++reached;
+        }
+    }
+    std::string available;
+    if (names.empty()) {
+        available = "pick at least one — a DMX rule with no fixtures does nothing";
+    } else if (reached == 0) {
+        available = "reaches nothing on this rig";
+    } else {
+        available =
+            "reaches " + std::to_string(reached) + (reached == 1 ? " fixture" : " fixtures");
+    }
+    window_->set_fixtures_available(shared(available));
+    window_->set_fixtures_reaches_nothing(reached == 0);
+}
+
+std::string RulesController::describeRoleReach(const trigger::DmxSend& send) const {
+    // **What the rule editor could not say, and should have.** A rule aimed at `dimmer` over
+    // an RGB par used to be a rule that fired, logged, counted and lit nothing — the fixture
+    // has no dimmer channel, so the effect reached no channel and the only trace was a number
+    // in `DmxEngine::missed()` that nothing shows. Reported from a rig on 2026-09-16:
+    // *"Choosing the closest thing available right now, dimmer, does absolutely nothing."*
+    //
+    // The engine now fakes a dimmer out of the color (see `dmx::aims`), so the honest line
+    // says which of the two is happening — and still says "reaches nothing" for the aim that
+    // really does, a pan on a wash.
+    if (!dmx::takesRole(send.effect)) {
+        return {};
+    }
+    const std::uint64_t mask = dmx::resolveFixtures(patch_, send.fixtures);
+    if (mask == 0) {
+        return {}; // "reaches no fixtures" is already said beside the fixture picker
+    }
+    std::size_t reached = 0;
+    std::size_t faked = 0;
+    std::size_t total = 0;
+    const std::size_t count = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
+    for (std::size_t i = 0; i < count; ++i) {
+        if ((mask & (std::uint64_t{1} << i)) == 0) {
+            continue;
+        }
+        ++total;
+        if (dmx::has(patch_[i], send.role)) {
+            ++reached;
+        } else if (dmx::aims(patch_[i], send.role)) {
+            ++faked;
+        }
+    }
+    if (total == 0) {
+        return {};
+    }
+    const std::string channel(dmx::labelOf(send.role));
+    if (reached + faked == 0) {
+        return "none of them has a " + channel + " channel — this reaches nothing";
+    }
+    if (faked > 0 && reached == 0) {
+        return faked == total ? "no " + channel + " channel: drives the color instead"
+                              : "some have no " + channel + " channel: those drive the color";
+    }
+    if (reached < total) {
+        return std::to_string(total - reached) + " of " + std::to_string(total) + " have no " +
+               channel + " channel";
+    }
+    return {};
+}
+
+void RulesController::publishDmx() {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        window_->set_sends_dmx(false);
+        return;
+    }
+    const trigger::DmxSend& send = rule->dmx;
+    window_->set_sends_dmx(rule->sendKind == trigger::Message::Kind::Dmx);
+
+    const auto effectIndex =
+        std::find(dmx::kEffectKinds.begin(), dmx::kEffectKinds.end(), send.effect) -
+        dmx::kEffectKinds.begin();
+    window_->set_effect_index(static_cast<int>(effectIndex));
+    const auto roleIndex =
+        std::find(dmx::kAimableRoles.begin(), dmx::kAimableRoles.end(), send.role) -
+        dmx::kAimableRoles.begin();
+    window_->set_effect_role_index(static_cast<int>(
+        roleIndex < static_cast<long long>(dmx::kAimableRoles.size()) ? roleIndex : 0));
+    const auto curveIndex =
+        std::find(dmx::kCurves.begin(), dmx::kCurves.end(), send.curve) - dmx::kCurves.begin();
+    window_->set_effect_curve_index(static_cast<int>(curveIndex));
+    const auto shapeIndex =
+        std::find(dmx::kPathShapes.begin(), dmx::kPathShapes.end(), send.shape) -
+        dmx::kPathShapes.begin();
+    window_->set_effect_shape_index(static_cast<int>(shapeIndex));
+
+    // Which controls this effect actually uses. Everything else is hidden rather than
+    // disabled: a strobe's duty cycle greyed out on a fade is a control an operator has to
+    // work out is irrelevant, and there are eight of them.
+    window_->set_effect_takes_role(dmx::takesRole(send.effect));
+    window_->set_effect_takes_base(dmx::takesBase(send.effect));
+    window_->set_effect_takes_cycles(dmx::takesCycles(send.effect));
+    window_->set_effect_takes_duty(send.effect == dmx::EffectKind::Strobe);
+    window_->set_effect_takes_hue(send.effect == dmx::EffectKind::HueSweep);
+    window_->set_effect_takes_shape(send.effect == dmx::EffectKind::Path);
+    window_->set_effect_takes_curve(send.effect != dmx::EffectKind::Strobe);
+    window_->set_effect_takes_color(dmx::takesColor(send.effect));
+
+    const auto colorModeIndex =
+        std::find(trigger::kColorModes.begin(), trigger::kColorModes.end(), send.colorMode) -
+        trigger::kColorModes.begin();
+    window_->set_color_mode_index(static_cast<int>(colorModeIndex));
+    window_->set_effect_role_note(shared(describeRoleReach(send)));
+
+    window_->set_effect_base(send.base);
+    window_->set_effect_duty(static_cast<float>(send.duty * 100.0));
+    window_->set_effect_size(static_cast<float>(send.size * 100.0));
+    window_->set_effect_hue(shared(spellNumber(send.hueFrom) + " - " + spellNumber(send.hueTo)));
+    window_->set_effect_cycles(shared(spellNumber(send.cycles)));
+    const auto unitIndex =
+        std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), send.unit) -
+        trigger::kDelayUnits.begin();
+    window_->set_effect_unit(static_cast<int>(unitIndex));
+    window_->set_effect_duration(shared(send.unit == trigger::DelayUnit::Milliseconds
+                                            ? spellNumber(send.durationSeconds * 1000.0)
+                                            : spellNumber(send.durationBeats)));
+    publishFixtureChoices();
+}
+
 void RulesController::publishSlots() {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
@@ -1894,11 +2836,26 @@ void RulesController::publishSlots() {
     // Clearing first makes the repeater build fresh items, so every box is bound again. It
     // costs the focus, which is right here — the operator just clicked another rule — and it
     // never happens on the `tick` path, where the id and kind are unchanged.
-    const bool rebuild = rule->id != slotsBuiltFor_ || rule->sendKind != slotsKind_;
+    // The DMX effect counts as a change of kind here, because it decides *which* generators a
+    // rule has: switching from a fade to a position takes the level chip away and puts pan and
+    // tilt in its place, and a row reused across that would be a pan box still bound to the
+    // level it used to be.
+    const bool rebuild = rule->id != slotsBuiltFor_ || rule->sendKind != slotsKind_ ||
+                         rule->dmx.effect != slotsEffect_ || rule->dmx.colorMode != slotsColorMode_;
     if (rebuild) {
         slotModel_->clear();
         slotsBuiltFor_ = rule->id;
         slotsKind_ = rule->sendKind;
+        slotsEffect_ = rule->dmx.effect;
+        // The color mode counts for the same reason the effect does: it decides *which*
+        // generators the rule has — one color chip or three component chips — and a row
+        // reused across that would be a red box still bound to the palette it used to be.
+        slotsColorMode_ = rule->dmx.colorMode;
+        // The picker's sliders belong to the rows that were on screen, and the rows are about
+        // to be different ones. Kept across an ordinary republish — that is the whole point of
+        // holding them — and dropped when the slots themselves change, so another rule's
+        // picker opens on that rule's own color.
+        pickedColors_.clear();
     }
 
     // What this rule's generators produced last time it fired, in the order the chips are
@@ -1908,7 +2865,8 @@ void RulesController::publishSlots() {
         seen == slotsSeen_.end() ? nullptr : &seen->second;
 
     std::vector<SlotRow> rows;
-    const auto push = [&rows, produced](const std::string& label, const Generator::Config& raw) {
+    const auto push = [&rows, produced, this](const std::string& label,
+                                              const Generator::Config& raw, bool color = false) {
         // What the generator **accepted**, not what was typed. `Generator::config()` gives
         // back the clamped configuration, so §5.8's clamp-never-refuse policy shows on
         // screen instead of being silent: a range typed backwards comes back the right way
@@ -1949,6 +2907,39 @@ void RulesController::publishSlots() {
         row.last = produced != nullptr && rows.size() < produced->size()
                        ? shared(spellValue((*produced)[rows.size()]))
                        : slint::SharedString("");
+
+        // A color slot gets a swatch and a picker, because `#20ff80` is the one value in
+        // this window nobody can read. The swatch shows what the generator is *set* to — a
+        // fixed color, or the first of a palette — so an operator glancing at the row sees
+        // the color rather than its arithmetic.
+        row.is_color = color;
+        if (color) {
+            std::string text;
+            if (config.kind == GeneratorKind::Fixed) {
+                config.fixed.appendTo(text);
+            } else if (!config.values.empty()) {
+                config.values.front().appendTo(text);
+            }
+            const dmx::Color swatch = dmx::parseColor(text).value_or(dmx::kWhite);
+            row.swatch = slint::Color::from_rgb_uint8(swatch.r, swatch.g, swatch.b);
+            // The sliders as the operator last left them, or read off the color the first
+            // time this row is drawn. See `pickedColors_` for why they are not re-derived
+            // every time.
+            const auto held = pickedColors_.find(static_cast<int>(rows.size()));
+            if (held != pickedColors_.end()) {
+                row.hue = held->second.hue;
+                row.sat = held->second.saturation;
+                row.val = held->second.brightness;
+            } else {
+                double hue = 0.0;
+                double saturation = 1.0;
+                double value = 1.0;
+                dmx::toHsv(swatch, hue, saturation, value);
+                row.hue = static_cast<float>(hue);
+                row.sat = static_cast<float>(saturation * 100.0);
+                row.val = static_cast<float>(value * 100.0);
+            }
+        }
         rows.push_back(std::move(row));
     };
 
@@ -1971,13 +2962,41 @@ void RulesController::publishSlots() {
         for (std::size_t i = 0; i < rule->segments.size(); ++i) {
             push(i < names.size() ? names[i] : "{?}", rule->segments[i]);
         }
+    } else if (rule->sendKind == trigger::Message::Kind::Dmx) {
+        // Only the generators this effect actually uses, in `Rule::lastSlots`' own order.
+        // `slotConfig` walks the same conditions; the two must not drift apart.
+        if (dmx::takesRole(rule->dmx.effect)) {
+            push(std::string(dmx::labelOf(rule->dmx.role)), rule->dmx.level);
+        }
+        if (dmx::takesColor(rule->dmx.effect)) {
+            // A palette is one chip holding colors; a mix is three chips holding numbers,
+            // and the numbers are DMX bytes, so they are labelled and ranged like every other
+            // byte in this window rather than pretending to be colors.
+            if (rule->dmx.colorMode == trigger::ColorMode::Mix) {
+                push("red", rule->dmx.red);
+                push("green", rule->dmx.green);
+                push("blue", rule->dmx.blue);
+            } else {
+                push("color", rule->dmx.color, /*color=*/true);
+            }
+        }
+        if (rule->dmx.effect == dmx::EffectKind::Position) {
+            // Percentages of each fixture's own movement window — see `DmxSend::pan`. Labelled
+            // with the unit, because 50 meaning "half way across what I allowed" rather than
+            // "DMX 50" is the one thing about this pair that is not obvious.
+            push("pan %", rule->dmx.pan);
+            push("tilt %", rule->dmx.tilt);
+        }
     } else if (trigger::sendsNumber(rule->sendKind)) {
         push(numberLabelOf(rule->sendKind), rule->number);
     }
     // Program change has nowhere to put a value; pitch bend is nothing but one. `slotConfig`
-    // indexes the rows in this same order.
-    if (rule->sendKind == trigger::Message::Kind::Osc ? rule->sendValue
-                                                      : trigger::sendsValue(rule->sendKind)) {
+    // indexes the rows in this same order. DMX built all of its own above.
+    if (rule->sendKind == trigger::Message::Kind::Dmx) {
+        // nothing more
+    } else if (rule->sendKind == trigger::Message::Kind::Osc
+                   ? rule->sendValue
+                   : trigger::sendsValue(rule->sendKind)) {
         push(valueLabelOf(rule->sendKind), rule->value);
     }
     // In place, and this is the one that mattered: these rows are the generator chips, they
@@ -1990,7 +3009,12 @@ void RulesController::publishSlots() {
     // or a box that has been typed into will go on showing what was typed. That readout is
     // the field to exclude: it ticks over on every beat, and rebuilding for it would tear the
     // boxes down under the operator's hands.
-    if (rowsNeedRebuild(*slotModel_, rows, [](const SlotRow& was, const SlotRow& now) {
+    //
+    // The other exclusion is not a field but a cause: a color slider being dragged changes
+    // this row's swatch and its hex on every pixel, and the picker holding that slider is a
+    // popup inside this very repeater. See `pickingColor_`.
+    if (!pickingColor_ &&
+        rowsNeedRebuild(*slotModel_, rows, [](const SlotRow& was, const SlotRow& now) {
             SlotRow ignoring = was;
             ignoring.last = now.last;
             return ignoring != now;
@@ -1998,20 +3022,32 @@ void RulesController::publishSlots() {
         rowsDirty_ = true;
     }
     writeRows(*slotModel_, rows);
+    publishPalette();
 }
 
 void RulesController::rebuildRows() {
+    // **Never while a picker is open.** A color picker is a `PopupWindow` belonging to one of
+    // the items about to be thrown away, so a rebuild here destroys the popup — and with it
+    // the slider the operator has hold of. The rebuild is not cancelled, only held: the flag
+    // stays set and `tick` takes it on the first redraw after the picker closes, which is
+    // before the operator can have typed into anything. See `setPickerOpen`.
+    if (pickerOpen_) {
+        return;
+    }
     rowsDirty_ = false;
     // Emptied, so the repeaters throw their items away and build new ones — which is the only
     // way a `LineEdit` that has been typed into, or a `CheckBox` that has been clicked,
     // starts following its model again. Publishing straight afterwards leaves nothing on
     // screen for a frame.
     slotModel_->clear();
+    paletteModel_->clear();
     followModel_->clear();
     choiceModel_->clear();
+    fixtureModel_->clear();
     publishSlots();
     publishFollowUps();
     publishOutputChoices();
+    publishFixtureChoices();
     // Every publisher compares against an empty model, so none can find a surviving row that
     // moved. Asserting that here rather than trusting it: a rebuild that set the flag again
     // would spin at thirty frames a second, tearing every box down as fast as it drew.

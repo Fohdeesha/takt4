@@ -3,6 +3,8 @@
 #include "core/output/osc_message.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <string>
 #include <utility>
 
 namespace takt4::trigger {
@@ -32,7 +34,25 @@ std::uint64_t mixSeed(std::uint64_t seed, std::uint64_t role) noexcept {
 constexpr std::uint64_t kValueRole = 1;
 constexpr std::uint64_t kNumberRole = 2;
 constexpr std::uint64_t kProbabilityRole = 3;
+constexpr std::uint64_t kDmxLevelRole = 4;
+constexpr std::uint64_t kDmxColorRole = 5;
+constexpr std::uint64_t kDmxPanRole = 6;
+constexpr std::uint64_t kDmxTiltRole = 7;
+/// `ColorMode::Mix`'s three. Distinct streams, or "a random color" would send a grey every
+/// time: three generators sharing a seed draw the same number, and r == g == b is white.
+constexpr std::uint64_t kDmxRedRole = 8;
+constexpr std::uint64_t kDmxGreenRole = 9;
+constexpr std::uint64_t kDmxBlueRole = 10;
 constexpr std::uint64_t kSegmentRole = 16;
+
+/// A DMX channel is a byte, so everything a generator offers one is clamped to it — wrapped
+/// would turn a level of 300 into 44, which is a fixture that goes almost dark at the moment
+/// an operator asked for more than full.
+constexpr int kDmxMax = 255;
+
+/// A `DmxSend`'s pan and tilt are percentages of the fixture's own window, so a generator over
+/// 0 to 100 is what an operator types and this is what it is read as.
+constexpr double kPercent = 100.0;
 
 Generator::Config seeded(Generator::Config config, std::uint64_t seed, std::uint64_t role) {
     config.seed = mixSeed(seed, role);
@@ -139,6 +159,72 @@ std::optional<DelayUnit> delayUnitOf(std::string_view name) noexcept {
     return std::nullopt;
 }
 
+std::string_view labelOf(ColorMode mode) noexcept {
+    // What the dropdown says, and it says what the mode *does* rather than what it is called
+    // in here: "palette" and "mix" are jargon until you have used both.
+    switch (mode) {
+    case ColorMode::Palette:
+        return "pick colors";
+    case ColorMode::Mix:
+        return "mix red, green, blue";
+    }
+    return "";
+}
+
+std::string_view nameOf(ColorMode mode) noexcept {
+    switch (mode) {
+    case ColorMode::Palette:
+        return "palette";
+    case ColorMode::Mix:
+        return "mix";
+    }
+    return "";
+}
+
+std::optional<ColorMode> colorModeOf(std::string_view name) noexcept {
+    for (const ColorMode mode : kColorModes) {
+        if (nameOf(mode) == name) {
+            return mode;
+        }
+    }
+    return std::nullopt;
+}
+
+Generator::Config paletteOf(dmx::Color color) noexcept {
+    Generator::Config config;
+    config.kind = GeneratorKind::Fixed;
+    config.fixed = Value::ofText(dmx::formatColor(color));
+    return config;
+}
+
+std::vector<Value> defaultPalette() {
+    // Six that read as six on a wall: the primaries, the secondaries, and no near-neighbours
+    // — a palette whose entries an audience cannot tell apart is a shuffle that looks broken.
+    return {
+        Value::ofText("#ff2040"), Value::ofText("#ff8000"), Value::ofText("#ffe000"),
+        Value::ofText("#20ff80"), Value::ofText("#2080ff"), Value::ofText("#a040ff"),
+    };
+}
+
+Generator::Config fixedNumber(int value) noexcept {
+    Generator::Config config;
+    config.kind = GeneratorKind::Fixed;
+    config.fixed = Value::ofInt(value);
+    return config;
+}
+
+Generator::Config componentMix() noexcept {
+    Generator::Config config;
+    config.kind = GeneratorKind::Random;
+    config.pool = Pool::Range;
+    config.low = 0;
+    config.high = kDmxMax;
+    // No seam guard: on a range of 256 it costs a draw and buys nothing an eye can see, and
+    // `Random`'s own note says a rule that stalls is worse than a rule that repeats.
+    config.noRepeatWithin = 0;
+    return config;
+}
+
 bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept {
     if (steps == 0 || pulses == 0) {
         return false; // no pattern, or a pattern of rests
@@ -177,6 +263,8 @@ std::string_view labelOf(Message::Kind kind) noexcept {
         return "MIDI program";
     case Message::Kind::MidiPitchBend:
         return "MIDI pitch bend";
+    case Message::Kind::Dmx:
+        return "DMX / Art-Net";
     }
     return "";
 }
@@ -195,8 +283,29 @@ std::string_view nameOf(Message::Kind kind) noexcept {
         return "midi-program";
     case Message::Kind::MidiPitchBend:
         return "midi-pitch-bend";
+    case Message::Kind::Dmx:
+        return "dmx";
     }
     return "";
+}
+
+double musicalSeconds(const Context& context, DelayUnit unit, double milliseconds,
+                      double beats) noexcept {
+    const double fixed = std::max(0.0, milliseconds);
+    if (unit == DelayUnit::Milliseconds) {
+        return fixed;
+    }
+    if (!(context.bpm > 0.0)) {
+        return fixed; // nothing tracked to count beats of; see the header
+    }
+    double counted = std::max(0.0, beats);
+    if (unit == DelayUnit::Bars) {
+        // The meter the tracker is reporting, never four (§5.5). Before it has an opinion a
+        // bar is one beat, which is short rather than wrong — the alternative is assuming a
+        // meter and holding a clip for four beats of a waltz.
+        counted *= static_cast<double>(std::max<std::uint32_t>(1, context.meter));
+    }
+    return counted * 60.0 / context.bpm;
 }
 
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept {
@@ -272,6 +381,13 @@ Rule::Rule(Config config)
     : config_(std::move(config)), enabled_(config_.enabled),
       value_(seeded(config_.value, config_.seed, kValueRole)),
       number_(seeded(config_.number, config_.seed, kNumberRole)),
+      dmxLevel_(seeded(config_.dmx.level, config_.seed, kDmxLevelRole)),
+      dmxColor_(seeded(config_.dmx.color, config_.seed, kDmxColorRole)),
+      dmxRed_(seeded(config_.dmx.red, config_.seed, kDmxRedRole)),
+      dmxGreen_(seeded(config_.dmx.green, config_.seed, kDmxGreenRole)),
+      dmxBlue_(seeded(config_.dmx.blue, config_.seed, kDmxBlueRole)),
+      dmxPan_(seeded(config_.dmx.pan, config_.seed, kDmxPanRole)),
+      dmxTilt_(seeded(config_.dmx.tilt, config_.seed, kDmxTiltRole)),
       probability_(mixSeed(config_.seed, kProbabilityRole)) {
     segments_.reserve(config_.segments.size());
     for (std::size_t i = 0; i < config_.segments.size(); ++i) {
@@ -294,6 +410,18 @@ void Rule::validate() {
     // being a segment of that: legal OSC characters, and no '/' of its own to split it.
     if (config_.id.find('/') != std::string::npos || !output::addressIsLegal("/" + config_.id)) {
         problem_ = "a rule id must be usable in an OSC address: " + config_.id;
+        return;
+    }
+    if (config_.sendKind == Message::Kind::Dmx) {
+        // A DMX rule that names no fixture reaches nothing, and saying so is the point. An
+        // empty output list means *every* output because sending a clip change twice is
+        // harmless; an empty fixture list cannot mean every fixture, because that would swing
+        // the whole rig the first time somebody added a rule. So it is a problem the editor
+        // shows, which is a rule that visibly does not work rather than a rig that visibly
+        // does the wrong thing.
+        if (config_.dmx.fixtures.empty()) {
+            problem_ = "a DMX rule needs at least one fixture or group to aim at";
+        }
         return;
     }
     if (config_.sendKind != Message::Kind::Osc) {
@@ -329,12 +457,42 @@ void Rule::reset() noexcept {
     }
     value_.reset();
     number_.reset();
+    dmxLevel_.reset();
+    dmxColor_.reset();
+    dmxRed_.reset();
+    dmxGreen_.reset();
+    dmxBlue_.reset();
+    dmxPan_.reset();
+    dmxTilt_.reset();
     probability_.reseed(mixSeed(config_.seed, kProbabilityRole));
     lastBpmSeen_ = -1.0;
     lastLockedSeen_ = -1;
     lastIntensitySeen_ = -1;
     lastFired_ = -1.0;
     fires_ = 0;
+    // The live gestures go back too: a preset load is "here is the show", not "here is the
+    // show as somebody left it half way through a set".
+    muted_ = false;
+    rate_ = 1.0;
+}
+
+void Rule::setRate(double rate) noexcept {
+    // A rate of zero or less would be a rule that fires every zero bars, which is either a
+    // division by nothing or a rule that fires constantly depending on where the arithmetic
+    // lands. Both are worse than refusing to go below a sixteenth of the written interval.
+    rate_ = std::clamp(rate, 0.0625, 64.0);
+}
+
+std::uint32_t Rule::effectiveEvery() const noexcept {
+    const std::uint32_t written = std::max<std::uint32_t>(1, config_.every);
+    if (rate_ == 1.0) {
+        return written;
+    }
+    const double scaled = std::round(static_cast<double>(written) * rate_);
+    // Floored at one: halving a rule that is already on every beat leaves it on every beat,
+    // rather than on every zero beats — which would be a rule that stopped firing, and an
+    // operator pressing "twice as often" would have turned it off.
+    return static_cast<std::uint32_t>(std::clamp(scaled, 1.0, 65536.0));
 }
 
 bool Rule::seesChange(const Context& context) noexcept {
@@ -403,7 +561,13 @@ std::optional<Message> Rule::fire(const Context& context) {
     // fire that cannot build its address leaves nothing behind: the editor would otherwise
     // go on showing the values of the last fire that worked, beside a rule that is failing.
     lastSlots_.clear();
-    if (config_.sendKind == Message::Kind::Osc) {
+    if (config_.sendKind == Message::Kind::Dmx) {
+        // Routing by fixture rather than by output: a fixture already names its universe and
+        // an Art-Net target already says which universes it carries, so there is no second
+        // routing decision to make and `message.outputs` means nothing here.
+        message.fixtures = fixtureMask_;
+        message.payload = buildPayload(context);
+    } else if (config_.sendKind == Message::Kind::Osc) {
         segmentValues_.clear();
         for (Generator& generator : segments_) {
             segmentValues_.push_back(generator.next(context));
@@ -449,7 +613,72 @@ std::optional<Message> Rule::fire(const Context& context) {
     return message;
 }
 
-void Rule::followUpsFor(const Message& fired,
+dmx::Payload Rule::buildPayload(const Context& context) {
+    const DmxSend& send = config_.dmx;
+    dmx::Payload payload;
+    payload.kind = send.effect;
+    payload.role = send.role;
+    payload.curve = send.curve;
+    payload.shape = send.shape;
+    payload.base = static_cast<std::uint8_t>(std::clamp(send.base, 0, kDmxMax));
+    payload.cycles = static_cast<float>(std::clamp(send.cycles, 0.0, 1024.0));
+    payload.duty = static_cast<float>(std::clamp(send.duty, 0.0, 1.0));
+    payload.hueFrom = static_cast<float>(send.hueFrom);
+    payload.hueTo = static_cast<float>(send.hueTo);
+    payload.size = static_cast<float>(std::clamp(send.size, 0.0, 1.0));
+    payload.durationSeconds = static_cast<float>(
+        musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
+
+    // **Only the generators this effect actually uses are drawn**, and in the order
+    // `lastSlots` documents — which is the order §5.9's editor draws the chips and the order
+    // `RulesController::slotConfig` indexes them by. The reasoning is the one the MIDI branch
+    // already gives: a generator whose value never leaves should not be spending a shuffle's
+    // bag on it, and recording one anyway pairs every chip after it with the wrong generator.
+    if (dmx::takesRole(send.effect)) {
+        const int level = std::clamp(dmxLevel_.next(context).asInt(), 0, kDmxMax);
+        payload.level = static_cast<std::uint8_t>(level);
+        lastSlots_.push_back(Value::ofInt(level));
+    }
+    if (dmx::takesColor(send.effect)) {
+        if (send.colorMode == ColorMode::Mix) {
+            // Three numbers, one per component — §5.8's generators doing color work. The
+            // *drawn* values go into `lastSlots`, clamped, so each chip's readout is the byte
+            // that went on the wire and the three of them add up to the swatch beside them.
+            const auto component = [&context](Generator& generator) {
+                return static_cast<std::uint8_t>(
+                    std::clamp(generator.next(context).asInt(), 0, kDmxMax));
+            };
+            payload.color.r = component(dmxRed_);
+            payload.color.g = component(dmxGreen_);
+            payload.color.b = component(dmxBlue_);
+            lastSlots_.push_back(Value::ofInt(payload.color.r));
+            lastSlots_.push_back(Value::ofInt(payload.color.g));
+            lastSlots_.push_back(Value::ofInt(payload.color.b));
+        } else {
+            const Value drawn = dmxColor_.next(context);
+            // A generator can produce anything; a color that will not parse falls back to
+            // white rather than to black, because black is indistinguishable from the effect
+            // not having fired and white is visibly wrong. `lastSlots` records what was
+            // *used*, so the editor shows the operator the color that went out rather than
+            // the text that did not work.
+            std::string text;
+            drawn.appendTo(text);
+            payload.color = dmx::parseColor(text).value_or(dmx::kWhite);
+            lastSlots_.push_back(Value::ofText(dmx::formatColor(payload.color)));
+        }
+    }
+    if (send.effect == dmx::EffectKind::Position) {
+        const int pan = std::clamp(dmxPan_.next(context).asInt(), 0, 100);
+        const int tilt = std::clamp(dmxTilt_.next(context).asInt(), 0, 100);
+        payload.pan = static_cast<float>(pan / kPercent);
+        payload.tilt = static_cast<float>(tilt / kPercent);
+        lastSlots_.push_back(Value::ofInt(pan));
+        lastSlots_.push_back(Value::ofInt(tilt));
+    }
+    return payload;
+}
+
+void Rule::followUpsFor(const Context& context, const Message& fired,
                         std::vector<std::pair<std::size_t, Message>>& out) const {
     const std::size_t many = std::min(config_.followUps.size(), kMaxFollowUps);
     for (std::size_t i = 0; i < many; ++i) {
@@ -476,7 +705,40 @@ void Rule::followUpsFor(const Message& fired,
             // along as the *release* velocity, which is a real field of Note Off.
             follow.kind = Message::Kind::MidiNoteOff;
         }
-        if (follow.kind == Message::Kind::Osc) {
+        if (follow.kind == Message::Kind::Dmx) {
+            if (owed.dmx) {
+                // A follow-up with an effect of its own: a fade out after a fade in, a
+                // blackout after a strobe. It keeps the rule's fixtures, which is what makes
+                // it a follow-*up* rather than a second rule.
+                const DmxFollow& next = *owed.dmx;
+                follow.payload.kind = next.effect;
+                follow.payload.curve = next.curve;
+                follow.payload.color = next.color;
+                follow.payload.durationSeconds = static_cast<float>(
+                    musicalSeconds(context, next.unit, next.durationSeconds, next.durationBeats));
+                follow.payload.level =
+                    static_cast<std::uint8_t>(std::clamp(owed.value.asInt(), 0, kDmxMax));
+            } else if (dmx::takesMovement(fired.payload.kind)) {
+                // There is no "let go" of a pan. See `FollowUp::dmx`.
+                continue;
+            } else {
+                // The release: the fired effect again, dimmed to `value`. For a color that
+                // means the same color at that brightness — so a release at zero is a fade to
+                // black and a release at half is the light still lit, which is what an
+                // operator means by letting go of a lamp rather than of a note.
+                const auto level =
+                    static_cast<std::uint8_t>(std::clamp(owed.value.asInt(), 0, kDmxMax));
+                follow.payload.level = level;
+                if (dmx::takesColor(fired.payload.kind)) {
+                    follow.payload.kind = dmx::EffectKind::Color;
+                    follow.payload.color = dmx::scale(fired.payload.color, level / 255.0);
+                } else {
+                    // A flash, a pulse or a strobe releases as a plain level: re-firing the
+                    // flash would be a second flash, which is not a release of the first.
+                    follow.payload.kind = dmx::EffectKind::Level;
+                }
+            }
+        } else if (follow.kind == Message::Kind::Osc) {
             follow.argument = owed.value;
             follow.hasArgument = true;
         } else {
@@ -497,21 +759,7 @@ double Rule::followUpDelay(const Context& context, std::size_t index) const noex
         return 0.0;
     }
     const FollowUp& owed = config_.followUps[index];
-    const double milliseconds = std::max(0.0, owed.delaySeconds);
-    if (owed.unit == DelayUnit::Milliseconds) {
-        return milliseconds;
-    }
-    if (!(context.bpm > 0.0)) {
-        return milliseconds; // nothing tracked to count beats of; see the header
-    }
-    double beats = std::max(0.0, owed.delayBeats);
-    if (owed.unit == DelayUnit::Bars) {
-        // The meter the tracker is reporting, never four (§5.5). Before it has an opinion a
-        // bar is one beat, which is short rather than wrong — the alternative is assuming a
-        // meter and holding a clip for four beats of a waltz.
-        beats *= static_cast<double>(std::max<std::uint32_t>(1, context.meter));
-    }
-    return beats * 60.0 / context.bpm;
+    return musicalSeconds(context, owed.unit, owed.delaySeconds, owed.delayBeats);
 }
 
 } // namespace takt4::trigger

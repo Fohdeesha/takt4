@@ -46,6 +46,30 @@ struct OutputCommand {
         /// §5.8's *"on manual hotkey"*, and §5.9's per-rule `[test]` button.
         Manual,
         TestRule,
+        /// The lighting patch, whole — the same shape and the same reasoning as `Rules`.
+        /// Every rule's fixture routing is resolved again afterwards, because a name means a
+        /// *bit* and the bit moves the moment a fixture above it is added or deleted.
+        Patch,
+        /// §5.7's `/ctl/rule/<id>/mute <0|1>`. Distinct from `RuleEnabled`, which is a
+        /// different state — see `trigger::Rule::muted`.
+        RuleMuted,
+        /// §5.7's `/ctl/rule/<id>/double`, `halve`, `rate <f>` and `reset`, which are all one
+        /// thing: a multiplier on how often the rule fires. `factor` is absolute when
+        /// `relative` is false and is applied to whatever the rule is already at when it is
+        /// true, which is what lets "double" be pressed twice.
+        RuleRate,
+        /// One lighting effect, fired by hand rather than by a rule — the patch editor's
+        /// IDENTIFY, which drives a fixture to full so an operator in the truss can see which
+        /// lamp they are addressing.
+        ///
+        /// Its own command rather than a rule, because it is not one: it has no trigger, no
+        /// conditions and no place in the show, and making it a temporary rule would put it in
+        /// the fire log and the fire counts.
+        Effect,
+        /// One raw DMX channel held at a value for a moment — the patch editor's per-channel
+        /// TEST. `DmxEngine::holdChannel` says why this is addressed by channel rather than by
+        /// role, and why it is not an `Effect`.
+        ChannelTest,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -102,6 +126,44 @@ struct OutputCommand {
         command.port = std::move(port);
         return command;
     }
+    static OutputCommand patch(std::vector<dmx::Fixture> fixtures) {
+        OutputCommand command;
+        command.kind = Kind::Patch;
+        command.fixtures = std::move(fixtures);
+        return command;
+    }
+    static OutputCommand ruleMuted(std::string id, bool on) {
+        OutputCommand command;
+        command.kind = Kind::RuleMuted;
+        command.ruleId = std::move(id);
+        command.enabled = on;
+        return command;
+    }
+    static OutputCommand ruleRate(std::string id, double factor, bool relative) {
+        OutputCommand command;
+        command.kind = Kind::RuleRate;
+        command.ruleId = std::move(id);
+        command.factor = factor;
+        command.relative = relative;
+        return command;
+    }
+    static OutputCommand effect(std::uint64_t fixtures, const dmx::Payload& payload) {
+        OutputCommand command;
+        command.kind = Kind::Effect;
+        command.fixtureMask = fixtures;
+        command.payload = payload;
+        return command;
+    }
+    static OutputCommand channelTest(dmx::PortAddress universe, std::uint16_t channel,
+                                     std::uint8_t level, double seconds) {
+        OutputCommand command;
+        command.kind = Kind::ChannelTest;
+        command.universe = universe;
+        command.channel = channel;
+        command.level = level;
+        command.factor = seconds;
+        return command;
+    }
 
     Kind kind = Kind::LinkEnabled;
     bool enabled = false;
@@ -109,8 +171,31 @@ struct OutputCommand {
     std::vector<OutputTarget> outputTargets;
     std::optional<std::string> port;
     std::vector<trigger::Rule::Config> ruleConfigs;
+    std::vector<dmx::Fixture> fixtures;
     std::string ruleId;
+    /// `Effect`'s target and instruction. The mask indexes the patch, exactly as a rule's
+    /// `Message::fixtures` does.
+    std::uint64_t fixtureMask = 0;
+    dmx::Payload payload;
+    /// `ChannelTest`'s target: a universe, a 1-based DMX channel and the byte to hold it at.
+    /// How long for rides in `factor`, which is otherwise `RuleRate`'s.
+    dmx::PortAddress universe = 0;
+    std::uint16_t channel = 0;
+    std::uint8_t level = 0;
+    /// `RuleRate`'s multiplier, and whether it multiplies the rule's current rate or replaces
+    /// it. See `Kind::RuleRate`. Also `ChannelTest`'s duration in seconds.
+    double factor = 1.0;
+    bool relative = false;
 };
+
+/// The rule id that means **every rule** — §5.7's `/ctl/rule/all/enable` and its neighbours.
+///
+/// A reserved word rather than a second address shape, because a Stream Deck button that
+/// mutes the lighting rules and one that mutes a single rule should differ by one word in the
+/// address and by nothing else. A rule actually *called* "all" is shadowed by it; that is a
+/// naming collision the editor can warn about and not a reason to spell the common case
+/// differently.
+inline constexpr std::string_view kAllRules = "all";
 
 /// HANDOFF §4.2's output thread.
 ///
@@ -234,8 +319,31 @@ public:
         /// simple one: a thread that is not the output thread reads the snapshot and nothing
         /// else. `WindowController::currentSettings` is the caller that has to save it.
         std::string oscPrefix;
+        /// The lighting patch as the output thread has it, in the order a rule's fixture mask
+        /// indexes it. Copied here for the reason `outputs` is: the live one is a vector the
+        /// output thread replaces whole, and a UI reading it at 30 Hz would be reading a buffer
+        /// being freed underneath it.
+        std::vector<dmx::Fixture> patch;
     };
     Snapshot snapshot() const;
+
+    /// One universe's 512 levels as the output thread last sent them, copied under a lock.
+    /// Empty when the patch does not use that universe.
+    ///
+    /// **A mirror rather than a read through `transports()`**, and the reason is the one that
+    /// method's own note gives. `DmxEngine::levels` looks its universe up in a vector the
+    /// output thread *replaces* on every re-patch; a 30 Hz readout walking that vector while
+    /// a patch edit swaps it is a data race with a freed buffer in the middle of it, not
+    /// merely a byte read half-written.
+    ///
+    /// Refreshed at most `kMirrorHz` times a second, which is more than a screen can show and
+    /// far less than the thousand rounds a second the engine actually moves in. So the number
+    /// on screen can be up to a frame stale, which is not a difference anybody can see.
+    std::vector<std::uint8_t> levelsOf(dmx::PortAddress universe) const;
+
+    /// How often the level mirror is refreshed. Twice a typical redraw, so a UI reading it at
+    /// 30 Hz never shows the same frame twice in a row.
+    static constexpr double kMirrorHz = 60.0;
 
     /// Link's clock, for `engine::BeatEngine::setHostTimeSource`.
     ///
@@ -263,6 +371,12 @@ public:
     void panic(bool engaged) override { post(OutputCommand::panic(engaged)); }
     void setRuleEnabled(std::string_view id, bool enabled) override {
         post(OutputCommand::ruleEnabled(std::string(id), enabled));
+    }
+    void setRuleMuted(std::string_view id, bool muted) override {
+        post(OutputCommand::ruleMuted(std::string(id), muted));
+    }
+    void setRuleRate(std::string_view id, double factor, bool relative) override {
+        post(OutputCommand::ruleRate(std::string(id), factor, relative));
     }
 
     /// What went wrong applying the last posted change, or empty. A MIDI port that is not
@@ -304,6 +418,10 @@ public:
         /// What each generator produced, in the order §5.9's editor draws the chips. Empty
         /// for a follow-up. See `trigger::Rule::lastSlots`.
         std::vector<trigger::Value> slots;
+        /// The rule fired and was **not sent**, because it is muted. In the log for the reason
+        /// `TriggerEngine::FireObserver` gives: from outside, a muted rule and a rule that has
+        /// stopped triggering look identical, and only this tells them apart.
+        bool muted = false;
     };
 
     /// Everything rules have sent since the last call, oldest first, and clears it.
@@ -332,6 +450,9 @@ private:
     /// Copies what the transports are set to into `snapshot_`. Called by whichever thread
     /// owns them, at the end of every `apply`, so a reader never has to touch the live ones.
     void takeSnapshot();
+    /// Copies the universe buffers into `levels_`, at most `kMirrorHz` times a second. Called
+    /// at the end of every round by the thread that owns them. See `levelsOf`.
+    void mirrorLevels(double now);
     /// Replaces §5.6's targets and resolves every rule's routing against the new list.
     ///
     /// **The routing is resolved even when the replacement failed**, and that is the whole
@@ -342,9 +463,12 @@ private:
     /// rule's clips to the lighting desk. Rethrows what `Transports` raised, so the failure
     /// still reaches `lastError`.
     void setTargets(const std::vector<OutputTarget>& targets);
-    /// Turns every rule's output *names* into the bit mask its messages carry. Run after the
-    /// rules change and after the targets do, because either moves the answer.
+    /// Turns every rule's output and fixture *names* into the bit masks its messages carry.
+    /// Run after the rules change, after the targets do and after the patch does, because any
+    /// of the three moves the answer.
     void resolveRouting() noexcept;
+    /// Applies `act` to the rule `id` names, or to every rule when it is `kAllRules`.
+    void forEachNamed(std::string_view id, const std::function<void(trigger::Rule&)>& act);
     /// The instant every rule in this round is judged against — §5.8's ONLY IF stage, made
     /// once so that two rules with the same condition cannot disagree about it.
     trigger::Context contextAt(double now) const;
@@ -385,6 +509,16 @@ private:
     /// never waits behind a command reporting what went wrong.
     mutable std::mutex snapshotMutex_;
     Snapshot snapshot_;
+    /// See `levelsOf`. A universe and its 512 bytes, copied off the output thread at
+    /// `kMirrorHz` so a patch editor can show a fade happening.
+    struct MirroredUniverse {
+        dmx::PortAddress universe = 0;
+        std::vector<std::uint8_t> levels;
+    };
+    mutable std::mutex levelsMutex_;
+    std::vector<MirroredUniverse> levels_;
+    /// When the mirror was last refreshed, on `elapsed()`. Negative before it ever has been.
+    double mirroredAt_ = -1.0;
     /// §5.9's fired messages, written by the output thread and drained by a UI. A mutex
     /// rather than a ring because the entries hold strings and both sides are far from the
     /// audio thread — the output thread already takes two of these every round.

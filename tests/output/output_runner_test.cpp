@@ -585,6 +585,74 @@ TEST_CASE("panic reaches the rules through the same queue as everything else",
     CHECK(runner.triggers().rule(0).enabled()); // and an id nobody has is not an error
 }
 
+// No quotes in the name, and no characters the console codepage cannot carry: ctest hands a
+// test's name back to the binary as a filter through the command line, so anything that does
+// not survive that round trip "fails" by matching nothing at all.
+TEST_CASE("the rule id all means every rule", "[output][trigger][control]") {
+    // §5.7's `/ctl/rule/all/mute`. The *surface* does not know what rules exist — only the
+    // thing behind `RuleControl` does — so "all" travels as a name and is expanded here.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+
+    std::vector<Rule::Config> rules;
+    for (const char* id : {"intro", "drop", "outro"}) {
+        Rule::Config rule;
+        rule.id = id;
+        rule.trigger = takt4::trigger::Trigger::Beat;
+        rule.address = "/fire";
+        rules.push_back(rule);
+    }
+    runner.post(OutputCommand::rules(rules));
+    REQUIRE(runner.triggers().ruleCount() == 3);
+
+    runner.post(OutputCommand::ruleMuted(std::string(takt4::output::kAllRules), true));
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(runner.triggers().rule(i).muted());
+    }
+
+    // And one rule at a time still means one rule.
+    runner.post(OutputCommand::ruleMuted("drop", false));
+    CHECK(runner.triggers().rule(0).muted());
+    CHECK_FALSE(runner.triggers().rule(1).muted());
+    CHECK(runner.triggers().rule(2).muted());
+
+    SECTION("a rate gesture reaches all of them too, and compounds where it is relative") {
+        runner.post(OutputCommand::ruleRate(std::string(takt4::output::kAllRules), 2.0, true));
+        runner.post(OutputCommand::ruleRate(std::string(takt4::output::kAllRules), 2.0, true));
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK(runner.triggers().rule(i).rate() == 4.0);
+        }
+        // Absolute replaces rather than compounding, which is what a reset is.
+        runner.post(OutputCommand::ruleRate(std::string(takt4::output::kAllRules), 1.0, false));
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK(runner.triggers().rule(i).rate() == 1.0);
+        }
+    }
+
+    SECTION("an edit to one rule does not undo the gestures made to the others") {
+        // §5.9's editor replaces the whole set on every keystroke, and the live gestures are
+        // not part of what it hands over — so without `setRules` carrying them by id, renaming
+        // one rule would unmute the rig.
+        rules[1].name = "renamed mid-set";
+        runner.post(OutputCommand::rules(rules));
+        CHECK(runner.triggers().rule(0).muted());
+        CHECK_FALSE(runner.triggers().rule(1).muted());
+        CHECK(runner.triggers().rule(2).muted());
+    }
+
+    SECTION("a preset load brings new ids, so nothing carries over") {
+        std::vector<Rule::Config> preset;
+        Rule::Config fresh;
+        fresh.id = "from-a-preset";
+        fresh.address = "/fire";
+        preset.push_back(fresh);
+        runner.post(OutputCommand::rules(preset));
+        REQUIRE(runner.triggers().ruleCount() == 1);
+        CHECK_FALSE(runner.triggers().rule(0).muted());
+        CHECK(runner.triggers().rule(0).rate() == 1.0);
+    }
+}
+
 TEST_CASE("a control surface reaches the rules without knowing what a runner is",
           "[output][trigger][control]") {
     // The far end of 5.7's two remaining addresses. `control::ControlSurface` is written

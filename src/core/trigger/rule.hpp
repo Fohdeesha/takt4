@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/dmx/color.hpp"
+#include "core/dmx/effect.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/trigger/context.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/value.hpp"
@@ -151,6 +154,16 @@ struct Message {
         MidiCc,
         MidiProgramChange,
         MidiPitchBend,
+        /// One lighting effect, aimed at fixtures rather than at an address or a channel —
+        /// `fixtures` and `payload` below, and nothing else on this struct.
+        ///
+        /// **It carries a whole effect where the others carry a number, and that is what DMX
+        /// is.** An OSC message is an event a receiver acts on; a DMX level is a *state* the
+        /// controller has to keep sending. So the thing a rule hands over is not "channel 5 =
+        /// 200" but "fade these fixtures to 200 over two bars", which `dmx::DmxEngine` then
+        /// spends the next two bars executing. See `dmx::Payload`, which is deliberately
+        /// allocation-free so that this struct still is.
+        Dmx,
     };
 
     Kind kind = Kind::Osc;
@@ -170,6 +183,18 @@ struct Message {
     /// MIDI: the velocity or the controller value, 0 to 127.
     int value = 127;
 
+    /// Dmx: which fixtures of the patch this reaches, one bit each, in the order
+    /// `dmx::DmxEngine::patch()` holds them. **Zero is no fixtures** — a DMX rule that has not
+    /// been routed sends nothing, which is the opposite of what an empty `outputs` means and
+    /// is deliberate; `dmx::resolveFixtures` says why.
+    ///
+    /// A mask rather than the names, for the reasons `outputs` gives: a fire allocates
+    /// nothing, and a follow-up outlives the rule that owed it.
+    std::uint64_t fixtures = 0;
+    /// Dmx: the effect, already resolved — every generator run, every duration converted to
+    /// seconds against the tempo that was playing.
+    dmx::Payload payload;
+
     /// §5.6's *"rule subset"*: which of the app's outputs this goes to, one bit each, in
     /// the order `output::Transports::outputs()` holds them. All bits — `output::
     /// kAllOutputs` — means everywhere, which is what an unrouted rule means and what
@@ -183,14 +208,27 @@ struct Message {
     std::uint64_t outputs = ~std::uint64_t{0};
 };
 
-inline constexpr std::array<Message::Kind, 6> kMessageKinds{
+inline constexpr std::array<Message::Kind, 7> kMessageKinds{
     Message::Kind::Osc,    Message::Kind::MidiNote,          Message::Kind::MidiNoteOff,
-    Message::Kind::MidiCc, Message::Kind::MidiProgramChange, Message::Kind::MidiPitchBend};
+    Message::Kind::MidiCc, Message::Kind::MidiProgramChange, Message::Kind::MidiPitchBend,
+    Message::Kind::Dmx};
 
-/// True for everything but `Osc` — the test every MIDI-shaped branch wants, written once so
-/// adding a seventh kind does not mean finding every `!= Osc` in the tree.
+/// True for the five MIDI kinds — the test every MIDI-shaped branch wants, written once so
+/// that adding a kind does not mean finding every `!= Osc` in the tree.
+///
+/// **It used to be `kind != Osc`, and that was right until there were three families.** The
+/// day `Dmx` arrived, every `!= Osc` in the tree started claiming a lighting effect was a MIDI
+/// message — which would have sent one down a MIDI cable as a status byte built from an
+/// effect kind. Spelled out rather than negated for that reason.
 constexpr bool isMidi(Message::Kind kind) noexcept {
-    return kind != Message::Kind::Osc;
+    return kind == Message::Kind::MidiNote || kind == Message::Kind::MidiNoteOff ||
+           kind == Message::Kind::MidiCc || kind == Message::Kind::MidiProgramChange ||
+           kind == Message::Kind::MidiPitchBend;
+}
+
+/// True for the one lighting kind.
+constexpr bool isDmx(Message::Kind kind) noexcept {
+    return kind == Message::Kind::Dmx;
 }
 
 /// Whether the kind puts `Message::number` on the wire. False for pitch bend, which is all
@@ -216,6 +254,166 @@ constexpr int valueCeiling(Message::Kind kind) noexcept {
 std::string_view labelOf(Message::Kind kind) noexcept;
 std::string_view nameOf(Message::Kind kind) noexcept;
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept;
+
+/// `milliseconds` seconds, or `beats` worth of the tempo in `context` — whichever `unit` names.
+///
+/// The one place a musical length becomes a wall-clock one, shared by a follow-up's *delay*
+/// and a DMX effect's *duration* so the two cannot disagree about what a bar is. Falls back to
+/// the millisecond figure when the unit is musical and there is no tempo to measure against,
+/// and uses the meter the tracker reports rather than four (§5.5).
+double musicalSeconds(const Context& context, DelayUnit unit, double milliseconds,
+                      double beats) noexcept;
+
+/// A rule's lighting instruction, before its generators have been run — the configuration
+/// half of `dmx::Payload`.
+///
+/// **The two are separate types on purpose, and the split is the same one `Rule::Config` and
+/// `Message` already make.** This holds generators, names and units: what the operator typed.
+/// `dmx::Payload` holds numbers, a mask and seconds: what a fire decided. Keeping the units
+/// here is also what keeps `core/dmx` free of any dependency on `core/trigger`, so the engine
+/// that runs the lights knows nothing about rules.
+///
+/// **The color and the level are generators like everything else**, which is not a
+/// flourish: it is what makes *"a random color from my palette, never the same one twice"*
+/// fall out of the machinery the clip triggers already use, rather than being a second
+/// random-color feature with its own bag and its own bugs. A palette is a `Shuffle` over a
+/// `List` of text values — `#ff2040`, `#20ff80` — and no code here knows that is what it is
+/// looking at.
+/// How a lighting rule decides what color to send.
+///
+/// **Two modes, because an operator asks for the color two different ways and neither can
+/// say what the other says.** "These six colors, never the same one twice" is a palette; "a
+/// random color, but keep the blue high and the green out of it" is three ranges. A palette
+/// cannot express the second without listing every color in it, and three ranges cannot
+/// express the first at all.
+enum class ColorMode : std::uint8_t {
+    /// `DmxSend::color` decides it: a `Fixed` text value is one color from the picker, and
+    /// a `Shuffle`/`Random`/`Cycle` over a `List` of them is a palette. Every generator kind
+    /// works — a `Cycle` walks the palette in order, a `Shuffle` never repeats within a bag.
+    Palette,
+    /// `DmxSend::red`, `green` and `blue` decide it, one generator each, 0 to 255.
+    ///
+    /// Three generators rather than a "random color" tick box, because that is what makes
+    /// *"within limits I set for r g and b specifically"* fall out of machinery that already
+    /// exists — a limit is a `Random` over a range — and because it costs nothing to let the
+    /// other kinds in: a `Ramp` on red over four bars, or a `Live` green that follows the
+    /// intensity, are gestures nobody had to write code for.
+    Mix,
+};
+
+inline constexpr std::array<ColorMode, 2> kColorModes{ColorMode::Palette, ColorMode::Mix};
+
+std::string_view labelOf(ColorMode mode) noexcept;
+std::string_view nameOf(ColorMode mode) noexcept;
+std::optional<ColorMode> colorModeOf(std::string_view name) noexcept;
+
+/// The color generator a rule starts with: **one fixed color**, not a shuffle.
+///
+/// `Generator::Config`'s own default is §5.8's — shuffle over the integers 1 to 8 — which is
+/// right for a clip index and nonsense for a color: every draw is a number `dmx::parseColor`
+/// cannot read, so every fire fell back to white and the editor showed a range box asking
+/// which eight colors 1 through 8 were. Reported from a rig on 2026-09-16: *"I define a range
+/// 1-8 which maps to what!? it just stays the same #ffff color code"*.
+Generator::Config paletteOf(dmx::Color color) noexcept;
+
+/// And the palette a color generator seeds when it is switched to a kind that draws from a
+/// pool. Six colors that look like six colors on a wall — an operator who picked "shuffle"
+/// wants to see a shuffle, and can then edit the swatches.
+std::vector<Value> defaultPalette();
+
+/// One component's generator: `Random` over the whole byte, which is what "a random color"
+/// means before anybody has narrowed it.
+Generator::Config componentMix() noexcept;
+
+/// A generator that always produces `value` — what every *number* a lighting rule carries
+/// starts as.
+///
+/// **The same mistake the color had, in the field next to it.** `Generator::Config` defaults
+/// to shuffling 1 to 8, and a DMX level is 0 to 255: an untouched rule faded its fixtures to
+/// somewhere between 0.4 % and 3 % of full, which on a lamp is indistinguishable from the rule
+/// not having fired. A pan of 1 to 8 is likewise the extreme left-hand edge of the movement
+/// window rather than "somewhere". The default has to be the number an operator means before
+/// they have said anything — full, and centre.
+Generator::Config fixedNumber(int value) noexcept;
+
+struct DmxSend {
+    dmx::EffectKind effect = dmx::EffectKind::Level;
+    /// Which channel, for the kinds `dmx::takesRole` names.
+    dmx::Role role = dmx::Role::Dimmer;
+    dmx::Curve curve = dmx::Curve::EaseOut;
+    dmx::PathShape shape = dmx::PathShape::Circle;
+
+    /// The fixtures and groups this rule aims at, by name. **Empty reaches nothing**, and the
+    /// rule reports it as a problem rather than firing into the dark — see
+    /// `dmx::resolveFixtures` for why this is the opposite of what an empty output list means.
+    ///
+    /// Names rather than indices, for the reason `Config::outputs` gives: this travels in a
+    /// preset, and an index moves the moment a fixture above it is deleted.
+    std::vector<std::string> fixtures;
+
+    /// The target level, peak or high end, 0 to 255. Clamped, not wrapped. Full by default —
+    /// see `fixedNumber`, and what a shuffle over 1 to 8 does to a lamp.
+    Generator::Config level = fixedNumber(255);
+    /// The low end, for the kinds `dmx::takesBase` names.
+    int base = 0;
+    /// Which of the two ways below decides the color.
+    ColorMode colorMode = ColorMode::Palette;
+    /// The color, as text a `dmx::parseColor` understands. A `Fixed` text value is the
+    /// color picker; a `Shuffle` over a list is a palette. Used when `colorMode` is
+    /// `Palette`.
+    Generator::Config color = paletteOf(dmx::kWhite);
+    /// The three components, 0 to 255, used when `colorMode` is `Mix`. Clamped, not wrapped.
+    Generator::Config red = componentMix();
+    Generator::Config green = componentMix();
+    Generator::Config blue = componentMix();
+
+    /// How long the effect runs — **not** how long until it starts, which is a follow-up's
+    /// delay. Spelled in beats by default, because a fade that follows the tempo is the thing
+    /// this app exists to make possible.
+    DelayUnit unit = DelayUnit::Beats;
+    /// The duration in seconds, used when `unit` is `Milliseconds`. Two numbers rather than
+    /// one converted between them, for the reason `FollowUp::delayBeats` gives.
+    double durationSeconds = 0.5;
+    double durationBeats = 1.0;
+
+    /// How many times a repeating effect repeats within the duration.
+    double cycles = 1.0;
+    /// A strobe's on-fraction.
+    double duty = 0.5;
+    /// A hue sweep's ends, in degrees. It may run past 360, and backwards.
+    double hueFrom = 0.0;
+    double hueTo = 360.0;
+
+    /// Where a `Position` goes, as a **percentage of each fixture's own movement window**, so
+    /// that one rule aimed at six differently-rigged heads means the same gesture on all six.
+    /// Generators, so that "a random position every four bars" is `Random` over 0 to 100 and
+    /// "sweep across the room over a phrase" is a `Ramp` — neither of which needed any code of
+    /// its own.
+    /// The middle of the window by default, for the reason `fixedNumber` gives: an untouched
+    /// position rule pointed every head at the extreme corner of its own travel.
+    Generator::Config pan = fixedNumber(50);
+    Generator::Config tilt = fixedNumber(50);
+    /// A `Path`'s radius as a fraction of the window's half-width, 0 to 1.
+    double size = 0.5;
+};
+
+/// What a follow-up replaces of a DMX rule's own effect.
+///
+/// Present for the case the operator asked for first: *"fade in and fade out"* is one rule
+/// with a fade up and a follow-up two bars later that fades down. The follow-up needs a
+/// duration of its own — a two-bar fade out is not the same number as the two-bar wait before
+/// it — and a kind of its own, because the way out of a flash is not another flash.
+struct DmxFollow {
+    dmx::EffectKind effect = dmx::EffectKind::Level;
+    /// Used by the color kinds. A release with no `DmxFollow` dims the fired color instead,
+    /// which is what "let go" means for a light that is already lit.
+    dmx::Color color = dmx::kBlack;
+    dmx::Curve curve = dmx::Curve::EaseOut;
+
+    DelayUnit unit = DelayUnit::Beats;
+    double durationSeconds = 0.5;
+    double durationBeats = 1.0;
+};
 
 /// One of the messages a rule sends *after* the one it fired — §5.8's *"optional follow-up
 /// value after a delay"*, grown into a list.
@@ -251,6 +449,19 @@ struct FollowUp {
     /// the fired message's instead, which is the whole point of a release.
     int number = 0;
 
+    /// For a DMX rule: what this follow-up does to the lights instead of re-sending the
+    /// rule's own effect.
+    ///
+    /// Null is the release, and a release of a light is a **dim**: the fired effect again with
+    /// its level replaced by `value`, or — for a color — the fired color scaled by it. At
+    /// zero that is a fade to black over the same time the rule faded up in, which is
+    /// press-then-release spelled the way a lamp understands it.
+    ///
+    /// A release of a *movement* effect is skipped rather than invented. There is no sensible
+    /// "let go" of a pan: sending the head home would be a gesture nobody asked for, and
+    /// re-firing the move would make one rule fight itself.
+    std::optional<DmxFollow> dmx;
+
     DelayUnit unit = DelayUnit::Milliseconds;
     /// The delay in milliseconds, used when `unit` is `Milliseconds`.
     double delaySeconds = 0.05;
@@ -268,10 +479,13 @@ struct FollowUp {
 /// settings file hand-edited into nonsense cannot make one fire queue thousands of messages.
 inline constexpr std::size_t kMaxFollowUps = 8;
 
-/// Whether `kind` can follow a rule that sends `sent` — the OSC/MIDI divide `FollowUp::kind`
+/// Whether `kind` can follow a rule that sends `sent` — the family divide `FollowUp::kind`
 /// describes. A release (no kind) always can, since it *is* the fired message.
+///
+/// Three families now rather than two: an OSC follow-up to a DMX rule has no address to
+/// inherit, and a DMX follow-up to a MIDI rule has no fixtures.
 constexpr bool followUpFits(Message::Kind kind, Message::Kind sent) noexcept {
-    return isMidi(kind) == isMidi(sent);
+    return isMidi(kind) == isMidi(sent) && isDmx(kind) == isDmx(sent);
 }
 
 /// Where a fired rule's messages go.
@@ -354,6 +568,12 @@ public:
         /// it shuffles clips.
         Generator::Config number;
 
+        /// The lighting instruction, for `sendKind == Dmx`. Ignored by every other kind, and
+        /// kept rather than cleared when the kind changes — an operator switching a rule to
+        /// MIDI to try something should get their fixtures and their fade back when they
+        /// switch it back.
+        DmxSend dmx;
+
         /// §5.8's *"optional follow-up value after a delay"*, as many as the rule needs.
         /// Empty is a rule that sends one message and is done. See `FollowUp`, and
         /// `Rule::followUpsFor` for what each entry turns into.
@@ -382,6 +602,31 @@ public:
     bool enabled() const noexcept { return enabled_; }
     void setEnabled(bool on) noexcept { enabled_ = on; }
 
+    /// Whether this rule is **muted** — §5.7's `/ctl/rule/<id>/mute`, added on the operator's
+    /// ask of 2026-09-16 for live per-rule control.
+    ///
+    /// **Muted is not disabled, and the difference is the whole reason both exist.** A
+    /// disabled rule does not run: its shuffle bag stands still, its cooldown stops, and when
+    /// it comes back it starts again from wherever it left off — which, for a rule that draws
+    /// clips or colors, is audibly a restart. A muted rule runs exactly as it would: it
+    /// triggers, its conditions are judged, its generators advance and its cooldown ticks.
+    /// Only the sending is suppressed. So unmuting rejoins the music in phase rather than
+    /// beginning again, which is what an operator dropping a layer out for eight bars means.
+    bool muted() const noexcept { return muted_; }
+    void setMuted(bool on) noexcept { muted_ = on; }
+
+    /// A multiplier on `Config::every` — §5.7's `double`, `halve` and `rate`.
+    ///
+    /// Live, and *not* part of the configuration: it is a performance gesture, like the tempo
+    /// ÷2 button, so it is not saved and `reset()` puts it back to one. A rule on every four
+    /// bars at rate 2 fires every eight; at 0.5, every two. The result is rounded and floored
+    /// at one, so halving a rule that is already on every beat leaves it on every beat rather
+    /// than turning it off.
+    double rate() const noexcept { return rate_; }
+    void setRate(double rate) noexcept;
+    /// `Config::every` with `rate()` applied — what the trigger actually counts against.
+    std::uint32_t effectiveEvery() const noexcept;
+
     /// Empty when the rule is usable, and otherwise why it is not — for §5.9's rule card to
     /// show. An invalid rule is still a rule: it is held, edited and saved, and only
     /// refuses to fire.
@@ -399,6 +644,15 @@ public:
     /// neighbour used to occupy.
     std::uint64_t outputMask() const noexcept { return outputMask_; }
     void setOutputMask(std::uint64_t mask) noexcept { outputMask_ = mask; }
+
+    /// Which fixtures this rule's lighting effects reach, as `Message::fixtures`.
+    ///
+    /// Resolved from `DmxSend::fixtures` by whoever knows what the patch *is* — which is
+    /// `output::OutputRunner`, exactly as `outputMask` is. Set again whenever the patch
+    /// changes, or a rule keeps aiming at the bit its old neighbour used to occupy, and one
+    /// deleted fixture sends a strobe to the front wash.
+    std::uint64_t fixtureMask() const noexcept { return fixtureMask_; }
+    void setFixtureMask(std::uint64_t mask) noexcept { fixtureMask_ = mask; }
 
     /// Whether `context` is a change of the kind this rule's trigger names — tempo, lock or
     /// intensity — and remembers it either way.
@@ -445,7 +699,10 @@ public:
     /// Appended rather than assigned: the scheduler calls this once per fire on the output
     /// thread and reuses one buffer, so a rule that sends two messages allocates nothing
     /// after the first fire.
-    void followUpsFor(const Message& fired,
+    /// `context` is read only by the DMX kinds, whose follow-ups carry a *duration* as well as
+    /// a delay and so have to be converted against the tempo that was playing — the same rule
+    /// `followUpDelay` follows, settled at the fire rather than when the follow-up comes due.
+    void followUpsFor(const Context& context, const Message& fired,
                       std::vector<std::pair<std::size_t, Message>>& out) const;
 
     /// How long follow-up `index` of `Config::followUps` waits, in seconds, for a fire now.
@@ -482,17 +739,44 @@ public:
 private:
     void validate();
 
+    /// Draws the level, color, pan and tilt for one fire and turns `Config::dmx` into the
+    /// resolved `dmx::Payload` a message carries.
+    dmx::Payload buildPayload(const Context& context);
+
     Config config_;
     bool enabled_ = true;
+    /// See `muted()`. Live state rather than configuration: a rule comes back armed, because
+    /// a preset that loaded silent would look exactly like a preset that did not load.
+    bool muted_ = false;
+    /// See `rate()`. Live for the same reason.
+    double rate_ = 1.0;
     std::string problem_;
     std::vector<Generator> segments_;
     Generator value_;
     Generator number_;
+    /// The four `DmxSend` generators. Separate from `value_` and `number_` rather than
+    /// reusing them, because a rule keeps its MIDI and its lighting configuration side by side
+    /// (see `Config::dmx`) and sharing a generator would make switching the send kind quietly
+    /// rewrite the other half.
+    Generator dmxLevel_;
+    Generator dmxColor_;
+    /// `ColorMode::Mix`'s three. Separate from `dmxColor_` for the reason the four above are
+    /// separate from `value_`: switching the color mode must not rewrite the palette an
+    /// operator built, and it does not.
+    Generator dmxRed_;
+    Generator dmxGreen_;
+    Generator dmxBlue_;
+    Generator dmxPan_;
+    Generator dmxTilt_;
     /// §5.8's probability percentage, on this rule's own stream. See `conditionsHold`.
     tracking::Xoshiro256pp probability_;
     /// See `outputMask`. Everywhere until somebody who knows the outputs says otherwise,
     /// which is the right default for a rule nobody has routed.
     std::uint64_t outputMask_ = ~std::uint64_t{0};
+    /// See `fixtureMask`. **Nothing** until somebody who knows the patch says otherwise —
+    /// the opposite default, and the safe one: a lighting rule that reached every fixture
+    /// because nobody had resolved it yet would swing the whole rig on its first fire.
+    std::uint64_t fixtureMask_ = 0;
     /// What `seesChange` last counted as a change. Negative means "nothing seen yet", which
     /// is not a change: a rule must not fire on the first round merely for existing.
     double lastBpmSeen_ = -1.0;

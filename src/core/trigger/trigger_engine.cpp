@@ -1,17 +1,45 @@
 #include "core/trigger/trigger_engine.hpp"
 
 #include <algorithm>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace takt4::trigger {
 
 TriggerEngine::TriggerEngine(Sink& sink) noexcept : sink_(sink) {}
 
 void TriggerEngine::setRules(const std::vector<Rule::Config>& rules) {
+    // **The live per-rule gestures survive, by id.**
+    //
+    // Every edit in §5.9's editor replaces the whole set — that is the command's stated
+    // purpose — so without this, renaming a rule mid-set would unmute every muted rule and
+    // put every ÷2 back. The operator would have made one edit and silently undone half a
+    // dozen decisions they made from a Stream Deck ten minutes earlier.
+    //
+    // By id rather than by position, for the reason `RulesController::firesSeen_` gives: a
+    // rule deleted from the middle would otherwise shift every state below it onto a
+    // different rule. And a *preset load* brings new ids, so nothing carries over — which is
+    // exactly right, because a preset is the show and not somebody's half-played set.
+    std::vector<std::pair<std::string, std::pair<bool, double>>> live;
+    live.reserve(rules_.size());
+    for (const Rule& rule : rules_) {
+        if (rule.muted() || rule.rate() != 1.0) {
+            live.emplace_back(rule.id(), std::make_pair(rule.muted(), rule.rate()));
+        }
+    }
+
     rules_.clear();
     rules_.reserve(rules.size());
     for (const Rule::Config& config : rules) {
         rules_.emplace_back(config);
+        for (const auto& [id, state] : live) {
+            if (id == rules_.back().id()) {
+                rules_.back().setMuted(state.first);
+                rules_.back().setRate(state.second);
+                break;
+            }
+        }
     }
     // The old rules' follow-ups belong to rules that no longer exist. They are still owed:
     // a clip pressed by the preset being replaced would stay latched on if its release went
@@ -38,7 +66,12 @@ void TriggerEngine::reset() noexcept {
 
 bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noexcept {
     const Rule::Config& config = rule.config();
-    const std::uint64_t every = std::max<std::uint64_t>(1, config.every);
+    // `effectiveEvery` and not `config.every`: §5.7's `double` and `halve` are a live gesture
+    // on top of what the operator wrote, like the tempo ÷2 button, and they act here so that
+    // the counting stays in phase — a rule on every 4 bars taken to every 8 still lands on
+    // bar 1, because both are counted from the first bar rather than from when the gesture
+    // was made.
+    const std::uint64_t every = std::max<std::uint64_t>(1, rule.effectiveEvery());
     switch (config.trigger) {
     case Trigger::Beat:
         // Counted from the first beat, so "every 4 beats" is beats 1, 5, 9 — an operator
@@ -70,21 +103,36 @@ void TriggerEngine::deliver(const Message& message, std::string_view ruleId, boo
         // After the sink, so what an observer is told about has already gone out. A UI
         // showing a message that then failed to send would be worse than one showing
         // nothing — `RuleSink`'s own counters are where "it went nowhere" is reported.
-        observer_(ruleId, message, followUp, slots);
+        observer_(ruleId, message, followUp, slots, false);
     }
 }
 
-bool TriggerEngine::dispatch(Rule& rule, const Context& context) {
+bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
     const std::optional<Message> message = rule.fire(context);
     if (!message) {
         ++dropped_;
         return false;
     }
+    if (rule.muted() && !force) {
+        // **The rule has run.** Its generators advanced, its cooldown started and its fire
+        // count moved, which is the whole difference between muted and disabled: unmuting
+        // rejoins the music where it is rather than restarting a shuffle bag mid-set.
+        //
+        // The follow-ups are suppressed with the press, not delivered on their own. A press
+        // that never left must not be followed by a release that does — on OSC that is a clip
+        // switched off that was never switched on, and on DMX it is a fade to black out of
+        // nowhere.
+        ++muted_;
+        if (observer_) {
+            observer_(rule.id(), *message, false, rule.lastSlots(), true);
+        }
+        return true;
+    }
     deliver(*message, rule.id(), false, rule.lastSlots());
     // Reused across fires, so a rule that owes two messages allocates nothing after the
     // first. Cleared here rather than by the callee, which appends.
     owed_.clear();
-    rule.followUpsFor(*message, owed_);
+    rule.followUpsFor(context, *message, owed_);
     for (const auto& [index, follow] : owed_) {
         // Never in the past, however the delay was configured: a follow-up due before the
         // message it follows would be sent in the same round and read as a rule that sends
@@ -210,7 +258,11 @@ bool TriggerEngine::test(std::string_view id, const Context& context) {
     if (panicked_) {
         return false;
     }
-    return dispatch(*rule, context);
+    // Past `muted` too, and for the same reason it is past `enabled`: an operator pressing
+    // [test] has asked to see where the message lands, and a test button that silently did
+    // nothing because of a state set from a Stream Deck ten minutes ago would be the least
+    // debuggable control in the app.
+    return dispatch(*rule, context, true);
 }
 
 void TriggerEngine::panic(const Context& context) {

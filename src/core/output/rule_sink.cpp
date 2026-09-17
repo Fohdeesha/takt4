@@ -57,9 +57,30 @@ RuleSink::RuleSink(Transports& transports) noexcept : transports_(transports) {}
 void RuleSink::send(const trigger::Message& message) {
     if (message.kind == trigger::Message::Kind::Osc) {
         sendOsc(message);
+    } else if (message.kind == trigger::Message::Kind::Dmx) {
+        sendDmx(message);
     } else {
         sendMidi(message);
     }
+}
+
+void RuleSink::sendDmx(const trigger::Message& message) {
+    // **Nothing goes on a wire here, and that is the whole shape of DMX.** The effect is
+    // handed to the engine, which owns the universe buffers and spends the next two bars
+    // turning "fade to full" into forty frames a second of slightly different levels.
+    // `Transports::advance` is what puts those frames on the network.
+    //
+    // So "delivered" means something different for this kind than for the other two: it means
+    // the effect reached at least one real channel, not that a datagram left. That is the
+    // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
+    // message routed to a target that is switched off, and looks the same from outside.
+    const std::uint64_t before = transports_.dmx().missed();
+    transports_.dmx().start(message.fixtures, message.payload, now_);
+    if (transports_.dmx().missed() != before) {
+        ++undeliverable_;
+        return;
+    }
+    ++delivered_;
 }
 
 void RuleSink::sendOsc(const trigger::Message& message) {

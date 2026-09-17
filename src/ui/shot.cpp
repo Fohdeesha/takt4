@@ -8,7 +8,7 @@
 // Slint's `SoftwareRenderer` does not need any of that. A custom `slint::platform::Platform`
 // hands the runtime a window adapter whose renderer draws into a buffer we own, and the
 // buffer is written out as a BMP. The result is the real component — the real layout, the
-// real fonts, the real colours — rendered by Slint, not a mock-up of it.
+// real fonts, the real colors — rendered by Slint, not a mock-up of it.
 //
 // The readouts are filled by running the tracker over the committed synthetic excerpt, so
 // the picture shows numbers the engine actually produced rather than invented ones.
@@ -20,6 +20,8 @@
 #include "core/audio/rates.hpp"
 #include "core/build_info.hpp"
 #include "core/control/control_action.hpp"
+#include "core/dmx/effect.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -37,6 +39,7 @@
 #include <slint-platform.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -221,13 +224,85 @@ void fillPickers(MainWindow& window) {
     window.set_channel_index(0);
 }
 
+/// The lighting patch editor, with a rig in it worth looking at: two washes and a moving
+/// head, which between them exercise every branch the window has — a grouped fixture, a
+/// 16-bit channel map, and the movement limits that only appear on something that can move.
+void fillFixtures(FixturesWindow& window) {
+    auto roles = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::Role role : dmx::kRoles) {
+        roles->push_back(slint::SharedString(std::string(dmx::labelOf(role))));
+    }
+    window.set_roles(roles);
+
+    auto modes = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    modes->push_back(slint::SharedString("custom"));
+    for (const dmx::FixtureMode& mode : dmx::builtinModes()) {
+        modes->push_back(slint::SharedString(std::string(mode.name)));
+    }
+    window.set_modes(modes);
+
+    const auto row = [](const char* name, const char* where, const char* group, bool enabled,
+                        const char* problem) {
+        FixtureRow one{};
+        one.name = slint::SharedString(name);
+        one.where = slint::SharedString(where);
+        one.group = slint::SharedString(group);
+        one.enabled = enabled;
+        one.problem = slint::SharedString(problem);
+        return one;
+    };
+    auto fixtures = std::make_shared<slint::VectorModel<FixtureRow>>();
+    fixtures->push_back(row("wash L", "0 · 1-4", "washes", true, ""));
+    fixtures->push_back(row("wash R", "0 · 5-8", "washes", true, ""));
+    fixtures->push_back(row("head 1", "0 · 11-22", "heads", true, ""));
+    fixtures->push_back(row("head 2", "0 · 23-34", "heads", true, ""));
+    // One that cannot be driven, because that is the state the list has to be able to show.
+    fixtures->push_back(
+        row("blinder", "0 · 505-516", "", true, "runs off the end of the universe"));
+    window.set_fixtures(fixtures);
+    window.set_selected(2);
+
+    window.set_name(slint::SharedString("head 1"));
+    window.set_group(slint::SharedString("heads"));
+    window.set_universe(slint::SharedString("0"));
+    window.set_address(11);
+    window.set_enabled(true);
+    window.set_mode_index(7); // "moving head 16-bit", after the "custom" entry
+    window.set_moves(true);
+    window.set_pan_min(20);
+    window.set_pan_max(80);
+    window.set_tilt_min(45);
+    window.set_tilt_max(70);
+    window.set_summary(slint::SharedString("5 fixtures on 1 universe, going to 1 node"));
+
+    const dmx::Fixture head = dmx::fixtureFromMode("head 1", 6, 0, 11);
+    auto channels = std::make_shared<slint::VectorModel<ChannelRow>>();
+    // Levels that look like a head part way through a move, so the live bars have something
+    // to draw — which is the one thing in this window a static picture cannot otherwise show.
+    const std::array<int, 12> live{164, 32, 96, 200, 0, 190, 255, 255, 64, 0, 0, 0};
+    for (std::size_t i = 0; i < head.channels.size(); ++i) {
+        ChannelRow one{};
+        one.number = static_cast<int>(head.address) + static_cast<int>(i);
+        for (std::size_t r = 0; r < dmx::kRoles.size(); ++r) {
+            if (dmx::kRoles[r] == head.channels[i]) {
+                one.role_index = static_cast<int>(r);
+                break;
+            }
+        }
+        one.parked = static_cast<int>(head.parked[i]);
+        one.live = i < live.size() ? live[i] : 0;
+        channels->push_back(one);
+    }
+    window.set_channels(channels);
+}
+
 /// §5.9's editor, with a set of rules in it worth looking at.
 ///
 /// Built here rather than through `RulesController`, because a controller needs an
 /// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout
 /// has any business opening. What is drawn is the real component with the real models; only
 /// where the values came from differs.
-void fillRules(RulesWindow& window) {
+void fillRules(RulesWindow& window, bool dmx) {
     auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::Trigger which : trigger::kTriggers) {
         names->push_back(slint::SharedString(std::string(trigger::labelOf(which))));
@@ -341,6 +416,100 @@ void fillRules(RulesWindow& window) {
     window.set_sends_osc(true);
     window.set_address(slint::SharedString("/composition/layers/{layer}/clips/{clip}/connect"));
 
+    // The lighting dropdowns. Filled whichever half is being drawn, because a window with
+    // empty models draws empty boxes and a picture of those says nothing about either.
+    auto effects = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::EffectKind kind : dmx::kEffectKinds) {
+        effects->push_back(slint::SharedString(std::string(dmx::labelOf(kind))));
+    }
+    window.set_effect_kinds(effects);
+    auto effectRoles = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::Role role : dmx::kAimableRoles) {
+        effectRoles->push_back(slint::SharedString(std::string(dmx::labelOf(role))));
+    }
+    window.set_effect_roles(effectRoles);
+    auto curves = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::Curve curve : dmx::kCurves) {
+        curves->push_back(slint::SharedString(std::string(dmx::labelOf(curve))));
+    }
+    window.set_effect_curves(curves);
+    auto paths = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const dmx::PathShape shape : dmx::kPathShapes) {
+        paths->push_back(slint::SharedString(std::string(dmx::labelOf(shape))));
+    }
+    window.set_effect_shapes(paths);
+    auto colorModes = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::ColorMode mode : trigger::kColorModes) {
+        colorModes->push_back(slint::SharedString(std::string(trigger::labelOf(mode))));
+    }
+    window.set_color_modes(colorModes);
+
+    if (dmx) {
+        // A color on the moving heads, drawn from a palette — the effect that shows the half
+        // of the lighting editor a strobe cannot: the color mode, the swatches, and the note
+        // under the channel dropdown that says what an aim really reaches.
+        window.set_rule_name(slint::SharedString("Heads change color on the drop"));
+        window.set_send_index(6); // DMX / Art-Net, last of `kMessageKinds`
+        window.set_sends_osc(false);
+        window.set_sends_midi(false);
+        window.set_sends_dmx(true);
+        window.set_effect_index(1);      // color
+        window.set_effect_role_index(0); // dimmer
+        window.set_effect_takes_role(false);
+        window.set_effect_takes_base(false);
+        window.set_effect_takes_cycles(false);
+        window.set_effect_takes_duty(false);
+        window.set_effect_takes_curve(true);
+        window.set_effect_takes_color(true);
+        window.set_color_mode_index(0); // pick colors
+        window.set_effect_duration(slint::SharedString("2"));
+        window.set_effect_unit(2); // bars
+        window.set_effect_base(0);
+        window.set_effect_cycles(slint::SharedString("16"));
+        window.set_effect_duty(35);
+        window.set_rule_muted(true);
+        window.set_rule_rate(slint::SharedString("2x faster"));
+
+        // The palette itself. Six colors, which is what picking "shuffle" on a color now
+        // seeds — see `trigger::defaultPalette`.
+        auto palette = std::make_shared<slint::VectorModel<PaletteEntry>>();
+        for (const trigger::Value& value : trigger::defaultPalette()) {
+            std::string text;
+            value.appendTo(text);
+            const dmx::Color color = dmx::parseColor(text).value_or(dmx::kWhite);
+            PaletteEntry entry{};
+            entry.swatch = slint::Color::from_rgb_uint8(color.r, color.g, color.b);
+            entry.hex = slint::SharedString(text);
+            double hue = 0.0;
+            double saturation = 1.0;
+            double brightness = 1.0;
+            dmx::toHsv(color, hue, saturation, brightness);
+            entry.hue = static_cast<float>(hue);
+            entry.sat = static_cast<float>(saturation * 100.0);
+            entry.val = static_cast<float>(brightness * 100.0);
+            palette->push_back(entry);
+        }
+        window.set_palette(palette);
+        window.set_palette_shown(true);
+
+        auto lights = std::make_shared<slint::VectorModel<OutputChoice>>();
+        const auto pick = [](const char* name, bool chosen, bool missing) {
+            OutputChoice row{};
+            row.name = slint::SharedString(name);
+            row.chosen = chosen;
+            row.missing = missing;
+            return row;
+        };
+        lights->push_back(pick("heads", true, false));
+        lights->push_back(pick("washes", false, false));
+        lights->push_back(pick("head 1", false, false));
+        lights->push_back(pick("head 2", false, false));
+        lights->push_back(pick("lasers", true, true));
+        window.set_fixture_choices(lights);
+        window.set_fixtures_summary(slint::SharedString("heads, lasers"));
+        window.set_fixtures_available(slint::SharedString("reaches 2 fixtures"));
+    }
+
     // THEN SEND: two entries, because one would say nothing about it being a list. The first
     // is §5.6's release — the shape that used to be a tick box — and the second is the thing
     // the tick box could not say at all.
@@ -404,6 +573,27 @@ void fillRules(RulesWindow& window) {
     slots->push_back(clip);
 
     slots->push_back(fixedSlot("value", "1", "1"));
+
+    if (dmx) {
+        // A lighting rule's own chips: the level, and a color with its swatch and
+        // picker. The picker is the one control here that cannot be judged from the markup —
+        // a swatch drawn at the wrong height or a popup anchored off the row is silent.
+        slots = std::make_shared<slint::VectorModel<SlotRow>>();
+        SlotRow color = fixedSlot("color", "#ff2040", "#20ff80");
+        color.is_color = true;
+        color.swatch = slint::Color::from_rgb_uint8(0xff, 0x20, 0x40);
+        color.hue = 348;
+        color.sat = 87;
+        color.val = 100;
+        // Drawn from the palette rather than fixed, which is what the swatches below it are
+        // for: the chip says *how* they are drawn and the palette says what they are.
+        color.is_fixed = false;
+        color.kind_index = 0; // shuffle
+        color.takes_pool = true;
+        color.is_list = true;
+        color.no_repeat = 1;
+        slots->push_back(color);
+    }
     window.set_slots(slots);
 
     window.set_last_fired(slint::SharedString("/composition/layers/3/clips/7/connect 1"));
@@ -462,9 +652,17 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     const int height = options.height;
 
     if (options.rules) {
-        return renderWindow(out, width, height, [] {
+        return renderWindow(out, width, height, [&options] {
             auto window = RulesWindow::create();
-            fillRules(*window);
+            fillRules(*window, options.dmx);
+            return window;
+        });
+    }
+
+    if (options.fixtures) {
+        return renderWindow(out, width, height, [] {
+            auto window = FixturesWindow::create();
+            fillFixtures(*window);
             return window;
         });
     }
@@ -495,6 +693,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     auto outputKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
     outputKinds->push_back(slint::SharedString("OSC"));
     outputKinds->push_back(slint::SharedString("MIDI"));
+    outputKinds->push_back(slint::SharedString("Art-Net"));
     window->set_output_kinds(outputKinds);
 
     // §5.7's control row, built the way WindowController builds it.
@@ -560,7 +759,23 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         lights.address = slint::SharedString("midi MOTU Midi Out 1");
         lights.enabled = false;
         targets->push_back(lights);
+        // And the third shape: an Art-Net node, which asks for a host, a port and a universe
+        // list rather than a host and a port. The universe box is left empty on purpose —
+        // that is what one node on one rig looks like, and the placeholder says "all".
+        OutputRow truss{};
+        truss.name = slint::SharedString("truss");
+        truss.kind_index = 2;
+        truss.host = slint::SharedString("10.0.0.20");
+        truss.port = slint::SharedString("6454");
+        truss.address = slint::SharedString("artnet 10.0.0.20:6454");
+        truss.enabled = true;
+        targets->push_back(truss);
         window->set_outputs_list(targets);
+        // Which decides whether the destination column is three fields wide and whether there
+        // is a "universes" heading over the third. The live window computes it from the rows;
+        // here it is said out loud because this list has an Art-Net node in it.
+        window->set_outputs_any_artnet(true);
+        window->set_fixtures_total(5);
         window->set_beats_sent(21);
         // A control surface bound, so the row shows what a learned binding reads as
         // rather than an empty picker and a blank line.

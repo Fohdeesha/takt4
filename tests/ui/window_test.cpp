@@ -788,12 +788,22 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
         CHECK(controller.outputs().panicked());
     }
 
-    SECTION("the picker offers panic but not the one that would need a rule named") {
-        // §5.7's `rule/<id>/enable` cannot be armed from a gesture: pressing a pad says
-        // which button, never which rule. The list is the actions minus that one, so it is
-        // one shorter than the table.
-        CHECK(controller.window().get_learn_actions()->row_count() ==
-              takt4::control::kControlActions.size() - 1);
+    SECTION("the picker offers panic but not the ones that would need a rule named") {
+        // §5.7's `rule/<id>/…` verbs cannot be armed from a gesture: pressing a pad says
+        // which button, never which rule. The list is the actions minus those.
+        //
+        // Counted from `takesRuleId` rather than written down as "one fewer", which is what
+        // this was: there was one such verb, and when mute, double, halve, rate and reset
+        // arrived the number silently became six. A test that knows *why* an action is left
+        // out does not need editing when another one is.
+        std::size_t armable = 0;
+        for (const takt4::control::ControlAction action : takt4::control::kControlActions) {
+            if (!takt4::control::takesRuleId(action)) {
+                ++armable;
+            }
+        }
+        CHECK(controller.window().get_learn_actions()->row_count() == armable);
+        CHECK(armable > 0);
     }
 }
 
@@ -1819,4 +1829,37 @@ TEST_CASE("importing something that is not a preset changes nothing", "[ui][sett
     // A cancelled dialog is an empty path, and is not an error to report.
     CHECK_FALSE(controller.importFrom(std::filesystem::path{}));
     CHECK(controller.rules().size() == 1);
+}
+
+TEST_CASE("a tap does not switch the fold on", "[ui]") {
+    // **The setting an operator switched off must not come back on because they tapped.**
+    //
+    // takt4 is handed a *set* — one record after another — and a window that suited the last
+    // track silently halves or doubles the next one. A tap used to turn the fold on and set
+    // the window around the tapped tempo; that was taken out on 2026-09-08 and nothing tested
+    // it, so this is the guard. Asked again on 2026-09-16: "you're also still automatically
+    // enabling the 'keep bpm in range' option. why? will this not harm detection for the next
+    // song which could have a wildly different bpm range".
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+
+    controller.window().invoke_fold_on_changed(false);
+    run.applyPosted();
+    REQUIRE_FALSE(tracker.engine().tempoOptions().octaveFold);
+    const Options before = tracker.engine().tempoOptions();
+
+    // Three taps half a second apart: 120 BPM, and nothing is sent before the third.
+    controller.tap(0.0);
+    controller.tap(0.5);
+    controller.tap(1.0);
+    run.applyPosted();
+
+    const Options after = tracker.engine().tempoOptions();
+    CHECK_FALSE(after.octaveFold);
+    // And the window it would have moved is where the operator left it, so switching the fold
+    // back on later does not switch on a window a tap chose in the meantime.
+    CHECK_THAT(after.minBpm, WithinAbs(before.minBpm, 1e-6));
+    CHECK_THAT(after.maxBpm, WithinAbs(before.maxBpm, 1e-6));
+    CHECK_FALSE(controller.window().get_fold_on());
 }

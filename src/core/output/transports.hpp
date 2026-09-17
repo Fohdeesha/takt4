@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/dmx/artnet_publisher.hpp"
+#include "core/dmx/dmx_engine.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/output/link_session.hpp"
 #include "core/output/midi_clock.hpp"
 #include "core/output/osc_publisher.hpp"
@@ -43,6 +46,10 @@ public:
         /// §5.5's latency offset as the tracker has it, so the transports start out
         /// agreeing with it. `setLatencySeconds` keeps them agreeing when it is moved.
         double latencySeconds = 0.0;
+        /// The lighting patch — what fixtures there are, where, and what their channels do.
+        /// Empty is a rig with no lights on it, which costs nothing: no universes means no
+        /// frames, and an Art-Net target with nothing to carry sends none.
+        std::vector<dmx::Fixture> patch;
     };
 
     /// Builds the transports and applies `config` as their starting state. Throws if a
@@ -65,6 +72,11 @@ public:
     /// Always there, switched on or not.
     LinkSession& link() const noexcept { return *link_; }
     OscPublisher& osc() const noexcept { return *osc_; }
+    /// The lighting state and the effects running against it. Always there for the same
+    /// reason Link and OSC are: an engine with no patch holds no universes and costs nothing,
+    /// and building one on demand would mean replacing it under a running output thread.
+    dmx::DmxEngine& dmx() const noexcept { return *dmx_; }
+    dmx::ArtNetPublisher& artnet() const noexcept { return *artnet_; }
     /// Null unless a MIDI port is open. Non-const like `link()` and `osc()` above, and for
     /// the same reason: these belong to whichever thread owns the transports, and Phase 6's
     /// rules send notes and CCs down this one.
@@ -78,7 +90,8 @@ public:
     /// still count beats and cost nothing else, which is what makes an app that has not
     /// been configured yet behave like one that has.
     bool any() const noexcept {
-        return linkEnabled_ || osc_->targetCount() != 0 || midi_ || !midiDevices_.empty();
+        return linkEnabled_ || osc_->targetCount() != 0 || midi_ || !midiDevices_.empty() ||
+               artnet_->targetCount() != 0;
     }
 
     // --- what is switched on, and changing it -------------------------------------
@@ -96,6 +109,11 @@ public:
     /// match; a device that cannot be opened leaves that target unreachable and is reported
     /// through `lastError`-style throwing, as `setMidiClockPort` already is.
     void setOutputs(const std::vector<OutputTarget>& targets);
+
+    /// Replaces the lighting patch and re-points every Art-Net target at whatever universes
+    /// the new patch uses. Levels survive where they can — see `dmx::DmxEngine::setPatch`.
+    void setPatch(std::vector<dmx::Fixture> patch);
+    const std::vector<dmx::Fixture>& patch() const noexcept { return dmx_->patch(); }
 
     /// The OSC half of `outputs()`, as the host/port pairs the older callers use.
     std::vector<OscTarget> oscTargets() const;
@@ -176,6 +194,10 @@ private:
     /// Never null, and never replaced: the audio thread holds a pointer to the session.
     std::unique_ptr<LinkSession> link_;
     std::unique_ptr<OscPublisher> osc_;
+    /// The lighting half. Declared before `artnet_` because the publisher reads the engine
+    /// every round and destruction runs in reverse.
+    std::unique_ptr<dmx::DmxEngine> dmx_;
+    std::unique_ptr<dmx::ArtNetPublisher> artnet_;
     /// Every MIDI device in use, by name, opened once however many things name it — the
     /// clock and any number of §5.8's rule targets. See `midiClockPort`.
     std::map<std::string, std::unique_ptr<MidiOutput>> midiDevices_;

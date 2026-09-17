@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -281,6 +283,44 @@ std::string toJson(const Settings& settings) {
         bindings.push_back(binding);
     }
 
+    // The lighting patch. An object per fixture rather than a line of text, unlike the
+    // outputs above: a channel map is a *list*, and squeezing "pan, pan-fine, tilt, tilt-fine,
+    // speed, dimmer, strobe, red, green, blue, white, gobo" onto one line beside an address
+    // and a pair of movement limits would be a line nobody can read and nobody can edit.
+    json fixtures = json::array();
+    for (const dmx::Fixture& fixture : settings.preset.fixtures) {
+        json channels = json::array();
+        for (const dmx::Role role : fixture.channels) {
+            channels.push_back(std::string(dmx::nameOf(role)));
+        }
+        json parked = json::array();
+        for (const std::uint8_t level : fixture.parked) {
+            parked.push_back(static_cast<unsigned int>(level));
+        }
+        json one{
+            {"name", fixture.name},
+            {"universe", static_cast<unsigned int>(fixture.universe)},
+            {"address", static_cast<unsigned int>(fixture.address)},
+            {"channels", std::move(channels)},
+            {"parked", std::move(parked)},
+            {"enabled", fixture.enabled},
+        };
+        if (!fixture.group.empty()) {
+            one["group"] = fixture.group;
+        }
+        // The movement window, only where it has been narrowed. A fixture that cannot move has
+        // no window worth writing, and one that has not been limited should not carry four
+        // numbers saying so.
+        if (fixture.panMin != 0.0 || fixture.panMax != 1.0 || fixture.tiltMin != 0.0 ||
+            fixture.tiltMax != 1.0) {
+            one["panMin"] = fixture.panMin;
+            one["panMax"] = fixture.panMax;
+            one["tiltMin"] = fixture.tiltMin;
+            one["tiltMax"] = fixture.tiltMax;
+        }
+        fixtures.push_back(std::move(one));
+    }
+
     const json document{
         {"version", kFormatVersion},
         {"machine",
@@ -303,6 +343,7 @@ std::string toJson(const Settings& settings) {
              {"link", settings.preset.link},
              {"oscPrefix", settings.preset.oscPrefix},
              {"outputs", targets},
+             {"fixtures", fixtures},
              // Through `rule_json`, which owns the shape of a rule, and back through
              // `json::parse` so it nests as an array rather than as a string of JSON.
              // §5.8's rules are the largest thing a preset carries and the only part of it
@@ -385,6 +426,52 @@ Settings fromJson(std::string_view text) {
         }
         if (preset.is_object() && preset.contains("rules")) {
             settings.preset.rules = rulesFromJson(preset.at("rules").dump());
+        }
+        if (preset.is_object() && preset.contains("fixtures") && preset.at("fixtures").is_array()) {
+            for (const json& one : preset.at("fixtures")) {
+                if (!one.is_object()) {
+                    continue; // one unreadable fixture must not cost the rest of the patch
+                }
+                dmx::Fixture fixture;
+                read(one, "name", fixture.name);
+                read(one, "group", fixture.group);
+                read(one, "enabled", fixture.enabled);
+                unsigned int universe = 0;
+                unsigned int address = 1;
+                read(one, "universe", universe);
+                read(one, "address", address);
+                fixture.universe = dmx::clampPortAddress(static_cast<int>(universe));
+                // Clamped rather than refused, like everything else `load` reads: a file
+                // hand-edited to address 900 gives a fixture the editor shows as wrong, not a
+                // settings file that will not open.
+                fixture.address = static_cast<std::uint16_t>(
+                    std::clamp<unsigned int>(address, 1, dmx::kChannelsPerUniverse));
+                if (one.contains("channels") && one.at("channels").is_array()) {
+                    for (const json& role : one.at("channels")) {
+                        if (!role.is_string()) {
+                            continue;
+                        }
+                        // An unknown role becomes `Unused` rather than being dropped, so the
+                        // channels *after* it stay where the fixture's manual says they are.
+                        // Dropping one would silently re-address everything below it.
+                        fixture.channels.push_back(
+                            dmx::roleOf(role.get<std::string>()).value_or(dmx::Role::Unused));
+                    }
+                }
+                if (one.contains("parked") && one.at("parked").is_array()) {
+                    for (const json& level : one.at("parked")) {
+                        if (level.is_number()) {
+                            fixture.parked.push_back(
+                                static_cast<std::uint8_t>(std::clamp(level.get<int>(), 0, 255)));
+                        }
+                    }
+                }
+                read(one, "panMin", fixture.panMin);
+                read(one, "panMax", fixture.panMax);
+                read(one, "tiltMin", fixture.tiltMin);
+                read(one, "tiltMax", fixture.tiltMax);
+                settings.preset.fixtures.push_back(std::move(fixture));
+            }
         }
         // `outputs` is what this build writes; `oscTargets` is what older ones did. Both
         // are read, so an upgrade keeps the targets an operator had typed rather than

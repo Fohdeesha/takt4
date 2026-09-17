@@ -74,6 +74,7 @@ output::Transports::Config transportConfig(const settings::Settings& settings,
     config.link = settings.preset.link;
     config.oscPrefix = settings.preset.oscPrefix;
     config.outputs = settings.preset.outputs;
+    config.patch = settings.preset.fixtures;
     config.latencySeconds = tempo.latencyOffsetSeconds;
     return config;
 }
@@ -185,16 +186,30 @@ int deviceIndexOf(const std::vector<std::string>& ports, const std::string& devi
 /// what an unnamed one is called (`parseOutputTarget`). Filling it in with the address would
 /// be true and useless: it is the box the operator types a name into, and it would come back
 /// holding a copy of the box beside it every time they did not.
+/// "0, 1, 4" — an Art-Net target's universe list as its box holds it. Empty for a node fed
+/// everything, which is the default and what the box's placeholder explains.
+std::string universeList(const std::vector<std::uint16_t>& universes) {
+    std::string text;
+    for (const std::uint16_t universe : universes) {
+        if (!text.empty()) {
+            text += ", ";
+        }
+        text += std::to_string(static_cast<unsigned int>(universe));
+    }
+    return text;
+}
+
 OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::string>& midiPorts) {
     OutputRow row{};
     const std::string address = output::formatOutputAddress(target);
     row.name = slint::SharedString(target.name == address ? std::string{} : target.name);
     row.address = slint::SharedString(address);
     const bool midi = target.kind == output::OutputTarget::Kind::Midi;
-    row.kind_index = midi ? 1 : 0;
+    row.kind_index = static_cast<int>(target.kind);
     row.host = slint::SharedString(target.host);
     row.port = slint::SharedString(std::to_string(target.port));
     row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
+    row.universes = slint::SharedString(universeList(target.universes));
     row.enabled = target.enabled;
     row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
     return row;
@@ -208,7 +223,7 @@ OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::strin
 /// picked. Empty is how `applyTargets` already spells "this row is being filled in", so an
 /// unfinished row costs no error message and sends nothing.
 std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts) {
-    if (row.kind_index != 0) {
+    if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi)) {
         const auto device = static_cast<std::size_t>(row.device_index);
         if (row.device_index <= 0 || device > midiPorts.size()) {
             return {};
@@ -219,8 +234,38 @@ std::string addressOf(const OutputRow& row, const std::vector<std::string>& midi
     if (host.empty()) {
         return {};
     }
+    const bool artnet = row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
     const std::string port(row.port);
-    return host + ":" + (port.empty() ? std::to_string(kNewTargetPort) : port);
+    const std::string where =
+        host + ":" +
+        (port.empty() ? std::to_string(artnet ? dmx::kArtNetPort : kNewTargetPort) : port);
+    if (!artnet) {
+        return where;
+    }
+    // The universe box is free text, so what the operator typed has to be turned into the
+    // `u0,1,4` the line format uses — and anything that is not a universe is dropped rather
+    // than making the whole row unparseable. A box being typed into holds "0, " for a moment.
+    std::string list;
+    const std::string typed(row.universes);
+    std::size_t at = 0;
+    while (at < typed.size()) {
+        const std::size_t comma = typed.find(',', at);
+        const std::string_view field = trim(
+            std::string_view(typed).substr(at, comma == std::string::npos ? comma : comma - at));
+        unsigned int universe = 0;
+        const char* const begin = field.data();
+        const char* const end = begin + field.size();
+        if (!field.empty() && std::from_chars(begin, end, universe).ec == std::errc{} &&
+            universe <= dmx::kMaxPortAddress) {
+            list += list.empty() ? "" : ",";
+            list += std::to_string(universe);
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        at = comma + 1;
+    }
+    return "artnet " + where + (list.empty() ? "" : " u" + list);
 }
 
 /// A whole destination back into the fields that edit it, as far as the text allows.
@@ -233,21 +278,32 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     output::OutputTarget target;
     if (output::parseOutputTarget(address, target)) {
         const bool midi = target.kind == output::OutputTarget::Kind::Midi;
-        row.kind_index = midi ? 1 : 0;
+        row.kind_index = static_cast<int>(target.kind);
         row.host = slint::SharedString(midi ? std::string{} : target.host);
         row.port = slint::SharedString(midi ? std::string{} : std::to_string(target.port));
         row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
+        row.universes = slint::SharedString(universeList(target.universes));
         return;
     }
     // Not a target — a row half-way through being typed, or one whose text was refused. The
     // kind is still readable from the shape of it, and for OSC so is as much of the host and
     // port as has been typed, which is what the boxes should go on showing.
-    const std::string_view text = trim(address);
+    std::string_view text = trim(address);
     if (text.rfind("midi ", 0) == 0 || text == "midi") {
-        row.kind_index = 1;
+        row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
         return;
     }
-    row.kind_index = 0;
+    if (text.rfind("artnet ", 0) == 0 || text == "artnet") {
+        row.kind_index = static_cast<int>(output::OutputTarget::Kind::ArtNet);
+        text = trim(text.substr(text.size() > 6 ? 7 : 6));
+        const std::size_t marker = text.rfind(" u");
+        if (marker != std::string_view::npos) {
+            row.universes = slint::SharedString(std::string(trim(text.substr(marker + 2))));
+            text = trim(text.substr(0, marker));
+        }
+    } else {
+        row.kind_index = static_cast<int>(output::OutputTarget::Kind::Osc);
+    }
     const std::size_t colon = text.rfind(':');
     if (colon == std::string_view::npos) {
         row.host = slint::SharedString(std::string(text));
@@ -300,7 +356,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // §5.9's editor, built with the window and shown on demand. It is given the rules
       // straight from the preset rather than through `setRules`, because the runner has
       // not been told about them yet — the constructor body does that below, once.
-      editor_(runner_, settings.preset.rules) {
+      editor_(runner_, settings.preset.rules),
+      // And the lighting patch, the same way. The runner was built with it (see
+      // `transportConfig`), so this one really is only the editor's copy.
+      patch_(runner_, settings.preset.fixtures) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -364,6 +423,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_output_kind_changed([this](int index, int kind) { setTargetKind(index, kind); });
     window_->on_output_device_picked(
         [this](int index, int device) { setTargetDevice(index, device); });
+    window_->on_output_universes_edited([this](int index, const slint::SharedString& text) {
+        setTargetUniverses(index, std::string(text), false);
+    });
+    window_->on_output_universes_accepted([this](int index, const slint::SharedString& text) {
+        setTargetUniverses(index, std::string(text), true);
+    });
     window_->on_output_added([this] { addTarget(); });
     window_->on_save_now([this] { saveNow(); });
     window_->on_export_settings([this] {
@@ -389,12 +454,20 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
 
     window_->on_rules_clicked([this] { openEditor(); });
+    window_->on_fixtures_clicked([this] { patch_.show(); });
     window_->on_panic_clicked([this] { togglePanic(); });
 
     // The editor owns the editing and this owns the file, so a change there comes back
     // here rather than the editor knowing where settings live.
     editor_.setRulesChanged(
         [this](const std::vector<trigger::Rule::Config>& rules) { rules_ = rules; });
+    // The same for the patch — and one more thing: a rule aims at a fixture by *name*, so the
+    // rule editor's "send to" list has to be rebuilt whenever the patch changes or a rule will
+    // go on offering a fixture that has been renamed out from under it.
+    patch_.setPatchChanged([this](const std::vector<dmx::Fixture>& fixtures) {
+        fixtures_ = fixtures;
+        editor_.setPatch(fixtures_);
+    });
 
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
@@ -424,6 +497,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // In `output::OutputTarget::Kind`'s own order, which is what `OutputRow::kind-index` is.
     kinds->push_back(shared("OSC"));
     kinds->push_back(shared("MIDI"));
+    kinds->push_back(shared("Art-Net"));
     window_->set_output_kinds(kinds);
 
     auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
@@ -475,6 +549,11 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     if (!settings.preset.rules.empty()) {
         setRules(settings.preset.rules);
     }
+    // The patch is already on the output thread — `transportConfig` gave it to the runner's
+    // constructor, so the universes exist before the first frame. What is left is this
+    // class's own copy for saving, and the rule editor's list of what a rule may aim at.
+    fixtures_ = settings.preset.fixtures;
+    editor_.setPatch(fixtures_);
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
         // reason the MIDI port is: a port another application has taken throws, and by now
@@ -714,7 +793,17 @@ void WindowController::setTargetKind(int index, int kind) {
     if (row.kind_index == kind) {
         return;
     }
+    const bool wasArtNet = row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
     row.kind_index = kind;
+    // Art-Net has one port and everybody uses it. A row switched to it while holding 7000 —
+    // an OSC port an operator typed, or the default a new row is born with — would be a node
+    // that never answers, and the reason would be a number they had no reason to look at. So
+    // the conventional port is put in when the kind is picked, and put back when it is not.
+    if (kind == static_cast<int>(output::OutputTarget::Kind::ArtNet)) {
+        row.port = shared(std::to_string(dmx::kArtNetPort));
+    } else if (wasArtNet) {
+        row.port = shared(std::to_string(kNewTargetPort));
+    }
     // A row switched to MIDI has no device picked yet, and one switched back to OSC keeps
     // whatever host and port it had — so `addressOf` gives an empty destination for the
     // first and the old one back for the second. Empty is how `applyTargets` spells "still
@@ -731,9 +820,24 @@ void WindowController::setTargetDevice(int index, int device) {
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
     row.device_index = device;
-    row.kind_index = 1;
+    row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
     row.address = shared(addressOf(row, midiPorts_));
     applyTargets();
+}
+
+void WindowController::setTargetUniverses(int index, const std::string& universes, bool apply) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    // Kept exactly as typed. `addressOf` is what turns it into the line format, and it drops
+    // anything that is not a universe — so a box holding "0, " mid-edit is a node on universe
+    // 0 rather than a row that has stopped parsing.
+    row.universes = shared(universes);
+    row.address = shared(addressOf(row, midiPorts_));
+    if (apply) {
+        applyTargets();
+    }
 }
 
 void WindowController::addTarget() {
@@ -922,6 +1026,14 @@ void WindowController::publishTargetRows() {
         targetRowsDirty_ = true;
     }
     writeRows(*targetModel_, targetDrafts_);
+
+    // Which headings the column needs, and how wide the destination slot is. See
+    // `outputs-any-artnet`: an Art-Net row is one field wider than the other two.
+    const bool artnet = std::any_of(
+        targetDrafts_.begin(), targetDrafts_.end(), [](const OutputRow& row) {
+            return row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
+        });
+    window_->set_outputs_any_artnet(artnet);
 }
 
 void WindowController::setMidiPort(const std::string& name) {
@@ -1168,6 +1280,7 @@ void WindowController::publishTriggers() {
     }
     window_->set_rules_active(active);
     window_->set_rules_total(static_cast<int>(rules_.size()));
+    window_->set_fixtures_total(static_cast<int>(fixtures_.size()));
     window_->set_panicked(runner_.panicked());
     // The editor is the only thing that drains what fired — `OutputRunner::takeFired` is a
     // drain and two readers would each get half — so this row is fed from what the editor
@@ -1390,8 +1503,10 @@ settings::Settings WindowController::currentSettings() const {
     out.preset.outputs = live.outputs;
     out.preset.oscPrefix = live.oscPrefix;
     // This window's copy, not the runner's: the runner's belong to the output thread and
-    // reading them while it runs is what `rules()` explains is unsafe.
+    // reading them while it runs is what `rules()` explains is unsafe. The patch is the same
+    // — the editor's copy, kept in step by its changed callback.
     out.preset.rules = rules_;
+    out.preset.fixtures = fixtures_;
     return out;
 }
 
@@ -1659,6 +1774,10 @@ void WindowController::tick() {
     // last message out of what the drain found. The other way round the TRIGGERS row was
     // always one redraw stale, which at 30 Hz nobody would see but which would be a lie.
     editor_.tick();
+    // And the patch editor, whose live level bars are the one thing in that window that moves
+    // on its own — and the only way to watch a fade happen with no fixture plugged in. It
+    // costs nothing while the window is closed.
+    patch_.tick();
     publishTriggers();
     if (!tracker_.running()) {
         return;

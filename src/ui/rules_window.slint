@@ -21,7 +21,7 @@
 // one being edited.
 
 import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { Press, Splitter, Theme } from "theme.slint";
+import { FocusSink, Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -71,6 +71,39 @@ export struct SlotRow {
   /// What this slot last produced, so an operator can see a sequence advancing without
   /// waiting for the address line to scroll past.
   last: string,
+
+  /// Whether this slot is a **color** — the one generator whose value nobody can read as
+  /// text. `#20ff80` says nothing about what it looks like on a wall, so a color slot gets
+  /// a swatch and a picker where every other slot gets a box.
+  is-color: bool,
+  /// The color that slot is currently set to, for the swatch.
+  swatch: color,
+  /// And the same color as hue, saturation and value, which is what the picker's three
+  /// sliders move. Held apart from `swatch` because a grey has no hue to read back out of
+  /// it — see `dmx::toHsv` — so the picker would jump to red the moment somebody dragged
+  /// the saturation to zero if it re-derived them on every frame.
+  hue: float,
+  sat: float,
+  val: float,
+}
+
+/// One color of a palette — `trigger::DmxSend::color`'s list, one entry.
+///
+/// **Its own model rather than a field of `SlotRow`**, because a rule has at most one color
+/// generator and a repeater nested inside another repeater's struct is not something a Slint
+/// model does. `RulesWindow::palette` is the list and `palette-shown` says whether the rule
+/// in front of the operator has one.
+export struct PaletteEntry {
+  /// What the swatch is painted.
+  swatch: color,
+  /// And the same color as text, for the box beside the picker — how a color gets pasted
+  /// in from anywhere else.
+  hex: string,
+  /// The picker's three sliders. Held rather than re-derived for the reason `SlotRow::hue`
+  /// gives: a black has no hue to read back out of it.
+  hue: float,
+  sat: float,
+  val: float,
 }
 
 /// One of the messages a rule sends *after* the one it fired — `trigger::FollowUp`.
@@ -181,6 +214,10 @@ export component RulesWindow inherits Window {
   callback rule-removed();
   callback rule-duplicated();
   callback rule-enabled-changed(bool);
+  callback rule-muted-changed(bool);
+  /// A **relative** multiplier on the rule's interval, so ÷2 pressed twice is four times as
+  /// often. Absolute would make the two buttons a pair of presets rather than a nudge.
+  callback rule-rate-changed(float);
   callback rule-renamed(string);
   callback panic-clicked();
   /// §5.6's presets at rig scale: a whole set of rules in one pick.
@@ -232,6 +269,11 @@ export component RulesWindow inherits Window {
   in-out property <[string]> send-kinds;
   in-out property <int> send-index;
   in-out property <bool> sends-osc: true;
+  /// **Three families now, not two.** "not OSC" used to mean MIDI, and the day a lighting
+  /// kind arrived that reading started putting a MIDI channel spinner on a rule that has no
+  /// channel. Each family says so itself.
+  in-out property <bool> sends-midi;
+  in-out property <bool> sends-dmx;
   in-out property <string> address;
   in-out property <int> channel: 1;
   /// §5.6's host presets: "The preset is a starting point the user can edit — never a
@@ -277,6 +319,101 @@ export component RulesWindow inherits Window {
   callback output-chosen(string, bool);
   callback all-outputs-chosen();
 
+  // --- the lighting half -----------------------------------------------------------
+  //
+  // Shown only for a rule whose send kind is DMX. Every control here is hidden rather than
+  // disabled when the chosen effect does not use it: a strobe's duty cycle greyed out on a
+  // fade is a control an operator has to work out is irrelevant, and there are eight of them.
+
+  /// The fixtures and groups this rule aims at — the same shape as the outputs list, ticked
+  /// from the rig's own patch. **Naming none reaches nothing**, which is the opposite of what
+  /// naming no output means: an unrouted lighting rule that went everywhere would swing the
+  /// whole rig the first time somebody added one.
+  in-out property <[OutputChoice]> fixture-choices;
+  in-out property <string> fixtures-summary;
+  /// How many fixtures those names really reach on this rig. The count is the point: "heads"
+  /// reaching three fixtures and "heads" reaching none look identical in a list of ticks.
+  in-out property <string> fixtures-available;
+  /// Whether this rule currently reaches no fixture at all — named none, or named only things
+  /// this rig has not got. A state rather than a string comparison in the markup, because the
+  /// markup would then depend on the exact wording of a sentence.
+  in-out property <bool> fixtures-reaches-nothing;
+
+  in-out property <[string]> effect-kinds;
+  in-out property <int> effect-index;
+  /// Which channel the effect drives, for the kinds that aim at one — `dmx::kAimableRoles`.
+  in-out property <[string]> effect-roles;
+  in-out property <int> effect-role-index;
+  in-out property <[string]> effect-curves;
+  in-out property <int> effect-curve-index;
+  in-out property <[string]> effect-shapes;
+  in-out property <int> effect-shape-index;
+
+  /// Which of the controls below this effect actually uses.
+  in-out property <bool> effect-takes-role;
+  in-out property <bool> effect-takes-base;
+  in-out property <bool> effect-takes-cycles;
+  in-out property <bool> effect-takes-duty;
+  in-out property <bool> effect-takes-hue;
+  in-out property <bool> effect-takes-shape;
+  in-out property <bool> effect-takes-curve;
+  in-out property <bool> effect-takes-color;
+
+  /// What the channel dropdown cannot say for itself: whether the fixtures this rule names
+  /// *have* the channel it is aimed at, and what happens on the ones that do not. Empty when
+  /// there is nothing worth saying. See `RulesController::describeRoleReach` — a rule aimed
+  /// at a dimmer over a par with no dimmer channel used to be silent in every direction.
+  in-out property <string> effect-role-note;
+
+  /// Where the color comes from — `trigger::ColorMode`, a palette or three components.
+  in-out property <[string]> color-modes;
+  in-out property <int> color-mode-index;
+  /// The palette's swatches, and whether this rule has a palette at all: a *fixed* color
+  /// keeps its swatch on the generator chip and has no list behind it.
+  in-out property <[PaletteEntry]> palette;
+  in-out property <bool> palette-shown;
+
+  /// How long the effect runs — **not** how long until it starts, which is a follow-up's
+  /// delay. In whichever unit `effect-unit` names; the controller keeps both numbers, so
+  /// switching units does not rewrite what was typed.
+  in-out property <string> effect-duration;
+  in-out property <int> effect-unit;
+  in-out property <int> effect-base;
+  in-out property <string> effect-cycles;
+  in-out property <float> effect-duty;
+  in-out property <string> effect-hue;
+  in-out property <float> effect-size;
+
+  callback fixture-chosen(string, bool);
+  callback no-fixtures-chosen();
+  callback effect-picked(int);
+  callback effect-role-picked(int);
+  callback effect-curve-picked(int);
+  callback effect-shape-picked(int);
+  callback effect-duration-edited(string);
+  callback effect-unit-picked(int);
+  callback effect-base-changed(int);
+  callback effect-cycles-edited(string);
+  callback effect-duty-changed(float);
+  callback effect-hue-edited(string);
+  callback effect-size-changed(float);
+  callback color-mode-picked(int);
+  callback palette-added();
+  callback palette-removed(int);
+  /// One palette entry from its picker: hue in degrees, saturation and brightness as
+  /// percentages — the same three `slot-color-changed` carries.
+  callback palette-color-changed(int, float, float, float);
+  callback palette-hex-edited(int, string);
+  /// Whether a color picker's popup is on the screen.
+  ///
+  /// **A picker is a `PopupWindow` inside a repeated item**, so anything that rebuilds that
+  /// repeater destroys the popup — and the slider the operator is dragging goes with it.
+  /// That crashed the program on 2026-09-16. The controller holds its rebuilds while this is
+  /// true; see `RulesController::setPickerOpen`. Both pickers report through it, and the
+  /// order is safe because `close-on-click-outside` closes the open one *before* the click
+  /// that opens the next is delivered.
+  callback picker-open-changed(bool);
+
   callback send-picked(int);
   callback address-edited(string);
   callback channel-changed(int);
@@ -297,6 +434,10 @@ export component RulesWindow inherits Window {
   callback slot-values-edited(int, string);
   callback slot-no-repeat-changed(int, int);
   callback slot-fixed-edited(int, string);
+  /// A color slot's hue (degrees), saturation and brightness (both percentages). Three
+  /// numbers rather than a hex string, because the picker moves them and the controller is
+  /// where they become the `#rrggbb` a generator holds.
+  callback slot-color-changed(int, float, float, float);
   callback slot-live-picked(int, int);
   callback slot-shape-picked(int, int);
   callback slot-ramp-bars-changed(int, int);
@@ -313,6 +454,22 @@ export component RulesWindow inherits Window {
   in-out property <bool> status-is-error;
 
   callback log-cleared();
+
+  // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
+  // commits when it loses the keyboard, and a click on a heading, a panel or the space
+  // between two rows used to move the focus nowhere — so the box stayed lit and what was
+  // typed in it stayed uncommitted until something else happened to take the focus.
+  //
+  // First in the window, so it is *behind* everything: a click that any real control wants
+  // is taken by that control and never reaches here, and what does reach here is a click on
+  // nothing. `Press` does the same thing for itself, since a button's own touch area would
+  // otherwise swallow the click before this saw it.
+  defocus := FocusSink { }
+  TouchArea {
+    clicked => {
+      defocus.take();
+    }
+  }
 
   HorizontalLayout {
     padding: 0px;
@@ -662,6 +819,31 @@ export component RulesWindow inherits Window {
             }
           }
 
+          // **Mute is not disable, and both are here because they are different states.**
+          // A disabled rule stops running: its shuffle bag stands still and it starts again
+          // where it left off. A muted one keeps running and stops *sending*, so unmuting
+          // rejoins the music in phase rather than restarting mid-set. Dropping a layer out
+          // for eight bars is the second one.
+          //
+          // Live, not saved: it is a performance gesture like the tempo ÷2 button, so a
+          // preset that loaded silent is not a thing that can happen. `/ctl/rule/<id>/mute`
+          // reaches the same state from a control surface.
+          Press {
+            text: "MUTE";
+            font: 13px;
+            pad: 10px;
+            active: root.rule-muted;
+            enabled: root.selected >= 0;
+            clicked => {
+              root.rule-muted-changed(!root.rule-muted);
+            }
+          }
+
+          // How often this rule fires against how often it was written to, as a live
+          // multiplier. ÷2 and ×2 are the interval, so ×2 is *half* as often — labelled with
+          // what happens to the firing rather than to the number, because that is what an
+          // operator is thinking about.
+
           LineEdit {
             text <=> root.rule-name;
             placeholder-text: "name this rule";
@@ -726,7 +908,15 @@ export component RulesWindow inherits Window {
               model: root.trigger-names;
               current-index <=> root.trigger-index;
               enabled: root.selected >= 0;
-              width: 220px;
+              // **Shrinkable rather than fixed.** At the window's own 900px minimum this row
+              // is a dropdown, a number, a line of prose and two buttons in about 515px, and a
+              // hard `width` cannot give way — so the row overflowed the pane and x2 was
+              // sliced in half. The prose elides first, this gives up its slack second, and
+              // the buttons keep their labels. Measured in a shot at 900x560.
+              preferred-width: 220px;
+              max-width: 220px;
+              min-width: 132px;
+              horizontal-stretch: 0;
               selected => {
                 root.trigger-picked(self.current-index);
               }
@@ -783,6 +973,54 @@ export component RulesWindow inherits Window {
               font-family: root.trigger-takes-pulses ? "Consolas" : "";
               vertical-alignment: center;
               horizontal-stretch: 1;
+              // **This is what was eating the two buttons beside it.** A `Text` with no
+              // elide reports its whole string as its minimum width, and a layout will not
+              // shrink a child below its minimum — so in a pane dragged narrow this line
+              // kept all twenty-three characters and ÷2 and ×2 were squeezed until `Press`
+              // elided *their* labels to a single ellipsis each. Reported from a rig on
+              // 2026-09-16 as "wtf are these two buttons with 3 dots each". The prose is
+              // what should give way here; the buttons are what gets pressed.
+              overflow: elide;
+            }
+
+            // **How often, live** — §5.7's `double` and `halve` reached from the window
+            // rather than only from a control surface.
+            //
+            // Here and not in the title bar beside MUTE, which is where they started: the
+            // title row is a checkbox, a button, a name field and TEST, and three more
+            // controls pushed the editor pane past what the window's own 900px minimum
+            // leaves it. A pane test caught it. They read better here anyway, because this
+            // is the row that already says how often the rule fires.
+            // And a floor of their own, so that whatever else is on the row these two keep
+            // enough width for the label they exist to show. Wide enough for "÷2" at 17px
+            // with `Press`'s own padding either side.
+            Press {
+              text: "÷2";
+              pad: 8px;
+              min-width: 52px;
+              enabled: root.selected >= 0;
+              clicked => {
+                root.rule-rate-changed(0.5);
+              }
+            }
+            Press {
+              text: "×2";
+              pad: 8px;
+              min-width: 52px;
+              enabled: root.selected >= 0;
+              clicked => {
+                root.rule-rate-changed(2.0);
+              }
+            }
+            Text {
+              // Only when it is not 1: a rule at the rate it was written to has nothing to
+              // say, and a permanent "×1" beside every rule would be noise.
+              text: root.rule-rate;
+              color: Theme.holding;
+              font-size: 12px;
+              font-family: "Consolas";
+              vertical-alignment: center;
+              width: 80px;
             }
           }
 
@@ -1030,14 +1268,14 @@ export component RulesWindow inherits Window {
               }
             }
 
-            if !root.sends-osc : Text {
+            if root.sends-midi : Text {
               text: "channel";
               color: Theme.dim;
               font-size: 12px;
               vertical-alignment: center;
             }
 
-            if !root.sends-osc : SpinBox {
+            if root.sends-midi : SpinBox {
               value <=> root.channel;
               minimum: 1;
               maximum: 16;
@@ -1048,7 +1286,450 @@ export component RulesWindow inherits Window {
               }
             }
 
+            // The effect, which for a lighting rule is what the address is for an OSC one:
+            // the first thing decided and the thing that decides what the rest of the row is
+            // even asking.
+            if root.sends-dmx : ComboBox {
+              model: root.effect-kinds;
+              current-index: root.effect-index;
+              enabled: root.selected >= 0;
+              preferred-width: 152px;
+              max-width: 152px;
+              min-width: 104px;
+              horizontal-stretch: 0;
+              selected => {
+                root.effect-picked(self.current-index);
+              }
+            }
+
+            if root.sends-dmx && root.effect-takes-role : Text {
+              text: "on";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            if root.sends-dmx && root.effect-takes-role : ComboBox {
+              model: root.effect-roles;
+              current-index: root.effect-role-index;
+              enabled: root.selected >= 0;
+              preferred-width: 130px;
+              max-width: 130px;
+              min-width: 96px;
+              horizontal-stretch: 0;
+              selected => {
+                root.effect-role-picked(self.current-index);
+              }
+            }
+
+            if root.sends-dmx && root.effect-takes-shape : ComboBox {
+              model: root.effect-shapes;
+              current-index: root.effect-shape-index;
+              enabled: root.selected >= 0;
+              width: 120px;
+              selected => {
+                root.effect-shape-picked(self.current-index);
+              }
+            }
+
             Rectangle { horizontal-stretch: 1; }
+          }
+
+          // Where the color comes from — a palette, or three component generators. See
+          // `trigger::ColorMode` for why these are two modes and not one: "these six colors"
+          // and "random, but keep the blue up" are different instructions and neither can say
+          // the other.
+          //
+          // **Its own row rather than a seventh control on the effect row**, which at the
+          // window's 900px minimum ran the dropdown off the right of the pane. The gutter is
+          // the one the rows below use, so it lines up with "over" and "lights".
+          if root.sends-dmx && root.effect-takes-color : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
+            spacing: 8px;
+
+            Text {
+              text: "color from";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            ComboBox {
+              model: root.color-modes;
+              current-index: root.color-mode-index;
+              enabled: root.selected >= 0;
+              preferred-width: 210px;
+              max-width: 210px;
+              min-width: 132px;
+              horizontal-stretch: 0;
+              selected => {
+                root.color-mode-picked(self.current-index);
+              }
+            }
+
+            Text {
+              text: root.color-mode-index == 0
+                  ? "swatches below; the chip beside them says how they are drawn"
+                  : "one generator per component, 0 to 255 each";
+              color: Theme.dim;
+              font-size: 11px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+          }
+
+          // **What the channel dropdown could not say for itself.**
+          //
+          // A rule aimed at "dimmer" over an RGB par names a channel the fixture has not got,
+          // and used to do so in total silence: the rule fired, logged, counted, and the lamp
+          // stayed dark. The engine now drives the color instead (`dmx::aims`); this is the
+          // line that says which of the two is happening, and still says "reaches nothing" for
+          // the aims that really do — a pan on a wash.
+          //
+          // **On a line of its own**, because on the effect row it was the seventh control and
+          // `Press`-style elision cut it to a single ellipsis at the window's own width. A
+          // warning nobody can read is not a warning; rendered and measured at 1164x872.
+          if root.sends-dmx && root.effect-takes-role && root.effect-role-note != "" : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 20px;
+            spacing: 8px;
+
+            // The same gutter the rows below use, so the note sits under the controls it is
+            // about rather than under the SEND heading.
+            Rectangle { width: 116px; horizontal-stretch: 0; }
+
+            Text {
+              text: root.effect-role-note;
+              color: Theme.holding;
+              font-size: 11px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+          }
+
+          // --- the lighting row ------------------------------------------------
+          //
+          // How long the effect runs, and the handful of numbers each effect uses. Spelled in
+          // beats by default, because a fade that follows the tempo is the thing this app
+          // exists to make possible — and the unit is beside the number rather than implied,
+          // because "2" meaning two bars and "2" meaning two milliseconds are the same box.
+          if root.sends-dmx : HorizontalLayout {
+            // **An explicit height, and it is load-bearing.** The column above says
+            // `alignment: start`, which holds a plain row to its own height and does
+            // *not* hold a conditional one: an `if` child of a vertical layout takes
+            // a share of whatever height is spare, and `vertical-stretch: 0` on it
+            // does not stop that either — both were measured. So the rows that live
+            // behind an `if` say how tall they are, exactly as the generator chips
+            // and the patch editor's channel rows already did.
+            //
+            // On a short rule these boxes drew three hundred pixels tall with grey
+            // canyons between the headings. Reported from a rig on 2026-09-16 and
+            // reproduced in a shot at 1164x1400, which is the only way it shows: at
+            // the window's own height the content fills it and nothing is spare.
+            height: 36px;
+            vertical-stretch: 0;
+            spacing: 8px;
+
+            Text {
+              text: "over";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            LineEdit {
+              text: root.effect-duration;
+              placeholder-text: "1";
+              font-size: 12px;
+              width: 76px;
+              enabled: root.selected >= 0;
+              accepted(t) => {
+                // Focus first, callback second: the callback republishes this box — that is
+                // how it comes back holding a number the controller normalised — and a
+                // handler touching `self` afterwards would be touching an element on its way
+                // out. The same order every other box in this window uses.
+                self.clear-focus();
+                root.effect-duration-edited(t);
+              }
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.effect-duration-edited(self.text);
+                }
+              }
+            }
+
+            ComboBox {
+              model: root.follow-up-units;
+              current-index: root.effect-unit;
+              enabled: root.selected >= 0;
+              width: 92px;
+              selected => {
+                root.effect-unit-picked(self.current-index);
+              }
+            }
+
+            if root.effect-takes-curve : ComboBox {
+              model: root.effect-curves;
+              current-index: root.effect-curve-index;
+              enabled: root.selected >= 0;
+              width: 124px;
+              selected => {
+                root.effect-curve-picked(self.current-index);
+              }
+            }
+
+            if root.effect-takes-base : Text {
+              text: "from";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            if root.effect-takes-base : SpinBox {
+              value: root.effect-base;
+              minimum: 0;
+              maximum: 255;
+              enabled: root.selected >= 0;
+              width: 92px;
+              edited(v) => {
+                root.effect-base-changed(v);
+              }
+            }
+
+            if root.effect-takes-cycles : Text {
+              text: "×";
+              color: Theme.dim;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+
+            if root.effect-takes-cycles : LineEdit {
+              text: root.effect-cycles;
+              placeholder-text: "1";
+              font-size: 12px;
+              width: 60px;
+              enabled: root.selected >= 0;
+              accepted(t) => {
+                self.clear-focus();
+                root.effect-cycles-edited(t);
+              }
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.effect-cycles-edited(self.text);
+                }
+              }
+            }
+
+            if root.effect-takes-hue : LineEdit {
+              text: root.effect-hue;
+              placeholder-text: "0 - 360";
+              font-size: 12px;
+              width: 96px;
+              enabled: root.selected >= 0;
+              accepted(t) => {
+                self.clear-focus();
+                root.effect-hue-edited(t);
+              }
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.effect-hue-edited(self.text);
+                }
+              }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // A strobe's duty cycle and a path's radius, each a slider because each is found by
+          // eye rather than typed.
+          if root.sends-dmx && root.effect-takes-duty : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
+            spacing: 8px;
+            Text {
+              text: "on for";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+            Slider {
+              minimum: 1;
+              maximum: 99;
+              value: root.effect-duty;
+              enabled: root.selected >= 0;
+              width: 220px;
+              changed(v) => {
+                root.effect-duty-changed(v);
+              }
+            }
+            Text {
+              text: round(root.effect-duty) + "% of each flash";
+              color: Theme.text;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          if root.sends-dmx && root.effect-takes-shape : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
+            spacing: 8px;
+            Text {
+              text: "size";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+            Slider {
+              minimum: 0;
+              maximum: 100;
+              value: root.effect-size;
+              enabled: root.selected >= 0;
+              width: 220px;
+              changed(v) => {
+                root.effect-size-changed(v);
+              }
+            }
+            Text {
+              // At 100% the figure just touches the fixture's own movement limits and never
+              // crosses them, which is what makes a full-size circle safe to fire blind.
+              text: round(root.effect-size) + "% of the movement window";
+              color: Theme.text;
+              font-size: 12px;
+              vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // --- which fixtures ---------------------------------------------------
+          //
+          // The same shape as "send to" below, and ticked from the rig's own patch for the
+          // same reason: an operator should not have to remember what their fixtures are
+          // called and spell each one the same way twice.
+          if root.sends-dmx : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
+            spacing: 8px;
+
+            Text {
+              text: "lights";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 116px;
+              vertical-alignment: center;
+            }
+
+            fixtures-field := Rectangle {
+              width: 260px;
+              height: 32px;
+              horizontal-stretch: 0;
+              background: root.selected < 0 ? Theme.controlOff : Theme.control;
+              border-radius: 4px;
+              border-width: 1px;
+              // Amber rather than grey when the rule names nothing, because a DMX rule with no
+              // fixtures does not fire at all — and a silent rule looks exactly like a rule
+              // whose trigger has not come round yet.
+              border-color: root.selected < 0 ? Theme.line
+                : root.fixtures-reaches-nothing ? Theme.holding
+                : fixtures-touch.has-hover ? Theme.accent
+                : Theme.controlEdge;
+
+              HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 6px;
+                Text {
+                  text: root.fixtures-summary;
+                  color: Theme.label;
+                  font-size: 12px;
+                  overflow: elide;
+                  horizontal-stretch: 1;
+                  vertical-alignment: center;
+                }
+                Text {
+                  // U+25BC and 8px, matching the outputs field below — the lighter chevrons
+                  // are not in the font the software renderer embeds and come out as nothing
+                  // at all. That was measured in a shot; see the note on `outputs-field`.
+                  text: "▼";
+                  color: Theme.dim;
+                  font-size: 8px;
+                  vertical-alignment: center;
+                }
+              }
+
+              fixtures-touch := TouchArea {
+                enabled: root.selected >= 0;
+                clicked => {
+                  fixtures-popup.show();
+                }
+              }
+
+              fixtures-popup := PopupWindow {
+                x: 0;
+                y: parent.height + 2px;
+                width: parent.width;
+                // Not the default: a click *inside* is a tick, and a list that closed on the
+                // first one would make aiming at three fixtures three trips.
+                close-policy: close-on-click-outside;
+
+                Rectangle {
+                  background: Theme.panel;
+                  border-radius: 4px;
+                  border-width: 1px;
+                  border-color: Theme.line;
+
+                  VerticalLayout {
+                    padding: 8px;
+                    spacing: 4px;
+
+                    Text {
+                      text: root.fixtures-available;
+                      color: Theme.dim;
+                      font-size: 11px;
+                      wrap: word-wrap;
+                    }
+
+                    for choice[index] in root.fixture-choices : CheckBox {
+                      // A group and a fixture look the same here on purpose: both are a name
+                      // a rule may aim at, and which one a name is is the patch's business.
+                      text: choice.missing ? choice.name + "  (not on this rig)" : choice.name;
+                      checked: choice.chosen;
+                      toggled => {
+                        root.fixture-chosen(choice.name, self.checked);
+                      }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+
+                    Press {
+                      text: "NONE";
+                      font: 12px;
+                      pad: 10px;
+                      clicked => {
+                        root.no-fixtures-chosen();
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            Text {
+              text: root.fixtures-available;
+              color: Theme.dim;
+              font-size: 11px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
           }
 
           // §5.6's rule subset, ticked from the rig's own list.
@@ -1058,7 +1739,15 @@ export component RulesWindow inherits Window {
           // it asks them to remember what their outputs are called *and* to spell each the
           // same way twice, and a typo reads as a rule that silently sends nowhere. The rig
           // knows what it has, so it offers them and the operator ticks.
-          HorizontalLayout {
+          //
+          // **Not for a lighting rule**, which is routed by *fixture* instead: a fixture
+          // already names its universe and an Art-Net target already says which universes it
+          // carries, so there is no second routing decision to make. Leaving the row on would
+          // be offering a control that changes nothing — which a render caught, sitting under
+          // "lights" and reading as though the two had to agree.
+          if !root.sends-dmx : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
             spacing: 8px;
 
             Text {
@@ -1234,6 +1923,8 @@ export component RulesWindow inherits Window {
           // one an operator reads character by character, so sharing a row with two pickers
           // left it with a hundred pixels. §5.9's sketch gives it a line too.
           if root.sends-osc : LineEdit {
+            height: 34px;
+            vertical-stretch: 0;
             text <=> root.address;
             placeholder-text: "/composition/layers/3/clips/{clip}/connect";
             enabled: root.selected >= 0;
@@ -1295,7 +1986,13 @@ export component RulesWindow inherits Window {
 
               // Which values, asked separately from how they are drawn — the two questions
               // `trigger::Pool` exists to keep apart.
-              if slot.takes-pool : CheckBox {
+              //
+              // **Not on a color**, which is the one slot where a *range* means nothing: the
+              // integers between two colors are not colors, and a color generator handed
+              // one falls back to white. A color's values are the palette row below, which
+              // is a list by construction, so the question does not arise and the box that
+              // asked it was a box with no right answer.
+              if slot.takes-pool && !slot.is-color : CheckBox {
                 text: "list";
                 checked: slot.is-list;
                 toggled => {
@@ -1303,7 +2000,15 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if slot.takes-pool && !slot.is-list : LineEdit {
+              if slot.takes-pool && slot.is-color : Text {
+                text: "colors below";
+                color: Theme.dim;
+                font-size: 11px;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+              }
+
+              if slot.takes-pool && !slot.is-color && !slot.is-list : LineEdit {
                 text: slot.low + " - " + slot.high;
                 placeholder-text: "1 - 8";
                 font-size: 12px;
@@ -1323,7 +2028,7 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if slot.takes-pool && slot.is-list : LineEdit {
+              if slot.takes-pool && !slot.is-color && slot.is-list : LineEdit {
                 text: slot.values;
                 placeholder-text: "3, 7, 1, 12 — in this order";
                 font-size: 12px;
@@ -1343,9 +2048,147 @@ export component RulesWindow inherits Window {
                 }
               }
 
+              // **The color picker.** A swatch that opens three sliders, because a hex
+              // string is the one value in this window nobody can read: `#20ff80` says
+              // nothing about what it will look like on a wall, and picking a color by
+              // typing one is picking it by arithmetic.
+              //
+              // Hue, saturation and value rather than red, green and blue — those are the
+              // axes somebody actually moves. "The same color but dimmer" and "the same
+              // color but washed out" are one slider each here and three there.
+              //
+              // The hex box stays beside it: it is how a color gets pasted in from anywhere
+              // else, and how a *palette* is written, which is a list and not one color.
+              if slot.is-color && slot.is-fixed : Rectangle {
+                width: 34px;
+                height: 28px;
+                y: 3px;
+                horizontal-stretch: 0;
+                background: slot.swatch;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: swatch-touch.has-hover ? Theme.accent : Theme.controlEdge;
+
+                swatch-touch := TouchArea {
+                  clicked => {
+                    picker.show();
+                  }
+                }
+
+                // **Watched from out here, not from inside the popup.** A `PopupWindow`'s
+                // contents are built when it is shown and dropped when it closes, so a
+                // `changed is-open` written inside it is created with `is-open` already true
+                // and never sees a change at all — measured: not one notification, either
+                // way. Read from the element that owns the popup it is a plain binding, which
+                // is the use the property is documented for. See `picker-open-changed`.
+                property <bool> picking: picker.is-open;
+                changed picking => {
+                  root.picker-open-changed(self.picking);
+                }
+
+                picker := PopupWindow {
+                  x: 0;
+                  y: parent.height + 2px;
+                  width: 280px;
+                  // A click inside is a drag on a slider, and a picker that closed on the
+                  // first one would make choosing a color three trips.
+                  close-policy: close-on-click-outside;
+
+                  Rectangle {
+                    background: Theme.panel;
+                    border-radius: 5px;
+                    border-width: 1px;
+                    border-color: Theme.controlEdge;
+
+                    VerticalLayout {
+                      padding: 10px;
+                      spacing: 6px;
+
+                      Rectangle {
+                        height: 34px;
+                        background: slot.swatch;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                      }
+
+                      HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                          text: "hue";
+                          color: Theme.dim;
+                          font-size: 11px;
+                          width: 34px;
+                          vertical-alignment: center;
+                        }
+                        Slider {
+                          minimum: 0;
+                          maximum: 359;
+                          value: slot.hue;
+                          horizontal-stretch: 1;
+                          changed(v) => {
+                            root.slot-color-changed(index, v, slot.sat, slot.val);
+                          }
+                        }
+                      }
+
+                      HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                          text: "sat";
+                          color: Theme.dim;
+                          font-size: 11px;
+                          width: 34px;
+                          vertical-alignment: center;
+                        }
+                        Slider {
+                          minimum: 0;
+                          maximum: 100;
+                          value: slot.sat;
+                          horizontal-stretch: 1;
+                          changed(v) => {
+                            root.slot-color-changed(index, slot.hue, v, slot.val);
+                          }
+                        }
+                      }
+
+                      HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                          // "bright", not "value": V is the letter in HSV and the word means
+                          // nothing here, where every other slot's *value* is the number it
+                          // sends.
+                          text: "bright";
+                          color: Theme.dim;
+                          font-size: 11px;
+                          width: 34px;
+                          vertical-alignment: center;
+                        }
+                        Slider {
+                          minimum: 0;
+                          maximum: 100;
+                          value: slot.val;
+                          horizontal-stretch: 1;
+                          changed(v) => {
+                            root.slot-color-changed(index, slot.hue, slot.sat, v);
+                          }
+                        }
+                      }
+
+                      Text {
+                        text: "sent to this rule's lights as you drag";
+                        color: Theme.dim;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                      }
+                    }
+                  }
+                }
+              }
+
               if slot.is-fixed : LineEdit {
                 text: slot.fixed;
-                placeholder-text: "value";
+                placeholder-text: slot.is-color ? "#ff2040" : "value";
                 font-size: 12px;
                 horizontal-stretch: 1;
                 accepted(text) => {
@@ -1431,7 +2274,12 @@ export component RulesWindow inherits Window {
               if slot.is-ramp : CheckBox {
                 // A float sweeps and an int steps — see `Generator::nextRamp`, where the
                 // difference is spelled out. Which one a host wants is not guessable.
-                text: "whole";
+                //
+                // It said "whole", which is half a sentence: whole *what*? Asked from a rig
+                // on 2026-09-16 — *"wtf does this 'whole' option mean next to the color
+                // code?"* — where it was sitting beside a last-fired readout and read as a
+                // property of that. The label now names the thing it does.
+                text: "whole numbers";
                 checked: !slot.ramp-float;
                 toggled => {
                   root.slot-ramp-float-changed(index, !self.checked);
@@ -1467,18 +2315,248 @@ export component RulesWindow inherits Window {
               Text {
                 // What this slot last produced. §5.9 asks for a last-fired line on the
                 // rule; a sequence is easier to believe when each part shows its own.
-                text: slot.last;
+                //
+                // **With an arrow**, because a bare value at the end of a row of settings
+                // reads as another setting. A rig asked what the `#ffffff` at the end of the
+                // color chip was and whether the checkbox beside it belonged to it; the
+                // arrow says this one is an output and the checkbox is not its label.
+                text: slot.last == "" ? "" : "→ " + slot.last;
                 color: Theme.locked;
                 font-size: 12px;
                 font-family: "Consolas";
-                width: 40px;
+                // A hex color is seven characters and a MIDI value is three.
+                width: slot.is-color ? 92px : 52px;
+                horizontal-stretch: 0;
                 horizontal-alignment: right;
                 vertical-alignment: center;
               }
             }
           }
 
-          HorizontalLayout {
+          // --- the palette -----------------------------------------------------
+          //
+          // **The colors a shuffle shuffles, as colors.** The chip above says how they are
+          // drawn — shuffle, cycle, random — and this says what they are, which is the half a
+          // text box could never show: `#20ff80, #ff2040, #ffe000` is a list nobody can read
+          // as three colors, and a *range* like "1 - 8" was worse than unreadable, because a
+          // color generator drawing the integer 3 falls back to white on every fire. That is
+          // exactly what a rig met on 2026-09-16 — *"there's no way to make it do random
+          // colors on beat ... I define a range 1-9 which maps to what!? it just stays the
+          // same #ffff color code"*.
+          //
+          // Each swatch opens the same hue/saturation/brightness picker the fixed color has,
+          // with a hex box for pasting one in and a REMOVE for taking it out.
+          if root.palette-shown : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
+            spacing: 8px;
+
+            Text {
+              text: "palette";
+              color: Theme.accent;
+              font-size: 13px;
+              font-family: "Consolas";
+              width: 64px;
+              vertical-alignment: center;
+            }
+
+            for entry[index] in root.palette : Rectangle {
+              width: 40px;
+              height: 30px;
+              horizontal-stretch: 0;
+              background: entry.swatch;
+              border-radius: 4px;
+              border-width: 1px;
+              border-color: entry-touch.has-hover ? Theme.accent : Theme.controlEdge;
+
+              entry-touch := TouchArea {
+                clicked => {
+                  entry-picker.show();
+                }
+              }
+
+              // From out here for the reason the other picker gives: a `changed is-open`
+              // inside the popup is built with the popup and never sees a change. This is the
+              // picker that crashed — its swatch is a repeated item, and dragging its hue
+              // slider is what rebuilt the repeater it belongs to.
+              property <bool> picking: entry-picker.is-open;
+              changed picking => {
+                root.picker-open-changed(self.picking);
+              }
+
+              entry-picker := PopupWindow {
+                x: 0;
+                y: parent.height + 2px;
+                width: 280px;
+                // A click inside is a drag on a slider; closing on the first one would make
+                // picking a color three trips.
+                close-policy: close-on-click-outside;
+
+                Rectangle {
+                  background: Theme.panel;
+                  border-radius: 5px;
+                  border-width: 1px;
+                  border-color: Theme.controlEdge;
+
+                  VerticalLayout {
+                    padding: 10px;
+                    spacing: 6px;
+
+                    Rectangle {
+                      height: 34px;
+                      background: entry.swatch;
+                      border-radius: 4px;
+                      border-width: 1px;
+                      border-color: Theme.line;
+                    }
+
+                    HorizontalLayout {
+                      spacing: 8px;
+                      Text {
+                        text: "hue";
+                        color: Theme.dim;
+                        font-size: 11px;
+                        width: 40px;
+                        vertical-alignment: center;
+                      }
+                      Slider {
+                        minimum: 0;
+                        maximum: 359;
+                        value: entry.hue;
+                        horizontal-stretch: 1;
+                        changed(v) => {
+                          root.palette-color-changed(index, v, entry.sat, entry.val);
+                        }
+                      }
+                    }
+
+                    HorizontalLayout {
+                      spacing: 8px;
+                      Text {
+                        text: "sat";
+                        color: Theme.dim;
+                        font-size: 11px;
+                        width: 40px;
+                        vertical-alignment: center;
+                      }
+                      Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: entry.sat;
+                        horizontal-stretch: 1;
+                        changed(v) => {
+                          root.palette-color-changed(index, entry.hue, v, entry.val);
+                        }
+                      }
+                    }
+
+                    HorizontalLayout {
+                      spacing: 8px;
+                      Text {
+                        // "bright", not "value": V is the letter in HSV and the word means
+                        // nothing here.
+                        text: "bright";
+                        color: Theme.dim;
+                        font-size: 11px;
+                        width: 40px;
+                        vertical-alignment: center;
+                      }
+                      Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: entry.val;
+                        horizontal-stretch: 1;
+                        changed(v) => {
+                          root.palette-color-changed(index, entry.hue, entry.sat, v);
+                        }
+                      }
+                    }
+
+                    Text {
+                      // Said out loud, because a picker that sends is not what a picker
+                      // usually does and an operator should know the rig is about to move.
+                      // See `RulesController::previewColor`.
+                      text: "sent to this rule's lights as you drag";
+                      color: Theme.dim;
+                      font-size: 10px;
+                      wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                      spacing: 8px;
+                      LineEdit {
+                        // How a color gets in from anywhere else — a brand guide, a
+                        // screenshot, the desk it has to match.
+                        text: entry.hex;
+                        placeholder-text: "#ff2040";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        accepted(t) => {
+                          self.clear-focus();
+                          root.palette-hex-edited(index, t);
+                        }
+                        changed has-focus => {
+                          if (!self.has-focus) {
+                            root.palette-hex-edited(index, self.text);
+                          }
+                        }
+                      }
+                      Press {
+                        text: "REMOVE";
+                        font: 11px;
+                        pad: 8px;
+                        min-height: 30px;
+                        clicked => {
+                          // **Closed first, then removed.** This button is inside the popup
+                          // and the popup belongs to the swatch being taken away, so removing
+                          // the row first would leave a popup whose owner had been destroyed
+                          // — the crash of 2026-09-16 reached from the other side. It is also
+                          // the only way the picker can be destroyed without a click outside
+                          // it, which is what otherwise leaves `picker-open-changed` saying
+                          // true for ever.
+                          entry-picker.close();
+                          root.palette-removed(index);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            Press {
+              text: "+";
+              font: 14px;
+              pad: 8px;
+              min-width: 34px;
+              min-height: 30px;
+              enabled: root.selected >= 0;
+              clicked => {
+                root.palette-added();
+              }
+            }
+
+            Text {
+              // What the chip above and these swatches mean *together*, which neither says on
+              // its own: the kind is how they are drawn and this is the set they come from.
+              text: root.palette.length == 0
+                  ? "no colors yet — + adds one"
+                  : root.palette.length + " colors, drawn the way the chip above says";
+              color: Theme.dim;
+              font-size: 11px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+          }
+
+          // OSC only: it is `Rule::Config::sendValue`, which says whether the *address* takes
+          // an argument at all. A MIDI kind's value is decided by the kind, and a lighting
+          // effect's by the effect — so on either of those this was a tick box that changed
+          // nothing, which a render caught sitting under a color picker.
+          if root.sends-osc : HorizontalLayout {
+            vertical-stretch: 0;
+            height: 36px;
             spacing: 10px;
 
             CheckBox {
@@ -1827,4 +2905,9 @@ export component RulesWindow inherits Window {
   // title bar can bind to them two-way. Written by the C++ side on every selection.
   in-out property <string> rule-name;
   in-out property <bool> rule-enabled;
+  /// §5.7's per-rule mute — see the MUTE button for why it is not the same as `rule-enabled`.
+  in-out property <bool> rule-muted;
+  /// How often this rule is currently firing against how often it was written to — "half as
+  /// often", "×4". **Empty at the written rate**, so a rule nobody has touched says nothing.
+  in-out property <string> rule-rate;
 }

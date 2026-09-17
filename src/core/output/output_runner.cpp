@@ -1,5 +1,6 @@
 #include "core/output/output_runner.hpp"
 
+#include <cmath>
 #include <exception>
 #include <span>
 #include <string>
@@ -42,6 +43,46 @@ void restoreTimerResolution(bool raised) noexcept {
 /// The *sent* form, with every `{}` already filled in — §5.9 asks for "the actually-sent
 /// message", and a card showing the template would be showing what the operator typed back
 /// at them rather than what happened.
+std::string describeDmx(const trigger::Message& message) {
+    const dmx::Payload& payload = message.payload;
+    std::string text(dmx::labelOf(payload.kind));
+    switch (payload.kind) {
+    case dmx::EffectKind::Level:
+    case dmx::EffectKind::Flash:
+    case dmx::EffectKind::Pulse:
+    case dmx::EffectKind::Strobe:
+        text += ' ';
+        text += dmx::labelOf(payload.role);
+        text += " = " + std::to_string(static_cast<int>(payload.level));
+        break;
+    case dmx::EffectKind::Color:
+    case dmx::EffectKind::HueSweep:
+        text += ' ';
+        text += dmx::formatColor(payload.color);
+        break;
+    case dmx::EffectKind::Position:
+        // Percentages of each fixture's own window, which is what the operator typed and the
+        // only form that means the same thing on two differently-rigged heads.
+        text += " pan " + std::to_string(std::lround(payload.pan * 100.0)) + "% tilt " +
+                std::to_string(std::lround(payload.tilt * 100.0)) + "%";
+        break;
+    case dmx::EffectKind::Path:
+        text += ' ';
+        text += dmx::labelOf(payload.shape);
+        break;
+    case dmx::EffectKind::Home:
+    case dmx::EffectKind::Blackout:
+        break;
+    }
+    if (payload.durationSeconds > 0.0f) {
+        // Milliseconds, whatever unit the rule spelled it in: by the time it is a message the
+        // duration has been settled against the tempo that was playing, and showing "2 bars"
+        // here would be showing the configuration rather than what happened.
+        text += " over " + std::to_string(std::lround(payload.durationSeconds * 1000.0)) + "ms";
+    }
+    return text;
+}
+
 std::string describe(const trigger::Message& message) {
     if (message.kind == trigger::Message::Kind::Osc) {
         std::string text = message.address;
@@ -50,6 +91,9 @@ std::string describe(const trigger::Message& message) {
             message.argument.appendTo(text);
         }
         return text;
+    }
+    if (message.kind == trigger::Message::Kind::Dmx) {
+        return describeDmx(message);
     }
     // Every kind by its own name. This said "note" for one of them and "cc" for the other
     // five, so a Note Off logged as a CC and the one line §5.9 calls "what turns a config
@@ -72,7 +116,8 @@ std::string describe(const trigger::Message& message) {
         // 14-bit, centre 8192, and no number at all.
         return "bend" + channel + " = " + std::to_string(message.value);
     case trigger::Message::Kind::Osc:
-        break; // handled above
+    case trigger::Message::Kind::Dmx:
+        break; // both handled above
     }
     return {};
 }
@@ -84,12 +129,14 @@ OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config&
     // §5.9's last-fired line and event log. Copied out of the output thread and into a
     // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
     triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
-                                     bool followUp, std::span<const trigger::Value> slots) {
+                                     bool followUp, std::span<const trigger::Value> slots,
+                                     bool muted) {
         Fired entry;
         entry.ruleId = ruleId;
         entry.message = describe(message);
         entry.when = elapsed();
         entry.followUp = followUp;
+        entry.muted = muted;
         entry.slots.assign(slots.begin(), slots.end());
         const std::lock_guard<std::mutex> lock(firedMutex_);
         if (fired_.size() >= kFiredCapacity) {
@@ -110,6 +157,7 @@ void OutputRunner::takeSnapshot() {
     taken.midiClockPort = transports_.midiClockPort();
     taken.midiClockOpen = transports_.midiClock() != nullptr;
     taken.oscPrefix = transports_.oscPrefix();
+    taken.patch = transports_.patch();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
 }
@@ -117,6 +165,34 @@ void OutputRunner::takeSnapshot() {
 OutputRunner::Snapshot OutputRunner::snapshot() const {
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     return snapshot_;
+}
+
+void OutputRunner::mirrorLevels(double now) {
+    // Rate-limited, because the engine moves a thousand times a second and a screen does not.
+    // Without this a fade would take a 512-byte copy and a lock every round for no reader.
+    if (mirroredAt_ >= 0.0 && now - mirroredAt_ < 1.0 / kMirrorHz) {
+        return;
+    }
+    mirroredAt_ = now;
+    const dmx::DmxEngine& engine = transports_.dmx();
+    const std::vector<dmx::PortAddress>& universes = engine.universes();
+    const std::lock_guard<std::mutex> lock(levelsMutex_);
+    levels_.resize(universes.size());
+    for (std::size_t i = 0; i < universes.size(); ++i) {
+        const std::span<const std::uint8_t> frame = engine.levels(universes[i]);
+        levels_[i].universe = universes[i];
+        levels_[i].levels.assign(frame.begin(), frame.end());
+    }
+}
+
+std::vector<std::uint8_t> OutputRunner::levelsOf(dmx::PortAddress universe) const {
+    const std::lock_guard<std::mutex> lock(levelsMutex_);
+    for (const MirroredUniverse& mirrored : levels_) {
+        if (mirrored.universe == universe) {
+            return mirrored.levels;
+        }
+    }
+    return {};
 }
 
 std::vector<OutputRunner::Fired> OutputRunner::takeFired() {
@@ -257,6 +333,10 @@ std::string OutputRunner::lastError() const {
 }
 
 void OutputRunner::apply(const OutputCommand& command) {
+    // `Manual`, `TestRule` and `Panic` all fire rules from here rather than from `drainOnce`,
+    // and a lighting effect needs to know when it started. Set once for every command rather
+    // than on the three that need it, so a fourth cannot be added without one.
+    sink_.setNow(elapsed());
     try {
         switch (command.kind) {
         case OutputCommand::Kind::LinkEnabled:
@@ -278,6 +358,11 @@ void OutputRunner::apply(const OutputCommand& command) {
         case OutputCommand::Kind::Panic:
             if (command.enabled) {
                 triggers_.panic(contextAt(elapsed()));
+                // And the lights stop animating — but keep their levels, and keep being sent.
+                // The operator's own call on 2026-09-16: takt4 may be one source among several
+                // on a rig, and a panic that blacked out the stage would take down lights that
+                // were not takt4's to take. See `dmx::DmxEngine::cancelAll`.
+                transports_.dmx().cancelAll();
             } else {
                 triggers_.release();
             }
@@ -286,9 +371,34 @@ void OutputRunner::apply(const OutputCommand& command) {
             panicked_.store(command.enabled, std::memory_order_relaxed);
             break;
         case OutputCommand::Kind::RuleEnabled:
-            if (trigger::Rule* rule = triggers_.find(command.ruleId)) {
-                rule->setEnabled(command.enabled);
-            }
+            forEachNamed(command.ruleId,
+                         [&](trigger::Rule& rule) { rule.setEnabled(command.enabled); });
+            break;
+        case OutputCommand::Kind::RuleMuted:
+            forEachNamed(command.ruleId,
+                         [&](trigger::Rule& rule) { rule.setMuted(command.enabled); });
+            break;
+        case OutputCommand::Kind::RuleRate:
+            forEachNamed(command.ruleId, [&](trigger::Rule& rule) {
+                // Relative multiplies what the rule is already at, which is what lets a
+                // "twice as often" button be pressed twice; absolute replaces it, which is
+                // what a fader and a reset both want.
+                rule.setRate(command.relative ? rule.rate() * command.factor : command.factor);
+            });
+            break;
+        case OutputCommand::Kind::Patch:
+            transports_.setPatch(command.fixtures);
+            resolveRouting();
+            break;
+        case OutputCommand::Kind::Effect:
+            // Straight to the engine, past the rules. `sink_.setNow` was called at the top of
+            // `apply`, and this uses the same clock so that a hand-fired effect and a rule's
+            // land on one timeline.
+            transports_.dmx().start(command.fixtureMask, command.payload, elapsed());
+            break;
+        case OutputCommand::Kind::ChannelTest:
+            transports_.dmx().holdChannel(command.universe, command.channel, command.level,
+                                          command.factor, elapsed());
             break;
         case OutputCommand::Kind::Manual:
             triggers_.manual(contextAt(elapsed()));
@@ -323,13 +433,32 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
 }
 
 void OutputRunner::resolveRouting() noexcept {
-    // The one place a rule's output *names* become the bits its messages carry. Neither
-    // `Rule` nor `TriggerEngine` knows what an output is, and `Transports` does not know
-    // what a rule is; this owns both and is where the two meet.
+    // The one place a rule's output and fixture *names* become the bits its messages carry.
+    // Neither `Rule` nor `TriggerEngine` knows what an output or a fixture is, and neither
+    // `Transports` nor `DmxEngine` knows what a rule is; this owns all of them and is where
+    // they meet.
     const std::vector<OutputTarget>& targets = transports_.outputs();
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
     for (std::size_t i = 0; i < triggers_.ruleCount(); ++i) {
         trigger::Rule& rule = triggers_.rule(i);
         rule.setOutputMask(resolveOutputs(rule.config().outputs, targets));
+        rule.setFixtureMask(dmx::resolveFixtures(patch, rule.config().dmx.fixtures));
+    }
+}
+
+void OutputRunner::forEachNamed(std::string_view id,
+                                const std::function<void(trigger::Rule&)>& act) {
+    // "all" is a reserved id meaning every rule — see `kAllRules`. A name that matches nothing
+    // acts on nothing and is not an error: a control surface holding a button for a rule the
+    // current preset no longer has is an ordinary state of the world (`RuleControl`).
+    if (id == kAllRules) {
+        for (std::size_t i = 0; i < triggers_.ruleCount(); ++i) {
+            act(triggers_.rule(i));
+        }
+        return;
+    }
+    if (trigger::Rule* rule = triggers_.find(id)) {
+        act(*rule);
     }
 }
 
@@ -386,6 +515,10 @@ trigger::Context OutputRunner::contextAt(double now) const {
 }
 
 void OutputRunner::drainOnce(double now) {
+    // Before any rule is evaluated: a lighting effect starts at an instant and runs for a
+    // duration, so the sink has to know where on this clock the round is. See
+    // `RuleSink::setNow`.
+    sink_.setNow(now);
     engine::EngineBeat beat;
     while (engine_.popBeat(beat)) {
         transports_.publish(beat.event, beat.hostMicros, now);
@@ -421,6 +554,9 @@ void OutputRunner::drainOnce(double now) {
     }
     // Last: the triggers that do not wait for a beat, and any follow-up now due.
     triggers_.advance(context);
+    // And a copy of the lighting frames for anything watching at redraw rate. After the
+    // triggers, so a fade started this round is in the very frame that is mirrored.
+    mirrorLevels(now);
 }
 
 } // namespace takt4::output

@@ -7,6 +7,34 @@
 
 import { Slider } from "std-widgets.slint";
 
+/// A place for the keyboard focus to go when the operator has finished with a text box.
+///
+/// **Because a text box only commits when it loses the focus**, and until this there was
+/// nothing in either window willing to take it. Every `LineEdit` here carries a
+/// `changed has-focus` handler that writes what was typed — that is how clicking away from a
+/// box saves the edit instead of losing it — and a click on a button, a heading or the panel
+/// behind them moved the focus nowhere at all, so the box stayed lit and the edit stayed
+/// uncommitted. Reported from a rig on 2026-09-16: *"when I click outside of a box, that box
+/// stays selected as an entry box ... clicking save, etc other ui elements doesnt exit out of
+/// that box being in edit mode either."*
+///
+/// `focus()` then `clear-focus()` in one go: taking the focus is what makes the box let go
+/// and commit, and dropping it again is what stops this leaving an invisible element holding
+/// the keyboard. It accepts focus neither by click nor by tab — it is only ever aimed at
+/// deliberately, by `Press` and by the window's own background.
+export component FocusSink inherits FocusScope {
+  width: 0px;
+  height: 0px;
+  focus-on-click: false;
+  focus-on-tab-navigation: false;
+
+  /// Takes the focus off whatever has it, and keeps none of it.
+  public function take() {
+    self.focus();
+    self.clear-focus();
+  }
+}
+
 // A dark window, whatever the desktop is set to. This is read across a booth, and the
 // std-widgets are pinned to the same scheme so the pickers do not come up white.
 export global Theme {
@@ -40,7 +68,7 @@ export global Theme {
 ///
 /// `Button` exposes `text`, `icon`, `primary`, `enabled` and `checkable` — and no
 /// `font-size` or `font-weight`. Its label therefore comes out at the widget set's own
-/// size in the widget set's own foreground colour, which on this dark panel is grey on
+/// size in the widget set's own foreground color, which on this dark panel is grey on
 /// grey and too small to read at a glance. These are the controls an operator hits in a
 /// booth, mid-set, while looking at something else, so the type is 17px, bold, and plain
 /// white. It also settles `÷2`: at the std size the dots of U+00F7 all but vanish and the
@@ -106,9 +134,16 @@ export component Press inherits Rectangle {
     }
   }
 
+  // Pressing a button finishes whatever was being typed. See `FocusSink`: SAVE used to fire
+  // with the name box still holding the focus and still holding an uncommitted edit, which
+  // is the one order in which a button called SAVE must not run.
+  sink := FocusSink { }
+
   touch := TouchArea {
     enabled: root.enabled;
     clicked => {
+      // Focus first, action second, so that what the box committed is what the action sees.
+      sink.take();
       root.clicked();
     }
   }

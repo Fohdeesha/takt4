@@ -64,7 +64,8 @@ std::string_view takeDelay(std::string_view body, double& seconds) noexcept {
     const char* const end = begin + number.size();
     const std::from_chars_result result = std::from_chars(begin, end, value);
     if (result.ec != std::errc{} || result.ptr != end ||
-        !(value >= kMinOutputDelaySeconds * 1000.0) || !(value <= kMaxOutputDelaySeconds * 1000.0)) {
+        !(value >= kMinOutputDelaySeconds * 1000.0) ||
+        !(value <= kMaxOutputDelaySeconds * 1000.0)) {
         return body;
     }
     seconds = value / 1000.0;
@@ -138,7 +139,20 @@ std::string formatOutputAddress(const OutputTarget& target) {
     if (target.kind == OutputTarget::Kind::Midi) {
         return "midi " + target.device;
     }
-    return target.host + ":" + std::to_string(static_cast<unsigned int>(target.port));
+    const std::string where =
+        target.host + ":" + std::to_string(static_cast<unsigned int>(target.port));
+    if (target.kind != OutputTarget::Kind::ArtNet) {
+        return where;
+    }
+    // "artnet 10.0.0.20:6454" for a node fed everything, and "artnet 10.0.0.20:6454 u0,1,4"
+    // for one fed a slice. The `u` prefix is what keeps the list from being mistaken for
+    // anything else on a line a person may be editing by hand.
+    std::string text = "artnet " + where;
+    for (std::size_t i = 0; i < target.universes.size(); ++i) {
+        text += i == 0 ? " u" : ",";
+        text += std::to_string(static_cast<unsigned int>(target.universes[i]));
+    }
+    return text;
 }
 
 bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
@@ -171,6 +185,49 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
     body = takeDelay(body, target.delaySeconds);
     if (body.empty()) {
         return false;
+    }
+
+    if (body.starts_with("artnet ") || body.starts_with("artnet\t")) {
+        target.kind = OutputTarget::Kind::ArtNet;
+        body = trim(body.substr(6));
+        // The universe list comes off the end before the host:port split, for the same reason
+        // the delay did: it would otherwise be read as part of the port.
+        const std::size_t marker = body.rfind(" u");
+        if (marker != std::string_view::npos) {
+            std::string_view list = body.substr(marker + 2);
+            body = trim(body.substr(0, marker));
+            while (!list.empty()) {
+                const std::size_t comma = list.find(',');
+                const std::string_view field =
+                    trim(comma == std::string_view::npos ? list : list.substr(0, comma));
+                unsigned int universe = 0;
+                const char* const begin = field.data();
+                const char* const end = begin + field.size();
+                const std::from_chars_result read = std::from_chars(begin, end, universe);
+                if (read.ec != std::errc{} || read.ptr != end || universe > 32767) {
+                    return false;
+                }
+                target.universes.push_back(static_cast<std::uint16_t>(universe));
+                if (comma == std::string_view::npos) {
+                    break;
+                }
+                list = list.substr(comma + 1);
+            }
+        }
+        const std::size_t split = body.rfind(':');
+        if (split == std::string_view::npos || split == 0 || split + 1 >= body.size()) {
+            return false;
+        }
+        const std::string_view where = trim(body.substr(0, split));
+        if (where.empty() || !readPort(trim(body.substr(split + 1)), target.port)) {
+            return false;
+        }
+        target.host = std::string(where);
+        if (target.name.empty()) {
+            target.name = std::string(body);
+        }
+        out = std::move(target);
+        return true;
     }
 
     if (body.starts_with("midi ") || body.starts_with("midi\t")) {

@@ -40,6 +40,17 @@ public:
 
     void send(const trigger::Message& message) override;
 
+    /// The output thread's clock, for the one kind of message that needs to know when it is.
+    ///
+    /// OSC and MIDI are instants: a message is sent and that is the whole of it. A lighting
+    /// effect **starts** at an instant and runs for a duration, so the engine has to be told
+    /// where on its clock the fade begins — and a `trigger::Sink` deliberately does not carry
+    /// a time, because the two kinds that existed before this one had no use for one.
+    ///
+    /// Set by `OutputRunner` at the top of every round, before any rule is evaluated, so a
+    /// fire in this round starts on this round's clock.
+    void setNow(double now) noexcept { now_ = now; }
+
     /// Messages handed to a transport that was actually switched on. A rule firing into an
     /// app with no OSC target and no MIDI port sends nothing, and says so here rather than
     /// looking like a rule that never fired.
@@ -50,8 +61,12 @@ public:
 private:
     void sendOsc(const trigger::Message& message);
     void sendMidi(const trigger::Message& message);
+    void sendDmx(const trigger::Message& message);
 
     Transports& transports_;
+    /// See `setNow`. Zero until the first round, which only matters offline: an effect started
+    /// at zero runs its duration from zero, and the first `tick` is at zero too.
+    double now_ = 0.0;
     std::uint64_t delivered_ = 0;
     std::uint64_t undeliverable_ = 0;
 };

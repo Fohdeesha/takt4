@@ -38,25 +38,41 @@ enum class ControlAction : std::uint8_t {
     Lock,
     /// §5.7's `/ctl/panic` — §5.8's *"global halt that stops every rule instantly"*.
     Panic,
-    /// §5.7's `/ctl/rule/<id>/enable <0|1>`. The only action that **names** something as
+    /// §5.7's `/ctl/rule/<id>/enable <0|1>`. The first action that **names** something as
     /// well as doing it; see `ControlTarget`.
     RuleEnable,
+    /// `/ctl/rule/<id>/mute <0|1>` — the rule keeps running and stops sending. Added on the
+    /// operator's ask of 2026-09-16. Not a second spelling of `RuleEnable`: see
+    /// `RuleControl::setRuleMuted` for why both exist.
+    RuleMute,
+    /// `/ctl/rule/<id>/double` — half as often, by doubling the interval. Bare, and
+    /// *relative*, so pressing it twice is four times the interval.
+    RuleDouble,
+    /// `/ctl/rule/<id>/halve` — twice as often. Bare and relative, like `RuleDouble`.
+    RuleHalve,
+    /// `/ctl/rule/<id>/rate <f>` — the interval multiplier outright, for a fader that holds a
+    /// position rather than a button that nudges.
+    RuleRate,
+    /// `/ctl/rule/<id>/reset` — back to the interval the rule was written with.
+    RuleReset,
 };
 
 /// Every action, in the order a UI should offer them for binding.
-inline constexpr std::array<ControlAction, 7> kControlActions{
+inline constexpr std::array<ControlAction, 12> kControlActions{
     ControlAction::Tap,         ControlAction::Downbeat, ControlAction::TempoHalve,
     ControlAction::TempoDouble, ControlAction::Lock,     ControlAction::Panic,
-    ControlAction::RuleEnable};
+    ControlAction::RuleEnable,  ControlAction::RuleMute, ControlAction::RuleDouble,
+    ControlAction::RuleHalve,   ControlAction::RuleRate, ControlAction::RuleReset};
 
-/// True where the action needs a rule named as well — `RuleEnable`, and nothing else.
+/// True where the action needs a rule named as well — the six `rule/<id>/…` verbs.
 ///
 /// Worth a predicate rather than a comparison at each site, because what it really marks is
 /// "a learn mode cannot bind this from a gesture alone": pressing a pad says *which button*,
-/// never *which rule*. §5.9's editor is where that second half gets asked for, and until it
-/// exists a UI offering this action would be offering a control that cannot be completed.
+/// never *which rule*. §5.9's editor is where that second half gets asked for.
 inline constexpr bool takesRuleId(ControlAction action) noexcept {
-    return action == ControlAction::RuleEnable;
+    return action == ControlAction::RuleEnable || action == ControlAction::RuleMute ||
+           action == ControlAction::RuleDouble || action == ControlAction::RuleHalve ||
+           action == ControlAction::RuleRate || action == ControlAction::RuleReset;
 }
 
 /// One action, and what it acts on where the action needs saying.

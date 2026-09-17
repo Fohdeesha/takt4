@@ -60,8 +60,13 @@ public:
     /// `slots` is what each generator produced, in the order §5.9's editor draws the chips
     /// — `Rule::lastSlots`. Empty for a follow-up, which produces no new values: it is the
     /// message just sent with one number changed.
+    ///
+    /// `muted` marks a fire that was **evaluated and not sent** — §5.7's per-rule mute. It
+    /// still reaches the observer, and that is the point: a muted rule is running, and an
+    /// operator watching the log has to be able to tell "this rule is muted" from "this rule
+    /// has stopped triggering", which look identical from outside.
     using FireObserver = std::function<void(std::string_view ruleId, const Message&, bool followUp,
-                                            std::span<const Value> slots)>;
+                                            std::span<const Value> slots, bool muted)>;
 
     /// The sink must outlive this. Nothing is sent until there are rules.
     explicit TriggerEngine(Sink& sink) noexcept;
@@ -73,6 +78,11 @@ public:
     /// `/ctl/rule/<id>/enable` and §5.9's cards address them by; a duplicate id is kept
     /// rather than dropped — a preset that holds one is an editing mistake to show, not a
     /// rule to silently discard — and `find` returns the first.
+    ///
+    /// **A rule that keeps its id keeps its live gestures** — its mute and its rate. Those are
+    /// not configuration and are not in what is being handed over, and every edit in §5.9's
+    /// editor comes through here: without carrying them, renaming one rule would unmute every
+    /// muted rule on the rig. See the definition.
     void setRules(const std::vector<Rule::Config>& rules);
 
     std::size_t ruleCount() const noexcept { return rules_.size(); }
@@ -138,6 +148,8 @@ public:
     /// generators had filled it in. Worth a number rather than silence: a rule dropping
     /// every fire looks exactly like a rule that never triggers.
     std::uint64_t dropped() const noexcept { return dropped_; }
+    /// Fires that happened and were not sent, because their rule was muted.
+    std::uint64_t muted() const noexcept { return muted_; }
     /// Follow-ups waiting for their delay to pass.
     std::size_t pending() const noexcept { return pending_.size(); }
 
@@ -154,7 +166,9 @@ private:
 
     /// Fires one rule that has already passed its trigger and its conditions: builds the
     /// message, sends it, and queues the follow-up.
-    bool dispatch(Rule& rule, const Context& context);
+    ///
+    /// `force` sends even from a muted rule — the [test] button, and nothing else.
+    bool dispatch(Rule& rule, const Context& context, bool force = false);
     /// Everything whose delay has passed, in the order it was queued.
     void drainDue(double now);
     void flushPending();
@@ -174,6 +188,7 @@ private:
     bool panicked_ = false;
     std::uint64_t sent_ = 0;
     std::uint64_t dropped_ = 0;
+    std::uint64_t muted_ = 0;
 };
 
 } // namespace takt4::trigger

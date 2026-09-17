@@ -148,7 +148,7 @@ TEST_CASE("a note rule's follow-up is a note off, carrying the same note and cha
     fired.value = 127;
 
     std::vector<std::pair<std::size_t, Message>> owed;
-    rule.followUpsFor(fired, owed);
+    rule.followUpsFor(takt4::trigger::Context{}, fired, owed);
     REQUIRE(owed.size() == 1);
     const Message& follow = owed[0].second;
     CHECK(follow.kind == Message::Kind::MidiNoteOff);
@@ -173,7 +173,7 @@ TEST_CASE("a CC follow-up stays a CC, because a controller has no off message", 
     fired.value = 127;
 
     std::vector<std::pair<std::size_t, Message>> owed;
-    rule.followUpsFor(fired, owed);
+    rule.followUpsFor(takt4::trigger::Context{}, fired, owed);
     REQUIRE(owed.size() == 1);
     CHECK(owed[0].second.kind == Message::Kind::MidiCc);
     CHECK(owed[0].second.value == 0);
