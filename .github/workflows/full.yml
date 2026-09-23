@@ -10,11 +10,21 @@ name: full
 # whose every changed file was under src/ui/ — and the answer was to turn this back on rather
 # than to keep dispatching it by hand and forgetting to.
 #
-# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries, and the reason
-# this is affordable to leave on: it used to cost ≈150 billable minutes because macOS is
-# billed at 10× and Slint takes 7–25 minutes to build; with one Windows job it is a small
-# fraction of that. The macOS and Linux entries are commented out rather than deleted so
-# bringing them back is uncommenting — but bring them back knowing what they used to cost.
+# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries: it used to cost
+# ≈150 billable minutes because macOS is billed at 10× and Slint takes 7–25 minutes to
+# build. The macOS and Linux app entries are commented out rather than deleted so bringing
+# them back is uncommenting — but bring them back knowing what they used to cost.
+#
+# **Plus the sanitizers, on every push, by the user on 2026-09-23** (the audit's T4, which
+# found that neither had ever run in CI and that `linux-tsan` had never run anywhere):
+# AddressSanitizer over the whole tree, the UI included, on Windows; and ThreadSanitizer on
+# Linux, because there is no ThreadSanitizer for Windows at all. takt4's threads — the audio
+# callback, the model, the tracker, the output thread, the UI, the OSC and MIDI listeners
+# and Link's own — are the reason. The cost was put to the user and accepted.
+#
+# The path filter covers everything that can change the app (the audit found src/core,
+# tests/ui, tests/CMakeLists.txt, assets and tools/embed_asset.py all missing from it, so a
+# change there went unbuilt until the Monday run). Documentation alone does not trigger it.
 #
 # Note the concurrency group below cancels in-progress runs for the same ref: a second push
 # to main while this is building kills the first run rather than queueing behind it.
@@ -23,21 +33,25 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/ui/**'
-      - 'src/main.cpp'
-      - 'src/CMakeLists.txt'
+      - 'src/**'
+      - 'tests/**'
+      - 'assets/**'
+      - 'third_party/**'
+      - 'cmake/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
-      - 'cmake/**'
+      - 'tools/embed_asset.py'
       - '.github/workflows/full.yml'
   pull_request:
     paths:
-      - 'src/ui/**'
-      - 'src/main.cpp'
-      - 'src/CMakeLists.txt'
+      - 'src/**'
+      - 'tests/**'
+      - 'assets/**'
+      - 'third_party/**'
+      - 'cmake/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
-      - 'cmake/**'
+      - 'tools/embed_asset.py'
       - '.github/workflows/full.yml'
   schedule:
     - cron: '0 6 * * 1' # Mondays, 06:00 UTC
@@ -58,7 +72,8 @@ jobs:
   build:
     name: ${{ matrix.preset }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # The ASan job builds the whole tree instrumented and runs every test under it.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +85,18 @@ jobs:
             preset: windows-msvc
             app: build/windows-msvc/bin/Release/takt4.exe
             cli: build/windows-msvc/bin/Release/takt4-cli.exe
+          # AddressSanitizer over everything, UI included. cmake/sanitizers.cmake copies the
+          # ASan runtime DLL beside the binaries, so they start without Visual Studio's PATH.
+          - os: windows-latest
+            preset: windows-asan
+            app: build/windows-asan/bin/Release/takt4.exe
+            cli: build/windows-asan/bin/Release/takt4-cli.exe
+          # ThreadSanitizer: Linux is where it exists. TSAN_OPTIONS makes a report fail the
+          # test that produced it rather than scroll past in a passing run.
+          - os: ubuntu-24.04
+            preset: linux-tsan
+            app: build/linux-tsan/bin/takt4
+            cli: build/linux-tsan/bin/takt4-cli
           # Windows only for now; see the note at the top of this file.
           # - os: macos-latest
           #   preset: macos
@@ -110,6 +137,8 @@ jobs:
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
       - name: Test
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: ctest --preset ${{ matrix.preset }}-all
 
       - name: Version banner

@@ -1,8 +1,16 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 namespace takt4::rt {
 
@@ -22,20 +30,56 @@ namespace takt4::rt {
 ///
 /// Requires `T` to be trivially copyable: a reader may copy a value that is being
 /// overwritten and then throw it away, which is only safe for bytes.
+///
+/// **The value is kept as relaxed atomic words, not as a `T`.** A reader's copy races with
+/// the writer's by design — that is what the retry is for — and a plain copy racing with a
+/// plain write is a data race under the C++ memory model, whatever the hardware does with
+/// it: harmless on x64, reported by ThreadSanitizer every time (the audit's Low items). The
+/// words are Boehm's answer ("Can seqlocks get along with programming language memory
+/// models?", 2012): every access is atomic, so there is no race to report, and the fences
+/// around the counter are what make a whole copy a whole copy.
 template <class T>
 class Published {
     static_assert(std::is_trivially_copyable_v<T>, "a published value is copied bitwise");
 
+    static constexpr std::size_t kWords =
+        (sizeof(T) + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
+    using Words = std::array<std::uint64_t, kWords>;
+
+    /// A spin that tells the core it is spinning, so a reader waiting out a write does not
+    /// starve the writer sharing its core of the pipeline.
+    static void relax() noexcept {
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+        _mm_pause();
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#endif
+    }
+
+    static Words toWords(const T& value) noexcept {
+        Words words{};
+        std::memcpy(words.data(), &value, sizeof(T));
+        return words;
+    }
+
 public:
-    Published() = default;
-    explicit Published(const T& initial) : value_(initial) {}
+    Published() : Published(T{}) {}
+    explicit Published(const T& initial) {
+        const Words words = toWords(initial);
+        for (std::size_t i = 0; i < kWords; ++i) {
+            words_[i].store(words[i], std::memory_order_relaxed);
+        }
+    }
 
     /// **One writer only.** Never blocks and never fails.
     void publish(const T& value) noexcept {
+        const Words words = toWords(value);
         const std::uint64_t before = sequence_.load(std::memory_order_relaxed);
-        sequence_.store(before + 1, std::memory_order_release); // now odd: writing
+        sequence_.store(before + 1, std::memory_order_relaxed); // now odd: writing
         std::atomic_thread_fence(std::memory_order_release);
-        value_ = value;
+        for (std::size_t i = 0; i < kWords; ++i) {
+            words_[i].store(words[i], std::memory_order_relaxed);
+        }
         sequence_.store(before + 2, std::memory_order_release); // even again: settled
     }
 
@@ -44,13 +88,20 @@ public:
         for (;;) {
             const std::uint64_t before = sequence_.load(std::memory_order_acquire);
             if ((before & 1U) != 0U) {
-                continue; // a write is in progress; the value is not whole
+                relax(); // a write is in progress; the value is not whole
+                continue;
             }
-            T copy = value_;
+            Words words;
+            for (std::size_t i = 0; i < kWords; ++i) {
+                words[i] = words_[i].load(std::memory_order_relaxed);
+            }
             std::atomic_thread_fence(std::memory_order_acquire);
             if (sequence_.load(std::memory_order_relaxed) == before) {
-                return copy;
+                std::array<std::byte, sizeof(T)> bytes;
+                std::memcpy(bytes.data(), words.data(), sizeof(T));
+                return std::bit_cast<T>(bytes);
             }
+            relax();
         }
     }
 
@@ -67,7 +118,7 @@ private:
 #pragma warning(disable : 4324)
 #endif
     alignas(64) std::atomic<std::uint64_t> sequence_{0};
-    alignas(64) T value_{};
+    alignas(64) std::array<std::atomic<std::uint64_t>, kWords> words_{};
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
