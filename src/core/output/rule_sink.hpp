@@ -66,6 +66,12 @@ public:
     /// targets or the patch are replaced, which would change what a held message's output bit
     /// or fixture mask names.
     void flushQueued();
+    /// Moves what is held after the outputs (`outputs`) or the patch (`fixtures`) changed —
+    /// see `trigger::remapBits`. A held MIDI message follows its output to where it now sits,
+    /// and is dropped with it when it is gone; a held effect's fixtures likewise. Empty leaves
+    /// that half alone. It used to be flushed instead, so a note off owed a beat later went out
+    /// the moment an output was renamed.
+    void remap(const std::vector<int>& outputs, const std::vector<int>& fixtures);
     /// Forgets every held lighting effect without starting it. For a PANIC, which freezes the
     /// lights where they are: an effect started only to be frozen on its first frame would be a
     /// flash held at full.

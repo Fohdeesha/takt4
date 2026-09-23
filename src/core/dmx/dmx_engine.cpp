@@ -44,16 +44,20 @@ std::size_t DmxEngine::bufferOf(PortAddress universe) const noexcept {
 }
 
 void DmxEngine::setPatch(std::vector<Fixture> patch) {
-    // Where each fixture of the old patch is in the new one, by name — each new fixture taken
-    // once, in order, so two fixtures of one name keep their order rather than both landing on
-    // the first. This is what lets a running effect and a virtual fixture's state carry on
-    // across an edit.
+    // Where each fixture of the old patch is in the new one — by id, which a rename does not
+    // move, and by name only for fixtures that have no id (one built in code rather than by the
+    // patch editor). Each new fixture is taken once, in order, so two fixtures of one name keep
+    // their order rather than both landing on the first. This is what lets a running effect and
+    // a virtual fixture's state carry on across an edit.
     std::vector<std::uint16_t> mapped(patch_.size(), kNoFixture);
     {
         std::vector<bool> taken(patch.size(), false);
         for (std::size_t i = 0; i < patch_.size(); ++i) {
             for (std::size_t j = 0; j < patch.size() && j < kNoFixture; ++j) {
-                if (!taken[j] && patch[j].name == patch_[i].name) {
+                const bool same = !patch[j].id.empty() || !patch_[i].id.empty()
+                                      ? patch[j].id == patch_[i].id
+                                      : patch[j].name == patch_[i].name;
+                if (!taken[j] && same) {
                     mapped[i] = static_cast<std::uint16_t>(j);
                     taken[j] = true;
                     break;
@@ -144,7 +148,7 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         }
     }
 
-    // Each virtual fixture's state carried by name, or read from its channels as they now stand.
+    // Each virtual fixture's state carried across, or read from its channels as they now stand.
     std::vector<Virtual> carried(patch.size());
     std::vector<bool> carries(patch.size(), false);
     for (std::size_t i = 0; i < mapped.size(); ++i) {

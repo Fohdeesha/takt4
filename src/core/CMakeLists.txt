@@ -96,6 +96,8 @@ add_library(takt4_core STATIC
   model/dimensions.hpp
   model/weights.cpp
   model/weights.hpp
+  net/resolver.cpp
+  net/resolver.hpp
   net/udp.hpp
   output/beat_scheduler.cpp
   output/beat_scheduler.hpp

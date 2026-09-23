@@ -36,12 +36,19 @@ using takt4::trigger::Value;
 
 namespace {
 
+/// A fixture whose id is its name. A rule aims at a fixture's id — never its name, which the
+/// operator can change — and giving the two the same text keeps these tests readable.
+Fixture named(Fixture fixture) {
+    fixture.id = fixture.name;
+    return fixture;
+}
+
 Fixture rgb(std::string name, std::uint16_t address) {
-    return takt4::dmx::fixtureFromMode(name, 1, 0, address);
+    return named(takt4::dmx::fixtureFromMode(name, 1, 0, address));
 }
 
 Fixture head(std::string name, std::uint16_t address) {
-    return takt4::dmx::fixtureFromMode(name, 6, 0, address);
+    return named(takt4::dmx::fixtureFromMode(name, 6, 0, address));
 }
 
 Generator::Config fixedInt(std::int32_t value) {
@@ -615,7 +622,7 @@ TEST_CASE("the rig a new operator builds actually lights up", "[dmx][trigger]") 
     // it to between 0.4 % and 3 % of full, which on a lamp is indistinguishable from the rule
     // not having fired (`trigger::fixedNumber`).
     Transports::Config rig;
-    rig.patch = {takt4::dmx::fixtureFromMode("Bedroom RGB", 1, 5, 70)};
+    rig.patch = {named(takt4::dmx::fixtureFromMode("Bedroom RGB", 1, 5, 70))};
     Transports transports(rig);
     RuleSink sink(transports);
     TriggerEngine engine(sink);

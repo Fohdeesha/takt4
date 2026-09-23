@@ -261,6 +261,12 @@ bool saveText(std::string_view json, const std::filesystem::path& path);
 /// headless mode is expected to hand-write one.
 std::string toJson(const Settings& settings);
 
+/// Gives every output and every fixture an id, and points every rule at them by id rather
+/// than by name. `fromJson` runs it on everything it reads, so a file written before ids
+/// existed loads routed exactly as it was; anything that builds a preset in code runs it
+/// before handing the preset over. See `output::OutputTarget::id`.
+void assignIds(Preset& preset);
+
 /// Parses what `toJson` writes. Never throws; see `load`. Values that cannot be honoured
 /// — a fold window that is inverted, a channel below zero, an OSC prefix that is not an
 /// address — fall back to the default rather than being passed on to code that trusts its

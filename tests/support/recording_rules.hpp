@@ -43,6 +43,17 @@ public:
         rates_.push_back(Rate{std::string(id), factor, relative});
     }
 
+    void fireManual() override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        ++manuals_;
+    }
+
+    /// How many times `/ctl/manual` was asked for.
+    int manuals() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return manuals_;
+    }
+
     /// One `rule/<id>/{double,halve,rate,reset}` as it was asked for. `relative` is what
     /// separates the button spellings from the fader one, so it has to be recorded.
     struct Rate {
@@ -82,6 +93,7 @@ private:
     std::vector<std::pair<std::string, bool>> enables_;
     std::vector<std::pair<std::string, bool>> mutes_;
     std::vector<Rate> rates_;
+    int manuals_ = 0;
 };
 
 } // namespace takt4::testing

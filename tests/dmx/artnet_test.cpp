@@ -10,11 +10,13 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -226,8 +228,19 @@ TEST_CASE("an Art-Net sender puts a real datagram on the loopback", "[dmx][artne
 }
 
 TEST_CASE("an Art-Net node that cannot be resolved is reported, not swallowed", "[dmx][artnet]") {
-    CHECK_THROWS_WITH(ArtNetSender("no.such.host.takt4.invalid", 6454),
-                      ContainsSubstring("cannot resolve"));
+    // Found out on a thread of its own rather than on the output thread — see
+    // `net::AsyncAddress` — so building one does not wait on a name server.
+    const auto opened = std::chrono::steady_clock::now();
+    ArtNetSender unknown("no.such.host.takt4.invalid", 6454);
+    CHECK(std::chrono::steady_clock::now() - opened < std::chrono::milliseconds(200));
+    const std::array<std::uint8_t, 3> levels{255, 0, 0};
+    CHECK_FALSE(unknown.sendDmx(0, levels));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (unknown.problem().rfind("cannot resolve", 0) != 0 &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK_THAT(unknown.problem(), ContainsSubstring("cannot resolve"));
 }
 
 // The pacing rules are the whole of what this class does, and both of them are felt on a rig:

@@ -1,11 +1,13 @@
 #include "core/dmx/artnet_sender.hpp"
 
+#include "core/net/resolver.hpp"
 #include "core/net/udp.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -33,6 +35,10 @@ struct ArtNetSender::Impl {
     std::unordered_map<PortAddress, std::uint8_t> sequence;
     /// The encode buffer, reused: one ArtDmx packet at a time, on one thread.
     std::array<std::byte, kArtDmxMaxSize> packet{};
+    /// Where the address comes from. See `net::AsyncAddress`.
+    std::optional<net::AsyncAddress> where;
+    /// Set when the address was known and a socket for it still could not be had.
+    int socketError = 0;
 
     ~Impl() {
         if (socket != kInvalidSocket) {
@@ -43,58 +49,69 @@ struct ArtNetSender::Impl {
 
 ArtNetSender::ArtNetSender(std::string_view host, std::uint16_t port) : host_(host), port_(port) {
     auto impl = std::make_unique<Impl>();
-
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-    addrinfo* results = nullptr;
-    const std::string node(host);
-    const std::string service = std::to_string(port);
-    const int error = ::getaddrinfo(node.c_str(), service.c_str(), &hints, &results);
-    if (error != 0 || results == nullptr) {
-        throw std::runtime_error("Art-Net node " + node + ":" + service + ": cannot resolve (" +
-                                 std::to_string(error) + ")");
-    }
-
-    for (const addrinfo* candidate = results; candidate != nullptr;
-         candidate = candidate->ai_next) {
-        const Socket handle =
-            ::socket(candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol);
-        if (handle == kInvalidSocket) {
-            continue;
-        }
-        impl->socket = handle;
-        std::memcpy(&impl->address, candidate->ai_addr, candidate->ai_addrlen);
-        impl->addressLength = static_cast<socklen_t>(candidate->ai_addrlen);
-        break;
-    }
-    const std::string resolved =
-        impl->addressLength > 0
-            ? describe(reinterpret_cast<const sockaddr*>(&impl->address), impl->addressLength)
-            : std::string();
-    ::freeaddrinfo(results);
-
-    if (impl->socket == kInvalidSocket) {
-        throw std::runtime_error("Art-Net node " + node + ":" + service +
-                                 ": cannot open a UDP socket (" +
-                                 std::to_string(lastSocketError()) + ")");
-    }
-
-    // A rig built around a broadcast address is a rig somebody already has, and the socket
-    // has to be told before it will carry one. Asked for unconditionally and ignored when it
-    // fails: a platform that refuses the option still sends unicast perfectly well, and the
-    // operator who typed a unicast address is not affected either way.
-    const int broadcast = 1;
-#if defined(_WIN32)
-    ::setsockopt(impl->socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&broadcast),
-                 sizeof broadcast);
-#else
-    ::setsockopt(impl->socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof broadcast);
-#endif
-
-    resolved_ = resolved;
+    impl->where.emplace(std::string(host), port);
     impl_ = impl.release();
+    // A literal address has its socket now; one that cannot get one never will, and says so.
+    if (!ready() && impl_->socketError != 0) {
+        const int error = impl_->socketError;
+        delete std::exchange(impl_, nullptr);
+        throw std::runtime_error("Art-Net node " + std::string(host) + ":" + std::to_string(port) +
+                                 ": cannot open a UDP socket (" + std::to_string(error) + ")");
+    }
+}
+
+bool ArtNetSender::ready() noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    if (impl_->socket != kInvalidSocket) {
+        return true;
+    }
+    try {
+        const std::optional<net::AsyncAddress::Address> known = impl_->where->address();
+        if (!known) {
+            return false;
+        }
+        const Socket handle = ::socket(known->family, SOCK_DGRAM, IPPROTO_UDP);
+        if (handle == kInvalidSocket) {
+            impl_->socketError = lastSocketError();
+            return false;
+        }
+        impl_->socket = handle;
+        impl_->socketError = 0;
+        std::memcpy(&impl_->address, known->storage, static_cast<std::size_t>(known->length));
+        impl_->addressLength = static_cast<socklen_t>(known->length);
+
+        // A rig built around a broadcast address is a rig somebody already has, and the socket
+        // has to be told before it will carry one. Asked for unconditionally and ignored when it
+        // fails: a platform that refuses the option still sends unicast perfectly well, and the
+        // operator who typed a unicast address is not affected either way.
+        const int broadcast = 1;
+#if defined(_WIN32)
+        ::setsockopt(impl_->socket, SOL_SOCKET, SO_BROADCAST,
+                     reinterpret_cast<const char*>(&broadcast), sizeof broadcast);
+#else
+        ::setsockopt(impl_->socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof broadcast);
+#endif
+        resolved_ = describe(reinterpret_cast<const sockaddr*>(&impl_->address),
+                             impl_->addressLength);
+        return true;
+    } catch (...) {
+        return false; // an allocation on the way to a look-up; the next frame tries again
+    }
+}
+
+std::string ArtNetSender::problem() const {
+    if (impl_ == nullptr) {
+        return "not open";
+    }
+    if (impl_->socket != kInvalidSocket) {
+        return {};
+    }
+    if (impl_->socketError != 0) {
+        return "cannot open a UDP socket (" + std::to_string(impl_->socketError) + ")";
+    }
+    return impl_->where->problem();
 }
 
 ArtNetSender::~ArtNetSender() {
@@ -120,7 +137,7 @@ ArtNetSender& ArtNetSender::operator=(ArtNetSender&& other) noexcept {
 }
 
 bool ArtNetSender::sendDmx(PortAddress universe, std::span<const std::uint8_t> levels) noexcept {
-    if (impl_ == nullptr) {
+    if (!ready()) {
         ++failed_;
         return false;
     }

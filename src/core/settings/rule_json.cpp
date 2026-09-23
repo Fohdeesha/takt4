@@ -396,7 +396,11 @@ json ruleToJson(const Rule::Config& rule) {
         out["dmx"] = dmxToJson(rule.dmx);
     } else {
         out["channel"] = rule.channel;
-        out["number"] = generatorToJson(rule.number);
+        // Null for a number nobody has chosen yet, so a half-built rule is still half-built
+        // after a restart rather than coming back armed with a generator's default.
+        out["number"] =
+            rule.numberChosen || !trigger::sendsNumber(rule.sendKind) ? generatorToJson(rule.number)
+                                                                       : json(nullptr);
     }
     if (!rule.followUps.empty()) {
         json owed = json::array();
@@ -492,7 +496,14 @@ Rule::Config ruleFromJson(const json& node) {
         rule.value = generatorFromJson(node.at("value"));
     }
     if (node.contains("number")) {
-        rule.number = generatorFromJson(node.at("number"));
+        if (node.at("number").is_null()) {
+            // As the editor leaves one: a fixed number with nothing in it, not the shuffle a
+            // default generator would otherwise show in the box.
+            rule.numberChosen = false;
+            rule.number.kind = trigger::GeneratorKind::Fixed;
+        } else {
+            rule.number = generatorFromJson(node.at("number"));
+        }
     }
     if (node.contains("dmx")) {
         rule.dmx = dmxFromJson(node.at("dmx"));

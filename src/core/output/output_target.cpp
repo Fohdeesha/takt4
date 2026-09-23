@@ -1,6 +1,8 @@
 #include "core/output/output_target.hpp"
 
 #include <charconv>
+#include <cstdio>
+#include <random>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -72,23 +74,96 @@ std::string_view takeDelay(std::string_view body, double& seconds) noexcept {
     return trim(withoutUnit.substr(0, space));
 }
 
+/// Whether `text` is an id of the shape `newOutputId` makes: "o-" and hex digits. Nothing
+/// looser, because what it is looked for at the end of is a MIDI device's name, and a device
+/// called "Launchpad #2" in a file written before ids existed must keep its "#2".
+bool looksLikeId(std::string_view text) noexcept {
+    if (text.size() < 3 || text.size() > 18 || !text.starts_with("o-")) {
+        return false;
+    }
+    for (const char c : text.substr(2)) {
+        const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!hex) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Takes a trailing " #id" off `body` into `id`, and hands back what is left. Only a whole
+/// last token after whitespace, so a '#' inside a MIDI device's name is left where it is.
+std::string_view takeId(std::string_view body, std::string& id) {
+    const std::size_t hash = body.rfind('#');
+    if (hash == std::string_view::npos || hash == 0 ||
+        (body[hash - 1] != ' ' && body[hash - 1] != '\t')) {
+        return body;
+    }
+    const std::string_view candidate = body.substr(hash + 1);
+    if (!looksLikeId(candidate)) {
+        return body;
+    }
+    id = std::string(candidate);
+    return trim(body.substr(0, hash));
+}
+
 } // namespace
 
-std::uint64_t resolveOutputs(const std::vector<std::string>& names,
+std::uint64_t resolveOutputs(const std::vector<std::string>& ids,
                              const std::vector<OutputTarget>& targets) noexcept {
-    if (names.empty()) {
+    if (ids.empty()) {
         return kAllOutputs;
     }
     std::uint64_t mask = 0;
     for (std::size_t i = 0; i < targets.size() && i < kMaxRoutableTargets; ++i) {
-        for (const std::string& name : names) {
-            if (targets[i].name == name) {
+        if (targets[i].id.empty()) {
+            continue; // nothing can be routed to a target that has no id yet
+        }
+        for (const std::string& id : ids) {
+            if (targets[i].id == id) {
                 mask |= std::uint64_t{1} << i;
                 break;
             }
         }
     }
     return mask;
+}
+
+std::string newOutputId(const std::vector<OutputTarget>& existing) {
+    static thread_local std::mt19937_64 random{std::random_device{}()};
+    for (;;) {
+        char text[16] = {};
+        std::snprintf(text, sizeof text, "o-%08x", static_cast<unsigned int>(random()));
+        std::string id(text);
+        if (findTarget(existing, id) == nullptr) {
+            return id;
+        }
+    }
+}
+
+void ensureOutputIds(std::vector<OutputTarget>& targets) {
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        bool taken = targets[i].id.empty();
+        for (std::size_t j = 0; j < i && !taken; ++j) {
+            taken = targets[j].id == targets[i].id;
+        }
+        if (taken) {
+            targets[i].id = newOutputId(targets);
+        }
+    }
+}
+
+void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets) {
+    for (std::string& entry : routing) {
+        if (findTarget(targets, entry) != nullptr) {
+            continue;
+        }
+        for (const OutputTarget& target : targets) {
+            if (!target.id.empty() && target.name == entry) {
+                entry = target.id;
+                break;
+            }
+        }
+    }
 }
 
 std::vector<OutputTarget>
@@ -101,14 +176,18 @@ oscOutputs(const std::vector<std::pair<std::string, std::uint16_t>>& targets) {
         target.host = host;
         target.port = port;
         target.name = host + ":" + std::to_string(static_cast<unsigned int>(port));
+        target.id = newOutputId(outputs);
         outputs.push_back(std::move(target));
     }
     return outputs;
 }
 
-const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::string_view name) {
+const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::string_view id) {
+    if (id.empty()) {
+        return nullptr;
+    }
     for (const OutputTarget& target : targets) {
-        if (target.name == name) {
+        if (target.id == id) {
             return &target;
         }
     }
@@ -131,6 +210,10 @@ std::string formatOutputTarget(const OutputTarget& target) {
         text += ms > 0 ? " +" : " ";
         text += std::to_string(ms);
         text += "ms";
+    }
+    if (!target.id.empty()) {
+        text += " #";
+        text += target.id;
     }
     return text;
 }
@@ -180,8 +263,9 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
         return false;
     }
 
-    // The delay comes off the end before anything else looks at the address, because a MIDI
-    // device name runs to the end of the line and would otherwise swallow it whole.
+    // The id and then the delay come off the end before anything else looks at the address,
+    // because a MIDI device name runs to the end of the line and would otherwise swallow both.
+    body = takeId(body, target.id);
     body = takeDelay(body, target.delaySeconds);
     if (body.empty()) {
         return false;

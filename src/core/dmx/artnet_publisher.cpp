@@ -1,6 +1,7 @@
 #include "core/dmx/artnet_publisher.hpp"
 
 #include <algorithm>
+#include <exception>
 
 namespace takt4::dmx {
 namespace {
@@ -17,10 +18,56 @@ void ArtNetPublisher::addTarget(const TargetConfig& config) {
     target.sender = std::make_unique<ArtNetSender>(config.host, config.port);
     target.universes = config.universes;
     target.bit = config.bit;
+    target.id = config.id;
     std::sort(target.universes.begin(), target.universes.end());
     target.universes.erase(std::unique(target.universes.begin(), target.universes.end()),
                            target.universes.end());
     targets_.push_back(std::move(target));
+}
+
+std::vector<std::pair<std::size_t, std::string>>
+ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
+    std::vector<std::pair<std::size_t, std::string>> failures;
+    std::vector<Target> next;
+    next.reserve(configs.size());
+    std::vector<bool> taken(targets_.size(), false);
+    for (const TargetConfig& config : configs) {
+        Target target;
+        for (std::size_t i = 0; i < targets_.size() && !config.id.empty(); ++i) {
+            if (!taken[i] && targets_[i].id == config.id &&
+                targets_[i].sender->host() == config.host &&
+                targets_[i].sender->port() == config.port) {
+                // The same node at the same address: its sender, its sequence numbers and its
+                // pacing clocks carry on, so it goes on being fed at the rate it was.
+                taken[i] = true;
+                target = std::move(targets_[i]);
+                break;
+            }
+        }
+        if (target.sender == nullptr) {
+            try {
+                target.sender = std::make_unique<ArtNetSender>(config.host, config.port);
+            } catch (const std::exception& e) {
+                failures.emplace_back(config.bit, e.what());
+                continue;
+            }
+        }
+        target.universes = config.universes;
+        std::sort(target.universes.begin(), target.universes.end());
+        target.universes.erase(std::unique(target.universes.begin(), target.universes.end()),
+                               target.universes.end());
+        target.bit = config.bit;
+        target.id = config.id;
+        next.push_back(std::move(target));
+    }
+    targets_ = std::move(next);
+    return failures;
+}
+
+void ArtNetPublisher::refresh() noexcept {
+    for (Target& target : targets_) {
+        (void)target.sender->ready();
+    }
 }
 
 void ArtNetPublisher::clearTargets() noexcept {

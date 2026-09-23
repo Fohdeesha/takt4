@@ -706,8 +706,10 @@ TEST_CASE("save reports a failure rather than raising one", "[settings]") {
 TEST_CASE("the lighting patch survives the round trip", "[settings][dmx]") {
     Settings in;
     takt4::dmx::Fixture wash = takt4::dmx::fixtureFromMode("wash L", 1, 0, 1);
+    wash.id = "f-0000000a";
     wash.group = "washes";
     takt4::dmx::Fixture head = takt4::dmx::fixtureFromMode("head 1", 6, 4, 100);
+    head.id = "f-0000000b";
     head.group = "heads";
     // Aimed at the floor and away from the audience, which is the whole reason the window
     // exists and the one part of a patch that must not be lost in a file.
@@ -825,6 +827,7 @@ TEST_CASE("an Art-Net output survives the round trip through its own text line",
           "[settings][dmx]") {
     Settings in;
     takt4::output::OutputTarget node;
+    node.id = "o-000000cc";
     node.name = "truss";
     node.kind = takt4::output::OutputTarget::Kind::ArtNet;
     node.host = "10.0.0.20";
@@ -901,5 +904,49 @@ TEST_CASE("a preset written with the British spelling still loads", "[settings][
         REQUIRE(twice.preset.rules.size() == 1);
         CHECK(twice.preset.rules.front().dmx.effect == takt4::dmx::EffectKind::Color);
         CHECK(twice.preset.fixtures.front().channels.back() == takt4::dmx::Role::ColorWheel);
+    }
+}
+
+TEST_CASE("a file routed by name loads routed by id, and a rename afterwards moves nothing",
+          "[settings][trigger]") {
+    // Every settings file written before outputs and fixtures had ids routes rules by their
+    // *names* — the operator's report of 2026-09-23 was that renaming an output broke every rule
+    // on it. Such a file has to load exactly as routed as it was, and stop depending on names.
+    const std::string text = R"({"preset":{
+        "outputs":["deck = 127.0.0.1:7000", "wall = 127.0.0.1:7001"],
+        "fixtures":[{"name":"wash L","group":"washes","universe":0,"address":1,
+                     "channels":["red","green","blue"]}],
+        "rules":[
+          {"id":"clips","send":"osc","address":"/clip","outputs":["wall"]},
+          {"id":"fade","send":"dmx","dmx":{"fixtures":["wash L","washes"]}}]}})";
+    takt4::settings::Settings loaded = takt4::settings::fromJson(text);
+    REQUIRE(loaded.preset.outputs.size() == 2);
+    REQUIRE(loaded.preset.fixtures.size() == 1);
+    REQUIRE(loaded.preset.rules.size() == 2);
+
+    const std::string wall = loaded.preset.outputs[1].id;
+    const std::string washL = loaded.preset.fixtures[0].id;
+    REQUIRE_FALSE(wall.empty());
+    REQUIRE_FALSE(washL.empty());
+    CHECK(loaded.preset.outputs[0].id != wall);
+    CHECK(loaded.preset.rules[0].outputs == std::vector<std::string>{wall});
+    CHECK(loaded.preset.rules[1].dmx.fixtures == std::vector<std::string>{washL, "washes"});
+    CHECK(takt4::output::resolveOutputs(loaded.preset.rules[0].outputs, loaded.preset.outputs) ==
+          0b10);
+
+    // Renamed, the same rules still reach the same things.
+    loaded.preset.outputs[1].name = "back wall";
+    loaded.preset.fixtures[0].name = "front wash";
+    CHECK(takt4::output::resolveOutputs(loaded.preset.rules[0].outputs, loaded.preset.outputs) ==
+          0b10);
+    CHECK(takt4::dmx::resolveFixtures(loaded.preset.fixtures,
+                                      loaded.preset.rules[1].dmx.fixtures) == 0b1);
+
+    SECTION("and the ids are written down, so the next load is the same rig") {
+        const takt4::settings::Settings again =
+            takt4::settings::fromJson(takt4::settings::toJson(loaded));
+        CHECK(again.preset.outputs[1].id == wall);
+        CHECK(again.preset.fixtures[0].id == washL);
+        CHECK(again.preset.rules[0].outputs == std::vector<std::string>{wall});
     }
 }

@@ -54,9 +54,9 @@ public:
     /// more goes to **zero**: a fixture switched off or deleted used to go on transmitting its
     /// last levels, out of reach of every rule, Blackout included.
     ///
-    /// Running effects **carry on**, re-aimed at the fixture of the same name in the new patch;
-    /// they were all cancelled, so every fade, strobe and path froze where it was whenever a
-    /// name was typed. An effect on a fixture that has gone, or cannot take it any more, stops
+    /// Running effects **carry on**, re-aimed at the same fixture — by `Fixture::id`, so a
+    /// rename is not a different fixture — in the new patch; they were all cancelled, so every
+    /// fade, strobe and path froze where it was whenever a name was typed. An effect on a fixture that has gone, or cannot take it any more, stops
     /// there. A channel TEST hold is let go, and its channel put back where it was.
     void setPatch(std::vector<Fixture> patch);
     const std::vector<Fixture>& patch() const noexcept { return patch_; }
@@ -259,7 +259,7 @@ private:
     Virtual virtualFromLevels(const Fixture& fixture) const;
     /// Drops the channels `running` is about to drive from every effect already driving them.
     void preempt(const Running& running);
-    /// Re-aims every running effect at the new patch, by fixture name — see `setPatch`.
+    /// Re-aims every running effect at the new patch, by fixture — see `setPatch`.
     /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.
     void retarget(const std::vector<std::uint16_t>& mapped);
 
