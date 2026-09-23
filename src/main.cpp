@@ -1,6 +1,7 @@
 #include "core/build_info.hpp"
 #include "ui/app.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <string_view>
 
@@ -62,28 +63,44 @@ void attachToLaunchingConsole() {
 } // namespace
 
 int main(int argc, char** argv) {
-    // Any argument at all is a question answered in text — `--version`, `--help`, or an
-    // option nobody knows. No argument is "open the window", and only then is no console
-    // wanted: a window application that borrowed its parent's console on every launch would
-    // print into whatever shell happened to start it and hold that console open.
+    // The crash dialog's "start again" (`ui::CrashReport`): the instance that fell over names
+    // itself, and this one waits for it to be gone before opening anything — otherwise it would
+    // find the audio interface still held by a process that is only now being terminated.
+    // Not in the usage text: nobody types it.
+    if (argc == 3 && std::string_view(argv[1]) == "--after-crash") {
+#if defined(_WIN32)
+        const unsigned long pid = std::strtoul(argv[2], nullptr, 10);
+        if (const HANDLE crashed = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
+            WaitForSingleObject(crashed, 15000);
+            CloseHandle(crashed);
+        }
+#endif
+        return takt4::ui::run();
+    }
+
+    // Any other argument is a question answered in text — `--version`, `--help`, or an option
+    // nobody knows. No argument is "open the window", and only then is no console wanted: a
+    // window application that borrowed its parent's console on every launch would print into
+    // whatever shell happened to start it and hold that console open.
+    //
+    // `argv[1]` is answered and that is the end of it: every branch returns. This was a loop
+    // over the arguments whose increment could never run, which is what MSVC's C4702 said.
     if (argc > 1) {
 #if defined(_WIN32)
         attachToLaunchingConsole();
 #endif
-        for (int i = 1; i < argc; ++i) {
-            const std::string_view arg = argv[i];
-            if (arg == "--version" || arg == "-v") {
-                std::cout << takt4::describe(takt4::buildInfo());
-                return 0;
-            }
-            if (arg == "--help" || arg == "-h") {
-                printUsage(std::cout);
-                return 0;
-            }
-            std::cerr << "takt4: unknown option '" << arg << "'\n";
-            printUsage(std::cerr);
-            return 2;
+        const std::string_view arg = argv[1];
+        if (arg == "--version" || arg == "-v") {
+            std::cout << takt4::describe(takt4::buildInfo());
+            return 0;
         }
+        if (arg == "--help" || arg == "-h") {
+            printUsage(std::cout);
+            return 0;
+        }
+        std::cerr << "takt4: unknown option '" << arg << "'\n";
+        printUsage(std::cerr);
+        return 2;
     }
 
     return takt4::ui::run();

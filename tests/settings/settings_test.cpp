@@ -6,10 +6,17 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <random>
 #include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 using Catch::Matchers::WithinAbs;
 using takt4::settings::Settings;
@@ -224,6 +231,23 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
     CHECK(targets.preset.outputs[0].host == "10.0.0.1");
 }
 
+TEST_CASE("an OSC prefix that is not an address falls back rather than stopping takt4",
+          "[settings]") {
+    // The audit's C1, third way in: `OscPublisher` throws on a prefix it cannot build an
+    // address from, inside `Transports`' constructor, inside the window's — so a hand-edited
+    // "vj" stopped the app opening at all. The file is not a caller worth trusting.
+    const auto prefixOf = [](const std::string& value) {
+        return takt4::settings::fromJson(R"({"preset": {"oscPrefix": )" + value + "}}")
+            .preset.oscPrefix;
+    };
+    for (const char* bad : {R"("vj")", R"("/vj/")", R"("")", R"("/")", R"("/v j")", R"(7)"}) {
+        INFO("prefix: " << bad);
+        CHECK(prefixOf(bad) == "/takt4");
+    }
+    CHECK(prefixOf(R"("/vj")") == "/vj");
+    CHECK(prefixOf(R"("/stage/left")") == "/stage/left");
+}
+
 TEST_CASE("a settings file written before targets had names still loads", "[settings]") {
     // The shape older builds wrote: an array of {host, port} objects under `oscTargets`.
     // Dropping it silently would cost an operator every target they had typed, which is the
@@ -262,17 +286,284 @@ TEST_CASE("a missing or unreadable settings file is not an error", "[settings]")
     const TempDir dir;
     const Settings missing = takt4::settings::load(dir.path() / "there-is-no-file.json");
     CHECK(missing.machine.deviceName.empty());
+    CHECK(takt4::settings::loadChecked(dir.path() / "there-is-no-file.json").status ==
+          takt4::settings::LoadStatus::Missing);
 
     // A directory where a file should be: openable as neither.
     CHECK(takt4::settings::load(dir.path()).machine.deviceName.empty());
+    CHECK(takt4::settings::loadChecked(dir.path()).status ==
+          takt4::settings::LoadStatus::Unreadable);
     CHECK(takt4::settings::load({}).machine.deviceName.empty());
     CHECK_FALSE(takt4::settings::save(Settings{}, {}));
 
-    // Half a file, as a crash mid-write would leave.
+    // Half a file, as a crash mid-write used to leave. `load` still opens on the defaults —
+    // that is what keeps the app starting — but it is **not** the same answer as a missing
+    // file any more, because the next thing that happened to one of these was a save of those
+    // defaults over it. See "a damaged settings file is kept, never saved over".
     const std::filesystem::path truncated = dir.path() / "half.json";
     write(truncated, R"({"machine": {"deviceName": "MOTU)");
     CHECK(takt4::settings::load(truncated).machine.deviceName.empty());
+    const takt4::settings::Loaded checked = takt4::settings::loadChecked(truncated);
+    CHECK(checked.status == takt4::settings::LoadStatus::Corrupt);
+    CHECK_FALSE(checked.problem.empty());
+
+    // And the empty file a crash in the old truncate-then-write save produced, said plainly.
+    const std::filesystem::path empty = dir.path() / "empty.json";
+    write(empty, "");
+    const takt4::settings::Loaded nothing = takt4::settings::loadChecked(empty);
+    CHECK(nothing.status == takt4::settings::LoadStatus::Corrupt);
+    CHECK(nothing.problem == "it is empty");
 }
+
+namespace {
+
+std::string readBytes(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+/// Every file in `dir` whose name starts with `prefix`.
+std::vector<std::filesystem::path> filesStarting(const std::filesystem::path& dir,
+                                                 const std::string& prefix) {
+    std::vector<std::filesystem::path> found;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.path().filename().string().rfind(prefix, 0) == 0) {
+            found.push_back(entry.path());
+        }
+    }
+    return found;
+}
+
+} // namespace
+
+TEST_CASE("a damaged settings file is kept, never saved over", "[settings]") {
+    // The audit's C8, as it happened: a file that would not parse — a trailing comma from a
+    // hand edit, or half a file from a crash — loaded as the **defaults** with no message, and
+    // the save on the way out then wrote those defaults over it. A rig that was one comma away
+    // from loading was gone.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    const std::string damaged =
+        R"({"machine": {"deviceName": "MOTU Pro Audio"}, "preset": {"link": true,}})";
+    write(file, damaged);
+
+    const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+    // Started, on the defaults — there is no backup to fall back to.
+    CHECK(startup.settings.machine.deviceName.empty());
+    CHECK(startup.writable);
+    // Said, naming what happened and where the file went.
+    CHECK(startup.notice.find("settings.json is damaged") != std::string::npos);
+    CHECK(startup.notice.find("default settings") != std::string::npos);
+    CHECK(startup.notice.find("settings.json.corrupt-") != std::string::npos);
+
+    // And the damaged bytes are still on disk, byte for byte, under a name no save will use.
+    CHECK_FALSE(std::filesystem::exists(file));
+    const std::vector<std::filesystem::path> kept = filesStarting(dir.path(), "settings.json.corrupt-");
+    REQUIRE(kept.size() == 1);
+    CHECK(readBytes(kept.front()) == damaged);
+
+    // A save now writes a fresh file and leaves the kept one alone.
+    REQUIRE(takt4::settings::save(startup.settings, file));
+    CHECK(readBytes(kept.front()) == damaged);
+}
+
+TEST_CASE("a damaged file falls back to the copy kept at the last good start", "[settings]") {
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+
+    // A clean start: the settings load, and the file as it stands is kept beside it.
+    Settings rig;
+    rig.machine.deviceName = "MOTU Pro Audio";
+    rig.preset.link = true;
+    REQUIRE(takt4::settings::save(rig, file));
+    const takt4::settings::Startup clean = takt4::settings::openAtStartup(file, file);
+    CHECK(clean.notice.empty());
+    CHECK(clean.settings.machine.deviceName == "MOTU Pro Audio");
+    const std::filesystem::path backup = takt4::settings::backupFile(file);
+    REQUIRE(std::filesystem::exists(backup));
+    CHECK(readBytes(backup) == readBytes(file));
+
+    // The session's own saves do not touch it: the copy worth going back to is the one from
+    // before tonight's edits, not the last autosave.
+    Settings edited = rig;
+    edited.machine.deviceName = "something else";
+    REQUIRE(takt4::settings::save(edited, file));
+    CHECK(takt4::settings::load(backup).machine.deviceName == "MOTU Pro Audio");
+
+    // Then the file is damaged, and the next start comes up on the kept copy rather than on
+    // nothing — and says so.
+    write(file, "{\"machine\": ");
+    const takt4::settings::Startup recovered = takt4::settings::openAtStartup(file, file);
+    CHECK(recovered.settings.machine.deviceName == "MOTU Pro Audio");
+    CHECK(recovered.settings.preset.link);
+    CHECK(recovered.notice.find("settings.json.bak") != std::string::npos);
+    CHECK(filesStarting(dir.path(), "settings.json.corrupt-").size() == 1);
+}
+
+#if defined(_WIN32)
+TEST_CASE("a settings file another program holds is not saved over", "[settings]") {
+    // Locked, not damaged: a sync client or an editor with it open. The contents may be
+    // perfectly good, so the startup must not replace them.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    Settings rig;
+    rig.machine.deviceName = "MOTU Pro Audio";
+    REQUIRE(takt4::settings::save(rig, file));
+
+    const HANDLE held = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(held != INVALID_HANDLE_VALUE);
+    const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+    CHECK_FALSE(startup.writable);
+    CHECK(startup.notice.find("could not be opened") != std::string::npos);
+    CloseHandle(held);
+
+    // Still there, still whole.
+    CHECK(takt4::settings::load(file).machine.deviceName == "MOTU Pro Audio");
+}
+#endif
+
+TEST_CASE("a save replaces the file whole and leaves nothing beside it", "[settings]") {
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    Settings first;
+    first.machine.deviceName = "first";
+    REQUIRE(takt4::settings::save(first, file));
+    Settings second;
+    second.machine.deviceName = "second";
+    REQUIRE(takt4::settings::save(second, file));
+
+    CHECK(takt4::settings::load(file).machine.deviceName == "second");
+    // The temporary the bytes went to first has become the file; nothing is left over.
+    CHECK_FALSE(std::filesystem::exists(dir.path() / "settings.json.tmp"));
+    CHECK(filesStarting(dir.path(), "settings.json").size() == 1);
+}
+
+TEST_CASE("a save that cannot finish leaves the old file as it was", "[settings]") {
+    // The failure the atomic save exists for, made to happen on purpose: the temporary cannot
+    // be created (a folder is squatting on its name), so nothing is written. The old save
+    // truncated the real file *first*, and any failure after that was an empty file.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    Settings good;
+    good.machine.deviceName = "MOTU Pro Audio";
+    REQUIRE(takt4::settings::save(good, file));
+    const std::string before = readBytes(file);
+
+    std::filesystem::create_directories(dir.path() / "settings.json.tmp");
+    Settings other;
+    other.machine.deviceName = "never written";
+    CHECK_FALSE(takt4::settings::save(other, file));
+    CHECK(readBytes(file) == before);
+}
+
+#if defined(_WIN32)
+namespace {
+
+/// The environment variable that turns this test binary into the child of the test below.
+constexpr const char* kSaveLoopVariable = "TAKT4_TEST_SAVE_LOOP";
+
+/// A rig big enough that writing it takes long enough to be interrupted — a few hundred
+/// kilobytes, as a show with every rule written out really is.
+Settings bigRig(const std::string& name, std::size_t rules) {
+    Settings rig;
+    rig.machine.deviceName = name;
+    for (std::size_t i = 0; i < rules; ++i) {
+        takt4::trigger::Rule::Config rule;
+        rule.id = name + "-" + std::to_string(i);
+        rule.name = "rule " + std::to_string(i) + " of the rig called " + name;
+        rule.address = "/composition/layers/" + std::to_string(i % 8 + 1) + "/clips/{}/connect";
+        rig.preset.rules.push_back(rule);
+    }
+    return rig;
+}
+
+std::string environment(const char* name) {
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+        return {};
+    }
+    const std::string out(value);
+    std::free(value);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("settings save loop child of the kill test", "[.child]") {
+    // Hidden: only ever run by "a save killed half way through leaves a whole file", which
+    // starts this binary again with the variable set and then kills it at random.
+    const std::string where = environment(kSaveLoopVariable);
+    if (where.empty()) {
+        SKIP("run only as the child of the kill test");
+    }
+    const std::filesystem::path file(where);
+    const std::string a = takt4::settings::toJson(bigRig("A", 600));
+    const std::string b = takt4::settings::toJson(bigRig("B", 400));
+    REQUIRE(takt4::settings::saveText(a, file));
+    // Tells the parent the first save has landed, so a kill from here on is a kill mid-loop.
+    write(file.parent_path() / "child-started", "1");
+    for (;;) {
+        (void)takt4::settings::saveText(b, file);
+        (void)takt4::settings::saveText(a, file);
+    }
+}
+
+TEST_CASE("a save killed half way through leaves a whole file", "[settings]") {
+    // **The effect, not the mechanism.** A real process saving a real rig in a loop, killed
+    // with TerminateProcess at a random moment, twenty times — and after every one the file
+    // must parse and be one of the two rigs, whole. The old truncate-and-rewrite save fails
+    // this within the first few kills: a kill mid-write leaves a prefix of the JSON, which is
+    // exactly the "power cut while saving" the audit describes.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    const std::filesystem::path started = dir.path() / "child-started";
+
+    wchar_t self[MAX_PATH] = {};
+    REQUIRE(GetModuleFileNameW(nullptr, self, MAX_PATH) > 0);
+    std::wstring command = L"\"" + std::wstring(self) +
+                           L"\" \"settings save loop child of the kill test\"";
+    REQUIRE(SetEnvironmentVariableA(kSaveLoopVariable, file.string().c_str()) != 0);
+
+    std::mt19937 random(20260923);
+    std::uniform_int_distribution<int> delayMs(0, 40);
+    int killedMidLoop = 0;
+    for (int round = 0; round < 20; ++round) {
+        std::error_code ignored;
+        std::filesystem::remove(started, ignored);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION child{};
+        std::wstring mutableCommand = command;
+        REQUIRE(CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child) != 0);
+        // Up to ten seconds for the child to come up and make its first save.
+        for (int wait = 0; wait < 1000 && !std::filesystem::exists(started); ++wait) {
+            Sleep(10);
+        }
+        const bool running = std::filesystem::exists(started);
+        if (running) {
+            Sleep(static_cast<DWORD>(delayMs(random)));
+            ++killedMidLoop;
+        }
+        TerminateProcess(child.hProcess, 1);
+        WaitForSingleObject(child.hProcess, INFINITE);
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        REQUIRE(running);
+
+        INFO("round " << round);
+        const takt4::settings::Loaded loaded = takt4::settings::loadChecked(file);
+        REQUIRE(loaded.status == takt4::settings::LoadStatus::Loaded);
+        const std::size_t rules = loaded.settings.preset.rules.size();
+        CHECK((rules == 600 || rules == 400));
+        CHECK(loaded.settings.machine.deviceName == (rules == 600 ? "A" : "B"));
+    }
+    SetEnvironmentVariableA(kSaveLoopVariable, nullptr);
+    CHECK(killedMidLoop == 20);
+}
+#endif
 
 TEST_CASE("the settings file lives beside the program", "[settings]") {
     // What makes takt4 something an operator can copy onto a stick: the settings travel

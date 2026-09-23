@@ -14,6 +14,13 @@ beforehand — point it at the sound coming out of the mixer and it follows.
 copy the executable anywhere and run it. It keeps a `settings.json` beside itself, which
 makes two copies in two folders two rigs — a rehearsal setup and a show setup.
 
+Your rig is saved on its own a few seconds after every change, and each save replaces the
+file whole, so a crash or a power cut never leaves half of one. Each clean start also keeps
+a copy as `settings.json.bak`. If the file is ever damaged, takt4 sets it aside as
+`settings.json.corrupt-<date>`, starts from that copy and tells you so. If takt4 itself
+falls over, it writes a crash report (`takt4-crash-<date>.dmp`) beside the executable and
+offers to start again.
+
 Windows today. The macOS and Linux presets are in the tree and the code is kept portable,
 but Windows is the only platform currently built and tested.
 
@@ -36,7 +43,8 @@ but Windows is the only platform currently built and tested.
   Edited by clicking, not by typing JSON.
 - **Stays hands-on while it plays.** Tap the tempo, snap the downbeat, ÷2, ×2, pin the
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
-  stops the tracker, reseeds anything or drops the lock.
+  stops the tracker, reseeds anything or drops the lock. From the keyboard: **T** taps,
+  **D** snaps the downbeat and **Esc** is PANIC (in a text box, Esc just leaves the box).
 - **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
   your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
   often from a Stream Deck, mid-set.
@@ -134,8 +142,9 @@ reachable from OSC, so a Stream Deck can drop a layer out for eight bars.
 
 Rig presets build a working setup in one pick: clips on three Resolume layers, Resolume's
 tempo and resync, a breathing dashboard, Euclidean MIDI stabs. Everything a preset writes
-is ordinary editable data, and a preset can be exported to another machine. **PANIC** stops
-every rule instantly.
+is ordinary editable data, and a preset can be exported to another machine. **PANIC** — the
+button, or **Esc** — stops every rule instantly and stays engaged, however many times it is
+pressed, until you press **RELEASE** beside it.
 
 ## Taking orders
 

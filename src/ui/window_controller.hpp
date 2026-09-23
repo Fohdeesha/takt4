@@ -56,6 +56,9 @@ public:
     /// milliseconds — so this is a backstop, not a timing assumption.
     static constexpr int kSettleRedraws = 3;
 
+    /// How often the autosave looks, in redraws — about twice a second. See `enableAutosave`.
+    static constexpr std::uint64_t kAutosaveCheckTicks = 15;
+
     /// The tracker must outlive this. Builds the window, fills the pickers from the
     /// tracker's device list, and starts the redraw timer.
     ///
@@ -243,7 +246,13 @@ public:
     /// Opens the editor, or brings it forward.
     void openEditor();
     /// §5.8's PANIC from the main window's own row, so a halt never waits on a window.
-    void togglePanic();
+    ///
+    /// **Engage only, and release is separate** — the audit's H18. This was `togglePanic`, so a
+    /// double-click on PANIC, which is how a button gets hit in a hurry, halted the rig and let
+    /// it go again before anybody saw it light. Pressing PANIC while panicked does nothing now;
+    /// RELEASE, which appears beside it, is the only way back.
+    void engagePanic();
+    void releasePanic();
 
     /// The MIDI surface itself. Non-const for the same reason `window()` is: a test drives
     /// `dispatch` to deliver an event no hardware here can send, which is the only way the
@@ -269,6 +278,23 @@ public:
 
     /// The same bytes to a file of the operator's choosing, for a backup or a second rig.
     bool exportTo(const std::filesystem::path& path);
+
+    /// Writes the settings to `file` on its own, `quietSeconds` after the last change.
+    ///
+    /// **Because a crash, a power cut or Windows shutting down used to lose the whole
+    /// session.** The file was written on a clean exit and on SAVE and at no other time, so a
+    /// rig built that afternoon lived only in memory until somebody remembered the button. The
+    /// audit's C8. This checks about twice a second whether what would be written has changed,
+    /// and writes once it has stopped changing — so a slider drag is one save when it ends, not
+    /// sixty while it moves, and the file is never more than a few seconds behind the window.
+    ///
+    /// Off until called. `ui::run` switches it on for the real settings file, and nothing else
+    /// does, so a test never writes beside its own executable.
+    void enableAutosave(std::filesystem::path file, double quietSeconds = 3.0);
+
+    /// A sentence the operator must see — `settings::Startup::notice`, most often: the file was
+    /// damaged and what was done about it. On the status line, as an error.
+    void showNotice(const std::string& text);
 
     /// Load a file and apply **the portable half** — Q7's preset: the rules, the outputs,
     /// the fold window and the rest of `TempoTracker::Options`, the meters, Link and the OSC
@@ -339,6 +365,9 @@ private:
     void writeTickProbe();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
+    /// One look at whether the settings need writing — see `enableAutosave`. `now` is
+    /// `nowSeconds()`.
+    void autosave(double now);
     void setStatus(const std::string& text, bool error);
     /// Seconds since this controller was built, on a steady clock. Only differences are
     /// used, which is all `tracking::TapTempo` asks of it.
@@ -397,6 +426,21 @@ private:
     /// there, which is a bug report about MIDI ports that failed to open in silence.
     std::string outputErrorShown_;
     std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
+
+    /// `enableAutosave`'s state. Empty `autosaveFile_` is autosave off.
+    std::filesystem::path autosaveFile_;
+    double autosaveQuietSeconds_ = 3.0;
+    /// What the file holds, as far as this window knows — the text of the last save it made,
+    /// or of the settings it started from. A change is this differing from what would be
+    /// written now.
+    std::string savedText_;
+    /// A change seen but not yet written, and when it was first seen in this exact form. The
+    /// text moving again restarts the wait, which is what makes a drag one save.
+    std::string pendingText_;
+    double pendingSince_ = 0.0;
+    /// When a save last failed, or negative. A full disk is retried now and then rather than
+    /// twice a second, and said once rather than on every attempt.
+    double autosaveFailedAt_ = -1.0;
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;

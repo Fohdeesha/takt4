@@ -5,7 +5,7 @@
 // are meant to look like one application have to import their theme from one place. This
 // is that place, and it holds nothing that knows what either window is for.
 
-import { Slider } from "std-widgets.slint";
+import { LineEdit, Slider } from "std-widgets.slint";
 
 /// A place for the keyboard focus to go when the operator has finished with a text box.
 ///
@@ -18,21 +18,79 @@ import { Slider } from "std-widgets.slint";
 /// stays selected as an entry box ... clicking save, etc other ui elements doesnt exit out of
 /// that box being in edit mode either."*
 ///
-/// `focus()` then `clear-focus()` in one go: taking the focus is what makes the box let go
-/// and commit, and dropping it again is what stops this leaving an invisible element holding
-/// the keyboard. It accepts focus neither by click nor by tab — it is only ever aimed at
-/// deliberately, by `Press` and by the window's own background.
+/// Taking the focus is what makes the box let go and commit. **And the focus stays here**,
+/// which it did not until 2026-09-23: this used to `clear-focus()` straight after, so that no
+/// invisible element held the keyboard — and with nothing holding it, Slint delivers a key
+/// press to nothing at all. That was harmless while no window had a keyboard shortcut. The
+/// main window has three now (the audit's H18: PANIC, TAP and DOWNBEAT from the keyboard),
+/// and a key only reaches the window's shortcut scope by bubbling up from whatever holds the
+/// focus — so after a click on a button the shortcuts went dead until the operator clicked
+/// the background. A sink that keeps the focus passes every key it does not want straight up
+/// to its window, which is exactly right. It accepts focus neither by click nor by tab — it is
+/// only ever aimed at deliberately, by `Press`, by `Field` and by a window's background.
 export component FocusSink inherits FocusScope {
   width: 0px;
   height: 0px;
   focus-on-click: false;
   focus-on-tab-navigation: false;
 
-  /// Takes the focus off whatever has it, and keeps none of it.
+  /// Takes the focus off whatever has it, and holds it somewhere harmless.
   public function take() {
     self.focus();
-    self.clear-focus();
   }
+}
+
+/// A text box that lets go on Escape and on Enter — and leaves the keyboard somewhere useful
+/// when it does.
+///
+/// Every box in takt4 commits when it loses the focus (see `FocusSink`). A `LineEdit` ignores
+/// Escape, so it bubbled up to the window — and in a window where Escape means PANIC, an
+/// operator pressing Escape to get out of a box would halt the show. This one takes Escape for
+/// itself: it finishes the edit, exactly as clicking away does, and panics nothing. Enter does
+/// the same through `leave()`, which the boxes' `accepted` handlers call instead of
+/// `clear-focus()` — clearing would leave nothing holding the keyboard, and the shortcuts dead.
+///
+/// A wrapper rather than `inherits LineEdit`, because a `LineEdit` cannot be given children and
+/// the place the focus goes has to live somewhere. Rooted in a layout so the box's own size
+/// constraints are the component's; `width`, `max-width` and the stretches set on an instance
+/// land on that root exactly as they did on the `LineEdit`. The properties and callbacks are
+/// the ones the boxes in this application use, under the same names.
+export component Field inherits HorizontalLayout {
+  in-out property <string> text <=> edit.text;
+  in property <string> placeholder-text <=> edit.placeholder-text;
+  in property <length> font-size <=> edit.font-size;
+  in property <bool> enabled <=> edit.enabled;
+  /// The box's own focus, so a `changed has-focus` on an instance commits exactly as it did.
+  out property <bool> has-focus: edit.has-focus;
+  callback edited(string);
+  callback accepted(string);
+
+  padding: 0px;
+  spacing: 0px;
+
+  /// Finished with the box: the focus goes where it commits the edit and still passes the
+  /// window's shortcuts up to it.
+  public function leave() {
+    done.take();
+  }
+
+  edit := LineEdit {
+    edited(text) => {
+      root.edited(text);
+    }
+    accepted(text) => {
+      root.accepted(text);
+    }
+    key-pressed(event) => {
+      if (event.text == Key.Escape) {
+        done.take();
+        return accept;
+      }
+      return reject;
+    }
+  }
+
+  done := FocusSink { }
 }
 
 // A dark window, whatever the desktop is set to. This is read across a booth, and the
@@ -93,6 +151,9 @@ export component Press inherits Rectangle {
   /// those, and at 17px two of them do not fit a pane that can be dragged to a third of the
   /// window — the choice is a smaller label or no label, and a smaller one still reads.
   in property <length> font: 17px;
+  /// The key that does the same thing, drawn small and dim after the label — "Esc", "T". A
+  /// shortcut nobody can see is one nobody uses, and the audit's H18 made three of these.
+  in property <string> hint;
   callback clicked;
 
   private property <color> face: root.active ? Theme.controlActive
@@ -116,6 +177,8 @@ export component Press inherits Rectangle {
   HorizontalLayout {
     padding-left: root.pad;
     padding-right: root.pad;
+    spacing: 8px;
+    alignment: center;
 
     Text {
       text: root.text;
@@ -131,6 +194,14 @@ export component Press inherits Rectangle {
       // narrower than the row of buttons in it, the buttons ran off the edge and were
       // clipped rather than giving way. Eliding makes the minimum one ellipsis wide.
       overflow: elide;
+    }
+
+    if root.hint != "" : Text {
+      text: root.hint;
+      color: Theme.dim;
+      font-size: 11px;
+      font-weight: 400;
+      vertical-alignment: center;
     }
   }
 

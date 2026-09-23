@@ -8,6 +8,7 @@
 #include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
+#include "core/io/utf8.hpp"
 #include "core/output/midi_ports.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/model_rows.hpp"
@@ -32,8 +33,11 @@ namespace {
 
 using Options = tracking::TempoTracker::Options;
 
+/// Every string this window shows, made safe to show. See `io::validUtf8`: device and port
+/// names come from drivers through ANSI APIs and exceptions carry whatever their library
+/// wrote, and one byte Slint cannot decode is an abort rather than a garbled character.
 slint::SharedString shared(const std::string& text) {
-    return slint::SharedString(text);
+    return slint::SharedString(io::validUtf8(text));
 }
 
 /// Whether the engine has taken the settings the window sent it.
@@ -62,18 +66,32 @@ std::string describeControl(const control::MidiEvent& event) {
         control::MidiBinding{event.kind, event.channel, event.number, control::ControlAction::Tap});
 }
 
-/// What the last run was sending, as the transports want it.
+/// The preset's OSC prefix if `OscPublisher` will take it, and the default if not.
 ///
-/// The MIDI port comes from the machine half and everything else from the portable half,
-/// which is Q7's split: an OSC address travels to another laptop and a port on this box
-/// does not. A port that has since been unplugged throws on the way up, so it is left for
-/// `setMidiPort` to try once the window exists and can say so.
+/// `settings::fromJson` already refuses a bad one, so this only matters for settings built
+/// some other way — but the publisher throws from inside the runner's constructor, which runs
+/// inside this class's, and a throw there is an application that does not open.
+std::string usablePrefix(const settings::Settings& settings) {
+    return output::isValidOscPrefix(settings.preset.oscPrefix) ? settings.preset.oscPrefix
+                                                               : settings::Preset{}.oscPrefix;
+}
+
+/// What the last run was sending, as the transports want it **at construction** — which is
+/// everything that cannot fail.
+///
+/// **Not the outputs, and not the MIDI clock port.** Either can name something that is not
+/// here today: a USB MIDI interface left at home, a media server whose hostname does not
+/// resolve yet because the network is still coming up. `Transports` throws for those, from
+/// inside `OutputRunner`'s constructor, from inside this class's member initialisers — and
+/// nothing above that caught it, so takt4 died within seconds of every launch with no window
+/// and no message (the audit's C1, reproduced with the Release build). The only way out was to
+/// hand-edit `settings.json`. So both are applied once the window exists, through the same
+/// `post` an operator's edit takes, and a failure lands on the status line like any other.
 output::Transports::Config transportConfig(const settings::Settings& settings,
                                            const Options& tempo) {
     output::Transports::Config config;
     config.link = settings.preset.link;
-    config.oscPrefix = settings.preset.oscPrefix;
-    config.outputs = settings.preset.outputs;
+    config.oscPrefix = usablePrefix(settings);
     config.patch = settings.preset.fixtures;
     config.latencySeconds = tempo.latencyOffsetSeconds;
     return config;
@@ -202,14 +220,16 @@ std::string universeList(const std::vector<std::uint16_t>& universes) {
 OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::string>& midiPorts) {
     OutputRow row{};
     const std::string address = output::formatOutputAddress(target);
-    row.name = slint::SharedString(target.name == address ? std::string{} : target.name);
-    row.address = slint::SharedString(address);
+    // Through `shared`: a MIDI target is named after its device unless somebody named it, and
+    // the device's name is RtMidi's, in whatever encoding the driver gave it.
+    row.name = shared(target.name == address ? std::string{} : target.name);
+    row.address = shared(address);
     const bool midi = target.kind == output::OutputTarget::Kind::Midi;
     row.kind_index = static_cast<int>(target.kind);
-    row.host = slint::SharedString(target.host);
-    row.port = slint::SharedString(std::to_string(target.port));
+    row.host = shared(target.host);
+    row.port = shared(std::to_string(target.port));
     row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
-    row.universes = slint::SharedString(universeList(target.universes));
+    row.universes = shared(universeList(target.universes));
     row.enabled = target.enabled;
     row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
     return row;
@@ -279,10 +299,10 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     if (output::parseOutputTarget(address, target)) {
         const bool midi = target.kind == output::OutputTarget::Kind::Midi;
         row.kind_index = static_cast<int>(target.kind);
-        row.host = slint::SharedString(midi ? std::string{} : target.host);
-        row.port = slint::SharedString(midi ? std::string{} : std::to_string(target.port));
+        row.host = shared(midi ? std::string{} : target.host);
+        row.port = shared(midi ? std::string{} : std::to_string(target.port));
         row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
-        row.universes = slint::SharedString(universeList(target.universes));
+        row.universes = shared(universeList(target.universes));
         return;
     }
     // Not a target — a row half-way through being typed, or one whose text was refused. The
@@ -298,7 +318,7 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
         text = trim(text.substr(text.size() > 6 ? 7 : 6));
         const std::size_t marker = text.rfind(" u");
         if (marker != std::string_view::npos) {
-            row.universes = slint::SharedString(std::string(trim(text.substr(marker + 2))));
+            row.universes = shared(std::string(trim(text.substr(marker + 2))));
             text = trim(text.substr(0, marker));
         }
     } else {
@@ -306,11 +326,11 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     }
     const std::size_t colon = text.rfind(':');
     if (colon == std::string_view::npos) {
-        row.host = slint::SharedString(std::string(text));
+        row.host = shared(std::string(text));
         return;
     }
-    row.host = slint::SharedString(std::string(text.substr(0, colon)));
-    row.port = slint::SharedString(std::string(text.substr(colon + 1)));
+    row.host = shared(std::string(text.substr(0, colon)));
+    row.port = shared(std::string(text.substr(colon + 1)));
 }
 
 /// §5.7's listening socket, from the machine half — a port on this box, never a preset's.
@@ -326,10 +346,9 @@ control::OscControl::Config oscControlConfig(const settings::Settings& settings)
     // One namespace in both directions: §5.6 publishes `<prefix>/bpm` and §5.7 listens on
     // `<prefix>/ctl/…`, and an operator who has learned one has learned the other. The
     // prefix is the portable half's — it describes the app, not the box — while whether to
-    // listen at all is machine-local.
-    if (!settings.preset.oscPrefix.empty()) {
-        config.prefix = settings.preset.oscPrefix;
-    }
+    // listen at all is machine-local. The same checked prefix the transports get, so the two
+    // directions cannot disagree about a bad one.
+    config.prefix = usablePrefix(settings);
     return config;
 }
 
@@ -380,9 +399,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
     // times a second while the tracker does and would otherwise replace a row mid-word.
-    // Safe to read the live list here and nowhere else: the runner has not been started, so
-    // there is no other thread to race. Everywhere after this uses `OutputRunner::snapshot`.
-    for (const output::OutputTarget& target : runner_.transports().outputs()) {
+    // From the settings rather than the runner, which has none yet — see `transportConfig`;
+    // they reach it below, once there is a status line to report a failure on.
+    for (const output::OutputTarget& target : settings.preset.outputs) {
         targetDrafts_.push_back(rowOf(target, midiPorts_));
     }
     publishTargetRows();
@@ -455,7 +474,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
 
     window_->on_rules_clicked([this] { openEditor(); });
     window_->on_fixtures_clicked([this] { patch_.show(); });
-    window_->on_panic_clicked([this] { togglePanic(); });
+    window_->on_panic_clicked([this] { engagePanic(); });
+    window_->on_panic_released([this] { releasePanic(); });
 
     // The editor owns the editing and this owns the file, so a change there comes back
     // here rather than the editor knowing where settings live.
@@ -540,6 +560,23 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     if (!settings.machine.midiClockPort.empty()) {
         setMidiPort(settings.machine.midiClockPort);
     }
+    // The outputs, for the same reason and with more riding on it. Posted whole, exactly as
+    // they were saved: `Transports::setOutputs` opens every target it can and names the ones it
+    // could not, so one missing MIDI interface or one hostname that does not resolve yet costs
+    // that one output and says so, and the rest of the rig is sending.
+    if (!settings.preset.outputs.empty()) {
+        runner_.post(output::OutputCommand::outputs(settings.preset.outputs));
+        const std::string error = runner_.lastError();
+        outputErrorShown_ = error;
+        if (!error.empty()) {
+            setStatus("outputs: " + error, true);
+        }
+    }
+    if (usablePrefix(settings) != settings.preset.oscPrefix) {
+        setStatus("The OSC prefix \"" + settings.preset.oscPrefix +
+                      "\" is not an address, so " + usablePrefix(settings) + " is used instead.",
+                  true);
+    }
     if (!settings.machine.midiControlPort.empty()) {
         setMidiControlPort(settings.machine.midiControlPort);
     }
@@ -573,8 +610,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // settings unwritten, since `ui::run` only saves once the loop has returned. An operator
     // who has just closed the app and been told nothing was kept has met the one failure the
     // SAVE button was added for.
+    //
+    // **Every other window, not only the editor** — the patch editor is a window of its own
+    // too, and closing the main window with PATCH LIGHTS open left takt4 running with nothing
+    // on screen but that: the ASIO device, Link and the ports still held, nothing saved, and
+    // a relaunch finding the interface busy (the audit's H14).
     window_->window().on_close_requested([this] {
         editor_.hide();
+        patch_.hide();
         return slint::CloseRequestResponse::HideWindow;
     });
 
@@ -1083,8 +1126,13 @@ void WindowController::openEditor() {
     editor_.show();
 }
 
-void WindowController::togglePanic() {
-    runner_.panic(!runner_.panicked());
+void WindowController::engagePanic() {
+    runner_.panic(true);
+    publishTriggers();
+}
+
+void WindowController::releasePanic() {
+    runner_.panic(false);
     publishTriggers();
 }
 
@@ -1494,9 +1542,12 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.oscControlPort = oscControl_.config().port;
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
 
-    // The tracker's own, not this window's copy: a tap moves the fold window and the
-    // window is only ever showing what the engine has (§7 deviation 8).
-    out.preset.tempo = tracker_.engine().tempoOptions();
+    // `settings()`: the engine's own, or a change posted moments ago that it has not taken
+    // yet. **Not the engine's alone**, which is what this read until the audit (M27): a
+    // stopped engine applies a posted change only at the next Start, so a slider moved and
+    // then saved — or autosaved — while stopped wrote the value from *before* the move. A tap
+    // still wins, because a tap clears what was in flight (§7 deviation 8).
+    out.preset.tempo = settings();
     out.preset.decoder = tracker_.engine().decoderKind();
     out.preset.meters = meters_;
     out.preset.link = live.link;
@@ -1516,11 +1567,21 @@ bool WindowController::saveNow() {
         setStatus("There is nowhere to save settings on this machine.", true);
         return false;
     }
-    if (!settings::save(currentSettings(), path)) {
-        setStatus("Could not write " + path.string(), true);
+    // Every path shown through `io::pathText`, never `path.string()` — which converts through
+    // the ANSI code page and either throws or produces bytes Slint aborts on for a folder
+    // called "Shows – 2026". The audit's H13.
+    const std::string text = settings::toJson(currentSettings());
+    if (!settings::saveText(text, path)) {
+        setStatus("Could not write " + io::pathText(path), true);
         return false;
     }
-    setStatus("Saved to " + path.string(), false);
+    // The autosave's idea of what is on disk, when this was its file: otherwise it would
+    // write the same bytes again a few seconds later.
+    if (path == autosaveFile_) {
+        savedText_ = text;
+        pendingText_.clear();
+    }
+    setStatus("Saved to " + io::pathText(path), false);
     return true;
 }
 
@@ -1529,11 +1590,67 @@ bool WindowController::exportTo(const std::filesystem::path& path) {
         return false; // cancelled
     }
     if (!settings::save(currentSettings(), path)) {
-        setStatus("Could not write " + path.string(), true);
+        setStatus("Could not write " + io::pathText(path), true);
         return false;
     }
-    setStatus("Exported to " + path.string(), false);
+    setStatus("Exported to " + io::pathText(path), false);
     return true;
+}
+
+void WindowController::enableAutosave(std::filesystem::path file, double quietSeconds) {
+    autosaveFile_ = std::move(file);
+    autosaveQuietSeconds_ = std::max(0.0, quietSeconds);
+    // What the file holds now, as far as this window can know: the settings it was built
+    // from, as it would write them. A difference from this is a change worth saving.
+    savedText_ = autosaveFile_.empty() ? std::string{} : settings::toJson(currentSettings());
+    pendingText_.clear();
+    autosaveFailedAt_ = -1.0;
+}
+
+void WindowController::showNotice(const std::string& text) {
+    if (!text.empty()) {
+        setStatus(text, true);
+    }
+}
+
+void WindowController::autosave(double now) {
+    // A full disk or a folder gone read-only is retried every ten seconds, not twice a second:
+    // each attempt is a file created and thrown away.
+    constexpr double kRetrySeconds = 10.0;
+    std::string text = settings::toJson(currentSettings());
+    if (text == savedText_) {
+        pendingText_.clear();
+        return;
+    }
+    if (text != pendingText_) {
+        // Still moving — a drag, a word being typed. Wait for it to settle.
+        pendingText_ = std::move(text);
+        pendingSince_ = now;
+        return;
+    }
+    if (now - pendingSince_ < autosaveQuietSeconds_) {
+        return;
+    }
+    if (autosaveFailedAt_ >= 0.0 && now - autosaveFailedAt_ < kRetrySeconds) {
+        return;
+    }
+    if (!settings::saveText(pendingText_, autosaveFile_)) {
+        // Said once, when it starts failing — and in words that tell an operator the rig is
+        // not being kept, which is the thing they have to act on.
+        if (autosaveFailedAt_ < 0.0) {
+            setStatus("Could not save settings to " + io::pathText(autosaveFile_) +
+                          " — changes are not being kept. Trying again every few seconds.",
+                      true);
+        }
+        autosaveFailedAt_ = now;
+        return;
+    }
+    if (autosaveFailedAt_ >= 0.0) {
+        setStatus("Settings saved to " + io::pathText(autosaveFile_) + " again.", false);
+    }
+    autosaveFailedAt_ = -1.0;
+    savedText_ = std::move(pendingText_);
+    pendingText_.clear();
 }
 
 bool WindowController::importFrom(const std::filesystem::path& path) {
@@ -1542,7 +1659,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     }
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
-        setStatus("No such file: " + path.string(), true);
+        setStatus("No such file: " + io::pathText(path), true);
         return false;
     }
     // `settings::load` is documented never to fail: anything it cannot read gives defaults.
@@ -1553,7 +1670,8 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     if (loaded.preset.rules.empty() && loaded.preset.outputs.empty() &&
         loaded.preset.oscPrefix == defaults.preset.oscPrefix &&
         loaded.preset.meters == defaults.preset.meters) {
-        setStatus(path.filename().string() + " has no preset in it, so nothing was changed.", true);
+        setStatus(io::pathText(path.filename()) + " has no preset in it, so nothing was changed.",
+                  true);
         return false;
     }
 
@@ -1578,7 +1696,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     publishTargetRows();
     applyTargets();
 
-    setStatus("Imported " + path.filename().string() + ": " +
+    setStatus("Imported " + io::pathText(path.filename()) + ": " +
                   std::to_string(loaded.preset.rules.size()) + " rules, " +
                   std::to_string(loaded.preset.outputs.size()) + " outputs.",
               false);
@@ -1695,6 +1813,8 @@ void WindowController::publishPin() {
 
 void WindowController::setStatus(const std::string& text, bool error) {
     statusIsError_ = error;
+    // Through `shared`, and so through `io::validUtf8`: this is where exception messages land,
+    // and those carry driver and device names in whatever encoding their library used.
     window_->set_status(shared(text));
     window_->set_status_is_error(error);
 }
@@ -1779,6 +1899,11 @@ void WindowController::tick() {
     // costs nothing while the window is closed.
     patch_.tick();
     publishTriggers();
+    // Above the early return too: a rig is mostly built with the tracker stopped, and that is
+    // exactly the work a crash would otherwise take with it. See `enableAutosave`.
+    if (!autosaveFile_.empty() && ticks_ % kAutosaveCheckTicks == 0) {
+        autosave(nowSeconds());
+    }
     if (!tracker_.running()) {
         return;
     }

@@ -1672,6 +1672,88 @@ TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[
     CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
 }
 
+TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]") {
+    // The audit's C1, reproduced with the Release build before it was fixed: a saved output
+    // naming a MIDI interface that was not plugged in threw out of the runner's constructor,
+    // out of this class's, and out of `ui::run` — takt4 exited 0xC0000409 within seconds of
+    // every launch, with no window and no message. A hostname that does not resolve yet did
+    // the same. The one port that had been guarded was the MIDI *clock* (the test above).
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    for (const char* line : {"lights = midi takt4 test - a device left at home",
+                             "hall = no-such-host.invalid:7000", "main = 127.0.0.1:7000"}) {
+        takt4::output::OutputTarget target;
+        REQUIRE(takt4::output::parseOutputTarget(line, target));
+        saved.preset.outputs.push_back(target);
+    }
+
+    std::optional<WindowController> controller;
+    REQUIRE_NOTHROW(controller.emplace(tracker, saved));
+
+    // The one that can open is sending; the other two are named, not dropped.
+    CHECK(controller->outputs().transports().osc().targetCount() == 1);
+    CHECK(controller->outputs().transports().outputs().size() == 3);
+    CHECK(controller->window().get_outputs_list()->row_count() == 3);
+    CHECK(controller->statusIsError());
+    const std::string status(controller->window().get_status());
+    CHECK(status.find("outputs:") != std::string::npos);
+    CHECK(status.find("lights") != std::string::npos);
+    CHECK(status.find("hall") != std::string::npos);
+}
+
+TEST_CASE("a saved OSC prefix that is not an address does not stop the window opening", "[ui]") {
+    // The same crash by the third road: `OscPublisher` throws on "vj", and it is built inside
+    // the runner. `settings::fromJson` refuses one on the way in; this is the window's own
+    // guard for settings that arrive any other way.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.preset.oscPrefix = "vj";
+
+    std::optional<WindowController> controller;
+    REQUIRE_NOTHROW(controller.emplace(tracker, saved));
+    CHECK(controller->outputs().transports().oscPrefix() == "/takt4");
+    CHECK(controller->oscControl().config().prefix == "/takt4");
+    CHECK(controller->statusIsError());
+    CHECK(std::string(controller->window().get_status()).find("\"vj\"") != std::string::npos);
+}
+
+TEST_CASE("the settings are saved on their own a moment after a change", "[ui][settings]") {
+    // The audit's C8: the file was written on a clean exit and on SAVE, and a crash, a power
+    // cut or Windows shutting down with the window open lost the whole session. No exit and
+    // no button here — only the redraw timer, and the file appears.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    controller.enableAutosave(file, 0.0);
+
+    // Nothing has changed since it was switched on, so nothing is written however long it runs.
+    for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
+        controller.tick();
+    }
+    CHECK_FALSE(std::filesystem::exists(file));
+
+    takt4::trigger::Rule::Config strobe;
+    strobe.id = "strobe";
+    strobe.address = "/composition/layers/1/clips/1/connect";
+    controller.setRules({strobe});
+    for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
+        controller.tick();
+    }
+    REQUIRE(std::filesystem::exists(file));
+    const takt4::settings::Settings back = takt4::settings::load(file);
+    REQUIRE(back.preset.rules.size() == 1);
+    CHECK(back.preset.rules[0].id == "strobe");
+
+    // And a slider moved while the tracker is stopped is saved as moved, not as it was before
+    // (the audit's M27: the save read the engine, which takes the change only at Start).
+    controller.window().invoke_fold_min_changed(91.0f);
+    for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
+        controller.tick();
+    }
+    CHECK_THAT(takt4::settings::load(file).preset.tempo.minBpm, WithinAbs(91.0, 1e-6));
+}
+
 TEST_CASE("what the window hands back is what it was given", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
@@ -1792,6 +1874,197 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     CHECK(fresh.rules()[1].address == "/composition/layers/1/clips/{}/connect");
 }
 
+TEST_CASE("a path or a device name in any encoding reaches the status line intact", "[ui]") {
+    // The audit's H13, and the wider class behind it. Every string on screen goes through
+    // `slint::SharedString`, which aborts the process on a byte that is not UTF-8 — and the
+    // status line was built from `path.string()`, which on Windows converts through the ANSI
+    // code page: "Jon’s set.json" came out as a lone 0x92 byte. A failure here is not a failed
+    // assertion but the test binary dying, which is what the operator's takt4 did.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file =
+        dir.path() / std::filesystem::path(L"Shows – 2026") / std::filesystem::path(L"Jon’s set.json");
+    REQUIRE(controller.exportTo(file));
+    REQUIRE(std::filesystem::exists(file));
+    const std::string status(controller.window().get_status());
+    CHECK(status.find("Shows \xE2\x80\x93 2026") != std::string::npos);
+    CHECK(status.find("Jon\xE2\x80\x99s set.json") != std::string::npos);
+
+    // And a name that arrived from a driver in its own encoding: an ASIO or MIDI device called
+    // "µ-Port" read through the ANSI API is the byte 0xB5 on its own. The failure to open it
+    // names it on the status line, which is where it used to abort.
+    controller.setMidiPort("takt4 test \xB5-Port");
+    CHECK(controller.statusIsError());
+    const std::string refused(controller.window().get_status());
+    CHECK(refused.find("takt4 test \xEF\xBF\xBD-Port") != std::string::npos);
+}
+
+namespace {
+
+/// The controller's main window, shown and laid out at `width` x `height` with nothing else
+/// between it and a dispatched event — the shape `render` gives a bare window, without the
+/// render, whose adapter slot may belong to one of the controller's other windows.
+void layOut(WindowController& controller, float width, float height) {
+    auto& window = controller.window().window();
+    controller.window().show();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({width, height}));
+    window.dispatch_window_active_changed_event(true);
+}
+
+void clickAt(slint::Window& window, float x, float y) {
+    const slint::LogicalPosition at({x, y});
+    window.dispatch_pointer_move_event(at);
+    window.dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+    window.dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+}
+
+void press(slint::Window& window, const std::string& key) {
+    window.dispatch_key_press_event(slint::SharedString(key));
+    window.dispatch_key_release_event(slint::SharedString(key));
+}
+
+const std::string kEscape(1, '\x1b');
+
+} // namespace
+
+TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "[ui]") {
+    // The audit's H18. PANIC was a plain toggle, so the way a button is hit in a hurry — twice
+    // — halted the rig and let go of it again before it had visibly lit. Driven with real
+    // clicks, because the fix is as much where RELEASE appears as what PANIC does: RELEASE
+    // shows up to PANIC's *left*, so the second click of a double-click lands on PANIC again.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 760.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+
+    // Inside PANIC's right-hand end, in the pinned footer — the spot the wheel test clicks.
+    const float panicX = kWidth - 34.0f;
+    const float footerY = kHeight - 65.0f;
+    clickAt(window, panicX, footerY);
+    clickAt(window, panicX, footerY);
+    CHECK(controller.outputs().panicked());
+    CHECK(controller.window().get_panicked());
+
+    // RELEASE, found rather than written down: the first thing left of PANIC that lets go.
+    bool released = false;
+    for (float x = panicX - 150.0f; x > 500.0f && !released; x -= 8.0f) {
+        clickAt(window, x, footerY);
+        released = !controller.outputs().panicked();
+    }
+    CHECK(released);
+    CHECK_FALSE(controller.window().get_panicked());
+
+    // And the keyboard still works after that click. RELEASE disappears the moment it works,
+    // and the focus the click gave it used to disappear with it — so the next Escape, which is
+    // the one that matters, reached nothing at all.
+    press(window, kEscape);
+    CHECK(controller.outputs().panicked());
+}
+
+TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
+    // The same trap by a quieter door: the row's "−" button takes the focus on the click and is
+    // then destroyed with its row, which left Escape reaching nothing until the next click.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.addTarget();
+    controller.addTarget();
+    constexpr float kWidth = 1000.0f;
+    layOut(controller, kWidth, 760.0f);
+    auto& window = controller.window().window();
+
+    // The "−" at the end of a row: found by clicking down the column until a row goes.
+    const float removeX = kWidth - 34.0f;
+    bool removed = false;
+    for (float y = 380.0f; y < 664.0f && !removed; y += 4.0f) {
+        clickAt(window, removeX, y);
+        removed = controller.window().get_outputs_list()->row_count() == 1;
+    }
+    REQUIRE(removed);
+    press(window, kEscape);
+    CHECK(controller.outputs().panicked());
+}
+
+TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the box", "[ui]") {
+    // HANDOFF: PANIC by keyboard is "non-negotiable for live use", and no `.slint` file handled
+    // a key at all. And the other half, which is what makes Escape safe to bind: an operator
+    // who presses Escape to get out of a text box must not halt the show.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.addTarget(); // a row with a name box in it
+    layOut(controller, 1000.0f, 760.0f);
+    auto& window = controller.window().window();
+
+    // Nothing clicked yet: the key reaches the window's own scope, and PANIC engages.
+    press(window, kEscape);
+    CHECK(controller.outputs().panicked());
+    controller.releasePanic();
+    REQUIRE_FALSE(controller.outputs().panicked());
+
+    // The name box of that row, found by typing into candidates until a name commits. A miss
+    // leaves Escape to engage PANIC, which is let go before the next try; the hit is the only
+    // round in which Escape was pressed *inside* a box, and that is the round asserted on.
+    bool found = false;
+    bool panickedInBox = true;
+    for (float y = 380.0f; y < 690.0f && !found; y += 4.0f) {
+        for (float x = 150.0f; x < 250.0f && !found; x += 20.0f) {
+            clickAt(window, x, y);
+            press(window, "q");
+            press(window, kEscape);
+            const auto rows = controller.window().get_outputs_list();
+            if (rows->row_count() > 0 && std::string(rows->row_data(0)->name) == "q") {
+                found = true;
+                panickedInBox = controller.outputs().panicked();
+            }
+            if (controller.outputs().panicked()) {
+                controller.releasePanic();
+            }
+        }
+    }
+    INFO("no click landed in the row's name box");
+    REQUIRE(found);
+    CHECK_FALSE(panickedInBox);
+
+    // And straight after leaving the box, Escape is PANIC again: leaving it put the focus
+    // somewhere that still passes keys up, rather than nowhere.
+    press(window, kEscape);
+    CHECK(controller.outputs().panicked());
+}
+
+TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key counts once",
+          "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    layOut(controller, 1000.0f, 760.0f);
+    auto& window = controller.window().window();
+
+    // Stopped, the keys do what their buttons do — nothing: both are greyed out.
+    press(window, "t");
+    CHECK(controller.taps() == 0);
+
+    // The window as a running tracker leaves it, without a device to open.
+    controller.window().set_running(true);
+    press(window, "t");
+    CHECK(controller.taps() == 1);
+    // Held down, a key repeats about thirty times a second; each repeat as a tap would seed a
+    // tempo of 1800 BPM.
+    window.dispatch_key_press_repeat_event(slint::SharedString("t"));
+    window.dispatch_key_press_repeat_event(slint::SharedString("t"));
+    CHECK(controller.taps() == 1);
+    window.dispatch_key_release_event(slint::SharedString("t"));
+    // A real second tap, later than a switch bounce could be.
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    press(window, "T");
+    CHECK(controller.taps() == 2);
+
+    CHECK_FALSE(controller.window().get_snap_pending());
+    press(window, "d");
+    CHECK(controller.window().get_snap_pending());
+}
+
 TEST_CASE("closing the main window closes the editor with it", "[ui]") {
     // Slint's event loop runs until the **last** window is hidden, and §5.9's editor is a
     // window of its own — so closing the main window with the editor up left takt4 running
@@ -1807,6 +2080,28 @@ TEST_CASE("closing the main window closes the editor with it", "[ui]") {
     // The real gesture, dispatched into the window — not the handler called directly.
     controller.window().window().dispatch_close_requested_event();
     CHECK_FALSE(controller.editor().visible());
+}
+
+TEST_CASE("closing the main window closes the patch editor with it", "[ui]") {
+    // The same failure through the other door (the audit's H14): the close handler hid the
+    // rule editor and nothing else, so with PATCH LIGHTS open the process stayed up with the
+    // patch window alone on screen — the interface, Link and the ports all still held.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    controller.window().invoke_fixtures_clicked();
+    REQUIRE(controller.patchEditor().visible());
+    REQUIRE(controller.patchEditor().window().window().is_visible());
+    controller.openEditor();
+    REQUIRE(controller.editor().visible());
+
+    controller.window().window().dispatch_close_requested_event();
+    CHECK_FALSE(controller.patchEditor().visible());
+    CHECK_FALSE(controller.editor().visible());
+    // What Slint itself thinks, which is what decides whether its event loop returns: it runs
+    // until the last *visible* window is gone, and the flags above are only ours.
+    CHECK_FALSE(controller.patchEditor().window().window().is_visible());
+    CHECK_FALSE(controller.editor().window().window().is_visible());
 }
 
 TEST_CASE("importing something that is not a preset changes nothing", "[ui][settings]") {

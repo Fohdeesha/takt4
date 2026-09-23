@@ -33,6 +33,7 @@ add_executable(takt4_tests
   features/filterbank_test.cpp
   features/intensity_test.cpp
   io/npy_file_test.cpp
+  io/utf8_test.cpp
   io/wav_file_test.cpp
   model/activation_engine_test.cpp
   model/beat_model_test.cpp
@@ -107,6 +108,7 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST)
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests
+    ui/crash_report_test.cpp
     ui/fixtures_test.cpp
     ui/main.cpp
     ui/model_watch.hpp

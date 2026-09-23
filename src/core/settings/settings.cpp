@@ -1,5 +1,8 @@
 #include "core/settings/settings.hpp"
 
+#include "core/io/atomic_file.hpp"
+#include "core/io/utf8.hpp"
+#include "core/output/osc_publisher.hpp"
 #include "core/settings/rule_json.hpp"
 
 #include <nlohmann/json.hpp>
@@ -8,10 +11,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <exception>
-#include <fstream>
-#include <ios>
-#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -205,6 +206,61 @@ tracking::TempoTracker::Options tempoFromJson(const json& object) {
     return tempo;
 }
 
+/// nlohmann's message for a parse failure, as an operator would want it on a status line:
+/// "line 12, column 3: syntax error while parsing object - unexpected '}'", without the
+/// library's `[json.exception.parse_error.101] parse error at ` in front of it.
+std::string describeParseError(std::string_view text, const std::exception& error) {
+    // The two a crash or an unlucky editor actually leave, said plainly rather than as the
+    // parser's account of reading nothing.
+    if (text.find_first_not_of(" \t\r\n") == std::string_view::npos) {
+        return "it is empty";
+    }
+    std::string message = error.what();
+    for (const std::string_view drop : {std::string_view("] "), std::string_view("parse error at ")}) {
+        const std::size_t at = message.find(drop);
+        if (at != std::string::npos) {
+            message.erase(0, at + drop.size());
+        }
+    }
+    // An error that quotes the file can quote bytes that are not UTF-8, and this is headed for
+    // the window.
+    return io::validUtf8(message);
+}
+
+/// `file` renamed to `settings.json.corrupt-20260923-101500` beside itself, or empty when it
+/// could not be moved. Never replaces anything: a second damaged file within the same second
+/// gets `-1` on the end rather than taking the first one's name.
+std::filesystem::path setAside(const std::filesystem::path& file) {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    if (localtime_s(&local, &now) != 0) {
+        return {};
+    }
+#else
+    if (localtime_r(&now, &local) == nullptr) {
+        return {};
+    }
+#endif
+    char stamp[32] = {};
+    if (std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local) == 0) {
+        return {};
+    }
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        std::filesystem::path target = file;
+        target += std::string(".corrupt-") + stamp +
+                  (attempt == 0 ? std::string{} : "-" + std::to_string(attempt));
+        std::error_code code;
+        if (std::filesystem::exists(target, code) || code) {
+            continue;
+        }
+        std::filesystem::rename(file, target, code);
+        // A rename that failed for any reason but the name will fail again under another one.
+        return code ? std::filesystem::path{} : target;
+    }
+    return {};
+}
+
 } // namespace
 
 std::filesystem::path settingsDirectory() {
@@ -360,13 +416,10 @@ std::string toJson(const Settings& settings) {
     return document.dump(2, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace) + "\n";
 }
 
-Settings fromJson(std::string_view text) {
-    Settings settings;
-    const json document = json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (document.is_discarded() || !document.is_object()) {
-        return settings;
-    }
+namespace {
 
+Settings fromDocument(const json& document) {
+    Settings settings;
     if (document.contains("machine")) {
         const json& machine = document.at("machine");
         read(machine, "deviceName", settings.machine.deviceName);
@@ -417,6 +470,13 @@ Settings fromJson(std::string_view text) {
         const json& preset = document.at("preset");
         read(preset, "link", settings.preset.link);
         read(preset, "oscPrefix", settings.preset.oscPrefix);
+        // Refused here rather than trusted: `OscPublisher` throws on a prefix it cannot build
+        // an address from, from inside the transports' constructor, and a hand-edited "vj"
+        // with no leading slash used to stop takt4 opening at all — no window, no message,
+        // every launch.
+        if (!output::isValidOscPrefix(settings.preset.oscPrefix)) {
+            settings.preset.oscPrefix = Preset{}.oscPrefix;
+        }
         std::string decoder;
         read(preset, "decoder", decoder);
         settings.preset.decoder = decoderFromName(decoder);
@@ -506,35 +566,143 @@ Settings fromJson(std::string_view text) {
     return settings;
 }
 
-Settings load(const std::filesystem::path& path) {
+} // namespace
+
+std::optional<Settings> parse(std::string_view text, std::string& problem) {
+    problem.clear();
+    try {
+        const json document = json::parse(text);
+        if (!document.is_object()) {
+            problem = "it is not a settings file";
+            return std::nullopt;
+        }
+        return fromDocument(document);
+    } catch (const std::exception& e) {
+        problem = describeParseError(text, e);
+        return std::nullopt;
+    }
+}
+
+Settings fromJson(std::string_view text) {
+    std::string ignored;
+    std::optional<Settings> parsed = parse(text, ignored);
+    return parsed ? std::move(*parsed) : Settings{};
+}
+
+Loaded loadChecked(const std::filesystem::path& path) {
+    Loaded out;
     if (path.empty()) {
-        return {};
+        return out;
     }
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        return {};
+    std::string problem;
+    const std::optional<std::string> text = io::readFile(path, problem);
+    if (!text) {
+        if (!problem.empty()) {
+            out.status = LoadStatus::Unreadable;
+            out.problem = std::move(problem);
+        }
+        return out;
     }
-    std::ostringstream text;
-    text << in.rdbuf();
-    return fromJson(text.str());
+    std::optional<Settings> parsed = parse(*text, problem);
+    if (!parsed) {
+        out.status = LoadStatus::Corrupt;
+        out.problem = std::move(problem);
+        return out;
+    }
+    out.settings = std::move(*parsed);
+    out.status = LoadStatus::Loaded;
+    return out;
+}
+
+Settings load(const std::filesystem::path& path) {
+    return loadChecked(path).settings;
+}
+
+std::filesystem::path backupFile(const std::filesystem::path& file) {
+    std::filesystem::path backup = file;
+    backup += ".bak";
+    return backup;
+}
+
+Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom) {
+    Startup out;
+    const Loaded loaded = loadChecked(readFrom);
+    const std::string name = io::pathText(readFrom.filename());
+    // Only the file takt4 writes to is protected by `writable`: a damaged or locked file in the
+    // old per-user location is not what the next save replaces.
+    const bool isOurs = !file.empty() && readFrom == file;
+
+    switch (loaded.status) {
+    case LoadStatus::Missing:
+        return out;
+    case LoadStatus::Loaded:
+        out.settings = loaded.settings;
+        // The rig as it stood when takt4 last started cleanly, kept beside it. Taken here and
+        // nowhere else, so an evening of autosaved edits never overwrites it: the one copy that
+        // is worth going back to is the one from before tonight. Atomic like every other
+        // write, so a crash in the middle of this cannot leave a half backup either.
+        if (isOurs) {
+            std::string ignored;
+            if (const std::optional<std::string> bytes = io::readFile(file, ignored)) {
+                (void)io::replaceFile(backupFile(file), *bytes);
+            }
+        }
+        return out;
+    case LoadStatus::Unreadable:
+        out.writable = !isOurs;
+        out.notice = name + " could not be opened (" + loaded.problem +
+                     "), so takt4 started with default settings" +
+                     (isOurs ? " and will not save over it automatically. Close whatever has "
+                               "it open, then restart takt4."
+                             : ".");
+        return out;
+    case LoadStatus::Corrupt:
+        break;
+    }
+
+    // Damaged. Moved aside first — **never** saved over, which is what used to happen: the
+    // defaults it loaded as went back out on exit, over the one copy of the rig there was.
+    const std::filesystem::path aside = setAside(readFrom);
+    if (aside.empty() && isOurs) {
+        out.writable = false;
+    }
+    std::string from = "default settings";
+    if (!file.empty()) {
+        const Loaded backup = loadChecked(backupFile(file));
+        if (backup.status == LoadStatus::Loaded) {
+            out.settings = backup.settings;
+            from = io::pathText(backupFile(file).filename()) +
+                   ", the copy kept when takt4 last started";
+        }
+    }
+    out.notice = name + " is damaged (" + loaded.problem + "), so takt4 started from " + from +
+                 ". " +
+                 (aside.empty()
+                      ? "The damaged file could not be moved aside, so takt4 will not save over "
+                        "it automatically: move or fix it, then restart."
+                      : "The damaged file was kept as " + io::pathText(aside.filename()) + ".");
+    return out;
+}
+
+bool saveText(std::string_view json, const std::filesystem::path& path) {
+    try {
+        if (path.empty()) {
+            return false;
+        }
+        std::error_code code;
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path(), code);
+            // Not checked: create_directories reports false with no error when the directory
+            // was already there, and the write below is the real test either way.
+        }
+        return io::replaceFile(path, json);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool save(const Settings& settings, const std::filesystem::path& path) try {
-    if (path.empty()) {
-        return false;
-    }
-    std::error_code code;
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path(), code);
-        // Not checked: create_directories reports false with no error when the directory
-        // was already there, and the open below is the real test either way.
-    }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return false;
-    }
-    out << toJson(settings);
-    return out.good();
+    return saveText(toJson(settings), path);
 } catch (...) {
     // A function-try-block, so the header's "false when it could not be written" is true of
     // *every* way it could fail rather than only of the file system. `toJson` is not

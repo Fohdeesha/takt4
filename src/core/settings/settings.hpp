@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -178,20 +179,97 @@ std::filesystem::path existingSettingsFile();
 /// truncated or nonsense gives the defaults, because settings that cannot be parsed must
 /// not be the reason an app will not open. Anything the file does not say keeps its
 /// default, so a file written by an older build still loads.
+///
+/// **Which is also why it must not be the only way in.** A file that did not parse and a file
+/// that was not there both come back as the defaults, and the exit save then wrote those
+/// defaults over the one that was merely damaged — a trailing comma from a hand edit was
+/// enough to lose a whole rig. `loadChecked` says which it was; startup goes through
+/// `openAtStartup`, which acts on the answer.
 Settings load(const std::filesystem::path& path);
 
-/// Writes `path`, creating the directory if it is not there. False when it could not be
-/// written — a read-only profile, a full disk — which is worth reporting once and not
-/// worth stopping for.
+/// What `loadChecked` found at a path.
+enum class LoadStatus : std::uint8_t {
+    /// Nothing there: a fresh install. The defaults, and nothing to report.
+    Missing,
+    /// Read and understood.
+    Loaded,
+    /// There, and not settings — truncated, empty, hand-edited into a syntax error, or not
+    /// JSON at all.
+    Corrupt,
+    /// There, and could not be opened: another program holds it, or it is not permitted.
+    Unreadable,
+};
+
+struct Loaded {
+    /// The defaults unless `status` is `Loaded`.
+    Settings settings;
+    LoadStatus status = LoadStatus::Missing;
+    /// What was wrong, in a few words, for `Corrupt` and `Unreadable` — "line 12, column 3:
+    /// unexpected '}'", "it is empty", "permission denied". Empty otherwise.
+    std::string problem;
+};
+
+/// `load`, saying what happened. Never throws.
+Loaded loadChecked(const std::filesystem::path& path);
+
+/// Where the copy of the settings file taken at each good startup is kept:
+/// `settings.json.bak` beside it. See `openAtStartup`.
+std::filesystem::path backupFile(const std::filesystem::path& file);
+
+/// What `ui::run` starts from, and anything the operator has to be told about how it got it.
+struct Startup {
+    Settings settings;
+    /// One or two sentences for the status line when the file could not be used as it was;
+    /// empty when it was read, or when there was none.
+    std::string notice;
+    /// False only when the file that is there could neither be read nor moved out of the way —
+    /// the one case in which an automatic save would destroy something. Nothing is written
+    /// over it automatically then.
+    bool writable = true;
+};
+
+/// Reads the settings for a launch, and **never lets a damaged file be lost**.
+///
+/// `file` is where settings are written (`settingsFile()`); `readFrom` is where they are
+/// read this time (`existingSettingsFile()`), which differs only on the first run after the
+/// file moved beside the executable.
+///
+///   * **Read** — the settings, and a copy of the file as it stands goes to `backupFile(file)`:
+///     the rig as it was when takt4 last started cleanly, which is what somebody wants back
+///     after an evening's edits went wrong.
+///   * **Damaged** — the file is renamed to `settings.json.corrupt-<date>-<time>` beside itself,
+///     never overwritten, and the backup is loaded instead if there is one that reads. The
+///     notice names both.
+///   * **Could not be opened** — the defaults, a notice, and `writable` false, since a save
+///     would replace a file that may be perfectly good and merely locked.
+Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom);
+
+/// Writes `path`, creating the directory if it is not there — **atomically**: see
+/// `io::replaceFile`. The file on disk is always a whole settings file, the old one or the new
+/// one, whatever happens part-way through; it used to be truncated and rewritten in place,
+/// and a crash or a full disk mid-save left an empty file where the rig had been.
+///
+/// False when it could not be written — a read-only folder, a full disk — which is worth
+/// reporting once and not worth stopping for. Never throws.
 bool save(const Settings& settings, const std::filesystem::path& path);
+
+/// `save` for text `toJson` has already produced — what an autosave that compared the text
+/// against the last save has in its hand. Never throws.
+bool saveText(std::string_view json, const std::filesystem::path& path);
 
 /// The file's text. Pretty-printed: this is a file a person may well open, and Q8's
 /// headless mode is expected to hand-write one.
 std::string toJson(const Settings& settings);
 
 /// Parses what `toJson` writes. Never throws; see `load`. Values that cannot be honoured
-/// — a fold window that is inverted, a channel below zero — fall back to the default
-/// rather than being passed on to a tracker that trusts its caller.
+/// — a fold window that is inverted, a channel below zero, an OSC prefix that is not an
+/// address — fall back to the default rather than being passed on to code that trusts its
+/// caller.
 Settings fromJson(std::string_view text);
+
+/// `fromJson`, or nothing with `problem` saying why the text is not a settings file at all.
+/// A file that parses and merely holds odd values is still a settings file: those values
+/// fall back one by one, exactly as `fromJson` does.
+std::optional<Settings> parse(std::string_view text, std::string& problem);
 
 } // namespace takt4::settings

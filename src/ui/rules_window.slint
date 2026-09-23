@@ -20,8 +20,8 @@
 // own copy and posts the set whole — see its header for why the runner's copy cannot be the
 // one being edited.
 
-import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { FocusSink, Press, Splitter, Theme } from "theme.slint";
+import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { Field, Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -455,1643 +455,1989 @@ export component RulesWindow inherits Window {
 
   callback log-cleared();
 
-  // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
-  // commits when it loses the keyboard, and a click on a heading, a panel or the space
-  // between two rows used to move the focus nowhere — so the box stayed lit and what was
-  // typed in it stayed uncommitted until something else happened to take the focus.
-  //
-  // First in the window, so it is *behind* everything: a click that any real control wants
-  // is taken by that control and never reaches here, and what does reach here is a click on
-  // nothing. `Press` does the same thing for itself, since a button's own touch area would
-  // otherwise swallow the click before this saw it.
-  defocus := FocusSink { }
-  TouchArea {
-    clicked => {
-      defocus.take();
+  /// PANIC let go of — the RELEASE button, which is the only way back. `panic-clicked` now
+  /// only ever engages; see the main window's footer for why.
+  callback panic-released();
+
+  // The keyboard's resting place, so Escape works the moment the editor opens.
+  forward-focus: keys;
+
+  // **PANIC from the keyboard in this window too** — the audit's H18. The editor is where an
+  // operator is looking when a rule they have just built runs away, and a halt that only
+  // works from the other window is one they have to find first. Escape only: TAP and DOWNBEAT
+  // belong to the main window, where the tracker they correct is on screen. Escape in a text
+  // box leaves the box and panics nothing — `Field` takes it before it gets here — and an
+  // open dropdown keeps it too, to close itself. See the main window's `keys` for the rest.
+  keys := FocusScope {
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+
+    key-pressed(event) => {
+      if (event.text == Key.Escape && !event.modifiers.control && !event.modifiers.alt &&
+          !event.modifiers.meta) {
+        if (!event.repeat) {
+          root.panic-clicked();
+        }
+        return accept;
+      }
+      return reject;
     }
-  }
 
-  HorizontalLayout {
-    padding: 0px;
-    spacing: 0px;
+    // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
+    // commits when it loses the keyboard, and a click on a heading, a panel or the space
+    // between two rows used to move the focus nowhere — so the box stayed lit and what was
+    // typed in it stayed uncommitted until something else happened to take the focus.
+    //
+    // First in the window, so it is *behind* everything: a click that any real control wants
+    // is taken by that control and never reaches here, and what does reach here is a click on
+    // nothing. `Press` does the same thing for itself, since a button's own touch area would
+    // otherwise swallow the click before this saw it. It hands the focus to `keys` itself.
+    TouchArea {
+      clicked => {
+        keys.focus();
+      }
+    }
 
-    // --- the rule list -------------------------------------------------------------
-    Rectangle {
-      background: Theme.panel;
-      width: root.list-width;
-      horizontal-stretch: 0;
-      // Dragged narrow, the buttons below stop fitting side by side. A layout does not
-      // shrink a child past its minimum, so without this they would draw over the editor.
-      clip: true;
+    HorizontalLayout {
+      padding: 0px;
+      spacing: 0px;
 
-      VerticalLayout {
-        padding: 12px;
-        spacing: 8px;
+      // --- the rule list -------------------------------------------------------------
+      Rectangle {
+        background: Theme.panel;
+        width: root.list-width;
+        horizontal-stretch: 0;
+        // Dragged narrow, the buttons below stop fitting side by side. A layout does not
+        // shrink a child past its minimum, so without this they would draw over the editor.
+        clip: true;
 
-        // [+] beside the heading rather than down with COPY and DELETE. Three buttons on one
-        // row need 210px between them, and this pane is dragged narrower than that; two need
-        // 120px, which is as narrow as it goes. Adding from the top of a list is also where
-        // every other list an operator has used puts it.
-        HorizontalLayout {
+        VerticalLayout {
+          padding: 12px;
           spacing: 8px;
-          vertical-stretch: 0;
 
-          Text {
-            text: "TRIGGERS";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-            overflow: elide;
+          // [+] beside the heading rather than down with COPY and DELETE. Three buttons on one
+          // row need 210px between them, and this pane is dragged narrower than that; two need
+          // 120px, which is as narrow as it goes. Adding from the top of a list is also where
+          // every other list an operator has used puts it.
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+
+            Text {
+              text: "TRIGGERS";
+              color: Theme.dim;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
+
+            Press {
+              text: "+";
+              pad: 8px;
+              font: 15px;
+              min-width: 34px;
+              min-height: 26px;
+              clicked => {
+                root.rule-added();
+              }
+            }
+          }
+
+          ListView {
+            vertical-stretch: 1;
+            for row[index] in root.rules: Rectangle {
+              height: 46px;
+              // Every row of the selection is lit; the one the editor is showing gets an edge
+              // as well, so "which of these six am I editing" is answerable at a glance.
+              background: row.chosen ? Theme.control : transparent;
+              border-radius: 4px;
+              border-width: index == root.selected && row.chosen ? 1px : 0px;
+              border-color: Theme.controlEdge;
+
+              // **First, so it is underneath the two marks.** Slint draws later siblings on
+              // top and gives them the pointer, so a row-wide TouchArea declared after the
+              // layout would swallow every click on the marks inside it and all four of them
+              // would merely select the row.
+              pick := TouchArea {
+                // `pointer-event` rather than `clicked`, because `clicked` carries no
+                // modifiers and ctrl/shift are the whole of multiple selection. On the *down*
+                // edge, which is where every list an operator has used already selects.
+                pointer-event(event) => {
+                  if (event.kind == PointerEventKind.down
+                      && event.button == PointerEventButton.left) {
+                    root.rule-picked-with(index, event.modifiers.control, event.modifiers.shift);
+                  }
+                }
+              }
+
+              line := HorizontalLayout {
+                // Duplicating and deleting live **on the row**, not on two buttons under the
+                // list. A button under the list acts on "the selection", which is a second
+                // thing to keep track of — and the gesture is "get rid of that one", pointing
+                // at a row. The marks show on every selected row and on the row under the
+                // pointer, so a selection of six shows six of them and pressing any one acts
+                // on all six. All three terms are needed: moving onto a mark takes the hover
+                // off `pick`, and without its own term the mark would vanish under the pointer.
+                property <bool> showing: row.chosen || pick.has-hover
+                  || copy-touch.has-hover || kill-touch.has-hover;
+
+                padding-left: 8px;
+                padding-right: 6px;
+                spacing: 6px;
+
+                // The dot says three things at a glance, which is what a list is for:
+                // disabled, broken, or ready. An operator scanning twenty rules needs the
+                // broken one to be findable without opening each.
+                Rectangle {
+                  width: 8px;
+                  height: 8px;
+                  border-radius: 4px;
+                  y: (parent.height - self.height) / 2;
+                  background: !row.enabled ? Theme.dim
+                    : row.problem != "" ? Theme.holding
+                    : Theme.locked;
+                }
+
+                Text {
+                  text: row.name == "" ? "(unnamed)" : row.name;
+                  color: row.enabled ? Theme.text : Theme.dim;
+                  font-size: 13px;
+                  vertical-alignment: center;
+                  horizontal-stretch: 1;
+                  overflow: elide;
+                }
+
+                // Out of the row entirely while the marks are showing rather than blanked:
+                // this pane is narrow, and an empty element still costs the layout's spacing
+                // either side of it — twelve pixels the name would rather have. The count is
+                // what a row says at rest; the marks are what it says when it is pointed at.
+                if !line.showing && row.fires > 0 : Text {
+                  text: row.fires;
+                  color: Theme.dim;
+                  font-size: 11px;
+                  font-family: "Consolas";
+                  vertical-alignment: center;
+                }
+
+                // Duplicate. **Drawn from two rectangles rather than typed as a glyph**: the
+                // font the software renderer embeds does not carry the symbols this wants, and
+                // a missing glyph renders as nothing at all rather than as a box — measured, in
+                // a shot, when a chevron came out blank (see the "send to" control).
+                //
+                // **The full height of the row**, no `height` set so the layout gives it all of
+                // it. At 22 px in a 46 px row it sat wherever the layout put it, which was the
+                // top — near enough the row above to read as belonging to that one. Reported
+                // from a rig. A full-height button belongs to exactly one row and is a bigger
+                // thing to hit in a booth.
+                copy-mark := Rectangle {
+                  width: parent.showing ? 34px : 0px;
+                  border-radius: 4px;
+                  background: copy-touch.has-hover ? Theme.control.brighter(0.4) : transparent;
+                  clip: true;
+
+                  Rectangle {
+                    x: (parent.width - 16px) / 2;
+                    y: (parent.height - 19px) / 2;
+                    width: 12px;
+                    height: 15px;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: copy-touch.has-hover ? Theme.text : Theme.dim;
+                  }
+                  Rectangle {
+                    // Filled, so it sits *over* the outline behind it and the pair reads as one
+                    // page on top of another. An outline would have crossed it.
+                    x: (parent.width - 16px) / 2 + 4px;
+                    y: (parent.height - 19px) / 2 + 4px;
+                    width: 12px;
+                    height: 15px;
+                    border-radius: 2px;
+                    background: copy-touch.has-hover ? Theme.text : Theme.dim;
+                  }
+
+                  copy-touch := TouchArea {
+                    clicked => {
+                      root.rule-duplicated-at(index);
+                    }
+                  }
+                }
+
+                // Delete. U+00D7, which is Latin-1 and in every font — unlike the ✕ and ⨯ this
+                // would rather have been.
+                kill-mark := Rectangle {
+                  width: parent.showing ? 34px : 0px;
+                  border-radius: 4px;
+                  background: kill-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
+                  clip: true;
+
+                  Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: kill-touch.has-hover ? Theme.label : Theme.dim;
+                    font-size: 24px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                  }
+
+                  kill-touch := TouchArea {
+                    clicked => {
+                      root.rule-removed-at(index);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // §5.6's presets, but several rules at once — "random clips on three layers" is
+          // three rules, and nobody should build the same rule three times and remember to
+          // give each a different seed. Everything it adds is an ordinary rule, editable like
+          // any other; nothing downstream asks which preset a rule came from.
+          //
+          // **Not a ComboBox**, and the reason is the one thing this control has to get right:
+          // it is a *menu*, not a setting. A ComboBox keeps showing what was last chosen, so
+          // after adding the Resolume rig the pane read "Resolume: clips on 3 layers" as though
+          // that were the state of something — and writing `current-index = 0` back inside
+          // `selected` does not move it (Slint 11970), so the label could not be restored.
+          // Reported from a rig. This says the same words whatever has been picked from it.
+          preset-field := Rectangle {
+            height: 32px;
+            vertical-stretch: 0;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: preset-touch.has-hover ? Theme.accent : Theme.controlEdge;
+            background: Theme.control;
+
+            HorizontalLayout {
+              padding-left: 10px;
+              padding-right: 10px;
+              spacing: 6px;
+
+              Text {
+                text: "select a preset";
+                color: Theme.dim;
+                font-size: 12px;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+              }
+
+              Text {
+                // U+25BC, for the reason the "send to" control gives: the lighter chevrons are
+                // not in the font the software renderer embeds and come out as nothing at all.
+                text: "▼";
+                color: Theme.dim;
+                font-size: 8px;
+                vertical-alignment: center;
+              }
+            }
+
+            preset-touch := TouchArea {
+              clicked => {
+                preset-popup.show();
+              }
+            }
+
+            preset-popup := PopupWindow {
+              x: 0;
+              y: parent.height + 2px;
+              // Wider than the pane it hangs off, which a popup may be: these are sentences
+              // ("Resolume: breathing dashboard") and a list of ellipses is not a menu.
+              width: 268px;
+
+              Rectangle {
+                background: Theme.panel;
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: Theme.controlEdge;
+
+                VerticalLayout {
+                  padding: 6px;
+                  spacing: 2px;
+
+                  for preset[i] in root.rig-presets : Rectangle {
+                    height: 28px;
+                    border-radius: 3px;
+                    background: preset-hover.has-hover ? Theme.control : transparent;
+
+                    HorizontalLayout {
+                      padding-left: 8px;
+                      padding-right: 8px;
+
+                      Text {
+                        text: preset;
+                        color: Theme.text;
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        overflow: elide;
+                      }
+                    }
+
+                    preset-hover := TouchArea {
+                      // One past the index, because `RulesController::addRig` keeps 0 for "no
+                      // preset" — the entry a dropdown needed and a menu does not have.
+                      clicked => {
+                        root.rig-added(i + 1);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // PANIC lives here rather than beside the rules it stops, because it is reached in
+          // a hurry: bottom-left of the window, the same place every time, never scrolled
+          // away, and lit while it is held so the state is unmistakable.
+          //
+          // **PANIC only engages; RELEASE is its own button** (the audit's H18). This one said
+          // "PANICKED — RELEASE" and let go on the next click, so a double-click — how a button
+          // is hit in a hurry — halted the rig and let it go again at once. RELEASE appears
+          // *above*, so PANIC stays anchored where the second click of a double-click lands.
+          // An explicit height, because an `if` row in a vertical layout otherwise takes a
+          // share of the spare height in a tall window.
+          if root.panicked : Press {
+            text: "RELEASE";
+            height: 40px;
+            vertical-stretch: 0;
+            clicked => {
+              // The keyboard back to the window first: this button goes the moment it works,
+              // and the focus it took would go with it, leaving the next Escape reaching
+              // nothing. Measured: it did, before this line.
+              keys.focus();
+              root.panic-released();
+            }
           }
 
           Press {
-            text: "+";
-            pad: 8px;
-            font: 15px;
-            min-width: 34px;
-            min-height: 26px;
+            text: root.panicked ? "PANICKED" : "PANIC";
+            hint: "Esc";
+            active: root.panicked;
+            primary: !root.panicked;
+            vertical-stretch: 0;
             clicked => {
-              root.rule-added();
+              root.panic-clicked();
+            }
+          }
+        }
+      }
+
+      Splitter {
+        dragged(by) => {
+          root.list-width = clamp(root.list-width + by, root.pane-min, root.pane-max);
+        }
+      }
+
+      // --- the editor ----------------------------------------------------------------
+      VerticalLayout {
+        horizontal-stretch: 1;
+        padding: 0px;
+
+        // The title bar of §5.9's card: the name, whether it is on, and [test].
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+          height: 60px;
+
+          HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 10px;
+
+            // **Labelled.** It was a bare box, which beside a text field reads as a divider
+            // rather than as a switch — and since every new rule used to arrive switched off,
+            // the first thing an operator met was a rule that would not fire and a control
+            // that did not say it was the reason. Rules are made switched on now; this says
+            // what the box is either way.
+            CheckBox {
+              text: "enabled";
+              checked <=> root.rule-enabled;
+              enabled: root.selected >= 0;
+              toggled => {
+                root.rule-enabled-changed(self.checked);
+              }
+            }
+
+            // **Mute is not disable, and both are here because they are different states.**
+            // A disabled rule stops running: its shuffle bag stands still and it starts again
+            // where it left off. A muted one keeps running and stops *sending*, so unmuting
+            // rejoins the music in phase rather than restarting mid-set. Dropping a layer out
+            // for eight bars is the second one.
+            //
+            // Live, not saved: it is a performance gesture like the tempo ÷2 button, so a
+            // preset that loaded silent is not a thing that can happen. `/ctl/rule/<id>/mute`
+            // reaches the same state from a control surface.
+            Press {
+              text: "MUTE";
+              font: 13px;
+              pad: 10px;
+              active: root.rule-muted;
+              enabled: root.selected >= 0;
+              clicked => {
+                root.rule-muted-changed(!root.rule-muted);
+              }
+            }
+
+            // How often this rule fires against how often it was written to, as a live
+            // multiplier. ÷2 and ×2 are the interval, so ×2 is *half* as often — labelled with
+            // what happens to the firing rather than to the number, because that is what an
+            // operator is thinking about.
+
+            Field {
+              text <=> root.rule-name;
+              placeholder-text: "name this rule";
+              enabled: root.selected >= 0;
+              font-size: 14px;
+              horizontal-stretch: 1;
+              edited(text) => {
+                root.rule-renamed(text);
+              }
+              // The name is already committed on every keystroke, so this is only the release —
+              // and the release is the whole point. Reported from a rig: *"when I click a box to
+              // edit it, once I'm done and hit enter, nothing happens, it stays in edit mode"*.
+              // Every other box in this window had it; this one did not.
+              accepted(text) => {
+                self.leave();
+              }
+            }
+
+            Press {
+              text: "TEST";
+              enabled: root.selected >= 0;
+              min-width: 92px;
+              clicked => {
+                root.rule-tested();
+              }
             }
           }
         }
 
-        ListView {
-          vertical-stretch: 1;
-          for row[index] in root.rules: Rectangle {
-            height: 46px;
-            // Every row of the selection is lit; the one the editor is showing gets an edge
-            // as well, so "which of these six am I editing" is answerable at a glance.
-            background: row.chosen ? Theme.control : transparent;
-            border-radius: 4px;
-            border-width: index == root.selected && row.chosen ? 1px : 0px;
-            border-color: Theme.controlEdge;
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
+        }
 
-            // **First, so it is underneath the two marks.** Slint draws later siblings on
-            // top and gives them the pointer, so a row-wide TouchArea declared after the
-            // layout would swallow every click on the marks inside it and all four of them
-            // would merely select the row.
-            pick := TouchArea {
-              // `pointer-event` rather than `clicked`, because `clicked` carries no
-              // modifiers and ctrl/shift are the whole of multiple selection. On the *down*
-              // edge, which is where every list an operator has used already selects.
-              pointer-event(event) => {
-                if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.left) {
-                  root.rule-picked-with(index, event.modifiers.control, event.modifiers.shift);
-                }
-              }
+        scroller := ScrollView {
+          vertical-stretch: 1;
+          // Scrolls vertically only. Without this a ScrollView sizes its viewport to whatever
+          // its content asks for, and a column of rows full of fixed widths asks for more than
+          // the pane has — so the editor scrolled sideways and half of every row was simply
+          // not on screen. Two renders found it; nothing in the markup says it is wrong.
+          viewport-width: self.visible-width;
+
+          VerticalLayout {
+            padding: 16px;
+            spacing: 14px;
+            alignment: start;
+
+            // --- WHEN ------------------------------------------------------------
+            Text {
+              text: "WHEN";
+              color: Theme.dim;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
             }
 
-            line := HorizontalLayout {
-              // Duplicating and deleting live **on the row**, not on two buttons under the
-              // list. A button under the list acts on "the selection", which is a second
-              // thing to keep track of — and the gesture is "get rid of that one", pointing
-              // at a row. The marks show on every selected row and on the row under the
-              // pointer, so a selection of six shows six of them and pressing any one acts
-              // on all six. All three terms are needed: moving onto a mark takes the hover
-              // off `pick`, and without its own term the mark would vanish under the pointer.
-              property <bool> showing: row.chosen || pick.has-hover
-                || copy-touch.has-hover || kill-touch.has-hover;
+            HorizontalLayout {
+              spacing: 10px;
 
-              padding-left: 8px;
-              padding-right: 6px;
-              spacing: 6px;
+              ComboBox {
+                model: root.trigger-names;
+                current-index <=> root.trigger-index;
+                enabled: root.selected >= 0;
+                // **Shrinkable rather than fixed.** At the window's own 900px minimum this row
+                // is a dropdown, a number, a line of prose and two buttons in about 515px, and a
+                // hard `width` cannot give way — so the row overflowed the pane and x2 was
+                // sliced in half. The prose elides first, this gives up its slack second, and
+                // the buttons keep their labels. Measured in a shot at 900x560.
+                preferred-width: 220px;
+                max-width: 220px;
+                min-width: 132px;
+                horizontal-stretch: 0;
+                selected => {
+                  root.trigger-picked(self.current-index);
+                }
+              }
 
-              // The dot says three things at a glance, which is what a list is for:
-              // disabled, broken, or ready. An operator scanning twenty rules needs the
-              // broken one to be findable without opening each.
-              Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                y: (parent.height - self.height) / 2;
-                background: !row.enabled ? Theme.dim
-                  : row.problem != "" ? Theme.holding
-                  : Theme.locked;
+              if root.trigger-takes-every : Text {
+                text: "every";
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: center;
+              }
+
+              if root.trigger-takes-every : SpinBox {
+                value <=> root.every;
+                minimum: 1;
+                maximum: 64;
+                enabled: root.selected >= 0;
+                width: 96px;
+                edited(v) => {
+                  root.every-changed(v);
+                }
+              }
+
+              if root.trigger-takes-pulses : Text {
+                text: "with";
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: center;
+              }
+
+              if root.trigger-takes-pulses : SpinBox {
+                value <=> root.pulses;
+                minimum: 0;
+                maximum: 64;
+                enabled: root.selected >= 0;
+                width: 88px;
+                edited(v) => {
+                  root.pulses-changed(v);
+                }
               }
 
               Text {
-                text: row.name == "" ? "(unnamed)" : row.name;
-                color: row.enabled ? Theme.text : Theme.dim;
-                font-size: 13px;
+                // "every 4 bars" counts from the first, so it is bars 1, 5 and 9 rather than
+                // 4, 8 and 12 — §7 deviation 11. An operator counting a phrase in starts at
+                // one, and the alternative anchors the phrase to wherever the modulo lands.
+                //
+                // For a Euclidean pattern the same line shows the pattern itself, which is the
+                // only way two numbers become something an operator can hear before it plays.
+                text: root.trigger-takes-pulses ? root.euclid-pattern
+                  : root.trigger-takes-every ? "counting from the first"
+                  : "";
+                color: Theme.dim;
+                font-size: 12px;
+                font-family: root.trigger-takes-pulses ? "Consolas" : "";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                // **This is what was eating the two buttons beside it.** A `Text` with no
+                // elide reports its whole string as its minimum width, and a layout will not
+                // shrink a child below its minimum — so in a pane dragged narrow this line
+                // kept all twenty-three characters and ÷2 and ×2 were squeezed until `Press`
+                // elided *their* labels to a single ellipsis each. Reported from a rig on
+                // 2026-09-16 as "wtf are these two buttons with 3 dots each". The prose is
+                // what should give way here; the buttons are what gets pressed.
+                overflow: elide;
+              }
+
+              // **How often, live** — §5.7's `double` and `halve` reached from the window
+              // rather than only from a control surface.
+              //
+              // Here and not in the title bar beside MUTE, which is where they started: the
+              // title row is a checkbox, a button, a name field and TEST, and three more
+              // controls pushed the editor pane past what the window's own 900px minimum
+              // leaves it. A pane test caught it. They read better here anyway, because this
+              // is the row that already says how often the rule fires.
+              // And a floor of their own, so that whatever else is on the row these two keep
+              // enough width for the label they exist to show. Wide enough for "÷2" at 17px
+              // with `Press`'s own padding either side.
+              Press {
+                text: "÷2";
+                pad: 8px;
+                min-width: 52px;
+                enabled: root.selected >= 0;
+                clicked => {
+                  root.rule-rate-changed(0.5);
+                }
+              }
+              Press {
+                text: "×2";
+                pad: 8px;
+                min-width: 52px;
+                enabled: root.selected >= 0;
+                clicked => {
+                  root.rule-rate-changed(2.0);
+                }
+              }
+              Text {
+                // Only when it is not 1: a rule at the rate it was written to has nothing to
+                // say, and a permanent "×1" beside every rule would be noise.
+                text: root.rule-rate;
+                color: Theme.holding;
+                font-size: 12px;
+                font-family: "Consolas";
+                vertical-alignment: center;
+                width: 80px;
+              }
+            }
+
+            Rectangle { height: 1px; background: Theme.line; }
+
+            // --- ONLY IF ---------------------------------------------------------
+            Text {
+              text: "ONLY IF";
+              color: Theme.dim;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+              spacing: 10px;
+
+              Text {
+                text: "confidence over";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              Slider {
+                minimum: 0;
+                maximum: 1;
+                value <=> root.min-confidence;
+                enabled: root.selected >= 0;
+                horizontal-stretch: 1;
+                changed(v) => {
+                  root.min-confidence-changed(v);
+                }
+              }
+
+              Text {
+                text: Math.round(root.min-confidence * 100) / 100;
+                color: Theme.text;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 44px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+            }
+
+            HorizontalLayout {
+              spacing: 10px;
+
+              Text {
+                text: "probability";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              Slider {
+                minimum: 0;
+                maximum: 1;
+                value <=> root.probability;
+                enabled: root.selected >= 0;
+                horizontal-stretch: 1;
+                changed(v) => {
+                  root.probability-changed(v);
+                }
+              }
+
+              Text {
+                text: Math.round(root.probability * 100) + "%";
+                color: Theme.text;
+                font-size: 12px;
+                font-family: "Consolas";
+                width: 44px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+            }
+
+            // The three that are not sliders, on a line of their own. One row of six controls
+            // was what the first render showed running off the edge of the pane.
+            HorizontalLayout {
+              spacing: 8px;
+
+              Text {
+                text: "intensity";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              CheckBox {
+                text: "calm";
+                checked <=> root.allow-calm;
+                enabled: root.selected >= 0;
+                toggled => {
+                  root.intensity-changed(0, self.checked);
+                }
+              }
+              CheckBox {
+                text: "normal";
+                checked <=> root.allow-normal;
+                enabled: root.selected >= 0;
+                toggled => {
+                  root.intensity-changed(1, self.checked);
+                }
+              }
+              CheckBox {
+                text: "intense";
+                checked <=> root.allow-intense;
+                enabled: root.selected >= 0;
+                toggled => {
+                  root.intensity-changed(2, self.checked);
+                }
+              }
+
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            HorizontalLayout {
+              spacing: 8px;
+
+              Text {
+                text: "BPM between";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              // **Two-way, and that is the whole of a bug.** This was
+              // `text: root.min-bpm + " - " + root.max-bpm`, a one-way binding — and Slint drops
+              // a binding the moment the property is assigned, which typing into a LineEdit
+              // does. So after one edit this box stopped following the model *for ever*: it went
+              // on showing the first rule's range over every rule selected after it, which is
+              // exactly what was reported as "when I edit the value range on trigger 1, it
+              // changes all the triggers". A `<=>` binding survives, because the widget writes
+              // back into the property instead of over the binding.
+              //
+              // The consequence is that the controller owns the text rather than the numbers:
+              // see `RulesController::publishSelected`, which spells it.
+              bpm-field := Field {
+                text <=> root.bpm-range;
+                placeholder-text: "any";
+                enabled: root.selected >= 0;
+                font-size: 12px;
+                width: 116px;
+                accepted(text) => {
+                  self.leave();
+                  root.bpm-range-edited(text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.bpm-range-edited(self.text);
+                  }
+                }
+              }
+
+              Text {
+                text: "cooldown";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 72px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+              }
+
+              // Two-way, for the reason the BPM field above gives at length.
+              cooldown-field := Field {
+                text <=> root.cooldown-ms;
+                placeholder-text: "0";
+                enabled: root.selected >= 0;
+                font-size: 12px;
+                width: 76px;
+                accepted(text) => {
+                  self.leave();
+                  root.cooldown-changed(text);
+                }
+                // And when the operator clicks away instead of pressing
+                // Enter, which is finishing rather than cancelling. Without
+                // this, what they typed sat in the box until the next
+                // publish wrote over it, and the edit was silently lost.
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.cooldown-changed(self.text);
+                  }
+                }
+              }
+
+              Text {
+                text: "ms";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            Rectangle { height: 1px; background: Theme.line; }
+
+            // --- SEND ------------------------------------------------------------
+            Text {
+              text: "SEND";
+              color: Theme.dim;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+              spacing: 8px;
+
+              ComboBox {
+                model: root.send-kinds;
+                current-index <=> root.send-index;
+                enabled: root.selected >= 0;
+                width: 140px;
+                selected => {
+                  root.send-picked(self.current-index);
+                }
+              }
+
+              if root.sends-osc : ComboBox {
+                // §5.6's host presets. A starting point that fills the address and its
+                // slots, never a code path — everything it wrote stays editable.
+                //
+                // Bound to the rule rather than left wherever it was last clicked: this box
+                // used to keep saying "Resolume 7" over an address the operator had since
+                // typed over, and say it about the *next* rule they selected too. It now
+                // shows which preset the address in front of it is, and "custom" when it is
+                // none of them — including after an edit that took it off a preset.
+                model: root.host-presets;
+                current-index <=> root.host-preset-index;
+                enabled: root.selected >= 0;
+                width: 168px;
+                selected => {
+                  root.host-preset-picked(self.current-index);
+                }
+              }
+
+              if root.sends-midi : Text {
+                text: "channel";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              if root.sends-midi : SpinBox {
+                value <=> root.channel;
+                minimum: 1;
+                maximum: 16;
+                enabled: root.selected >= 0;
+                width: 96px;
+                edited(v) => {
+                  root.channel-changed(v);
+                }
+              }
+
+              // The effect, which for a lighting rule is what the address is for an OSC one:
+              // the first thing decided and the thing that decides what the rest of the row is
+              // even asking.
+              if root.sends-dmx : ComboBox {
+                model: root.effect-kinds;
+                current-index: root.effect-index;
+                enabled: root.selected >= 0;
+                preferred-width: 152px;
+                max-width: 152px;
+                min-width: 104px;
+                horizontal-stretch: 0;
+                selected => {
+                  root.effect-picked(self.current-index);
+                }
+              }
+
+              if root.sends-dmx && root.effect-takes-role : Text {
+                text: "on";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              if root.sends-dmx && root.effect-takes-role : ComboBox {
+                model: root.effect-roles;
+                current-index: root.effect-role-index;
+                enabled: root.selected >= 0;
+                preferred-width: 130px;
+                max-width: 130px;
+                min-width: 96px;
+                horizontal-stretch: 0;
+                selected => {
+                  root.effect-role-picked(self.current-index);
+                }
+              }
+
+              if root.sends-dmx && root.effect-takes-shape : ComboBox {
+                model: root.effect-shapes;
+                current-index: root.effect-shape-index;
+                enabled: root.selected >= 0;
+                width: 120px;
+                selected => {
+                  root.effect-shape-picked(self.current-index);
+                }
+              }
+
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // Where the color comes from — a palette, or three component generators. See
+            // `trigger::ColorMode` for why these are two modes and not one: "these six colors"
+            // and "random, but keep the blue up" are different instructions and neither can say
+            // the other.
+            //
+            // **Its own row rather than a seventh control on the effect row**, which at the
+            // window's 900px minimum ran the dropdown off the right of the pane. The gutter is
+            // the one the rows below use, so it lines up with "over" and "lights".
+            if root.sends-dmx && root.effect-takes-color : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "color from";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              ComboBox {
+                model: root.color-modes;
+                current-index: root.color-mode-index;
+                enabled: root.selected >= 0;
+                preferred-width: 210px;
+                max-width: 210px;
+                min-width: 132px;
+                horizontal-stretch: 0;
+                selected => {
+                  root.color-mode-picked(self.current-index);
+                }
+              }
+
+              Text {
+                text: root.color-mode-index == 0
+                    ? "swatches below; the chip beside them says how they are drawn"
+                    : "one generator per component, 0 to 255 each";
+                color: Theme.dim;
+                font-size: 11px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
                 overflow: elide;
               }
+            }
 
-              // Out of the row entirely while the marks are showing rather than blanked:
-              // this pane is narrow, and an empty element still costs the layout's spacing
-              // either side of it — twelve pixels the name would rather have. The count is
-              // what a row says at rest; the marks are what it says when it is pointed at.
-              if !line.showing && row.fires > 0 : Text {
-                text: row.fires;
-                color: Theme.dim;
+            // **What the channel dropdown could not say for itself.**
+            //
+            // A rule aimed at "dimmer" over an RGB par names a channel the fixture has not got,
+            // and used to do so in total silence: the rule fired, logged, counted, and the lamp
+            // stayed dark. The engine now drives the color instead (`dmx::aims`); this is the
+            // line that says which of the two is happening, and still says "reaches nothing" for
+            // the aims that really do — a pan on a wash.
+            //
+            // **On a line of its own**, because on the effect row it was the seventh control and
+            // `Press`-style elision cut it to a single ellipsis at the window's own width. A
+            // warning nobody can read is not a warning; rendered and measured at 1164x872.
+            if root.sends-dmx && root.effect-takes-role && root.effect-role-note != "" : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 20px;
+              spacing: 8px;
+
+              // The same gutter the rows below use, so the note sits under the controls it is
+              // about rather than under the SEND heading.
+              Rectangle { width: 116px; horizontal-stretch: 0; }
+
+              Text {
+                text: root.effect-role-note;
+                color: Theme.holding;
                 font-size: 11px;
-                font-family: "Consolas";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+            }
+
+            // --- the lighting row ------------------------------------------------
+            //
+            // How long the effect runs, and the handful of numbers each effect uses. Spelled in
+            // beats by default, because a fade that follows the tempo is the thing this app
+            // exists to make possible — and the unit is beside the number rather than implied,
+            // because "2" meaning two bars and "2" meaning two milliseconds are the same box.
+            if root.sends-dmx : HorizontalLayout {
+              // **An explicit height, and it is load-bearing.** The column above says
+              // `alignment: start`, which holds a plain row to its own height and does
+              // *not* hold a conditional one: an `if` child of a vertical layout takes
+              // a share of whatever height is spare, and `vertical-stretch: 0` on it
+              // does not stop that either — both were measured. So the rows that live
+              // behind an `if` say how tall they are, exactly as the generator chips
+              // and the patch editor's channel rows already did.
+              //
+              // On a short rule these boxes drew three hundred pixels tall with grey
+              // canyons between the headings. Reported from a rig on 2026-09-16 and
+              // reproduced in a shot at 1164x1400, which is the only way it shows: at
+              // the window's own height the content fills it and nothing is spare.
+              height: 36px;
+              vertical-stretch: 0;
+              spacing: 8px;
+
+              Text {
+                text: "over";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
                 vertical-alignment: center;
               }
 
-              // Duplicate. **Drawn from two rectangles rather than typed as a glyph**: the
-              // font the software renderer embeds does not carry the symbols this wants, and
-              // a missing glyph renders as nothing at all rather than as a box — measured, in
-              // a shot, when a chevron came out blank (see the "send to" control).
-              //
-              // **The full height of the row**, no `height` set so the layout gives it all of
-              // it. At 22 px in a 46 px row it sat wherever the layout put it, which was the
-              // top — near enough the row above to read as belonging to that one. Reported
-              // from a rig. A full-height button belongs to exactly one row and is a bigger
-              // thing to hit in a booth.
-              copy-mark := Rectangle {
-                width: parent.showing ? 34px : 0px;
-                border-radius: 4px;
-                background: copy-touch.has-hover ? Theme.control.brighter(0.4) : transparent;
-                clip: true;
-
-                Rectangle {
-                  x: (parent.width - 16px) / 2;
-                  y: (parent.height - 19px) / 2;
-                  width: 12px;
-                  height: 15px;
-                  border-radius: 2px;
-                  border-width: 1px;
-                  border-color: copy-touch.has-hover ? Theme.text : Theme.dim;
+              Field {
+                text: root.effect-duration;
+                placeholder-text: "1";
+                font-size: 12px;
+                width: 76px;
+                enabled: root.selected >= 0;
+                accepted(t) => {
+                  // Focus first, callback second: the callback republishes this box — that is
+                  // how it comes back holding a number the controller normalised — and a
+                  // handler touching `self` afterwards would be touching an element on its way
+                  // out. The same order every other box in this window uses.
+                  self.leave();
+                  root.effect-duration-edited(t);
                 }
-                Rectangle {
-                  // Filled, so it sits *over* the outline behind it and the pair reads as one
-                  // page on top of another. An outline would have crossed it.
-                  x: (parent.width - 16px) / 2 + 4px;
-                  y: (parent.height - 19px) / 2 + 4px;
-                  width: 12px;
-                  height: 15px;
-                  border-radius: 2px;
-                  background: copy-touch.has-hover ? Theme.text : Theme.dim;
-                }
-
-                copy-touch := TouchArea {
-                  clicked => {
-                    root.rule-duplicated-at(index);
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.effect-duration-edited(self.text);
                   }
                 }
               }
 
-              // Delete. U+00D7, which is Latin-1 and in every font — unlike the ✕ and ⨯ this
-              // would rather have been.
-              kill-mark := Rectangle {
-                width: parent.showing ? 34px : 0px;
-                border-radius: 4px;
-                background: kill-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
-                clip: true;
+              ComboBox {
+                model: root.follow-up-units;
+                current-index: root.effect-unit;
+                enabled: root.selected >= 0;
+                width: 92px;
+                selected => {
+                  root.effect-unit-picked(self.current-index);
+                }
+              }
 
-                Text {
+              if root.effect-takes-curve : ComboBox {
+                model: root.effect-curves;
+                current-index: root.effect-curve-index;
+                enabled: root.selected >= 0;
+                width: 124px;
+                selected => {
+                  root.effect-curve-picked(self.current-index);
+                }
+              }
+
+              if root.effect-takes-base : Text {
+                text: "from";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              if root.effect-takes-base : SpinBox {
+                value: root.effect-base;
+                minimum: 0;
+                maximum: 255;
+                enabled: root.selected >= 0;
+                width: 92px;
+                edited(v) => {
+                  root.effect-base-changed(v);
+                }
+              }
+
+              if root.effect-takes-cycles : Text {
+                text: "×";
+                color: Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+
+              if root.effect-takes-cycles : Field {
+                text: root.effect-cycles;
+                placeholder-text: "1";
+                font-size: 12px;
+                width: 60px;
+                enabled: root.selected >= 0;
+                accepted(t) => {
+                  self.leave();
+                  root.effect-cycles-edited(t);
+                }
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.effect-cycles-edited(self.text);
+                  }
+                }
+              }
+
+              if root.effect-takes-hue : Field {
+                text: root.effect-hue;
+                placeholder-text: "0 - 360";
+                font-size: 12px;
+                width: 96px;
+                enabled: root.selected >= 0;
+                accepted(t) => {
+                  self.leave();
+                  root.effect-hue-edited(t);
+                }
+                changed has-focus => {
+                  if (!self.has-focus) {
+                    root.effect-hue-edited(self.text);
+                  }
+                }
+              }
+
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // A strobe's duty cycle and a path's radius, each a slider because each is found by
+            // eye rather than typed.
+            if root.sends-dmx && root.effect-takes-duty : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+              Text {
+                text: "on for";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+              Slider {
+                minimum: 1;
+                maximum: 99;
+                value: root.effect-duty;
+                enabled: root.selected >= 0;
+                width: 220px;
+                changed(v) => {
+                  root.effect-duty-changed(v);
+                }
+              }
+              Text {
+                text: round(root.effect-duty) + "% of each flash";
+                color: Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.sends-dmx && root.effect-takes-shape : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+              Text {
+                text: "size";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+              Slider {
+                minimum: 0;
+                maximum: 100;
+                value: root.effect-size;
+                enabled: root.selected >= 0;
+                width: 220px;
+                changed(v) => {
+                  root.effect-size-changed(v);
+                }
+              }
+              Text {
+                // At 100% the figure just touches the fixture's own movement limits and never
+                // crosses them, which is what makes a full-size circle safe to fire blind.
+                text: round(root.effect-size) + "% of the movement window";
+                color: Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+              }
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // --- which fixtures ---------------------------------------------------
+            //
+            // The same shape as "send to" below, and ticked from the rig's own patch for the
+            // same reason: an operator should not have to remember what their fixtures are
+            // called and spell each one the same way twice.
+            if root.sends-dmx : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "lights";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              fixtures-field := Rectangle {
+                width: 260px;
+                height: 32px;
+                horizontal-stretch: 0;
+                background: root.selected < 0 ? Theme.controlOff : Theme.control;
+                border-radius: 4px;
+                border-width: 1px;
+                // Amber rather than grey when the rule names nothing, because a DMX rule with no
+                // fixtures does not fire at all — and a silent rule looks exactly like a rule
+                // whose trigger has not come round yet.
+                border-color: root.selected < 0 ? Theme.line
+                  : root.fixtures-reaches-nothing ? Theme.holding
+                  : fixtures-touch.has-hover ? Theme.accent
+                  : Theme.controlEdge;
+
+                HorizontalLayout {
+                  padding-left: 10px;
+                  padding-right: 10px;
+                  spacing: 6px;
+                  Text {
+                    text: root.fixtures-summary;
+                    color: Theme.label;
+                    font-size: 12px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                  }
+                  Text {
+                    // U+25BC and 8px, matching the outputs field below — the lighter chevrons
+                    // are not in the font the software renderer embeds and come out as nothing
+                    // at all. That was measured in a shot; see the note on `outputs-field`.
+                    text: "▼";
+                    color: Theme.dim;
+                    font-size: 8px;
+                    vertical-alignment: center;
+                  }
+                }
+
+                fixtures-touch := TouchArea {
+                  enabled: root.selected >= 0;
+                  clicked => {
+                    fixtures-popup.show();
+                  }
+                }
+
+                fixtures-popup := PopupWindow {
                   x: 0;
-                  y: 0;
+                  y: parent.height + 2px;
                   width: parent.width;
-                  height: parent.height;
-                  text: "×";
-                  color: kill-touch.has-hover ? Theme.label : Theme.dim;
-                  font-size: 24px;
-                  horizontal-alignment: center;
-                  vertical-alignment: center;
-                }
+                  // Not the default: a click *inside* is a tick, and a list that closed on the
+                  // first one would make aiming at three fixtures three trips.
+                  close-policy: close-on-click-outside;
 
-                kill-touch := TouchArea {
-                  clicked => {
-                    root.rule-removed-at(index);
+                  Rectangle {
+                    background: Theme.panel;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.line;
+
+                    VerticalLayout {
+                      padding: 8px;
+                      spacing: 4px;
+
+                      Text {
+                        text: root.fixtures-available;
+                        color: Theme.dim;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                      }
+
+                      for choice[index] in root.fixture-choices : CheckBox {
+                        // A group and a fixture look the same here on purpose: both are a name
+                        // a rule may aim at, and which one a name is is the patch's business.
+                        text: choice.missing ? choice.name + "  (not on this rig)" : choice.name;
+                        checked: choice.chosen;
+                        toggled => {
+                          root.fixture-chosen(choice.name, self.checked);
+                        }
+                      }
+
+                      Rectangle { height: 1px; background: Theme.line; }
+
+                      Press {
+                        text: "NONE";
+                        font: 12px;
+                        pad: 10px;
+                        clicked => {
+                          root.no-fixtures-chosen();
+                        }
+                      }
+                    }
                   }
                 }
               }
-            }
-          }
-        }
 
-        // §5.6's presets, but several rules at once — "random clips on three layers" is
-        // three rules, and nobody should build the same rule three times and remember to
-        // give each a different seed. Everything it adds is an ordinary rule, editable like
-        // any other; nothing downstream asks which preset a rule came from.
-        //
-        // **Not a ComboBox**, and the reason is the one thing this control has to get right:
-        // it is a *menu*, not a setting. A ComboBox keeps showing what was last chosen, so
-        // after adding the Resolume rig the pane read "Resolume: clips on 3 layers" as though
-        // that were the state of something — and writing `current-index = 0` back inside
-        // `selected` does not move it (Slint 11970), so the label could not be restored.
-        // Reported from a rig. This says the same words whatever has been picked from it.
-        preset-field := Rectangle {
-          height: 32px;
-          vertical-stretch: 0;
-          border-radius: 4px;
-          border-width: 1px;
-          border-color: preset-touch.has-hover ? Theme.accent : Theme.controlEdge;
-          background: Theme.control;
-
-          HorizontalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
-            spacing: 6px;
-
-            Text {
-              text: "select a preset";
-              color: Theme.dim;
-              font-size: 12px;
-              horizontal-stretch: 1;
-              vertical-alignment: center;
-              overflow: elide;
+              Text {
+                text: root.fixtures-available;
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
             }
 
-            Text {
-              // U+25BC, for the reason the "send to" control gives: the lighter chevrons are
-              // not in the font the software renderer embeds and come out as nothing at all.
-              text: "▼";
-              color: Theme.dim;
-              font-size: 8px;
-              vertical-alignment: center;
+            // §5.6's rule subset, ticked from the rig's own list.
+            //
+            // This was a field of comma-separated names, on the reasoning that somebody with
+            // three outputs can type three names faster than they can find them. They cannot:
+            // it asks them to remember what their outputs are called *and* to spell each the
+            // same way twice, and a typo reads as a rule that silently sends nowhere. The rig
+            // knows what it has, so it offers them and the operator ticks.
+            //
+            // **Not for a lighting rule**, which is routed by *fixture* instead: a fixture
+            // already names its universe and an Art-Net target already says which universes it
+            // carries, so there is no second routing decision to make. Leaving the row on would
+            // be offering a control that changes nothing — which a render caught, sitting under
+            // "lights" and reading as though the two had to agree.
+            if !root.sends-dmx : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "send to";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              // The closed control. Not a std `ComboBox`: that one picks exactly one thing and
+              // closes on the pick, and this picks any number of them.
+              outputs-field := Rectangle {
+                width: 260px;
+                height: 32px;
+                horizontal-stretch: 0;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: root.selected < 0 ? Theme.line
+                  : outputs-touch.has-hover ? Theme.accent
+                  : Theme.controlEdge;
+                background: root.selected < 0 ? Theme.controlOff : Theme.control;
+
+                HorizontalLayout {
+                  padding-left: 10px;
+                  padding-right: 10px;
+                  spacing: 6px;
+
+                  Text {
+                    text: root.outputs-summary;
+                    color: root.selected < 0 ? Theme.dim
+                      : root.outputs-all ? Theme.dim
+                      : Theme.text;
+                    font-size: 12px;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    overflow: elide;
+                  }
+
+                  Text {
+                    // U+25BC, not the lighter U+2304 or U+25BE this started as: neither of
+                    // those is in the font the software renderer embeds, so both came out as
+                    // nothing at all — measured, in a shot. Small and dim so a solid triangle
+                    // reads as a chevron rather than as a warning.
+                    text: "▼";
+                    color: Theme.dim;
+                    font-size: 8px;
+                    vertical-alignment: center;
+                  }
+                }
+
+                outputs-touch := TouchArea {
+                  enabled: root.selected >= 0;
+                  clicked => {
+                    outputs-popup.show();
+                  }
+                }
+
+                outputs-popup := PopupWindow {
+                  x: 0;
+                  y: parent.height + 2px;
+                  width: parent.width;
+                  // Not the default: a click *inside* is a tick, and a list that closed on the
+                  // first one would make routing to three outputs three trips.
+                  close-policy: close-on-click-outside;
+
+                  Rectangle {
+                    background: Theme.panel;
+                    border-radius: 5px;
+                    border-width: 1px;
+                    border-color: Theme.controlEdge;
+
+                    VerticalLayout {
+                      padding: 6px;
+                      spacing: 2px;
+
+                      // "every output" is what naming nothing means, so it is a state and not
+                      // a tick that can be taken off — clicking it clears the names. A
+                      // CheckBox here would snap back under the pointer and read as broken.
+                      Rectangle {
+                        height: 28px;
+                        border-radius: 3px;
+                        background: all-touch.has-hover ? Theme.control : transparent;
+
+                        HorizontalLayout {
+                          padding-left: 8px;
+                          padding-right: 8px;
+                          spacing: 8px;
+
+                          Text {
+                            text: root.outputs-all ? "✓" : "";
+                            color: Theme.locked;
+                            font-size: 12px;
+                            width: 14px;
+                            vertical-alignment: center;
+                          }
+
+                          Text {
+                            text: "every output";
+                            color: Theme.text;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                          }
+                        }
+
+                        all-touch := TouchArea {
+                          clicked => {
+                            root.all-outputs-chosen();
+                          }
+                        }
+                      }
+
+                      Rectangle {
+                        height: 1px;
+                        background: Theme.line;
+                      }
+
+                      if root.output-choices.length == 0 : Text {
+                        text: "no outputs yet — add one on the main window";
+                        color: Theme.dim;
+                        font-size: 11px;
+                        height: 28px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                      }
+
+                      for choice in root.output-choices : Rectangle {
+                        height: 28px;
+
+                        HorizontalLayout {
+                          padding-left: 6px;
+                          padding-right: 8px;
+                          spacing: 6px;
+
+                          CheckBox {
+                            checked: choice.chosen;
+                            text: choice.name;
+                            horizontal-stretch: 1;
+                            toggled => {
+                              root.output-chosen(choice.name, self.checked);
+                            }
+                          }
+
+                          Text {
+                            // A name from a preset written on a rig this is not. Ticking it
+                            // off is the only thing that can be done with it here, which is
+                            // exactly what a name that reaches nothing deserves.
+                            text: choice.missing ? "not on this rig" : "";
+                            color: Theme.holding;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              Text {
+                text: root.outputs-available;
+                color: Theme.dim;
+                font-size: 11px;
+                font-family: "Consolas";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+              }
             }
-          }
 
-          preset-touch := TouchArea {
-            clicked => {
-              preset-popup.show();
+            // The address on a line of its own: it is the longest thing in the window and the
+            // one an operator reads character by character, so sharing a row with two pickers
+            // left it with a hundred pixels. §5.9's sketch gives it a line too.
+            if root.sends-osc : Field {
+              height: 34px;
+              vertical-stretch: 0;
+              text <=> root.address;
+              placeholder-text: "/composition/layers/3/clips/{clip}/connect";
+              enabled: root.selected >= 0;
+              font-size: 13px;
+              accepted(text) => {
+                self.leave();
+                root.address-edited(text);
+              }
+              // And when the operator clicks away instead of pressing
+              // Enter, which is finishing rather than cancelling. Without
+              // this, what they typed sat in the box until the next
+              // publish wrote over it, and the edit was silently lost.
+              changed has-focus => {
+                if (!self.has-focus) {
+                  root.address-edited(self.text);
+                }
+              }
             }
-          }
 
-          preset-popup := PopupWindow {
-            x: 0;
-            y: parent.height + 2px;
-            // Wider than the pane it hangs off, which a popup may be: these are sentences
-            // ("Resolume: breathing dashboard") and a list of ellipses is not a menu.
-            width: 268px;
-
-            Rectangle {
+            // Every `{...}` of the address, plus the value and — for MIDI — the note. Each
+            // one is a generator, and this is where "custom random triggers and sequences"
+            // actually gets designed.
+            for slot[index] in root.slots: Rectangle {
               background: Theme.panel;
               border-radius: 5px;
-              border-width: 1px;
-              border-color: Theme.controlEdge;
-
-              VerticalLayout {
-                padding: 6px;
-                spacing: 2px;
-
-                for preset[i] in root.rig-presets : Rectangle {
-                  height: 28px;
-                  border-radius: 3px;
-                  background: preset-hover.has-hover ? Theme.control : transparent;
-
-                  HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-
-                    Text {
-                      text: preset;
-                      color: Theme.text;
-                      font-size: 12px;
-                      horizontal-stretch: 1;
-                      vertical-alignment: center;
-                      overflow: elide;
-                    }
-                  }
-
-                  preset-hover := TouchArea {
-                    // One past the index, because `RulesController::addRig` keeps 0 for "no
-                    // preset" — the entry a dropdown needed and a menu does not have.
-                    clicked => {
-                      root.rig-added(i + 1);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // PANIC lives here rather than beside the rules it stops, because it is reached in
-        // a hurry: bottom-left of the window, the same place every time, never scrolled
-        // away, and lit while it is held so the state is unmistakable.
-        Press {
-          text: root.panicked ? "PANICKED — RELEASE" : "PANIC";
-          active: root.panicked;
-          primary: !root.panicked;
-          vertical-stretch: 0;
-          clicked => {
-            root.panic-clicked();
-          }
-        }
-      }
-    }
-
-    Splitter {
-      dragged(by) => {
-        root.list-width = clamp(root.list-width + by, root.pane-min, root.pane-max);
-      }
-    }
-
-    // --- the editor ----------------------------------------------------------------
-    VerticalLayout {
-      horizontal-stretch: 1;
-      padding: 0px;
-
-      // The title bar of §5.9's card: the name, whether it is on, and [test].
-      Rectangle {
-        background: Theme.panel;
-        vertical-stretch: 0;
-        height: 60px;
-
-        HorizontalLayout {
-          padding-left: 18px;
-          padding-right: 18px;
-          padding-top: 10px;
-          padding-bottom: 10px;
-          spacing: 10px;
-
-          // **Labelled.** It was a bare box, which beside a text field reads as a divider
-          // rather than as a switch — and since every new rule used to arrive switched off,
-          // the first thing an operator met was a rule that would not fire and a control
-          // that did not say it was the reason. Rules are made switched on now; this says
-          // what the box is either way.
-          CheckBox {
-            text: "enabled";
-            checked <=> root.rule-enabled;
-            enabled: root.selected >= 0;
-            toggled => {
-              root.rule-enabled-changed(self.checked);
-            }
-          }
-
-          // **Mute is not disable, and both are here because they are different states.**
-          // A disabled rule stops running: its shuffle bag stands still and it starts again
-          // where it left off. A muted one keeps running and stops *sending*, so unmuting
-          // rejoins the music in phase rather than restarting mid-set. Dropping a layer out
-          // for eight bars is the second one.
-          //
-          // Live, not saved: it is a performance gesture like the tempo ÷2 button, so a
-          // preset that loaded silent is not a thing that can happen. `/ctl/rule/<id>/mute`
-          // reaches the same state from a control surface.
-          Press {
-            text: "MUTE";
-            font: 13px;
-            pad: 10px;
-            active: root.rule-muted;
-            enabled: root.selected >= 0;
-            clicked => {
-              root.rule-muted-changed(!root.rule-muted);
-            }
-          }
-
-          // How often this rule fires against how often it was written to, as a live
-          // multiplier. ÷2 and ×2 are the interval, so ×2 is *half* as often — labelled with
-          // what happens to the firing rather than to the number, because that is what an
-          // operator is thinking about.
-
-          LineEdit {
-            text <=> root.rule-name;
-            placeholder-text: "name this rule";
-            enabled: root.selected >= 0;
-            font-size: 14px;
-            horizontal-stretch: 1;
-            edited(text) => {
-              root.rule-renamed(text);
-            }
-            // The name is already committed on every keystroke, so this is only the release —
-            // and the release is the whole point. Reported from a rig: *"when I click a box to
-            // edit it, once I'm done and hit enter, nothing happens, it stays in edit mode"*.
-            // Every other box in this window had it; this one did not.
-            accepted(text) => {
-              self.clear-focus();
-            }
-          }
-
-          Press {
-            text: "TEST";
-            enabled: root.selected >= 0;
-            min-width: 92px;
-            clicked => {
-              root.rule-tested();
-            }
-          }
-        }
-      }
-
-      Rectangle {
-        height: 1px;
-        background: Theme.line;
-        vertical-stretch: 0;
-      }
-
-      scroller := ScrollView {
-        vertical-stretch: 1;
-        // Scrolls vertically only. Without this a ScrollView sizes its viewport to whatever
-        // its content asks for, and a column of rows full of fixed widths asks for more than
-        // the pane has — so the editor scrolled sideways and half of every row was simply
-        // not on screen. Two renders found it; nothing in the markup says it is wrong.
-        viewport-width: self.visible-width;
-
-        VerticalLayout {
-          padding: 16px;
-          spacing: 14px;
-          alignment: start;
-
-          // --- WHEN ------------------------------------------------------------
-          Text {
-            text: "WHEN";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-          }
-
-          HorizontalLayout {
-            spacing: 10px;
-
-            ComboBox {
-              model: root.trigger-names;
-              current-index <=> root.trigger-index;
-              enabled: root.selected >= 0;
-              // **Shrinkable rather than fixed.** At the window's own 900px minimum this row
-              // is a dropdown, a number, a line of prose and two buttons in about 515px, and a
-              // hard `width` cannot give way — so the row overflowed the pane and x2 was
-              // sliced in half. The prose elides first, this gives up its slack second, and
-              // the buttons keep their labels. Measured in a shot at 900x560.
-              preferred-width: 220px;
-              max-width: 220px;
-              min-width: 132px;
-              horizontal-stretch: 0;
-              selected => {
-                root.trigger-picked(self.current-index);
-              }
-            }
-
-            if root.trigger-takes-every : Text {
-              text: "every";
-              color: Theme.text;
-              font-size: 13px;
-              vertical-alignment: center;
-            }
-
-            if root.trigger-takes-every : SpinBox {
-              value <=> root.every;
-              minimum: 1;
-              maximum: 64;
-              enabled: root.selected >= 0;
-              width: 96px;
-              edited(v) => {
-                root.every-changed(v);
-              }
-            }
-
-            if root.trigger-takes-pulses : Text {
-              text: "with";
-              color: Theme.text;
-              font-size: 13px;
-              vertical-alignment: center;
-            }
-
-            if root.trigger-takes-pulses : SpinBox {
-              value <=> root.pulses;
-              minimum: 0;
-              maximum: 64;
-              enabled: root.selected >= 0;
-              width: 88px;
-              edited(v) => {
-                root.pulses-changed(v);
-              }
-            }
-
-            Text {
-              // "every 4 bars" counts from the first, so it is bars 1, 5 and 9 rather than
-              // 4, 8 and 12 — §7 deviation 11. An operator counting a phrase in starts at
-              // one, and the alternative anchors the phrase to wherever the modulo lands.
-              //
-              // For a Euclidean pattern the same line shows the pattern itself, which is the
-              // only way two numbers become something an operator can hear before it plays.
-              text: root.trigger-takes-pulses ? root.euclid-pattern
-                : root.trigger-takes-every ? "counting from the first"
-                : "";
-              color: Theme.dim;
-              font-size: 12px;
-              font-family: root.trigger-takes-pulses ? "Consolas" : "";
-              vertical-alignment: center;
-              horizontal-stretch: 1;
-              // **This is what was eating the two buttons beside it.** A `Text` with no
-              // elide reports its whole string as its minimum width, and a layout will not
-              // shrink a child below its minimum — so in a pane dragged narrow this line
-              // kept all twenty-three characters and ÷2 and ×2 were squeezed until `Press`
-              // elided *their* labels to a single ellipsis each. Reported from a rig on
-              // 2026-09-16 as "wtf are these two buttons with 3 dots each". The prose is
-              // what should give way here; the buttons are what gets pressed.
-              overflow: elide;
-            }
-
-            // **How often, live** — §5.7's `double` and `halve` reached from the window
-            // rather than only from a control surface.
-            //
-            // Here and not in the title bar beside MUTE, which is where they started: the
-            // title row is a checkbox, a button, a name field and TEST, and three more
-            // controls pushed the editor pane past what the window's own 900px minimum
-            // leaves it. A pane test caught it. They read better here anyway, because this
-            // is the row that already says how often the rule fires.
-            // And a floor of their own, so that whatever else is on the row these two keep
-            // enough width for the label they exist to show. Wide enough for "÷2" at 17px
-            // with `Press`'s own padding either side.
-            Press {
-              text: "÷2";
-              pad: 8px;
-              min-width: 52px;
-              enabled: root.selected >= 0;
-              clicked => {
-                root.rule-rate-changed(0.5);
-              }
-            }
-            Press {
-              text: "×2";
-              pad: 8px;
-              min-width: 52px;
-              enabled: root.selected >= 0;
-              clicked => {
-                root.rule-rate-changed(2.0);
-              }
-            }
-            Text {
-              // Only when it is not 1: a rule at the rate it was written to has nothing to
-              // say, and a permanent "×1" beside every rule would be noise.
-              text: root.rule-rate;
-              color: Theme.holding;
-              font-size: 12px;
-              font-family: "Consolas";
-              vertical-alignment: center;
-              width: 80px;
-            }
-          }
-
-          Rectangle { height: 1px; background: Theme.line; }
-
-          // --- ONLY IF ---------------------------------------------------------
-          Text {
-            text: "ONLY IF";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-          }
-
-          HorizontalLayout {
-            spacing: 10px;
-
-            Text {
-              text: "confidence over";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            Slider {
-              minimum: 0;
-              maximum: 1;
-              value <=> root.min-confidence;
-              enabled: root.selected >= 0;
-              horizontal-stretch: 1;
-              changed(v) => {
-                root.min-confidence-changed(v);
-              }
-            }
-
-            Text {
-              text: Math.round(root.min-confidence * 100) / 100;
-              color: Theme.text;
-              font-size: 12px;
-              font-family: "Consolas";
-              width: 44px;
-              horizontal-alignment: right;
-              vertical-alignment: center;
-            }
-          }
-
-          HorizontalLayout {
-            spacing: 10px;
-
-            Text {
-              text: "probability";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            Slider {
-              minimum: 0;
-              maximum: 1;
-              value <=> root.probability;
-              enabled: root.selected >= 0;
-              horizontal-stretch: 1;
-              changed(v) => {
-                root.probability-changed(v);
-              }
-            }
-
-            Text {
-              text: Math.round(root.probability * 100) + "%";
-              color: Theme.text;
-              font-size: 12px;
-              font-family: "Consolas";
-              width: 44px;
-              horizontal-alignment: right;
-              vertical-alignment: center;
-            }
-          }
-
-          // The three that are not sliders, on a line of their own. One row of six controls
-          // was what the first render showed running off the edge of the pane.
-          HorizontalLayout {
-            spacing: 8px;
-
-            Text {
-              text: "intensity";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            CheckBox {
-              text: "calm";
-              checked <=> root.allow-calm;
-              enabled: root.selected >= 0;
-              toggled => {
-                root.intensity-changed(0, self.checked);
-              }
-            }
-            CheckBox {
-              text: "normal";
-              checked <=> root.allow-normal;
-              enabled: root.selected >= 0;
-              toggled => {
-                root.intensity-changed(1, self.checked);
-              }
-            }
-            CheckBox {
-              text: "intense";
-              checked <=> root.allow-intense;
-              enabled: root.selected >= 0;
-              toggled => {
-                root.intensity-changed(2, self.checked);
-              }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          HorizontalLayout {
-            spacing: 8px;
-
-            Text {
-              text: "BPM between";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            // **Two-way, and that is the whole of a bug.** This was
-            // `text: root.min-bpm + " - " + root.max-bpm`, a one-way binding — and Slint drops
-            // a binding the moment the property is assigned, which typing into a LineEdit
-            // does. So after one edit this box stopped following the model *for ever*: it went
-            // on showing the first rule's range over every rule selected after it, which is
-            // exactly what was reported as "when I edit the value range on trigger 1, it
-            // changes all the triggers". A `<=>` binding survives, because the widget writes
-            // back into the property instead of over the binding.
-            //
-            // The consequence is that the controller owns the text rather than the numbers:
-            // see `RulesController::publishSelected`, which spells it.
-            bpm-field := LineEdit {
-              text <=> root.bpm-range;
-              placeholder-text: "any";
-              enabled: root.selected >= 0;
-              font-size: 12px;
-              width: 116px;
-              accepted(text) => {
-                self.clear-focus();
-                root.bpm-range-edited(text);
-              }
-              // And when the operator clicks away instead of pressing
-              // Enter, which is finishing rather than cancelling. Without
-              // this, what they typed sat in the box until the next
-              // publish wrote over it, and the edit was silently lost.
-              changed has-focus => {
-                if (!self.has-focus) {
-                  root.bpm-range-edited(self.text);
-                }
-              }
-            }
-
-            Text {
-              text: "cooldown";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 72px;
-              horizontal-alignment: right;
-              vertical-alignment: center;
-            }
-
-            // Two-way, for the reason the BPM field above gives at length.
-            cooldown-field := LineEdit {
-              text <=> root.cooldown-ms;
-              placeholder-text: "0";
-              enabled: root.selected >= 0;
-              font-size: 12px;
-              width: 76px;
-              accepted(text) => {
-                self.clear-focus();
-                root.cooldown-changed(text);
-              }
-              // And when the operator clicks away instead of pressing
-              // Enter, which is finishing rather than cancelling. Without
-              // this, what they typed sat in the box until the next
-              // publish wrote over it, and the edit was silently lost.
-              changed has-focus => {
-                if (!self.has-focus) {
-                  root.cooldown-changed(self.text);
-                }
-              }
-            }
-
-            Text {
-              text: "ms";
-              color: Theme.dim;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          Rectangle { height: 1px; background: Theme.line; }
-
-          // --- SEND ------------------------------------------------------------
-          Text {
-            text: "SEND";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-          }
-
-          HorizontalLayout {
-            spacing: 8px;
-
-            ComboBox {
-              model: root.send-kinds;
-              current-index <=> root.send-index;
-              enabled: root.selected >= 0;
-              width: 140px;
-              selected => {
-                root.send-picked(self.current-index);
-              }
-            }
-
-            if root.sends-osc : ComboBox {
-              // §5.6's host presets. A starting point that fills the address and its
-              // slots, never a code path — everything it wrote stays editable.
-              //
-              // Bound to the rule rather than left wherever it was last clicked: this box
-              // used to keep saying "Resolume 7" over an address the operator had since
-              // typed over, and say it about the *next* rule they selected too. It now
-              // shows which preset the address in front of it is, and "custom" when it is
-              // none of them — including after an edit that took it off a preset.
-              model: root.host-presets;
-              current-index <=> root.host-preset-index;
-              enabled: root.selected >= 0;
-              width: 168px;
-              selected => {
-                root.host-preset-picked(self.current-index);
-              }
-            }
-
-            if root.sends-midi : Text {
-              text: "channel";
-              color: Theme.dim;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-
-            if root.sends-midi : SpinBox {
-              value <=> root.channel;
-              minimum: 1;
-              maximum: 16;
-              enabled: root.selected >= 0;
-              width: 96px;
-              edited(v) => {
-                root.channel-changed(v);
-              }
-            }
-
-            // The effect, which for a lighting rule is what the address is for an OSC one:
-            // the first thing decided and the thing that decides what the rest of the row is
-            // even asking.
-            if root.sends-dmx : ComboBox {
-              model: root.effect-kinds;
-              current-index: root.effect-index;
-              enabled: root.selected >= 0;
-              preferred-width: 152px;
-              max-width: 152px;
-              min-width: 104px;
-              horizontal-stretch: 0;
-              selected => {
-                root.effect-picked(self.current-index);
-              }
-            }
-
-            if root.sends-dmx && root.effect-takes-role : Text {
-              text: "on";
-              color: Theme.dim;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-
-            if root.sends-dmx && root.effect-takes-role : ComboBox {
-              model: root.effect-roles;
-              current-index: root.effect-role-index;
-              enabled: root.selected >= 0;
-              preferred-width: 130px;
-              max-width: 130px;
-              min-width: 96px;
-              horizontal-stretch: 0;
-              selected => {
-                root.effect-role-picked(self.current-index);
-              }
-            }
-
-            if root.sends-dmx && root.effect-takes-shape : ComboBox {
-              model: root.effect-shapes;
-              current-index: root.effect-shape-index;
-              enabled: root.selected >= 0;
-              width: 120px;
-              selected => {
-                root.effect-shape-picked(self.current-index);
-              }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // Where the color comes from — a palette, or three component generators. See
-          // `trigger::ColorMode` for why these are two modes and not one: "these six colors"
-          // and "random, but keep the blue up" are different instructions and neither can say
-          // the other.
-          //
-          // **Its own row rather than a seventh control on the effect row**, which at the
-          // window's 900px minimum ran the dropdown off the right of the pane. The gutter is
-          // the one the rows below use, so it lines up with "over" and "lights".
-          if root.sends-dmx && root.effect-takes-color : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-
-            Text {
-              text: "color from";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            ComboBox {
-              model: root.color-modes;
-              current-index: root.color-mode-index;
-              enabled: root.selected >= 0;
-              preferred-width: 210px;
-              max-width: 210px;
-              min-width: 132px;
-              horizontal-stretch: 0;
-              selected => {
-                root.color-mode-picked(self.current-index);
-              }
-            }
-
-            Text {
-              text: root.color-mode-index == 0
-                  ? "swatches below; the chip beside them says how they are drawn"
-                  : "one generator per component, 0 to 255 each";
-              color: Theme.dim;
-              font-size: 11px;
-              vertical-alignment: center;
-              horizontal-stretch: 1;
-              overflow: elide;
-            }
-          }
-
-          // **What the channel dropdown could not say for itself.**
-          //
-          // A rule aimed at "dimmer" over an RGB par names a channel the fixture has not got,
-          // and used to do so in total silence: the rule fired, logged, counted, and the lamp
-          // stayed dark. The engine now drives the color instead (`dmx::aims`); this is the
-          // line that says which of the two is happening, and still says "reaches nothing" for
-          // the aims that really do — a pan on a wash.
-          //
-          // **On a line of its own**, because on the effect row it was the seventh control and
-          // `Press`-style elision cut it to a single ellipsis at the window's own width. A
-          // warning nobody can read is not a warning; rendered and measured at 1164x872.
-          if root.sends-dmx && root.effect-takes-role && root.effect-role-note != "" : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 20px;
-            spacing: 8px;
-
-            // The same gutter the rows below use, so the note sits under the controls it is
-            // about rather than under the SEND heading.
-            Rectangle { width: 116px; horizontal-stretch: 0; }
-
-            Text {
-              text: root.effect-role-note;
-              color: Theme.holding;
-              font-size: 11px;
-              vertical-alignment: center;
-              horizontal-stretch: 1;
-              overflow: elide;
-            }
-          }
-
-          // --- the lighting row ------------------------------------------------
-          //
-          // How long the effect runs, and the handful of numbers each effect uses. Spelled in
-          // beats by default, because a fade that follows the tempo is the thing this app
-          // exists to make possible — and the unit is beside the number rather than implied,
-          // because "2" meaning two bars and "2" meaning two milliseconds are the same box.
-          if root.sends-dmx : HorizontalLayout {
-            // **An explicit height, and it is load-bearing.** The column above says
-            // `alignment: start`, which holds a plain row to its own height and does
-            // *not* hold a conditional one: an `if` child of a vertical layout takes
-            // a share of whatever height is spare, and `vertical-stretch: 0` on it
-            // does not stop that either — both were measured. So the rows that live
-            // behind an `if` say how tall they are, exactly as the generator chips
-            // and the patch editor's channel rows already did.
-            //
-            // On a short rule these boxes drew three hundred pixels tall with grey
-            // canyons between the headings. Reported from a rig on 2026-09-16 and
-            // reproduced in a shot at 1164x1400, which is the only way it shows: at
-            // the window's own height the content fills it and nothing is spare.
-            height: 36px;
-            vertical-stretch: 0;
-            spacing: 8px;
-
-            Text {
-              text: "over";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            LineEdit {
-              text: root.effect-duration;
-              placeholder-text: "1";
-              font-size: 12px;
-              width: 76px;
-              enabled: root.selected >= 0;
-              accepted(t) => {
-                // Focus first, callback second: the callback republishes this box — that is
-                // how it comes back holding a number the controller normalised — and a
-                // handler touching `self` afterwards would be touching an element on its way
-                // out. The same order every other box in this window uses.
-                self.clear-focus();
-                root.effect-duration-edited(t);
-              }
-              changed has-focus => {
-                if (!self.has-focus) {
-                  root.effect-duration-edited(self.text);
-                }
-              }
-            }
-
-            ComboBox {
-              model: root.follow-up-units;
-              current-index: root.effect-unit;
-              enabled: root.selected >= 0;
-              width: 92px;
-              selected => {
-                root.effect-unit-picked(self.current-index);
-              }
-            }
-
-            if root.effect-takes-curve : ComboBox {
-              model: root.effect-curves;
-              current-index: root.effect-curve-index;
-              enabled: root.selected >= 0;
-              width: 124px;
-              selected => {
-                root.effect-curve-picked(self.current-index);
-              }
-            }
-
-            if root.effect-takes-base : Text {
-              text: "from";
-              color: Theme.dim;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-
-            if root.effect-takes-base : SpinBox {
-              value: root.effect-base;
-              minimum: 0;
-              maximum: 255;
-              enabled: root.selected >= 0;
-              width: 92px;
-              edited(v) => {
-                root.effect-base-changed(v);
-              }
-            }
-
-            if root.effect-takes-cycles : Text {
-              text: "×";
-              color: Theme.dim;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-
-            if root.effect-takes-cycles : LineEdit {
-              text: root.effect-cycles;
-              placeholder-text: "1";
-              font-size: 12px;
-              width: 60px;
-              enabled: root.selected >= 0;
-              accepted(t) => {
-                self.clear-focus();
-                root.effect-cycles-edited(t);
-              }
-              changed has-focus => {
-                if (!self.has-focus) {
-                  root.effect-cycles-edited(self.text);
-                }
-              }
-            }
-
-            if root.effect-takes-hue : LineEdit {
-              text: root.effect-hue;
-              placeholder-text: "0 - 360";
-              font-size: 12px;
-              width: 96px;
-              enabled: root.selected >= 0;
-              accepted(t) => {
-                self.clear-focus();
-                root.effect-hue-edited(t);
-              }
-              changed has-focus => {
-                if (!self.has-focus) {
-                  root.effect-hue-edited(self.text);
-                }
-              }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // A strobe's duty cycle and a path's radius, each a slider because each is found by
-          // eye rather than typed.
-          if root.sends-dmx && root.effect-takes-duty : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-            Text {
-              text: "on for";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-            Slider {
-              minimum: 1;
-              maximum: 99;
-              value: root.effect-duty;
-              enabled: root.selected >= 0;
-              width: 220px;
-              changed(v) => {
-                root.effect-duty-changed(v);
-              }
-            }
-            Text {
-              text: round(root.effect-duty) + "% of each flash";
-              color: Theme.text;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          if root.sends-dmx && root.effect-takes-shape : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-            Text {
-              text: "size";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-            Slider {
-              minimum: 0;
-              maximum: 100;
-              value: root.effect-size;
-              enabled: root.selected >= 0;
-              width: 220px;
-              changed(v) => {
-                root.effect-size-changed(v);
-              }
-            }
-            Text {
-              // At 100% the figure just touches the fixture's own movement limits and never
-              // crosses them, which is what makes a full-size circle safe to fire blind.
-              text: round(root.effect-size) + "% of the movement window";
-              color: Theme.text;
-              font-size: 12px;
-              vertical-alignment: center;
-            }
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // --- which fixtures ---------------------------------------------------
-          //
-          // The same shape as "send to" below, and ticked from the rig's own patch for the
-          // same reason: an operator should not have to remember what their fixtures are
-          // called and spell each one the same way twice.
-          if root.sends-dmx : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-
-            Text {
-              text: "lights";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            fixtures-field := Rectangle {
-              width: 260px;
-              height: 32px;
-              horizontal-stretch: 0;
-              background: root.selected < 0 ? Theme.controlOff : Theme.control;
-              border-radius: 4px;
-              border-width: 1px;
-              // Amber rather than grey when the rule names nothing, because a DMX rule with no
-              // fixtures does not fire at all — and a silent rule looks exactly like a rule
-              // whose trigger has not come round yet.
-              border-color: root.selected < 0 ? Theme.line
-                : root.fixtures-reaches-nothing ? Theme.holding
-                : fixtures-touch.has-hover ? Theme.accent
-                : Theme.controlEdge;
+              vertical-stretch: 0;
+              height: 48px;
 
               HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
+                padding: 8px;
                 spacing: 6px;
+
                 Text {
-                  text: root.fixtures-summary;
-                  color: Theme.label;
-                  font-size: 12px;
+                  text: slot.label;
+                  color: Theme.accent;
+                  font-size: 13px;
+                  font-family: "Consolas";
+                  width: 64px;
+                  vertical-alignment: center;
                   overflow: elide;
+                }
+
+                ComboBox {
+                  model: root.generator-kinds;
+                  current-index: slot.kind-index;
+                  width: 104px;
+                  selected => {
+                    root.slot-kind-picked(index, self.current-index);
+                  }
+                }
+
+                // `if`, not `visible`, on every one of these — and it is not a style
+                // preference. Slint's own reference: *"When set to false, the element and all
+                // its children won't be drawn ... The element still takes up layout space
+                // within any layout container."* These five are alternatives to each other, so
+                // with `visible` the row reserved room for all of them at once and ran off the
+                // right of the pane, drawing a stray empty field beside the one that mattered.
+                // `if` takes the element out of the tree. Two renders to find, one line to fix.
+
+                // Which values, asked separately from how they are drawn — the two questions
+                // `trigger::Pool` exists to keep apart.
+                //
+                // **Not on a color**, which is the one slot where a *range* means nothing: the
+                // integers between two colors are not colors, and a color generator handed
+                // one falls back to white. A color's values are the palette row below, which
+                // is a list by construction, so the question does not arise and the box that
+                // asked it was a box with no right answer.
+                if slot.takes-pool && !slot.is-color : CheckBox {
+                  text: "list";
+                  checked: slot.is-list;
+                  toggled => {
+                    root.slot-pool-changed(index, self.checked);
+                  }
+                }
+
+                if slot.takes-pool && slot.is-color : Text {
+                  text: "colors below";
+                  color: Theme.dim;
+                  font-size: 11px;
                   horizontal-stretch: 1;
                   vertical-alignment: center;
                 }
-                Text {
-                  // U+25BC and 8px, matching the outputs field below — the lighter chevrons
-                  // are not in the font the software renderer embeds and come out as nothing
-                  // at all. That was measured in a shot; see the note on `outputs-field`.
-                  text: "▼";
-                  color: Theme.dim;
-                  font-size: 8px;
-                  vertical-alignment: center;
+
+                if slot.takes-pool && !slot.is-color && !slot.is-list : Field {
+                  text: slot.low + " - " + slot.high;
+                  placeholder-text: "1 - 8";
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-range-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-range-edited(index, self.text);
+                    }
+                  }
                 }
-              }
 
-              fixtures-touch := TouchArea {
-                enabled: root.selected >= 0;
-                clicked => {
-                  fixtures-popup.show();
+                if slot.takes-pool && !slot.is-color && slot.is-list : Field {
+                  text: slot.values;
+                  placeholder-text: "3, 7, 1, 12 — in this order";
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-values-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-values-edited(index, self.text);
+                    }
+                  }
                 }
-              }
 
-              fixtures-popup := PopupWindow {
-                x: 0;
-                y: parent.height + 2px;
-                width: parent.width;
-                // Not the default: a click *inside* is a tick, and a list that closed on the
-                // first one would make aiming at three fixtures three trips.
-                close-policy: close-on-click-outside;
-
-                Rectangle {
-                  background: Theme.panel;
+                // **The color picker.** A swatch that opens three sliders, because a hex
+                // string is the one value in this window nobody can read: `#20ff80` says
+                // nothing about what it will look like on a wall, and picking a color by
+                // typing one is picking it by arithmetic.
+                //
+                // Hue, saturation and value rather than red, green and blue — those are the
+                // axes somebody actually moves. "The same color but dimmer" and "the same
+                // color but washed out" are one slider each here and three there.
+                //
+                // The hex box stays beside it: it is how a color gets pasted in from anywhere
+                // else, and how a *palette* is written, which is a list and not one color.
+                if slot.is-color && slot.is-fixed : Rectangle {
+                  width: 34px;
+                  height: 28px;
+                  y: 3px;
+                  horizontal-stretch: 0;
+                  background: slot.swatch;
                   border-radius: 4px;
                   border-width: 1px;
-                  border-color: Theme.line;
+                  border-color: swatch-touch.has-hover ? Theme.accent : Theme.controlEdge;
 
-                  VerticalLayout {
-                    padding: 8px;
-                    spacing: 4px;
-
-                    Text {
-                      text: root.fixtures-available;
-                      color: Theme.dim;
-                      font-size: 11px;
-                      wrap: word-wrap;
-                    }
-
-                    for choice[index] in root.fixture-choices : CheckBox {
-                      // A group and a fixture look the same here on purpose: both are a name
-                      // a rule may aim at, and which one a name is is the patch's business.
-                      text: choice.missing ? choice.name + "  (not on this rig)" : choice.name;
-                      checked: choice.chosen;
-                      toggled => {
-                        root.fixture-chosen(choice.name, self.checked);
-                      }
-                    }
-
-                    Rectangle { height: 1px; background: Theme.line; }
-
-                    Press {
-                      text: "NONE";
-                      font: 12px;
-                      pad: 10px;
-                      clicked => {
-                        root.no-fixtures-chosen();
-                      }
+                  swatch-touch := TouchArea {
+                    clicked => {
+                      picker.show();
                     }
                   }
-                }
-              }
-            }
 
-            Text {
-              text: root.fixtures-available;
-              color: Theme.dim;
-              font-size: 11px;
-              vertical-alignment: center;
-              horizontal-stretch: 1;
-              overflow: elide;
-            }
-          }
+                  // **Watched from out here, not from inside the popup.** A `PopupWindow`'s
+                  // contents are built when it is shown and dropped when it closes, so a
+                  // `changed is-open` written inside it is created with `is-open` already true
+                  // and never sees a change at all — measured: not one notification, either
+                  // way. Read from the element that owns the popup it is a plain binding, which
+                  // is the use the property is documented for. See `picker-open-changed`.
+                  property <bool> picking: picker.is-open;
+                  changed picking => {
+                    root.picker-open-changed(self.picking);
+                  }
 
-          // §5.6's rule subset, ticked from the rig's own list.
-          //
-          // This was a field of comma-separated names, on the reasoning that somebody with
-          // three outputs can type three names faster than they can find them. They cannot:
-          // it asks them to remember what their outputs are called *and* to spell each the
-          // same way twice, and a typo reads as a rule that silently sends nowhere. The rig
-          // knows what it has, so it offers them and the operator ticks.
-          //
-          // **Not for a lighting rule**, which is routed by *fixture* instead: a fixture
-          // already names its universe and an Art-Net target already says which universes it
-          // carries, so there is no second routing decision to make. Leaving the row on would
-          // be offering a control that changes nothing — which a render caught, sitting under
-          // "lights" and reading as though the two had to agree.
-          if !root.sends-dmx : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-
-            Text {
-              text: "send to";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 116px;
-              vertical-alignment: center;
-            }
-
-            // The closed control. Not a std `ComboBox`: that one picks exactly one thing and
-            // closes on the pick, and this picks any number of them.
-            outputs-field := Rectangle {
-              width: 260px;
-              height: 32px;
-              horizontal-stretch: 0;
-              border-radius: 4px;
-              border-width: 1px;
-              border-color: root.selected < 0 ? Theme.line
-                : outputs-touch.has-hover ? Theme.accent
-                : Theme.controlEdge;
-              background: root.selected < 0 ? Theme.controlOff : Theme.control;
-
-              HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 6px;
-
-                Text {
-                  text: root.outputs-summary;
-                  color: root.selected < 0 ? Theme.dim
-                    : root.outputs-all ? Theme.dim
-                    : Theme.text;
-                  font-size: 12px;
-                  horizontal-stretch: 1;
-                  vertical-alignment: center;
-                  overflow: elide;
-                }
-
-                Text {
-                  // U+25BC, not the lighter U+2304 or U+25BE this started as: neither of
-                  // those is in the font the software renderer embeds, so both came out as
-                  // nothing at all — measured, in a shot. Small and dim so a solid triangle
-                  // reads as a chevron rather than as a warning.
-                  text: "▼";
-                  color: Theme.dim;
-                  font-size: 8px;
-                  vertical-alignment: center;
-                }
-              }
-
-              outputs-touch := TouchArea {
-                enabled: root.selected >= 0;
-                clicked => {
-                  outputs-popup.show();
-                }
-              }
-
-              outputs-popup := PopupWindow {
-                x: 0;
-                y: parent.height + 2px;
-                width: parent.width;
-                // Not the default: a click *inside* is a tick, and a list that closed on the
-                // first one would make routing to three outputs three trips.
-                close-policy: close-on-click-outside;
-
-                Rectangle {
-                  background: Theme.panel;
-                  border-radius: 5px;
-                  border-width: 1px;
-                  border-color: Theme.controlEdge;
-
-                  VerticalLayout {
-                    padding: 6px;
-                    spacing: 2px;
-
-                    // "every output" is what naming nothing means, so it is a state and not
-                    // a tick that can be taken off — clicking it clears the names. A
-                    // CheckBox here would snap back under the pointer and read as broken.
-                    Rectangle {
-                      height: 28px;
-                      border-radius: 3px;
-                      background: all-touch.has-hover ? Theme.control : transparent;
-
-                      HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 8px;
-
-                        Text {
-                          text: root.outputs-all ? "✓" : "";
-                          color: Theme.locked;
-                          font-size: 12px;
-                          width: 14px;
-                          vertical-alignment: center;
-                        }
-
-                        Text {
-                          text: "every output";
-                          color: Theme.text;
-                          font-size: 12px;
-                          horizontal-stretch: 1;
-                          vertical-alignment: center;
-                        }
-                      }
-
-                      all-touch := TouchArea {
-                        clicked => {
-                          root.all-outputs-chosen();
-                        }
-                      }
-                    }
+                  picker := PopupWindow {
+                    x: 0;
+                    y: parent.height + 2px;
+                    width: 280px;
+                    // A click inside is a drag on a slider, and a picker that closed on the
+                    // first one would make choosing a color three trips.
+                    close-policy: close-on-click-outside;
 
                     Rectangle {
-                      height: 1px;
-                      background: Theme.line;
-                    }
+                      background: Theme.panel;
+                      border-radius: 5px;
+                      border-width: 1px;
+                      border-color: Theme.controlEdge;
 
-                    if root.output-choices.length == 0 : Text {
-                      text: "no outputs yet — add one on the main window";
-                      color: Theme.dim;
-                      font-size: 11px;
-                      height: 28px;
-                      vertical-alignment: center;
-                      horizontal-alignment: center;
-                    }
-
-                    for choice in root.output-choices : Rectangle {
-                      height: 28px;
-
-                      HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 8px;
+                      VerticalLayout {
+                        padding: 10px;
                         spacing: 6px;
 
-                        CheckBox {
-                          checked: choice.chosen;
-                          text: choice.name;
-                          horizontal-stretch: 1;
-                          toggled => {
-                            root.output-chosen(choice.name, self.checked);
+                        Rectangle {
+                          height: 34px;
+                          background: slot.swatch;
+                          border-radius: 4px;
+                          border-width: 1px;
+                          border-color: Theme.line;
+                        }
+
+                        HorizontalLayout {
+                          spacing: 8px;
+                          Text {
+                            text: "hue";
+                            color: Theme.dim;
+                            font-size: 11px;
+                            width: 34px;
+                            vertical-alignment: center;
+                          }
+                          Slider {
+                            minimum: 0;
+                            maximum: 359;
+                            value: slot.hue;
+                            horizontal-stretch: 1;
+                            changed(v) => {
+                              root.slot-color-changed(index, v, slot.sat, slot.val);
+                            }
+                          }
+                        }
+
+                        HorizontalLayout {
+                          spacing: 8px;
+                          Text {
+                            text: "sat";
+                            color: Theme.dim;
+                            font-size: 11px;
+                            width: 34px;
+                            vertical-alignment: center;
+                          }
+                          Slider {
+                            minimum: 0;
+                            maximum: 100;
+                            value: slot.sat;
+                            horizontal-stretch: 1;
+                            changed(v) => {
+                              root.slot-color-changed(index, slot.hue, v, slot.val);
+                            }
+                          }
+                        }
+
+                        HorizontalLayout {
+                          spacing: 8px;
+                          Text {
+                            // "bright", not "value": V is the letter in HSV and the word means
+                            // nothing here, where every other slot's *value* is the number it
+                            // sends.
+                            text: "bright";
+                            color: Theme.dim;
+                            font-size: 11px;
+                            width: 34px;
+                            vertical-alignment: center;
+                          }
+                          Slider {
+                            minimum: 0;
+                            maximum: 100;
+                            value: slot.val;
+                            horizontal-stretch: 1;
+                            changed(v) => {
+                              root.slot-color-changed(index, slot.hue, slot.sat, v);
+                            }
                           }
                         }
 
                         Text {
-                          // A name from a preset written on a rig this is not. Ticking it
-                          // off is the only thing that can be done with it here, which is
-                          // exactly what a name that reaches nothing deserves.
-                          text: choice.missing ? "not on this rig" : "";
-                          color: Theme.holding;
-                          font-size: 11px;
-                          vertical-alignment: center;
+                          text: "sent to this rule's lights as you drag";
+                          color: Theme.dim;
+                          font-size: 10px;
+                          wrap: word-wrap;
                         }
                       }
                     }
                   }
                 }
+
+                if slot.is-fixed : Field {
+                  text: slot.fixed;
+                  placeholder-text: slot.is-color ? "#ff2040" : "value";
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-fixed-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-fixed-edited(index, self.text);
+                    }
+                  }
+                }
+
+                if slot.is-live : ComboBox {
+                  model: root.live-sources;
+                  current-index: slot.live-index;
+                  horizontal-stretch: 1;
+                  selected => {
+                    root.slot-live-picked(index, self.current-index);
+                  }
+                }
+
+                // A ramp: its shape, the range it sweeps, how many bars it takes, and whether
+                // it lands on whole numbers. Four controls, because a ramp is the one
+                // generator whose whole behaviour is in its configuration.
+                if slot.is-ramp : ComboBox {
+                  model: root.ramp-shapes;
+                  current-index: slot.shape-index;
+                  width: 108px;
+                  selected => {
+                    root.slot-shape-picked(index, self.current-index);
+                  }
+                }
+
+                if slot.is-ramp : Field {
+                  text: slot.low + " - " + slot.high;
+                  placeholder-text: "0 - 1";
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-range-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-range-edited(index, self.text);
+                    }
+                  }
+                }
+
+                if slot.is-ramp : Text {
+                  text: "over";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                if slot.is-ramp : SpinBox {
+                  value: slot.ramp-bars;
+                  minimum: 1;
+                  maximum: 64;
+                  width: 76px;
+                  edited(v) => {
+                    root.slot-ramp-bars-changed(index, v);
+                  }
+                }
+
+                if slot.is-ramp : Text {
+                  text: "bars";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                if slot.is-ramp : CheckBox {
+                  // A float sweeps and an int steps — see `Generator::nextRamp`, where the
+                  // difference is spelled out. Which one a host wants is not guessable.
+                  //
+                  // It said "whole", which is half a sentence: whole *what*? Asked from a rig
+                  // on 2026-09-16 — *"wtf does this 'whole' option mean next to the color
+                  // code?"* — where it was sitting beside a last-fired readout and read as a
+                  // property of that. The label now names the thing it does.
+                  text: "whole numbers";
+                  checked: !slot.ramp-float;
+                  toggled => {
+                    root.slot-ramp-float-changed(index, !self.checked);
+                  }
+                }
+
+                // Something stretchy for the kinds that offer no field of their own, so the
+                // row does not collapse around the dropdown.
+                if !slot.takes-pool && !slot.is-fixed && !slot.is-live && !slot.is-ramp
+                    : Rectangle {
+                  horizontal-stretch: 1;
+                }
+
+                if slot.takes-pool : Text {
+                  // Short because the row is tight and the SpinBox beside it says the rest:
+                  // "no repeat 2" reads as what it is. `Generator::Config::noRepeatWithin`.
+                  text: "no repeat";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                if slot.takes-pool : SpinBox {
+                  value: slot.no-repeat;
+                  minimum: 0;
+                  maximum: 64;
+                  width: 76px;
+                  edited(v) => {
+                    root.slot-no-repeat-changed(index, v);
+                  }
+                }
+
+                Text {
+                  // What this slot last produced. §5.9 asks for a last-fired line on the
+                  // rule; a sequence is easier to believe when each part shows its own.
+                  //
+                  // **With an arrow**, because a bare value at the end of a row of settings
+                  // reads as another setting. A rig asked what the `#ffffff` at the end of the
+                  // color chip was and whether the checkbox beside it belonged to it; the
+                  // arrow says this one is an output and the checkbox is not its label.
+                  text: slot.last == "" ? "" : "→ " + slot.last;
+                  color: Theme.locked;
+                  font-size: 12px;
+                  font-family: "Consolas";
+                  // A hex color is seven characters and a MIDI value is three.
+                  width: slot.is-color ? 92px : 52px;
+                  horizontal-stretch: 0;
+                  horizontal-alignment: right;
+                  vertical-alignment: center;
+                }
               }
             }
 
-            Text {
-              text: root.outputs-available;
-              color: Theme.dim;
-              font-size: 11px;
-              font-family: "Consolas";
-              horizontal-stretch: 1;
-              vertical-alignment: center;
-              overflow: elide;
-            }
-          }
-
-          // The address on a line of its own: it is the longest thing in the window and the
-          // one an operator reads character by character, so sharing a row with two pickers
-          // left it with a hundred pixels. §5.9's sketch gives it a line too.
-          if root.sends-osc : LineEdit {
-            height: 34px;
-            vertical-stretch: 0;
-            text <=> root.address;
-            placeholder-text: "/composition/layers/3/clips/{clip}/connect";
-            enabled: root.selected >= 0;
-            font-size: 13px;
-            accepted(text) => {
-              self.clear-focus();
-              root.address-edited(text);
-            }
-            // And when the operator clicks away instead of pressing
-            // Enter, which is finishing rather than cancelling. Without
-            // this, what they typed sat in the box until the next
-            // publish wrote over it, and the edit was silently lost.
-            changed has-focus => {
-              if (!self.has-focus) {
-                root.address-edited(self.text);
-              }
-            }
-          }
-
-          // Every `{...}` of the address, plus the value and — for MIDI — the note. Each
-          // one is a generator, and this is where "custom random triggers and sequences"
-          // actually gets designed.
-          for slot[index] in root.slots: Rectangle {
-            background: Theme.panel;
-            border-radius: 5px;
-            vertical-stretch: 0;
-            height: 48px;
-
-            HorizontalLayout {
-              padding: 8px;
-              spacing: 6px;
+            // --- the palette -----------------------------------------------------
+            //
+            // **The colors a shuffle shuffles, as colors.** The chip above says how they are
+            // drawn — shuffle, cycle, random — and this says what they are, which is the half a
+            // text box could never show: `#20ff80, #ff2040, #ffe000` is a list nobody can read
+            // as three colors, and a *range* like "1 - 8" was worse than unreadable, because a
+            // color generator drawing the integer 3 falls back to white on every fire. That is
+            // exactly what a rig met on 2026-09-16 — *"there's no way to make it do random
+            // colors on beat ... I define a range 1-9 which maps to what!? it just stays the
+            // same #ffff color code"*.
+            //
+            // Each swatch opens the same hue/saturation/brightness picker the fixed color has,
+            // with a hex box for pasting one in and a REMOVE for taking it out.
+            if root.palette-shown : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
 
               Text {
-                text: slot.label;
+                text: "palette";
                 color: Theme.accent;
                 font-size: 13px;
                 font-family: "Consolas";
                 width: 64px;
                 vertical-alignment: center;
-                overflow: elide;
               }
 
-              ComboBox {
-                model: root.generator-kinds;
-                current-index: slot.kind-index;
-                width: 104px;
-                selected => {
-                  root.slot-kind-picked(index, self.current-index);
-                }
-              }
-
-              // `if`, not `visible`, on every one of these — and it is not a style
-              // preference. Slint's own reference: *"When set to false, the element and all
-              // its children won't be drawn ... The element still takes up layout space
-              // within any layout container."* These five are alternatives to each other, so
-              // with `visible` the row reserved room for all of them at once and ran off the
-              // right of the pane, drawing a stray empty field beside the one that mattered.
-              // `if` takes the element out of the tree. Two renders to find, one line to fix.
-
-              // Which values, asked separately from how they are drawn — the two questions
-              // `trigger::Pool` exists to keep apart.
-              //
-              // **Not on a color**, which is the one slot where a *range* means nothing: the
-              // integers between two colors are not colors, and a color generator handed
-              // one falls back to white. A color's values are the palette row below, which
-              // is a list by construction, so the question does not arise and the box that
-              // asked it was a box with no right answer.
-              if slot.takes-pool && !slot.is-color : CheckBox {
-                text: "list";
-                checked: slot.is-list;
-                toggled => {
-                  root.slot-pool-changed(index, self.checked);
-                }
-              }
-
-              if slot.takes-pool && slot.is-color : Text {
-                text: "colors below";
-                color: Theme.dim;
-                font-size: 11px;
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-              }
-
-              if slot.takes-pool && !slot.is-color && !slot.is-list : LineEdit {
-                text: slot.low + " - " + slot.high;
-                placeholder-text: "1 - 8";
-                font-size: 12px;
-                horizontal-stretch: 1;
-                accepted(text) => {
-                  self.clear-focus();
-                  root.slot-range-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.slot-range-edited(index, self.text);
-                  }
-                }
-              }
-
-              if slot.takes-pool && !slot.is-color && slot.is-list : LineEdit {
-                text: slot.values;
-                placeholder-text: "3, 7, 1, 12 — in this order";
-                font-size: 12px;
-                horizontal-stretch: 1;
-                accepted(text) => {
-                  self.clear-focus();
-                  root.slot-values-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.slot-values-edited(index, self.text);
-                  }
-                }
-              }
-
-              // **The color picker.** A swatch that opens three sliders, because a hex
-              // string is the one value in this window nobody can read: `#20ff80` says
-              // nothing about what it will look like on a wall, and picking a color by
-              // typing one is picking it by arithmetic.
-              //
-              // Hue, saturation and value rather than red, green and blue — those are the
-              // axes somebody actually moves. "The same color but dimmer" and "the same
-              // color but washed out" are one slider each here and three there.
-              //
-              // The hex box stays beside it: it is how a color gets pasted in from anywhere
-              // else, and how a *palette* is written, which is a list and not one color.
-              if slot.is-color && slot.is-fixed : Rectangle {
-                width: 34px;
-                height: 28px;
-                y: 3px;
+              for entry[index] in root.palette : Rectangle {
+                width: 40px;
+                height: 30px;
                 horizontal-stretch: 0;
-                background: slot.swatch;
+                background: entry.swatch;
                 border-radius: 4px;
                 border-width: 1px;
-                border-color: swatch-touch.has-hover ? Theme.accent : Theme.controlEdge;
+                border-color: entry-touch.has-hover ? Theme.accent : Theme.controlEdge;
 
-                swatch-touch := TouchArea {
+                entry-touch := TouchArea {
                   clicked => {
-                    picker.show();
+                    entry-picker.show();
                   }
                 }
 
-                // **Watched from out here, not from inside the popup.** A `PopupWindow`'s
-                // contents are built when it is shown and dropped when it closes, so a
-                // `changed is-open` written inside it is created with `is-open` already true
-                // and never sees a change at all — measured: not one notification, either
-                // way. Read from the element that owns the popup it is a plain binding, which
-                // is the use the property is documented for. See `picker-open-changed`.
-                property <bool> picking: picker.is-open;
+                // From out here for the reason the other picker gives: a `changed is-open`
+                // inside the popup is built with the popup and never sees a change. This is the
+                // picker that crashed — its swatch is a repeated item, and dragging its hue
+                // slider is what rebuilt the repeater it belongs to.
+                property <bool> picking: entry-picker.is-open;
                 changed picking => {
                   root.picker-open-changed(self.picking);
                 }
 
-                picker := PopupWindow {
+                entry-picker := PopupWindow {
                   x: 0;
                   y: parent.height + 2px;
                   width: 280px;
-                  // A click inside is a drag on a slider, and a picker that closed on the
-                  // first one would make choosing a color three trips.
+                  // A click inside is a drag on a slider; closing on the first one would make
+                  // picking a color three trips.
                   close-policy: close-on-click-outside;
 
                   Rectangle {
@@ -2106,7 +2452,7 @@ export component RulesWindow inherits Window {
 
                       Rectangle {
                         height: 34px;
-                        background: slot.swatch;
+                        background: entry.swatch;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -2118,16 +2464,16 @@ export component RulesWindow inherits Window {
                           text: "hue";
                           color: Theme.dim;
                           font-size: 11px;
-                          width: 34px;
+                          width: 40px;
                           vertical-alignment: center;
                         }
                         Slider {
                           minimum: 0;
                           maximum: 359;
-                          value: slot.hue;
+                          value: entry.hue;
                           horizontal-stretch: 1;
                           changed(v) => {
-                            root.slot-color-changed(index, v, slot.sat, slot.val);
+                            root.palette-color-changed(index, v, entry.sat, entry.val);
                           }
                         }
                       }
@@ -2138,16 +2484,16 @@ export component RulesWindow inherits Window {
                           text: "sat";
                           color: Theme.dim;
                           font-size: 11px;
-                          width: 34px;
+                          width: 40px;
                           vertical-alignment: center;
                         }
                         Slider {
                           minimum: 0;
                           maximum: 100;
-                          value: slot.sat;
+                          value: entry.sat;
                           horizontal-stretch: 1;
                           changed(v) => {
-                            root.slot-color-changed(index, slot.hue, v, slot.val);
+                            root.palette-color-changed(index, entry.hue, v, entry.val);
                           }
                         }
                       }
@@ -2156,601 +2502,156 @@ export component RulesWindow inherits Window {
                         spacing: 8px;
                         Text {
                           // "bright", not "value": V is the letter in HSV and the word means
-                          // nothing here, where every other slot's *value* is the number it
-                          // sends.
+                          // nothing here.
                           text: "bright";
                           color: Theme.dim;
                           font-size: 11px;
-                          width: 34px;
+                          width: 40px;
                           vertical-alignment: center;
                         }
                         Slider {
                           minimum: 0;
                           maximum: 100;
-                          value: slot.val;
+                          value: entry.val;
                           horizontal-stretch: 1;
                           changed(v) => {
-                            root.slot-color-changed(index, slot.hue, slot.sat, v);
+                            root.palette-color-changed(index, entry.hue, entry.sat, v);
                           }
                         }
                       }
 
                       Text {
+                        // Said out loud, because a picker that sends is not what a picker
+                        // usually does and an operator should know the rig is about to move.
+                        // See `RulesController::previewColor`.
                         text: "sent to this rule's lights as you drag";
                         color: Theme.dim;
                         font-size: 10px;
                         wrap: word-wrap;
                       }
-                    }
-                  }
-                }
-              }
 
-              if slot.is-fixed : LineEdit {
-                text: slot.fixed;
-                placeholder-text: slot.is-color ? "#ff2040" : "value";
-                font-size: 12px;
-                horizontal-stretch: 1;
-                accepted(text) => {
-                  self.clear-focus();
-                  root.slot-fixed-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.slot-fixed-edited(index, self.text);
-                  }
-                }
-              }
-
-              if slot.is-live : ComboBox {
-                model: root.live-sources;
-                current-index: slot.live-index;
-                horizontal-stretch: 1;
-                selected => {
-                  root.slot-live-picked(index, self.current-index);
-                }
-              }
-
-              // A ramp: its shape, the range it sweeps, how many bars it takes, and whether
-              // it lands on whole numbers. Four controls, because a ramp is the one
-              // generator whose whole behaviour is in its configuration.
-              if slot.is-ramp : ComboBox {
-                model: root.ramp-shapes;
-                current-index: slot.shape-index;
-                width: 108px;
-                selected => {
-                  root.slot-shape-picked(index, self.current-index);
-                }
-              }
-
-              if slot.is-ramp : LineEdit {
-                text: slot.low + " - " + slot.high;
-                placeholder-text: "0 - 1";
-                font-size: 12px;
-                horizontal-stretch: 1;
-                accepted(text) => {
-                  self.clear-focus();
-                  root.slot-range-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.slot-range-edited(index, self.text);
-                  }
-                }
-              }
-
-              if slot.is-ramp : Text {
-                text: "over";
-                color: Theme.dim;
-                font-size: 11px;
-                vertical-alignment: center;
-              }
-
-              if slot.is-ramp : SpinBox {
-                value: slot.ramp-bars;
-                minimum: 1;
-                maximum: 64;
-                width: 76px;
-                edited(v) => {
-                  root.slot-ramp-bars-changed(index, v);
-                }
-              }
-
-              if slot.is-ramp : Text {
-                text: "bars";
-                color: Theme.dim;
-                font-size: 11px;
-                vertical-alignment: center;
-              }
-
-              if slot.is-ramp : CheckBox {
-                // A float sweeps and an int steps — see `Generator::nextRamp`, where the
-                // difference is spelled out. Which one a host wants is not guessable.
-                //
-                // It said "whole", which is half a sentence: whole *what*? Asked from a rig
-                // on 2026-09-16 — *"wtf does this 'whole' option mean next to the color
-                // code?"* — where it was sitting beside a last-fired readout and read as a
-                // property of that. The label now names the thing it does.
-                text: "whole numbers";
-                checked: !slot.ramp-float;
-                toggled => {
-                  root.slot-ramp-float-changed(index, !self.checked);
-                }
-              }
-
-              // Something stretchy for the kinds that offer no field of their own, so the
-              // row does not collapse around the dropdown.
-              if !slot.takes-pool && !slot.is-fixed && !slot.is-live && !slot.is-ramp
-                  : Rectangle {
-                horizontal-stretch: 1;
-              }
-
-              if slot.takes-pool : Text {
-                // Short because the row is tight and the SpinBox beside it says the rest:
-                // "no repeat 2" reads as what it is. `Generator::Config::noRepeatWithin`.
-                text: "no repeat";
-                color: Theme.dim;
-                font-size: 11px;
-                vertical-alignment: center;
-              }
-
-              if slot.takes-pool : SpinBox {
-                value: slot.no-repeat;
-                minimum: 0;
-                maximum: 64;
-                width: 76px;
-                edited(v) => {
-                  root.slot-no-repeat-changed(index, v);
-                }
-              }
-
-              Text {
-                // What this slot last produced. §5.9 asks for a last-fired line on the
-                // rule; a sequence is easier to believe when each part shows its own.
-                //
-                // **With an arrow**, because a bare value at the end of a row of settings
-                // reads as another setting. A rig asked what the `#ffffff` at the end of the
-                // color chip was and whether the checkbox beside it belonged to it; the
-                // arrow says this one is an output and the checkbox is not its label.
-                text: slot.last == "" ? "" : "→ " + slot.last;
-                color: Theme.locked;
-                font-size: 12px;
-                font-family: "Consolas";
-                // A hex color is seven characters and a MIDI value is three.
-                width: slot.is-color ? 92px : 52px;
-                horizontal-stretch: 0;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-              }
-            }
-          }
-
-          // --- the palette -----------------------------------------------------
-          //
-          // **The colors a shuffle shuffles, as colors.** The chip above says how they are
-          // drawn — shuffle, cycle, random — and this says what they are, which is the half a
-          // text box could never show: `#20ff80, #ff2040, #ffe000` is a list nobody can read
-          // as three colors, and a *range* like "1 - 8" was worse than unreadable, because a
-          // color generator drawing the integer 3 falls back to white on every fire. That is
-          // exactly what a rig met on 2026-09-16 — *"there's no way to make it do random
-          // colors on beat ... I define a range 1-9 which maps to what!? it just stays the
-          // same #ffff color code"*.
-          //
-          // Each swatch opens the same hue/saturation/brightness picker the fixed color has,
-          // with a hex box for pasting one in and a REMOVE for taking it out.
-          if root.palette-shown : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 8px;
-
-            Text {
-              text: "palette";
-              color: Theme.accent;
-              font-size: 13px;
-              font-family: "Consolas";
-              width: 64px;
-              vertical-alignment: center;
-            }
-
-            for entry[index] in root.palette : Rectangle {
-              width: 40px;
-              height: 30px;
-              horizontal-stretch: 0;
-              background: entry.swatch;
-              border-radius: 4px;
-              border-width: 1px;
-              border-color: entry-touch.has-hover ? Theme.accent : Theme.controlEdge;
-
-              entry-touch := TouchArea {
-                clicked => {
-                  entry-picker.show();
-                }
-              }
-
-              // From out here for the reason the other picker gives: a `changed is-open`
-              // inside the popup is built with the popup and never sees a change. This is the
-              // picker that crashed — its swatch is a repeated item, and dragging its hue
-              // slider is what rebuilt the repeater it belongs to.
-              property <bool> picking: entry-picker.is-open;
-              changed picking => {
-                root.picker-open-changed(self.picking);
-              }
-
-              entry-picker := PopupWindow {
-                x: 0;
-                y: parent.height + 2px;
-                width: 280px;
-                // A click inside is a drag on a slider; closing on the first one would make
-                // picking a color three trips.
-                close-policy: close-on-click-outside;
-
-                Rectangle {
-                  background: Theme.panel;
-                  border-radius: 5px;
-                  border-width: 1px;
-                  border-color: Theme.controlEdge;
-
-                  VerticalLayout {
-                    padding: 10px;
-                    spacing: 6px;
-
-                    Rectangle {
-                      height: 34px;
-                      background: entry.swatch;
-                      border-radius: 4px;
-                      border-width: 1px;
-                      border-color: Theme.line;
-                    }
-
-                    HorizontalLayout {
-                      spacing: 8px;
-                      Text {
-                        text: "hue";
-                        color: Theme.dim;
-                        font-size: 11px;
-                        width: 40px;
-                        vertical-alignment: center;
-                      }
-                      Slider {
-                        minimum: 0;
-                        maximum: 359;
-                        value: entry.hue;
-                        horizontal-stretch: 1;
-                        changed(v) => {
-                          root.palette-color-changed(index, v, entry.sat, entry.val);
+                      HorizontalLayout {
+                        spacing: 8px;
+                        Field {
+                          // How a color gets in from anywhere else — a brand guide, a
+                          // screenshot, the desk it has to match.
+                          text: entry.hex;
+                          placeholder-text: "#ff2040";
+                          font-size: 12px;
+                          horizontal-stretch: 1;
+                          accepted(t) => {
+                            self.leave();
+                            root.palette-hex-edited(index, t);
+                          }
+                          changed has-focus => {
+                            if (!self.has-focus) {
+                              root.palette-hex-edited(index, self.text);
+                            }
+                          }
                         }
-                      }
-                    }
-
-                    HorizontalLayout {
-                      spacing: 8px;
-                      Text {
-                        text: "sat";
-                        color: Theme.dim;
-                        font-size: 11px;
-                        width: 40px;
-                        vertical-alignment: center;
-                      }
-                      Slider {
-                        minimum: 0;
-                        maximum: 100;
-                        value: entry.sat;
-                        horizontal-stretch: 1;
-                        changed(v) => {
-                          root.palette-color-changed(index, entry.hue, v, entry.val);
-                        }
-                      }
-                    }
-
-                    HorizontalLayout {
-                      spacing: 8px;
-                      Text {
-                        // "bright", not "value": V is the letter in HSV and the word means
-                        // nothing here.
-                        text: "bright";
-                        color: Theme.dim;
-                        font-size: 11px;
-                        width: 40px;
-                        vertical-alignment: center;
-                      }
-                      Slider {
-                        minimum: 0;
-                        maximum: 100;
-                        value: entry.val;
-                        horizontal-stretch: 1;
-                        changed(v) => {
-                          root.palette-color-changed(index, entry.hue, entry.sat, v);
-                        }
-                      }
-                    }
-
-                    Text {
-                      // Said out loud, because a picker that sends is not what a picker
-                      // usually does and an operator should know the rig is about to move.
-                      // See `RulesController::previewColor`.
-                      text: "sent to this rule's lights as you drag";
-                      color: Theme.dim;
-                      font-size: 10px;
-                      wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                      spacing: 8px;
-                      LineEdit {
-                        // How a color gets in from anywhere else — a brand guide, a
-                        // screenshot, the desk it has to match.
-                        text: entry.hex;
-                        placeholder-text: "#ff2040";
-                        font-size: 12px;
-                        horizontal-stretch: 1;
-                        accepted(t) => {
-                          self.clear-focus();
-                          root.palette-hex-edited(index, t);
-                        }
-                        changed has-focus => {
-                          if (!self.has-focus) {
-                            root.palette-hex-edited(index, self.text);
+                        Press {
+                          text: "REMOVE";
+                          font: 11px;
+                          pad: 8px;
+                          min-height: 30px;
+                          clicked => {
+                            // **Closed first, then removed.** This button is inside the popup
+                            // and the popup belongs to the swatch being taken away, so removing
+                            // the row first would leave a popup whose owner had been destroyed
+                            // — the crash of 2026-09-16 reached from the other side. It is also
+                            // the only way the picker can be destroyed without a click outside
+                            // it, which is what otherwise leaves `picker-open-changed` saying
+                            // true for ever. And the keyboard goes back to the window before
+                            // either, since the focus this click took dies with the swatch.
+                            keys.focus();
+                            entry-picker.close();
+                            root.palette-removed(index);
                           }
                         }
                       }
-                      Press {
-                        text: "REMOVE";
-                        font: 11px;
-                        pad: 8px;
-                        min-height: 30px;
-                        clicked => {
-                          // **Closed first, then removed.** This button is inside the popup
-                          // and the popup belongs to the swatch being taken away, so removing
-                          // the row first would leave a popup whose owner had been destroyed
-                          // — the crash of 2026-09-16 reached from the other side. It is also
-                          // the only way the picker can be destroyed without a click outside
-                          // it, which is what otherwise leaves `picker-open-changed` saying
-                          // true for ever.
-                          entry-picker.close();
-                          root.palette-removed(index);
-                        }
-                      }
                     }
                   }
                 }
               }
-            }
 
-            Press {
-              text: "+";
-              font: 14px;
-              pad: 8px;
-              min-width: 34px;
-              min-height: 30px;
-              enabled: root.selected >= 0;
-              clicked => {
-                root.palette-added();
-              }
-            }
-
-            Text {
-              // What the chip above and these swatches mean *together*, which neither says on
-              // its own: the kind is how they are drawn and this is the set they come from.
-              text: root.palette.length == 0
-                  ? "no colors yet — + adds one"
-                  : root.palette.length + " colors, drawn the way the chip above says";
-              color: Theme.dim;
-              font-size: 11px;
-              vertical-alignment: center;
-              horizontal-stretch: 1;
-              overflow: elide;
-            }
-          }
-
-          // OSC only: it is `Rule::Config::sendValue`, which says whether the *address* takes
-          // an argument at all. A MIDI kind's value is decided by the kind, and a lighting
-          // effect's by the effect — so on either of those this was a tick box that changed
-          // nothing, which a render caught sitting under a color picker.
-          if root.sends-osc : HorizontalLayout {
-            vertical-stretch: 0;
-            height: 36px;
-            spacing: 10px;
-
-            CheckBox {
-              text: "send a value";
-              checked <=> root.send-value;
-              enabled: root.selected >= 0;
-              toggled => {
-                root.send-value-changed(self.checked);
-              }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          Rectangle { height: 1px; background: Theme.line; }
-
-          // --- THEN SEND -------------------------------------------------------
-          //
-          // **A list, where there was a tick box.** §7.4: Resolume's connect takes 1 for
-          // press and 0 for release, and a rule that sends only the 1 leaves the clip held —
-          // so the editor had "then send [0] after [50] [ms]". That says the one thing, and a
-          // rig needed the other: *"I need a note on trigger to trigger Liberation laser
-          // clips. when the beat is done, I need the option to send a note off. in the same
-          // trigger"*, and then, exactly right, *"we should just replace the 'then send'
-          // machinery with a more fleshed out second send box, so each trigger can send
-          // multiple things, spaced by time or beats/bars"*. This is that.
-          //
-          // Every delay is counted from the fire, never from the row above — see
-          // `trigger::FollowUp`, which says why.
-          HorizontalLayout {
-            spacing: 10px;
-
-            Text {
-              text: "THEN SEND";
-              color: Theme.dim;
-              font-size: 12px;
-              font-weight: 700;
-              letter-spacing: 1px;
-              vertical-alignment: center;
-            }
-
-            Text {
-              text: root.follow-ups.length == 0
-                ? "nothing — this trigger sends once and is done"
-                : "";
-              color: Theme.dim;
-              font-size: 11px;
-              horizontal-stretch: 1;
-              vertical-alignment: center;
-              overflow: elide;
-            }
-
-            Press {
-              text: "+ ADD";
-              pad: 8px;
-              font: 12px;
-              min-width: 62px;
-              min-height: 26px;
-              enabled: root.selected >= 0 && root.can-add-follow-up;
-              clicked => {
-                root.follow-up-added();
-              }
-            }
-          }
-
-          for owed[index] in root.follow-ups : Rectangle {
-            background: Theme.panel;
-            border-radius: 5px;
-            vertical-stretch: 0;
-            height: 48px;
-
-            HorizontalLayout {
-              padding: 8px;
-              spacing: 6px;
-
-              ComboBox {
-                // "release" first, then whatever fits this rule. An OSC rule gets the one
-                // entry, because a MIDI follow-up to an OSC rule has no channel to inherit —
-                // `trigger::followUpFits`. Offering one that would be dropped is worse than
-                // not offering it.
-                model: root.follow-kinds;
-                current-index: owed.kind-index;
-                // Wide enough for "release (same note)". The first entry names what it
-                // inherits rather than just saying "release", because "release" alone did not
-                // read as *the dynamic one* — a rig shuffling its note picked the explicit
-                // note off instead, got a box demanding one fixed number, and reported the
-                // feature missing. It was not missing; it was the entry above.
-                width: 176px;
-                selected => {
-                  root.follow-kind-picked(index, self.current-index);
-                }
-              }
-
-              // `if`, not `visible`, for the reason the generator rows give at length: a
-              // hidden element still takes its width in a layout, and these are alternatives.
-              if owed.takes-number : Text {
-                text: owed.number-label;
-                color: Theme.accent;
-                font-size: 12px;
-                font-family: "Consolas";
-                vertical-alignment: center;
-              }
-
-              if owed.takes-number : SpinBox {
-                value: owed.number;
-                minimum: 0;
-                maximum: 127;
-                width: 84px;
-                edited(v) => {
-                  root.follow-number-changed(index, v);
-                }
-              }
-
-              // Labelled like the number beside it and like the generator chips above, for the
-              // same reason: a bare box holding 0 says nothing about whether that 0 is a
-              // velocity, a bend or an OSC argument, and on a release it is the one field the
-              // row does not inherit.
-              if owed.takes-value : Text {
-                text: owed.value-label;
-                color: Theme.accent;
-                font-size: 12px;
-                font-family: "Consolas";
-                vertical-alignment: center;
-              }
-
-              if owed.takes-value : LineEdit {
-                text: owed.value;
-                placeholder-text: "0";
-                font-size: 12px;
-                width: 72px;
-                accepted(text) => {
-                  // Focus first, callback second. The callback rebuilds these rows — that is
-                  // how a box comes back showing a value the controller normalised — and a
-                  // handler that touched `self` afterwards would be touching an element on
-                  // its way out.
-                  self.clear-focus();
-                  root.follow-value-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.follow-value-edited(index, self.text);
-                  }
+              Press {
+                text: "+";
+                font: 14px;
+                pad: 8px;
+                min-width: 34px;
+                min-height: 30px;
+                enabled: root.selected >= 0;
+                clicked => {
+                  root.palette-added();
                 }
               }
 
               Text {
-                text: "after";
+                // What the chip above and these swatches mean *together*, which neither says on
+                // its own: the kind is how they are drawn and this is the set they come from.
+                text: root.palette.length == 0
+                    ? "no colors yet — + adds one"
+                    : root.palette.length + " colors, drawn the way the chip above says";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+            }
+
+            // OSC only: it is `Rule::Config::sendValue`, which says whether the *address* takes
+            // an argument at all. A MIDI kind's value is decided by the kind, and a lighting
+            // effect's by the effect — so on either of those this was a tick box that changed
+            // nothing, which a render caught sitting under a color picker.
+            if root.sends-osc : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 10px;
+
+              CheckBox {
+                text: "send a value";
+                checked <=> root.send-value;
+                enabled: root.selected >= 0;
+                toggled => {
+                  root.send-value-changed(self.checked);
+                }
+              }
+
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            Rectangle { height: 1px; background: Theme.line; }
+
+            // --- THEN SEND -------------------------------------------------------
+            //
+            // **A list, where there was a tick box.** §7.4: Resolume's connect takes 1 for
+            // press and 0 for release, and a rule that sends only the 1 leaves the clip held —
+            // so the editor had "then send [0] after [50] [ms]". That says the one thing, and a
+            // rig needed the other: *"I need a note on trigger to trigger Liberation laser
+            // clips. when the beat is done, I need the option to send a note off. in the same
+            // trigger"*, and then, exactly right, *"we should just replace the 'then send'
+            // machinery with a more fleshed out second send box, so each trigger can send
+            // multiple things, spaced by time or beats/bars"*. This is that.
+            //
+            // Every delay is counted from the fire, never from the row above — see
+            // `trigger::FollowUp`, which says why.
+            HorizontalLayout {
+              spacing: 10px;
+
+              Text {
+                text: "THEN SEND";
                 color: Theme.dim;
                 font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 1px;
                 vertical-alignment: center;
               }
 
-              // **Milliseconds or beats, and the difference is musical.** A device's own lag
-              // is a fixed number of milliseconds — a media server takes as long to key a clip
-              // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go
-              // two beats later" is the same gesture at either tempo, and spelling it in
-              // milliseconds means retyping it whenever the record changes.
-              LineEdit {
-                text: owed.delay;
-                font-size: 12px;
-                width: 68px;
-                accepted(text) => {
-                  self.clear-focus();
-                  root.follow-delay-edited(index, text);
-                }
-                // And when the operator clicks away instead of pressing
-                // Enter, which is finishing rather than cancelling. Without
-                // this, what they typed sat in the box until the next
-                // publish wrote over it, and the edit was silently lost.
-                changed has-focus => {
-                  if (!self.has-focus) {
-                    root.follow-delay-edited(index, self.text);
-                  }
-                }
-              }
-
-              ComboBox {
-                model: root.follow-up-units;
-                current-index: owed.unit;
-                width: 88px;
-                selected => {
-                  root.follow-unit-picked(index, self.current-index);
-                }
-              }
-
               Text {
-                // What a release actually resolves to, which is the one thing the row cannot
-                // show by listing its own fields — and the answer to "you made note on and
-                // note off exclusive", which is what the old tick box looked like.
-                text: owed.summary;
+                text: root.follow-ups.length == 0
+                  ? "nothing — this trigger sends once and is done"
+                  : "";
                 color: Theme.dim;
                 font-size: 11px;
                 horizontal-stretch: 1;
@@ -2758,143 +2659,293 @@ export component RulesWindow inherits Window {
                 overflow: elide;
               }
 
-              // U+00D7, which is Latin-1 and in every font — see the rule list's own mark.
-              kill-owed := Rectangle {
-                width: 28px;
-                border-radius: 4px;
-                background: owed-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
+              Press {
+                text: "+ ADD";
+                pad: 8px;
+                font: 12px;
+                min-width: 62px;
+                min-height: 26px;
+                enabled: root.selected >= 0 && root.can-add-follow-up;
+                clicked => {
+                  root.follow-up-added();
+                }
+              }
+            }
 
-                Text {
-                  x: 0;
-                  y: 0;
-                  width: parent.width;
-                  height: parent.height;
-                  text: "×";
-                  color: owed-touch.has-hover ? Theme.label : Theme.dim;
-                  font-size: 20px;
-                  horizontal-alignment: center;
+            for owed[index] in root.follow-ups : Rectangle {
+              background: Theme.panel;
+              border-radius: 5px;
+              vertical-stretch: 0;
+              height: 48px;
+
+              HorizontalLayout {
+                padding: 8px;
+                spacing: 6px;
+
+                ComboBox {
+                  // "release" first, then whatever fits this rule. An OSC rule gets the one
+                  // entry, because a MIDI follow-up to an OSC rule has no channel to inherit —
+                  // `trigger::followUpFits`. Offering one that would be dropped is worse than
+                  // not offering it.
+                  model: root.follow-kinds;
+                  current-index: owed.kind-index;
+                  // Wide enough for "release (same note)". The first entry names what it
+                  // inherits rather than just saying "release", because "release" alone did not
+                  // read as *the dynamic one* — a rig shuffling its note picked the explicit
+                  // note off instead, got a box demanding one fixed number, and reported the
+                  // feature missing. It was not missing; it was the entry above.
+                  width: 176px;
+                  selected => {
+                    root.follow-kind-picked(index, self.current-index);
+                  }
+                }
+
+                // `if`, not `visible`, for the reason the generator rows give at length: a
+                // hidden element still takes its width in a layout, and these are alternatives.
+                if owed.takes-number : Text {
+                  text: owed.number-label;
+                  color: Theme.accent;
+                  font-size: 12px;
+                  font-family: "Consolas";
                   vertical-alignment: center;
                 }
 
-                owed-touch := TouchArea {
-                  clicked => {
-                    root.follow-up-removed(index);
+                if owed.takes-number : SpinBox {
+                  value: owed.number;
+                  minimum: 0;
+                  maximum: 127;
+                  width: 84px;
+                  edited(v) => {
+                    root.follow-number-changed(index, v);
+                  }
+                }
+
+                // Labelled like the number beside it and like the generator chips above, for the
+                // same reason: a bare box holding 0 says nothing about whether that 0 is a
+                // velocity, a bend or an OSC argument, and on a release it is the one field the
+                // row does not inherit.
+                if owed.takes-value : Text {
+                  text: owed.value-label;
+                  color: Theme.accent;
+                  font-size: 12px;
+                  font-family: "Consolas";
+                  vertical-alignment: center;
+                }
+
+                if owed.takes-value : Field {
+                  text: owed.value;
+                  placeholder-text: "0";
+                  font-size: 12px;
+                  width: 72px;
+                  accepted(text) => {
+                    // Focus first, callback second. The callback rebuilds these rows — that is
+                    // how a box comes back showing a value the controller normalised — and a
+                    // handler that touched `self` afterwards would be touching an element on
+                    // its way out.
+                    self.leave();
+                    root.follow-value-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.follow-value-edited(index, self.text);
+                    }
+                  }
+                }
+
+                Text {
+                  text: "after";
+                  color: Theme.dim;
+                  font-size: 12px;
+                  vertical-alignment: center;
+                }
+
+                // **Milliseconds or beats, and the difference is musical.** A device's own lag
+                // is a fixed number of milliseconds — a media server takes as long to key a clip
+                // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go
+                // two beats later" is the same gesture at either tempo, and spelling it in
+                // milliseconds means retyping it whenever the record changes.
+                Field {
+                  text: owed.delay;
+                  font-size: 12px;
+                  width: 68px;
+                  accepted(text) => {
+                    self.leave();
+                    root.follow-delay-edited(index, text);
+                  }
+                  // And when the operator clicks away instead of pressing
+                  // Enter, which is finishing rather than cancelling. Without
+                  // this, what they typed sat in the box until the next
+                  // publish wrote over it, and the edit was silently lost.
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.follow-delay-edited(index, self.text);
+                    }
+                  }
+                }
+
+                ComboBox {
+                  model: root.follow-up-units;
+                  current-index: owed.unit;
+                  width: 88px;
+                  selected => {
+                    root.follow-unit-picked(index, self.current-index);
+                  }
+                }
+
+                Text {
+                  // What a release actually resolves to, which is the one thing the row cannot
+                  // show by listing its own fields — and the answer to "you made note on and
+                  // note off exclusive", which is what the old tick box looked like.
+                  text: owed.summary;
+                  color: Theme.dim;
+                  font-size: 11px;
+                  horizontal-stretch: 1;
+                  vertical-alignment: center;
+                  overflow: elide;
+                }
+
+                // U+00D7, which is Latin-1 and in every font — see the rule list's own mark.
+                kill-owed := Rectangle {
+                  width: 28px;
+                  border-radius: 4px;
+                  background: owed-touch.has-hover ? Theme.holding.darker(0.5) : transparent;
+
+                  Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: owed-touch.has-hover ? Theme.label : Theme.dim;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                  }
+
+                  owed-touch := TouchArea {
+                    clicked => {
+                      root.follow-up-removed(index);
+                    }
                   }
                 }
               }
             }
           }
         }
-      }
 
-      Rectangle {
-        height: 1px;
-        background: Theme.line;
-        vertical-stretch: 0;
-      }
-
-      // §5.9: "the last-fired line ... That single line turns a config screen into an
-      // instrument." Above the log rather than inside it, because it is about *this* rule
-      // and the log is about all of them.
-      Rectangle {
-        background: Theme.panel;
-        vertical-stretch: 0;
-        height: 38px;
-
-        HorizontalLayout {
-          padding-left: 18px;
-          padding-right: 18px;
-          spacing: 10px;
-
-          Text {
-            // The status *instead of* the last-fired line, not beside it: this bar is one
-            // line high and two stretchy columns in it would each get half a sentence.
-            // A status is raised by an edit — "a range is two numbers" — and cleared by the
-            // next edit that works (`RulesController::commit`), so it is on screen for
-            // exactly as long as it is the last thing that happened.
-            //
-            // Until this, `status` was a property nothing drew: every one of those messages
-            // was written and never shown, which is the same as not writing them.
-            text: root.status != "" ? root.status
-              : root.last-fired == "" ? "not fired yet"
-              : "→ " + root.last-fired;
-            color: root.status != "" ? (root.status-is-error ? Theme.holding : Theme.text)
-              : root.last-fired == "" ? Theme.dim
-              : Theme.locked;
-            font-size: 12px;
-            font-family: root.status != "" ? "" : "Consolas";
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-            overflow: elide;
-          }
-
-          Text {
-            text: root.status != "" ? "" : root.last-fired-ago;
-            color: Theme.dim;
-            font-size: 12px;
-            font-family: "Consolas";
-            vertical-alignment: center;
-          }
+        Rectangle {
+          height: 1px;
+          background: Theme.line;
+          vertical-stretch: 0;
         }
-      }
-    }
 
-    Splitter {
-      // The pane this one moves is on its *right*, so a drag left widens it.
-      dragged(by) => {
-        root.log-width = clamp(root.log-width - by, root.pane-min, root.pane-max);
-      }
-    }
+        // §5.9: "the last-fired line ... That single line turns a config screen into an
+        // instrument." Above the log rather than inside it, because it is about *this* rule
+        // and the log is about all of them.
+        Rectangle {
+          background: Theme.panel;
+          vertical-stretch: 0;
+          height: 38px;
 
-    // --- the event log --------------------------------------------------------------
-    // Phase 6's list has a tab for this. A pane rather than a tab: an operator watching a
-    // rule they just built wants the log and the editor on screen together, and the whole
-    // point of a second window was that there is room.
-    Rectangle {
-      background: Theme.panel;
-      width: root.log-width;
-      horizontal-stretch: 0;
-      clip: true;
+          HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 10px;
 
-      VerticalLayout {
-        padding: 12px;
-        spacing: 8px;
+            Text {
+              // The status *instead of* the last-fired line, not beside it: this bar is one
+              // line high and two stretchy columns in it would each get half a sentence.
+              // A status is raised by an edit — "a range is two numbers" — and cleared by the
+              // next edit that works (`RulesController::commit`), so it is on screen for
+              // exactly as long as it is the last thing that happened.
+              //
+              // Until this, `status` was a property nothing drew: every one of those messages
+              // was written and never shown, which is the same as not writing them.
+              text: root.status != "" ? root.status
+                : root.last-fired == "" ? "not fired yet"
+                : "→ " + root.last-fired;
+              color: root.status != "" ? (root.status-is-error ? Theme.holding : Theme.text)
+                : root.last-fired == "" ? Theme.dim
+                : Theme.locked;
+              font-size: 12px;
+              font-family: root.status != "" ? "" : "Consolas";
+              horizontal-stretch: 1;
+              vertical-alignment: center;
+              overflow: elide;
+            }
 
-        HorizontalLayout {
-          spacing: 8px;
-          Text {
-            text: "EVENT LOG";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
-          }
-          Press {
-            text: "CLEAR";
-            // Tight, because this pane is narrow by default now and the heading beside it
-            // was eliding to "EVENT L..." — a truncated column title says less than a
-            // slightly smaller button next to a whole one.
-            pad: 6px;
-            font: 12px;
-            min-width: 44px;
-            clicked => {
-              root.log-cleared();
+            Text {
+              text: root.status != "" ? "" : root.last-fired-ago;
+              color: Theme.dim;
+              font-size: 12px;
+              font-family: "Consolas";
+              vertical-alignment: center;
             }
           }
         }
+      }
 
-        ListView {
-          vertical-stretch: 1;
-          for line in root.log: Text {
-            text: line;
-            color: Theme.dim;
-            font-size: 11px;
-            font-family: "Consolas";
-            height: 18px;
-            overflow: elide;
+      Splitter {
+        // The pane this one moves is on its *right*, so a drag left widens it.
+        dragged(by) => {
+          root.log-width = clamp(root.log-width - by, root.pane-min, root.pane-max);
+        }
+      }
+
+      // --- the event log --------------------------------------------------------------
+      // Phase 6's list has a tab for this. A pane rather than a tab: an operator watching a
+      // rule they just built wants the log and the editor on screen together, and the whole
+      // point of a second window was that there is room.
+      Rectangle {
+        background: Theme.panel;
+        width: root.log-width;
+        horizontal-stretch: 0;
+        clip: true;
+
+        VerticalLayout {
+          padding: 12px;
+          spacing: 8px;
+
+          HorizontalLayout {
+            spacing: 8px;
+            Text {
+              text: "EVENT LOG";
+              color: Theme.dim;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 1px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              overflow: elide;
+            }
+            Press {
+              text: "CLEAR";
+              // Tight, because this pane is narrow by default now and the heading beside it
+              // was eliding to "EVENT L..." — a truncated column title says less than a
+              // slightly smaller button next to a whole one.
+              pad: 6px;
+              font: 12px;
+              min-width: 44px;
+              clicked => {
+                root.log-cleared();
+              }
+            }
+          }
+
+          ListView {
+            vertical-stretch: 1;
+            for line in root.log: Text {
+              text: line;
+              color: Theme.dim;
+              font-size: 11px;
+              font-family: "Consolas";
+              height: 18px;
+              overflow: elide;
+            }
           }
         }
       }

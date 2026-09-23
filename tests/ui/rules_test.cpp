@@ -826,8 +826,89 @@ TEST_CASE("PANIC is reachable from the editor and latches", "[ui][trigger]") {
     CHECK(rig.runner.panicked());
     CHECK(editor.window().get_panicked());
 
+    // A second press is not a release — it used to be, so a double-click undid the halt
+    // (the audit's H18). RELEASE is its own button.
     editor.panic();
+    CHECK(rig.runner.panicked());
+    editor.releasePanic();
     CHECK_FALSE(rig.runner.panicked());
+    CHECK_FALSE(editor.window().get_panicked());
+}
+
+TEST_CASE("the editor's PANIC holds through a double click and answers Escape", "[ui][trigger]") {
+    // The same fixes as the main window's (the audit's H18), driven with real clicks and keys:
+    // PANIC only engages, RELEASE appears *above* it so the second click of a double-click
+    // still lands on PANIC, Escape is PANIC from anywhere in this window — and Escape in a text
+    // box only leaves the box.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    const std::string before = editor.rules().front().name;
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+    window.window().dispatch_window_active_changed_event(true);
+    const auto click = [&window](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+    };
+    const auto press = [&window](const std::string& key) {
+        window.window().dispatch_key_press_event(slint::SharedString(key));
+        window.window().dispatch_key_release_event(slint::SharedString(key));
+    };
+    const std::string escape(1, '\x1b');
+
+    // PANIC: the bottom of the rule list, found by climbing from the window's bottom edge.
+    constexpr float kX = 60.0f;
+    float panicY = -1.0f;
+    for (float y = takt4::ui::kRulesWindowHeight - 14.0f;
+         y > takt4::ui::kRulesWindowHeight - 140.0f && panicY < 0.0f; y -= 4.0f) {
+        click(kX, y);
+        if (rig.runner.panicked()) {
+            panicY = y;
+        }
+    }
+    REQUIRE(panicY > 0.0f);
+    click(kX, panicY); // the second click of the double-click
+    CHECK(rig.runner.panicked());
+
+    bool released = false;
+    for (float y = panicY - 20.0f; y > panicY - 120.0f && !released; y -= 4.0f) {
+        click(kX, y);
+        released = !rig.runner.panicked();
+    }
+    CHECK(released);
+
+    press(escape);
+    CHECK(rig.runner.panicked());
+    editor.releasePanic();
+
+    // The rule's name box in the title bar, found by typing into candidates until the name
+    // changes. Only the hit is asserted on: it is the round in which Escape was inside a box.
+    bool found = false;
+    bool panickedInBox = true;
+    for (float y = 12.0f; y < 58.0f && !found; y += 4.0f) {
+        for (float x = 320.0f; x < 760.0f && !found; x += 20.0f) {
+            click(x, y);
+            press("q");
+            press(escape);
+            if (editor.rules().front().name != before) {
+                found = true;
+                panickedInBox = rig.runner.panicked();
+            }
+            if (rig.runner.panicked()) {
+                editor.releasePanic();
+            }
+        }
+    }
+    INFO("no click landed in the rule's name box");
+    REQUIRE(found);
+    CHECK_FALSE(panickedInBox);
+    CHECK(editor.rules().front().name.find('q') != std::string::npos);
 }
 
 TEST_CASE("what fired reaches the editor's log and its last-fired line", "[ui][trigger]") {

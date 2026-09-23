@@ -140,7 +140,10 @@ public:
     /// reading the output thread's rules, which is unsafe while it runs.
     void nudgeRate(double factor);
     void test();
+    /// §5.8's PANIC: engages, and only engages — a second press while panicked does nothing,
+    /// so a double-click cannot let go of it (the audit's H18). `releasePanic` is RELEASE.
     void panic();
+    void releasePanic();
 
     void pickTrigger(int index);
     void setEvery(int every);

@@ -346,6 +346,13 @@ if(TAKT4_BUILD_UI)
     message(FATAL_ERROR "Slint did not produce slint_cpp-static; a static build was expected")
   endif()
 
+  # Line tables for Slint's own Rust, so a crash inside it names a file and a line. Cargo's
+  # release profile has no debug info at all, and a minidump of a panic in Slint read as an
+  # offset into `takt4.exe` and nothing more — which is where takt4's UI crashes so far have
+  # been (the audit's H16). `line-tables-only` adds the line tables and no variable
+  # information, so the symbols grow by that and the code does not change at all.
+  corrosion_set_env_vars(slint_cpp CARGO_PROFILE_RELEASE_DEBUG=line-tables-only)
+
   # slint_cpp is a Rust staticlib. Corrosion attaches the system libraries the Rust
   # standard library needs, but not the ones Slint's crates request with #[link] or from
   # their build scripts; those only surface as unresolved symbols when takt4 is linked.

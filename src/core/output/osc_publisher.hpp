@@ -38,10 +38,20 @@ namespace takt4::output {
 /// Host presets (§5.6: Resolume, TouchDesigner, MadMapper, QLC+) fill in address
 /// templates and belong to Phase 6's trigger engine; this is the layer underneath them,
 /// and is never a hardcoded code path for any one host.
+/// Whether `prefix` is one `OscPublisher` will take: it starts with '/', does not end with
+/// one, and every address built from it is a legal OSC address.
+///
+/// Its own function so that a settings file can be checked **before** a publisher is built
+/// from it. The constructor throws on a bad prefix, and it runs inside `Transports`'s — so a
+/// hand-edited `"oscPrefix": "vj"` used to stop takt4 opening at all, with no window and no
+/// message, on every launch until somebody found the file.
+bool isValidOscPrefix(std::string_view prefix);
+
 class OscPublisher {
 public:
     /// The namespace prefix, so a second instance on the same network can be told apart.
-    /// "/takt4" by default; a trailing '/' is not wanted and not accepted.
+    /// "/takt4" by default; a trailing '/' is not wanted and not accepted — see
+    /// `isValidOscPrefix`, which is the test this throws on.
     explicit OscPublisher(std::string prefix = "/takt4");
 
     /// Adds a target, at the next routing bit. Throws std::runtime_error if the host
