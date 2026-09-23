@@ -15,8 +15,8 @@
 // its own copy and posts it whole — see its header, and `RulesController`'s, for why the
 // output thread's copy cannot be the one being edited.
 
-import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { FocusSink, Press, Splitter, Theme } from "theme.slint";
+import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { Field, FocusSink, Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the fixture list — everything it shows without the editor being open.
 export struct FixtureRow {
@@ -316,7 +316,7 @@ export component FixturesWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
 
-            LineEdit {
+            Field {
               text: root.name;
               placeholder-text: "name — what a rule aims at";
               font-size: 13px;
@@ -325,13 +325,13 @@ export component FixturesWindow inherits Window {
               // row read as one enormous box and two afterthoughts.
               max-width: 420px;
               edited(t) => { root.name-edited(t); }
-              accepted(t) => { self.clear-focus(); root.name-edited(t); }
+              accepted(t) => { self.leave(); root.name-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.name-edited(self.text); }
               }
             }
 
-            LineEdit {
+            Field {
               // A second name any number of fixtures share, so a rule can say "heads" and a
               // re-rig is an edit to the patch rather than to every rule.
               text: root.group;
@@ -339,7 +339,7 @@ export component FixturesWindow inherits Window {
               font-size: 13px;
               width: 180px;
               edited(t) => { root.group-edited(t); }
-              accepted(t) => { self.clear-focus(); root.group-edited(t); }
+              accepted(t) => { self.leave(); root.group-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.group-edited(self.text); }
               }
@@ -365,7 +365,7 @@ export component FixturesWindow inherits Window {
               width: 72px;
               vertical-alignment: center;
             }
-            LineEdit {
+            Field {
               // A flat number, which is how every desk and node front panel spells it. The
               // three-part "net:sub:uni" form is accepted too, for a rig that has left the
               // first Net — see `dmx::parsePortAddress`.
@@ -374,7 +374,7 @@ export component FixturesWindow inherits Window {
               font-size: 13px;
               width: 90px;
               edited(t) => { root.universe-edited(t); }
-              accepted(t) => { self.clear-focus(); root.universe-edited(t); }
+              accepted(t) => { self.leave(); root.universe-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.universe-edited(self.text); }
               }

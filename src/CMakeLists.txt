@@ -5,6 +5,11 @@ add_subdirectory(core)
 # Debug so a real-time violation found on the bench aborts rather than hides.
 add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/console.hpp cli/main.cpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
+if(WIN32)
+  # UTF-8 as the process code page, so a WAV named outside the machine's code page opens. See
+  # src/utf8.manifest; the linker merges it with the manifest it writes anyway.
+  target_sources(takt4-cli PRIVATE utf8.manifest)
+endif()
 # `beats` needs a weight set and `track` a state space, and the console is a bench tool
 # that is never packaged and never relocated, so it defaults to the ones in the source
 # tree. The application will resolve them next to itself instead, when Phase 7 gives it
@@ -34,6 +39,9 @@ if(TAKT4_BUILD_UI)
     # was launched from when there is one. See src/main.cpp.
     set_target_properties(takt4 PROPERTIES WIN32_EXECUTABLE ON)
     target_link_options(takt4 PRIVATE "/ENTRY:mainCRTStartup")
+    # UTF-8 as the process code page: device and port names read through the ANSI API arrive
+    # as UTF-8, which is what the window needs them in. See src/utf8.manifest.
+    target_sources(takt4 PRIVATE utf8.manifest)
   endif()
 
   # takt4-shot: renders the window to an image with no display involved (src/ui/shot.cpp).

@@ -1,6 +1,7 @@
 #include "ui/rules_controller.hpp"
 
 #include "core/features/intensity.hpp"
+#include "core/io/utf8.hpp"
 #include "core/trigger/generator.hpp"
 #include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
@@ -39,8 +40,11 @@ private:
     bool was_;
 };
 
+/// Every string this editor shows, made safe to show — see `io::validUtf8`. A target is named
+/// after its MIDI device unless somebody named it, and that name is the driver's, in whatever
+/// encoding the driver used; one byte Slint cannot decode is an abort.
 slint::SharedString shared(const std::string& text) {
-    return slint::SharedString(text);
+    return slint::SharedString(io::validUtf8(text));
 }
 
 std::string_view trim(std::string_view text) noexcept {
@@ -713,6 +717,7 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
     window_->on_rule_tested([this] { test(); });
     window_->on_panic_clicked([this] { panic(); });
+    window_->on_panic_released([this] { releasePanic(); });
 
     window_->on_trigger_picked([this](int index) { pickTrigger(index); });
     window_->on_every_changed([this](int every) { setEvery(every); });
@@ -1300,14 +1305,20 @@ void RulesController::test() {
 }
 
 void RulesController::panic() {
-    const bool wanted = !runner_.panicked();
-    runner_.panic(wanted);
+    // Engage, whatever the state: a press on PANIC is never a request to let go. It was a
+    // toggle, and the second click of a double-click undid the first.
+    runner_.panic(true);
     // **Shown from what was asked for, not read back.** `panic` *posts*: the output thread
     // applies it about a millisecond later, so reading the flag here returns the state the
     // press was leaving, and the button lit the wrong way for a frame. On a PANIC button that
     // is the worst possible place for a flicker. `tick` puts it back in step if the change
     // somehow did not take.
-    window_->set_panicked(wanted);
+    window_->set_panicked(true);
+}
+
+void RulesController::releasePanic() {
+    runner_.panic(false);
+    window_->set_panicked(false);
 }
 
 void RulesController::pickTrigger(int index) {

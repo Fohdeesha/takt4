@@ -2,6 +2,7 @@
 
 #include "core/dmx/artnet_packet.hpp"
 #include "core/dmx/effect.hpp"
+#include "core/io/utf8.hpp"
 #include "ui/window_state.hpp"
 
 #include <algorithm>
@@ -12,8 +13,9 @@
 namespace takt4::ui {
 namespace {
 
+/// Every string this editor shows, made safe to show — see `io::validUtf8`.
 slint::SharedString shared(const std::string& text) {
-    return slint::SharedString(text);
+    return slint::SharedString(io::validUtf8(text));
 }
 
 /// "0 · 1-3" — the universe and the channels the fixture occupies, spelled the way the

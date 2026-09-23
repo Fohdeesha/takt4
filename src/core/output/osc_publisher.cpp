@@ -30,6 +30,15 @@ constexpr double kConfidenceEpsilon = 0.005;
 
 } // namespace
 
+bool isValidOscPrefix(std::string_view prefix) {
+    if (prefix.empty() || prefix.front() != '/' || prefix.back() == '/') {
+        return false;
+    }
+    // The longest address built from it, which is the one most likely to be refused — and
+    // every other one differs only in its last word.
+    return OscMessage(std::string(prefix) + "/beat/bar").valid();
+}
+
 OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
     if (prefix_.empty() || prefix_.front() != '/' || prefix_.back() == '/') {
         throw std::invalid_argument("OscPublisher: the prefix must start with '/' and not end "

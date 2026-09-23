@@ -31,6 +31,8 @@ target_link_libraries(takt4_ui_slint PUBLIC Slint::Slint)
 add_library(takt4_ui STATIC
   app.cpp
   app.hpp
+  crash_report.cpp
+  crash_report.hpp
   file_dialog.cpp
   file_dialog.hpp
   fixtures_controller.cpp
