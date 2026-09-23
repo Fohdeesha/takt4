@@ -3,6 +3,7 @@
 #include "core/audio/rates.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace takt4::audio {
 
@@ -21,6 +22,17 @@ void InputPipeline::process(const float* interleaved, std::size_t frames) noexce
     while (frames > 0) {
         const std::size_t take = std::min(frames, mono_.size());
         picker_.pickMono(interleaved, take, mono_.data());
+        std::uint64_t repaired = 0;
+        for (std::size_t i = 0; i < take; ++i) {
+            if (!std::isfinite(mono_[i])) {
+                mono_[i] = 0.0f;
+                ++repaired;
+            }
+        }
+        if (repaired != 0) {
+            samplesRepaired_.store(samplesRepaired_.load(std::memory_order_relaxed) + repaired,
+                                   std::memory_order_relaxed);
+        }
         resampler_.process(mono_.data(), take, [this](const float* samples, std::size_t count) {
             samplesOut_.store(samplesOut_.load(std::memory_order_relaxed) + count,
                               std::memory_order_relaxed);

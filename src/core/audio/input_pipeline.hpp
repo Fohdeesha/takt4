@@ -45,6 +45,12 @@ public:
     std::uint64_t framesIn() const noexcept { return framesIn_.load(std::memory_order_relaxed); }
     std::uint64_t samplesOut() const noexcept { return samplesOut_.load(std::memory_order_relaxed); }
     std::uint64_t hopsOut() const noexcept { return hopsOut_.load(std::memory_order_relaxed); }
+    /// Device samples on the picked input that were NaN or an infinity, and went on as
+    /// silence. Before the resampler, whose filter would otherwise carry one into every
+    /// output sample it touches (the audit's M2).
+    std::uint64_t samplesRepaired() const noexcept {
+        return samplesRepaired_.load(std::memory_order_relaxed);
+    }
 
 private:
     ChannelPicker picker_;
@@ -56,6 +62,7 @@ private:
     std::atomic<std::uint64_t> framesIn_{0};
     std::atomic<std::uint64_t> samplesOut_{0};
     std::atomic<std::uint64_t> hopsOut_{0};
+    std::atomic<std::uint64_t> samplesRepaired_{0};
 };
 
 } // namespace takt4::audio

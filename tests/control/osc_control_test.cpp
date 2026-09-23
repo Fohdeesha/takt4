@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -213,6 +214,31 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         // that missed one message would be inverted for the rest of the set.
         CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/enable", std::nullopt));
         CHECK(rules.enables().empty());
+    }
+
+    SECTION("a value that is not a number is refused, not read as on") {
+        // The audit's M1. Every state here is "anything but zero is on", and a NaN is not zero:
+        // `lock nan` pinned the lock, `enable nan` armed a rule, and `rate nan` gave a rule an
+        // interval that was undefined. An OSC float can carry a NaN or an infinity; no control
+        // surface means one.
+        for (const double junk : {std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity()}) {
+            CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/enable", junk));
+            CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/mute", junk));
+            CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/rate", junk));
+            CHECK_FALSE(control.dispatch("/takt4/ctl/panic", junk));
+            CHECK_FALSE(control.dispatch("/takt4/ctl/lock", junk));
+        }
+        CHECK(rules.enables().empty());
+        CHECK(rules.mutes().empty());
+        CHECK(rules.rates().empty());
+        CHECK(rules.panics().empty());
+        (void)engine->step();
+        CHECK_FALSE(engine->state().pinned);
+        // And the same addresses with a number still work.
+        CHECK(control.dispatch("/takt4/ctl/rule/intro/rate", 2.0));
+        REQUIRE(rules.rates().size() == 1);
+        CHECK(rules.rates()[0].factor == 2.0);
     }
 
     SECTION("mute is its own verb, because it is its own state") {

@@ -101,7 +101,8 @@ public:
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     /// Audio thread. Copies the hop into the queue and returns; counts a drop if the
-    /// worker has fallen an entire queue behind.
+    /// worker has fallen an entire queue behind. A sample that is not a finite number is
+    /// copied as silence and counted — see `samplesRepaired`.
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
 
     /// Reader thread. False when nothing is queued.
@@ -122,6 +123,13 @@ public:
     }
     std::uint64_t framesDropped() const noexcept {
         return framesDropped_.load(std::memory_order_relaxed);
+    }
+    /// Samples that arrived as NaN or an infinity and went on as silence. **One would have
+    /// ended the run:** the network is recurrent, so a NaN in its state is a NaN in every
+    /// frame after it, and the intensity state freezes the same way — beats stopped until
+    /// Stop and Start (the audit's M2). A loopback or a virtual cable can hand one over.
+    std::uint64_t samplesRepaired() const noexcept {
+        return samplesRepaired_.load(std::memory_order_relaxed);
     }
 
     /// The Phase 3 real-time check (§8): the worst the worker has taken over one hop,
@@ -164,6 +172,7 @@ private:
     std::atomic<std::uint64_t> hopsDropped_{0};
     std::atomic<std::uint64_t> framesEmitted_{0};
     std::atomic<std::uint64_t> framesDropped_{0};
+    std::atomic<std::uint64_t> samplesRepaired_{0};
     std::atomic<double> worstHopMicros_{0.0};
     std::atomic<double> worstModelMicros_{0.0};
     std::atomic<double> totalHopMicros_{0.0};

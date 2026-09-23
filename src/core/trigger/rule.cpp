@@ -537,6 +537,14 @@ void Rule::reset() noexcept {
 }
 
 void Rule::setRate(double rate) noexcept {
+    // Not a number is not a rate, and is refused outright: `std::clamp` hands a NaN straight
+    // back, and a NaN interval cast to an integer is undefined — it came out as zero, a rule on
+    // every beat. One OSC message, `/ctl/rule/x/rate nan`, was enough (the audit's M1). An
+    // infinity is refused with it rather than clamped: it is a broken sender, not a request
+    // for the slowest rate there is.
+    if (!std::isfinite(rate)) {
+        return;
+    }
     // A rate of zero or less would be a rule that fires every zero bars, which is either a
     // division by nothing or a rule that fires constantly depending on where the arithmetic
     // lands. Both are worse than refusing to go below a sixteenth of the written interval.

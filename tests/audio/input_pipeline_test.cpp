@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <random>
 #include <vector>
@@ -155,6 +156,34 @@ TEST_CASE("a silent input stays exactly silent beside loud ones", "[audio]") {
             REQUIRE(std::all_of(hop.begin(), hop.end(), [](float x) { return x == 0.0f; }));
         }
     }
+}
+
+TEST_CASE("a sample that is not a number reaches no hop as one", "[audio]") {
+    // The audit's M2, at the front door. A loopback or a virtual cable can hand over a NaN or
+    // an infinity, and the resampler's filter would spread one across every output sample it
+    // touches — on the way to a network whose state it would never leave.
+    std::vector<float> block = interfaceBlock(48000);
+    const float junk[] = {std::numeric_limits<float>::quiet_NaN(),
+                          std::numeric_limits<float>::infinity(),
+                          -std::numeric_limits<float>::infinity()};
+    for (std::size_t n = 0; n < 3; ++n) {
+        block[(10000 + n * 7000) * kChannels + kToneChannel] = junk[n];
+    }
+    RecordingProcessor recorder;
+    const ChannelPicker picker(device(HostApiKind::Wasapi), ChannelSelection::single(kToneChannel));
+    InputPipeline pipeline(picker, kDeviceRate, recorder);
+    feed(pipeline, block, kChannels, 512);
+
+    REQUIRE(recorder.hops.size() > 40);
+    for (const auto& hop : recorder.hops) {
+        REQUIRE(std::all_of(hop.begin(), hop.end(), [](float x) { return std::isfinite(x); }));
+    }
+    CHECK(pipeline.samplesRepaired() == 3);
+    // And the tone either side of each is still the tone: one sample of silence in 48000 is
+    // a click nobody hears, where a NaN was the end of the run.
+    const double expectedRms = kToneAmplitude / std::numbers::sqrt2;
+    CHECK_THAT(hopRms(recorder.hops[recorder.hops.size() / 2]), WithinAbs(expectedRms, 0.02));
+    CHECK_THAT(hopRms(recorder.hops.back()), WithinAbs(expectedRms, 0.02));
 }
 
 TEST_CASE("native and software picks produce identical hops", "[audio]") {

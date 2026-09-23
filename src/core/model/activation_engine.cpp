@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <span>
 #include <thread>
 
@@ -38,6 +39,7 @@ void ActivationEngine::start() {
     hopsDropped_.store(0, std::memory_order_relaxed);
     framesEmitted_.store(0, std::memory_order_relaxed);
     framesDropped_.store(0, std::memory_order_relaxed);
+    samplesRepaired_.store(0, std::memory_order_relaxed);
     worstHopMicros_.store(0.0, std::memory_order_relaxed);
     worstModelMicros_.store(0.0, std::memory_order_relaxed);
     totalHopMicros_.store(0.0, std::memory_order_relaxed);
@@ -63,7 +65,22 @@ void ActivationEngine::processHop(const float* hop, std::uint64_t hopIndex) noex
         queued.hostMicros = clock->hostMicrosForSample(static_cast<double>(hopIndex) *
                                                        static_cast<double>(audio::kHopSize));
     }
-    std::copy_n(hop, audio::kHopSize, queued.samples.begin());
+    // Copied one sample at a time so that one that is not a number goes on as silence. The
+    // network and the intensity state are both recurrent, so a single NaN would be in every
+    // frame after it — a run with no beats until Stop and Start (the audit's M2).
+    std::uint64_t repaired = 0;
+    for (std::size_t i = 0; i < audio::kHopSize; ++i) {
+        const float sample = hop[i];
+        if (std::isfinite(sample)) {
+            queued.samples[i] = sample;
+        } else {
+            queued.samples[i] = 0.0f;
+            ++repaired;
+        }
+    }
+    if (repaired != 0) {
+        samplesRepaired_.fetch_add(repaired, std::memory_order_relaxed);
+    }
     if (hops_.tryPush(queued)) {
         hopsQueued_.fetch_add(1, std::memory_order_relaxed);
     } else {

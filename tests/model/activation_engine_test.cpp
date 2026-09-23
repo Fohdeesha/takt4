@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -79,6 +81,81 @@ TEST_CASE("the engine turns hops into one activation each, a hop behind", "[mode
     }
     CHECK(expected == hops - 1);
     CHECK(loudest > 0.5f); // the synthetic excerpt is a drum machine at 128 BPM
+}
+
+namespace {
+
+/// Every activation `engine` has made, stepped by hand.
+std::vector<FrameActivation> runThrough(ActivationEngine& engine, const std::vector<float>& signal) {
+    const std::size_t hops = signal.size() / kHopSize;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine.processHop(signal.data() + h * kHopSize, h);
+        (void)engine.step();
+    }
+    std::vector<FrameActivation> out;
+    FrameActivation activation;
+    while (engine.pop(activation)) {
+        out.push_back(activation);
+    }
+    return out;
+}
+
+/// The strongest beat activation among frames [from, to).
+float loudestBeat(const std::vector<FrameActivation>& frames, std::size_t from, std::size_t to) {
+    float loudest = 0.0f;
+    for (std::size_t i = from; i < to && i < frames.size(); ++i) {
+        loudest = std::max(loudest, frames[i].beat);
+    }
+    return loudest;
+}
+
+} // namespace
+
+TEST_CASE("a sample that is not a number does not end the run", "[model][engine]") {
+    // The audit's M2. The network is recurrent and so is the intensity state: one NaN in the
+    // audio was a NaN in every frame after it, which is a tracker with no beats until somebody
+    // pressed Stop and Start. The console's file path reaches the model without the input
+    // pipeline, so this is checked at the model's own door.
+    std::vector<float> signal = syntheticExcerpt();
+    const std::size_t hops = signal.size() / kHopSize;
+    REQUIRE(hops > 200);
+    const std::size_t poisoned = hops / 3;
+    signal[poisoned * kHopSize + 17] = std::numeric_limits<float>::quiet_NaN();
+    signal[poisoned * kHopSize + 18] = std::numeric_limits<float>::infinity();
+
+    const std::unique_ptr<ActivationEngine> engine = makeEngine();
+    const std::vector<FrameActivation> frames = runThrough(*engine, signal);
+    REQUIRE(frames.size() == hops - 1);
+    CHECK(engine->samplesRepaired() == 2);
+
+    for (const FrameActivation& frame : frames) {
+        INFO("frame " << frame.frameIndex);
+        REQUIRE(std::isfinite(frame.beat));
+        REQUIRE(std::isfinite(frame.downbeat));
+        REQUIRE(std::isfinite(frame.nonBeat));
+        REQUIRE(std::isfinite(frame.flux));
+    }
+    // And the beats go on: the frames after the bad sample peak as the ones before did.
+    const std::vector<FrameActivation> clean = runThrough(*makeEngine(), syntheticExcerpt());
+    const float before = loudestBeat(clean, poisoned + 20, frames.size());
+    CHECK(loudestBeat(frames, poisoned + 20, frames.size()) > 0.5f * before);
+}
+
+TEST_CASE("a clipped input is still an input the model can track", "[model][engine]") {
+    // The audit's T3: nothing tested what a hot input does to the model. The excerpt driven
+    // twenty times over and hard-clipped at full scale — a gain knob turned all the way up.
+    std::vector<float> signal = syntheticExcerpt();
+    for (float& sample : signal) {
+        sample = std::clamp(sample * 20.0f, -1.0f, 1.0f);
+    }
+    const std::unique_ptr<ActivationEngine> engine = makeEngine();
+    const std::vector<FrameActivation> frames = runThrough(*engine, signal);
+    REQUIRE(frames.size() == signal.size() / kHopSize - 1);
+    CHECK(engine->samplesRepaired() == 0);
+    for (const FrameActivation& frame : frames) {
+        REQUIRE(std::isfinite(frame.beat));
+    }
+    CHECK(loudestBeat(frames, 0, frames.size()) > 0.5f);
 }
 
 TEST_CASE("an activation carries the host time of the audio it was made from", "[model][engine]") {

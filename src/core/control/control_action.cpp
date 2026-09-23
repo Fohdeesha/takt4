@@ -3,6 +3,7 @@
 #include "core/engine/control.hpp"
 
 #include <array>
+#include <cmath>
 
 namespace takt4::control {
 namespace {
@@ -168,6 +169,14 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     using engine::Command;
 
     if (takesArgument(target.action) && !argument) {
+        return false;
+    }
+    // **A value that is not a number is not a message anybody meant**, and is refused rather
+    // than read. Every state below is "anything but zero is on", which a NaN satisfies — so
+    // `/ctl/lock nan` pinned the lock, and `/ctl/rule/x/rate nan` gave a rule an interval
+    // that was a NaN cast to an integer (the audit's M1). An OSC float can carry either; a
+    // MIDI message cannot, so this only ever turns away a broken sender.
+    if (argument && !std::isfinite(*argument)) {
         return false;
     }
 

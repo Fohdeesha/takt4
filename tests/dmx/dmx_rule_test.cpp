@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <span>
 #include <string>
@@ -427,6 +428,26 @@ TEST_CASE("a rule's rate multiplies how often it fires", "[trigger]") {
         // fired constantly, depending on where the arithmetic landed. Both are worse than a
         // floor, and an operator pressing "twice as often" would have turned it off.
         CHECK(barsThatFire(1, 0.25) == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
+    }
+
+    SECTION("a rate that is not a number is refused, and the rule keeps the one it had") {
+        // The audit's M1. `/ctl/rule/x/rate nan` is one OSC message, and `std::clamp` hands a
+        // NaN straight back — so the rule's interval became a NaN cast to an integer, which is
+        // undefined, and came out as zero here: a rule counting its beats against nothing.
+        CHECK(barsThatFire(4, std::numeric_limits<double>::quiet_NaN()) ==
+              std::vector<int>{1, 5, 9});
+        Rule::Config config4 = fadeRule("bars", {"par"}, 255, 0.0);
+        config4.every = 4;
+        Rule four(config4);
+        four.setRate(0.5);
+        REQUIRE(four.effectiveEvery() == 2);
+        for (const double junk : {std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()}) {
+            four.setRate(junk);
+            CHECK(four.rate() == 0.5);
+            CHECK(four.effectiveEvery() == 2);
+        }
     }
 
     SECTION("a preset load puts the live gestures back, because a preset is the show") {
