@@ -150,11 +150,12 @@ public:
     void setPulses(int pulses);
     /// §5.6's rule subset, as a comma-separated list of output names. Empty is everywhere.
     /// Not reachable from the window any more — the routing is ticked from the rig's own
-    /// list — but it is still how a preset arrives and how a whole routing is set at once.
+    /// list — but it is how a whole routing is set at once. The rule keeps the *ids* of the
+    /// outputs named, so renaming one afterwards leaves it routed.
     void setOutputs(const std::string& text);
-    /// One output named or un-named. Un-naming the last one is "every output" again: an
-    /// empty list *is* everywhere (`output::resolveOutputs`), so the two cannot disagree.
-    void setOutputChosen(const std::string& name, bool chosen);
+    /// One output, by its id, routed or not. Un-routing the last one is "every output" again:
+    /// an empty list *is* everywhere (`output::resolveOutputs`), so the two cannot disagree.
+    void setOutputChosen(const std::string& id, bool chosen);
     /// Back to reaching every output, which is what naming none of them means.
     void chooseAllOutputs();
 
@@ -175,7 +176,8 @@ public:
     // One fixture or group named or un-named, and "none" — which for a DMX rule is a rule
     // that reaches nothing and says so, unlike an empty *output* list. See
     // `dmx::resolveFixtures` for why the two defaults are opposites.
-    void setFixtureChosen(const std::string& name, bool chosen);
+    /// `key` is a fixture's id or a group's label — what the fixture list's tick sends.
+    void setFixtureChosen(const std::string& key, bool chosen);
     void chooseNoFixtures();
     /// Which effect — an index into `dmx::kEffectKinds`.
     void pickEffect(int index);
@@ -259,6 +261,11 @@ public:
     void setSlotPool(int slot, bool list);
     void setSlotRange(int slot, const std::string& text);
     void setSlotValues(int slot, const std::string& text);
+    /// "BPM normalised"'s tempo range, as "20 - 500". Refused, with a status, when it is not two
+    /// numbers with the second above the first.
+    void setSlotNormalise(int slot, const std::string& text);
+    /// A weighted generator's values and their weights, as "7:3, 12:1" — a bare value weighs 1.
+    void setSlotWeights(int slot, const std::string& text);
     void setSlotNoRepeat(int slot, int within);
     void setSlotFixed(int slot, const std::string& text);
     /// A color slot from the picker: hue in degrees, saturation and brightness as
@@ -282,6 +289,24 @@ private:
     /// The generator a slot index names, in the order `publishSlots` lists them: the
     /// address's placeholders, then the value, then the MIDI number.
     trigger::Generator::Config* slotConfig(int slot) noexcept;
+    /// Says an edit to `slot` has landed: if that slot is a MIDI rule's note or controller, the
+    /// number is one the operator chose and the rule may fire (the audit's C7). Called by each
+    /// slot setter just before it commits, so an edit that was refused does not count.
+    void choseSlot(int slot) noexcept;
+    /// A keystroke in a chip's box (`followUp` false) or a follow-up's (true); `field` says
+    /// which box of the row. See `typing_`.
+    void noteTyping(bool followUp, int index, int field, std::string text);
+    /// That box committed on its own, so there is nothing left to carry over.
+    void typed(bool followUp, int index) noexcept;
+    /// Commits what `typing_` holds to the rule it was typed for, if that is still the rule
+    /// showing. Called before anything that changes which rule that is.
+    void commitTyping();
+    /// Takes in what a control surface changed on the live rules — enabled, mute, rate — so
+    /// the card shows what is really running (the audit's H7). Enabled is configuration and is
+    /// saved, so it goes into `rules_` and out through the changed callback; mute and rate are
+    /// live gestures and only reach the mirrors. Touches only those controls: a full republish
+    /// would overwrite a box somebody is typing in.
+    void adoptLive(const std::vector<output::OutputRunner::LiveRule>& live);
     /// The selected rule's follow-up at this row, or null.
     trigger::FollowUp* followConfig(int index) noexcept;
 
@@ -390,6 +415,31 @@ private:
     /// again — see `trigger::Rule::reset`, which clears the same two on the other side.
     std::unordered_map<std::string, bool> mutedSeen_;
     std::unordered_map<std::string, double> rateSeen_;
+    /// `OutputRunner::liveRulesVersion` as `tick` last adopted it. See `adoptLive`.
+    std::uint64_t liveSeen_ = 0;
+    /// The rows each repeater has to build again, by index — see `renewRows`, and `rebuildAll_`
+    /// for the two edits that still need the whole list.
+    std::vector<std::size_t> staleSlots_;
+    std::vector<std::size_t> staleFollows_;
+    std::vector<std::size_t> staleChoices_;
+    std::vector<std::size_t> staleFixtures_;
+    std::vector<std::size_t> stalePalette_;
+    /// A palette swatch added or taken away: every swatch after it has moved, so the whole
+    /// palette — and the chips, whose color rows read from it — are built again.
+    bool rebuildAll_ = false;
+    /// What is in a chip's or a follow-up's box that has not been committed yet — kept from its
+    /// keystrokes, so that switching rules commits it to the rule it was typed for (the audit's
+    /// M16). Switching used to rebuild the rows at once, which destroyed the box and what was
+    /// in it; and a box that survived committed, when it lost the focus, into whichever rule
+    /// was showing by then.
+    struct Typing {
+        std::string ruleId;
+        bool followUp = false;
+        int index = 0;
+        int field = 0;
+        std::string text;
+    };
+    std::optional<Typing> typing_;
 
     /// Which rule, and which send kind, the generator rows currently on screen were built
     /// for. When either changes the rows are rebuilt rather than updated in place, so the

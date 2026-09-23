@@ -732,6 +732,7 @@ TEST_CASE("a target list that would not open still moves the routing with it",
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
 
     takt4::output::OutputTarget wall;
+    wall.id = "o-000000aa";
     wall.name = "wall";
     wall.host = "127.0.0.1";
     wall.port = 7000;
@@ -744,7 +745,7 @@ TEST_CASE("a target list that would not open still moves the routing with it",
     rule.id = "wall-rule";
     rule.trigger = takt4::trigger::Trigger::Beat;
     rule.address = "/wall";
-    rule.outputs = {"wall"};
+    rule.outputs = {wall.id};
     runner.post(OutputCommand::rules({rule}));
     REQUIRE(runner.triggers().ruleCount() == 1);
     REQUIRE(runner.triggers().rule(0).outputMask() == 1); // "wall" is target 0
@@ -752,6 +753,7 @@ TEST_CASE("a target list that would not open still moves the routing with it",
     // A new list where "wall" has moved to index 1 and index 0 is a device this machine has
     // not got, so the replacement reports a failure part-way through.
     takt4::output::OutputTarget broken;
+    broken.id = "o-000000bb";
     broken.name = "lights";
     broken.kind = takt4::output::OutputTarget::Kind::Midi;
     broken.device = "takt4 test - no such MIDI device exists";
@@ -1224,4 +1226,120 @@ TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][
     CHECK(sink.queued() == 0);
     CHECK(transports.dmx().running() == 0);
     CHECK(transports.dmx().levels(0)[0] == 0);
+}
+
+TEST_CASE("a name server that does not answer does not stop the output thread",
+          "[output][network]") {
+    // The audit's H12. An output typed as a host name was resolved on the output thread — the
+    // one with the MIDI clock, Link, Art-Net's keep-alive and every rule on it — so a name the
+    // network could not answer stopped all of that for the resolver's timeout. A missing
+    // ".local" name takes about nine seconds to fail on the machine this was written on.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.start();
+    takt4::output::OutputTarget slow;
+    slow.id = "o-000000d1";
+    slow.name = "slow";
+    slow.host = "takt4-no-such-host.local";
+    slow.port = 9000;
+    runner.post(OutputCommand::outputs({slow}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const std::uint64_t before = runner.rounds();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const std::uint64_t during = runner.rounds() - before;
+    runner.stop();
+    INFO("rounds in half a second: " << during);
+    CHECK(during > 250);
+    // And the target is there, waiting for its address rather than refused.
+    CHECK(runner.snapshot().outputs.size() == 1);
+}
+
+TEST_CASE("a delay slider moves one output's delay and drops nothing held", "[output][osc]") {
+    // The audit's H12, the other half: the slider posted the whole target list on every pixel
+    // of a drag, and every one of those cleared what was queued for a delayed target.
+    LoopbackReceiver server;
+    Transports::Config config;
+    takt4::output::OutputTarget media;
+    media.id = "o-000000e1";
+    media.name = "media";
+    media.host = "127.0.0.1";
+    media.port = server.port();
+    media.delaySeconds = 0.8;
+    config.outputs = {media};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+
+    Rule::Config rule;
+    rule.id = "clip";
+    rule.address = "/clip";
+    runner.post(OutputCommand::rules({rule}));
+    runner.post(OutputCommand::testRule("clip"));
+    REQUIRE(runner.transports().osc().pending() == 1);
+
+    runner.post(OutputCommand::outputDelay(media.id, 0.3));
+    CHECK(runner.transports().osc().pending() == 1);
+    CHECK(runner.snapshot().outputs[0].delaySeconds == 0.3);
+
+    // And the whole list again, as the other edits send it, with nothing about this output
+    // changed: its sender and what it holds are kept.
+    media.delaySeconds = 0.3;
+    runner.post(OutputCommand::outputs({media}));
+    CHECK(runner.transports().osc().pending() == 1);
+}
+
+TEST_CASE("a release owed to an output follows it when another is added above it",
+          "[output][trigger]") {
+    // The audit's H12, and the operator's rule that nothing hangs off something editable: a
+    // follow-up carries its routing as a bit, and the bit is the output's place in the list.
+    // An output added above it moved every place below — so a release owed to the deck went
+    // to whatever took the deck's place.
+    LoopbackReceiver deck;
+    LoopbackReceiver fresh;
+    takt4::output::OutputTarget deckTarget;
+    deckTarget.id = "o-000000f1";
+    deckTarget.name = "deck";
+    deckTarget.host = "127.0.0.1";
+    deckTarget.port = deck.port();
+    takt4::output::OutputTarget freshTarget = deckTarget;
+    freshTarget.id = "o-000000f2";
+    freshTarget.name = "fresh";
+    freshTarget.port = fresh.port();
+
+    Transports::Config config;
+    config.outputs = {deckTarget};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+
+    Rule::Config rule;
+    rule.id = "clip";
+    rule.address = "/clip";
+    rule.outputs = {deckTarget.id};
+    takt4::trigger::FollowUp release;
+    release.value = takt4::trigger::Value::ofInt(0);
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 0.3;
+    rule.followUps.push_back(release);
+    runner.post(OutputCommand::rules({rule}));
+    runner.post(OutputCommand::testRule("clip"));
+    REQUIRE(runner.triggers().pending() == 1);
+    REQUIRE(deck.receive().find("/clip") != std::string::npos); // the press
+
+    runner.post(OutputCommand::outputs({freshTarget, deckTarget}));
+    CHECK(runner.triggers().pending() == 1); // still owed, at its own time
+
+    // Running now, so the generic namespace goes to both as well — what matters is where the
+    // release to "/clip" lands.
+    runner.start();
+    bool releasedAtDeck = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!releasedAtDeck && std::chrono::steady_clock::now() < until) {
+        releasedAtDeck = deck.receive().find("/clip") != std::string::npos;
+    }
+    runner.stop();
+    bool releasedAtFresh = false;
+    for (std::string datagram = fresh.receive(); !datagram.empty(); datagram = fresh.receive()) {
+        releasedAtFresh = releasedAtFresh || datagram.find("/clip") != std::string::npos;
+    }
+    CHECK(releasedAtDeck);
+    CHECK_FALSE(releasedAtFresh);
 }

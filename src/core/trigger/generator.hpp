@@ -153,6 +153,8 @@ struct WeightedChoice {
     /// "never", and a list that is all zeroes or all negative is treated as uniform rather
     /// than as an error — see `Generator`'s note on clamping.
     double weight = 1.0;
+
+    bool operator==(const WeightedChoice&) const noexcept = default;
 };
 
 /// A generator, as a flat configuration plus whatever state its kind needs.
@@ -249,6 +251,11 @@ public:
         /// rule engine has to hand out distinct ones, or every rule in a preset fires the
         /// same clip as every other.
         std::uint64_t seed = 1;
+
+        /// Every field, the seed included: two configurations that compare equal draw the
+        /// same sequence, which is what lets an edited rule keep a generator it did not touch
+        /// mid-bag (`Rule::carryFrom`).
+        bool operator==(const Config&) const noexcept = default;
     };
 
     /// §5.8's default: Shuffle over 1 to 8, with the seam guard on.

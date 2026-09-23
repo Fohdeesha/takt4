@@ -115,10 +115,27 @@ public:
 
     /// §5.6's targets, in the order a rule's routing mask indexes them.
     const std::vector<OutputTarget>& outputs() const noexcept { return outputs_; }
-    /// Replaces the set. Rebuilds every OSC sender and opens or closes MIDI devices to
-    /// match; a device that cannot be opened leaves that target unreachable and is reported
-    /// through `lastError`-style throwing, as `setMidiClockPort` already is.
+    /// Replaces the set, **keeping every sender whose output did not change** — see
+    /// `OscPublisher::setTargets` and `dmx::ArtNetPublisher::setTargets` — and opening or
+    /// closing MIDI devices to match. Nothing here waits on a name server: a host typed as a
+    /// name is looked up on a thread of its own (`net::AsyncAddress`), and one that will not
+    /// resolve is an `outputProblems` entry rather than a stall of the output thread (the
+    /// audit's H12). A device or socket that cannot be had at all leaves that target
+    /// unreachable and is reported by throwing, as `setMidiClockPort` already is.
     void setOutputs(const std::vector<OutputTarget>& targets);
+
+    /// Moves one output's delay — the one with this `OutputTarget::id` — and nothing else:
+    /// what a dragged delay slider sends, where a whole `setOutputs` per pixel reopened senders
+    /// and flushed what was held (the audit's H12). False when no output has that id.
+    bool setOutputDelay(std::string_view id, double seconds);
+
+    /// Every output that cannot be sent to and why, as "name: reason" — a host name that will
+    /// not resolve, most often. Not one still being looked up: that is not a problem yet.
+    std::vector<std::string> outputProblems() const;
+    /// Lets every OSC and Art-Net target find its address and open its socket, and try a
+    /// failed look-up again when it is due. The output thread calls it now and then, so a
+    /// target that nothing is being sent to still resolves.
+    void refreshTargets() noexcept;
 
     /// Replaces the lighting patch and re-points every Art-Net target at whatever universes
     /// the new patch uses. Levels survive where they can — see `dmx::DmxEngine::setPatch`.

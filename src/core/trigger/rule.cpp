@@ -427,6 +427,14 @@ void Rule::validate() {
     if (config_.sendKind != Message::Kind::Osc) {
         if (config_.channel < 1 || config_.channel > kMidiChannels) {
             problem_ = "a MIDI channel is 1 to 16";
+            return;
+        }
+        // Worded as what to do, because this is the first thing a new MIDI rule says.
+        if (sendsNumber(config_.sendKind) && !config_.numberChosen) {
+            problem_ = config_.sendKind == Message::Kind::MidiCc ? "choose a controller number"
+                       : config_.sendKind == Message::Kind::MidiProgramChange
+                           ? "choose a program number"
+                           : "choose a note number";
         }
         return;
     }
@@ -449,6 +457,58 @@ void Rule::validate() {
     if (!fillAddress(config_.address, zeroes.data(), zeroes.size(), trial)) {
         problem_ = "not a legal OSC address once filled in: " + config_.address;
     }
+}
+
+std::uint64_t remapBits(std::uint64_t mask, const std::vector<int>& moved) noexcept {
+    if (mask == ~std::uint64_t{0}) {
+        return mask;
+    }
+    std::uint64_t out = 0;
+    for (std::size_t i = 0; i < moved.size() && i < 64; ++i) {
+        if ((mask & (std::uint64_t{1} << i)) != 0 && moved[i] >= 0 && moved[i] < 64) {
+            out |= std::uint64_t{1} << moved[i];
+        }
+    }
+    return out;
+}
+
+void Rule::carryFrom(const Rule& previous) {
+    // A generator is kept whole when its accepted configuration — the seed included — is the
+    // one it had, which is exactly when it would have drawn the same sequence from scratch.
+    const auto keep = [](Generator& mine, const Generator& theirs) {
+        if (mine.config() == theirs.config()) {
+            mine = theirs;
+        }
+    };
+    const std::size_t shared = std::min(segments_.size(), previous.segments_.size());
+    for (std::size_t i = 0; i < shared; ++i) {
+        keep(segments_[i], previous.segments_[i]);
+    }
+    keep(value_, previous.value_);
+    keep(number_, previous.number_);
+    keep(dmxLevel_, previous.dmxLevel_);
+    keep(dmxColor_, previous.dmxColor_);
+    keep(dmxRed_, previous.dmxRed_);
+    keep(dmxGreen_, previous.dmxGreen_);
+    keep(dmxBlue_, previous.dmxBlue_);
+    keep(dmxPan_, previous.dmxPan_);
+    keep(dmxTilt_, previous.dmxTilt_);
+    if (config_.seed == previous.config_.seed) {
+        probability_ = previous.probability_;
+    }
+
+    if (config_.enabled == previous.config_.enabled) {
+        enabled_ = previous.enabled_;
+    }
+    muted_ = previous.muted_;
+    rate_ = previous.rate_;
+    lastBpmSeen_ = previous.lastBpmSeen_;
+    lastLockedSeen_ = previous.lastLockedSeen_;
+    lastIntensitySeen_ = previous.lastIntensitySeen_;
+    lastFired_ = previous.lastFired_;
+    fires_ = previous.fires_;
+    outputMask_ = previous.outputMask_;
+    fixtureMask_ = previous.fixtureMask_;
 }
 
 void Rule::reset() noexcept {

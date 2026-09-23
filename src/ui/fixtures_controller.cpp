@@ -31,9 +31,9 @@ std::string whereOf(const dmx::Fixture& fixture) {
 
 /// A name nothing in `patch` is using yet — "fixture 1", "fixture 2".
 ///
-/// Unique because a rule aims at a *name*: two fixtures called the same thing is not an error
-/// (`resolveFixtures` takes both, which is the forgiving reading) but it is never what an
-/// operator pressing ADD twice meant.
+/// Unique because two fixtures called the same thing are two rows nobody can tell apart in the
+/// rule editor's list, which is never what an operator pressing ADD twice meant. Nothing
+/// *routes* by it any more; see `dmx::Fixture::id`.
 std::string freshName(const std::vector<dmx::Fixture>& patch, const std::string& stem) {
     for (int suffix = 1; suffix < 1000; ++suffix) {
         const std::string candidate = stem + " " + std::to_string(suffix);
@@ -54,6 +54,9 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     : runner_(runner), fixtures_(std::move(fixtures)), window_(FixturesWindow::create()),
       listModel_(std::make_shared<slint::VectorModel<FixtureRow>>()),
       channelModel_(std::make_shared<slint::VectorModel<ChannelRow>>()) {
+    // A patch built in code, or read by something older than the settings loader, may have
+    // none; the settings loader has already given every fixture one.
+    dmx::ensureFixtureIds(fixtures_);
     window_->set_fixtures(listModel_);
     window_->set_channels(channelModel_);
 
@@ -160,6 +163,7 @@ void FixturesController::commit() {
 
 void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures) {
     fixtures_ = std::move(fixtures);
+    dmx::ensureFixtureIds(fixtures_);
     resettle(selected_);
     publishAll();
 }
@@ -405,6 +409,7 @@ void FixturesController::add() {
     // operator adding a second par means and it is the arithmetic they would otherwise do by
     // hand. A universe with nothing on it starts at 1.
     dmx::Fixture fixture = dmx::fixtureFromMode(freshName(fixtures_, "fixture"), 1, 0, 1);
+    fixture.id = dmx::newFixtureId(fixtures_);
     if (!fixtures_.empty()) {
         const dmx::Fixture& last = fixtures_.back();
         fixture.universe = last.universe;
@@ -425,6 +430,8 @@ void FixturesController::duplicate() {
     }
     dmx::Fixture copy = *fixture;
     copy.name = freshName(fixtures_, fixture->name);
+    // A fixture of its own, which rules aimed at the original do not reach.
+    copy.id = dmx::newFixtureId(fixtures_);
     // Addressed after the one it came from, which is what duplicating a par in a row means.
     const std::uint16_t after = dmx::lastChannelOf(*fixture);
     copy.address = static_cast<std::uint16_t>(
@@ -467,9 +474,8 @@ void FixturesController::rename(const std::string& name) {
     if (fixture == nullptr || fixture->name == name) {
         return;
     }
-    // **A rule aims at a name, so renaming a fixture un-routes every rule that named it.**
-    // Said rather than silently done: the rule keeps the old name (a preset opened on another
-    // rig should, see `DmxSend::fixtures`), so plugging the name back in restores the routing.
+    // Only the label. A rule aims at the fixture's id, so every rule aimed at it goes on
+    // reaching it under its new name — it used to un-route them all (the audit's M28).
     fixture->name = name;
     commit();
 }

@@ -70,8 +70,7 @@ TEST_CASE("a fixture says why it cannot be driven", "[dmx][fixture]") {
     }
 }
 
-TEST_CASE("a rule names fixtures and groups, and an unrouted one reaches nothing",
-          "[dmx][fixture]") {
+TEST_CASE("a rule aims at fixtures by id and at groups by label", "[dmx][fixture]") {
     std::vector<Fixture> patch;
     patch.push_back(takt4::dmx::fixtureFromMode("wash L", 1, 0, 1));
     patch.push_back(takt4::dmx::fixtureFromMode("wash R", 1, 0, 4));
@@ -79,10 +78,23 @@ TEST_CASE("a rule names fixtures and groups, and an unrouted one reaches nothing
     patch[0].group = "washes";
     patch[1].group = "washes";
     patch[2].group = "heads";
+    takt4::dmx::ensureFixtureIds(patch);
+    const std::string washL = patch[0].id;
+    const std::string head = patch[2].id;
+    REQUIRE_FALSE(washL.empty());
+    CHECK(washL != patch[1].id);
 
-    CHECK(takt4::dmx::resolveFixtures(patch, {"wash L"}) == 0b001);
+    CHECK(takt4::dmx::resolveFixtures(patch, {washL}) == 0b001);
     CHECK(takt4::dmx::resolveFixtures(patch, {"washes"}) == 0b011);
-    CHECK(takt4::dmx::resolveFixtures(patch, {"heads", "wash L"}) == 0b101);
+    CHECK(takt4::dmx::resolveFixtures(patch, {"heads", washL}) == 0b101);
+
+    SECTION("a fixture's name reaches nothing, so renaming it moves no rule") {
+        // The operator's report of 2026-09-23, and the audit's M28: a rule aimed at a fixture
+        // by name stopped reaching it the moment it was renamed.
+        CHECK(takt4::dmx::resolveFixtures(patch, {"wash L"}) == 0);
+        patch[0].name = "front wash";
+        CHECK(takt4::dmx::resolveFixtures(patch, {washL}) == 0b001);
+    }
 
     SECTION("naming none is none — the opposite of what an empty output list means") {
         // A rule that named no output means "every output", because sending a clip change
@@ -91,13 +103,29 @@ TEST_CASE("a rule names fixtures and groups, and an unrouted one reaches nothing
         CHECK(takt4::dmx::resolveFixtures(patch, {}) == 0);
     }
 
-    SECTION("a name this rig has not got contributes nothing and is not an error") {
+    SECTION("something this rig has not got contributes nothing and is not an error") {
         CHECK(takt4::dmx::resolveFixtures(patch, {"lasers"}) == 0);
-        CHECK(takt4::dmx::resolveFixtures(patch, {"lasers", "head 1"}) == 0b100);
+        CHECK(takt4::dmx::resolveFixtures(patch, {"lasers", head}) == 0b100);
     }
 
-    SECTION("a fixture matched by both its name and its group is counted once") {
-        CHECK(takt4::dmx::resolveFixtures(patch, {"washes", "wash L"}) == 0b011);
+    SECTION("a fixture reached by both its id and its group is counted once") {
+        CHECK(takt4::dmx::resolveFixtures(patch, {"washes", washL}) == 0b011);
+    }
+
+    SECTION("a file that aimed by name is re-pointed at the ids, groups left as labels") {
+        std::vector<std::string> aims{"wash L", "heads", "lasers"};
+        takt4::dmx::aimByIds(aims, patch);
+        CHECK(aims == std::vector<std::string>{washL, "heads", "lasers"});
+        // Run twice, nothing moves: an id is left alone.
+        takt4::dmx::aimByIds(aims, patch);
+        CHECK(aims == std::vector<std::string>{washL, "heads", "lasers"});
+    }
+
+    SECTION("a duplicated fixture is given an id of its own") {
+        patch.push_back(patch[0]);
+        takt4::dmx::ensureFixtureIds(patch);
+        CHECK(patch[3].id != washL);
+        CHECK(patch[0].id == washL);
     }
 }
 

@@ -79,11 +79,22 @@ public:
     /// rather than dropped — a preset that holds one is an editing mistake to show, not a
     /// rule to silently discard — and `find` returns the first.
     ///
-    /// **A rule that keeps its id keeps its live gestures** — its mute and its rate. Those are
-    /// not configuration and are not in what is being handed over, and every edit in §5.9's
-    /// editor comes through here: without carrying them, renaming one rule would unmute every
-    /// muted rule on the rig. See the definition.
+    /// **A rule that keeps its id keeps everything it was doing** — its mute and its rate, a
+    /// switch a control surface flipped, where its shuffle bags and cycles have got to, its
+    /// cooldown. See `Rule::carryFrom`. Every edit in §5.9's editor comes through here, a
+    /// keystroke of a rename included, and rebuilding every rule from its configuration on each
+    /// one replayed every bag from its seed and undid a remote enable (the audit's H7).
+    ///
+    /// **What is owed stays owed, at its own time.** A follow-up carries everything it needs,
+    /// so the ones already queued go out when they are due whatever the rules become — a
+    /// release fired early by an edit cut a laser clip or a fade short.
     void setRules(const std::vector<Rule::Config>& rules);
+
+    /// Moves every queued follow-up's routing after the outputs (`outputs`) or the patch
+    /// (`fixtures`) changed — see `remapBits`. Empty leaves that half alone. A release owed to
+    /// the second output goes to that output wherever it now sits, and nowhere if it is gone,
+    /// rather than to whatever took its place (the audit's H12).
+    void remapPending(const std::vector<int>& outputs, const std::vector<int>& fixtures) noexcept;
 
     std::size_t ruleCount() const noexcept { return rules_.size(); }
     Rule& rule(std::size_t index) noexcept { return rules_[index]; }

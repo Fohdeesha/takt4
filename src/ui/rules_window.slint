@@ -60,6 +60,18 @@ export struct SlotRow {
   /// `Fixed`'s literal and `Live`'s source, shown only for those kinds.
   fixed: string,
   is-fixed: bool,
+  /// A MIDI note or controller nobody has chosen yet: the box is empty and asks for one, and
+  /// the rule does not fire until it has it (`Rule::Config::numberChosen`).
+  wanting: bool,
+  /// `Live`'s "BPM normalised", and the tempo range it maps onto 0 to 1 — "20 - 500", which is
+  /// Resolume's. The range is the host's, so it has to be settable; it was not (the audit's
+  /// M10), and a host with any other range could not use this at all.
+  is-normalised: bool,
+  normalise: string,
+  /// `Weighted`, and its values with their weights — "7:3, 12:1". It had no editor at all, so
+  /// a weighted generator had nothing to draw from and sent zero every time (the audit's M10).
+  is-weighted: bool,
+  weights: string,
   is-live: bool,
   live-index: int,
   /// `Ramp`'s shape and period. A ramp has a range and no pool, so it borrows `low`/`high`
@@ -150,12 +162,15 @@ export struct FollowRow {
 /// remember what their outputs are called and to spell them the same way twice. The rig
 /// already knows what it has, so the list is the rig's and the operator only ticks.
 export struct OutputChoice {
+  /// What the rule holds for this line and what a tick sends back: an output's or a fixture's
+  /// id, or a group's label. Never shown — the name below is, and can change without moving
+  /// this.
+  key: string,
   name: string,
   chosen: bool,
-  /// Named by the rule but not on this rig — a preset written somewhere else. Kept and shown
-  /// rather than quietly dropped (`Rule::Config::outputs`), because plugging that output
-  /// back in should restore the routing, and because a name reaching nothing is worth
-  /// seeing. It can be ticked off; it cannot be typed back.
+  /// Held by the rule but reaching nothing here — an output or fixture since deleted, or a
+  /// group no fixture carries. Kept and shown rather than quietly dropped, because a routing
+  /// that reaches nothing is worth seeing. It can be ticked off; it cannot be ticked back.
   missing: bool,
 }
 
@@ -432,6 +447,15 @@ export component RulesWindow inherits Window {
   callback slot-pool-changed(int, bool);
   callback slot-range-edited(int, string);
   callback slot-values-edited(int, string);
+  /// A keystroke in a chip's box, before it is committed: field 0 is the fixed value, 1 a
+  /// range, 2 a list, 3 weights, 4 a normalised range. See `RulesController::typing_`.
+  callback slot-typed(int, int, string);
+  /// The same for a follow-up's boxes: field 0 the value, 1 the delay.
+  callback follow-typed(int, int, string);
+  /// A "BPM normalised" source's range, as typed: "20 - 500".
+  callback slot-normalise-edited(int, string);
+  /// A weighted generator's values and weights, as typed: "7:3, 12:1".
+  callback slot-weights-edited(int, string);
   callback slot-no-repeat-changed(int, int);
   callback slot-fixed-edited(int, string);
   /// A color slot's hue (degrees), saturation and brightness (both percentages). Three
@@ -601,13 +625,26 @@ export component RulesWindow inherits Window {
                     : Theme.locked;
                 }
 
-                Text {
-                  text: row.name == "" ? "(unnamed)" : row.name;
-                  color: row.enabled ? Theme.text : Theme.dim;
-                  font-size: 13px;
-                  vertical-alignment: center;
+                // The name, and under it why the rule will not fire when it will not — the dot
+                // beside it is only a color, and a color is not a reason.
+                VerticalLayout {
                   horizontal-stretch: 1;
-                  overflow: elide;
+                  alignment: center;
+                  spacing: 1px;
+
+                  Text {
+                    text: row.name == "" ? "(unnamed)" : row.name;
+                    color: row.enabled ? Theme.text : Theme.dim;
+                    font-size: 13px;
+                    overflow: elide;
+                  }
+                  Text {
+                    text: row.problem;
+                    color: Theme.holding;
+                    font-size: 11px;
+                    overflow: elide;
+                    height: row.problem != "" ? 14px : 0px;
+                  }
                 }
 
                 // Out of the row entirely while the marks are showing rather than blanked:
@@ -921,6 +958,27 @@ export component RulesWindow inherits Window {
           }
         }
 
+        // **Why it will not fire, said on the card.** It was an orange dot in the list and
+        // nothing else, so a MIDI rule waiting for its note looked exactly like a rule that did
+        // not work (the audit's M11). A fixed height, because a row behind an `if` in a
+        // vertical layout otherwise takes a share of whatever height is spare.
+        if root.selected >= 0 && root.rule-problem != "" : Rectangle {
+          height: 30px;
+          vertical-stretch: 0;
+          background: Theme.panel;
+
+          Text {
+            x: 18px;
+            width: parent.width - 36px;
+            height: parent.height;
+            text: "Will not fire: " + root.rule-problem + ".";
+            color: Theme.holding;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+          }
+        }
+
         Rectangle {
           height: 1px;
           background: Theme.line;
@@ -1013,9 +1071,12 @@ export component RulesWindow inherits Window {
                 //
                 // For a Euclidean pattern the same line shows the pattern itself, which is the
                 // only way two numbers become something an operator can hear before it plays.
+                // And where the trigger has no count, why ÷2 and ×2 beside it are greyed out:
+                // they multiply the count, and a downbeat or a lock change has none (the
+                // audit's M10) — pressed, they changed a number nothing reads.
                 text: root.trigger-takes-pulses ? root.euclid-pattern
                   : root.trigger-takes-every ? "counting from the first"
-                  : "";
+                  : root.selected >= 0 ? "÷2 and ×2 need a count" : "";
                 color: Theme.dim;
                 font-size: 12px;
                 font-family: root.trigger-takes-pulses ? "Consolas" : "";
@@ -1046,7 +1107,7 @@ export component RulesWindow inherits Window {
                 text: "÷2";
                 pad: 8px;
                 min-width: 52px;
-                enabled: root.selected >= 0;
+                enabled: root.selected >= 0 && root.trigger-takes-every;
                 clicked => {
                   root.rule-rate-changed(0.5);
                 }
@@ -1055,7 +1116,7 @@ export component RulesWindow inherits Window {
                 text: "×2";
                 pad: 8px;
                 min-width: 52px;
-                enabled: root.selected >= 0;
+                enabled: root.selected >= 0 && root.trigger-takes-every;
                 clicked => {
                   root.rule-rate-changed(2.0);
                 }
@@ -1753,10 +1814,10 @@ export component RulesWindow inherits Window {
                       for choice[index] in root.fixture-choices : CheckBox {
                         // A group and a fixture look the same here on purpose: both are a name
                         // a rule may aim at, and which one a name is is the patch's business.
-                        text: choice.missing ? choice.name + "  (not on this rig)" : choice.name;
+                        text: choice.missing ? choice.name + "  (reaches nothing)" : choice.name;
                         checked: choice.chosen;
                         toggled => {
-                          root.fixture-chosen(choice.name, self.checked);
+                          root.fixture-chosen(choice.key, self.checked);
                         }
                       }
 
@@ -1941,15 +2002,15 @@ export component RulesWindow inherits Window {
                             text: choice.name;
                             horizontal-stretch: 1;
                             toggled => {
-                              root.output-chosen(choice.name, self.checked);
+                              root.output-chosen(choice.key, self.checked);
                             }
                           }
 
                           Text {
-                            // A name from a preset written on a rig this is not. Ticking it
-                            // off is the only thing that can be done with it here, which is
-                            // exactly what a name that reaches nothing deserves.
-                            text: choice.missing ? "not on this rig" : "";
+                            // An output since deleted, or one this kind of rule cannot reach.
+                            // Ticking it off is the only thing that can be done with it here,
+                            // which is exactly what a routing that reaches nothing deserves.
+                            text: choice.missing ? "reaches nothing" : "";
                             color: Theme.holding;
                             font-size: 11px;
                             vertical-alignment: center;
@@ -2066,6 +2127,9 @@ export component RulesWindow inherits Window {
                   placeholder-text: "1 - 8";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  edited(text) => {
+                    root.slot-typed(index, 1, text);
+                  }
                   accepted(text) => {
                     self.leave();
                     root.slot-range-edited(index, text);
@@ -2086,6 +2150,9 @@ export component RulesWindow inherits Window {
                   placeholder-text: "3, 7, 1, 12 — in this order";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  edited(text) => {
+                    root.slot-typed(index, 2, text);
+                  }
                   accepted(text) => {
                     self.leave();
                     root.slot-values-edited(index, text);
@@ -2241,9 +2308,12 @@ export component RulesWindow inherits Window {
 
                 if slot.is-fixed : Field {
                   text: slot.fixed;
-                  placeholder-text: slot.is-color ? "#ff2040" : "value";
+                  placeholder-text: slot.is-color ? "#ff2040" : slot.wanting ? "choose one" : "value";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  edited(text) => {
+                    root.slot-typed(index, 0, text);
+                  }
                   accepted(text) => {
                     self.leave();
                     root.slot-fixed-edited(index, text);
@@ -2268,6 +2338,52 @@ export component RulesWindow inherits Window {
                   }
                 }
 
+                // The tempo range "BPM normalised" maps onto 0 to 1 — the host's, so settable.
+                if slot.is-live && slot.is-normalised : Text {
+                  text: "across BPM";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+                if slot.is-live && slot.is-normalised : Field {
+                  text: slot.normalise;
+                  placeholder-text: "20 - 500";
+                  font-size: 12px;
+                  width: 96px;
+                  edited(text) => {
+                    root.slot-typed(index, 4, text);
+                  }
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-normalise-edited(index, text);
+                  }
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-normalise-edited(index, self.text);
+                    }
+                  }
+                }
+
+                // A weighted generator's values, each with how often it comes up.
+                if slot.is-weighted : Field {
+                  text: slot.weights;
+                  placeholder-text: "7:3, 12:1 — value:weight";
+                  font-size: 12px;
+                  horizontal-stretch: 1;
+                  edited(text) => {
+                    root.slot-typed(index, 3, text);
+                  }
+                  accepted(text) => {
+                    self.leave();
+                    root.slot-weights-edited(index, text);
+                  }
+                  changed has-focus => {
+                    if (!self.has-focus) {
+                      root.slot-weights-edited(index, self.text);
+                    }
+                  }
+                }
+
                 // A ramp: its shape, the range it sweeps, how many bars it takes, and whether
                 // it lands on whole numbers. Four controls, because a ramp is the one
                 // generator whose whole behaviour is in its configuration.
@@ -2285,6 +2401,9 @@ export component RulesWindow inherits Window {
                   placeholder-text: "0 - 1";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  edited(text) => {
+                    root.slot-typed(index, 1, text);
+                  }
                   accepted(text) => {
                     self.leave();
                     root.slot-range-edited(index, text);
@@ -2342,7 +2461,7 @@ export component RulesWindow inherits Window {
                 // Something stretchy for the kinds that offer no field of their own, so the
                 // row does not collapse around the dropdown.
                 if !slot.takes-pool && !slot.is-fixed && !slot.is-live && !slot.is-ramp
-                    : Rectangle {
+                    && !slot.is-weighted : Rectangle {
                   horizontal-stretch: 1;
                 }
 
@@ -2742,6 +2861,9 @@ export component RulesWindow inherits Window {
                   placeholder-text: "0";
                   font-size: 12px;
                   width: 72px;
+                  edited(text) => {
+                    root.follow-typed(index, 0, text);
+                  }
                   accepted(text) => {
                     // Focus first, callback second. The callback rebuilds these rows — that is
                     // how a box comes back showing a value the controller normalised — and a
@@ -2777,6 +2899,9 @@ export component RulesWindow inherits Window {
                   text: owed.delay;
                   font-size: 12px;
                   width: 68px;
+                  edited(text) => {
+                    root.follow-typed(index, 1, text);
+                  }
                   accepted(text) => {
                     self.leave();
                     root.follow-delay-edited(index, text);
@@ -2961,6 +3086,9 @@ export component RulesWindow inherits Window {
   // title bar can bind to them two-way. Written by the C++ side on every selection.
   in-out property <string> rule-name;
   in-out property <bool> rule-enabled;
+  /// Why the selected rule will not fire, in words — `Rule::problem()` — or empty. The list's
+  /// dot says *that* a rule is broken; this says what to do about it.
+  in property <string> rule-problem;
   /// §5.7's per-rule mute — see the MUTE button for why it is not the same as `rule-enabled`.
   in-out property <bool> rule-muted;
   /// How often this rule is currently firing against how often it was written to — "half as

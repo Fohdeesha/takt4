@@ -45,8 +45,8 @@ but Windows is the only platform currently built and tested.
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
   stops the tracker, reseeds anything or drops the lock. A ÷2 or ×2 lasts for the record
   it was pressed on and is dropped when the next one takes over, unless you tick **keep
-  for the next track**. From the keyboard: **T** taps, **D** snaps the downbeat and **Esc**
-  is PANIC (in a text box, Esc just leaves the box).
+  for the next track**. From the keyboard: **T** taps, **D** snaps the downbeat, **M** fires
+  the manual rules and **Esc** is PANIC (in a text box, Esc just leaves the box).
 - **Rides out the rig failing.** If the interface stops sending — unplugged, power-cycled,
   reset by its driver, or moved to another sample rate by another program — the readout
   says **NO AUDIO** and takt4 reopens it as soon as it answers, while Link and the MIDI clock
@@ -104,7 +104,10 @@ including everything that was tried and rejected.
 ## Outputs
 
 Each output has a name, a kind, a destination, an enable and an offset, and rules can be
-routed to any subset of them. Link and MIDI clock are their own rows.
+routed to any subset of them. Link and MIDI clock are their own rows. Rename an output — or
+a fixture — whenever you like: rules follow the output itself, not what it is called. An
+output given as a host name rather than an address is looked up in the background, and the
+status line says so if it cannot be found.
 
 The outputs are live from the moment takt4 opens, not from **START**: Link is joined as
 soon as its switch is on, and a fixture can be identified or tested before any music is
@@ -136,18 +139,25 @@ Open **triggers**. A rule is three columns:
 
 - **when** — every beat, every N beats, every bar, every N bars, on the downbeat, on a
   tempo change, on lock or unlock, when the intensity changes (takt4 tells a breakdown
-  from a drop out of the audio it is already analysing), on a manual hotkey, or on a
-  Euclidean pattern: 3-in-8 is the tresillo, 5-in-16 the bossa, locked to the tracker's
-  own beat rather than a clock of its own.
+  from a drop out of the audio it is already analysing), on a manual press — the **M**
+  key, `/takt4/ctl/manual`, or a pad bound with LEARN — or on a Euclidean pattern: 3-in-8
+  is the tresillo, 5-in-16 the bossa, locked to the tracker's own beat rather than a clock
+  of its own.
 - **only if** — confidence above a threshold, intensity in a set, BPM in a range, a
   probability, a cooldown.
 - **send** — an OSC message; a MIDI note, note off, CC, program change or pitch bend; or a
   lighting effect aimed at your fixtures. OSC and MIDI go to whichever outputs you tick.
-  Any number in it can be a generator: shuffle, random, round-robin, weighted, fixed, a
-  live value (BPM, bar, confidence, meter, intensity), or a ramp that sweeps over a whole
-  number of bars, locked to the downbeat. Then a sequence of follow-ups — a release, or
-  something else entirely — each delayed in milliseconds, beats or bars from the moment the
-  rule fired.
+  Any number in it can be a generator: shuffle, random, round-robin, weighted (`7:3, 12:1`
+  is 7 three times as often as 12), fixed, a live value (BPM, BPM across a host's range such
+  as Resolume's 20–500, bar, confidence, meter, intensity), or a ramp that sweeps over a
+  whole number of bars, locked to the downbeat. Then a sequence of follow-ups — a release,
+  or something else entirely — each delayed in milliseconds, beats or bars from the moment
+  the rule fired.
+
+A rule switched to a MIDI note, CC or program change does nothing until you choose its
+number, and a rule that will not fire for any reason says why on its card and in the list.
+Editing a rule changes what you changed and nothing else: its shuffle carries on where it
+was, its cooldown keeps running, and a switch a control surface flipped stays flipped.
 
 Two live controls sit beside each rule and are **not** saved with it, because they are
 performance gestures rather than configuration: **mute**, which leaves the rule running and
@@ -174,6 +184,7 @@ it to the network. Every address hangs off the same prefix as the outputs:
 /takt4/ctl/tempo/double             ×2
 /takt4/ctl/lock            <0|1>    pin the lock, or release it
 /takt4/ctl/panic           [0|1]    halt every rule; bare engages
+/takt4/ctl/manual                   fire the rules whose trigger is a manual press
 /takt4/ctl/rule/<id>/enable <0|1>   arm a rule, or take it out of the show
 /takt4/ctl/rule/<id>/mute   <0|1>   keep it running, stop it sending
 /takt4/ctl/rule/<id>/double         fire half as often — press twice for a quarter

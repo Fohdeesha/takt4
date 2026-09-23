@@ -55,14 +55,19 @@ enum class ControlAction : std::uint8_t {
     RuleRate,
     /// `/ctl/rule/<id>/reset` — back to the interval the rule was written with.
     RuleReset,
+    /// `/ctl/manual` — fires every rule whose trigger is "manual hotkey". That trigger was
+    /// offered by the editor and the README with nothing anywhere that could fire it, so a rule
+    /// set to it was a rule that never did anything (the audit's M7). A button, bare.
+    Manual,
 };
 
 /// Every action, in the order a UI should offer them for binding.
-inline constexpr std::array<ControlAction, 12> kControlActions{
+inline constexpr std::array<ControlAction, 13> kControlActions{
     ControlAction::Tap,         ControlAction::Downbeat, ControlAction::TempoHalve,
     ControlAction::TempoDouble, ControlAction::Lock,     ControlAction::Panic,
     ControlAction::RuleEnable,  ControlAction::RuleMute, ControlAction::RuleDouble,
-    ControlAction::RuleHalve,   ControlAction::RuleRate, ControlAction::RuleReset};
+    ControlAction::RuleHalve,   ControlAction::RuleRate, ControlAction::RuleReset,
+    ControlAction::Manual};
 
 /// True where the action needs a rule named as well — the six `rule/<id>/…` verbs.
 ///

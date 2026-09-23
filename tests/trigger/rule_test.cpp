@@ -629,3 +629,60 @@ TEST_CASE("what a fire records is what the kind actually sends", "[trigger][rule
         CHECK(bare.lastSlots().size() == 2);
     }
 }
+
+TEST_CASE("a MIDI rule waits for a number somebody chose", "[trigger][rule]") {
+    // The audit's C7: a rule switched to MIDI CC fired CC 1 to 8 at a value of one on every bar,
+    // to every MIDI output — CC 7 at one is a synth's volume gone. The operator's call: the rule
+    // stays armed, does nothing, and says what it is waiting for.
+    Rule::Config config;
+    config.id = "stab";
+    config.number = fixedAt(60);
+    config.numberChosen = false;
+    Context context;
+    context.bpm = 120.0;
+    context.confidence = 1.0;
+    context.locked = true;
+
+    const std::pair<Message::Kind, const char*> kinds[] = {
+        {Message::Kind::MidiNote, "choose a note number"},
+        {Message::Kind::MidiNoteOff, "choose a note number"},
+        {Message::Kind::MidiCc, "choose a controller number"},
+        {Message::Kind::MidiProgramChange, "choose a program number"},
+    };
+    for (const auto& [kind, problem] : kinds) {
+        config.sendKind = kind;
+        Rule waiting(config);
+        INFO(problem);
+        CHECK_FALSE(waiting.valid());
+        CHECK(waiting.problem() == problem);
+
+        config.numberChosen = true;
+        Rule chosen(config);
+        CHECK(chosen.valid());
+        REQUIRE(chosen.fire(context).has_value());
+        CHECK(chosen.fire(context)->number == 60);
+        config.numberChosen = false;
+    }
+
+    SECTION("pitch bend has no number to wait for") {
+        config.sendKind = Message::Kind::MidiPitchBend;
+        CHECK(Rule(config).valid());
+    }
+    SECTION("and nor do OSC and lighting, whatever the flag says") {
+        config.sendKind = Message::Kind::Osc;
+        config.address = "/go";
+        CHECK(Rule(config).valid());
+    }
+}
+
+TEST_CASE("a note is a note on or off, and nothing else is the same number", "[trigger][rule]") {
+    using takt4::trigger::sameNumber;
+    CHECK(sameNumber(Message::Kind::MidiNote, Message::Kind::MidiNoteOff));
+    CHECK(sameNumber(Message::Kind::MidiNoteOff, Message::Kind::MidiNote));
+    CHECK(sameNumber(Message::Kind::MidiCc, Message::Kind::MidiCc));
+    CHECK_FALSE(sameNumber(Message::Kind::MidiNote, Message::Kind::MidiCc));
+    CHECK_FALSE(sameNumber(Message::Kind::MidiCc, Message::Kind::MidiProgramChange));
+    CHECK_FALSE(sameNumber(Message::Kind::Osc, Message::Kind::MidiNote));
+    CHECK_FALSE(sameNumber(Message::Kind::MidiPitchBend, Message::Kind::MidiPitchBend));
+    CHECK_FALSE(sameNumber(Message::Kind::Dmx, Message::Kind::MidiCc));
+}

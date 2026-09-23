@@ -53,8 +53,11 @@ export struct TracePoint {
 /// is picked first and the row then asks that kind's question: a host and a port for OSC, a
 /// list of this machine's own devices for MIDI.
 export struct OutputRow {
-  /// What a rule names it by (`trigger::Rule::Config::outputs`). Left empty, the target is
-  /// named after its address, which is what this field meant before names existed.
+  /// What rules are routed to it by — `output::OutputTarget::id`. Never shown and never
+  /// edited: it is what lets the name be changed without un-routing every rule.
+  id: string,
+  /// What the operator calls it. Left empty, the target is named after its address, which is
+  /// what this field meant before names existed.
   name: string,
   /// `output::OutputTarget::Kind`: 0 is OSC, 1 is MIDI, 2 is Art-Net. The index into
   /// `output-kinds`.
@@ -301,6 +304,9 @@ export component MainWindow inherits Window {
   callback redouble();
   callback tap();
   callback snap-downbeat();
+  /// Fires every rule whose trigger is "manual hotkey" — the M key. The same thing
+  /// `/ctl/manual` and a learned MIDI pad do.
+  callback manual-fired();
   /// The state being asked for, not a toggle: the button already shows the current one,
   /// and sending the intention is what makes two quick presses land as two changes.
   callback pin-changed(bool);
@@ -391,6 +397,14 @@ export component MainWindow inherits Window {
       if (event.text == "d" || event.text == "D") {
         if (root.running && !event.repeat) {
           root.snap-downbeat();
+        }
+        return accept;
+      }
+      // The "manual hotkey" trigger's hotkey, which it never had (the audit's M7). Whether or
+      // not the tracker is running: the outputs are, and a manual cue is the operator's own.
+      if (event.text == "m" || event.text == "M") {
+        if (!event.repeat) {
+          root.manual-fired();
         }
         return accept;
       }
@@ -1434,7 +1448,7 @@ export component MainWindow inherits Window {
               // of a frame at 60 Hz and far coarser than the offsets it is used to find. Stretched
               // rather than widened by a fixed amount: what the destination box gave up is a floor,
               // and a window dragged wider should spend the rest here too.
-              Slider {
+              if target.kind-index != 2 : Slider {
                 minimum: -root.output-delay-limit-ms;
                 maximum: root.output-delay-limit-ms;
                 step: 1;
@@ -1447,6 +1461,19 @@ export component MainWindow inherits Window {
                 changed(v) => {
                   root.output-delay-changed(index, v);
                 }
+              }
+              // **An Art-Net row has no offset of its own**, and says so where the slider would
+              // be rather than offering one that does nothing (the audit's M9). A universe is a
+              // stream of frames that never stops, so there is no message to hold back; what moves
+              // with the latency is when an effect starts, and the rig's slider already does that.
+              if target.kind-index == 2 : Text {
+                text: "follows the rig's latency";
+                color: Theme.dim;
+                font-size: 12px;
+                min-width: 70px;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
               }
 
               // Two readouts, not one string, and the difference between them is the point.
@@ -1470,7 +1497,8 @@ export component MainWindow inherits Window {
                   // The row's **total** offset: this target's own plus the whole-rig slider above,
                   // because that is what actually happens to this feed and a reader should not
                   // have to add two numbers on two sides of the window to find it.
-                  property <float> total: target.delay-ms + root.latency-ms;
+                  property <float> total: (target.kind-index == 2 ? 0 : target.delay-ms)
+                      + root.latency-ms;
                   text: (total > 0 ? "+" : "") + round(total) + " ms";
                   color: total != 0 ? Theme.text : Theme.dim;
                   font-size: 12px;
@@ -1481,7 +1509,8 @@ export component MainWindow inherits Window {
                 }
 
                 Text {
-                  property <float> total: target.delay-ms + root.latency-ms;
+                  property <float> total: (target.kind-index == 2 ? 0 : target.delay-ms)
+                      + root.latency-ms;
                   // Blank rather than a fraction of nothing when no tempo is being published.
                   text: total != 0 && root.bpm > 0
                       ? round(total * root.bpm / 600.0) / 100.0 + "♩"

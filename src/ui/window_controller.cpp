@@ -230,6 +230,7 @@ std::string universeList(const std::vector<std::uint16_t>& universes) {
 
 OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::string>& midiPorts) {
     OutputRow row{};
+    row.id = shared(target.id);
     const std::string address = output::formatOutputAddress(target);
     // Through `shared`: a MIDI target is named after its device unless somebody named it, and
     // the device's name is RtMidi's, in whatever encoding the driver gave it.
@@ -368,7 +369,20 @@ control::OscControl::Config oscControlConfig(const settings::Settings& settings)
 WindowController::WindowController(engine::LiveTracker& tracker)
     : WindowController(tracker, settings::Settings{}) {}
 
+namespace {
+
+settings::Settings withIds(settings::Settings settings) {
+    settings::assignIds(settings.preset);
+    return settings;
+}
+
+} // namespace
+
 WindowController::WindowController(engine::LiveTracker& tracker, const settings::Settings& settings)
+    : WindowController(tracker, withIds(settings), IdsAssigned{}) {}
+
+WindowController::WindowController(engine::LiveTracker& tracker, const settings::Settings& settings,
+                                   IdsAssigned)
     : tracker_(tracker), window_(MainWindow::create()), trace_(kTraceLength),
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
@@ -436,6 +450,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_redouble([this] { redouble(); });
     window_->on_tap([this] { tap(); });
     window_->on_snap_downbeat([this] { snapDownbeat(); });
+    window_->on_manual_fired([this] { runner_.post(output::OutputCommand::manual()); });
     window_->on_pin_changed([this](bool pinned) { setPinned(pinned); });
     window_->on_fold_on_changed([this](bool on) { setFoldEnabled(on); });
     window_->on_fold_min_changed([this](float bpm) { setFoldMin(static_cast<double>(bpm)); });
@@ -1140,6 +1155,16 @@ void WindowController::addTarget() {
     row.host = shared("127.0.0.1");
     row.port = shared(std::to_string(kNewTargetPort));
     row.address = shared(addressOf(row, midiPorts_));
+    // Its id from the moment it exists, so a rule can be routed to it before it is renamed and
+    // stays routed after. Checked against the outputs running now as well as the rows, since a
+    // row being filled in has not reached the runner yet.
+    std::vector<output::OutputTarget> known = runner_.snapshot().outputs;
+    for (const OutputRow& other : targetDrafts_) {
+        output::OutputTarget holder;
+        holder.id = std::string(other.id);
+        known.push_back(std::move(holder));
+    }
+    row.id = shared(output::newOutputId(known));
     targetDrafts_.push_back(row);
     // Anything already typed into the rows above survives because `editTarget` kept it here.
     applyTargets();
@@ -1173,9 +1198,18 @@ void WindowController::setTargetDelay(int index, float ms) {
         return; // the slider resending where it already is; see the fold sliders
     }
     draft.delay_ms = clamped;
-    // Applied as it moves, so the offset can be found by ear. That means rebuilding this
-    // target's sender on every step of the drag, which costs a socket and nothing else —
-    // `setOutputs` only reopens what actually changed for MIDI, and a UDP socket is free.
+    // Applied as it moves, so the offset can be found by ear — as the delay alone, by the
+    // output's id. A whole target list per pixel of the drag re-applied every output, flushed
+    // what was held for the others and, before that, rebuilt every sender (the audit's H12).
+    // A row that is not an output yet — still being typed — has nothing to move, and goes the
+    // long way when it becomes one.
+    const std::string id(draft.id);
+    if (!id.empty() && output::findTarget(runner_.snapshot().outputs, id) != nullptr) {
+        runner_.post(output::OutputCommand::outputDelay(id, static_cast<double>(clamped) / 1000.0));
+        publishTargetRows();
+        publishOutputs();
+        return;
+    }
     applyTargets();
 }
 
@@ -1237,6 +1271,12 @@ void WindowController::applyTargets() {
             if (i == 0 && !name.empty()) {
                 target.name = name;
             }
+            // And the row's id, which is what keeps it the same output whatever is typed into
+            // it. A line pasted into a row brings the rest of its targets with their own ids,
+            // or none, and those are given one below.
+            if (i == 0 && !std::string(draft.id).empty()) {
+                target.id = std::string(draft.id);
+            }
             // Both have to agree: the switch is the row's, and "off " in front of a pasted
             // address is that line saying the same thing.
             target.enabled = target.enabled && draft.enabled;
@@ -1249,16 +1289,18 @@ void WindowController::applyTargets() {
             if (i == 0 && target.delaySeconds == 0.0) {
                 target.delaySeconds = static_cast<double>(draft.delay_ms) / 1000.0;
             }
+            // An id for one that came without, and a fresh one for a line pasted twice — before
+            // the row is built from it, so the row holds the id the runner is given.
+            if (target.id.empty() || output::findTarget(targets, target.id) != nullptr) {
+                target.id = output::newOutputId(targets);
+            }
             rows.push_back(rowOf(target, midiPorts_));
             targets.push_back(std::move(target));
         }
     }
 
-    // Two targets with one name would make a rule's routing ambiguous, and `resolveOutputs`
-    // would quietly take the first. Said rather than silently allowed, because the operator
-    // who typed it is the only one who can decide which they meant — and said as what it is:
-    // a duplicate name reported as "not a target" sends somebody looking at an address that
-    // is perfectly fine.
+    // Two targets with one name route fine — rules hold ids — but are two rows nobody can
+    // tell apart in the rule editor's list. Said, so the operator can rename one.
     std::string duplicate;
     for (std::size_t i = 0; i < targets.size() && duplicate.empty(); ++i) {
         for (std::size_t j = i + 1; j < targets.size(); ++j) {
@@ -1283,7 +1325,7 @@ void WindowController::applyTargets() {
         setStatus("outputs: \"" + bad + "\" is not a target, so it was left out.", true);
     } else if (!duplicate.empty()) {
         setStatus("outputs: two are called \"" + duplicate +
-                      "\". A rule routed there reaches the first of them.",
+                      "\". Rename one so the rule editor can tell them apart.",
                   true);
     } else if (!error.empty()) {
         // A MIDI device that is not on this machine. The rest of the rig is still sending;
@@ -2039,6 +2081,31 @@ void WindowController::publishOutputs() {
     window_->set_midi_on(live.midiClockOpen && !clockLost);
     window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
     publishLostMidi(live.lostMidi);
+    publishOutputProblems(live.outputProblems);
+}
+
+void WindowController::publishOutputProblems(const std::vector<std::string>& problems) {
+    if (problems == outputProblemsShown_) {
+        return;
+    }
+    const bool arrived = std::any_of(problems.begin(), problems.end(), [this](const auto& p) {
+        return std::find(outputProblemsShown_.begin(), outputProblemsShown_.end(), p) ==
+               outputProblemsShown_.end();
+    });
+    if (arrived) {
+        // **Every output that cannot be reached, not only the one just found out.** One status
+        // line, and a MIDI device left at home and a host that will not resolve are both things
+        // the operator has to hear about — the second used to write the first away.
+        std::string text;
+        for (const std::string& problem : problems) {
+            text += text.empty() ? "" : "; ";
+            text += problem;
+        }
+        setStatus("outputs: " + text + ".", true);
+    } else if (problems.empty() && !outputProblemsShown_.empty()) {
+        setStatus("outputs: every output can be reached again.", false);
+    }
+    outputProblemsShown_ = problems;
 }
 
 void WindowController::publishLostMidi(const std::vector<std::string>& lost) {

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <random>
 
 namespace takt4::dmx {
 namespace {
@@ -161,7 +163,7 @@ std::uint16_t lastChannelOf(const Fixture& fixture) noexcept {
 
 std::string problemWith(const Fixture& fixture) {
     if (fixture.name.empty()) {
-        return "no name — a rule has nothing to aim at";
+        return "no name — give it one so a rule can pick it";
     }
     if (fixture.channels.empty()) {
         return "no channels — pick a mode";
@@ -193,22 +195,88 @@ std::string problemWith(const Fixture& fixture) {
 }
 
 std::uint64_t resolveFixtures(const std::vector<Fixture>& patch,
-                              const std::vector<std::string>& names) {
+                              const std::vector<std::string>& aims) {
     std::uint64_t mask = 0;
-    if (names.empty()) {
+    if (aims.empty()) {
         return mask; // see the header: no fixtures, not every fixture
     }
     const std::size_t count = std::min(patch.size(), kMaxRoutableFixtures);
     for (std::size_t i = 0; i < count; ++i) {
         const Fixture& fixture = patch[i];
-        for (const std::string& name : names) {
-            if (name == fixture.name || (!fixture.group.empty() && name == fixture.group)) {
+        for (const std::string& aim : aims) {
+            if ((!fixture.id.empty() && aim == fixture.id) ||
+                (!fixture.group.empty() && aim == fixture.group)) {
                 mask |= std::uint64_t{1} << i;
                 break;
             }
         }
     }
     return mask;
+}
+
+const Fixture* findFixture(const std::vector<Fixture>& patch, std::string_view id) noexcept {
+    if (id.empty()) {
+        return nullptr;
+    }
+    for (const Fixture& fixture : patch) {
+        if (fixture.id == id) {
+            return &fixture;
+        }
+    }
+    return nullptr;
+}
+
+std::string newFixtureId(const std::vector<Fixture>& patch) {
+    static thread_local std::mt19937_64 random{std::random_device{}()};
+    for (;;) {
+        char text[16] = {};
+        std::snprintf(text, sizeof text, "f-%08x", static_cast<unsigned int>(random()));
+        std::string id(text);
+        if (findFixture(patch, id) == nullptr) {
+            return id;
+        }
+    }
+}
+
+void ensureFixtureIds(std::vector<Fixture>& patch) {
+    for (std::size_t i = 0; i < patch.size(); ++i) {
+        bool taken = patch[i].id.empty();
+        for (std::size_t j = 0; j < i && !taken; ++j) {
+            taken = patch[j].id == patch[i].id;
+        }
+        if (taken) {
+            patch[i].id = newFixtureId(patch);
+        }
+    }
+}
+
+void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch) {
+    std::vector<std::string> out;
+    out.reserve(aims.size());
+    for (const std::string& aim : aims) {
+        if (findFixture(patch, aim) != nullptr) {
+            out.push_back(aim);
+            continue;
+        }
+        bool isGroup = false;
+        bool named = false;
+        for (const Fixture& fixture : patch) {
+            isGroup = isGroup || (!fixture.group.empty() && fixture.group == aim);
+            if (!fixture.id.empty() && fixture.name == aim &&
+                std::find(out.begin(), out.end(), fixture.id) == out.end()) {
+                // Every fixture of that name: two called the same were both reached before,
+                // and still are.
+                out.push_back(fixture.id);
+                named = true;
+            }
+        }
+        // A label is kept as a label, and so is something that matched nothing at all — a
+        // name that was a group and a fixture both keeps reaching the group too.
+        if (isGroup || !named) {
+            out.push_back(aim);
+        }
+    }
+    aims = std::move(out);
 }
 
 std::vector<PortAddress> universesOf(const std::vector<Fixture>& patch) {

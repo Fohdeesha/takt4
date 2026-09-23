@@ -140,6 +140,16 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
     takt4::testing::RecordingRules rules;
     OscControl control(*engine, localConfig(kAnyPort), &rules);
 
+    SECTION("manual fires the manual rules, as a button") {
+        // The audit's M7: a trigger called "manual hotkey" that nothing could fire. A press
+        // fires; a pad's release, sent as a zero, is understood and does nothing.
+        CHECK(control.dispatch("/takt4/ctl/manual", std::nullopt));
+        CHECK(rules.manuals() == 1);
+        CHECK(control.dispatch("/takt4/ctl/manual", 1.0));
+        CHECK(control.dispatch("/takt4/ctl/manual", 0.0));
+        CHECK(rules.manuals() == 2);
+    }
+
     SECTION("a bare panic engages, because a panic button panics") {
         // §5.7 writes `lock <0|1>` and `rule/<id>/enable <0|1>` with an argument and writes
         // `panic` bare. A message with no argument is the whole gesture.

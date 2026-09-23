@@ -151,6 +151,29 @@ std::string spellNumber(double value) {
     return text;
 }
 
+/// A weighted generator's list as its box shows it: "7:3, 12:1".
+std::string spellWeights(const std::vector<trigger::WeightedChoice>& choices) {
+    std::string text;
+    for (const trigger::WeightedChoice& choice : choices) {
+        if (!text.empty()) {
+            text += ", ";
+        }
+        choice.value.appendTo(text);
+        text += ":" + spellNumber(choice.weight);
+    }
+    return text;
+}
+
+/// `staleRows`, added to `into`: whether any row of `model` has to be built again. The
+/// indices are kept for `rebuildRows` to renew one at a time.
+template <typename Row, typename Changed>
+bool markStale(const slint::VectorModel<Row>& model, const std::vector<Row>& rows,
+               std::vector<std::size_t>& into, Changed changed) {
+    const std::vector<std::size_t> stale = staleRows(model, rows, changed);
+    into.insert(into.end(), stale.begin(), stale.end());
+    return !stale.empty();
+}
+
 /// The live interval multiplier in the words an operator thinks in, or **empty** at 1.
 ///
 /// The multiplier is on the *interval*, so 2 is half as often — which is exactly backwards
@@ -207,7 +230,7 @@ bool targetTakes(trigger::Message::Kind kind, const output::OutputTarget& target
                                  : target.kind == output::OutputTarget::Kind::Osc;
 }
 
-std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::string>& names,
+std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::string>& ids,
                             const std::vector<output::OutputTarget>& targets) {
     // Only what this kind can reach — the same filter the tick list uses, because a line
     // reading "every output: RDM10" over a MIDI rule names a node the rule can never send to.
@@ -222,7 +245,7 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
                    ? "no outputs yet"
                    : std::string("no ") + (trigger::isMidi(kind) ? "MIDI" : "OSC") + " output yet";
     }
-    if (names.empty()) {
+    if (ids.empty()) {
         std::string all = "every output: ";
         for (std::size_t i = 0; i < reachable.size(); ++i) {
             all += i == 0 ? "" : ", ";
@@ -230,29 +253,29 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
         }
         return all;
     }
-    // Two ways a named output can reach nothing, and they are different mistakes. A name this
-    // rig has not got is a preset from somewhere else and the answer is "plug it in". A name
-    // it *has* on the wrong kind of target — a MIDI rule still routed to an OSC feed after the
-    // send kind was changed — is a routing the operator has to undo, and saying "no output
-    // called wall" over an output plainly called wall would read as a bug in takt4.
-    std::string missing;
+    // Two ways a routed output can reach nothing, and they are different mistakes. One that
+    // has been deleted is gone and can only be un-ticked. One this rig *has* on the wrong kind
+    // of target — a MIDI rule still routed to an OSC feed after the send kind was changed — is
+    // a routing the operator has to undo, and saying "gone" over an output plainly there would
+    // read as a bug in takt4.
+    std::size_t gone = 0;
     std::string wrongKind;
     std::size_t reached = 0;
-    for (const std::string& name : names) {
-        const output::OutputTarget* const target = output::findTarget(targets, name);
+    for (const std::string& id : ids) {
+        const output::OutputTarget* const target = output::findTarget(targets, id);
         if (target != nullptr && targetTakes(kind, *target)) {
             ++reached;
         } else if (target != nullptr) {
             wrongKind += wrongKind.empty() ? "" : ", ";
-            wrongKind += name;
+            wrongKind += target->name;
         } else {
-            missing += missing.empty() ? "" : ", ";
-            missing += name;
+            ++gone;
         }
     }
     std::string trouble;
-    if (!missing.empty()) {
-        trouble = "no output called " + missing;
+    if (gone > 0) {
+        trouble = gone == 1 ? "1 output it was routed to is gone"
+                            : std::to_string(gone) + " outputs it was routed to are gone";
     }
     if (!wrongKind.empty()) {
         trouble += trouble.empty() ? "" : "; ";
@@ -267,6 +290,11 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
                         : "reaches " + std::to_string(reached) +
                               (reached == 1 ? " output; " : " outputs; ") + trouble;
 }
+
+/// What a MIDI rule's value starts at: a velocity that is plainly heard without being the
+/// loudest, and the centre of a pitch bend, which is no bend at all.
+constexpr std::int32_t kVelocity = 100;
+constexpr std::int32_t kBendRest = 8192;
 
 /// What a kind calls the number it carries — "note 96" and "program 96" are different
 /// instructions, and the label beside the box is the only thing that says which is about to
@@ -792,6 +820,16 @@ RulesController::RulesController(output::OutputRunner& runner,
         [this](int slot, const slint::SharedString& t) { setSlotRange(slot, std::string(t)); });
     window_->on_slot_values_edited(
         [this](int slot, const slint::SharedString& t) { setSlotValues(slot, std::string(t)); });
+    window_->on_slot_typed([this](int slot, int field, const slint::SharedString& t) {
+        noteTyping(false, slot, field, std::string(t));
+    });
+    window_->on_follow_typed([this](int index, int field, const slint::SharedString& t) {
+        noteTyping(true, index, field, std::string(t));
+    });
+    window_->on_slot_normalise_edited(
+        [this](int slot, const slint::SharedString& t) { setSlotNormalise(slot, std::string(t)); });
+    window_->on_slot_weights_edited(
+        [this](int slot, const slint::SharedString& t) { setSlotWeights(slot, std::string(t)); });
     window_->on_slot_no_repeat_changed([this](int slot, int n) { setSlotNoRepeat(slot, n); });
     window_->on_slot_color_changed([this](int slot, float hue, float saturation, float bright) {
         setSlotColor(slot, hue, saturation, bright);
@@ -831,6 +869,7 @@ void RulesController::show() {
 }
 
 void RulesController::hide() {
+    commitTyping();
     window_->hide();
     visible_ = false;
     // A picker goes with the window, and nothing in the markup will say so — a popup reports
@@ -860,6 +899,67 @@ trigger::Rule::Config* RulesController::current() noexcept {
 
 const trigger::Rule::Config* RulesController::current() const noexcept {
     return const_cast<RulesController*>(this)->current();
+}
+
+void RulesController::noteTyping(bool followUp, int index, int field, std::string text) {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    typing_ = Typing{rule->id, followUp, index, field, std::move(text)};
+}
+
+void RulesController::typed(bool followUp, int index) noexcept {
+    if (typing_ && typing_->followUp == followUp && typing_->index == index) {
+        typing_.reset();
+    }
+}
+
+void RulesController::commitTyping() {
+    if (!typing_) {
+        return;
+    }
+    const Typing pending = *typing_;
+    typing_.reset();
+    const Rule::Config* rule = current();
+    if (rule == nullptr || rule->id != pending.ruleId) {
+        return; // the rule it was typed for is not the one showing; nothing to put it in
+    }
+    if (pending.followUp) {
+        if (pending.field == 0) {
+            setFollowValue(pending.index, pending.text);
+        } else {
+            setFollowDelay(pending.index, pending.text);
+        }
+        return;
+    }
+    switch (pending.field) {
+    case 0:
+        setSlotFixed(pending.index, pending.text);
+        break;
+    case 1:
+        setSlotRange(pending.index, pending.text);
+        break;
+    case 2:
+        setSlotValues(pending.index, pending.text);
+        break;
+    case 3:
+        setSlotWeights(pending.index, pending.text);
+        break;
+    case 4:
+        setSlotNormalise(pending.index, pending.text);
+        break;
+    default:
+        break;
+    }
+}
+
+void RulesController::choseSlot(int slot) noexcept {
+    // The number is slot 0 on every kind that sends one — see `slotConfig` below.
+    Rule::Config* rule = current();
+    if (rule != nullptr && slot == 0 && trigger::sendsNumber(rule->sendKind)) {
+        rule->numberChosen = true;
+    }
 }
 
 Generator::Config* RulesController::slotConfig(int slot) noexcept {
@@ -961,6 +1061,8 @@ void RulesController::matchSegmentsToAddress(Rule::Config& rule) {
 }
 
 void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
+    // Nothing half-typed is carried into a set it was not typed for.
+    typing_.reset();
     // A whole new set, so the counts and last values start again. A preset may well reuse
     // the ids of the set it replaces — `add` numbers them "rule1", "rule2" — and a card
     // inheriting a number from a different rule that happened to share its id is a readout
@@ -1002,6 +1104,9 @@ void RulesController::pickWith(int index, bool control, bool shift) {
     if (index < 0 || static_cast<std::size_t>(index) >= rules_.size()) {
         return;
     }
+    // What is half-typed in a box goes to the rule it was typed into, before that stops being
+    // the rule on screen — see `typing_`.
+    commitTyping();
     chosen_.resize(rules_.size(), false);
     if (control) {
         // In or out, one row at a time. Never out of the last one: a selection of nothing has
@@ -1072,6 +1177,7 @@ void RulesController::pickWith(int index, bool control, bool shift) {
 }
 
 void RulesController::add() {
+    commitTyping();
     Rule::Config rule;
     // A fresh id that is legal as an OSC address segment (§5.7 addresses a rule by it) and
     // that nothing else has. Numbered rather than named, because a name is the operator's
@@ -1122,6 +1228,7 @@ void RulesController::add() {
 }
 
 void RulesController::remove() {
+    commitTyping();
     const std::vector<int> going = chosen();
     if (going.empty()) {
         return;
@@ -1148,6 +1255,7 @@ void RulesController::remove() {
 }
 
 void RulesController::duplicate() {
+    commitTyping();
     const std::vector<int> sources = chosen();
     if (sources.empty()) {
         return;
@@ -1197,6 +1305,7 @@ void RulesController::duplicate() {
 }
 
 void RulesController::removeAt(int index) {
+    commitTyping();
     if (index < 0 || static_cast<std::size_t>(index) >= chosen_.size() ||
         !chosen_[static_cast<std::size_t>(index)]) {
         pick(index);
@@ -1205,6 +1314,7 @@ void RulesController::removeAt(int index) {
 }
 
 void RulesController::duplicateAt(int index) {
+    commitTyping();
     if (index < 0 || static_cast<std::size_t>(index) >= chosen_.size() ||
         !chosen_[static_cast<std::size_t>(index)]) {
         pick(index);
@@ -1216,6 +1326,7 @@ void RulesController::addRig(int index) {
     if (index <= 0) {
         return; // the picker's own label
     }
+    commitTyping();
     const std::vector<Rule::Config> added = rigPresetRules(static_cast<std::size_t>(index));
     if (added.empty()) {
         return;
@@ -1370,19 +1481,21 @@ void RulesController::setOutputs(const std::string& text) {
     for (const std::string_view part : split(text, ",;")) {
         rule->outputs.emplace_back(part);
     }
+    // Names are what a person types; the rule keeps the ids of the outputs they name.
+    output::routeByIds(rule->outputs, targets_);
     commit();
     publishSelected();
 }
 
-void RulesController::setOutputChosen(const std::string& name, bool chosen) {
+void RulesController::setOutputChosen(const std::string& id, bool chosen) {
     Rule::Config* rule = current();
-    if (rule == nullptr || name.empty()) {
+    if (rule == nullptr || id.empty()) {
         return;
     }
-    const auto at = std::find(rule->outputs.begin(), rule->outputs.end(), name);
+    const auto at = std::find(rule->outputs.begin(), rule->outputs.end(), id);
     if (chosen) {
         if (at == rule->outputs.end()) {
-            rule->outputs.push_back(name);
+            rule->outputs.push_back(id);
         }
     } else if (at != rule->outputs.end()) {
         rule->outputs.erase(at);
@@ -1415,19 +1528,19 @@ void RulesController::setPatch(std::vector<dmx::Fixture> patch) {
     publishSelected();
 }
 
-void RulesController::setFixtureChosen(const std::string& name, bool chosen) {
+void RulesController::setFixtureChosen(const std::string& key, bool chosen) {
     Rule::Config* rule = current();
-    if (rule == nullptr || name.empty()) {
+    if (rule == nullptr || key.empty()) {
         return;
     }
-    std::vector<std::string>& names = rule->dmx.fixtures;
-    const auto at = std::find(names.begin(), names.end(), name);
+    std::vector<std::string>& aims = rule->dmx.fixtures;
+    const auto at = std::find(aims.begin(), aims.end(), key);
     if (chosen) {
-        if (at == names.end()) {
-            names.push_back(name);
+        if (at == aims.end()) {
+            aims.push_back(key);
         }
-    } else if (at != names.end()) {
-        names.erase(at);
+    } else if (at != aims.end()) {
+        aims.erase(at);
     }
     // Un-ticking the last one leaves the rule reaching **nothing**, which is the opposite of
     // what un-ticking the last output does. `Rule::validate` reports it as a problem, so the
@@ -1556,7 +1669,33 @@ void RulesController::pickSend(int index) {
         static_cast<std::size_t>(index) >= trigger::kMessageKinds.size()) {
         return;
     }
+    const trigger::Message::Kind was = rule->sendKind;
     rule->sendKind = trigger::kMessageKinds[static_cast<std::size_t>(index)];
+    // **A number nobody chose does not go out** (the audit's C7, and the operator's call: the
+    // rule stays armed and waits). A rule switched to a note or a controller used to fire at
+    // once with whatever the number generator held — a shuffle over 1 to 8 by default, so CC 7
+    // at one on channel 1, to every MIDI output, on some bar: a synth's volume gone. A number
+    // carries over only where it means the same thing (`trigger::sameNumber`).
+    if (trigger::sendsNumber(rule->sendKind) && !trigger::sameNumber(was, rule->sendKind)) {
+        const std::uint64_t seed = rule->number.seed;
+        rule->number = Generator::Config{};
+        rule->number.kind = GeneratorKind::Fixed;
+        rule->number.seed = seed;
+        rule->numberChosen = false;
+    }
+    // And a velocity that is still another kind's default becomes this kind's. A new rule's
+    // value is OSC's `1`, which as a velocity is a note too quiet to hear; pitch bend is 14-bit
+    // with its rest at 8192, where 100 is a bend nearly all the way down.
+    if (trigger::sendsValue(rule->sendKind) && rule->value.kind == GeneratorKind::Fixed) {
+        const trigger::Value rest = trigger::Value::ofInt(
+            rule->sendKind == trigger::Message::Kind::MidiPitchBend ? kBendRest : kVelocity);
+        for (const std::int32_t untouched : {1, kVelocity, kBendRest}) {
+            if (rule->value.fixed == trigger::Value::ofInt(untouched)) {
+                rule->value.fixed = rest;
+                break;
+            }
+        }
+    }
     // A follow-up left on the far side of the OSC/MIDI divide would be **silently dropped** at
     // fire time (`trigger::followUpFits`) — a clip pressed and never released, which is the
     // worst failure this editor has. Turned into releases instead, which is what an operator
@@ -1867,6 +2006,7 @@ void RulesController::setFollowNumber(int index, int number) {
 }
 
 void RulesController::setFollowValue(int index, const std::string& text) {
+    typed(true, index);
     if (trigger::FollowUp* entry = followConfig(index)) {
         entry->value = parseValue(text);
         commit();
@@ -1875,6 +2015,7 @@ void RulesController::setFollowValue(int index, const std::string& text) {
 }
 
 void RulesController::setFollowDelay(int index, const std::string& text) {
+    typed(true, index);
     trigger::FollowUp* entry = followConfig(index);
     if (entry == nullptr) {
         return;
@@ -1952,6 +2093,7 @@ void RulesController::pickSlotKind(int slot, int kind) {
         }
         pickedPalette_.clear();
     }
+    choseSlot(slot);
     commit();
     publishSelected();
 }
@@ -1973,10 +2115,12 @@ void RulesController::setSlotPool(int slot, bool list) {
             }
         }
     }
+    choseSlot(slot);
     commit();
 }
 
 void RulesController::setSlotRange(int slot, const std::string& text) {
+    typed(false, slot);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -1994,10 +2138,12 @@ void RulesController::setSlotRange(int slot, const std::string& text) {
     }
     config->low = static_cast<std::int32_t>(*low);
     config->high = static_cast<std::int32_t>(*high);
+    choseSlot(slot);
     commit();
 }
 
 void RulesController::setSlotValues(int slot, const std::string& text) {
+    typed(false, slot);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2009,6 +2155,64 @@ void RulesController::setSlotValues(int slot, const std::string& text) {
     // Typing a list is saying the values come from a list, so the switch follows rather than
     // making the operator tick a box to make what they typed take effect.
     config->pool = trigger::Pool::List;
+    choseSlot(slot);
+    commit();
+}
+
+void RulesController::setSlotNormalise(int slot, const std::string& text) {
+    typed(false, slot);
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr) {
+        return;
+    }
+    const std::vector<std::string_view> parts = split(text, "-– ");
+    const std::optional<double> low = parts.size() == 2 ? readNumber(parts[0]) : std::nullopt;
+    const std::optional<double> high = parts.size() == 2 ? readNumber(parts[1]) : std::nullopt;
+    if (!low || !high || !(*high > *low)) {
+        setStatus("A tempo range is two numbers, the lower first, like 20 - 500.", true);
+        return;
+    }
+    config->normaliseLow = *low;
+    config->normaliseHigh = *high;
+    choseSlot(slot);
+    commit();
+}
+
+void RulesController::setSlotWeights(int slot, const std::string& text) {
+    typed(false, slot);
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr) {
+        return;
+    }
+    std::vector<trigger::WeightedChoice> choices;
+    for (const std::string_view part : split(text, ",;")) {
+        const std::string_view entry = trim(part);
+        if (entry.empty()) {
+            continue;
+        }
+        trigger::WeightedChoice choice;
+        const std::size_t colon = entry.rfind(':');
+        if (colon != std::string_view::npos) {
+            const std::optional<double> weight = readNumber(trim(entry.substr(colon + 1)));
+            if (!weight || *weight < 0.0) {
+                setStatus("A weight is a number of 0 or more, as in 7:3 — 7 three times as often.",
+                          true);
+                return;
+            }
+            choice.value = parseValue(trim(entry.substr(0, colon)));
+            choice.weight = *weight;
+        } else {
+            choice.value = parseValue(entry);
+        }
+        choices.push_back(choice);
+    }
+    config->choices = std::move(choices);
+    // **No repeat guard on a weighted draw.** The guard refuses the last value and draws again,
+    // so with two values it alternates them and the weights mean nothing — measured: 7:3, 12:1
+    // came out 201 to 199. A weighted generator is asked how *often* each value comes up, and
+    // this row has no "no repeat" box to turn the guard off with, so it is off.
+    config->noRepeatWithin = 0;
+    choseSlot(slot);
     commit();
 }
 
@@ -2040,10 +2244,24 @@ void RulesController::setSlotNoRepeat(int slot, int within) {
 }
 
 void RulesController::setSlotFixed(int slot, const std::string& text) {
-    if (Generator::Config* config = slotConfig(slot)) {
-        config->fixed = parseValue(text);
-        commit();
+    typed(false, slot);
+    Generator::Config* config = slotConfig(slot);
+    if (config == nullptr) {
+        return;
     }
+    const trigger::Value value = parseValue(text);
+    // A MIDI note or controller is a number. Text here would go out as note 0 — and, typed
+    // into a number nobody has chosen yet, would arm the rule on it.
+    const Rule::Config* rule = current();
+    if (slot == 0 && trigger::sendsNumber(rule->sendKind) &&
+        value.kind() == trigger::Value::Kind::Text) {
+        setStatus(std::string("A ") + numberLabelOf(rule->sendKind) + " number is a number, 0 to 127.",
+                  true);
+        return;
+    }
+    config->fixed = value;
+    choseSlot(slot);
+    commit();
 }
 
 void RulesController::setSlotColor(int slot, float hue, float saturation, float brightness) {
@@ -2187,6 +2405,7 @@ void RulesController::addPaletteColor() {
         config->values.push_back(trigger::Value::ofText(dmx::formatColor(dmx::kWhite)));
     }
     commit();
+    rebuildAll_ = true;
     rowsDirty_ = true;
     publishSelected();
 }
@@ -2200,6 +2419,7 @@ void RulesController::removePaletteColor(int index) {
     config->values.erase(config->values.begin() + index);
     pickedPalette_.clear(); // every entry after this one has moved
     commit();
+    rebuildAll_ = true;
     rowsDirty_ = true;
     publishSelected();
 }
@@ -2289,7 +2509,7 @@ void RulesController::publishPalette() {
     // 2026-09-16, and taking this condition out makes the test below it fail with ninety
     // resets for a ninety-pixel drag.
     if (!pickingColor_ &&
-        rowsNeedRebuild(*paletteModel_, rows, [](const PaletteEntry& was, const PaletteEntry& now) {
+        markStale(*paletteModel_, rows, stalePalette_, [](const PaletteEntry& was, const PaletteEntry& now) {
             return was != now;
         })) {
         rowsDirty_ = true;
@@ -2304,7 +2524,36 @@ void RulesController::pickSlotLive(int slot, int source) {
         return;
     }
     config->source = trigger::kLiveSources[static_cast<std::size_t>(source)];
+    choseSlot(slot);
     commit();
+}
+
+void RulesController::adoptLive(const std::vector<output::OutputRunner::LiveRule>& live) {
+    bool enabledMoved = false;
+    for (const output::OutputRunner::LiveRule& one : live) {
+        const auto rule = std::find_if(rules_.begin(), rules_.end(),
+                                       [&one](const Rule::Config& config) { return config.id == one.id; });
+        if (rule == rules_.end()) {
+            continue;
+        }
+        if (rule->enabled != one.enabled) {
+            rule->enabled = one.enabled;
+            enabledMoved = true;
+        }
+        mutedSeen_[one.id] = one.muted;
+        rateSeen_[one.id] = one.rate;
+    }
+    if (enabledMoved && changed_) {
+        changed_(rules_);
+    }
+    publishList();
+    if (const Rule::Config* rule = current()) {
+        window_->set_rule_enabled(rule->enabled);
+        const auto muted = mutedSeen_.find(rule->id);
+        window_->set_rule_muted(muted != mutedSeen_.end() && muted->second);
+        const auto rate = rateSeen_.find(rule->id);
+        window_->set_rule_rate(shared(describeRate(rate == rateSeen_.end() ? 1.0 : rate->second)));
+    }
 }
 
 void RulesController::clearLog() {
@@ -2318,6 +2567,11 @@ void RulesController::tick() {
     if (rowsDirty_) {
         rebuildRows();
     }
+    // What a control surface changed behind this editor's back. See `adoptLive`.
+    if (const std::uint64_t version = runner_.liveRulesVersion(); version != liveSeen_) {
+        liveSeen_ = version;
+        adoptLive(runner_.liveRules());
+    }
     // Drained whether or not the window is up: the buffer is bounded and dropping the
     // oldest, so a log that is never drained would quietly lose the start of a set. It is
     // also the cheapest possible call when nothing has fired.
@@ -2325,15 +2579,19 @@ void RulesController::tick() {
     if (!fired.empty()) {
         const Rule::Config* rule = current();
         for (const output::OutputRunner::Fired& entry : fired) {
-            log_.push_back(spellNumber(entry.when) + "s  " + entry.ruleId + "  " + entry.message);
-            lastFiredAnywhere_ = entry.message;
+            // A muted rule still runs and still "fires" — that is what keeps it in phase — but
+            // nothing left, and the log said it had (the audit's M11).
+            const std::string message =
+                entry.muted ? entry.message + "  (muted, not sent)" : entry.message;
+            log_.push_back(spellNumber(entry.when) + "s  " + entry.ruleId + "  " + message);
+            lastFiredAnywhere_ = message;
             if (!entry.followUp) {
                 // The press, not the release: see `OutputRunner::Fired::followUp`.
                 ++firesSeen_[entry.ruleId];
                 slotsSeen_[entry.ruleId] = entry.slots;
             }
             if (rule != nullptr && entry.ruleId == rule->id) {
-                lastFired_ = entry.message;
+                lastFired_ = message;
                 lastFiredAt_ = entry.when;
             }
         }
@@ -2388,6 +2646,12 @@ void RulesController::publishList() {
         row.chosen = rows.size() < chosen_.size() && chosen_[rows.size()];
         rows.push_back(std::move(row));
     }
+    // And the card's own line for the one being edited, from the same `Rule` — here rather than
+    // only in `publishSelected`, because `commit` does not call that and nearly every edit that
+    // changes whether a rule can fire goes through `commit`.
+    window_->set_rule_problem(selected_ >= 0 && static_cast<std::size_t>(selected_) < rows.size()
+                                  ? rows[static_cast<std::size_t>(selected_)].problem
+                                  : slint::SharedString(""));
     // In place: this runs on the redraw timer whenever a rule fires, and the fire counts
     // move on every beat. See `writeRows`.
     writeRows(*listModel_, rows);
@@ -2399,11 +2663,13 @@ void RulesController::publishSelected() {
     if (rule == nullptr) {
         window_->set_rule_name(slint::SharedString(""));
         window_->set_rule_enabled(false);
+        window_->set_rule_problem(slint::SharedString(""));
         window_->set_address(slint::SharedString(""));
         return;
     }
     window_->set_rule_name(shared(rule->name));
     window_->set_rule_enabled(rule->enabled);
+    window_->set_rule_problem(shared(Rule(*rule).problem()));
 
     const auto triggerIndex =
         std::find(trigger::kTriggers.begin(), trigger::kTriggers.end(), rule->trigger) -
@@ -2479,12 +2745,16 @@ void RulesController::publishFollowUps() {
     // that a change of send kind stranded into releases, so no row can name one.
     //
     // And OSC goes, because on an OSC rule it *is* the first entry: the same address with a
-    // different argument is what a release means, so the two would behave identically. A MIDI
-    // kind matching the rule's own is a different matter and stays — it carries a number of
-    // its own where a release inherits the one that fired, which is a real second gesture.
+    // different argument is what a release means, so the two would behave identically. DMX
+    // goes for the same reason on a lighting rule (the audit's M10): a DMX follow-up with no
+    // effect of its own — and nothing here can give it one — is exactly the release, so the
+    // list offered "release" and "DMX" and both did the same thing. A MIDI kind matching the
+    // rule's own is a different matter and stays — it carries a number of its own where a
+    // release inherits the one that fired, which is a real second gesture.
     std::vector<trigger::Message::Kind> allowed;
     for (const trigger::Message::Kind kind : trigger::kMessageKinds) {
-        if (kind != trigger::Message::Kind::Osc && trigger::followUpFits(kind, rule->sendKind)) {
+        if (kind != trigger::Message::Kind::Osc && kind != trigger::Message::Kind::Dmx &&
+            trigger::followUpFits(kind, rule->sendKind)) {
             allowed.push_back(kind);
         }
     }
@@ -2547,7 +2817,7 @@ void RulesController::publishFollowUps() {
     // Nothing on these rows moves on its own — no live readout — so any change at all is one
     // the controller made and has to get back into a box that may have gone deaf. See
     // `rowsNeedRebuild` and `rowsDirty_`.
-    if (rowsNeedRebuild(*followModel_, rows,
+    if (markStale(*followModel_, rows, staleFollows_,
                         [](const FollowRow& was, const FollowRow& now) { return was != now; })) {
         rowsDirty_ = true;
     }
@@ -2563,13 +2833,13 @@ void RulesController::publishOutputChoices() {
         return;
     }
 
-    const auto names = rule->outputs;
-    const auto named = [&names](const std::string& name) {
-        return std::find(names.begin(), names.end(), name) != names.end();
+    const auto ids = rule->outputs;
+    const auto routed = [&ids](const std::string& id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
     };
 
     std::vector<OutputChoice> rows;
-    rows.reserve(targets_.size() + names.size());
+    rows.reserve(targets_.size() + ids.size());
     for (const output::OutputTarget& target : targets_) {
         // **Only the targets this rule's kind can actually reach.** See `targetTakes`: a MIDI
         // rule ticked against an OSC target sends nothing, and nothing routes to an Art-Net
@@ -2580,23 +2850,22 @@ void RulesController::publishOutputChoices() {
             continue;
         }
         OutputChoice row{};
+        row.key = shared(target.id);
         row.name = shared(target.name);
-        row.chosen = named(target.name);
+        row.chosen = routed(target.id);
         row.missing = false;
         rows.push_back(std::move(row));
     }
-    // Names this rule carries that the rig has no target for — a preset written elsewhere.
-    // Listed rather than dropped, for `Rule::Config::outputs`' own reason: plugging that
-    // output back in should restore the routing, so the name has to survive not being here.
-    //
-    // And names it carries that this rig *has* but this kind cannot reach — a rule switched
-    // from OSC to MIDI while still routed to an OSC target. Same treatment, because the
-    // outcome is the same: the rule names it and it reaches nothing.
-    for (const std::string& name : names) {
-        const output::OutputTarget* const target = output::findTarget(targets_, name);
+    // Outputs this rule is routed to that the rig no longer has, and ones it has that this
+    // kind cannot reach — a rule switched from OSC to MIDI while still routed to an OSC target.
+    // Listed rather than dropped, because the outcome is the same either way: the rule holds
+    // it and it reaches nothing, and the list is where that is seen and un-ticked.
+    for (const std::string& id : ids) {
+        const output::OutputTarget* const target = output::findTarget(targets_, id);
         if (target == nullptr || !targetTakes(rule->sendKind, *target)) {
             OutputChoice row{};
-            row.name = shared(name);
+            row.key = shared(id);
+            row.name = shared(target != nullptr ? target->name : std::string("an output that is gone"));
             row.chosen = true;
             row.missing = true;
             rows.push_back(std::move(row));
@@ -2612,15 +2881,20 @@ void RulesController::publishOutputChoices() {
     // it to route *that* rule un-ticked it and did nothing. Nothing on this row moves on its
     // own, so any change at all is one the controller made and has to get back into a box
     // that may have gone deaf.
-    if (rowsNeedRebuild(*choiceModel_, rows, [](const OutputChoice& was, const OutputChoice& now) {
+    if (markStale(*choiceModel_, rows, staleChoices_, [](const OutputChoice& was, const OutputChoice& now) {
             return was != now;
         })) {
         rowsDirty_ = true;
     }
     writeRows(*choiceModel_, rows);
 
-    window_->set_outputs_all(names.empty());
-    window_->set_outputs_summary(shared(names.empty() ? "every output" : join(names)));
+    std::vector<std::string> shown;
+    for (const std::string& id : ids) {
+        const output::OutputTarget* const target = output::findTarget(targets_, id);
+        shown.push_back(target != nullptr ? target->name : std::string("an output that is gone"));
+    }
+    window_->set_outputs_all(ids.empty());
+    window_->set_outputs_summary(shared(ids.empty() ? "every output" : join(shown)));
 }
 
 void RulesController::publishFixtureChoices() {
@@ -2633,13 +2907,13 @@ void RulesController::publishFixtureChoices() {
         return;
     }
 
-    const std::vector<std::string>& names = rule->dmx.fixtures;
-    const auto named = [&names](const std::string& name) {
-        return std::find(names.begin(), names.end(), name) != names.end();
+    const std::vector<std::string>& aims = rule->dmx.fixtures;
+    const auto aimed = [&aims](const std::string& key) {
+        return std::find(aims.begin(), aims.end(), key) != aims.end();
     };
 
     std::vector<OutputChoice> rows;
-    rows.reserve(patch_.size() + names.size());
+    rows.reserve(patch_.size() + aims.size());
     // Groups first, because aiming at "heads" is what an operator reaches for and a list that
     // buried it under six fixture names would hide the useful half. Each group once, in the
     // order the patch introduces it.
@@ -2651,28 +2925,31 @@ void RulesController::publishFixtureChoices() {
         }
         groups.push_back(fixture.group);
         OutputChoice row{};
+        row.key = shared(fixture.group); // a group is its label; see `dmx::Fixture::group`
         row.name = shared(fixture.group);
-        row.chosen = named(fixture.group);
+        row.chosen = aimed(fixture.group);
         row.missing = false;
         rows.push_back(std::move(row));
     }
     for (const dmx::Fixture& fixture : patch_) {
         OutputChoice row{};
+        row.key = shared(fixture.id);
         row.name = shared(fixture.name);
-        row.chosen = named(fixture.name);
+        row.chosen = aimed(fixture.id);
         row.missing = false;
         rows.push_back(std::move(row));
     }
-    // Names this rule carries that the patch has no fixture or group for — a preset written
-    // on another rig. Listed rather than dropped, for `DmxSend::fixtures`' own reason.
-    for (const std::string& name : names) {
-        const bool here =
-            std::find(groups.begin(), groups.end(), name) != groups.end() ||
-            std::any_of(patch_.begin(), patch_.end(),
-                        [&name](const dmx::Fixture& fixture) { return fixture.name == name; });
+    // What this rule aims at that the patch has no fixture or group for — a fixture since
+    // deleted, or a group label no fixture carries any more. Listed rather than dropped, so
+    // the routing that reaches nothing is seen and can be un-ticked.
+    for (const std::string& key : aims) {
+        const bool here = std::find(groups.begin(), groups.end(), key) != groups.end() ||
+                          dmx::findFixture(patch_, key) != nullptr;
         if (!here) {
             OutputChoice row{};
-            row.name = shared(name);
+            row.key = shared(key);
+            // A group's label reads as itself; a fixture's id means nothing to anybody.
+            row.name = shared(key.rfind("f-", 0) == 0 ? std::string("a fixture that is gone") : key);
             row.chosen = true;
             row.missing = true;
             rows.push_back(std::move(row));
@@ -2681,18 +2958,25 @@ void RulesController::publishFixtureChoices() {
 
     // Tick boxes, which drop their binding the moment they are clicked — see
     // `publishOutputChoices`, which found that the hard way.
-    if (rowsNeedRebuild(*fixtureModel_, rows, [](const OutputChoice& was, const OutputChoice& now) {
+    if (markStale(*fixtureModel_, rows, staleFixtures_, [](const OutputChoice& was, const OutputChoice& now) {
             return was != now;
         })) {
         rowsDirty_ = true;
     }
     writeRows(*fixtureModel_, rows);
 
+    std::vector<std::string> shown;
+    for (const std::string& key : aims) {
+        const dmx::Fixture* const fixture = dmx::findFixture(patch_, key);
+        shown.push_back(fixture != nullptr ? fixture->name
+                        : key.rfind("f-", 0) == 0 ? std::string("a fixture that is gone")
+                                                  : key);
+    }
     window_->set_fixtures_summary(
-        shared(names.empty() ? "nothing — this rule sends nowhere" : join(names)));
-    // What the names actually reach on *this* rig, in fixtures. The count matters: "heads"
+        shared(aims.empty() ? "nothing — this rule sends nowhere" : join(shown)));
+    // What the rule actually reaches on *this* rig, in fixtures. The count matters: "heads"
     // reaching three fixtures and "heads" reaching none look identical in a list of ticks.
-    const std::uint64_t mask = dmx::resolveFixtures(patch_, names);
+    const std::uint64_t mask = dmx::resolveFixtures(patch_, aims);
     std::size_t reached = 0;
     for (std::size_t i = 0; i < patch_.size() && i < dmx::kMaxRoutableFixtures; ++i) {
         if ((mask & (std::uint64_t{1} << i)) != 0) {
@@ -2700,7 +2984,7 @@ void RulesController::publishFixtureChoices() {
         }
     }
     std::string available;
-    if (names.empty()) {
+    if (aims.empty()) {
         available = "pick at least one — a DMX rule with no fixtures does nothing";
     } else if (reached == 0) {
         available = "reaches nothing on this rig";
@@ -2899,6 +3183,11 @@ void RulesController::publishSlots() {
         row.fixed = shared(spellValue(config.fixed));
         row.is_fixed = config.kind == GeneratorKind::Fixed;
         row.is_live = config.kind == GeneratorKind::Live;
+        row.is_normalised = row.is_live && config.source == trigger::LiveSource::BpmNormalised;
+        row.normalise = shared(spellNumber(config.normaliseLow) + " - " +
+                               spellNumber(config.normaliseHigh));
+        row.is_weighted = config.kind == GeneratorKind::Weighted;
+        row.weights = shared(spellWeights(config.choices));
         const auto sourceIndex =
             std::find(trigger::kLiveSources.begin(), trigger::kLiveSources.end(), config.source) -
             trigger::kLiveSources.begin();
@@ -3000,6 +3289,12 @@ void RulesController::publishSlots() {
         }
     } else if (trigger::sendsNumber(rule->sendKind)) {
         push(numberLabelOf(rule->sendKind), rule->number);
+        if (!rule->numberChosen) {
+            // An empty box asking for one, not the zero a fixed generator holds — a zero would
+            // read as a number already chosen, and the rule is not firing because it is not.
+            rows.back().fixed = slint::SharedString("");
+            rows.back().wanting = true;
+        }
     }
     // Program change has nowhere to put a value; pitch bend is nothing but one. `slotConfig`
     // indexes the rows in this same order. DMX built all of its own above.
@@ -3025,7 +3320,7 @@ void RulesController::publishSlots() {
     // this row's swatch and its hex on every pixel, and the picker holding that slider is a
     // popup inside this very repeater. See `pickingColor_`.
     if (!pickingColor_ &&
-        rowsNeedRebuild(*slotModel_, rows, [](const SlotRow& was, const SlotRow& now) {
+        markStale(*slotModel_, rows, staleSlots_, [](const SlotRow& was, const SlotRow& now) {
             SlotRow ignoring = was;
             ignoring.last = now.last;
             return ignoring != now;
@@ -3046,10 +3341,27 @@ void RulesController::rebuildRows() {
         return;
     }
     rowsDirty_ = false;
-    // Emptied, so the repeaters throw their items away and build new ones — which is the only
-    // way a `LineEdit` that has been typed into, or a `CheckBox` that has been clicked,
-    // starts following its model again. Publishing straight afterwards leaves nothing on
-    // screen for a frame.
+    if (!rebuildAll_) {
+        // **Only the rows that moved** — see `renewRows`. A new element is the only way a
+        // `LineEdit` that has been typed into, or a `CheckBox` that has been clicked, starts
+        // following its model again, and the rows around it — the box just clicked into among
+        // them — have no reason to be thrown away with it.
+        renewRows(*slotModel_, staleSlots_);
+        renewRows(*paletteModel_, stalePalette_);
+        renewRows(*followModel_, staleFollows_);
+        renewRows(*choiceModel_, staleChoices_);
+        renewRows(*fixtureModel_, staleFixtures_);
+        return;
+    }
+    rebuildAll_ = false;
+    staleSlots_.clear();
+    stalePalette_.clear();
+    staleFollows_.clear();
+    staleChoices_.clear();
+    staleFixtures_.clear();
+    // Emptied, so the repeaters throw their items away and build new ones — a palette swatch
+    // added or taken away moves every one after it. Publishing straight afterwards leaves
+    // nothing on screen for a frame.
     slotModel_->clear();
     paletteModel_->clear();
     followModel_->clear();

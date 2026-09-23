@@ -61,6 +61,9 @@ public:
     /// that fires every zero bars is not a thing that may be allowed to exist.
     virtual void setRuleRate(std::string_view id, double factor, bool relative) = 0;
 
+    /// `/ctl/manual` — fires every rule whose trigger is "manual hotkey", conditions and all.
+    virtual void fireManual() = 0;
+
 protected:
     RuleControl() = default;
     RuleControl(RuleControl&&) = default;

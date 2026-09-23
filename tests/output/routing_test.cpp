@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -43,8 +45,21 @@ const takt4::tracking::StateSpaceModel& stateSpace() {
     return loaded;
 }
 
+/// A stable id for a test target, from its name — the shape `newOutputId` makes, so it also
+/// survives the text line. What a rule in these tests is routed by.
+std::string idFor(std::string_view name) {
+    std::uint32_t hash = 2166136261u;
+    for (const char c : name) {
+        hash = (hash ^ static_cast<std::uint8_t>(c)) * 16777619u;
+    }
+    char text[16] = {};
+    std::snprintf(text, sizeof text, "o-%08x", static_cast<unsigned int>(hash));
+    return text;
+}
+
 OutputTarget osc(std::string name, std::uint16_t port) {
     OutputTarget target;
+    target.id = idFor(name);
     target.name = std::move(name);
     target.kind = OutputTarget::Kind::Osc;
     target.host = "127.0.0.1";
@@ -81,7 +96,7 @@ bool sawAddress(const std::vector<std::string>& datagrams, std::string_view addr
 
 } // namespace
 
-TEST_CASE("a target's name survives being written down and read back", "[output][routing]") {
+TEST_CASE("a target's name and id survive being written down and read back", "[output][routing]") {
     const auto roundTrip = [](const OutputTarget& in) {
         OutputTarget out;
         const std::string text = takt4::output::formatOutputTarget(in);
@@ -95,10 +110,20 @@ TEST_CASE("a target's name survives being written down and read back", "[output]
     CHECK(roundTrip(wall) == wall);
 
     OutputTarget lights;
+    lights.id = idFor("lights");
     lights.name = "lights";
     lights.kind = OutputTarget::Kind::Midi;
     lights.device = "MOTU Pro Audio Midi Out 1";
     CHECK(roundTrip(lights) == lights);
+
+    SECTION("a # in a device's name is the device's, in a line written before ids") {
+        OutputTarget pad;
+        REQUIRE(takt4::output::parseOutputTarget("pads = midi Launchpad #2", pad));
+        CHECK(pad.device == "Launchpad #2");
+        CHECK(pad.id.empty());
+        pad.id = idFor("pads");
+        CHECK(roundTrip(pad) == pad);
+    }
 
     OutputTarget off = osc("spare", 9000);
     off.enabled = false;
@@ -115,6 +140,7 @@ TEST_CASE("a target's name survives being written down and read back", "[output]
         CHECK(bare.port == 7000);
         CHECK(bare.name == "127.0.0.1:7000");
         CHECK(bare.enabled);
+        CHECK(bare.id.empty()); // until `ensureOutputIds` gives it one
     }
 
     SECTION("a line that is not a target is refused rather than half-read") {
@@ -127,22 +153,43 @@ TEST_CASE("a target's name survives being written down and read back", "[output]
     }
 }
 
-TEST_CASE("a rule's names become the bits its messages carry", "[output][routing]") {
-    const std::vector<OutputTarget> targets{osc("main", 7000), osc("wall", 7001),
-                                            osc("spare", 7002)};
+TEST_CASE("a rule's output ids become the bits its messages carry", "[output][routing]") {
+    std::vector<OutputTarget> targets{osc("main", 7000), osc("wall", 7001), osc("spare", 7002)};
 
     // §5.6's own default: a rule that names nothing goes everywhere. That is what every rule
     // meant before routing existed, so no preset changes behaviour by being loaded.
     CHECK(takt4::output::resolveOutputs({}, targets) == kAllOutputs);
 
-    CHECK(takt4::output::resolveOutputs({"main"}, targets) == 0b001);
-    CHECK(takt4::output::resolveOutputs({"spare"}, targets) == 0b100);
-    CHECK(takt4::output::resolveOutputs({"main", "spare"}, targets) == 0b101);
+    CHECK(takt4::output::resolveOutputs({idFor("main")}, targets) == 0b001);
+    CHECK(takt4::output::resolveOutputs({idFor("spare")}, targets) == 0b100);
+    CHECK(takt4::output::resolveOutputs({idFor("main"), idFor("spare")}, targets) == 0b101);
 
-    // A name this rig does not have contributes nothing and is not an error: a preset
-    // written where there was a "lights" output should keep saying so.
-    CHECK(takt4::output::resolveOutputs({"lights"}, targets) == 0);
-    CHECK(takt4::output::resolveOutputs({"main", "lights"}, targets) == 0b001);
+    // An id this rig does not have contributes nothing and is not an error.
+    CHECK(takt4::output::resolveOutputs({idFor("lights")}, targets) == 0);
+    CHECK(takt4::output::resolveOutputs({idFor("main"), idFor("lights")}, targets) == 0b001);
+
+    SECTION("a name reaches nothing, so renaming an output moves no rule") {
+        // The operator's report of 2026-09-23: renaming an OSC target broke every rule routed
+        // to it, and each had to be routed again.
+        CHECK(takt4::output::resolveOutputs({"main"}, targets) == 0);
+        targets[0].name = "front of house";
+        CHECK(takt4::output::resolveOutputs({idFor("main")}, targets) == 0b001);
+    }
+
+    SECTION("routing written by name is re-pointed at the ids of those outputs") {
+        std::vector<std::string> routing{"wall", "lights", idFor("spare")};
+        takt4::output::routeByIds(routing, targets);
+        CHECK(routing == std::vector<std::string>{idFor("wall"), "lights", idFor("spare")});
+    }
+
+    SECTION("every output is given an id, and a copied one its own") {
+        std::vector<OutputTarget> typed{targets[0], targets[0]};
+        typed[0].id.clear();
+        takt4::output::ensureOutputIds(typed);
+        CHECK_FALSE(typed[0].id.empty());
+        CHECK(typed[1].id == idFor("main"));
+        CHECK(typed[0].id != typed[1].id);
+    }
 }
 
 TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][routing]") {
@@ -156,8 +203,8 @@ TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][r
 
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
     OutputRunner runner(*engine, config);
-    runner.post(OutputCommand::rules({firing("clips", "/deck/clip", {"deck"}),
-                                      firing("cue", "/wall/cue", {"wall"}),
+    runner.post(OutputCommand::rules({firing("clips", "/deck/clip", {idFor("deck")}),
+                                      firing("cue", "/wall/cue", {idFor("wall")}),
                                       firing("both", "/everywhere", {})}));
 
     // Fired through the [test] button rather than from audio: what is under test is where a
@@ -202,11 +249,20 @@ TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][r
     }
 
     SECTION("adding a target above one does not move what the rules below it reach") {
-        // The reason routing travels as *names*: a bit moves the moment a target is inserted
+        // The reason routing travels as *ids*: a bit moves the moment a target is inserted
         // ahead of it, and a rule that quietly started addressing its neighbour would be the
         // worst kind of bug — it would look like it was working.
         std::vector<OutputTarget> grown{osc("new", 7009), config.outputs[0], config.outputs[1]};
         runner.post(OutputCommand::outputs(grown));
+        runner.post(OutputCommand::testRule("clips"));
+        CHECK(sawAddress(drain(deck), "/deck/clip"));
+        CHECK_FALSE(sawAddress(drain(wall), "/deck/clip"));
+    }
+
+    SECTION("renaming a target leaves the rules routed to it reaching it") {
+        std::vector<OutputTarget> renamed = config.outputs;
+        renamed[0].name = "media server";
+        runner.post(OutputCommand::outputs(renamed));
         runner.post(OutputCommand::testRule("clips"));
         CHECK(sawAddress(drain(deck), "/deck/clip"));
         CHECK_FALSE(sawAddress(drain(wall), "/deck/clip"));

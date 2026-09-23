@@ -499,9 +499,10 @@ TEST_CASE("panic halts every rule and hands back what it owes", "[trigger][engin
     }
 }
 
-TEST_CASE("replacing the rules pays out the old ones' follow-ups", "[trigger][engine]") {
-    // The same argument panic makes: a clip pressed by the preset being replaced would stay
-    // latched on if its release went with the rule that owed it.
+TEST_CASE("replacing the rules keeps what the old ones owe until it is due", "[trigger][engine]") {
+    // A queued follow-up is a whole message with its own routing, so it is still right when it
+    // comes due. Paying it out at the replacement — which every keystroke in the editor is — cut
+    // a laser clip or a fade short (the audit's H7). A rule that is gone still gets its release.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Beat);
@@ -511,11 +512,108 @@ TEST_CASE("replacing the rules pays out the old ones' follow-ups", "[trigger][en
     REQUIRE(engine.pending() == 1);
 
     engine.setRules({simple("other", Trigger::Beat)});
-    CHECK(engine.pending() == 0);
-    REQUIRE(sink.sent.size() == 2);
-    CHECK(sink.sent[1].argument.asInt() == 0);
+    CHECK(engine.pending() == 1);
+    CHECK(sink.sent.size() == 1); // the press, and nothing owed paid early
     CHECK(engine.ruleCount() == 1);
     CHECK(engine.find("clip") == nullptr);
+
+    Context later = beatAt(1, 1, 1, 4.9);
+    engine.advance(later);
+    CHECK(sink.sent.size() == 1);
+    later.now = 5.0;
+    engine.advance(later);
+    REQUIRE(sink.sent.size() == 2);
+    CHECK(sink.sent[1].address == "/fire/clip");
+    CHECK(sink.sent[1].argument.asInt() == 0);
+}
+
+TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
+    // The audit's H7: every edit in the editor rebuilt every rule from its configuration, so a
+    // clip shuffle replayed its bag from the seed, a cooldown was forgotten and a rule a Stream
+    // Deck had switched off came back on.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("clips", Trigger::Beat);
+    config.value.kind = GeneratorKind::Shuffle;
+    config.value.low = 1;
+    config.value.high = 8;
+
+    SECTION("a shuffle keeps drawing from the same bag across an edit elsewhere") {
+        engine.setRules({config});
+        for (std::uint64_t beat = 1; beat <= 3; ++beat) {
+            engine.onBeat(beatAt(beat, 1, 1, static_cast<double>(beat)));
+        }
+        config.name = "renamed mid-bag";
+        engine.setRules({config});
+        for (std::uint64_t beat = 4; beat <= 8; ++beat) {
+            engine.onBeat(beatAt(beat, 1, 1, static_cast<double>(beat)));
+        }
+        std::vector<std::int32_t> drawn = sink.arguments();
+        REQUIRE(drawn.size() == 8);
+        std::sort(drawn.begin(), drawn.end());
+        // One bag of eight, drawn without replacement: every value once. A bag restarted from
+        // its seed after three draws hands those three out again.
+        CHECK(drawn == std::vector<std::int32_t>{1, 2, 3, 4, 5, 6, 7, 8});
+    }
+
+    SECTION("but a generator that was itself edited starts again") {
+        engine.setRules({config});
+        engine.onBeat(beatAt(1, 1, 1, 1.0));
+        config.value.high = 4;
+        engine.setRules({config});
+        for (std::uint64_t beat = 2; beat <= 5; ++beat) {
+            engine.onBeat(beatAt(beat, 1, 1, static_cast<double>(beat)));
+        }
+        const std::vector<std::int32_t> all = sink.arguments();
+        REQUIRE(all.size() == 5);
+        std::vector<std::int32_t> after(all.begin() + 1, all.end());
+        std::sort(after.begin(), after.end());
+        CHECK(after == std::vector<std::int32_t>{1, 2, 3, 4});
+    }
+
+    SECTION("a cooldown already running is still running") {
+        config.value = fixedAt(1);
+        config.conditions.cooldownSeconds = 10.0;
+        engine.setRules({config});
+        engine.onBeat(beatAt(1, 1, 1, 0.0));
+        REQUIRE(sink.sent.size() == 1);
+        config.name = "edited";
+        engine.setRules({config});
+        engine.onBeat(beatAt(2, 2, 1, 1.0));
+        CHECK(sink.sent.size() == 1);
+        engine.onBeat(beatAt(3, 3, 1, 11.0));
+        CHECK(sink.sent.size() == 2);
+    }
+
+    SECTION("a rule switched off from outside stays off through an edit") {
+        engine.setRules({config});
+        engine.find("clips")->setEnabled(false); // /ctl/rule/clips/enable 0
+        config.name = "edited";
+        engine.setRules({config});
+        CHECK_FALSE(engine.find("clips")->enabled());
+        engine.onBeat(beatAt(1, 1, 1, 0.0));
+        CHECK(sink.sent.empty());
+    }
+
+    SECTION("unless the edit is the switch itself") {
+        config.enabled = false;
+        engine.setRules({config});
+        config.enabled = true; // the operator ticked the box
+        engine.setRules({config});
+        CHECK(engine.find("clips")->enabled());
+    }
+
+    SECTION("and something still owed goes out when it is due, not at the edit") {
+        config.value = fixedAt(1);
+        config.followUps.push_back(releaseAfterMs(0, 500));
+        engine.setRules({config});
+        engine.onBeat(beatAt(1, 1, 1, 0.0));
+        REQUIRE(engine.pending() == 1);
+        config.name = "edited";
+        engine.setRules({config});
+        CHECK(engine.pending() == 1);
+        CHECK(sink.sent.size() == 1);
+    }
 }
 
 TEST_CASE("the test button fires one rule past everything that would stop it",

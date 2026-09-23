@@ -10,41 +10,45 @@ namespace takt4::trigger {
 TriggerEngine::TriggerEngine(Sink& sink) noexcept : sink_(sink) {}
 
 void TriggerEngine::setRules(const std::vector<Rule::Config>& rules) {
-    // **The live per-rule gestures survive, by id.**
+    // **A rule that keeps its id carries on**, by id.
     //
     // Every edit in §5.9's editor replaces the whole set — that is the command's stated
-    // purpose — so without this, renaming a rule mid-set would unmute every muted rule and
-    // put every ÷2 back. The operator would have made one edit and silently undone half a
-    // dozen decisions they made from a Stream Deck ten minutes earlier.
+    // purpose — so without this, renaming a rule mid-set would unmute every muted rule, put
+    // every ÷2 back, replay every shuffle bag from its seed and switch back on a rule a Stream
+    // Deck had switched off. The operator would have made one edit and silently undone half a
+    // dozen decisions made ten minutes earlier.
     //
     // By id rather than by position, for the reason `RulesController::firesSeen_` gives: a
     // rule deleted from the middle would otherwise shift every state below it onto a
     // different rule. And a *preset load* brings new ids, so nothing carries over — which is
     // exactly right, because a preset is the show and not somebody's half-played set.
-    std::vector<std::pair<std::string, std::pair<bool, double>>> live;
-    live.reserve(rules_.size());
-    for (const Rule& rule : rules_) {
-        if (rule.muted() || rule.rate() != 1.0) {
-            live.emplace_back(rule.id(), std::make_pair(rule.muted(), rule.rate()));
-        }
-    }
-
-    rules_.clear();
-    rules_.reserve(rules.size());
+    std::vector<Rule> next;
+    next.reserve(rules.size());
     for (const Rule::Config& config : rules) {
-        rules_.emplace_back(config);
-        for (const auto& [id, state] : live) {
-            if (id == rules_.back().id()) {
-                rules_.back().setMuted(state.first);
-                rules_.back().setRate(state.second);
+        next.emplace_back(config);
+        for (const Rule& previous : rules_) {
+            if (previous.id() == config.id) {
+                next.back().carryFrom(previous);
                 break;
             }
         }
     }
-    // The old rules' follow-ups belong to rules that no longer exist. They are still owed:
-    // a clip pressed by the preset being replaced would stay latched on if its release went
-    // with it, which is the same argument panic() makes.
-    flushPending();
+    rules_ = std::move(next);
+    // And nothing owed is paid early. A queued follow-up is a whole message with its own
+    // routing, so it is still right when it comes due — including one owed by a rule this
+    // replaced. See the header.
+}
+
+void TriggerEngine::remapPending(const std::vector<int>& outputs,
+                                 const std::vector<int>& fixtures) noexcept {
+    for (Pending& waiting : pending_) {
+        if (!outputs.empty()) {
+            waiting.message.outputs = remapBits(waiting.message.outputs, outputs);
+        }
+        if (!fixtures.empty()) {
+            waiting.message.fixtures = remapBits(waiting.message.fixtures, fixtures);
+        }
+    }
 }
 
 Rule* TriggerEngine::find(std::string_view id) noexcept {

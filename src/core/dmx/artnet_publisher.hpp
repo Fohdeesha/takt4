@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace takt4::dmx {
@@ -49,10 +50,27 @@ public:
         /// is routed by *fixture*, and a fixture already names its universe — and carried so
         /// that switching a target off is the same gesture here as everywhere else.
         std::size_t bit = 0;
+        /// `output::OutputTarget::id`, which is what `setTargets` recognises a node by.
+        std::string id;
     };
 
-    /// Adds a node. Throws `std::runtime_error` when the host cannot be resolved.
+    /// Adds a node. Throws `std::runtime_error` only when a socket cannot be had at all; a
+    /// name that does not resolve is the sender's `problem()`, not an error here.
     void addTarget(const TargetConfig& config);
+
+    /// Replaces the nodes with `configs`, **keeping a node's sender and its pacing while its id
+    /// and its host and port are the same** (the audit's H12). Rebuilding them all on every
+    /// output edit reset every clock and sequence number, so a dragged slider on another row
+    /// sent frames faster than the 44 Hz a node takes. Returns, for each config whose sender
+    /// could not be made, its bit and why.
+    std::vector<std::pair<std::size_t, std::string>>
+    setTargets(const std::vector<TargetConfig>& configs);
+
+    /// Lets every node find its address and open its socket — see `ArtNetSender::ready`.
+    void refresh() noexcept;
+
+    /// Which output node `index` is — its routing bit.
+    std::size_t outputOf(std::size_t index) const noexcept { return targets_[index].bit; }
 
     /// Removes every node and forgets every pacing clock, so a node added afterwards is sent
     /// a frame immediately rather than waiting out a keep-alive it was not there for.
@@ -91,6 +109,7 @@ private:
         std::unique_ptr<ArtNetSender> sender;
         std::vector<PortAddress> universes;
         std::size_t bit = 0;
+        std::string id;
         /// One per universe actually being fed, found or made on the first frame. Held per
         /// target so that two nodes on one universe pace independently.
         std::vector<Paced> paced;

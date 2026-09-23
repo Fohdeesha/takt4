@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -69,7 +70,90 @@ void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::siz
         bit < kMaxRoutableTargets ? (std::uint64_t{1} << bit) : kAllOutputs;
     const double delay =
         std::clamp(delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
-    targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector, delay});
+    targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector, delay, bit, {}});
+}
+
+std::vector<std::pair<std::size_t, std::string>>
+OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
+    std::vector<std::pair<std::size_t, std::string>> failures;
+    std::vector<Target> next;
+    next.reserve(specs.size());
+    // Where each old target went: its index in `next`, or nowhere.
+    constexpr std::size_t kGone = static_cast<std::size_t>(-1);
+    std::vector<std::size_t> moved(targets_.size(), kGone);
+    bool added = false;
+    for (const TargetSpec& spec : specs) {
+        std::size_t was = kGone;
+        for (std::size_t i = 0; i < targets_.size() && !spec.id.empty(); ++i) {
+            if (moved[i] == kGone && targets_[i].id == spec.id) {
+                was = i;
+                break;
+            }
+        }
+        Target target;
+        target.bit = spec.bit < kMaxRoutableTargets ? (std::uint64_t{1} << spec.bit) : kAllOutputs;
+        target.output = spec.bit;
+        target.id = spec.id;
+        target.delaySeconds =
+            std::clamp(spec.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        if (was != kGone && targets_[was].sender->host() == spec.host &&
+            targets_[was].sender->port() == spec.port) {
+            target.sender = std::move(targets_[was].sender);
+        } else {
+            try {
+                target.sender = std::make_unique<OscSender>(spec.host, spec.port);
+            } catch (const std::exception& e) {
+                failures.emplace_back(spec.bit, e.what());
+                continue;
+            }
+            added = true;
+        }
+        if (was != kGone) {
+            moved[was] = next.size();
+        }
+        next.push_back(std::move(target));
+    }
+    // What is queued follows its target to where it went; what was queued for a target that
+    // is gone goes nowhere, which is what deleting or switching one off asks for.
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        Pending& item = pending_[i];
+        if (item.target >= moved.size() || moved[item.target] == kGone) {
+            ++dropped_;
+            continue;
+        }
+        item.target = moved[item.target];
+        if (kept != i) {
+            pending_[kept] = std::move(item);
+        }
+        ++kept;
+    }
+    pending_.resize(kept);
+    targets_ = std::move(next);
+    if (added) {
+        // A target that is new has never been told the state, and only a change is sent
+        // between beats — see `clearTargets`.
+        lastBpm_ = -1.0;
+        lastConfidence_ = -1.0;
+        lastLocked_ = -1;
+        lastMeter_ = 0;
+    }
+    return failures;
+}
+
+void OscPublisher::setDelay(std::size_t bit, double delaySeconds) noexcept {
+    for (Target& target : targets_) {
+        if (target.output == bit) {
+            target.delaySeconds =
+                std::clamp(delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        }
+    }
+}
+
+void OscPublisher::refresh() noexcept {
+    for (Target& target : targets_) {
+        (void)target.sender->ready();
+    }
 }
 
 void OscPublisher::flushAll() {
@@ -229,9 +313,17 @@ void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, 
         lastConfidence_ = confidence;
     }
     const int lockedNow = locked ? 1 : 0;
+    // §5.6's resync, on the one moment it means: the tracker has found the beat again after
+    // having said it had lost it. Documented and never sent (the audit's M8). Not on a first
+    // state that is already locked — nothing was lost — and not when a target is added, which
+    // starts this memory again at "never said".
+    const bool refound = lockedNow == 1 && lastLocked_ == 0;
     if (force || lockedNow != lastLocked_) {
         sendInt(lockedAddress_, lockedNow, kAllOutputs, moment);
         lastLocked_ = lockedNow;
+    }
+    if (refound) {
+        sendInt(resyncAddress_, 1, kAllOutputs, moment);
     }
     if (force || meter != lastMeter_) {
         sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs, moment);

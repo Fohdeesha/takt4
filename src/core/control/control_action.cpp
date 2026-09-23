@@ -51,6 +51,8 @@ std::string_view plainVerbOf(ControlAction action) noexcept {
         return "lock";
     case ControlAction::Panic:
         return "panic";
+    case ControlAction::Manual:
+        return "manual";
     case ControlAction::RuleEnable:
     case ControlAction::RuleMute:
     case ControlAction::RuleDouble:
@@ -144,6 +146,8 @@ std::string_view labelOf(ControlAction action) noexcept {
         return "set how often a rule fires";
     case ControlAction::RuleReset:
         return "rule back to its written rate";
+    case ControlAction::Manual:
+        return "fire the manual rules";
     }
     return {};
 }
@@ -251,6 +255,12 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
             return false;
         }
         rules_->setRuleRate(target.rule, 1.0, false);
+        return true;
+    case ControlAction::Manual:
+        if (rules_ == nullptr) {
+            return false;
+        }
+        rules_->fireManual();
         return true;
     }
     return false;

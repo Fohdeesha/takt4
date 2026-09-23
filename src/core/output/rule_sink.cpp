@@ -55,6 +55,23 @@ std::size_t midiLengthFor(trigger::Message::Kind kind) noexcept {
 
 RuleSink::RuleSink(Transports& transports) noexcept : transports_(transports) {}
 
+void RuleSink::remap(const std::vector<int>& outputs, const std::vector<int>& fixtures) {
+    if (!outputs.empty()) {
+        std::erase_if(midiQueue_, [&outputs](HeldMidi& held) {
+            if (held.target >= outputs.size() || outputs[held.target] < 0) {
+                return true; // its output has gone, and so has everywhere to send it
+            }
+            held.target = static_cast<std::size_t>(outputs[held.target]);
+            return false;
+        });
+    }
+    if (!fixtures.empty()) {
+        for (HeldDmx& held : dmxQueue_) {
+            held.fixtures = trigger::remapBits(held.fixtures, fixtures);
+        }
+    }
+}
+
 void RuleSink::setNow(double now) noexcept {
     now_ = now;
     transports_.osc().setNow(now);

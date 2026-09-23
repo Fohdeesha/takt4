@@ -1706,7 +1706,41 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
         controller.setOscTargets("hall = 127.0.0.1:7002");
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
-              "no output called deck");
+              "1 output it was routed to is gone");
+    }
+
+    SECTION("renaming an output in its row leaves the rules routed to it reaching it") {
+        // The operator's report of 2026-09-23: *"if I change the name of a target like an osc
+        // target, all the triggers pointed to it break, and I have to reassign them."* A rule
+        // is routed to an output's id, which the row keeps whatever is typed into its name.
+        controller.editor().add();
+        controller.editor().setOutputs("deck");
+        const std::vector<std::string> routed = controller.editor().rules().back().outputs;
+        REQUIRE(routed.size() == 1);
+        const std::string before = live().targets[0].id;
+        CHECK(routed.front() == before);
+
+        controller.setTargetName(0, "media server", true);
+        controller.tick();
+        REQUIRE(live().targets[0].name == "media server");
+        CHECK(live().targets[0].id == before);
+        CHECK(controller.editor().rules().back().outputs == routed);
+        CHECK(std::string(controller.editor().window().get_outputs_available()) ==
+              "reaches 1 output");
+        CHECK(std::string(controller.editor().window().get_outputs_summary()) == "media server");
+    }
+
+    SECTION("every row is an output with an id of its own") {
+        const auto rows = controller.window().get_outputs_list();
+        REQUIRE(rows->row_count() == 2);
+        CHECK_FALSE(std::string(rows->row_data(0)->id).empty());
+        CHECK(std::string(rows->row_data(0)->id) == live().targets[0].id);
+        CHECK(std::string(rows->row_data(1)->id) == live().targets[1].id);
+        CHECK(live().targets[0].id != live().targets[1].id);
+        // A row added is one from the start.
+        controller.addTarget();
+        CHECK_FALSE(std::string(rows->row_data(2)->id).empty());
+        CHECK(std::string(rows->row_data(2)->id) == live().targets[2].id);
     }
 }
 
@@ -2031,15 +2065,31 @@ TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]
     std::optional<WindowController> controller;
     REQUIRE_NOTHROW(controller.emplace(tracker, saved));
 
-    // The one that can open is sending; the other two are named, not dropped.
-    CHECK(seen(*controller).oscTargets == 1);
+    // None is dropped. The MIDI device that is not here is said at once; the host name is an
+    // OSC target of its own, looked up on a thread of its own (the audit's H12), and is said
+    // when that look-up fails — nothing waits for a name server any more.
+    CHECK(seen(*controller).oscTargets == 2);
     CHECK(seen(*controller).targets.size() == 3);
     CHECK(controller->window().get_outputs_list()->row_count() == 3);
     CHECK(controller->statusIsError());
-    const std::string status(controller->window().get_status());
-    CHECK(status.find("outputs:") != std::string::npos);
-    CHECK(status.find("lights") != std::string::npos);
+    const std::string first(controller->window().get_status());
+    INFO("status at launch: " << first);
+    CHECK(first.find("outputs:") != std::string::npos);
+    CHECK(first.find("lights") != std::string::npos);
+
+    std::string status;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (status.find("hall") == std::string::npos && std::chrono::steady_clock::now() < until) {
+        controller->tick();
+        status = std::string(controller->window().get_status());
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    INFO(status);
     CHECK(status.find("hall") != std::string::npos);
+    CHECK(status.find("cannot resolve") != std::string::npos);
+    // And the device left at home is still said beside it rather than written over.
+    CHECK(status.find("lights") != std::string::npos);
+    CHECK(controller->statusIsError());
 }
 
 TEST_CASE("a saved OSC prefix that is not an address does not stop the window opening", "[ui]") {
@@ -2477,6 +2527,38 @@ TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key cou
     CHECK(controller.window().get_snap_pending());
 }
 
+TEST_CASE("M fires the manual rules from the keyboard", "[ui]") {
+    // The audit's M7: the editor offered "manual hotkey" as a trigger and nothing anywhere could
+    // fire one, so a rule set to it never did anything. The hotkey is M.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::trigger::Rule::Config cue;
+    cue.id = "cue";
+    cue.trigger = takt4::trigger::Trigger::Manual;
+    cue.address = "/cue";
+    saved.preset.rules = {cue};
+    WindowController controller(tracker, saved);
+    layOut(controller, 1000.0f, 760.0f);
+    auto& window = controller.window().window();
+    const auto fires = [&controller] {
+        REQUIRE(controller.settleOutputs());
+        return controller.outputs().inspect(
+            [](const takt4::trigger::TriggerEngine& rules, const takt4::output::Transports&,
+               const takt4::output::RuleSink&) { return rules.rule(0).fires(); });
+    };
+    REQUIRE(fires() == 0);
+
+    // Stopped or not: the outputs run, and a manual cue is the operator's own.
+    press(window, "m");
+    CHECK(fires() == 1);
+    // A held key counts once, as T does.
+    window.dispatch_key_press_event(slint::SharedString("M"));
+    window.dispatch_key_press_repeat_event(slint::SharedString("M"));
+    window.dispatch_key_press_repeat_event(slint::SharedString("M"));
+    window.dispatch_key_release_event(slint::SharedString("M"));
+    CHECK(fires() == 2);
+}
+
 TEST_CASE("closing the main window closes the editor with it", "[ui]") {
     // Slint's event loop runs until the **last** window is hidden, and §5.9's editor is a
     // window of its own — so closing the main window with the editor up left takt4 running
@@ -2604,4 +2686,51 @@ TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][
               static_cast<std::uint8_t>(datagram[20]) > 200;
     }
     CHECK(lit);
+}
+
+TEST_CASE("an Art-Net row offers no delay of its own", "[ui]") {
+    // The audit's M9: the per-output delay slider was on every row, and on an Art-Net row it
+    // moved a number nothing reads — a universe is a stream of frames with no message to hold
+    // back. Driven by real clicks: what is under test is what the row draws.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    for (const char* line : {"deck = 127.0.0.1:7000", "node = artnet 127.0.0.1:6454"}) {
+        takt4::output::OutputTarget target;
+        REQUIRE(takt4::output::parseOutputTarget(line, target));
+        saved.preset.outputs.push_back(target);
+    }
+    WindowController controller(tracker, saved);
+    layOut(controller, 1000.0f, 1400.0f);
+    auto& window = controller.window().window();
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 2);
+    REQUIRE(rows->row_data(1)->kind_index == 2);
+
+    // The OSC row's slider: the first click that moves the OSC row's delay.
+    float sliderX = -1.0f;
+    float sliderY = -1.0f;
+    for (float y = 200.0f; y < 1400.0f && sliderX < 0.0f; y += 4.0f) {
+        for (float x = 450.0f; x < 900.0f && sliderX < 0.0f; x += 25.0f) {
+            clickAt(window, x, y);
+            if (rows->row_data(0)->delay_ms != 0.0f) {
+                sliderX = x;
+                sliderY = y;
+            }
+        }
+    }
+    {
+        INFO("no click moved the OSC row's delay slider");
+        REQUIRE(sliderX >= 0.0f);
+    }
+    REQUIRE(rows->row_data(1)->delay_ms == 0.0f);
+
+    // The same column on the row below: nothing there to move.
+    for (float y = sliderY + 8.0f; y < sliderY + 90.0f; y += 3.0f) {
+        for (float x = sliderX - 50.0f; x < sliderX + 60.0f; x += 10.0f) {
+            clickAt(window, x, y);
+        }
+    }
+    INFO("slider at " << sliderX << "," << sliderY);
+    CHECK(rows->row_data(1)->delay_ms == 0.0f);
+    CHECK(seen(controller).targets[1].delaySeconds == 0.0);
 }

@@ -179,6 +179,20 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
         CHECK(patch.fixtures()[1].name != "wash L");
         CHECK(patch.fixtures()[1].address == 4); // straight after the par at 1-3
         CHECK(patch.fixtures()[1].group == "washes");
+        // A fixture of its own: a rule aimed at the original does not reach the copy.
+        CHECK_FALSE(patch.fixtures()[1].id.empty());
+        CHECK(patch.fixtures()[1].id != patch.fixtures()[0].id);
+    }
+
+    SECTION("renaming a fixture leaves the rules aimed at it reaching it") {
+        // The audit's M28, and the operator's report of 2026-09-23 about outputs: a rule aimed
+        // at a fixture by name stopped reaching it the moment it was renamed.
+        const std::string id = patch.fixtures()[0].id;
+        REQUIRE_FALSE(id.empty());
+        patch.pick(0);
+        patch.rename("front wash");
+        CHECK(patch.fixtures()[0].id == id);
+        CHECK(takt4::dmx::resolveFixtures(patch.fixtures(), {id}) == 0b001);
     }
 
     SECTION("the patch reaches the output thread, not just this class") {

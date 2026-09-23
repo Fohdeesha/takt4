@@ -9,7 +9,7 @@
 
 namespace takt4::dmx {
 
-/// One Art-Net node, resolved once when it is opened.
+/// One Art-Net node.
 ///
 /// A datagram socket and an ArtDmx encoder, nothing more: no discovery, no event loop, no
 /// retries. Sending is a single non-blocking `sendto`, so a node that has been unplugged costs
@@ -33,11 +33,14 @@ namespace takt4::dmx {
 /// that too, because some rigs are built that way and refusing would help nobody — but it is
 /// the operator's instruction and not takt4's default.
 ///
-/// Not for the audio thread. Opening one resolves a host name, which can block.
+/// **Opening one never blocks.** A literal address gets its socket at once; a name is looked up
+/// on a thread of its own (`net::AsyncAddress`) and the socket opens on the first frame after it
+/// answers. Until then frames fail, are counted, and `problem()` says why — for the reason
+/// `output::OscSender` gives (the audit's H12).
 class ArtNetSender {
 public:
-    /// Resolves `host` (a name or a literal address) and opens a socket for it. Throws
-    /// `std::runtime_error` if either fails.
+    /// `host` is a name or a literal address. Throws `std::runtime_error` only when a socket
+    /// cannot be had at all for a literal one; a name that will not resolve is a `problem()`.
     ///
     /// `port` is almost always `kArtNetPort`; it is settable because a few software nodes
     /// listen elsewhere and because two nodes behind one NAT have to be told apart somehow.
@@ -61,13 +64,22 @@ public:
 
     const std::string& host() const noexcept { return host_; }
     std::uint16_t port() const noexcept { return port_; }
-    /// What the host name resolved to, for the UI and for logs.
+    /// What the host name resolved to, for the UI and for logs. Empty until it has.
     const std::string& resolved() const noexcept { return resolved_; }
+    /// Empty when frames can be sent; otherwise why not.
+    std::string problem() const;
 
     std::uint64_t sent() const noexcept { return sent_; }
     std::uint64_t failed() const noexcept { return failed_; }
 
+    /// Opens the socket if the address has become known, and starts another look-up if the
+    /// last one failed long enough ago. True when there is a socket to send on. A send does
+    /// this itself; it is public so that a target nothing is being sent to still finds its
+    /// address, and still says when it cannot.
+    bool ready() noexcept;
+
 private:
+
     struct Impl;
     Impl* impl_ = nullptr; // a socket handle, the resolved address and the sequence counters
     std::string host_;

@@ -102,13 +102,20 @@ constexpr bool isFine(Role role) noexcept {
 /// one place the two meet — which is deliberate, since an off-by-one here is a rig where
 /// every color is on the wrong component and nothing says why.
 struct Fixture {
-    /// What a rule names it by, and what the patch editor shows. Unique within a patch: two
-    /// fixtures with one name is an editing mistake, and `resolveFixtures` takes both — which
-    /// is the forgiving reading, since the operator plainly meant "these".
+    /// What a rule aims at it by: generated once (`newFixtureId`), saved with it, never shown
+    /// or edited. **Not the name** — a rule aimed at a fixture by name stopped reaching it the
+    /// moment it was renamed (the audit's M28, and the operator's call of 2026-09-23 that
+    /// nothing may hang off a name somebody can edit). Unique within a patch.
+    std::string id;
+    /// What the patch editor and the rule editor show. The operator's to change.
     std::string name;
-    /// An optional second name a rule may aim at, shared by any number of fixtures — "heads",
-    /// "washes", "floor". A rule naming a group reaches every fixture in it, so re-patching a
-    /// rig is editing the patch rather than editing every rule.
+    /// An optional label a rule may aim at, shared by any number of fixtures — "heads",
+    /// "washes", "floor". A rule aimed at a group reaches every fixture carrying the label, so
+    /// re-patching a rig is editing the patch rather than editing every rule.
+    ///
+    /// A rule holds the label itself rather than an id, and that is not the thing the id
+    /// above fixes: a group is not a thing with a name, it is the label. Changing one fixture's
+    /// label takes that fixture out of the group, which is what the gesture means.
     std::string group;
 
     /// Which universe, as a flat Port-Address. See `PortAddress`.
@@ -153,7 +160,7 @@ struct Fixture {
     friend bool operator==(const Fixture&, const Fixture&) = default;
 };
 
-/// How many fixtures a rule can be routed to by name.
+/// How many fixtures a rule can be routed to.
 ///
 /// A rule carries its fixtures as a bit each (`trigger::Message::fixtures`), which is what
 /// keeps a fire allocation-free and a follow-up safe to hold after the patch has been
@@ -199,7 +206,7 @@ std::uint16_t lastChannelOf(const Fixture& fixture) noexcept;
 /// saved, and only refuses to be driven.
 std::string problemWith(const Fixture& fixture);
 
-/// The bits for `names` within `patch` — a fixture name or a group name, each contributing
+/// The bits for `aims` within `patch` — each a fixture's id or a group's label, contributing
 /// every fixture it matches.
 ///
 /// **An empty list is no fixtures, which is the opposite of what an empty output list
@@ -211,11 +218,26 @@ std::string problemWith(const Fixture& fixture);
 /// it as a problem, which is a rule that visibly does not work rather than a rig that
 /// visibly does the wrong thing.
 ///
-/// A name that matches nothing contributes no bit and is kept — a preset written on a rig
+/// An entry that matches nothing contributes no bit and is kept — a preset written on a rig
 /// with "heads" opened on one without should still say "heads", so that plugging the rig back
 /// in restores the routing.
 std::uint64_t resolveFixtures(const std::vector<Fixture>& patch,
-                              const std::vector<std::string>& names);
+                              const std::vector<std::string>& aims);
+
+/// A fresh fixture id no fixture in `patch` has — random, for `output::newOutputId`'s reason.
+std::string newFixtureId(const std::vector<Fixture>& patch);
+
+/// Gives every fixture without an id one, and a second fixture holding an id already taken a
+/// new one.
+void ensureFixtureIds(std::vector<Fixture>& patch);
+
+/// Re-points what a rule aims at by fixture name at those fixtures' ids: what every settings
+/// file written before fixtures had ids holds. A group label stays a label, an entry that is
+/// already an id stays, and one that matches nothing is kept as it is.
+void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch);
+
+/// The fixture with this id, or null.
+const Fixture* findFixture(const std::vector<Fixture>& patch, std::string_view id) noexcept;
 
 /// Every distinct universe the patch uses, ascending. What an Art-Net target with no explicit
 /// universe list carries, and what the frame buffers are built from.

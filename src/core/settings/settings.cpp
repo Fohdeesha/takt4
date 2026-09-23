@@ -325,6 +325,15 @@ std::filesystem::path existingSettingsFile() {
     return beside;
 }
 
+void assignIds(Preset& preset) {
+    output::ensureOutputIds(preset.outputs);
+    dmx::ensureFixtureIds(preset.fixtures);
+    for (trigger::Rule::Config& rule : preset.rules) {
+        output::routeByIds(rule.outputs, preset.outputs);
+        dmx::aimByIds(rule.dmx.fixtures, preset.fixtures);
+    }
+}
+
 std::string toJson(const Settings& settings) {
     // One line each, as `formatOutputTarget` writes them: "main = 127.0.0.1:7000" and
     // "lights = midi MOTU Pro Audio Midi Out 1". Text rather than an object per target for
@@ -356,6 +365,7 @@ std::string toJson(const Settings& settings) {
             parked.push_back(static_cast<unsigned int>(level));
         }
         json one{
+            {"id", fixture.id},
             {"name", fixture.name},
             {"universe", static_cast<unsigned int>(fixture.universe)},
             {"address", static_cast<unsigned int>(fixture.address)},
@@ -495,6 +505,7 @@ Settings fromDocument(const json& document) {
                     continue; // one unreadable fixture must not cost the rest of the patch
                 }
                 dmx::Fixture fixture;
+                read(one, "id", fixture.id);
                 read(one, "name", fixture.name);
                 read(one, "group", fixture.group);
                 read(one, "enabled", fixture.enabled);
@@ -564,6 +575,12 @@ Settings fromDocument(const json& document) {
                 }
             }
         }
+        // **Everything a rule points at, by id.** A file written before outputs and fixtures
+        // had ids routes rules by their names, and a hand-written line has no id: each gets
+        // one here, and each rule is re-pointed from the name to that id — so the rig loads
+        // exactly as it was, and renaming an output or a fixture from now on moves no rule
+        // (the operator's report of 2026-09-23, and the audit's M28).
+        assignIds(settings.preset);
     }
     return settings;
 }

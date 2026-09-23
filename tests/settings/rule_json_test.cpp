@@ -185,6 +185,35 @@ TEST_CASE("a MIDI rule carries what a MIDI rule needs", "[settings][trigger]") {
     // And it does not carry an OSC address it would never use.
     CHECK(out.address.empty());
     CHECK(out.segments.empty());
+    CHECK(out.numberChosen);
+}
+
+TEST_CASE("a MIDI rule still waiting for its number is still waiting after a restart",
+          "[settings][trigger]") {
+    // The audit's C7. Saved with its generator's default, a half-built rule came back armed on
+    // a shuffle over 1 to 8.
+    Rule::Config rule;
+    rule.id = "stab";
+    rule.sendKind = Message::Kind::MidiCc;
+    rule.numberChosen = false;
+
+    const std::string written = rulesToJson({rule});
+    INFO(written);
+    const std::size_t key = written.find("\"number\"");
+    REQUIRE(key != std::string::npos);
+    const std::size_t value = written.find_first_not_of(": \t\r\n", key + 8);
+    CHECK(written.compare(value, 4, "null") == 0);
+
+    const Rule::Config out = first(written);
+    CHECK_FALSE(out.numberChosen);
+    CHECK(out.number.kind == GeneratorKind::Fixed);
+    CHECK(Rule(out).problem() == "choose a controller number");
+
+    SECTION("and a file from before the flag reads as chosen") {
+        std::string old = written;
+        old.replace(key, 8, "\"unknown\""); // a key this build does not read
+        CHECK(first(old).numberChosen);
+    }
 }
 
 TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {

@@ -217,6 +217,16 @@ struct Message {
     double moment = 0.0;
 };
 
+/// A routing mask — `Message::outputs` or `Message::fixtures` — after the list it indexes has
+/// changed: each bit moved to where its entry went, `moved[old]` being the new index or
+/// negative for an entry that is gone. Every bit set stays every bit set, which is what an
+/// unrouted rule's "everywhere" is.
+///
+/// What lets a message already on its way survive an edit to the outputs or the patch: it
+/// carries bits rather than names, which is what keeps a fire allocation-free, and the bits
+/// have to follow their outputs rather than land on whatever now sits where they were.
+std::uint64_t remapBits(std::uint64_t mask, const std::vector<int>& moved) noexcept;
+
 inline constexpr std::array<Message::Kind, 7> kMessageKinds{
     Message::Kind::Osc,    Message::Kind::MidiNote,          Message::Kind::MidiNoteOff,
     Message::Kind::MidiCc, Message::Kind::MidiProgramChange, Message::Kind::MidiPitchBend,
@@ -245,6 +255,16 @@ constexpr bool isDmx(Message::Kind kind) noexcept {
 constexpr bool sendsNumber(Message::Kind kind) noexcept {
     return kind == Message::Kind::MidiNote || kind == Message::Kind::MidiNoteOff ||
            kind == Message::Kind::MidiCc || kind == Message::Kind::MidiProgramChange;
+}
+
+/// Whether a number chosen for one kind means the same thing sent as another. A note is a note
+/// whether it goes on or off; a controller and a program are each only themselves, and a note
+/// 60 carried over to a CC would be a fader nobody asked to move.
+constexpr bool sameNumber(Message::Kind a, Message::Kind b) noexcept {
+    const auto family = [](Message::Kind kind) {
+        return kind == Message::Kind::MidiNoteOff ? Message::Kind::MidiNote : kind;
+    };
+    return sendsNumber(a) && sendsNumber(b) && family(a) == family(b);
 }
 
 /// Whether the kind puts `Message::value` on the wire. False for program change, which is a
@@ -576,6 +596,13 @@ public:
         /// MIDI: which note or controller. A generator, so a rule can shuffle notes the way
         /// it shuffles clips.
         Generator::Config number;
+        /// MIDI: whether `number` is one the operator chose. **False is a rule that does not
+        /// fire**, and `problem` says why. A rule switched to a note or a controller has no
+        /// number anybody meant, and the one it would otherwise draw from — a generator's own
+        /// default, a shuffle over 1 to 8 — sent CC 7 at a value of one to every MIDI output on
+        /// some bar, which silences a synth (the audit's C7). True by default, so every rule
+        /// already in a file goes on working.
+        bool numberChosen = true;
 
         /// The lighting instruction, for `sendKind == Dmx`. Ignored by every other kind, and
         /// kept rather than cleared when the kind changes — an operator switching a rule to
@@ -644,6 +671,19 @@ public:
 
     /// Fresh generators, no cooldown owed, nothing remembered about the tempo or the lock.
     void reset() noexcept;
+
+    /// Takes over what `previous` — the same rule before an edit — was in the middle of, so an
+    /// edit changes what it changed and nothing else (the audit's H7):
+    ///
+    ///   - every generator whose configuration is unchanged, with its bag, its cycle and its
+    ///     no-repeat memory, so a clip shuffle carries on mid-bag when the name is edited;
+    ///   - the probability stream, the cooldown, the fire count and what `seesChange` last saw;
+    ///   - the live gestures, mute and rate;
+    ///   - **enabled as it is live** — which a control surface may have changed — unless the
+    ///     configuration's own `enabled` is what the edit changed, when the edit wins.
+    ///
+    /// The routing masks come too, until whoever resolves them does it again.
+    void carryFrom(const Rule& previous);
 
     /// Which outputs this rule's messages carry, as `Message::outputs`.
     ///

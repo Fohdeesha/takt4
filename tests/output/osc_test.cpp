@@ -10,6 +10,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -18,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -130,9 +133,28 @@ TEST_CASE("datagrams reach a socket that is really listening", "[output][osc]") 
         CHECK(sender.failed() == 1);
     }
 
-    SECTION("a host that cannot be resolved is an error, not a silent no-op") {
-        CHECK_THROWS_WITH(OscSender("no.such.host.takt4.invalid", 9000),
-                          ContainsSubstring("cannot resolve"));
+    SECTION("a host that cannot be resolved is said, not a silent no-op") {
+        // Found out on a thread of its own, not here — opening one used to resolve on the
+        // output thread, and a name with the DNS down stopped the MIDI clock for the
+        // resolver's timeout (the audit's H12). Meanwhile nothing is sent and it is counted.
+        const auto opened = std::chrono::steady_clock::now();
+        OscSender unknown("no.such.host.takt4.invalid", 9000);
+        CHECK(std::chrono::steady_clock::now() - opened < std::chrono::milliseconds(200));
+        OscMessage probe("/takt4/bpm");
+        CHECK_FALSE(unknown.send(probe.packet()));
+        CHECK(unknown.failed() == 1);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (unknown.problem().rfind("cannot resolve", 0) != 0 &&
+               std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        CHECK_THAT(unknown.problem(), ContainsSubstring("cannot resolve"));
+        CHECK_FALSE(unknown.ready());
+    }
+
+    SECTION("a literal address has its socket at once, and no problem to report") {
+        CHECK(sender.problem().empty());
+        CHECK(sender.ready());
     }
 }
 
@@ -464,5 +486,93 @@ TEST_CASE("a delay round-trips through a target's written form", "[output][routi
         REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:7000", parsed));
         CHECK(parsed.delaySeconds == 0.0);
         CHECK(parsed.port == 7000);
+    }
+}
+
+TEST_CASE("an edit to the targets keeps what is queued for the ones that stay", "[output][osc]") {
+    // The audit's H12. Every output edit cleared every sender and built them all again, which
+    // dropped whatever was queued for a delayed target — a release among it, so a Resolume clip
+    // was left latched by somebody adding an output on another row.
+    LoopbackReceiver media;
+    LoopbackReceiver other;
+    OscPublisher publisher;
+    publisher.setTargets({{"o-000000a1", "127.0.0.1", media.port(), 0, 0.5}});
+    publisher.setNow(0.0);
+    publisher.sendAddressTo(takt4::output::kAllOutputs, "/held", std::int32_t{0}, 0.0);
+    REQUIRE(publisher.pending() == 1);
+    const OscSender* const sender = &publisher.target(0);
+
+    SECTION("another output added above it, and this one untouched") {
+        publisher.setTargets({{"o-000000b2", "127.0.0.1", other.port(), 0, 0.0},
+                              {"o-000000a1", "127.0.0.1", media.port(), 1, 0.5}});
+        CHECK(publisher.pending() == 1);
+        // The very same sender, not a new one on the same address.
+        CHECK(&publisher.target(1) == sender);
+        publisher.setNow(0.6);
+        publisher.flushDue();
+        CHECK(media.receive().find("/held") != std::string::npos);
+        CHECK(other.receive().empty());
+    }
+
+    SECTION("its own address edited: a new sender, and what is queued goes to where it is now") {
+        publisher.setTargets({{"o-000000a1", "127.0.0.1", other.port(), 0, 0.5}});
+        CHECK(publisher.pending() == 1);
+        publisher.setNow(0.6);
+        publisher.flushDue();
+        CHECK(other.receive().find("/held") != std::string::npos);
+    }
+
+    SECTION("deleted, or switched off: what was queued for it goes nowhere") {
+        publisher.setTargets({{"o-000000b2", "127.0.0.1", other.port(), 0, 0.0}});
+        CHECK(publisher.pending() == 0);
+        publisher.setNow(0.6);
+        publisher.flushDue();
+        CHECK(media.receive().empty());
+        CHECK(other.receive().empty());
+    }
+}
+
+TEST_CASE("the tracker finding the beat again sends a resync", "[output][osc]") {
+    // The audit's M8: `/takt4/resync` was documented and never sent. It means "the tracker has
+    // just re-found itself", which is the published lock going from off back to on.
+    LoopbackReceiver receiver;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", receiver.port(), 0);
+    const auto received = [&receiver] {
+        std::vector<std::string> got;
+        for (std::string datagram = receiver.receive(); !datagram.empty();
+             datagram = receiver.receive()) {
+            got.push_back(datagram);
+        }
+        return got;
+    };
+    const auto resyncs = [](const std::vector<std::string>& datagrams) {
+        return std::count_if(datagrams.begin(), datagrams.end(), [](const std::string& d) {
+            return d.find("/takt4/resync") != std::string::npos;
+        });
+    };
+    takt4::tracking::TempoState state;
+    state.bpm = 128.0;
+    state.locked = false;
+    publisher.publishState(state);
+    CHECK(resyncs(received()) == 0);
+
+    state.locked = true; // found
+    publisher.publishState(state);
+    CHECK(resyncs(received()) == 1);
+    publisher.publishState(state); // still locked: nothing new
+    CHECK(resyncs(received()) == 0);
+
+    state.locked = false; // lost
+    publisher.publishState(state);
+    state.locked = true; // and found again
+    publisher.publishState(state);
+    CHECK(resyncs(received()) == 1);
+
+    SECTION("a target added mid-lock is told the state, not a resync") {
+        publisher.clearTargets();
+        publisher.addTarget("127.0.0.1", receiver.port(), 0);
+        publisher.publishState(state);
+        CHECK(resyncs(received()) == 0);
     }
 }

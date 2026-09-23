@@ -139,45 +139,108 @@ void Transports::closeUnusedDevices() noexcept {
 void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
     outputs_ = targets;
     outputPorts_.assign(outputs_.size(), nullptr);
-    osc_->clearTargets();
-    artnet_->clearTargets();
 
     // The bit a rule's routing mask uses is the target's index in *this* list, so an OSC
     // publisher that only holds the OSC ones still has to be told which bit each is.
     std::string failures;
+    const auto fail = [&failures](const std::string& name, const std::string& why) {
+        // One target that will not open must not cost the others: a controller unplugged
+        // since the preset was written is an ordinary state of the world, and the rest of
+        // the rig should still be sending. Collected and raised once at the end so the
+        // caller can say which.
+        failures += failures.empty() ? "" : "; ";
+        failures += name + ": " + why;
+    };
+    std::vector<OscPublisher::TargetSpec> osc;
+    std::vector<dmx::ArtNetPublisher::TargetConfig> nodes;
     for (std::size_t i = 0; i < outputs_.size(); ++i) {
         const OutputTarget& target = outputs_[i];
         if (!target.enabled) {
             continue; // switched off sends nothing, of either kind
         }
-        try {
-            if (target.kind == OutputTarget::Kind::Osc) {
-                osc_->addTarget(target.host, target.port, i, target.delaySeconds);
-            } else if (target.kind == OutputTarget::Kind::ArtNet) {
-                dmx::ArtNetPublisher::TargetConfig node;
-                node.host = target.host;
-                node.port = target.port;
-                node.universes = target.universes;
-                node.bit = i;
-                artnet_->addTarget(node);
-            } else {
+        if (target.kind == OutputTarget::Kind::Osc) {
+            osc.push_back({target.id, target.host, target.port, i, target.delaySeconds});
+        } else if (target.kind == OutputTarget::Kind::ArtNet) {
+            dmx::ArtNetPublisher::TargetConfig node;
+            node.host = target.host;
+            node.port = target.port;
+            node.universes = target.universes;
+            node.bit = i;
+            node.id = target.id;
+            nodes.push_back(std::move(node));
+        } else {
+            try {
                 outputPorts_[i] = openDevice(target.device);
+            } catch (const std::exception& e) {
+                fail(target.name, e.what());
             }
-        } catch (const std::exception& e) {
-            // One target that will not open must not cost the others: a controller unplugged
-            // since the preset was written is an ordinary state of the world, and the rest of
-            // the rig should still be sending. Collected and raised once at the end so the
-            // caller can say which.
-            if (!failures.empty()) {
-                failures += "; ";
-            }
-            failures += target.name + ": " + e.what();
         }
+    }
+    for (const auto& [bit, why] : osc_->setTargets(osc)) {
+        fail(outputs_[bit].name, why);
+    }
+    for (const auto& [bit, why] : artnet_->setTargets(nodes)) {
+        fail(outputs_[bit].name, why);
     }
     closeUnusedDevices();
     if (!failures.empty()) {
         throw std::runtime_error(failures);
     }
+}
+
+bool Transports::setOutputDelay(std::string_view id, double seconds) {
+    for (std::size_t i = 0; i < outputs_.size(); ++i) {
+        if (!id.empty() && outputs_[i].id == id) {
+            outputs_[i].delaySeconds =
+                std::clamp(seconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+            osc_->setDelay(i, outputs_[i].delaySeconds);
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> Transports::outputProblems() const {
+    // One per output, in the order the outputs are listed, so a status line built from these
+    // reads in the order the rows do.
+    std::vector<std::string> byOutput(outputs_.size());
+    const auto note = [&](std::size_t bit, const std::string& why) {
+        // Still being looked up is not a problem yet, and saying so would flash a warning on
+        // every launch with a named target.
+        if (why.empty() || why.rfind("looking up", 0) == 0 || bit >= outputs_.size()) {
+            return;
+        }
+        byOutput[bit] = outputs_[bit].name + ": " + why;
+    };
+    for (std::size_t i = 0; i < osc_->targetCount(); ++i) {
+        note(osc_->outputOf(i), osc_->target(i).problem());
+    }
+    for (std::size_t i = 0; i < artnet_->targetCount(); ++i) {
+        note(artnet_->outputOf(i), artnet_->target(i).problem());
+    }
+    // And a MIDI output whose device would not open. It used to be said once, from the command
+    // that opened it, and then written over by whatever the status line said next — a host
+    // that would not resolve, most often, which is found out later.
+    for (std::size_t i = 0; i < outputs_.size() && i < outputPorts_.size(); ++i) {
+        const OutputTarget& target = outputs_[i];
+        if (target.enabled && target.kind == OutputTarget::Kind::Midi &&
+            outputPorts_[i] == nullptr) {
+            byOutput[i] = target.name + ": no MIDI device called \"" + target.device +
+                          "\" — plug it in and press RESCAN";
+        }
+    }
+    std::vector<std::string> problems;
+    for (std::string& problem : byOutput) {
+        if (!problem.empty()) {
+            problems.push_back(std::move(problem));
+        }
+    }
+    return problems;
+}
+
+void Transports::refreshTargets() noexcept {
+    osc_->refresh();
+    artnet_->refresh();
 }
 
 std::vector<Transports::OscTarget> Transports::oscTargets() const {

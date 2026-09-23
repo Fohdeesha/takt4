@@ -78,6 +78,10 @@ struct OutputCommand {
         /// Nothing at all: what `OutputRunner::sync` waits on, so that everything posted before
         /// it has been applied by the time it has.
         Sync,
+        /// One output's delay, by `OutputTarget::id` in `ruleId`, seconds in `factor` — what
+        /// the delay slider sends while it is dragged, where a whole `Outputs` per pixel
+        /// reopened senders and flushed what was held (the audit's H12).
+        OutputDelay,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -166,6 +170,13 @@ struct OutputCommand {
         OutputCommand command;
         command.kind = Kind::Tracking;
         command.enabled = on;
+        return command;
+    }
+    static OutputCommand outputDelay(std::string outputId, double seconds) {
+        OutputCommand command;
+        command.kind = Kind::OutputDelay;
+        command.ruleId = std::move(outputId);
+        command.factor = seconds;
         return command;
     }
     static OutputCommand channelTest(dmx::PortAddress universe, std::uint16_t channel,
@@ -371,8 +382,31 @@ public:
         /// which, because a lighting desk or a sequencer that has stopped hearing takt4 is not
         /// otherwise visible from here at all.
         std::vector<std::string> lostMidi;
+        /// Outputs that cannot be sent to and why — `Transports::outputProblems`. A host name
+        /// that will not resolve is found out on a thread of its own, after the command that
+        /// set it has long been answered, so this is where it is reported.
+        std::vector<std::string> outputProblems;
     };
     Snapshot snapshot() const;
+
+    /// One rule's live switches as the output thread has them: the three things a control
+    /// surface can change behind §5.9's editor. See `liveRules`.
+    struct LiveRule {
+        std::string id;
+        bool enabled = true;
+        bool muted = false;
+        double rate = 1.0;
+        bool operator==(const LiveRule&) const noexcept = default;
+    };
+    /// Every rule's live switches, copied under a lock after any command that could change one.
+    /// The editor reads this so that a rule a Stream Deck muted or switched off shows as muted
+    /// or off there too — it used to go on showing what the editor itself had last set, and the
+    /// next edit it made put the rule back (the audit's H7).
+    std::vector<LiveRule> liveRules() const;
+    /// Moves whenever `liveRules` would give a different answer, so a redraw can skip the copy.
+    std::uint64_t liveRulesVersion() const noexcept {
+        return liveVersion_.load(std::memory_order_acquire);
+    }
 
     /// One universe's 512 levels as the output thread last sent them, copied under a lock.
     /// Empty when the patch does not use that universe.
@@ -460,6 +494,7 @@ public:
     void setRuleRate(std::string_view id, double factor, bool relative) override {
         post(OutputCommand::ruleRate(std::string(id), factor, relative));
     }
+    void fireManual() override { post(OutputCommand::manual()); }
 
     /// What went wrong applying the last posted change, or empty. A MIDI port that is not
     /// on the machine is the one that happens; an operator has to be told rather than
@@ -538,6 +573,9 @@ private:
     /// Copies what the transports are set to into `snapshot_`. Called by whichever thread
     /// owns them, at the end of every `apply`, so a reader never has to touch the live ones.
     void takeSnapshot();
+    /// Copies every rule's live switches into `live_` when they differ from what is there. By
+    /// whichever thread owns the rules, after a command that could have changed one.
+    void publishLiveRules();
     /// Copies the universe buffers into `levels_`, at most `kMirrorHz` times a second. Called
     /// at the end of every round by the thread that owns them. See `levelsOf`.
     void mirrorLevels(double now);
@@ -606,6 +644,10 @@ private:
     /// never waits behind a command reporting what went wrong.
     mutable std::mutex snapshotMutex_;
     Snapshot snapshot_;
+    /// See `liveRules`.
+    mutable std::mutex liveMutex_;
+    std::vector<LiveRule> live_;
+    std::atomic<std::uint64_t> liveVersion_{0};
     /// See `levelsOf`. A universe and its 512 bytes, copied off the output thread at
     /// `kMirrorHz` so a patch editor can show a fade happening.
     struct MirroredUniverse {
@@ -616,6 +658,9 @@ private:
     std::vector<MirroredUniverse> levels_;
     /// When the mirror was last refreshed, on `elapsed()`. Negative before it ever has been.
     double mirroredAt_ = -1.0;
+    /// Rounds since the output targets were last asked to find their addresses. See
+    /// `Transports::refreshTargets`.
+    std::uint32_t sinceRefresh_ = 0;
     /// How many lost MIDI devices the snapshot last recorded. A device goes lost or comes back
     /// in the middle of a round rather than in a command, so the round compares against this
     /// and takes a fresh snapshot only when the count moves.

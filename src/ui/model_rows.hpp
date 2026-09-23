@@ -81,4 +81,47 @@ bool rowsNeedRebuild(const slint::VectorModel<Row>& model, const std::vector<Row
     return false;
 }
 
+/// The surviving rows of `model` that `rows` would move in a way that matters — the rows
+/// `rowsNeedRebuild` is asking about, by index rather than as one answer for the whole list.
+template <typename Row, typename Changed>
+std::vector<std::size_t> staleRows(const slint::VectorModel<Row>& model,
+                                   const std::vector<Row>& rows, Changed changed) {
+    std::vector<std::size_t> stale;
+    const std::size_t common = std::min<std::size_t>(model.row_count(), rows.size());
+    for (std::size_t i = 0; i < common; ++i) {
+        const std::optional<Row> was = model.row_data(i);
+        if (was && changed(*was, rows[i])) {
+            stale.push_back(i);
+        }
+    }
+    return stale;
+}
+
+/// Builds the rows at `indices` again as new elements, and nothing else, then forgets them.
+///
+/// **One row at a time, not the whole list** (the audit's M16). A box typed into loses its
+/// binding and has to come back as a new element — but emptying the model to do that threw
+/// away every row, and with them the box the operator had *just clicked into*: leaving one
+/// chip's box commits it, the commit asks for a rebuild, and the rebuild took the next box out
+/// from under the pointer, so what was typed there went nowhere. An erase and an insert at
+/// one index make the repeater replace that item alone; every other row keeps its element and
+/// whatever has the keyboard keeps it.
+template <typename Row>
+void renewRows(slint::VectorModel<Row>& model, std::vector<std::size_t>& indices) {
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    for (const std::size_t i : indices) {
+        if (i >= model.row_count()) {
+            continue;
+        }
+        const std::optional<Row> row = model.row_data(i);
+        if (!row) {
+            continue;
+        }
+        model.erase(i);
+        model.insert(i, *row);
+    }
+    indices.clear();
+}
+
 } // namespace takt4::ui

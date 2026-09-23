@@ -375,6 +375,9 @@ private:
     /// Which MIDI devices have gone quiet, from the runner's snapshot, said on the status line
     /// when the set changes.
     void publishLostMidi(const std::vector<std::string>& lost);
+    /// The same for outputs that cannot be sent to — a host name that will not resolve, found
+    /// out on a thread of its own long after the edit that typed it was applied.
+    void publishOutputProblems(const std::vector<std::string>& problems);
     void publishStopped();
     void publishOpenStream();
     void publishOptions();
@@ -420,6 +423,12 @@ private:
     /// used, which is all `tracking::TapTempo` asks of it.
     double nowSeconds() const;
 
+    /// The constructor proper, handed settings that have been through `settings::assignIds` —
+    /// the public one does that first, so that the runner, both editors and the output rows
+    /// are all built from one set of ids rather than each generating its own.
+    struct IdsAssigned {};
+    WindowController(engine::LiveTracker& tracker, const settings::Settings& settings, IdsAssigned);
+
     engine::LiveTracker& tracker_;
     std::vector<std::string> midiPorts_;
     std::vector<std::string> midiInputPorts_;
@@ -447,6 +456,8 @@ private:
     std::string midiClockWanted_;
     /// The lost MIDI devices the status line last reported.
     std::vector<std::string> lostMidiShown_;
+    /// The output problems the status line last reported. See `publishOutputProblems`.
+    std::vector<std::string> outputProblemsShown_;
 
     /// §C4's watch on the running input. See `superviseInput`.
     audio::InputWatchdog watchdog_;

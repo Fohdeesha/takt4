@@ -18,6 +18,45 @@
 namespace takt4::output {
 namespace {
 
+/// Where each output of `before` is in `after`, by `OutputTarget::id`: the new index, or -1
+/// for one that is gone. See `trigger::remapBits`.
+std::vector<int> movedOutputs(const std::vector<OutputTarget>& before,
+                              const std::vector<OutputTarget>& after) {
+    std::vector<int> moved(std::min(before.size(), kMaxRoutableTargets), -1);
+    for (std::size_t i = 0; i < moved.size(); ++i) {
+        for (std::size_t j = 0; j < after.size() && j < kMaxRoutableTargets; ++j) {
+            if (!before[i].id.empty() && after[j].id == before[i].id) {
+                moved[i] = static_cast<int>(j);
+                break;
+            }
+        }
+    }
+    return moved;
+}
+
+/// The same for the patch, by `dmx::Fixture::id` — or by name for a fixture built in code with
+/// no id, which is the one kind that can have none.
+std::vector<int> movedFixtures(const std::vector<dmx::Fixture>& before,
+                               const std::vector<dmx::Fixture>& after) {
+    std::vector<int> moved(std::min(before.size(), dmx::kMaxRoutableFixtures), -1);
+    for (std::size_t i = 0; i < moved.size(); ++i) {
+        for (std::size_t j = 0; j < after.size() && j < dmx::kMaxRoutableFixtures; ++j) {
+            const bool same = !before[i].id.empty() || !after[j].id.empty()
+                                  ? before[i].id == after[j].id
+                                  : before[i].name == after[j].name;
+            if (same) {
+                moved[i] = static_cast<int>(j);
+                break;
+            }
+        }
+    }
+    return moved;
+}
+
+/// How many rounds — milliseconds — between two looks at whether the output targets have found
+/// their addresses. A name server answers in tens of milliseconds or not at all.
+constexpr std::uint32_t kRefreshRounds = 250;
+
 /// Windows' default timer granularity is 15.6 ms, and this loop wants 1 ms; without
 /// raising it a `sleep_for(1ms)` is a `sleep_for(15.6ms)` and every MIDI tick inherits
 /// that as jitter. Process-wide, reference-counted by the OS — so nesting inside a caller
@@ -162,6 +201,7 @@ void OutputRunner::takeSnapshot() {
     taken.patch = transports_.patch();
     taken.lostMidi = transports_.lostMidiDevices();
     lostInSnapshot_ = taken.lostMidi.size();
+    taken.outputProblems = transports_.outputProblems();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
 }
@@ -169,6 +209,25 @@ void OutputRunner::takeSnapshot() {
 OutputRunner::Snapshot OutputRunner::snapshot() const {
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     return snapshot_;
+}
+
+void OutputRunner::publishLiveRules() {
+    std::vector<LiveRule> now;
+    now.reserve(triggers_.ruleCount());
+    for (std::size_t i = 0; i < triggers_.ruleCount(); ++i) {
+        const trigger::Rule& rule = triggers_.rule(i);
+        now.push_back(LiveRule{rule.id(), rule.enabled(), rule.muted(), rule.rate()});
+    }
+    const std::lock_guard<std::mutex> lock(liveMutex_);
+    if (now != live_) {
+        live_ = std::move(now);
+        liveVersion_.fetch_add(1, std::memory_order_release);
+    }
+}
+
+std::vector<OutputRunner::LiveRule> OutputRunner::liveRules() const {
+    const std::lock_guard<std::mutex> lock(liveMutex_);
+    return live_;
 }
 
 void OutputRunner::mirrorLevels(double now) {
@@ -417,11 +476,19 @@ void OutputRunner::apply(const OutputCommand& command) {
                 rule.setRate(command.relative ? rule.rate() * command.factor : command.factor);
             });
             break;
-        case OutputCommand::Kind::Patch:
-            // A held effect's fixture mask names fixtures by their place in *this* patch.
-            sink_.flushQueued();
+        case OutputCommand::Kind::Patch: {
+            // A held effect's fixture mask, and a queued follow-up's, name fixtures by their
+            // place in the patch — which is about to move. They follow their fixtures by id.
+            const std::vector<dmx::Fixture> before = transports_.patch();
             transports_.setPatch(command.fixtures);
+            const std::vector<int> moved = movedFixtures(before, transports_.patch());
+            triggers_.remapPending({}, moved);
+            sink_.remap({}, moved);
             resolveRouting();
+            break;
+        }
+        case OutputCommand::Kind::OutputDelay:
+            (void)transports_.setOutputDelay(command.ruleId, command.factor);
             break;
         case OutputCommand::Kind::Effect:
             // Straight to the engine, past the rules. `sink_.setNow` was called at the top of
@@ -468,6 +535,16 @@ void OutputRunner::apply(const OutputCommand& command) {
     // Whether it worked or not: what a reader must see is what the transports are *now*, and
     // a command that threw part-way through has still changed some of them.
     takeSnapshot();
+    switch (command.kind) {
+    case OutputCommand::Kind::Rules:
+    case OutputCommand::Kind::RuleEnabled:
+    case OutputCommand::Kind::RuleMuted:
+    case OutputCommand::Kind::RuleRate:
+        publishLiveRules();
+        break;
+    default:
+        break;
+    }
     if (command.ticket != 0) {
         // Somebody is waiting on this one in `postAndWait`: its own answer, which the next
         // command could otherwise overwrite before the waiter wakes.
@@ -509,17 +586,25 @@ std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
 }
 
 void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
-    // A held MIDI message names its output by its place in *this* list, which is about to move.
-    sink_.flushQueued();
-    // The routing is resolved either way — see the declaration. A target that would not open
-    // still took its place in the list, so every bit below it has moved.
+    // What is held and what is owed names its output by its place in the list, which is about
+    // to move — so each follows its output by id afterwards, rather than being flushed early
+    // or sent to whatever takes its place (the audit's H12).
+    const std::vector<OutputTarget> before = transports_.outputs();
+    const auto follow = [&] {
+        const std::vector<int> moved = movedOutputs(before, transports_.outputs());
+        triggers_.remapPending(moved, {});
+        sink_.remap(moved, {});
+        resolveRouting();
+    };
+    // Either way — see the declaration. A target that would not open still took its place in
+    // the list, so every bit below it has moved.
     try {
         transports_.setOutputs(targets);
     } catch (...) {
-        resolveRouting();
+        follow();
         throw;
     }
-    resolveRouting();
+    follow();
 }
 
 void OutputRunner::resolveRouting() noexcept {
@@ -683,7 +768,17 @@ void OutputRunner::drainOnce(double now) {
     // A MIDI device went lost or came back this round — neither is a command, so nothing else
     // would refresh what a reader sees. Only when the count moves: a snapshot copies the
     // targets and the patch, which is nothing to do a thousand times a second.
-    if (transports_.lostMidiCount() != lostInSnapshot_) {
+    bool retake = transports_.lostMidiCount() != lostInSnapshot_;
+    // And now and then, the targets are let find their addresses — a name looked up on a thread
+    // of its own answers whenever it answers — and anything that changed is reported.
+    if (++sinceRefresh_ >= kRefreshRounds) {
+        sinceRefresh_ = 0;
+        transports_.refreshTargets();
+        std::vector<std::string> problems = transports_.outputProblems();
+        const std::lock_guard<std::mutex> lock(snapshotMutex_);
+        retake = retake || problems != snapshot_.outputProblems;
+    }
+    if (retake) {
         takeSnapshot();
     }
 }

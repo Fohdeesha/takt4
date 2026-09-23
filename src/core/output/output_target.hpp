@@ -13,7 +13,7 @@ namespace takt4::output {
 ///
 /// The rule subset is the half that had never been built: every rule went to every target,
 /// so a rig with a media server and a lighting desk on it could not send a clip to one and a
-/// cue to the other. A target has a **name** now, and §5.8's rules name the ones they go to.
+/// cue to the other. A target has an **id** now, and §5.8's rules list the ones they go to.
 ///
 /// **One type with a kind tag rather than two lists**, for the reason `trigger::Generator`
 /// gives: these are edited by clicking, travel in a preset (Q7) and are shown in one list, so
@@ -38,8 +38,12 @@ struct OutputTarget {
         ArtNet,
     };
 
-    /// What a rule names it by, and what a UI shows. Unique within a set: two targets with
-    /// one name are an editing mistake, and `findTarget` takes the first.
+    /// What a rule is routed to it by: generated once (`newOutputId`), saved with it, and
+    /// never shown or edited. **Not the name**, which is the operator's to change — rules
+    /// routed by name all stopped reaching an output the moment it was renamed, and had to be
+    /// routed again one at a time. Unique within a set; `ensureOutputIds` makes it so.
+    std::string id;
+    /// What a UI shows. The operator's to write and to change; nothing refers to it.
     std::string name;
     Kind kind = Kind::Osc;
 
@@ -127,16 +131,28 @@ inline constexpr std::size_t kMaxRoutableTargets = 64;
 /// Every bit set: what a rule that names no target means, and the default.
 inline constexpr std::uint64_t kAllOutputs = ~std::uint64_t{0};
 
-/// The bits for `names` within `targets`. An empty list is `kAllOutputs` — *"send this
+/// The bits for the targets `ids` lists. An empty list is `kAllOutputs` — *"send this
 /// everywhere"*, which is what a rule written before anyone had two targets meant and what a
 /// rule an operator has not routed still means.
 ///
-/// A name that matches nothing contributes no bit. That is deliberate and is not an error
-/// here: a preset written on a rig with a "lights" output, opened on one without, should keep
-/// saying "lights" so that plugging it back in restores the routing. §5.9's editor is where
-/// an operator is told the name currently reaches nothing.
-std::uint64_t resolveOutputs(const std::vector<std::string>& names,
+/// An id that matches nothing contributes no bit. That is deliberate and is not an error
+/// here: the output may have been deleted, and §5.9's editor is where an operator is told the
+/// routing reaches nothing.
+std::uint64_t resolveOutputs(const std::vector<std::string>& ids,
                              const std::vector<OutputTarget>& targets) noexcept;
+
+/// A fresh id no target in `existing` has. Random rather than counted, so an output deleted
+/// and another added can never be handed the id a rule still holds for the first.
+std::string newOutputId(const std::vector<OutputTarget>& existing);
+
+/// Gives every target without an id one, and a second target holding an id already taken a
+/// new one — a line typed or pasted by hand has none, and a duplicated line has two of one.
+void ensureOutputIds(std::vector<OutputTarget>& targets);
+
+/// Re-points routing written by name at the ids of the targets with those names: what every
+/// settings file written before targets had ids holds, and what a hand-written preset may. An
+/// entry that is already an id is left alone, and one that names nothing is kept as it is.
+void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets);
 
 /// Unnamed OSC targets as `OutputTarget`s, each named after its own address.
 ///
@@ -147,13 +163,13 @@ std::uint64_t resolveOutputs(const std::vector<std::string>& names,
 std::vector<OutputTarget>
 oscOutputs(const std::vector<std::pair<std::string, std::uint16_t>>& targets);
 
-/// The first target with this name, or null.
-const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::string_view name);
+/// The target with this id, or null.
+const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::string_view id);
 
 /// "main = 127.0.0.1:7000" and "lights = midi MOTU Pro Audio Midi Out 1", which is how a
 /// settings file stores one and how §5.9's outputs field shows it. A switched-off target
-/// leads with "off ", and one with a delay ends with " +120ms". Round-trips through
-/// `parseOutputTarget`.
+/// leads with "off ", one with a delay ends with " +120ms", and the id, where there is one,
+/// comes last as " #o-1a2b3c4d". Round-trips through `parseOutputTarget`.
 std::string formatOutputTarget(const OutputTarget& target);
 
 /// Just the destination half: "127.0.0.1:7000", or "midi MOTU Pro Audio Midi Out 1".
@@ -168,7 +184,8 @@ std::string formatOutputAddress(const OutputTarget& target);
 ///
 /// Forgiving about what it can be: the name and the `=` may be left off, in which case the
 /// host and port become the name too, so `127.0.0.1:7000` on its own is still a target and
-/// the format an operator already knew still works.
+/// the format an operator already knew still works. The `#id` may be left off too; the
+/// target then has none until `ensureOutputIds` gives it one.
 bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept;
 
 } // namespace takt4::output

@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace takt4::output {
@@ -69,6 +70,40 @@ public:
     void addTarget(std::string_view host, std::uint16_t port, std::size_t bit,
                    double delaySeconds = 0.0);
 
+    /// One target as `setTargets` wants it: which output it is (`OutputTarget::id`), where it
+    /// sends, its routing bit and its delay.
+    struct TargetSpec {
+        std::string id;
+        std::string host;
+        std::uint16_t port = 0;
+        std::size_t bit = 0;
+        double delaySeconds = 0.0;
+    };
+    /// Replaces the targets with `specs`, **keeping what did not change** (the audit's H12).
+    ///
+    /// Every output edit used to clear every sender and build them all again, on the output
+    /// thread: what was queued for a delayed target was dropped, releases included, so a clip
+    /// was left latched; and a dragged delay slider did it on every pixel. Now a target keeps
+    /// its sender while its id and its host and port are the same; one whose address was
+    /// edited gets a new sender and keeps what is queued for it; and only what was queued for a
+    /// target that is gone — deleted or switched off, which both mean *send it nothing* — is
+    /// dropped.
+    ///
+    /// Returns, for each spec whose sender could not be made at all, its bit and why.
+    std::vector<std::pair<std::size_t, std::string>> setTargets(const std::vector<TargetSpec>& specs);
+
+    /// Moves the delay of the target on routing bit `bit`, and nothing else. What the delay
+    /// slider sends while it is dragged. What is already queued keeps the moment it was given.
+    void setDelay(std::size_t bit, double delaySeconds) noexcept;
+
+    /// Which output target `index` is — its routing bit, as `addTarget` and `setTargets` were
+    /// given it.
+    std::size_t outputOf(std::size_t index) const noexcept { return targets_[index].output; }
+    /// Lets every target find its address and open its socket if it can — see
+    /// `OscSender::ready`. Called now and then by the output thread, so a target nothing is
+    /// being sent to still resolves, and still says when it cannot.
+    void refresh() noexcept;
+
     /// The output thread's clock, which is what a delay is measured against. Set before
     /// anything is published so a message queued this round is due relative to *this* round.
     void setNow(double now) noexcept { now_ = now; }
@@ -105,6 +140,7 @@ public:
 
     std::size_t targetCount() const noexcept { return targets_.size(); }
     const OscSender& target(std::size_t index) const noexcept { return *targets_[index].sender; }
+    OscSender& target(std::size_t index) noexcept { return *targets_[index].sender; }
 
     /// Publishes one beat, and any state that changed with it. `moment` is when the beat is in
     /// the music, on the clock `setNow` is given — ahead of now when the output thread fires it
@@ -115,8 +151,9 @@ public:
     /// every frame: when nothing has changed it sends nothing.
     void publishState(const tracking::TempoState& state);
 
-    /// §5.6's resync: tell downstream to snap. Sent when the tracker regains its lock
-    /// after losing it, and available for the manual downbeat in Phase 5.
+    /// §5.6's resync: tell downstream to snap. Sent by itself whenever the published lock goes
+    /// from off to on — see `sendChangedState` — and callable for anything else that means the
+    /// same.
     void publishResync();
 
     /// One address of Phase 6's own choosing, to every target. §5.8's rules build their
@@ -193,6 +230,11 @@ private:
         std::unique_ptr<OscSender> sender;
         std::uint64_t bit = 0;
         double delaySeconds = 0.0;
+        /// The routing bit's number, and the index of the output in `Transports`' list.
+        std::size_t output = 0;
+        /// `OutputTarget::id`, which is what `setTargets` recognises a target by. Empty for one
+        /// added with `addTarget`.
+        std::string id;
     };
     std::vector<Target> targets_;
 
