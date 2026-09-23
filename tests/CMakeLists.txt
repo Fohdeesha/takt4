@@ -104,6 +104,23 @@ include(Catch)
 # The slowest test measured was 37 s under ASan with four running at once; 300 s is eight times
 # that.
 set(TAKT4_TEST_TIMEOUT 300)
+# The console that ships beside the app, run as it is shipped: the built-in weights and the
+# default state space have to come from inside it, not from this source tree — which is what
+# made the released takt4-cli fail on every other machine (the audit's H19). Only where the
+# assets are built, which every full build and every release is.
+if(TARGET takt4_assets)
+  add_test(NAME "the console that ships reads the weights built into it"
+           COMMAND takt4-cli beats "${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav")
+  add_test(NAME "the console that ships tracks with what is built into it"
+           COMMAND takt4-cli track "${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav"
+                   --decoder particle)
+  set_tests_properties(
+    "the console that ships reads the weights built into it"
+    "the console that ships tracks with what is built into it"
+    PROPERTIES PASS_REGULAR_EXPRESSION "weights electronic \\(built in\\)" LABELS "cli"
+               TIMEOUT 300)
+endif()
+
 catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
                      PROPERTIES TIMEOUT ${TAKT4_TEST_TIMEOUT})
 

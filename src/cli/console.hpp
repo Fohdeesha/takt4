@@ -4,8 +4,17 @@
 // turns a weight set's name into a file. Header-only, so `annotate` and `track` read the
 // keyboard the same way without either owning the class.
 
+#include "core/model/weights.hpp"
+#include "core/tracking/state_space.hpp"
+
+#if TAKT4_CLI_EMBEDDED_ASSETS
+#include "core/assets/embedded.hpp"
+#endif
+
 #include <filesystem>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 
 #if defined(_WIN32)
 #include <conio.h>
@@ -25,6 +34,52 @@ inline std::filesystem::path resolveWeights(const std::string& spec) {
         return given;
     }
     return std::filesystem::path(TAKT4_WEIGHTS_DIR) / (spec + ".bin");
+}
+
+/// A name under assets/statespace/ — "default", "fps100" — or a path to a blob.
+inline std::filesystem::path resolveStateSpace(const std::string& which) {
+    const std::filesystem::path given(which);
+    if (given.has_extension() || given.has_parent_path()) {
+        return given;
+    }
+    return std::filesystem::path(TAKT4_STATESPACE_DIR) / (which + ".bin");
+}
+
+/// The weight set the application builds in, by the name the console knows it by.
+inline constexpr const char* kBuiltInWeights = "electronic";
+
+/// The weights `spec` names. **The built-in set comes from this binary** wherever it has
+/// them (every full build, which is what ships): the console is attached to every release
+/// beside the app, and it used to open its weights from the source tree it was built in, so
+/// on any other machine `beats`, `track` and `annotate` failed (the audit's H19). Any other
+/// set is a file — under the source tree for a bare name, which only a bench has.
+inline model::ModelWeights loadWeights(const std::string& spec) {
+#if TAKT4_CLI_EMBEDDED_ASSETS
+    if (spec == kBuiltInWeights) {
+        return model::ModelWeights::fromBytes(assets::weights(), "electronic (built in)");
+    }
+#endif
+    const std::filesystem::path path = resolveWeights(spec);
+    std::error_code code;
+    if (path == std::filesystem::path(TAKT4_WEIGHTS_DIR) / (spec + ".bin") &&
+        !std::filesystem::exists(path, code)) {
+        // A bare name that is not the built-in set, on a machine without the source tree —
+        // said as what it is, rather than as a path the operator never typed.
+        throw std::runtime_error("no weight set called \"" + spec + "\" here: this console has \"" +
+                                 std::string(kBuiltInWeights) +
+                                 "\" built in, and takes any other set as a path to its .bin");
+    }
+    return model::ModelWeights::fromFile(path);
+}
+
+/// The state space `which` names; "default" from this binary wherever it has it, as above.
+inline tracking::StateSpaceModel loadStateSpace(const std::string& which) {
+#if TAKT4_CLI_EMBEDDED_ASSETS
+    if (which == "default") {
+        return tracking::StateSpaceModel::fromBytes(assets::stateSpace(), "default (built in)");
+    }
+#endif
+    return tracking::StateSpaceModel::fromFile(resolveStateSpace(which));
 }
 
 /// Single keys from the terminal, without waiting for one.

@@ -1,8 +1,8 @@
 add_subdirectory(core)
 
-# takt4-cli: the development console (HANDOFF §8 Phase 1). Core only, built in every
-# configuration including UI-less ones, never packaged. Its allocation guard is on in
-# Debug so a real-time violation found on the bench aborts rather than hides.
+# takt4-cli: the development console (HANDOFF §8 Phase 1). Built in every configuration
+# including UI-less ones, and attached to every release beside the app. Its allocation guard
+# is on in Debug so a real-time violation found on the bench aborts rather than hides.
 add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/console.hpp cli/main.cpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
 if(WIN32)
@@ -10,14 +10,20 @@ if(WIN32)
   # src/utf8.manifest; the linker merges it with the manifest it writes anyway.
   target_sources(takt4-cli PRIVATE utf8.manifest)
 endif()
-# `beats` needs a weight set and `track` a state space, and the console is a bench tool
-# that is never packaged and never relocated, so it defaults to the ones in the source
-# tree. The application will resolve them next to itself instead, when Phase 7 gives it
-# an installer.
+# `beats` needs a weight set and `track` a state space. A bare name that is not the built-in
+# one is looked up in the source tree, which only a bench has; the built-in set and the
+# default state space come from the copies compiled into the binary wherever the assets are
+# built (every full build, which is what ships), so the console that goes out with a release
+# works on any machine (the audit's H19). A core-only build has no assets and reads the
+# source tree for everything.
 target_compile_definitions(takt4-cli PRIVATE
   "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
   "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
 )
+if(TARGET takt4_assets)
+  target_link_libraries(takt4-cli PRIVATE takt4::assets)
+  target_compile_definitions(takt4-cli PRIVATE TAKT4_CLI_EMBEDDED_ASSETS=1)
+endif()
 takt4_enable_rt_guard(takt4-cli DEBUG_ONLY)
 
 if(TAKT4_BUILD_UI)

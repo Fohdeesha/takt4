@@ -404,7 +404,7 @@ int runAnnotate(const std::vector<std::string_view>& args) {
     const std::filesystem::path tapsPath =
         a.tapsOut.value_or(outPath.parent_path() / (outPath.stem().string() + ".taps"));
 
-    const model::ModelWeights weights = model::ModelWeights::fromFile(resolveWeights(a.weights));
+    const model::ModelWeights weights = loadWeights(a.weights);
     std::cout << a.in.string() << ": " << fixed(static_cast<double>(audio.samples.size()) / audio::kInternalSampleRate, 1)
               << " s, weights " << weights.path().filename().string() << "\nlistening ahead for the peaks... "
               << std::flush;
