@@ -157,6 +157,11 @@ struct Settings {
 ///
 /// Falls back to `userSettingsDirectory()` only where the platform will not name the
 /// executable at all.
+///
+/// **Unless `TAKT4_SETTINGS_DIR` names another.** The test binaries set it (tests/support/
+/// crt_dialogs.cpp): they are built into the same folder as takt4.exe, and on a rig the
+/// settings.json there is a real show's — a test whose click landed on SAVE would have
+/// written over it. Nothing else is expected to set it.
 std::filesystem::path settingsDirectory();
 
 /// Where settings *used* to be kept: `%APPDATA%\takt4` on Windows, `~/Library/Application
@@ -172,7 +177,8 @@ std::filesystem::path settingsFile();
 /// **Where to read.** `settingsFile()` when that exists; otherwise the file under
 /// `userSettingsDirectory()` if a build before this one left one there, so a rig keeps its
 /// outputs, its device and its MIDI bindings across the move; otherwise `settingsFile()`
-/// again, which `load` will report as the defaults.
+/// again, which `load` will report as the defaults. With `TAKT4_SETTINGS_DIR` set there is
+/// no looking in the profile: a process given a folder of its own reads nobody else's.
 std::filesystem::path existingSettingsFile();
 
 /// Reads `path`. **Never throws, and never fails**: a file that is missing, unreadable,

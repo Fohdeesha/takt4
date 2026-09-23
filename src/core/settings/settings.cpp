@@ -64,6 +64,25 @@ std::string environmentVariable(const char* name) {
 #endif
 }
 
+/// The folder `TAKT4_SETTINGS_DIR` names, or empty. Read wide on Windows, since it is a
+/// path: a temp folder under a user name outside the ANSI code page would not survive the
+/// narrow read `environmentVariable` makes.
+std::filesystem::path namedSettingsDirectory() {
+#if defined(_WIN32)
+    wchar_t* value = nullptr;
+    std::size_t size = 0;
+    if (_wdupenv_s(&value, &size, L"TAKT4_SETTINGS_DIR") != 0 || value == nullptr) {
+        return {};
+    }
+    std::filesystem::path named(value);
+    std::free(value);
+    return named;
+#else
+    const std::string named = environmentVariable("TAKT4_SETTINGS_DIR");
+    return named.empty() ? std::filesystem::path{} : std::filesystem::path(named);
+#endif
+}
+
 /// This program's own file, or empty when the platform will not say.
 ///
 /// Not `argv[0]`, which is whatever the caller felt like passing and is a bare name when the
@@ -272,6 +291,12 @@ std::filesystem::path settingsDirectory() {
     // this used to be, and is still read once — see `existingSettingsFile`.
     // `parent_path`, not `remove_filename`: the latter leaves the trailing separator, so the
     // directory would not compare equal to the `parent_path()` of the file inside it.
+    //
+    // A folder named in the environment comes first: see the header — it is how a test
+    // process is kept off the rig's file.
+    if (std::filesystem::path named = namedSettingsDirectory(); !named.empty()) {
+        return named;
+    }
     const std::filesystem::path exe = executablePath();
     return exe.empty() ? userSettingsDirectory() : exe.parent_path();
 }
@@ -312,6 +337,9 @@ std::filesystem::path existingSettingsFile() {
     std::error_code code;
     if (!beside.empty() && std::filesystem::exists(beside, code)) {
         return beside;
+    }
+    if (!namedSettingsDirectory().empty()) {
+        return beside; // a folder of its own, and nobody else's file read instead
     }
     // A build before this one kept the file under the user's profile. With none beside the
     // executable yet, that one is still this machine's settings, and reading it is how a rig

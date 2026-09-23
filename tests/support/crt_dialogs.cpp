@@ -6,11 +6,16 @@
 //   stderr instead, so an abort — Eigen's alignment asserts, the [rt] allocation guard —
 //   fails the test the way it does on every other platform.
 // - No ASIO, unless the run is for the rig (below).
+// - A settings folder of its own (below).
 
 #ifdef _MSC_VER
 
 #include <crtdbg.h>
+#include <process.h>
+
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 
 namespace {
 
@@ -24,6 +29,21 @@ struct NoCrtDialogs {
         size_t length = 0;
         if (getenv_s(&length, nullptr, 0, "TAKT4_TEST_HARDWARE") != 0 || length == 0) {
             _putenv_s("TAKT4_NO_ASIO", "1");
+        }
+        // **A settings folder of its own.** These binaries are built into the same folder as
+        // takt4.exe, and settings live beside the program — so on the rig, a test whose click
+        // landed on SAVE would have written over the show's settings.json. Each test process
+        // gets a folder under the temp directory instead; `settings::settingsDirectory`
+        // honours it. A folder only appears if something is saved.
+        std::size_t named = 0;
+        if (_wgetenv_s(&named, nullptr, 0, L"TAKT4_SETTINGS_DIR") != 0 || named == 0) {
+            std::error_code code;
+            const std::filesystem::path temp = std::filesystem::temp_directory_path(code);
+            if (!code) {
+                const std::wstring folder =
+                    (temp / L"takt4-tests" / std::to_wstring(_getpid())).wstring();
+                _wputenv_s(L"TAKT4_SETTINGS_DIR", folder.c_str());
+            }
         }
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         _set_error_mode(_OUT_TO_STDERR);
