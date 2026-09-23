@@ -252,7 +252,7 @@ TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][r
         // The reason routing travels as *ids*: a bit moves the moment a target is inserted
         // ahead of it, and a rule that quietly started addressing its neighbour would be the
         // worst kind of bug — it would look like it was working.
-        std::vector<OutputTarget> grown{osc("new", 7009), config.outputs[0], config.outputs[1]};
+        std::vector<OutputTarget> grown{osc("new", 57009), config.outputs[0], config.outputs[1]};
         runner.post(OutputCommand::outputs(grown));
         runner.post(OutputCommand::testRule("clips"));
         CHECK(sawAddress(drain(deck), "/deck/clip"));

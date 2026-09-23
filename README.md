@@ -334,11 +334,18 @@ ctest --preset windows-msvc
 The executable lands in `build/windows-msvc/bin/Release/`. `takt4 --version` prints what
 it was built with.
 
+The test presets leave out what would disturb a show running on the same machine: the tests
+tagged `[network]` join the Ableton Link session and open sockets, and the ones tagged
+`[hardware]` open the audio interface and the MIDI ports. The test binaries also skip loading
+the ASIO drivers. To run everything, close Resolume, Live and anything else on the
+interface, and use the `-all` preset (`ctest --preset windows-msvc-all`).
+
 There is a second set of presets that builds the same tree with the runtime checks turned
 on. `windows-asan` is AddressSanitizer, which is all Windows has; `linux-asan` adds the
-undefined-behaviour checks and `linux-tsan` looks for races between the audio, output and
-UI threads. The suite is meant to pass clean under each of them, and it reports when the
-tests *run*, so the build alone proves nothing:
+undefined-behaviour checks and `linux-tsan` looks for races between takt4's threads — the
+audio callback, the model, the tracker, the output thread, the UI, the OSC and MIDI
+listeners, and Link's own. The suite is meant to pass clean under each of them, and it
+reports when the tests *run*, so the build alone proves nothing:
 
 ```sh
 cmake --preset windows-asan

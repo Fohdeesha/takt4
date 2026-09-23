@@ -76,12 +76,11 @@ TEST_CASE("Resampling to the same rate is a copy", "[audio]") {
     CHECK(takt4::audio::resampleForPlayback(source, kInternalSampleRate, kInternalSampleRate) == source);
 }
 
-TEST_CASE("A silent buffer plays to its end and the clock reaches it", "[audio]") {
+TEST_CASE("A silent buffer plays to its end and the clock reaches it", "[audio][hardware]") {
     const takt4::audio::PortAudioSession session;
     const auto device = takt4::audio::defaultOutputDevice(session);
     if (!device) {
-        SUCCEED("no output device on this machine");
-        return;
+        SKIP("no output device on this machine");
     }
     // Three tenths of a second of silence: nothing to hear, and a clock to read.
     const std::vector<float> silence(static_cast<std::size_t>(0.3 * kInternalSampleRate), 0.0f);
@@ -103,12 +102,11 @@ TEST_CASE("A silent buffer plays to its end and the clock reaches it", "[audio]"
     CHECK_FALSE(player.running());
 }
 
-TEST_CASE("Playback can start part-way in, with absolute positions", "[audio]") {
+TEST_CASE("Playback can start part-way in, with absolute positions", "[audio][hardware]") {
     const takt4::audio::PortAudioSession session;
     const auto device = takt4::audio::defaultOutputDevice(session);
     if (!device) {
-        SUCCEED("no output device on this machine");
-        return;
+        SKIP("no output device on this machine");
     }
     const std::vector<float> silence(static_cast<std::size_t>(2.0 * kInternalSampleRate), 0.0f);
     takt4::audio::PlaybackStream player(session, *device, silence, kInternalSampleRate, 1.8);
