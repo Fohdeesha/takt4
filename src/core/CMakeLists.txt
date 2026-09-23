@@ -3,6 +3,18 @@
 
 configure_file(build_config.hpp.in "${PROJECT_BINARY_DIR}/generated/core/build_config.hpp" @ONLY)
 
+# Which commit this build came from, and whether the tree had uncommitted changes — written on
+# every build, not at configure time (see cmake/git_describe.cmake). A target of its own that
+# always runs; the header it writes only changes when the answer does.
+find_package(Git QUIET)
+add_custom_target(takt4_git_describe
+  COMMAND "${CMAKE_COMMAND}" "-DGIT=${GIT_EXECUTABLE}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
+          "-DOUT=${PROJECT_BINARY_DIR}/generated/core/git_describe.hpp"
+          -P "${PROJECT_SOURCE_DIR}/cmake/git_describe.cmake"
+  BYPRODUCTS "${PROJECT_BINARY_DIR}/generated/core/git_describe.hpp"
+  COMMENT "Naming the commit this build comes from"
+  VERBATIM)
+
 add_library(takt4_core STATIC
   build_info.cpp
   build_info.hpp
@@ -161,6 +173,7 @@ target_include_directories(takt4_core
     "${PROJECT_SOURCE_DIR}/src"
     "${PROJECT_BINARY_DIR}/generated"
 )
+add_dependencies(takt4_core takt4_git_describe)
 
 target_link_libraries(takt4_core
   PRIVATE

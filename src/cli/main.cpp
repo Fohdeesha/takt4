@@ -80,7 +80,7 @@ void onSignal(int) {
 }
 
 void printUsage(std::ostream& out) {
-    out << "takt4-cli " << takt4::buildInfo().version << " — development console\n"
+    out << "takt4-cli " << takt4::versionLabel(takt4::buildInfo()) << " — development console\n"
         << "\n"
         << "  takt4-cli devices\n"
         << "      List the host APIs, then every input device with its channels.\n"

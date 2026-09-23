@@ -2,6 +2,7 @@
 
 #include "core/audio/resampler.hpp"
 #include "core/build_config.hpp"
+#include "core/git_describe.hpp"
 
 #include <RtMidi.h>
 #include <asio/version.hpp>
@@ -32,6 +33,7 @@ std::string nlohmannJsonVersion() {
 BuildInfo buildInfo() {
     BuildInfo info;
     info.version = TAKT4_VERSION;
+    info.commit = TAKT4_GIT_DESCRIBE;
     info.platform = TAKT4_PLATFORM;
     info.compiler = TAKT4_COMPILER;
     info.portaudio = Pa_GetVersionInfo()->versionText;
@@ -46,9 +48,17 @@ BuildInfo buildInfo() {
     return info;
 }
 
+std::string versionLabel(const BuildInfo& info) {
+    if (info.commit == "v" + info.version) {
+        return info.version;
+    }
+    return info.version + " (" + info.commit + ")";
+}
+
 std::string describe(const BuildInfo& info) {
     std::ostringstream out;
     out << "takt4 " << info.version << '\n'
+        << "  commit:        " << info.commit << '\n'
         << "  platform:      " << info.platform << '\n'
         << "  compiler:      " << info.compiler << '\n'
         << "  PortAudio:     " << info.portaudio << '\n'

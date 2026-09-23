@@ -224,7 +224,7 @@ TEST_CASE("the build's version is on screen and stays there", "[ui]") {
     WindowController controller(tracker);
 
     const std::string version(controller.window().get_version());
-    CHECK(version == takt4::buildInfo().version);
+    CHECK(version == takt4::versionLabel(takt4::buildInfo()));
     CHECK_FALSE(version.empty());
     // A version, not a name: the title composes the two and the status bar shows this on
     // its own, so anything else here would read as "takt4 takt4" in the title bar.
