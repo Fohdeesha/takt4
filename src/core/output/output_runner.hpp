@@ -324,6 +324,11 @@ public:
         /// output thread replaces whole, and a UI reading it at 30 Hz would be reading a buffer
         /// being freed underneath it.
         std::vector<dmx::Fixture> patch;
+        /// MIDI devices that have stopped taking messages, by the name they were asked for —
+        /// `Transports::lostMidiDevices`. The output thread keeps trying them; the window says
+        /// which, because a lighting desk or a sequencer that has stopped hearing takt4 is not
+        /// otherwise visible from here at all.
+        std::vector<std::string> lostMidi;
     };
     Snapshot snapshot() const;
 
@@ -519,6 +524,10 @@ private:
     std::vector<MirroredUniverse> levels_;
     /// When the mirror was last refreshed, on `elapsed()`. Negative before it ever has been.
     double mirroredAt_ = -1.0;
+    /// How many lost MIDI devices the snapshot last recorded. A device goes lost or comes back
+    /// in the middle of a round rather than in a command, so the round compares against this
+    /// and takes a fresh snapshot only when the count moves.
+    std::size_t lostInSnapshot_ = 0;
     /// §5.9's fired messages, written by the output thread and drained by a UI. A mutex
     /// rather than a ring because the entries hold strings and both sides are far from the
     /// audio thread — the output thread already takes two of these every round.

@@ -115,6 +115,16 @@ export component MainWindow inherits Window {
   in-out property <int> device-index;
   in-out property <int> channel-index;
   in-out property <bool> running;
+  /// The input has stopped delivering audio, or is being reopened after it did — the audit's
+  /// C4. While this is true the readouts are the last ones before the audio stopped, and the
+  /// lock readout says NO AUDIO rather than LOCKED at a tempo nothing is producing any more.
+  in-out property <bool> input-lost;
+  /// What the input itself has complained about — "3 overflows" — or empty. Shown under the
+  /// meter, because a device dropping input is otherwise visible nowhere.
+  in-out property <string> input-trouble;
+  /// Look for input devices and MIDI ports again: an interface switched on after takt4
+  /// started, a controller plugged in later. Only while stopped.
+  callback rescan-clicked();
 
   // --- what the tracker says -----------------------------------------------------
   in-out property <float> bpm;
@@ -456,6 +466,19 @@ export component MainWindow inherits Window {
                 }
               }
 
+              // The device list is read once, when takt4 starts — so an interface switched on
+              // afterwards, or unplugged and plugged back in, was never in it (the audit's H11).
+              // Beside the pickers it refreshes, and only while stopped, because every device
+              // is renumbered when it runs.
+              Press {
+                text: "RESCAN";
+                enabled: !root.running;
+                min-width: 108px;
+                clicked => {
+                  root.rescan-clicked();
+                }
+              }
+
               run-button := Press {
                 text: root.running ? "STOP" : "START";
                 primary: !root.running;
@@ -585,17 +608,23 @@ export component MainWindow inherits Window {
                   y: 6px;
                   border-radius: 5px;
                   background: !root.running ? Theme.line
+                    : root.input-lost ? Theme.alarm
                     : root.holding ? Theme.holding
                     : root.locked ? Theme.locked
                     : Theme.dim;
                 }
 
+                // NO AUDIO before anything else: with the input dead the tracker is frozen on
+                // its last state, and LOCKED at that tempo was the window lying about a rig that
+                // had stopped hearing the music.
                 Text {
                   text: !root.running ? "STOPPED"
+                    : root.input-lost ? "NO AUDIO"
                     : root.holding ? "HOLDING"
                     : root.locked ? "LOCKED"
                     : "HUNTING";
                   color: !root.running ? Theme.dim
+                    : root.input-lost ? Theme.alarm
                     : root.holding ? Theme.holding
                     : root.locked ? Theme.locked
                     : Theme.dim;
@@ -924,6 +953,19 @@ export component MainWindow inherits Window {
               // Peaking is the one thing an input meter must not be quiet about.
               fill: root.input-peak >= 0.99 ? Theme.holding : Theme.accent;
             }
+
+            // The input's own complaints, under the meter they are about. An explicit height,
+            // because an `if` row in a vertical layout otherwise takes a share of the spare
+            // height in a tall window.
+            if root.input-trouble != "" : Text {
+              text: root.input-trouble;
+              color: Theme.holding;
+              font-size: 11px;
+              height: 14px;
+              vertical-stretch: 0;
+              horizontal-alignment: right;
+              overflow: elide;
+            }
           }
 
           Rectangle {
@@ -1048,12 +1090,20 @@ export component MainWindow inherits Window {
                 horizontal-alignment: center;
               }
 
+              // Every heading carries **exactly the size constraints of the column under it** —
+              // the rows are separate layouts, and two layouts only share out a narrow window
+              // the same way when every column gives way by the same rules. With a hard width
+              // here and a softer one below, the headings drifted a column to the left at the
+              // window's minimum width (rendered at 820 px).
               Text {
                 text: "name";
                 color: Theme.dim;
                 font-size: 10px;
-                width: 104px;
+                preferred-width: 104px;
+                min-width: 80px;
+                max-width: 104px;
                 horizontal-stretch: 0;
+                overflow: elide;
               }
 
               Text {
@@ -1070,7 +1120,7 @@ export component MainWindow inherits Window {
               HorizontalLayout {
                 preferred-width: root.outputs-any-artnet ? 288px : 226px;
                 max-width: root.outputs-any-artnet ? 288px : 226px;
-                min-width: 150px;
+                min-width: root.outputs-any-artnet ? 192px : 150px;
                 horizontal-stretch: 0;
                 spacing: 6px;
 
@@ -1106,7 +1156,7 @@ export component MainWindow inherits Window {
                 text: "this target's own delay";
                 color: Theme.dim;
                 font-size: 10px;
-                min-width: 90px;
+                min-width: 70px;
                 horizontal-stretch: 1;
                 overflow: elide;
               }
@@ -1164,7 +1214,10 @@ export component MainWindow inherits Window {
                 text: target.name;
                 placeholder-text: "name";
                 font-size: 12px;
-                width: 104px;
+                // The heading's constraints exactly — see the "name" heading above.
+                preferred-width: 104px;
+                min-width: 80px;
+                max-width: 104px;
                 horizontal-stretch: 0;
                 edited(text) => {
                   root.output-name-edited(index, text);
@@ -1213,9 +1266,16 @@ export component MainWindow inherits Window {
                 // it takes the extra rather than squeezing all three into a slot sized for two.
                 // The delay slider beside it gives it up; that slider stretches, and this does
                 // not, so every readout to the right of it still starts at the same x.
-                preferred-width: target.kind-index == 2 ? 288px : 226px;
-                max-width: target.kind-index == 2 ? 288px : 226px;
-                min-width: 150px;
+                //
+                // **Sized by whether any row is Art-Net, not by this row's kind** — the same test
+                // the column headings use. Sized by its own kind, an OSC row's slot was the
+                // narrower one in a rig that also had a node, so its delay slider started under
+                // the "universes" heading and every heading to the right of it named the wrong
+                // column (rendered at 1000 px). The space a universe list would take is left
+                // empty on the rows that have none; see the spacer at the end of the slot.
+                preferred-width: root.outputs-any-artnet ? 288px : 226px;
+                max-width: root.outputs-any-artnet ? 288px : 226px;
+                min-width: root.outputs-any-artnet ? 192px : 150px;
                 horizontal-stretch: 0;
                 spacing: 6px;
 
@@ -1227,6 +1287,13 @@ export component MainWindow inherits Window {
                   placeholder-text: "127.0.0.1";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  // Its own floor, not the Fluent box's 160 px: with the port beside it that was
+                  // a slot of 228 px against the 150 it is meant to give way to, so at the
+                  // window's minimum width the row overflowed and the port box slid under the
+                  // delay slider (rendered at 820 px). At the window's very minimum an address
+                  // shows its first half and scrolls in the box when typed into; at the size the
+                  // window opens at it reads whole.
+                  min-width: 62px;
                   edited(text) => {
                     root.output-host-edited(index, text);
                   }
@@ -1305,9 +1372,19 @@ export component MainWindow inherits Window {
                   model: root.output-devices;
                   current-index: target.device-index;
                   horizontal-stretch: 1;
+                  // The slot's own floor, for the reason the host box gives: the Fluent
+                  // ComboBox's minimum would otherwise hold the slot wider than it can go.
+                  min-width: 120px;
                   selected => {
                     root.output-device-picked(index, self.current-index);
                   }
+                }
+
+                // Where an Art-Net row has its universe list, on a row that has none — so the
+                // host and port boxes line up under their headings in a mixed rig.
+                if root.outputs-any-artnet && target.kind-index != 2 : Rectangle {
+                  width: 56px;
+                  horizontal-stretch: 0;
                 }
               }
 
@@ -1327,7 +1404,9 @@ export component MainWindow inherits Window {
                 step: 1;
                 enabled: target.enabled;
                 value: target.delay-ms;
-                min-width: 90px;
+                // The floor the heading above it has, so the two give way together; 70 is what
+                // fits a row with a universe list inside the window's minimum width.
+                min-width: 70px;
                 horizontal-stretch: 1;
                 changed(v) => {
                   root.output-delay-changed(index, v);

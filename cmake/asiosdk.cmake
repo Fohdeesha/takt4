@@ -5,9 +5,11 @@
 # `if(PA_USE_ASIO AND TARGET ASIO::host)` branch uses the vendored SDK and never reaches
 # its fallback of downloading the SDK from steinberg.net at configure time.
 #
-# host/pc/asiolist.cpp frees an array allocated with new[] using plain delete. PortAudio
-# patches that line too. The patched copy is written to the build tree so the vendored
-# SDK stays byte-identical to Steinberg's package.
+# host/pc/asiolist.cpp is patched in three places — see the replacements below: an array
+# allocated with new[] freed with plain delete (PortAudio patches that line too), a driver
+# name copied unbounded into a 128-byte field, and a missing-DLL check that could never fail.
+# The patched copy is written to the build tree so the vendored SDK stays byte-identical to
+# Steinberg's package.
 
 if(NOT WIN32)
   message(FATAL_ERROR "cmake/asiosdk.cmake is Windows-only")
@@ -33,13 +35,40 @@ set(asiolist_out "${asiosdk_gen}/patched_asiolist.cpp")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${asiolist_in}")
 
 file(READ "${asiolist_in}" asiolist_source)
-string(REPLACE "delete lpdrv" "delete[] lpdrv" asiolist_patched "${asiolist_source}")
-if(asiolist_patched STREQUAL asiolist_source)
-  message(FATAL_ERROR
-    "${asiolist_in} no longer contains the 'delete lpdrv' this patch expects. "
-    "Check whether the SDK fixed it upstream and update cmake/asiosdk.cmake."
-  )
-endif()
+set(asiolist_patched "${asiolist_source}")
+
+# Each edit is an exact-text replacement that stops the configure if the text is not there,
+# so a changed SDK is noticed instead of silently compiled unpatched.
+function(takt4_patch_asiolist what from to)
+  string(FIND "${asiolist_patched}" "${from}" at)
+  if(at EQUAL -1)
+    message(FATAL_ERROR
+      "${asiolist_in} no longer contains the text for \"${what}\". Check whether the SDK "
+      "fixed it upstream and update cmake/asiosdk.cmake.")
+  endif()
+  string(REPLACE "${from}" "${to}" patched "${asiolist_patched}")
+  set(asiolist_patched "${patched}" PARENT_SCOPE)
+endfunction()
+
+takt4_patch_asiolist("new[] freed with delete" "delete lpdrv" "delete[] lpdrv")
+
+# The driver's description, up to 255 bytes from the registry, copied into a 128-byte name
+# with strcpy — a heap overflow for any driver that describes itself at length, at every
+# launch, before a window exists (the audit's ASIO section). Bounded, and the source
+# terminated first, since RegQueryValueEx does not promise to.
+takt4_patch_asiolist("the driver description copy"
+  "strcpy(lpdrv->drvname,databuf);"
+  "databuf[sizeof(databuf) - 1] = 0; strncpy(lpdrv->drvname,databuf,sizeof(lpdrv->drvname) - 1); lpdrv->drvname[sizeof(lpdrv->drvname) - 1] = 0; /* takt4: bounded */")
+takt4_patch_asiolist("the key name copy"
+  "else strcpy(lpdrv->drvname,keyname);"
+  "else { strncpy(lpdrv->drvname,keyname,sizeof(lpdrv->drvname) - 1); lpdrv->drvname[sizeof(lpdrv->drvname) - 1] = 0; } /* takt4: bounded */")
+
+# OpenFile reports a missing file as HFILE_ERROR, which is -1 and so true: the check that a
+# driver's DLL exists could never fail, and every registered driver was loaded at every launch
+# — including the two on this machine whose DLLs are gone. A faulty driver can take a process
+# down at load with a fault nothing can catch (PortAudio #960, #1148), so one whose DLL is not
+# even there is not tried.
+takt4_patch_asiolist("the missing-DLL check" "if (hfile) rc = 0;" "if (hfile != HFILE_ERROR) rc = 0; /* takt4 */")
 
 # Only rewrite when the content changes, so a reconfigure doesn't force a rebuild.
 set(asiolist_existing "")

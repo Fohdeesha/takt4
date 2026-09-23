@@ -45,6 +45,12 @@ but Windows is the only platform currently built and tested.
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
   stops the tracker, reseeds anything or drops the lock. From the keyboard: **T** taps,
   **D** snaps the downbeat and **Esc** is PANIC (in a text box, Esc just leaves the box).
+- **Rides out the rig failing.** If the interface stops sending — unplugged, power-cycled,
+  reset by its driver, or moved to another sample rate by another program — the readout
+  says **NO AUDIO** and takt4 reopens it as soon as it answers, while Link and the MIDI clock
+  carry the last tempo on. It never changes an interface's sample rate: it opens at whatever
+  the interface is already running at. **RESCAN** finds devices switched on after takt4
+  started, and a MIDI device unplugged mid-set is picked up again when it comes back.
 - **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
   your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
   often from a Stream Deck, mid-set.

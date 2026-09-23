@@ -51,11 +51,17 @@ export component FocusSink inherits FocusScope {
 /// `clear-focus()` — clearing would leave nothing holding the keyboard, and the shortcuts dead.
 ///
 /// A wrapper rather than `inherits LineEdit`, because a `LineEdit` cannot be given children and
-/// the place the focus goes has to live somewhere. Rooted in a layout so the box's own size
-/// constraints are the component's; `width`, `max-width` and the stretches set on an instance
-/// land on that root exactly as they did on the `LineEdit`. The properties and callbacks are
-/// the ones the boxes in this application use, under the same names.
-export component Field inherits HorizontalLayout {
+/// the place the focus goes has to live somewhere. The properties and callbacks are the ones
+/// the boxes in this application use, under the same names.
+///
+/// **A plain rectangle that forwards the box's own size constraints, not a layout.** The first
+/// version was rooted in a `HorizontalLayout`, and a layout's minimum is its children's — so
+/// the `LineEdit`'s own minimum beat every `width:` written on an instance. Rendered, the port
+/// box came out 69 px against its 62, the universe box 92 against 56 and over the delay slider,
+/// and at the window's minimum width the port box sat under the slider's thumb. On a rectangle
+/// an explicit `width` wins, exactly as it did on the `LineEdit` itself; with none, the
+/// forwarded constraints give the box its natural size and let it stretch as it did.
+export component Field inherits Rectangle {
   in-out property <string> text <=> edit.text;
   in property <string> placeholder-text <=> edit.placeholder-text;
   in property <length> font-size <=> edit.font-size;
@@ -65,8 +71,12 @@ export component Field inherits HorizontalLayout {
   callback edited(string);
   callback accepted(string);
 
-  padding: 0px;
-  spacing: 0px;
+  min-width: edit.min-width;
+  min-height: edit.min-height;
+  preferred-width: edit.preferred-width;
+  preferred-height: edit.preferred-height;
+  max-height: edit.max-height;
+  vertical-stretch: 0;
 
   /// Finished with the box: the focus goes where it commits the edit and still passes the
   /// window's shortcuts up to it.
@@ -75,6 +85,10 @@ export component Field inherits HorizontalLayout {
   }
 
   edit := LineEdit {
+    x: 0;
+    y: 0;
+    width: root.width;
+    height: root.height;
     edited(text) => {
       root.edited(text);
     }
@@ -104,6 +118,9 @@ export global Theme {
   out property <color> accent: #60cdff;   // fluent's own dark accent, so the pickers agree
   out property <color> locked: #4ade80;
   out property <color> holding: #fbbf24;
+  // Something has failed and the rig is not doing what the screen would otherwise suggest —
+  // no audio arriving, most of all. Red, because amber already means "holding".
+  out property <color> alarm: #f87171;
   out property <color> trace: #3f596b;
 
   // The pressable controls. Lighter than the panel they sit on, so a button reads as a

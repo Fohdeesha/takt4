@@ -6,6 +6,8 @@ configure_file(build_config.hpp.in "${PROJECT_BINARY_DIR}/generated/core/build_c
 add_library(takt4_core STATIC
   build_info.cpp
   build_info.hpp
+  audio/asio_driver.cpp
+  audio/asio_driver.hpp
   audio/channel_meter.cpp
   audio/channel_meter.hpp
   audio/channel_picker.cpp
@@ -25,6 +27,8 @@ add_library(takt4_core STATIC
   audio/input_pipeline.hpp
   audio/input_stream.cpp
   audio/input_stream.hpp
+  audio/input_watchdog.cpp
+  audio/input_watchdog.hpp
   audio/playback_stream.cpp
   audio/playback_stream.hpp
   audio/portaudio_session.cpp

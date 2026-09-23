@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -50,7 +51,16 @@ public:
         /// Empty is a rig with no lights on it, which costs nothing: no universes means no
         /// frames, and an Art-Net target with nothing to carry sends none.
         std::vector<dmx::Fixture> patch;
+        /// How a MIDI device is opened by name. Empty is RtMidi, which is the application; a
+        /// test supplies ports it can unplug, which is the only way to test a reconnect on a
+        /// machine with nothing to unplug.
+        std::function<std::unique_ptr<MidiOutput>(const std::string&)> openMidi;
     };
+
+    /// How often a lost MIDI device is looked for again. Often enough that a cable plugged
+    /// back in is sending within a beat or two; rarely enough that enumerating ports — which
+    /// RtMidi does on every look — costs nothing.
+    static constexpr double kMidiReconnectSeconds = 1.0;
 
     /// Builds the transports and applies `config` as their starting state. Throws if a
     /// named MIDI port is not on the machine.
@@ -140,7 +150,17 @@ public:
     /// a rig sending both 24 PPQN and §5.8's note messages down one cable is the ordinary
     /// case, and opening the same port twice is refused by some drivers.
     const std::optional<std::string>& midiClockPort() const noexcept { return midiClockPort_; }
+    /// Picking the port that is already open is a no-op **unless that device is lost**, when it
+    /// is an operator saying "try it now" and the port is reopened on the spot.
     void setMidiClockPort(const std::optional<std::string>& port);
+
+    /// Every MIDI device in use that has stopped taking messages, by the name it was asked
+    /// for — the clock's or a target's. Empty while everything is sending. See
+    /// `MidiOutput::lost`; `advance` keeps trying to bring each one back.
+    std::vector<std::string> lostMidiDevices() const;
+    /// How many of them there are — the same question without building a list, for the output
+    /// thread to ask every round.
+    std::size_t lostMidiCount() const noexcept;
 
     /// Enables Link and starts the MIDI clock. `now` is the seconds-since-start clock
     /// `advance` and `publish` are given.
@@ -189,6 +209,12 @@ private:
     MidiOutput* openDevice(const std::string& device);
     /// Closes every device nothing names any more — the clock's or a target's.
     void closeUnusedDevices() noexcept;
+    /// Tries to bring back every lost MIDI device, at most once per `kMidiReconnectSeconds`.
+    void maintainMidi(double now) noexcept;
+
+    std::function<std::unique_ptr<MidiOutput>(const std::string&)> openMidi_;
+    /// When `maintainMidi` last looked; negative before it ever has.
+    double midiMaintainedAt_ = -1.0;
 
     std::atomic<std::int64_t> latencyMicros_;
     /// Never null, and never replaced: the audio thread holds a pointer to the session.

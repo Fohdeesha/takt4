@@ -6,7 +6,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -215,6 +219,120 @@ TEST_CASE("a config naming a MIDI port that is not there throws", "[output]") {
     Transports::Config config;
     config.midiClockPort = kNoSuchPort;
     CHECK_THROWS(Transports{config});
+}
+
+namespace {
+
+/// A MIDI device that can be pulled out and plugged back in, which nothing on a test machine
+/// can do for real. Shared state, because the transports own the port and the test has to
+/// reach the cable.
+struct Cable {
+    bool plugged = true;
+    int opens = 0;
+    std::uint64_t delivered = 0;
+};
+
+class UnpluggablePort final : public takt4::output::MidiPort {
+public:
+    explicit UnpluggablePort(std::shared_ptr<Cable> cable) : cable_(std::move(cable)) {}
+    std::string open(std::string_view spec) override {
+        ++cable_->opens;
+        if (!cable_->plugged) {
+            throw std::runtime_error("MIDI output: no port matching \"" + std::string(spec) + "\"");
+        }
+        return "Desk " + std::string(spec);
+    }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char>) override {
+        if (!cable_->plugged) {
+            throw std::runtime_error("the device has gone");
+        }
+        ++cable_->delivered;
+    }
+
+private:
+    std::shared_ptr<Cable> cable_;
+};
+
+} // namespace
+
+TEST_CASE("a MIDI device pulled out mid-set comes back on its own", "[output][midi]") {
+    // The audit's H11a. A send to a port whose device has gone failed and was counted, and
+    // nothing ever opened the port again — so a USB interface pulled out and pushed back in
+    // mid-show stayed silent until takt4 was restarted. Driven through the clock, which sends
+    // 24 times a beat and so finds a dead port within a beat.
+    auto cable = std::make_shared<Cable>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [cable](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name,
+                                                           std::make_unique<UnpluggablePort>(cable));
+    };
+    Transports transports(config);
+    const TempoState state;
+    transports.startOutputs(0.0);
+    double now = 0.0;
+    const auto runFor = [&](double seconds) {
+        const double until = now + seconds;
+        while (now < until) {
+            now += 0.001;
+            transports.advance(now, state);
+        }
+    };
+
+    runFor(1.0);
+    REQUIRE(cable->delivered > 0);
+    CHECK(transports.lostMidiDevices().empty());
+
+    cable->plugged = false;
+    runFor(0.5);
+    const std::vector<std::string> lost = transports.lostMidiDevices();
+    REQUIRE(lost.size() == 1);
+    CHECK(lost.front() == "Clock");
+    CHECK(transports.lostMidiCount() == 1);
+
+    // Looked for again once a second, not once a tick: five seconds unplugged is about five
+    // tries, not five thousand.
+    const int opensBefore = cable->opens;
+    runFor(5.0);
+    CHECK(cable->opens - opensBefore >= 4);
+    CHECK(cable->opens - opensBefore <= 6);
+    CHECK(transports.lostMidiCount() == 1);
+
+    // Plugged back in: within a second it is found, and the clock is sending again without
+    // anybody touching anything.
+    cable->plugged = true;
+    const std::uint64_t deliveredBefore = cable->delivered;
+    runFor(1.5);
+    CHECK(transports.lostMidiDevices().empty());
+    CHECK(cable->delivered > deliveredBefore);
+    transports.stopOutputs();
+}
+
+TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]") {
+    // Re-picking the port that was already selected did nothing, because it was "already
+    // open" — which is exactly what an operator does after plugging the cable back in.
+    auto cable = std::make_shared<Cable>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [cable](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name,
+                                                           std::make_unique<UnpluggablePort>(cable));
+    };
+    Transports transports(config);
+    const TempoState state;
+    transports.startOutputs(0.0);
+    transports.advance(0.1, state);
+    cable->plugged = false;
+    for (double now = 0.101; now < 0.4; now += 0.001) {
+        transports.advance(now, state);
+    }
+    REQUIRE(transports.lostMidiCount() == 1);
+
+    cable->plugged = true;
+    transports.setMidiClockPort(std::string("Clock"));
+    CHECK(transports.lostMidiCount() == 0);
+    transports.stopOutputs();
 }
 
 TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link]") {

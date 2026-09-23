@@ -158,6 +158,8 @@ void OutputRunner::takeSnapshot() {
     taken.midiClockOpen = transports_.midiClock() != nullptr;
     taken.oscPrefix = transports_.oscPrefix();
     taken.patch = transports_.patch();
+    taken.lostMidi = transports_.lostMidiDevices();
+    lostInSnapshot_ = taken.lostMidi.size();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
 }
@@ -557,6 +559,12 @@ void OutputRunner::drainOnce(double now) {
     // And a copy of the lighting frames for anything watching at redraw rate. After the
     // triggers, so a fade started this round is in the very frame that is mirrored.
     mirrorLevels(now);
+    // A MIDI device went lost or came back this round — neither is a command, so nothing else
+    // would refresh what a reader sees. Only when the count moves: a snapshot copies the
+    // targets and the patch, which is nothing to do a thousand times a second.
+    if (transports_.lostMidiCount() != lostInSnapshot_) {
+        takeSnapshot();
+    }
 }
 
 } // namespace takt4::output

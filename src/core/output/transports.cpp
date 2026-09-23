@@ -22,7 +22,8 @@ std::int64_t toMicros(double seconds) noexcept {
 } // namespace
 
 Transports::Transports(const Config& config)
-    : latencyMicros_(toMicros(config.latencySeconds)), link_(std::make_unique<LinkSession>(120.0)),
+    : openMidi_(config.openMidi), latencyMicros_(toMicros(config.latencySeconds)),
+      link_(std::make_unique<LinkSession>(120.0)),
       osc_(std::make_unique<OscPublisher>(config.oscPrefix)),
       dmx_(std::make_unique<dmx::DmxEngine>()), artnet_(std::make_unique<dmx::ArtNetPublisher>()),
       oscPrefix_(config.oscPrefix) {
@@ -87,7 +88,9 @@ MidiOutput* Transports::openDevice(const std::string& device) {
     if (found != midiDevices_.end()) {
         return found->second.get();
     }
-    auto opened = std::make_unique<MidiOutput>(device); // throws if it is not on the machine
+    // Throws if it is not on the machine.
+    std::unique_ptr<MidiOutput> opened =
+        openMidi_ ? openMidi_(device) : std::make_unique<MidiOutput>(device);
     MidiOutput* const port = opened.get();
     midiDevices_.emplace(device, std::move(opened));
     return port;
@@ -183,6 +186,12 @@ bool Transports::anyOutputIn(std::uint64_t outputs) const noexcept {
 
 void Transports::setMidiClockPort(const std::optional<std::string>& port) {
     if (port == midiClockPort_ && (!port || midi_)) {
+        // The same port again. Nothing to change — unless that device has gone, when picking
+        // it again is the operator saying "try it now", and it used to be ignored because the
+        // port was "already open" (the audit's H11a).
+        if (MidiOutput* const current = midiPort(); current != nullptr && current->lost()) {
+            (void)current->reconnect();
+        }
         return;
     }
     if (!port) {
@@ -212,8 +221,45 @@ void Transports::setMidiClockPort(const std::optional<std::string>& port) {
     }
 }
 
+std::vector<std::string> Transports::lostMidiDevices() const {
+    std::vector<std::string> lost;
+    for (const auto& [name, device] : midiDevices_) {
+        if (device->lost()) {
+            lost.push_back(name);
+        }
+    }
+    return lost;
+}
+
+std::size_t Transports::lostMidiCount() const noexcept {
+    std::size_t lost = 0;
+    for (const auto& entry : midiDevices_) {
+        if (entry.second->lost()) {
+            ++lost;
+        }
+    }
+    return lost;
+}
+
+void Transports::maintainMidi(double now) noexcept {
+    if (midiMaintainedAt_ >= 0.0 && now - midiMaintainedAt_ < kMidiReconnectSeconds) {
+        return;
+    }
+    midiMaintainedAt_ = now;
+    // Every device, not only the clock's: a lighting desk on a rule target unplugged and
+    // plugged back in is the same failure and wants the same answer. The clock and every rule
+    // hold the `MidiOutput` itself, never the port inside it, so a reconnect is invisible to
+    // them — the next tick simply goes out.
+    for (auto& [name, device] : midiDevices_) {
+        if (device->lost()) {
+            (void)device->reconnect();
+        }
+    }
+}
+
 void Transports::advance(double now, const tracking::TempoState& state) {
     lastNow_ = now;
+    maintainMidi(now);
     if (midi_) {
         (void)midi_->advance(now);
     }

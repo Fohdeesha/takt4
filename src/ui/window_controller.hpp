@@ -1,6 +1,8 @@
 #pragma once
 
+#include "core/audio/asio_driver.hpp"
 #include "core/audio/devices.hpp"
+#include "core/audio/input_watchdog.hpp"
 #include "core/control/midi_control.hpp"
 #include "core/control/osc_control.hpp"
 #include "core/engine/live_tracker.hpp"
@@ -95,6 +97,30 @@ public:
     void pickDevice(int index);
     void pickChannel(int index) { channel_ = index; }
     void toggleRun();
+
+    /// Looks for input devices and MIDI ports again — the RESCAN button. Only while stopped:
+    /// PortAudio renumbers every device when it looks. Keeps the choice that was made (or the
+    /// remembered one, if the last launch fell back from it) by name, and tries again anything
+    /// remembered that was missing: the MIDI clock port, and any MIDI output a target names.
+    void rescanDevices();
+
+    /// Whether the operator has asked for the tracker to run: true from Start to Stop, and
+    /// **through an outage the window is recovering from**, when the tracker itself may be
+    /// stopped between attempts. It is what the START/STOP button shows.
+    bool wantsRunning() const noexcept { return wantRunning_; }
+
+    /// §C4's supervision of a running input, one look — what the redraw timer does each round.
+    /// `reading` is the watchdog's and `events` the ASIO driver's, both handed in rather than
+    /// read here so a test can deliver a dead input or a driver reset that nothing on this
+    /// machine can produce. `now` is on `nowSeconds()`'s clock.
+    ///
+    /// Silence begins an outage: the readout says NO AUDIO, the status line says which device,
+    /// and the input is reopened after a second, then every two, with the device list looked at
+    /// again now and then in case it went away and came back under another number. A moved
+    /// clock or a driver asking to be reset reopens at once. The outputs are not stopped for
+    /// any of it: Link and the MIDI clock carry the last tempo on while the input comes back.
+    void superviseInput(const audio::InputWatchdog::Reading& reading,
+                        const audio::AsioDriverEvents& events, double now);
 
     /// §5.5's manual controls. Each one posts on the engine's control queue and returns;
     /// the inference thread applies it before the next frame it tracks, so none of them
@@ -328,6 +354,17 @@ private:
     /// Fills the device picker and selects one: the remembered device if it is still
     /// there, otherwise the most useful one on the machine.
     void refreshDevices(const settings::MachineSettings& remembered);
+    /// The MIDI pickers' models, from `midiPorts_` and `midiInputPorts_`.
+    void publishPortLists();
+    /// Closes the input and opens the same device and channel again, found by name — a
+    /// rescan renumbers devices. False, with `error` saying why, when it would not open.
+    bool reopenInput(std::string& error);
+    /// A reopen for `why`, now; an outage when it fails.
+    void restartInput(const std::string& why, double now);
+    void beginOutage(const std::string& why, double since, double now);
+    /// Which MIDI devices have gone quiet, from the runner's snapshot, said on the status line
+    /// when the set changes.
+    void publishLostMidi(const std::vector<std::string>& lost);
     void publishStopped();
     void publishOpenStream();
     void publishOptions();
@@ -382,6 +419,42 @@ private:
     std::vector<audio::InputDevice> devices_;
     int device_ = -1;
     int channel_ = 0;
+
+    /// The machine half as the last run left it, kept for the whole session — see
+    /// `deviceFallback_` for why a fallback must not overwrite it.
+    settings::MachineSettings remembered_;
+    /// The remembered interface was not on the machine when the list was read, so another was
+    /// selected. **Saving that one as if it had been chosen** meant a launch before the MOTU
+    /// was powered on made the next show open on the wrong device at channel 1 (the audit's
+    /// H11). While this holds and the operator has not picked anything, the remembered one is
+    /// what gets saved.
+    bool deviceFallback_ = false;
+    /// The operator picked a device or a channel from the pickers this session.
+    bool deviceChosen_ = false;
+    /// The MIDI clock port asked for — from the settings or from the picker — whether or not it
+    /// opened. Saved as it is, so a port that was not plugged in at one launch is still
+    /// wanted at the next.
+    std::string midiClockWanted_;
+    /// The lost MIDI devices the status line last reported.
+    std::vector<std::string> lostMidiShown_;
+
+    /// §C4's watch on the running input. See `superviseInput`.
+    audio::InputWatchdog watchdog_;
+    bool wantRunning_ = false;
+    /// What was opened, for reopening the same device and channel by name.
+    std::optional<engine::LiveTracker::Running> input_;
+    /// An outage in progress: since when, when to try again, how many tries so far.
+    struct Outage {
+        double since = 0.0;
+        double nextTry = 0.0;
+        int tries = 0;
+        std::string why;
+    };
+    std::optional<Outage> outage_;
+    /// When PortAudio last looked for devices during an outage; negative before that.
+    double rescannedAt_ = -1.0;
+    /// The input overflows the window last showed.
+    std::uint32_t overflowsShown_ = 0;
 
     tracking::TapTempo taps_;
     /// When the last tap landed, so a set that has gone quiet stops claiming to be

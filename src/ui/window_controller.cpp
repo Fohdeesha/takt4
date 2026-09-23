@@ -182,6 +182,16 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
 /// destination that has a conventional answer, where the host does not.
 constexpr std::uint16_t kNewTargetPort = 9000;
 
+/// An outage's pacing (see `WindowController::superviseInput`). The first try is soon: a
+/// driver that paused for a buffer-size change is usually back within it. After that every
+/// two seconds, which is quick enough that a replugged interface is running again before an
+/// operator has finished looking for the cable, and slow enough that a driver refusing to
+/// open is not hammered. A fresh enumeration costs a second or two of loading every ASIO
+/// driver on the machine, so it is rarer still.
+constexpr double kOutageFirstTrySeconds = 1.0;
+constexpr double kOutageRetrySeconds = 2.0;
+constexpr double kOutageRescanSeconds = 10.0;
+
 /// Where a row's MIDI dropdown sits for this device — an index into the window's
 /// `output-devices`, whose entry 0 is its own "not chosen yet" label.
 ///
@@ -384,6 +394,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // that ordering `LiveTracker::start`'s business instead of this class's.
     tickProbe_ = environmentPath("TAKT4_TICK_PROBE");
     meters_ = settings.preset.meters;
+    remembered_ = settings.machine;
+    midiClockWanted_ = settings.machine.midiClockPort;
     tracker_.setHostTimeSource(&runner_.hostTimeClock());
     midiPorts_ = output::listMidiOutputPorts();
     midiInputPorts_ = output::listMidiInputPorts();
@@ -406,9 +418,18 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     }
     publishTargetRows();
 
-    window_->on_device_picked([this](int index) { pickDevice(index); });
-    window_->on_channel_picked([this](int index) { pickChannel(index); });
+    // A pick from the pickers is the operator's choice, which is what makes it the one saved
+    // rather than the remembered interface a launch without it fell back from.
+    window_->on_device_picked([this](int index) {
+        deviceChosen_ = true;
+        pickDevice(index);
+    });
+    window_->on_channel_picked([this](int index) {
+        deviceChosen_ = true;
+        pickChannel(index);
+    });
     window_->on_toggle_run([this] { toggleRun(); });
+    window_->on_rescan_clicked([this] { rescanDevices(); });
 
     window_->on_halve([this] { halve(); });
     window_->on_redouble([this] { redouble(); });
@@ -492,26 +513,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
 
-    // The first entry of each list is "nothing picked". **It says so in words**: it used to
-    // be an empty string, and a dropdown showing nothing at all does not read as a list
-    // nobody has chosen from — it reads as a box the application failed to fill in. Reported
-    // from a rig about the control input, and the clock picker had the same hole.
-    auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    ports->push_back(shared("no MIDI clock"));
-    for (const std::string& port : midiPorts_) {
-        ports->push_back(shared(port));
-    }
-    window_->set_midi_ports(ports);
-
-    // The same devices again, under the label a *target* row wants: leaving the clock unset
-    // is a setting, leaving a target's device unset is an unfinished row.
-    auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    devices->push_back(
-        shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
-    for (const std::string& port : midiPorts_) {
-        devices->push_back(shared(port));
-    }
-    window_->set_output_devices(devices);
+    publishPortLists();
 
     auto kinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
     // In `output::OutputTarget::Kind`'s own order, which is what `OutputRow::kind-index` is.
@@ -519,14 +521,6 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     kinds->push_back(shared("MIDI"));
     kinds->push_back(shared("Art-Net"));
     window_->set_output_kinds(kinds);
-
-    auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    inputs->push_back(
-        shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "select input"));
-    for (const std::string& port : midiInputPorts_) {
-        inputs->push_back(shared(port));
-    }
-    window_->set_midi_in_ports(inputs);
 
     // Everything a gesture can bind on its own. §5.7's `rule/<id>/enable` is the one that
     // cannot: pressing a pad says which button, never which rule, and this window has
@@ -664,6 +658,8 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     }
 
     const bool restored = chosen != devices_.size();
+    // Only a fallback when there was something to fall back *from*. See `deviceFallback_`.
+    deviceFallback_ = !restored && !remembered.deviceName.empty();
     if (!restored) {
         // Nothing remembered, or it is not here any more. The most useful device to land
         // on: a real input before a loopback of the speakers (Q3 offers loopback as a way
@@ -696,6 +692,85 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     }
 }
 
+void WindowController::publishPortLists() {
+    // The first entry of each list is "nothing picked". **It says so in words**: it used to
+    // be an empty string, and a dropdown showing nothing at all does not read as a list
+    // nobody has chosen from — it reads as a box the application failed to fill in. Reported
+    // from a rig about the control input, and the clock picker had the same hole.
+    auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    ports->push_back(shared("no MIDI clock"));
+    for (const std::string& port : midiPorts_) {
+        ports->push_back(shared(port));
+    }
+    window_->set_midi_ports(ports);
+
+    // The same devices again, under the label a *target* row wants: leaving the clock unset
+    // is a setting, leaving a target's device unset is an unfinished row.
+    auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    devices->push_back(
+        shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
+    for (const std::string& port : midiPorts_) {
+        devices->push_back(shared(port));
+    }
+    window_->set_output_devices(devices);
+
+    auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    inputs->push_back(
+        shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "select input"));
+    for (const std::string& port : midiInputPorts_) {
+        inputs->push_back(shared(port));
+    }
+    window_->set_midi_in_ports(inputs);
+}
+
+void WindowController::rescanDevices() {
+    if (wantRunning_ || tracker_.running()) {
+        setStatus("Stop first: devices can only be looked for again while nothing is open.", true);
+        return;
+    }
+    // What to land on afterwards: what the operator chose, or — when the last read fell back
+    // from the remembered interface and nobody picked another — the remembered one, which is
+    // the whole point of looking again after powering it on.
+    settings::MachineSettings keep = remembered_;
+    if ((!deviceFallback_ || deviceChosen_) && device_ >= 0 &&
+        static_cast<std::size_t>(device_) < devices_.size()) {
+        keep.deviceName = devices_[static_cast<std::size_t>(device_)].name;
+        keep.hostApiName = devices_[static_cast<std::size_t>(device_)].hostApiName;
+        keep.channel = channel_;
+    }
+    setStatus("Looking for devices...", false);
+    try {
+        (void)tracker_.rescan();
+    } catch (const std::exception& e) {
+        setStatus(std::string("Could not look for devices again: ") + e.what(), true);
+        return;
+    }
+    refreshDevices(keep);
+
+    // RtMidi enumerates afresh on every call, so these are simply read again. The target rows
+    // are re-derived from their names by `applyTargets` below, which is what keeps a row on
+    // its device when the list reorders.
+    midiPorts_ = output::listMidiOutputPorts();
+    midiInputPorts_ = output::listMidiInputPorts();
+    publishPortLists();
+
+    // Whatever was remembered and missing may be here now.
+    if (!midiClockWanted_.empty() && !runner_.snapshot().midiClockOpen) {
+        setMidiPort(midiClockWanted_);
+    }
+    if (!control_.running() && !control_.config().port.empty()) {
+        setMidiControlPort(control_.config().port);
+    }
+    applyTargets();
+    publishControl();
+    if (!statusIsError_) {
+        setStatus("Found " + std::to_string(devices_.size()) + " inputs, " +
+                      std::to_string(midiPorts_.size()) + " MIDI outputs and " +
+                      std::to_string(midiInputPorts_.size()) + " MIDI inputs.",
+                  false);
+    }
+}
+
 void WindowController::pickDevice(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= devices_.size()) {
         return;
@@ -716,7 +791,14 @@ void WindowController::pickDevice(int index) {
 }
 
 void WindowController::toggleRun() {
-    if (tracker_.running()) {
+    // By what was asked for, not by whether a stream is open: during an outage the tracker is
+    // stopped between attempts to reopen it, and STOP has to mean stop — not "start".
+    if (wantRunning_ || tracker_.running()) {
+        wantRunning_ = false;
+        outage_.reset();
+        input_.reset();
+        window_->set_input_lost(false);
+        window_->set_input_trouble(shared(""));
         // The tracker first: it tracks the hops still in flight on the way down, and those
         // can call a last beat that the runner should still send.
         tracker_.stop();
@@ -764,8 +846,154 @@ void WindowController::toggleRun() {
         publishStopped();
         return;
     }
+    wantRunning_ = true;
+    input_ = tracker_.current();
+    watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
+    overflowsShown_ = 0;
+    window_->set_input_trouble(shared(""));
     window_->set_running(true);
     publishOpenStream();
+}
+
+bool WindowController::reopenInput(std::string& error) {
+    if (!input_) {
+        error = "nothing was open";
+        return false;
+    }
+    tracker_.stop();
+    // Found again by name: a rescan renumbers every device, and the index the input had when
+    // it was opened may now belong to something else.
+    const audio::InputDevice* device = &input_->device;
+    for (const audio::InputDevice& candidate : devices_) {
+        if (candidate.name == input_->device.name &&
+            candidate.hostApiName == input_->device.hostApiName) {
+            device = &candidate;
+            break;
+        }
+    }
+    try {
+        tracker_.start(*device, input_->selection);
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+    input_ = tracker_.current();
+    watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
+    overflowsShown_ = 0;
+    window_->set_input_trouble(shared(""));
+    return true;
+}
+
+void WindowController::beginOutage(const std::string& why, double since, double now) {
+    Outage outage;
+    outage.since = since;
+    outage.nextTry = now + kOutageFirstTrySeconds;
+    outage.why = why;
+    outage_ = outage;
+    window_->set_input_lost(true);
+    // The meter goes to nothing rather than holding its last reading: it is the first thing an
+    // operator looks at to see whether sound is arriving, and it used to say it was.
+    peak_ = 0.0f;
+    window_->set_input_level(0.0f);
+    window_->set_input_peak(0.0f);
+    window_->set_input_reading(shared("no audio"));
+    setStatus(why + " — the interface stopped sending. Reopening it...", true);
+}
+
+void WindowController::restartInput(const std::string& why, double now) {
+    std::string error;
+    if (reopenInput(error)) {
+        const audio::InputStream* stream = tracker_.stream();
+        setStatus(why + "; reopened at " + fixed(stream->sampleRate(), 0) + " Hz.", true);
+        return;
+    }
+    beginOutage(why + ", and it would not open again (" + error + ")", now, now);
+}
+
+void WindowController::superviseInput(const audio::InputWatchdog::Reading& reading,
+                                      const audio::AsioDriverEvents& events, double now) {
+    if (!wantRunning_) {
+        return;
+    }
+    const std::string name = input_ ? input_->device.name : std::string("the input");
+
+    if (outage_) {
+        if (now < outage_->nextTry) {
+            return;
+        }
+        ++outage_->tries;
+        // Every third try, and not more often than `kOutageRescanSeconds`, PortAudio looks at
+        // the machine again: an interface that was unplugged, or power-cycled, can come back
+        // under another index or only be seen again by a fresh enumeration. The tracker is
+        // stopped for it — which it already is between attempts — and the device found again
+        // by name in `reopenInput`.
+        if (outage_->tries % 3 == 0 &&
+            (rescannedAt_ < 0.0 || now - rescannedAt_ >= kOutageRescanSeconds)) {
+            rescannedAt_ = now;
+            tracker_.stop();
+            try {
+                if (tracker_.rescan()) {
+                    devices_ = tracker_.devices();
+                }
+            } catch (const std::exception&) {
+                // PortAudio would not come back up; the next try will ask again.
+            }
+        }
+        std::string error;
+        if (reopenInput(error)) {
+            const double lasted = now - outage_->since;
+            outage_.reset();
+            window_->set_input_lost(false);
+            setStatus("Audio is back from " + name + " after " + fixed(lasted, 0) +
+                          " s without it; reopened at " +
+                          fixed(tracker_.stream()->sampleRate(), 0) + " Hz.",
+                      true);
+        } else {
+            outage_->nextTry = now + kOutageRetrySeconds;
+            setStatus(outage_->why + " — still no audio after " +
+                          fixed(now - outage_->since, 0) + " s (" + error + "). Trying again...",
+                      true);
+        }
+        return;
+    }
+
+    // What the ASIO driver said. Each of these means the stream as opened no longer describes
+    // the hardware, and PortAudio's host used to acknowledge them and carry on regardless.
+    if (events.needsReopen()) {
+        const char* what = events.resetRequest       ? "asked to be reset"
+                           : events.sampleRateChange ? "changed its sample rate"
+                                                     : "changed its buffer size";
+        restartInput("The driver for " + name + " " + what, now);
+        return;
+    }
+
+    if (reading.inputOverflows != overflowsShown_) {
+        overflowsShown_ = reading.inputOverflows;
+        window_->set_input_trouble(shared(
+            overflowsShown_ == 0
+                ? std::string{}
+                : std::to_string(overflowsShown_) +
+                      (overflowsShown_ == 1 ? " input overflow" : " input overflows") +
+                      " — the interface dropped audio"));
+    }
+
+    switch (reading.verdict) {
+    case audio::InputWatchdog::Verdict::Silent:
+        beginOutage("No audio from " + name, now - reading.silentForSeconds, now);
+        break;
+    case audio::InputWatchdog::Verdict::RateChanged: {
+        const double opened = tracker_.stream() != nullptr ? tracker_.stream()->sampleRate() : 0.0;
+        // What an operator hears as "every tempo is slightly wrong": the resampler converting
+        // at the old ratio from a clock another program has moved.
+        restartInput("The clock of " + name + " moved from " + fixed(opened, 0) + " Hz to about " +
+                         fixed(reading.measuredRate, 0) + " Hz",
+                     now);
+        break;
+    }
+    case audio::InputWatchdog::Verdict::Starting:
+    case audio::InputWatchdog::Verdict::Healthy:
+        break;
+    }
 }
 
 void WindowController::setLinkEnabled(bool on) {
@@ -1080,6 +1308,8 @@ void WindowController::publishTargetRows() {
 }
 
 void WindowController::setMidiPort(const std::string& name) {
+    // Wanted whether or not it opens: see `midiClockWanted_`.
+    midiClockWanted_ = name;
     runner_.post(output::OutputCommand::midiClockPort(
         name.empty() ? std::optional<std::string>{} : std::optional<std::string>{name}));
     const std::string error = runner_.lastError();
@@ -1512,7 +1742,14 @@ void WindowController::publishTaps() {
 
 settings::Settings WindowController::currentSettings() const {
     settings::Settings out;
-    if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
+    if (deviceFallback_ && !deviceChosen_) {
+        // The remembered interface was not here and nobody picked another — so it is still the
+        // one wanted. Saving the fallback as if chosen made one launch before the MOTU was
+        // powered on move the next show to the wrong device at channel 1 (the audit's H11).
+        out.machine.deviceName = remembered_.deviceName;
+        out.machine.hostApiName = remembered_.hostApiName;
+        out.machine.channel = remembered_.channel;
+    } else if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
         const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
         out.machine.deviceName = device.name;
         out.machine.hostApiName = device.hostApiName;
@@ -1524,7 +1761,9 @@ settings::Settings WindowController::currentSettings() const {
     // reassigns it is a freed buffer, not a stale reading. `publishOutputs` already reads
     // this way; this was the one place left that did not.
     const output::OutputRunner::Snapshot live = runner_.snapshot();
-    out.machine.midiClockPort = live.midiClockPort.value_or(std::string{});
+    // The port asked for, open or not: one that was unplugged at this launch is still the one
+    // wanted at the next, and saving what happened to open lost it (the audit's H11).
+    out.machine.midiClockPort = midiClockWanted_;
 
     // §5.7's control surface, which is machine-local for the same reason and more so: what
     // was learned describes the box of buttons on this desk.
@@ -1726,8 +1965,38 @@ void WindowController::publishOutputs() {
 
     window_->set_midi_port_index(
         deviceIndexOf(midiPorts_, live.midiClockPort.value_or(std::string{})));
-    window_->set_midi_on(live.midiClockOpen);
+    // Open is not the same as sending: a clock port whose device was pulled out is still open
+    // as far as the transports know, and the indicator lit for it was the window claiming a
+    // drum machine was hearing a clock it was not (the audit's H11a).
+    const bool clockLost =
+        live.midiClockPort &&
+        std::find(live.lostMidi.begin(), live.lostMidi.end(), *live.midiClockPort) !=
+            live.lostMidi.end();
+    window_->set_midi_on(live.midiClockOpen && !clockLost);
     window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
+    publishLostMidi(live.lostMidi);
+}
+
+void WindowController::publishLostMidi(const std::vector<std::string>& lost) {
+    if (lost == lostMidiShown_) {
+        return;
+    }
+    // Said when it changes, in words: a lighting desk or a sequencer that has stopped hearing
+    // takt4 is otherwise invisible from here, and the output thread is already trying to bring
+    // it back once a second.
+    for (const std::string& name : lost) {
+        if (std::find(lostMidiShown_.begin(), lostMidiShown_.end(), name) == lostMidiShown_.end()) {
+            setStatus("MIDI device \"" + name +
+                          "\" has stopped responding — unplugged? takt4 keeps trying to reopen it.",
+                      true);
+        }
+    }
+    for (const std::string& name : lostMidiShown_) {
+        if (std::find(lost.begin(), lost.end(), name) == lost.end()) {
+            setStatus("MIDI device \"" + name + "\" is back.", false);
+        }
+    }
+    lostMidiShown_ = lost;
 }
 
 void WindowController::publishStopped() {
@@ -1904,7 +2173,25 @@ void WindowController::tick() {
     if (!autosaveFile_.empty() && ticks_ % kAutosaveCheckTicks == 0) {
         autosave(nowSeconds());
     }
+    // The input's health, above the early return because an outage is exactly when no stream
+    // is open: the tracker is stopped between attempts to bring it back. See `superviseInput`.
+    if (wantRunning_) {
+        const double now = nowSeconds();
+        audio::InputWatchdog::Reading reading;
+        audio::AsioDriverEvents events;
+        if (!outage_ && tracker_.stream() != nullptr) {
+            reading = watchdog_.observe(tracker_.stream()->counters(), now);
+            if (input_ && input_->device.hostApi == audio::HostApiKind::Asio) {
+                events = audio::takeAsioDriverEvents();
+            }
+        }
+        superviseInput(reading, events, now);
+    }
     if (!tracker_.running()) {
+        // The outputs keep going through an outage, so what they are doing is still shown.
+        if (runner_.running()) {
+            publishOutputs();
+        }
         return;
     }
 

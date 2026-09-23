@@ -74,17 +74,26 @@ public:
     /// null for none. Ableton Link is the one that exists; `output::OutputRunner` hands
     /// its session over as `hostTimeClock()`.
     ///
-    /// Set it once, on a tracker that is stopped, and leave it: `start()` installs it
-    /// before the stream is opened and `stop()` clears it afterwards, which is the
-    /// ordering §4.3 requires and the reason this is here rather than left to a caller
-    /// to remember. It must outlive every run it is set for.
+    /// Set it once, on a tracker that is stopped, and leave it: `start()` installs it on the
+    /// engine before the stream is opened, which is the ordering §4.3 requires and the reason
+    /// this is here rather than left to a caller to remember. `stop()` does not take it away
+    /// again — it stays installed across runs — so it must outlive the tracker, not merely
+    /// the run it was set for.
     void setHostTimeSource(audio::HostTimeSource* source) noexcept { hostTime_ = source; }
     audio::HostTimeSource* hostTimeSource() const noexcept { return hostTime_; }
 
-    /// Every input device PortAudio can see, freshly enumerated each call — a device list
-    /// goes stale the moment somebody plugs something in. The indices in it are only
-    /// meaningful while this object lives.
+    /// Every input device PortAudio found **the last time it looked** — at construction, or
+    /// at the last `rescan()`. Not freshly enumerated each call, which is what this used to
+    /// claim: PortAudio builds its device table once, so an interface switched on after takt4
+    /// started was never listed, however often this was asked (the audit's H11). The indices
+    /// in it are only meaningful until the next `rescan()`.
     std::vector<audio::InputDevice> devices() const;
+
+    /// Makes PortAudio enumerate the machine's devices again — an interface switched on
+    /// late, or one that went away and came back. Only while stopped, because every device
+    /// index changes: false, and nothing done, while a stream is open. Throws
+    /// `audio::PortAudioError` if PortAudio will not come back up.
+    bool rescan();
 
     /// Opens `device` on `selection` and starts tracking it, stopping whatever was
     /// running first — so this doubles as "switch to that one".

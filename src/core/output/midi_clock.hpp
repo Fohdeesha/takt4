@@ -23,13 +23,44 @@ protected:
     MidiSink& operator=(const MidiSink&) = default;
 };
 
-/// One RtMidi output port, opened by name.
+/// The device behind a `MidiOutput`: RtMidi's port in the application, a stand-in in the
+/// tests — which is the only way to test a device being unplugged and plugged back in on a
+/// machine that has nothing to unplug.
+class MidiPort {
+public:
+    virtual ~MidiPort() = default;
+    /// Opens the first port matching `spec` — part of a name, or an index — and returns the
+    /// port's full name. Throws std::runtime_error when there is no such port.
+    virtual std::string open(std::string_view spec) = 0;
+    virtual void close() noexcept = 0;
+    /// One message. Throws when the port has gone away.
+    virtual void send(std::span<const unsigned char> message) = 0;
+
+protected:
+    MidiPort() = default;
+    MidiPort(const MidiPort&) = default;
+    MidiPort& operator=(const MidiPort&) = default;
+};
+
+/// One MIDI output port, opened by name — and **opened again by name when it comes back**.
+///
+/// A USB MIDI interface pulled out mid-show used to stay dead for the rest of the show: every
+/// send failed and was counted, nothing ever reopened the port, and re-picking the same port
+/// in the window did nothing because it was "already open" (the audit's H11a). Now a run of
+/// failures marks it `lost()`, and whoever owns it calls `reconnect()` now and then — the
+/// output thread does, once a second — until the device is back.
 class MidiOutput final : public MidiSink {
 public:
+    /// Sends in a row that fail before the port counts as lost. One failure can be a driver
+    /// hiccup; three in a row, with a clock sending 24 a beat, is a device that has gone.
+    static constexpr std::uint32_t kLostAfterFailures = 3;
+
     /// Opens the first port whose name contains `portName` (case-sensitive), or the port
     /// at that index if `portName` is a number. Throws std::runtime_error if there is no
     /// such port or RtMidi cannot open it.
     explicit MidiOutput(std::string_view portName);
+    /// The same through any port — how a test supplies one it can unplug.
+    MidiOutput(std::string_view portName, std::unique_ptr<MidiPort> port);
     ~MidiOutput() override;
 
     MidiOutput(const MidiOutput&) = delete;
@@ -37,16 +68,28 @@ public:
 
     void send(std::span<const unsigned char> message) noexcept override;
 
+    /// The port's full name as opened — which is what the window shows.
     const std::string& portName() const noexcept { return portName_; }
+    /// The name it was asked for, which is what it is looked for by again.
+    const std::string& requested() const noexcept { return requested_; }
     std::uint64_t sent() const noexcept { return sent_; }
     std::uint64_t failed() const noexcept { return failed_; }
 
+    /// Whether the port has stopped taking messages: `kLostAfterFailures` sends in a row failed,
+    /// and no reconnect has worked since.
+    bool lost() const noexcept { return failedInARow_ >= kLostAfterFailures; }
+
+    /// Closes the port and opens it again by `requested()`. True when that worked; false, and
+    /// still lost, when the device is not back yet. Never throws.
+    bool reconnect() noexcept;
+
 private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::unique_ptr<MidiPort> port_;
+    std::string requested_;
     std::string portName_;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
+    std::uint32_t failedInARow_ = 0;
 };
 
 /// MIDI beat clock: 24 pulses per quarter note, plus Start, Stop and Continue.

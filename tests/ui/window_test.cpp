@@ -256,6 +256,104 @@ TEST_CASE("a short window scrolls rather than losing its bottom row", "[ui]") {
     }
 }
 
+TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
+    // Rendered, not reasoned about. At the window's minimum width, with an Art-Net node in
+    // the rig, a row used to need 870 px: the text boxes' Fluent minimum of 160 px held the
+    // destination slot wider than its floor, the port box slid under the delay slider, and
+    // each row's "−" was clipped off the right-hand edge. Every row's "−" is looked for, whole.
+    auto window = MainWindow::create();
+    auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+    const auto row = [](const char* name, int kind, const char* host, const char* port) {
+        OutputRow out{};
+        out.name = slint::SharedString(name);
+        out.kind_index = kind;
+        out.host = slint::SharedString(host);
+        out.port = slint::SharedString(port);
+        out.enabled = true;
+        return out;
+    };
+    targets->push_back(row("deck", 0, "192.168.1.40", "7000"));
+    targets->push_back(row("wall", 0, "192.168.1.41", "7000"));
+    targets->push_back(row("lights", 1, "", ""));
+    targets->push_back(row("truss", 2, "10.0.0.20", "6454"));
+    window->set_outputs_list(targets);
+    window->set_outputs_any_artnet(true);
+
+    constexpr int kWidth = 820; // MainWindow's min-width
+    constexpr int kHeight = 1100; // tall enough that nothing scrolls
+    const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
+    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
+    // Down a column just inside the "−" buttons' right-hand end, below the trace and above the
+    // footer — the same way the wheel test finds rows.
+    const int x = kWidth - 34;
+    std::vector<std::pair<int, int>> rows; // top, bottom of each "−"
+    int start = -1;
+    for (int y = 450; y < kHeight - 110; ++y) {
+        const bool face = shot.is(x, y, kControl[0], kControl[1], kControl[2]);
+        if (face && start < 0) {
+            start = y;
+        } else if (!face && start >= 0) {
+            if (y - start > 20) {
+                rows.emplace_back(start, y - 1);
+            }
+            start = -1;
+        }
+    }
+    // Four rows, four "−" buttons, all whole; ADD OUTPUT and the rest sit further left.
+    REQUIRE(rows.size() == 4);
+
+    // **And every heading stands over the column it names** — the markup's own promise, and
+    // the part a row that merely fits can still break: with a text box's Fluent minimum
+    // holding the destination slot open, the row fitted and the port box slid right, under
+    // "universes". Everything on this panel that is not the panel's own colour is ink: a
+    // text box or a dropdown is one solid run of it along a row's middle, and a heading is a
+    // run of glyphs. So the columns' left edges can be read off both and compared.
+    constexpr std::uint8_t kPanel[3] = {0x19, 0x1b, 0x1f};
+    const auto runsAlong = [&](int y, int mergeGap) {
+        std::vector<int> starts;
+        int lastInk = -1000;
+        for (int px = 140; px < kWidth - 60; ++px) {
+            if (shot.is(px, y, kPanel[0], kPanel[1], kPanel[2])) {
+                continue;
+            }
+            if (px - lastInk > mergeGap) {
+                starts.push_back(px);
+            }
+            lastInk = px;
+        }
+        return starts;
+    };
+    // The headings' text line: the densest line of ink in the strip above the first row.
+    int headingY = rows.front().first - 18;
+    std::size_t densest = 0;
+    for (int y = rows.front().first - 24; y < rows.front().first - 2; ++y) {
+        std::size_t ink = 0;
+        for (int px = 140; px < kWidth - 60; ++px) {
+            ink += shot.is(px, y, kPanel[0], kPanel[1], kPanel[2]) ? 0 : 1;
+        }
+        if (ink > densest) {
+            densest = ink;
+            headingY = y;
+        }
+    }
+    // Letters and the spaces inside "host / device" are a few pixels apart; columns are ten.
+    const std::vector<int> headings = runsAlong(headingY, 7);
+    // name, protocol, host / device, port, universes, this target's own delay, total
+    REQUIRE(headings.size() >= 5);
+    const auto checkRow = [&](std::size_t index, std::size_t columns) {
+        const int middle = (rows[index].first + rows[index].second) / 2;
+        const std::vector<int> boxes = runsAlong(middle, 3);
+        INFO("row " << index << " at y=" << middle);
+        REQUIRE(boxes.size() >= columns);
+        for (std::size_t c = 0; c < columns; ++c) {
+            INFO("column " << c << ": heading at x=" << headings[c] << ", box at x=" << boxes[c]);
+            CHECK(std::abs(boxes[c] - headings[c]) <= 3);
+        }
+    };
+    checkRow(0, 4); // an OSC row: name, protocol, host, port
+    checkRow(3, 5); // the Art-Net row, with its universe list
+}
+
 TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     // The other half of the scroll view, and the half that a picture of one height cannot
     // show: that the wheel actually scrolls, that what is pinned stays pinned, and — the
@@ -1638,6 +1736,135 @@ TEST_CASE("a remembered device that is gone falls back rather than picking wrong
           best->name);
     // And the channel of a device we did not restore is not restored either.
     CHECK(controller.channelIndex() == 0);
+}
+
+TEST_CASE("a remembered interface that is missing at launch is still the one saved", "[ui]") {
+    // The audit's H11: one launch before the MOTU was powered on fell back to another device —
+    // right — and then saved that device as if it had been chosen, so the next show opened on
+    // the wrong interface at channel 1 even with the MOTU plugged in.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (tracker.devices().empty()) {
+        SKIP("no input device on this machine");
+    }
+    takt4::settings::Settings saved;
+    saved.machine.deviceName = "An interface that is switched off";
+    saved.machine.hostApiName = "ASIO";
+    saved.machine.channel = 10;
+
+    WindowController controller(tracker, saved);
+    // Running on something else for now...
+    CHECK(controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name !=
+          saved.machine.deviceName);
+    // ...and still wanting the one that is missing.
+    const takt4::settings::Settings out = controller.currentSettings();
+    CHECK(out.machine.deviceName == "An interface that is switched off");
+    CHECK(out.machine.hostApiName == "ASIO");
+    CHECK(out.machine.channel == 10);
+
+    // Unless the operator picks one, which is a choice and is kept.
+    controller.window().invoke_device_picked(controller.deviceIndex());
+    CHECK(controller.currentSettings().machine.deviceName ==
+          controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name);
+}
+
+TEST_CASE("a remembered MIDI clock port that is missing at launch is still the one saved",
+          "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.machine.midiClockPort = "takt4 test - a drum machine left at home";
+    WindowController controller(tracker, saved);
+    REQUIRE(controller.outputs().transports().midiClock() == nullptr);
+    CHECK(controller.currentSettings().machine.midiClockPort ==
+          "takt4 test - a drum machine left at home");
+
+    // Choosing "no MIDI clock" is a choice too.
+    controller.pickMidiPort(0);
+    CHECK(controller.currentSettings().machine.midiClockPort.empty());
+}
+
+TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
+    // The audit's H11: PortAudio builds its device list once, so an interface switched on after
+    // takt4 started was never offered. RESCAN restarts PortAudio — the only thing that makes it
+    // look again — and must land back on what was selected, found by name.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    if (controller.devices().empty()) {
+        SKIP("no input device on this machine");
+    }
+    const std::size_t pick = controller.devices().size() > 1 ? 1 : 0;
+    controller.window().invoke_device_picked(static_cast<int>(pick));
+    const std::string chosen = controller.devices()[pick].name;
+    const std::string api = controller.devices()[pick].hostApiName;
+
+    controller.window().invoke_rescan_clicked();
+    REQUIRE(controller.deviceIndex() >= 0);
+    const InputDevice& after = controller.devices()[static_cast<std::size_t>(controller.deviceIndex())];
+    CHECK(after.name == chosen);
+    CHECK(after.hostApiName == api);
+    CHECK_FALSE(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("Found ") != std::string::npos);
+}
+
+TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
+    // The audit's C4, the window's half. The watchdog's arithmetic is input_watchdog_test.cpp's
+    // business; this hands the window the readings a pulled cable, a moved clock and a driver
+    // reset produce, and checks what an operator would see and that the input really reopens.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (!bestInputDevice(tracker)) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    REQUIRE(controller.wantsRunning());
+
+    using Reading = takt4::audio::InputWatchdog::Reading;
+    using Verdict = takt4::audio::InputWatchdog::Verdict;
+    const takt4::audio::AsioDriverEvents nothing;
+
+    // Silence: NO AUDIO, the meter at nothing, and the status line naming the device.
+    Reading silent;
+    silent.verdict = Verdict::Silent;
+    silent.silentForSeconds = 0.6;
+    controller.superviseInput(silent, nothing, 100.0);
+    CHECK(controller.window().get_input_lost());
+    CHECK(controller.window().get_input_level() == 0.0f);
+    CHECK(std::string(controller.window().get_status()).find("No audio from") != std::string::npos);
+    // Still running as far as the operator is concerned: STOP is what the button offers.
+    CHECK(controller.window().get_running());
+
+    // Not before its time, and then reopened: the stream is open again and the readout clear.
+    controller.superviseInput(Reading{}, nothing, 100.5);
+    CHECK(controller.window().get_input_lost());
+    controller.superviseInput(Reading{}, nothing, 101.1);
+    CHECK_FALSE(controller.window().get_input_lost());
+    CHECK(tracker.running());
+    CHECK(std::string(controller.window().get_status()).find("Audio is back") != std::string::npos);
+
+    // A clock moved by another program: reopened at once, and said.
+    Reading moved;
+    moved.verdict = Verdict::RateChanged;
+    moved.measuredRate = 48000.0;
+    controller.superviseInput(moved, nothing, 102.0);
+    CHECK(tracker.running());
+    CHECK(std::string(controller.window().get_status()).find("moved from") != std::string::npos);
+
+    // A driver asking to be reset: the same.
+    takt4::audio::AsioDriverEvents reset;
+    reset.resetRequest = true;
+    controller.superviseInput(Reading{}, reset, 103.0);
+    CHECK(tracker.running());
+    CHECK(std::string(controller.window().get_status()).find("asked to be reset") !=
+          std::string::npos);
+
+    // And STOP during an outage stops, rather than reading "not running" and starting.
+    controller.superviseInput(silent, nothing, 104.0);
+    REQUIRE(controller.window().get_input_lost());
+    controller.toggleRun();
+    CHECK_FALSE(controller.wantsRunning());
+    CHECK_FALSE(tracker.running());
+    CHECK_FALSE(controller.window().get_input_lost());
+    CHECK_FALSE(controller.window().get_running());
 }
 
 TEST_CASE("the window switches the outputs back on", "[ui]") {
