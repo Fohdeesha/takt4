@@ -17,6 +17,7 @@
 #include "ui/rules_controller.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <slint-platform.h>
 
 #include <cstddef>
 #include <filesystem>
@@ -372,4 +373,134 @@ TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
         patch.testChannel(9);
         CHECK(engine.levels(5)[71] == 180); // the one held before is still the only one
     }
+}
+
+namespace {
+
+void clickAt(slint::Window& window, float x, float y) {
+    const slint::LogicalPosition at({x, y});
+    window.dispatch_pointer_move_event(at);
+    window.dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+    window.dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+}
+
+void typeText(slint::Window& window, const std::string& text) {
+    for (const char c : text) {
+        const slint::SharedString key(std::string(1, c));
+        window.dispatch_key_press_event(key);
+        window.dispatch_key_release_event(key);
+    }
+}
+
+} // namespace
+
+TEST_CASE("a name typed for one fixture stays with it when another is clicked", "[ui][dmx]") {
+    // The audit's H10, with the gestures an operator makes. The name box was bound one way, and
+    // a one-way binding dies on the first keystroke: after typing a name and clicking another
+    // fixture in the list, the box went on showing the first one's text, and the focus-out that
+    // Slint runs a loop late renamed the *second* fixture to it.
+    Rig rig;
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("left", 1, 0, 1),
+                                          takt4::dmx::fixtureFromMode("right", 1, 0, 10)});
+    patch.show();
+    auto& window = patch.window().window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+    window.dispatch_window_active_changed_event(true);
+    REQUIRE(patch.selected() == 0);
+
+    // The name box: the first spot in the editor pane where a typed letter lands in the name.
+    bool inBox = false;
+    for (float y = 20.0f; y < 200.0f && !inBox; y += 6.0f) {
+        for (float x = 340.0f; x < 700.0f && !inBox; x += 40.0f) {
+            clickAt(window, x, y);
+            typeText(window, "Q");
+            inBox = std::string(patch.window().get_name()).find('Q') != std::string::npos;
+        }
+    }
+    INFO("no click landed in the name box");
+    REQUIRE(inBox);
+    typeText(window, "X");
+    const std::string typed(patch.window().get_name());
+    REQUIRE(typed.find("QX") != std::string::npos);
+
+    // The second fixture in the list, found by clicking down the list column.
+    bool switched = false;
+    for (float y = 30.0f; y < 400.0f && !switched; y += 6.0f) {
+        clickAt(window, 120.0f, y);
+        slint::platform::update_timers_and_animations();
+        switched = patch.selected() == 1;
+    }
+    REQUIRE(switched);
+    // Whatever Slint runs a loop late has run.
+    slint::platform::update_timers_and_animations();
+
+    CHECK(patch.fixtures()[0].name == typed);   // the name went to the fixture it was typed for
+    CHECK(patch.fixtures()[1].name == "right"); // and not to the one clicked
+    CHECK(std::string(patch.window().get_name()) == "right"); // and the box shows the new one
+}
+
+namespace {
+
+void pressKey(slint::Window& window, const slint::SharedString& key) {
+    window.dispatch_key_press_event(key);
+    window.dispatch_key_release_event(key);
+}
+
+/// Opens the dropdown under (x, y), moves it one entry down and closes it: what an operator
+/// does with the arrow keys, and a gesture that starts from whatever the dropdown is *showing*.
+void stepDropdown(slint::Window& window, float x, float y) {
+    clickAt(window, x, y);
+    slint::platform::update_timers_and_animations();
+    pressKey(window, slint::SharedString(u8"")); // Key.DownArrow
+    pressKey(window, slint::SharedString(u8"\u001b")); // Key.Escape
+    slint::platform::update_timers_and_animations();
+}
+
+} // namespace
+
+TEST_CASE("a channel's role follows a new mode after it was picked by hand", "[ui][dmx]") {
+    // The channel rows are updated in place while a fixture keeps the same number of channels,
+    // and each row's dropdown is bound to its role one way — so once the operator has picked a
+    // role from it, that binding is gone and the dropdown shows its own pick from then on. A
+    // mode picked afterwards with the same channel count changed the map underneath and left
+    // the dropdown showing the old role; the next arrow press stepped from *that*.
+    Rig rig;
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("par", 2, 0, 1)}); // RGBW
+    patch.show();
+    auto& window = patch.window().window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+    window.dispatch_window_active_changed_event(true);
+    patch.tick();
+    slint::platform::update_timers_and_animations();
+    REQUIRE(patch.fixtures()[0].channels.size() == 4);
+    REQUIRE(patch.fixtures()[0].channels[0] == Role::Red);
+
+    // The first channel's dropdown, found by trying the "does" column from below the fixture's
+    // own boxes down: the first spot where one step moves the first channel's role.
+    constexpr float kDoesColumn = 440.0f;
+    float found = -1.0f;
+    for (float y = 250.0f; y < 500.0f && found < 0.0f; y += 6.0f) {
+        stepDropdown(window, kDoesColumn, y);
+        if (patch.fixtures()[0].channels[0] != Role::Red) {
+            found = y;
+        }
+    }
+    {
+        INFO("no click landed on the first channel's dropdown");
+        REQUIRE(found >= 0.0f);
+    }
+    REQUIRE(patch.fixtures()[0].channels[0] == takt4::dmx::kRoles[static_cast<std::size_t>(roleIndexOf(Role::Red)) + 1]);
+
+    // A mode with the same number of channels and a different first one.
+    patch.window().invoke_mode_picked(modeIndexOf("dimmer + RGB (4ch)"));
+    patch.tick();
+    slint::platform::update_timers_and_animations();
+    REQUIRE(patch.fixtures()[0].channels.size() == 4);
+    REQUIRE(patch.fixtures()[0].channels[0] == Role::Dimmer);
+
+    // One more step from what the dropdown now shows: from dimmer, not from the pick before.
+    stepDropdown(window, kDoesColumn, found);
+    CHECK(patch.fixtures()[0].channels[0] == takt4::dmx::kRoles[static_cast<std::size_t>(roleIndexOf(Role::Dimmer)) + 1]);
 }

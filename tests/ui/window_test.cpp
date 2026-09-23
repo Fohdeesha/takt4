@@ -4,6 +4,7 @@
 #include "core/build_info.hpp"
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/io/wav_file.hpp"
@@ -18,6 +19,7 @@
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
+#include "support/loopback_receiver.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -125,6 +127,45 @@ void pumpTimers(std::chrono::milliseconds span) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     slint::platform::update_timers_and_animations();
+}
+
+/// What the window's output thread has, read the only safe way: once it has taken every change
+/// posted so far, and between two of its rounds. It runs for as long as the window exists
+/// (the audit's H5), so reading its rules or transports directly would race it.
+struct OutputsSeen {
+    std::vector<std::string> ruleIds;
+    std::vector<bool> ruleValid;
+    bool link = false;
+    std::size_t oscTargets = 0;
+    bool midiClock = false;
+    std::vector<takt4::output::OutputTarget> targets;
+    std::string oscPrefix;
+};
+
+OutputsSeen seen(WindowController& controller) {
+    REQUIRE(controller.settleOutputs());
+    return controller.outputs().inspect([](const takt4::trigger::TriggerEngine& rules,
+                                           const takt4::output::Transports& transports,
+                                           const takt4::output::RuleSink&) {
+        OutputsSeen out;
+        for (std::size_t i = 0; i < rules.ruleCount(); ++i) {
+            out.ruleIds.push_back(rules.rule(i).id());
+            out.ruleValid.push_back(rules.rule(i).valid());
+        }
+        out.link = transports.linkEnabled();
+        out.oscTargets = transports.osc().targetCount();
+        out.midiClock = transports.midiClock() != nullptr;
+        out.targets = transports.outputs();
+        out.oscPrefix = transports.oscPrefix();
+        return out;
+    });
+}
+
+/// Whether PANIC is engaged once the output thread has taken what was posted — a gesture posts
+/// it, and the thread applies it a round later.
+bool panickedNow(WindowController& controller) {
+    REQUIRE(controller.settleOutputs());
+    return controller.outputs().panicked();
 }
 
 } // namespace
@@ -629,6 +670,30 @@ TEST_CASE("the run callback opens a device and closes it again", "[ui][hardware]
     CHECK(controller.window().get_beats_per_bar() == 0);
 }
 
+TEST_CASE("a window closed with the tracker running stops it first", "[ui][hardware]") {
+    // The window hands the tracker Link's clock, and that clock belongs to the window's output
+    // thread. A tracker still running once the window has gone stamps every hop through it —
+    // a read of freed memory on the audio thread, fifty times a second, until the tracker goes
+    // too. `ui::run` stops the tracker before the window; a test that failed between its START
+    // and its STOP did not, and neither does anything else that forgets to.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    {
+        WindowController controller(tracker);
+        controller.toggleRun();
+        REQUIRE(tracker.running());
+        REQUIRE(tracker.hostTimeSource() != nullptr);
+    }
+    CHECK_FALSE(tracker.running());
+    CHECK(tracker.hostTimeSource() == nullptr);
+    // And long enough that the audio thread would have run a few hops through the pointer if
+    // it were still going — which, under AddressSanitizer, is a report rather than a pass.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
 TEST_CASE("the trace scrolls while the tracker is running", "[ui][hardware]") {
     // The other claim a still picture cannot make: that the window's redraw actually
     // moves the activation trace along as frames arrive.
@@ -862,12 +927,13 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
     pad.number = 44;
     pad.value = 127;
     REQUIRE(controller.control().dispatch(pad)); // learned, not fired
-    CHECK_FALSE(controller.outputs().panicked());
+    CHECK_FALSE(panickedNow(controller));
 
-    // And now it is the panic button. The runner is stopped, so the command applies on this
-    // thread at once — which is exactly what an operator arming a rig before a set does.
+    // And now it is the panic button — with the tracker stopped, which is exactly what an
+    // operator arming a rig before a set does, and which since the audit's H5 reaches a runner
+    // that is running.
     CHECK(controller.control().dispatch(pad));
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
 
     SECTION("and the OSC socket moves the same latch the pad just moved") {
         // §5.7's other surface, wired into the window on 2026-09-06. The pad above left
@@ -877,13 +943,13 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
         //
         // Driven through `dispatch` rather than a real datagram: the socket has its own
         // tests in tests/control, and nothing here needs one to exist.
-        REQUIRE(controller.outputs().panicked());
+        REQUIRE(panickedNow(controller));
         CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", 0.0));
-        CHECK_FALSE(controller.outputs().panicked());
+        CHECK_FALSE(panickedNow(controller));
 
         // And a bare `/ctl/panic` engages, because a panic button panics.
         CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", std::nullopt));
-        CHECK(controller.outputs().panicked());
+        CHECK(panickedNow(controller));
     }
 
     SECTION("the picker offers panic but not the ones that would need a rule named") {
@@ -931,10 +997,11 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
     REQUIRE(controller.rules().size() == 1);
     CHECK(controller.rules()[0].id == "drop");
 
-    // And the output thread's, which is the live one. Safe to read here because the runner
-    // has not been started — which is what `rules()` documents as the only time it is.
-    REQUIRE(controller.outputs().triggers().ruleCount() == 1);
-    CHECK(controller.outputs().triggers().rule(0).valid());
+    // And the output thread's, which is the live one — read between its rounds, since it is
+    // running from the moment the window is built.
+    const OutputsSeen live = seen(controller);
+    REQUIRE(live.ruleIds.size() == 1);
+    CHECK(live.ruleValid[0]);
     // A valid rule says nothing — but only the *rule's* silence is being claimed here. On a
     // machine with no audio input the controller has already set an error of its own at
     // construction ("No input device. Connect an interface and start takt4 again."), which is
@@ -961,8 +1028,9 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
         other.address = "/fire";
         controller.setRules({other});
         CHECK(controller.rules().size() == 1);
-        CHECK(controller.outputs().triggers().ruleCount() == 1);
-        CHECK(controller.outputs().triggers().rule(0).id() == "stab");
+        const OutputsSeen after = seen(controller);
+        REQUIRE(after.ruleIds.size() == 1);
+        CHECK(after.ruleIds[0] == "stab");
     }
 
     SECTION("a rule that will not fire is kept, and said so") {
@@ -973,8 +1041,9 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
         broken.address = "/a/{x}/b"; // one placeholder, no segments
         controller.setRules({broken});
         CHECK(controller.rules().size() == 1);
-        REQUIRE(controller.outputs().triggers().ruleCount() == 1);
-        CHECK_FALSE(controller.outputs().triggers().rule(0).valid());
+        const OutputsSeen after = seen(controller);
+        REQUIRE(after.ruleValid.size() == 1);
+        CHECK_FALSE(after.ruleValid[0]);
         CHECK(controller.statusIsError());
     }
 }
@@ -1126,9 +1195,6 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
     REQUIRE(run.until([&tracker] {
         return tracker.engine().state().bars >= 2 && tracker.engine().state().beatInBar > 1;
     }));
-    takt4::engine::EngineBeat beat;
-    while (tracker.engine().popBeat(beat)) {
-    }
 
     controller.window().invoke_snap_downbeat();
     run.applyPosted();
@@ -1138,21 +1204,14 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
     // tests/engine/beat_engine_test.cpp's business.
     CHECK(tracker.engine().state().beatInBar == 1);
 
-    // The next beat is what carries the new phase out to the transports, and it is the
-    // bar's second.
-    std::optional<takt4::engine::EngineBeat> next;
-    REQUIRE(run.until([&] {
-        while (tracker.engine().popBeat(beat)) {
-            if (!next) {
-                next = beat;
-            }
-        }
-        return next.has_value();
-    }));
-    REQUIRE(next);
-    CHECK(next->event.snapped);
-    CHECK_FALSE(next->event.downbeat);
-    CHECK(next->event.beatInBar == 2);
+    // The next beat is the bar's second. Read from the engine's published state, not by
+    // draining its beat ring: that ring has one consumer, the window's output thread, which
+    // runs for as long as the window does (the audit's H5) — a test taking beats off it too
+    // would be a second consumer, and each would see half of them.
+    const std::uint64_t pressedAt = tracker.engine().state().beats;
+    REQUIRE(run.until([&] { return tracker.engine().state().beats > pressedAt; }));
+    CHECK(tracker.engine().state().beats == pressedAt + 1);
+    CHECK(tracker.engine().state().beatInBar == 2);
 }
 
 TEST_CASE("the downbeat button says it has been pressed", "[ui]") {
@@ -1348,9 +1407,14 @@ TEST_CASE("the window comes up sending nothing", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
-    CHECK_FALSE(controller.outputs().transports().linkEnabled());
-    CHECK(controller.outputs().transports().osc().targetCount() == 0);
-    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    // Running — the outputs live as long as the window does (the audit's H5) — and with
+    // nothing to send, and the tracker not listening.
+    CHECK(controller.outputs().running());
+    CHECK_FALSE(controller.outputs().tracking());
+    const OutputsSeen live = seen(controller);
+    CHECK_FALSE(live.link);
+    CHECK(live.oscTargets == 0);
+    CHECK_FALSE(live.midiClock);
     CHECK_FALSE(controller.window().get_link_on());
     CHECK_FALSE(controller.window().get_osc_on());
     CHECK_FALSE(controller.window().get_midi_on());
@@ -1370,39 +1434,40 @@ TEST_CASE("the Link tick reaches the transports and shows its peers", "[ui]") {
     WindowController controller(tracker);
 
     controller.window().invoke_link_toggled(true);
-    CHECK(controller.outputs().transports().linkEnabled());
+    CHECK(seen(controller).link);
     CHECK(controller.window().get_link_on());
-    // Switched on while stopped says what to do, not to do it now: nothing is in front of
-    // peers until the tracker runs.
-    CHECK_FALSE(controller.outputs().transports().link().enabled());
-    CHECK(controller.window().get_link_peers() == 0);
+    // **Joined on its own switch, whether or not the tracker is listening** — the operator's
+    // call of 2026-09-23 (Q2). Joining publishes nothing: takt4 sends Link a tempo and a phase
+    // only from a locked beat, so a peer is not handed anything until there is one.
+    CHECK(controller.outputs().transports().link().enabled());
+    CHECK_FALSE(controller.outputs().tracking());
 
     controller.window().invoke_link_toggled(false);
-    CHECK_FALSE(controller.outputs().transports().linkEnabled());
+    CHECK_FALSE(seen(controller).link);
+    CHECK_FALSE(controller.outputs().transports().link().enabled());
 }
 
 TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
-    const auto& transports = [&controller]() -> const takt4::output::Transports& {
-        return controller.outputs().transports();
-    };
+    // What the output thread has, read between its rounds once it has taken the change.
+    const auto live = [&controller] { return seen(controller); };
 
     // The format this row always took, before targets had names — still a target, named
     // after its own address.
     controller.setOscTargets("127.0.0.1:7000");
-    CHECK(transports().osc().targetCount() == 1);
-    REQUIRE(transports().outputs().size() == 1);
-    CHECK(transports().outputs()[0].name == "127.0.0.1:7000");
+    CHECK(live().oscTargets == 1);
+    REQUIRE(live().targets.size() == 1);
+    CHECK(live().targets[0].name == "127.0.0.1:7000");
     CHECK(controller.window().get_osc_on());
 
     // §5.6's "multiple simultaneous targets", each with a name a rule can use. One piece of
     // text still holds several — a settings line, or a rig pasted in.
     controller.setOscTargets("deck = 127.0.0.1:7000, wall = 127.0.0.1:7001");
-    CHECK(transports().osc().targetCount() == 2);
-    REQUIRE(transports().outputs().size() == 2);
-    CHECK(transports().outputs()[0].name == "deck");
-    CHECK(transports().outputs()[1].name == "wall");
+    CHECK(live().oscTargets == 2);
+    REQUIRE(live().targets.size() == 2);
+    CHECK(live().targets[0].name == "deck");
+    CHECK(live().targets[1].name == "wall");
 
     SECTION("and a line holding several becomes a row each, name and address apart") {
         const auto rows = controller.window().get_outputs_list();
@@ -1420,7 +1485,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 1);
         CHECK(std::string(rows->row_data(0)->name).empty());
-        CHECK(transports().outputs()[0].name == "127.0.0.1:7000");
+        CHECK(live().targets[0].name == "127.0.0.1:7000");
     }
 
     SECTION("each target carries its own delay, and only its own") {
@@ -1429,9 +1494,9 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // rig's timeline together, which is the one adjustment a rig with two different lags
         // in it cannot use.
         controller.setTargetDelay(1, 352.0f);
-        REQUIRE(transports().outputs().size() == 2);
-        CHECK(transports().outputs()[0].delaySeconds == 0.0);
-        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(0.352));
+        REQUIRE(live().targets.size() == 2);
+        CHECK(live().targets[0].delaySeconds == 0.0);
+        CHECK(live().targets[1].delaySeconds == Catch::Approx(0.352));
 
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 2);
@@ -1445,16 +1510,16 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // Past either limit is clamped rather than refused: a slider cannot get there, but
         // §5.7's inbound OSC and a hand-edited settings file both can.
         controller.setTargetDelay(1, 5000.0f);
-        CHECK(transports().outputs()[1].delaySeconds ==
+        CHECK(live().targets[1].delaySeconds ==
               Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
         controller.setTargetDelay(1, -5000.0f);
-        CHECK(transports().outputs()[1].delaySeconds ==
+        CHECK(live().targets[1].delaySeconds ==
               Catch::Approx(takt4::output::kMinOutputDelaySeconds));
 
         // Negative is a real setting now, not a clamp to zero: "this device is 300 ms slow"
         // is the sentence an operator says, and the publisher turns it into a wait.
         controller.setTargetDelay(1, -300.0f);
-        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(-0.300));
+        CHECK(live().targets[1].delaySeconds == Catch::Approx(-0.300));
         CHECK(rows->row_data(1)->delay_ms == Catch::Approx(-300.0f));
 
         // And it survives the rest of the row being edited, which is what would break if the
@@ -1462,7 +1527,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         controller.setTargetDelay(1, 120.0f);
         controller.setTargetEnabled(1, false);
         controller.setTargetEnabled(1, true);
-        CHECK(transports().outputs()[1].delaySeconds == Catch::Approx(0.12));
+        CHECK(live().targets[1].delaySeconds == Catch::Approx(0.12));
     }
 
     SECTION("dragging a delay slider does not rebuild the slider being dragged") {
@@ -1496,14 +1561,14 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("a switched-off target is kept and sends nothing") {
         controller.setTargetEnabled(1, false);
-        REQUIRE(transports().outputs().size() == 2);
-        CHECK_FALSE(transports().outputs()[1].enabled);
+        REQUIRE(live().targets.size() == 2);
+        CHECK_FALSE(live().targets[1].enabled);
         // Held in the list, so it can be switched back on — but no socket behind it.
-        CHECK(transports().osc().targetCount() == 1);
+        CHECK(live().oscTargets == 1);
         CHECK_FALSE(controller.window().get_outputs_list()->row_data(1)->enabled);
 
         controller.setTargetEnabled(1, true);
-        CHECK(transports().osc().targetCount() == 2);
+        CHECK(live().oscTargets == 2);
     }
 
     SECTION("two targets with one name is said rather than silently resolved") {
@@ -1520,7 +1585,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("halfway through typing, the ones that already worked survive") {
         controller.acceptTarget(1, "wall", "127.0.0.1:");
-        CHECK(transports().osc().targetCount() == 1);
+        CHECK(live().oscTargets == 1);
         CHECK(controller.statusIsError());
         CHECK(std::string(controller.window().get_status()).find("not a target") !=
               std::string::npos);
@@ -1535,7 +1600,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // Applying opens and closes a socket. Doing that per character would rebuild it
         // halfway through an address.
         controller.editTarget(1, "wall", "127.0.0.1:7009");
-        CHECK(transports().outputs()[1].port == 7001);
+        CHECK(live().targets[1].port == 7001);
 
         // And the draft still has to survive the list being republished, which is what [+]
         // does — the row is drawn from the model, so a draft kept only in the widget would go.
@@ -1543,7 +1608,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 3);
         CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7009");
-        CHECK(transports().outputs()[1].port == 7009);
+        CHECK(live().targets[1].port == 7009);
     }
 
     SECTION("an added row is a target already") {
@@ -1556,20 +1621,20 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(rows->row_data(2)->kind_index == 0);
         CHECK(std::string(rows->row_data(2)->host) == "127.0.0.1");
         CHECK(std::string(rows->row_data(2)->port) == "9000");
-        REQUIRE(transports().outputs().size() == 3);
-        CHECK(transports().outputs()[2].host == "127.0.0.1");
-        CHECK(transports().outputs()[2].port == 9000);
+        REQUIRE(live().targets.size() == 3);
+        CHECK(live().targets[2].host == "127.0.0.1");
+        CHECK(live().targets[2].port == 9000);
     }
 
     SECTION("a row asks for a host and a port, not for one string holding both") {
         // The two boxes are edited one at a time and merged here — see `setTargetHost`.
         controller.setTargetHost(0, "192.168.1.40", false);
-        CHECK(transports().outputs()[0].host == "127.0.0.1"); // a keystroke, not applied
+        CHECK(live().targets[0].host == "127.0.0.1"); // a keystroke, not applied
         controller.setTargetPort(0, "7010", true);
-        REQUIRE(transports().outputs().size() == 2);
-        CHECK(transports().outputs()[0].host == "192.168.1.40");
-        CHECK(transports().outputs()[0].port == 7010);
-        CHECK(transports().outputs()[0].name == "deck");
+        REQUIRE(live().targets.size() == 2);
+        CHECK(live().targets[0].host == "192.168.1.40");
+        CHECK(live().targets[0].port == 7010);
+        CHECK(live().targets[0].name == "deck");
     }
 
     SECTION("switching a row to MIDI leaves it unfinished rather than broken") {
@@ -1581,14 +1646,14 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         REQUIRE(rows->row_count() == 2);
         CHECK(rows->row_data(0)->kind_index == 1);
         CHECK(std::string(rows->row_data(0)->address).empty());
-        CHECK(transports().outputs().size() == 1);
+        CHECK(live().targets.size() == 1);
         CHECK_FALSE(controller.statusIsError());
     }
 
     SECTION("a row removed is a target removed") {
         controller.removeTarget(0);
-        REQUIRE(transports().outputs().size() == 1);
-        CHECK(transports().outputs()[0].name == "wall");
+        REQUIRE(live().targets.size() == 1);
+        CHECK(live().targets[0].name == "wall");
         CHECK(controller.window().get_outputs_list()->row_count() == 1);
     }
 
@@ -1620,13 +1685,13 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("a port outside the range is not a port") {
         controller.setOscTargets("127.0.0.1:99999");
-        CHECK(transports().osc().targetCount() == 0);
+        CHECK(live().oscTargets == 0);
     }
 
     SECTION("and clearing the row clears the outputs") {
         controller.acceptTarget(0, "", "");
         controller.acceptTarget(1, "", "");
-        CHECK(transports().outputs().empty());
+        CHECK(live().targets.empty());
         CHECK_FALSE(controller.window().get_osc_on());
     }
 
@@ -1661,8 +1726,8 @@ TEST_CASE("a MIDI target is a row like any other", "[ui]") {
     // than dropping the row, because the rest of the rig is still sending.
     CHECK(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("outputs:") != std::string::npos);
-    REQUIRE(controller.outputs().transports().outputs().size() == 1);
-    CHECK(controller.outputs().transports().outputs()[0].kind ==
+    REQUIRE(seen(controller).targets.size() == 1);
+    CHECK(seen(controller).targets[0].kind ==
           takt4::output::OutputTarget::Kind::Midi);
 }
 
@@ -1674,7 +1739,7 @@ TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
     // the machine's own port list now (a ComboBox cannot be moved by its value — Slint
     // 11970), and no index on this machine names a port that does not exist.
     controller.setMidiPort("takt4 test - no such port");
-    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    CHECK(!seen(controller).midiClock);
     CHECK(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
     CHECK_FALSE(controller.window().get_midi_on());
@@ -1697,10 +1762,20 @@ TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware
     pumpTimers(std::chrono::milliseconds(400));
     controller.toggleRun();
 
-    CHECK_FALSE(controller.outputs().running());
+    // The outputs go on — they live as long as the window (the audit's H5) — and are told
+    // the tracker has stopped listening.
+    CHECK(controller.outputs().running());
+    REQUIRE(controller.settleOutputs());
+    CHECK_FALSE(controller.outputs().tracking());
     CHECK(tracker.engine().beatsDropped() == 0);
     CHECK(controller.outputs().errors() == 0);
-    // Whatever the tracker called on silence, the transports were given all of it.
+    // Whatever the tracker called on silence, the transports were given all of it — by the
+    // output thread, a round or two after the stop, since nothing drains the ring for it now.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (controller.outputs().transports().beats() != tracker.engine().beatsCalled() &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
     CHECK(controller.outputs().transports().beats() == tracker.engine().beatsCalled());
 }
 
@@ -1812,7 +1887,7 @@ TEST_CASE("a remembered MIDI clock port that is missing at launch is still the o
     takt4::settings::Settings saved;
     saved.machine.midiClockPort = "takt4 test - a drum machine left at home";
     WindowController controller(tracker, saved);
-    REQUIRE(controller.outputs().transports().midiClock() == nullptr);
+    REQUIRE(!seen(controller).midiClock);
     CHECK(controller.currentSettings().machine.midiClockPort ==
           "takt4 test - a drum machine left at home");
 
@@ -1914,8 +1989,8 @@ TEST_CASE("the window switches the outputs back on", "[ui]") {
     saved.preset.outputs = takt4::output::oscOutputs({{"127.0.0.1", 7000}, {"127.0.0.1", 7001}});
 
     WindowController controller(tracker, saved);
-    CHECK(controller.outputs().transports().linkEnabled());
-    CHECK(controller.outputs().transports().osc().targetCount() == 2);
+    CHECK(seen(controller).link);
+    CHECK(seen(controller).oscTargets == 2);
     CHECK(controller.outputs().transports().oscPrefix() == "/vj");
     CHECK(controller.window().get_link_on());
     CHECK(controller.window().get_osc_on());
@@ -1933,7 +2008,7 @@ TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[
     saved.machine.midiClockPort = "takt4 test - a port from another machine";
 
     WindowController controller(tracker, saved);
-    CHECK(controller.outputs().transports().midiClock() == nullptr);
+    CHECK(!seen(controller).midiClock);
     CHECK(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
 }
@@ -1957,8 +2032,8 @@ TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]
     REQUIRE_NOTHROW(controller.emplace(tracker, saved));
 
     // The one that can open is sending; the other two are named, not dropped.
-    CHECK(controller->outputs().transports().osc().targetCount() == 1);
-    CHECK(controller->outputs().transports().outputs().size() == 3);
+    CHECK(seen(*controller).oscTargets == 1);
+    CHECK(seen(*controller).targets.size() == 3);
     CHECK(controller->window().get_outputs_list()->row_count() == 3);
     CHECK(controller->statusIsError());
     const std::string status(controller->window().get_status());
@@ -2140,6 +2215,42 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     CHECK(fresh.rules()[1].address == "/composition/layers/1/clips/{}/connect");
 }
 
+TEST_CASE("an import brings the lighting patch with it", "[ui][settings][dmx]") {
+    // The audit's M18. IMPORT applied the rules and the outputs and left the patch alone, so
+    // every imported lighting rule aimed at fixtures this rig did not have and reached nothing;
+    // and a file holding only a patch was "no preset in it".
+    takt4::settings::Settings show;
+    show.preset.fixtures = {takt4::dmx::fixtureFromMode("wash L", 1, 0, 1),
+                            takt4::dmx::fixtureFromMode("wash R", 1, 0, 4)};
+    show.preset.oscPrefix = "/show";
+    show.preset.decoder = takt4::tracking::Decoder::ParticleFilter;
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "patch-only.json";
+    REQUIRE(takt4::settings::save(show, file));
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    REQUIRE(controller.importFrom(file));
+
+    // Into the output thread — which is what a rule aims at — and into what is saved.
+    REQUIRE(controller.settleOutputs());
+    const std::size_t live = controller.outputs().inspect(
+        [](const auto&, const takt4::output::Transports& transports, const auto&) {
+            return transports.patch().size();
+        });
+    CHECK(live == 2);
+    const takt4::settings::Settings saved = controller.currentSettings();
+    REQUIRE(saved.preset.fixtures.size() == 2);
+    CHECK(saved.preset.fixtures[1].name == "wash R");
+    // And the patch editor shows it.
+    CHECK(controller.patchEditor().fixtures().size() == 2);
+
+    // The two the running application cannot switch are kept for the next launch, and said.
+    CHECK(saved.preset.oscPrefix == "/show");
+    CHECK(saved.preset.decoder == takt4::tracking::Decoder::ParticleFilter);
+    CHECK(std::string(controller.window().get_status()).find("Restart") != std::string::npos);
+}
+
 TEST_CASE("a path or a device name in any encoding reaches the status line intact", "[ui]") {
     // The audit's H13, and the wider class behind it. Every string on screen goes through
     // `slint::SharedString`, which aborts the process on a byte that is not UTF-8 — and the
@@ -2211,15 +2322,19 @@ TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "
     const float panicX = kWidth - 34.0f;
     const float footerY = kHeight - 65.0f;
     clickAt(window, panicX, footerY);
+    // Lit by the press itself, not by the next redraw: the outputs run on their own thread for
+    // the window's whole life, so the window waits for the press to be applied before drawing
+    // what it did — and RELEASE, which appears with it.
+    CHECK(controller.window().get_panicked());
     clickAt(window, panicX, footerY);
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
     CHECK(controller.window().get_panicked());
 
     // RELEASE, found rather than written down: the first thing left of PANIC that lets go.
     bool released = false;
     for (float x = panicX - 150.0f; x > 500.0f && !released; x -= 8.0f) {
         clickAt(window, x, footerY);
-        released = !controller.outputs().panicked();
+        released = !panickedNow(controller);
     }
     CHECK(released);
     CHECK_FALSE(controller.window().get_panicked());
@@ -2228,7 +2343,7 @@ TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "
     // and the focus the click gave it used to disappear with it — so the next Escape, which is
     // the one that matters, reached nothing at all.
     press(window, kEscape);
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
 }
 
 TEST_CASE("the keep for the next track box is ticked by a click", "[ui]") {
@@ -2282,7 +2397,7 @@ TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
     }
     REQUIRE(removed);
     press(window, kEscape);
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
 }
 
 TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the box", "[ui]") {
@@ -2297,9 +2412,9 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
 
     // Nothing clicked yet: the key reaches the window's own scope, and PANIC engages.
     press(window, kEscape);
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
     controller.releasePanic();
-    REQUIRE_FALSE(controller.outputs().panicked());
+    REQUIRE_FALSE(panickedNow(controller));
 
     // The name box of that row, found by typing into candidates until a name commits. A miss
     // leaves Escape to engage PANIC, which is let go before the next try; the hit is the only
@@ -2314,9 +2429,9 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
             const auto rows = controller.window().get_outputs_list();
             if (rows->row_count() > 0 && std::string(rows->row_data(0)->name) == "q") {
                 found = true;
-                panickedInBox = controller.outputs().panicked();
+                panickedInBox = panickedNow(controller);
             }
-            if (controller.outputs().panicked()) {
+            if (panickedNow(controller)) {
                 controller.releasePanic();
             }
         }
@@ -2328,7 +2443,7 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
     // And straight after leaving the box, Escape is PANIC again: leaving it put the focus
     // somewhere that still passes keys up, rather than nowhere.
     press(window, kEscape);
-    CHECK(controller.outputs().panicked());
+    CHECK(panickedNow(controller));
 }
 
 TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key counts once",
@@ -2454,4 +2569,39 @@ TEST_CASE("a tap does not switch the fold on", "[ui]") {
     CHECK_THAT(after.minBpm, WithinAbs(before.minBpm, 1e-6));
     CHECK_THAT(after.maxBpm, WithinAbs(before.maxBpm, 1e-6));
     CHECK_FALSE(controller.window().get_fold_on());
+}
+
+TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][dmx]") {
+    // The audit's H5, where the rig met it: the patch editor's IDENTIFY said "Identifying..."
+    // and nothing went out, because the outputs only ran while the tracker did. An operator in
+    // the truss patching a rig before the doors open is exactly who presses it.
+    takt4::testing::LoopbackReceiver node;
+    takt4::settings::Settings settings;
+    takt4::output::OutputTarget truss;
+    truss.name = "truss";
+    truss.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    truss.host = "127.0.0.1";
+    truss.port = node.port();
+    settings.preset.outputs = {truss};
+    settings.preset.fixtures = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    REQUIRE_FALSE(tracker.running());
+    controller.patchEditor().pick(0);
+    controller.patchEditor().identify();
+
+    bool lit = false;
+    for (int attempt = 0; attempt < 200 && !lit; ++attempt) {
+        const std::string datagram = node.receive();
+        if (datagram.empty()) {
+            break;
+        }
+        // An ArtDmx frame's levels start at byte 18; the par is channels 1 to 3.
+        lit = datagram.size() >= 21 && datagram.compare(0, 8, std::string("Art-Net\0", 8)) == 0 &&
+              static_cast<std::uint8_t>(datagram[18]) > 200 &&
+              static_cast<std::uint8_t>(datagram[19]) > 200 &&
+              static_cast<std::uint8_t>(datagram[20]) > 200;
+    }
+    CHECK(lit);
 }

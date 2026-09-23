@@ -623,7 +623,30 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // bar — which is where the version lives — was cut off the bottom.
     window_->window().set_size(slint::LogicalSize({kMainWindowWidth, kMainWindowHeight}));
 
+    // **The outputs from now until the window goes**, not from Start to Stop — the audit's H5
+    // and the operator's call of 2026-09-23. Last, after every setting above has been applied
+    // on this thread: a `post` to a running runner is taken by its thread a millisecond later,
+    // and the lines above read `lastError()` straight after posting.
+    //
+    // Caught, because this is the constructor of the window an operator is about to see: a
+    // failure here is said on the status line rather than taking the application with it.
+    try {
+        runner_.start();
+    } catch (const std::exception& e) {
+        setStatus(std::string("Cannot start the outputs: ") + e.what(), true);
+    }
+
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
+}
+
+WindowController::~WindowController() {
+    // Before any member goes: `runner_` owns the clock the audio thread reads on every hop,
+    // and it is destroyed long before `tracker_`, which is not this class's. `ui::run` stops
+    // the tracker itself before letting go of the window; a test that fails half-way through a
+    // run does not, and that was a use-after-free on the audio thread.
+    tracker_.stop();
+    tracker_.setHostTimeSource(nullptr);
+    tracker_.engine().setHostTimeSource(nullptr);
 }
 
 void WindowController::run() {
@@ -802,9 +825,11 @@ void WindowController::toggleRun() {
         window_->set_input_lost(false);
         window_->set_input_trouble(shared(""));
         // The tracker first: it tracks the hops still in flight on the way down, and those
-        // can call a last beat that the runner should still send.
+        // can call a last beat that the runner should still send. The runner itself goes on —
+        // it runs for the application's whole life (the audit's H5) — and is told the tracker
+        // stopped, which stops the MIDI clock and blacks the lights out (Q3).
         tracker_.stop();
-        runner_.stop();
+        runner_.setTracking(false);
         publishStopped();
         return;
     }
@@ -833,21 +858,8 @@ void WindowController::toggleRun() {
     std::fill(trace_.begin(), trace_.end(), TracePoint{});
     publishTrace();
     peak_ = 0.0f;
-    // After the tracker, so nothing is sent for a run that failed to open.
-    //
-    // Caught, because `Transports::startOutputs` opens a MIDI port — a device that was on the
-    // machine when it was chosen and has since been unplugged throws here. This is a Slint
-    // callback, and an exception leaving one takes the process with it: the app would vanish
-    // on Start rather than say which cable had gone. The tracker is wound back so the button
-    // does not read as running against a rig that is not.
-    try {
-        runner_.start();
-    } catch (const std::exception& e) {
-        tracker_.stop();
-        setStatus(std::string("Cannot start the outputs: ") + e.what(), true);
-        publishStopped();
-        return;
-    }
+    // After the tracker, so the MIDI clock is not given a Start for a run that failed to open.
+    runner_.setTracking(true);
     wantRunning_ = true;
     input_ = tracker_.current();
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
@@ -999,7 +1011,10 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
 }
 
 void WindowController::setLinkEnabled(bool on) {
-    runner_.post(output::OutputCommand::linkEnabled(on));
+    // Waited for, so the row below is drawn from what the transports now are rather than from
+    // the snapshot before this change — the runner is always running, so a plain `post` is
+    // taken a round later.
+    (void)runner_.postAndWait(output::OutputCommand::linkEnabled(on));
     publishOutputs();
 }
 
@@ -1255,12 +1270,15 @@ void WindowController::applyTargets() {
     }
 
     targetDrafts_ = std::move(rows);
-    runner_.post(output::OutputCommand::outputs(targets));
-    // Only meaningful while the tracker is stopped, where `post` applies on this thread. While
-    // it runs the answer has not arrived yet, and `tick` is what notices it — see
-    // `outputErrorShown_`.
-    const std::string error = runner_.lastError();
-    outputErrorShown_ = error;
+    // Waited for, so an output that will not open is said now — the runner runs for the
+    // application's whole life, so a plain `post` is always answered a round later. When even
+    // the wait runs out, `tick` is what notices the answer; see `outputErrorShown_`.
+    const std::optional<std::string> answer =
+        runner_.postAndWait(output::OutputCommand::outputs(targets));
+    const std::string error = answer.value_or(std::string{});
+    if (answer) {
+        outputErrorShown_ = error;
+    }
     if (!bad.empty()) {
         setStatus("outputs: \"" + bad + "\" is not a target, so it was left out.", true);
     } else if (!duplicate.empty()) {
@@ -1312,12 +1330,13 @@ void WindowController::publishTargetRows() {
 void WindowController::setMidiPort(const std::string& name) {
     // Wanted whether or not it opens: see `midiClockWanted_`.
     midiClockWanted_ = name;
-    runner_.post(output::OutputCommand::midiClockPort(
+    const std::optional<std::string> answer = runner_.postAndWait(output::OutputCommand::midiClockPort(
         name.empty() ? std::optional<std::string>{} : std::optional<std::string>{name}));
-    const std::string error = runner_.lastError();
-    outputErrorShown_ = error;
-    if (!error.empty()) {
-        setStatus("MIDI clock: " + error, true);
+    if (answer) {
+        outputErrorShown_ = *answer;
+        if (!answer->empty()) {
+            setStatus("MIDI clock: " + *answer, true);
+        }
     }
     publishOutputs();
 }
@@ -1359,12 +1378,15 @@ void WindowController::openEditor() {
 }
 
 void WindowController::engagePanic() {
-    runner_.panic(true);
+    // Waited for — a round, a millisecond — so the button is drawn lit, and RELEASE is drawn
+    // beside it, by the press itself rather than by the next redraw: the runner is always
+    // running, so a plain `post` has not been applied when `publishTriggers` reads it.
+    (void)runner_.postAndWait(output::OutputCommand::panic(true));
     publishTriggers();
 }
 
 void WindowController::releasePanic() {
-    runner_.panic(false);
+    (void)runner_.postAndWait(output::OutputCommand::panic(false));
     publishTriggers();
 }
 
@@ -1803,11 +1825,13 @@ settings::Settings WindowController::currentSettings() const {
     // then saved — or autosaved — while stopped wrote the value from *before* the move. A tap
     // still wins, because a tap clears what was in flight (§7 deviation 8).
     out.preset.tempo = settings();
-    out.preset.decoder = tracker_.engine().decoderKind();
+    // What the next launch should use: an imported preset's, where it named one this run
+    // cannot switch to — see `importFrom`.
+    out.preset.decoder = pendingDecoder_.value_or(tracker_.engine().decoderKind());
     out.preset.meters = meters_;
     out.preset.link = live.link;
     out.preset.outputs = live.outputs;
-    out.preset.oscPrefix = live.oscPrefix;
+    out.preset.oscPrefix = pendingPrefix_.value_or(live.oscPrefix);
     // This window's copy, not the runner's: the runner's belong to the output thread and
     // reading them while it runs is what `rules()` explains is unsafe. The patch is the same
     // — the editor's copy, kept in step by its changed callback.
@@ -1921,13 +1945,18 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // That is right for startup and wrong here — importing a JPEG would silently wipe the
     // rules — so the file is checked for being *settings* before any of it is applied.
     const settings::Settings loaded = settings::load(path);
-    const settings::Settings defaults;
-    if (loaded.preset.rules.empty() && loaded.preset.outputs.empty() &&
-        loaded.preset.oscPrefix == defaults.preset.oscPrefix &&
-        loaded.preset.meters == defaults.preset.meters) {
-        setStatus(io::pathText(path.filename()) + " has no preset in it, so nothing was changed.",
-                  true);
-        return false;
+    // **The whole preset half against a fresh install's**, not four fields of it: this used to
+    // look at the rules, the outputs, the prefix and the meters, so a file holding nothing but
+    // a lighting patch — or a tempo window, or a decoder — was "no preset" (the audit's M18).
+    {
+        settings::Settings imported;
+        imported.preset = loaded.preset;
+        if (settings::toJson(imported) == settings::toJson(settings::Settings{})) {
+            setStatus(io::pathText(path.filename()) +
+                          " has no preset in it, so nothing was changed.",
+                      true);
+            return false;
+        }
     }
 
     // Q7's portable half only. The device, the MIDI clock port and the learned bindings are
@@ -1935,11 +1964,27 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     setRules(loaded.preset.rules);
     meters_ = loaded.preset.meters;
     postOptions(loaded.preset.tempo);
-    runner_.post(output::OutputCommand::linkEnabled(loaded.preset.link));
-    // Not the OSC prefix: `Transports` takes it at construction and there is no command to
-    // change one that is running. It is saved and it is loaded at startup, so a preset that
-    // carries a different prefix needs a restart to take it — which is worth a command of
-    // its own later rather than a half-applied import now.
+    (void)runner_.postAndWait(output::OutputCommand::linkEnabled(loaded.preset.link));
+    // **The lighting patch too** (M18): an import used to leave the patch alone, so every
+    // imported lighting rule aimed at fixtures this rig did not have, and reached nothing.
+    fixtures_ = loaded.preset.fixtures;
+    runner_.post(output::OutputCommand::patch(fixtures_));
+    patch_.setFixtures(fixtures_);
+    editor_.setPatch(fixtures_);
+    // The decoder and the OSC prefix are fixed for as long as the application runs — the
+    // engine is built with one, and a receiver is configured for the other — so a preset that
+    // carries different ones is kept for the next launch rather than dropped, and says so.
+    std::string restart;
+    if (loaded.preset.decoder != tracker_.engine().decoderKind()) {
+        pendingDecoder_ = loaded.preset.decoder;
+        restart += "the decoder";
+    }
+    if (output::isValidOscPrefix(loaded.preset.oscPrefix) &&
+        loaded.preset.oscPrefix != runner_.snapshot().oscPrefix) {
+        pendingPrefix_ = loaded.preset.oscPrefix;
+        restart += restart.empty() ? "the OSC prefix " + loaded.preset.oscPrefix
+                                   : " and the OSC prefix " + loaded.preset.oscPrefix;
+    }
 
     // The rows the operator edits, not just the transports: these are the window's copy from
     // construction onwards (see the constructor), so an import that changed only the
@@ -1953,7 +1998,10 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
 
     setStatus("Imported " + io::pathText(path.filename()) + ": " +
                   std::to_string(loaded.preset.rules.size()) + " rules, " +
-                  std::to_string(loaded.preset.outputs.size()) + " outputs.",
+                  std::to_string(loaded.preset.outputs.size()) + " outputs, " +
+                  std::to_string(loaded.preset.fixtures.size()) + " fixtures." +
+                  (restart.empty() ? std::string{}
+                                   : " Restart takt4 for " + restart + " to take effect."),
               false);
     return true;
 }

@@ -316,39 +316,61 @@ export component FixturesWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
 
+            // **Two-way, and committed on Enter or on leaving the box — never per keystroke.**
+            // The audit's H10 and H8: a one-way `text:` binding dies on the first keystroke, so
+            // after typing a name, clicking another fixture left this box showing the first
+            // one's name and the next focus-out renamed the second to it; and a commit per
+            // keystroke re-patched the rig, freezing every running effect, on every letter.
+            // Switching fixture commits what is in the boxes first — see `FixturesController::
+            // pick` — because Slint runs `changed has-focus` a loop late, after the switch.
+            //
+            // Labelled, and in the same column as "universe" below: a placeholder only shows
+            // while the box is empty, and a patched fixture's name and group are two boxes
+            // reading "head 1" and "heads" with nothing saying which is which.
+            Text {
+              text: "name";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 72px;
+              vertical-alignment: center;
+            }
             Field {
-              text: root.name;
+              text <=> root.name;
               placeholder-text: "name — what a rule aims at";
               font-size: 13px;
               horizontal-stretch: 1;
+              min-width: 120px;
               // A name is a name. Left to stretch it took half a wide window, which makes the
               // row read as one enormous box and two afterthoughts.
               max-width: 420px;
-              edited(t) => { root.name-edited(t); }
               accepted(t) => { self.leave(); root.name-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.name-edited(self.text); }
               }
             }
 
+            Text {
+              text: "group";
+              color: Theme.dim;
+              font-size: 12px;
+              width: 64px;
+              horizontal-alignment: right;
+              vertical-alignment: center;
+            }
             Field {
               // A second name any number of fixtures share, so a rule can say "heads" and a
               // re-rig is an edit to the patch rather than to every rule.
-              text: root.group;
+              text <=> root.group;
               placeholder-text: "group (optional)";
               font-size: 13px;
-              width: 180px;
-              edited(t) => { root.group-edited(t); }
+              // Gives way in a narrow window rather than pushing the row off its edge.
+              horizontal-stretch: 1;
+              min-width: 100px;
+              max-width: 180px;
               accepted(t) => { self.leave(); root.group-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.group-edited(self.text); }
               }
-            }
-
-            CheckBox {
-              text: "on";
-              checked: root.enabled;
-              toggled => { root.fixture-enabled-changed(self.checked); }
             }
 
             Rectangle { horizontal-stretch: 1; }
@@ -369,11 +391,10 @@ export component FixturesWindow inherits Window {
               // A flat number, which is how every desk and node front panel spells it. The
               // three-part "net:sub:uni" form is accepted too, for a rig that has left the
               // first Net — see `dmx::parsePortAddress`.
-              text: root.universe;
+              text <=> root.universe;
               placeholder-text: "0";
               font-size: 13px;
               width: 90px;
-              edited(t) => { root.universe-edited(t); }
               accepted(t) => { self.leave(); root.universe-edited(t); }
               changed has-focus => {
                 if (!self.has-focus) { root.universe-edited(self.text); }
@@ -399,12 +420,27 @@ export component FixturesWindow inherits Window {
               edited(v) => { root.address-changed(v); }
             }
 
+            CheckBox {
+              // What the switch does rather than "on", which read as the lamp being lit.
+              text: "in the show";
+              checked <=> root.enabled;
+              toggled => { root.fixture-enabled-changed(self.checked); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+          }
+
+          // The mode and IDENTIFY on a row of their own. On the row above they needed half as
+          // much again as the pane has at the window's narrowest, and IDENTIFY went off its edge.
+          HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+
             Text {
               text: "mode";
               color: Theme.dim;
               font-size: 12px;
-              width: 48px;
-              horizontal-alignment: right;
+              width: 72px;
               vertical-alignment: center;
             }
             ComboBox {
@@ -413,7 +449,9 @@ export component FixturesWindow inherits Window {
               // so patching an RGB par is one pick and patching something unusual is picking
               // the nearest and editing the map below.
               model: root.modes;
-              current-index: root.mode-index;
+              // Two-way, for the reason the boxes above are: a pick breaks a one-way binding,
+              // and the next fixture chosen went on showing this one's mode.
+              current-index <=> root.mode-index;
               horizontal-stretch: 1;
               // The longest entry is "moving head 16-bit (12ch)"; past that the box is only
               // wider, and a wide window should not spend all of itself on one dropdown.
@@ -489,7 +527,7 @@ export component FixturesWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
             Text { text: "ch"; color: Theme.dim; font-size: 11px; width: 40px; }
-            Text { text: "does"; color: Theme.dim; font-size: 11px; width: 168px; }
+            Text { text: "does"; color: Theme.dim; font-size: 11px; width: 144px; }
             Text { text: "parked at"; color: Theme.dim; font-size: 11px; width: 104px; }
             Text { text: "sending"; color: Theme.dim; font-size: 11px; width: 64px; }
             Text { text: "test"; color: Theme.dim; font-size: 11px; width: 60px; }
@@ -517,7 +555,9 @@ export component FixturesWindow inherits Window {
             ComboBox {
               model: root.roles;
               current-index: channel.role-index;
-              width: 168px;
+              // Room for "color wheel", the longest role, and no more: at 168 the row was 20px
+              // wider than the pane at the window's narrowest, and cut the delete button in half.
+              width: 144px;
               height: 32px;
               y: 2px;
               selected => { root.channel-role-picked(index, self.current-index); }
@@ -627,7 +667,7 @@ export component FixturesWindow inherits Window {
           }
 
           if root.moves : Text {
-            text: "How much of this head's travel a rule may use. Every random position and every path is a fraction of *this* window, so one rule means the same gesture on six differently-rigged heads — and none of them can be sent into the audience.";
+            text: "How much of this head's travel a rule may use. Every random position and every path is a fraction of this window, so one rule means the same gesture on six differently-rigged heads — and none of them can be sent into the audience.";
             color: Theme.dim;
             font-size: 11px;
             wrap: word-wrap;
@@ -645,16 +685,19 @@ export component FixturesWindow inherits Window {
             Slider {
               minimum: 0;
               maximum: 100;
-              value: root.pan-min;
+              // Two-way, so the readout follows the thumb and a pick of another head moves it
+              // (the audit's H10); committed when it is let go, not on every pixel of the drag,
+              // each of which re-patched the rig (H8).
+              value <=> root.pan-min;
               horizontal-stretch: 1;
-              changed(v) => { root.pan-range-changed(v, root.pan-max); }
+              released(v) => { root.pan-range-changed(v, root.pan-max); }
             }
             Slider {
               minimum: 0;
               maximum: 100;
-              value: root.pan-max;
+              value <=> root.pan-max;
               horizontal-stretch: 1;
-              changed(v) => { root.pan-range-changed(root.pan-min, v); }
+              released(v) => { root.pan-range-changed(root.pan-min, v); }
             }
             Text {
               text: round(root.pan-min) + "% – " + round(root.pan-max) + "%";
@@ -677,16 +720,16 @@ export component FixturesWindow inherits Window {
             Slider {
               minimum: 0;
               maximum: 100;
-              value: root.tilt-min;
+              value <=> root.tilt-min;
               horizontal-stretch: 1;
-              changed(v) => { root.tilt-range-changed(v, root.tilt-max); }
+              released(v) => { root.tilt-range-changed(v, root.tilt-max); }
             }
             Slider {
               minimum: 0;
               maximum: 100;
-              value: root.tilt-max;
+              value <=> root.tilt-max;
               horizontal-stretch: 1;
-              changed(v) => { root.tilt-range-changed(root.tilt-min, v); }
+              released(v) => { root.tilt-range-changed(root.tilt-min, v); }
             }
             Text {
               text: round(root.tilt-min) + "% – " + round(root.tilt-max) + "%";

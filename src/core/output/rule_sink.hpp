@@ -66,6 +66,10 @@ public:
     /// targets or the patch are replaced, which would change what a held message's output bit
     /// or fixture mask names.
     void flushQueued();
+    /// Forgets every held lighting effect without starting it. For a PANIC, which freezes the
+    /// lights where they are: an effect started only to be frozen on its first frame would be a
+    /// flash held at full.
+    void dropQueuedLighting() noexcept { dmxQueue_.clear(); }
     /// MIDI messages and lighting effects waiting for their time.
     std::size_t queued() const noexcept { return midiQueue_.size() + dmxQueue_.size(); }
 

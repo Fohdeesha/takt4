@@ -41,16 +41,23 @@ public:
 
     /// Replaces the patch.
     ///
-    /// **Levels survive it where they can.** A universe that is still patched keeps the bytes
-    /// it had, and only channels the *previous* patch did not cover are set to their new
-    /// fixture's parked levels. That is what lets an operator add a fixture or fix a channel
-    /// map during a set without the rig blinking: re-patching is an edit to the map, not an
-    /// instruction to reset the lights. Channels that have stopped being patched are left
-    /// where they were and simply stop being sent, if their universe has gone with them.
+    /// **Levels survive it where they still mean the same thing.** A channel that is patched
+    /// before and after — same position in its fixture, same role, same parked level — keeps the
+    /// byte it had, which is what lets an operator add a fixture or rename one during a set
+    /// without the rig blinking: re-patching is an edit to the map, not an instruction to reset
+    /// the lights.
     ///
-    /// Running effects are **cancelled**, because their tracks point at buffers and channels
-    /// that may no longer mean the same thing. Cancelling holds levels rather than clearing
-    /// them, so this is a pause in the animation and not a blackout.
+    /// Everything else is put right (the audit's H8). A channel newly patched, or whose role or
+    /// parked level changed — a head re-moded from 8-bit to 16-bit, a parked shutter edited —
+    /// takes its fixture's parked level; it used to keep the old byte until a restart, so the
+    /// re-moded head inherited a closed shutter. And a channel no enabled fixture covers any
+    /// more goes to **zero**: a fixture switched off or deleted used to go on transmitting its
+    /// last levels, out of reach of every rule, Blackout included.
+    ///
+    /// Running effects **carry on**, re-aimed at the fixture of the same name in the new patch;
+    /// they were all cancelled, so every fade, strobe and path froze where it was whenever a
+    /// name was typed. An effect on a fixture that has gone, or cannot take it any more, stops
+    /// there. A channel TEST hold is let go, and its channel put back where it was.
     void setPatch(std::vector<Fixture> patch);
     const std::vector<Fixture>& patch() const noexcept { return patch_; }
 
@@ -82,8 +89,9 @@ public:
     /// find out what it does. A role could not name any of those.
     ///
     /// It goes back on its own, which is the whole point of a test: pressing it during a set
-    /// must not leave a channel somewhere the operator has to remember to undo. Nothing is
-    /// held across a re-patch — `setPatch` cancels everything, as it does for every effect.
+    /// must not leave a channel somewhere the operator has to remember to undo. Nor is it held
+    /// across a re-patch: `setPatch` lets go of it and puts the channel back first — a hold left
+    /// running then was a TEST stuck on (the audit's H8).
     void holdChannel(PortAddress universe, std::uint16_t channel, std::uint8_t level,
                      double seconds, double now);
 
@@ -97,6 +105,12 @@ public:
     /// blackout is available as an effect a rule can fire, which is where a deliberate one
     /// belongs.
     void cancelAll() noexcept;
+
+    /// Every effect stopped and every light-emitting channel of every fixture taken to zero —
+    /// what the Blackout effect does, to the whole patch at once, and nothing that configures a
+    /// fixture: a shutter or a head's position stays where it is. **Stop and quit**, the
+    /// operator's call of 2026-09-23 (the audit's Q3); PANIC is `cancelAll`, which freezes.
+    void blackout(double now);
 
     /// Every level back to its fixture's parked value, and every effect stopped. For a preset
     /// load, not for panic.
@@ -124,8 +138,14 @@ public:
     std::uint64_t missed() const noexcept { return missed_; }
 
 private:
+    /// A fixture index that is not one — a TEST hold, which is addressed by channel.
+    static constexpr std::uint16_t kNoFixture = 0xFFFF;
+    /// `Track::component` for a virtual dimmer's intensity; a color component is 1 + its
+    /// index in `kEmitters`.
+    static constexpr std::uint8_t kIntensity = 0;
+
     /// One channel an effect is driving, in unit terms so that 8-bit and 16-bit are the same
-    /// arithmetic everywhere but the write.
+    /// arithmetic everywhere but the write — or one half of a **virtual** fixture's state.
     struct Track {
         std::uint32_t buffer = 0;
         /// 0-based within the universe. `channelOf` hands out 1-based DMX numbers; this is
@@ -138,12 +158,23 @@ private:
         /// Which color component this track carries, for `HueSweep` — which computes a
         /// color per round rather than interpolating three independent numbers.
         Role role = Role::Unused;
+        /// Which fixture of the patch it was built for, and the role it addressed there — what
+        /// lets `setPatch` re-aim it at the same fixture in a new patch. `kNoFixture` for a
+        /// channel TEST hold.
+        std::uint16_t fixture = kNoFixture;
+        Role source = Role::Unused;
+        /// Whether this drives a virtual fixture's state (`Virtual`) rather than a channel, and
+        /// which part of it: `kIntensity`, or 1 + a `kEmitters` index.
+        bool isVirtual = false;
+        std::uint8_t component = 0;
     };
 
     /// A pan and tilt pair, driven together. Movement cannot be expressed as two independent
     /// tracks: a circle is one figure in two channels, and interpolating them separately would
     /// make it a diagonal line.
     struct Move {
+        /// See `Track::fixture`.
+        std::uint16_t fixture = kNoFixture;
         std::uint32_t buffer = 0;
         std::uint16_t pan = kNoChannel;
         std::uint16_t panFine = kNoChannel;
@@ -171,13 +202,39 @@ private:
         std::vector<Move> moves;
     };
 
+    /// What the patch says a channel is: its place in its fixture, its role and its parked
+    /// level. A channel whose meaning moved is re-parked by `setPatch`; one that kept it keeps
+    /// its level.
+    struct Meaning {
+        bool covered = false;
+        std::uint16_t position = 0;
+        Role role = Role::Unused;
+        std::uint8_t parked = 0;
+        friend bool operator==(const Meaning&, const Meaning&) = default;
+    };
+
     struct Buffer {
         PortAddress universe = 0;
         std::array<std::uint8_t, kChannelsPerUniverse> levels{};
-        /// Whether the patch reaches each channel. Only patched channels are given parked
-        /// levels, and only they survive a re-patch — see `setPatch`.
-        std::array<bool, kChannelsPerUniverse> covered{};
+        /// What the patch makes of each channel — see `Meaning` and `setPatch`.
+        std::array<Meaning, kChannelsPerUniverse> meaning{};
         std::uint64_t revision = 0;
+    };
+
+    /// **A fixture with no dimmer channel that emits light** — the LED par — has its brightness
+    /// kept here, apart from its color, and its emitter channels written as color × intensity.
+    ///
+    /// It used to take the hue for a dimmer effect from the channels' *current* levels, so once
+    /// a flash had decayed to zero the fixture read as dark and was taken as white: a color rule
+    /// and a beat flash gave the chosen color on the first flash and white on every one after
+    /// (the audit's H9). A color effect now moves the color and a dimmer effect the intensity,
+    /// and neither forgets the other.
+    struct Virtual {
+        bool active = false;
+        double intensity = 1.0;
+        std::array<double, kEmitters.size()> color{};
+        /// Whether the channels need writing again from the two above.
+        bool dirty = false;
     };
 
     /// The index of `universe` in `buffers_`, or `npos`.
@@ -189,15 +246,26 @@ private:
     /// Reads one channel back as a unit value — where a fade starts from.
     double readChannel(std::uint32_t buffer, std::uint16_t channel,
                        std::uint16_t fine) const noexcept;
-    /// Fills `running`'s tracks and moves for one fixture. False when this fixture has none
-    /// of the channels the payload needs.
-    bool buildFor(const Fixture& fixture, const Payload& payload, Running& running);
+    /// Fills `running`'s tracks and moves for one fixture — the `index`th of the patch. False
+    /// when this fixture has none of the channels the payload needs.
+    bool buildFor(std::size_t index, const Payload& payload, Running& running);
     /// Applies one running effect at `now`.
     void evaluate(const Running& running, double now);
+    /// Writes one track's value, to its channel or to its virtual fixture's state.
+    void writeTrack(const Track& track, double unit) noexcept;
+    /// Writes every virtual fixture whose state moved to its channels, as color × intensity.
+    void composeVirtuals() noexcept;
+    /// A virtual fixture's state, read from its channels as they stand — for a new patch.
+    Virtual virtualFromLevels(const Fixture& fixture) const;
     /// Drops the channels `running` is about to drive from every effect already driving them.
     void preempt(const Running& running);
+    /// Re-aims every running effect at the new patch, by fixture name — see `setPatch`.
+    /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.
+    void retarget(const std::vector<std::uint16_t>& mapped);
 
     std::vector<Fixture> patch_;
+    /// One per fixture of `patch_`; see `Virtual`.
+    std::vector<Virtual> virtuals_;
     std::vector<Buffer> buffers_;
     std::vector<PortAddress> universes_;
     std::vector<Running> running_;

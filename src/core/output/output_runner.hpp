@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace takt4::output {
@@ -71,6 +73,11 @@ struct OutputCommand {
         /// TEST. `DmxEngine::holdChannel` says why this is addressed by channel rather than by
         /// role, and why it is not an `Effect`.
         ChannelTest,
+        /// The tracker started or stopped listening. See `OutputRunner::setTracking`.
+        Tracking,
+        /// Nothing at all: what `OutputRunner::sync` waits on, so that everything posted before
+        /// it has been applied by the time it has.
+        Sync,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -155,6 +162,12 @@ struct OutputCommand {
         command.payload = payload;
         return command;
     }
+    static OutputCommand tracking(bool on) {
+        OutputCommand command;
+        command.kind = Kind::Tracking;
+        command.enabled = on;
+        return command;
+    }
     static OutputCommand channelTest(dmx::PortAddress universe, std::uint16_t channel,
                                      std::uint8_t level, double seconds) {
         OutputCommand command;
@@ -167,6 +180,8 @@ struct OutputCommand {
     }
 
     Kind kind = Kind::LinkEnabled;
+    /// Non-zero for a command somebody is waiting on — see `OutputRunner::postAndWait`.
+    std::uint64_t ticket = 0;
     bool enabled = false;
     std::vector<Transports::OscTarget> targets;
     std::vector<OutputTarget> outputTargets;
@@ -264,6 +279,13 @@ public:
     /// Enables the transports and starts the thread. `start()` on a running runner does
     /// nothing.
     ///
+    /// **An application starts this once and leaves it running** — the audit's H5, and the
+    /// operator's call of 2026-09-23. It used to start and stop with the tracker, so before
+    /// Start nothing was transmitted at all: the patch editor's IDENTIFY and TEST changed a
+    /// buffer nobody sent, a Stop to change input dropped the Art-Net keep-alive so nodes fell
+    /// back to their failsafe, and a control surface's PANIC reached rules that could not
+    /// hear it. The tracker's Start and Stop reach this as `setTracking`.
+    ///
     /// **The clock does not restart.** `elapsed()` runs from construction and only ever goes
     /// forwards, across as many stops and starts as an operator makes — see the note in the
     /// definition, which is a bug report. Throws what `Transports` throws, having put back
@@ -271,9 +293,22 @@ public:
     void start();
 
     /// Stops the thread, drains whatever was still on the ring on the calling thread —
-    /// the last beats of a set are still beats — and then stops the transports. Safe to
-    /// call twice, and called by the destructor.
+    /// the last beats of a set are still beats — sends every release still owed, blacks the
+    /// lights out and transmits that last frame, and then stops the transports. The way out of
+    /// the application. Safe to call twice, and called by the destructor.
     void stop() noexcept;
+
+    /// The tracker has started, or stopped, listening. Any thread; it is a `post`.
+    ///
+    /// Started, the MIDI clock is sent Start and begins ticking. Stopped, it is sent Stop, and
+    /// **the lights are blacked out** — every light-emitting channel to zero, and kept being
+    /// sent: the operator's call of 2026-09-23 (Q3), for the rig takt4 is running. PANIC is
+    /// different and freezes; see `dmx::DmxEngine::cancelAll`. Everything else goes on — Link on
+    /// its own switch, OSC state, a rule fired by hand or from a control surface, and every
+    /// release still owed, when it is due.
+    void setTracking(bool on) { post(OutputCommand::tracking(on)); }
+    /// Whether the last `setTracking` said the tracker was listening. Any thread.
+    bool tracking() const noexcept { return tracking_.load(std::memory_order_relaxed); }
 
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
@@ -373,6 +408,41 @@ public:
     /// immediately on the calling thread when the runner is not running, which is what
     /// lets an app be configured before it is started.
     void post(OutputCommand command);
+
+    /// `post`, and wait for the output thread to have applied it: what went wrong applying
+    /// **this** command, empty for nothing — or no answer at all when it has not been applied
+    /// within `kWaitForApply`, when the caller should rely on `lastError` later.
+    ///
+    /// For the few changes a window reports on the spot — a MIDI port that is not on the
+    /// machine, an output that will not open. Since the runner runs for the application's
+    /// whole life a `post` is always asynchronous, and `lastError()` read straight after one is
+    /// the *previous* command's answer. From any thread but the output thread.
+    std::optional<std::string> postAndWait(OutputCommand command);
+
+    /// Waits until everything posted before this call has been applied. True when it has been,
+    /// within `kWaitForApply`. For whoever has to read what a change did — a test, mostly.
+    bool sync() {
+        OutputCommand command;
+        command.kind = OutputCommand::Kind::Sync;
+        return postAndWait(std::move(command)).has_value();
+    }
+
+    /// Calls `look(rules, transports, sink)` **between two of the output thread's rounds**, and
+    /// returns what it returns — the one safe way to read the rules or the transports from
+    /// another thread while the runner is running, which since the audit's H5 is always. It
+    /// holds the output thread up for as long as `look` takes, so keep it to copying things out.
+    template <typename Look>
+    decltype(auto) inspect(Look&& look) const {
+        const std::lock_guard<std::mutex> owner(ownerMutex_);
+        return std::forward<Look>(look)(static_cast<const trigger::TriggerEngine&>(triggers_),
+                                        static_cast<const Transports&>(transports_),
+                                        static_cast<const RuleSink&>(sink_));
+    }
+
+    /// How long `postAndWait` waits. A round is a millisecond; this is long enough for a busy
+    /// one and short enough that a window never visibly stalls on a change — a hostname being
+    /// resolved on the output thread can take the resolver's whole timeout.
+    static constexpr std::chrono::milliseconds kWaitForApply{250};
 
     /// §5.7's `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.
     ///
@@ -526,6 +596,12 @@ private:
     std::vector<OutputCommand> applying_;
     mutable std::mutex errorMutex_;
     std::string lastError_;
+    /// `postAndWait`'s side: the last ticket handed out, and each waited-on command's answer
+    /// until its waiter collects it.
+    std::uint64_t lastTicket_ = 0;
+    std::mutex answerMutex_;
+    std::condition_variable answered_;
+    std::vector<std::pair<std::uint64_t, std::string>> answers_;
     /// See `snapshot()`. Its own lock rather than `errorMutex_`'s, so a UI reading it at 30 Hz
     /// never waits behind a command reporting what went wrong.
     mutable std::mutex snapshotMutex_;
@@ -553,6 +629,8 @@ private:
     std::atomic<bool> running_{false};
     /// A reader-safe mirror of `triggers_.panicked()`; see `panicked()`.
     std::atomic<bool> panicked_{false};
+    /// See `tracking()`.
+    std::atomic<bool> tracking_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
     /// Where `elapsed()` counts from. Const, so the monotonicity `start()` depends on is

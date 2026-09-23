@@ -68,6 +68,12 @@ public:
     /// Sends every frame that is due, and says how many datagrams left. Call every round.
     std::size_t publish(const DmxEngine& engine, double now);
 
+    /// Sends every universe's current frame to every node **now**, whatever the pacing says —
+    /// the last thing takt4 transmits on the way out. A frame changed a millisecond after the
+    /// last one sent would otherwise wait out the 44 Hz spacing for a round that never comes,
+    /// and a node left holding the frame before the blackout holds the rig lit (the audit's H6).
+    std::size_t flush(const DmxEngine& engine, double now);
+
     /// Datagrams that left, and datagrams a socket refused.
     std::uint64_t sent() const noexcept { return sent_; }
     std::uint64_t failed() const noexcept { return failed_; }

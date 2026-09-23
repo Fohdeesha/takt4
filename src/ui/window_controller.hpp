@@ -77,6 +77,10 @@ public:
     /// `const Settings& = {}` in a declaration compiles on MSVC and on nothing else.
     WindowController(engine::LiveTracker& tracker, const settings::Settings& settings);
     explicit WindowController(engine::LiveTracker& tracker);
+    /// Stops the tracker and takes Link's clock back off it — the clock is the runner's, and
+    /// goes with this. A tracker left running past its window would stamp every hop through a
+    /// pointer into a runner that had been destroyed.
+    ~WindowController();
 
     WindowController(const WindowController&) = delete;
     WindowController& operator=(const WindowController&) = delete;
@@ -335,8 +339,12 @@ public:
     /// than on the contents being sensible.
     bool importFrom(const std::filesystem::path& path);
 
-    /// What is being sent, for the row that draws it.
+    /// What is being sent, for the row that draws it. The runner is running for as long as
+    /// this window exists, so its rules and transports are read through `inspect` — see there.
     const output::OutputRunner& outputs() const noexcept { return runner_; }
+    /// Waits until the output thread has taken every change posted to it so far. What a test
+    /// calls between a gesture and reading what it did.
+    bool settleOutputs() { return runner_.sync(); }
     /// Every MIDI output port on the machine, as offered in the picker.
     const std::vector<std::string>& midiPorts() const noexcept { return midiPorts_; }
 
@@ -560,6 +568,10 @@ private:
     /// The lighting patch, as this class has it for saving. `patch_` owns the editing; this is
     /// the copy that goes into a settings file, kept in step by its changed callback.
     std::vector<dmx::Fixture> fixtures_;
+    /// A decoder and an OSC prefix an imported preset asked for that this run cannot switch to
+    /// — both are fixed while the application runs — saved so the next launch uses them.
+    std::optional<tracking::Decoder> pendingDecoder_;
+    std::optional<std::string> pendingPrefix_;
 
     /// §5.7's control input. Which action LEARN would bind, as an index into
     /// `learnActions_`; the binding table itself lives in `control_`.

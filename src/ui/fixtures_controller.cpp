@@ -123,6 +123,7 @@ void FixturesController::show() {
 }
 
 void FixturesController::hide() {
+    commitDrafts();
     visible_ = false;
     window_->hide();
 }
@@ -362,10 +363,28 @@ void FixturesController::setStatus(const std::string& text, bool error) {
     window_->set_status_error(error);
 }
 
+void FixturesController::commitDrafts() {
+    // What the three text boxes hold, for the fixture they belong to — before anything moves the
+    // selection. The boxes commit on Enter and on losing the keyboard, and Slint runs the second
+    // a loop late: after a click on another fixture has already switched them to it. Committed
+    // then, a name typed for one fixture went to the next (the audit's H10). Each setter does
+    // nothing when its value has not moved.
+    if (current() == nullptr) {
+        return;
+    }
+    rename(std::string(window_->get_name()));
+    setGroup(std::string(window_->get_group()));
+    const std::string universe(window_->get_universe());
+    if (universe != dmx::describePortAddress(current()->universe)) {
+        setUniverse(universe);
+    }
+}
+
 void FixturesController::pick(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= fixtures_.size()) {
         return;
     }
+    commitDrafts();
     selected_ = index;
     publishList();
     publishSelected();
@@ -373,6 +392,7 @@ void FixturesController::pick(int index) {
 }
 
 void FixturesController::add() {
+    commitDrafts();
     if (fixtures_.size() >= dmx::kMaxRoutableFixtures) {
         // Past this a fixture can still be patched and driven by its own rules; what it
         // cannot be is *named* by one, because a rule carries its fixtures as a bit each.
@@ -398,6 +418,7 @@ void FixturesController::add() {
 }
 
 void FixturesController::duplicate() {
+    commitDrafts();
     const dmx::Fixture* const fixture = current();
     if (fixture == nullptr) {
         return;
@@ -414,6 +435,7 @@ void FixturesController::duplicate() {
 }
 
 void FixturesController::remove() {
+    commitDrafts();
     if (current() == nullptr) {
         return;
     }
@@ -426,6 +448,7 @@ void FixturesController::removeAt(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= fixtures_.size()) {
         return;
     }
+    commitDrafts();
     fixtures_.erase(fixtures_.begin() + index);
     resettle(selected_ > index ? selected_ - 1 : selected_);
     commit();
@@ -519,6 +542,11 @@ void FixturesController::pickMode(int mode) {
     // shaped like that", not "start again".
     fixture->channels.assign(modes[index].channels.begin(), modes[index].channels.end());
     fixture->parked.assign(modes[index].parked.begin(), modes[index].parked.end());
+    // Every channel row built again rather than updated in place, even when the count is the
+    // same. A row's dropdown is bound to its role one way, and a role picked from it by hand has
+    // broken that binding: updated in place, it went on showing the pick, over a map that now
+    // said something else. Safe to rebuild — the mode dropdown is not one of the rows.
+    channelsBuiltFor_ = -1;
     commit();
 }
 

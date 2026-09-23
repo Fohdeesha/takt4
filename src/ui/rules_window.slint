@@ -1334,12 +1334,17 @@ export component RulesWindow inherits Window {
                 }
               }
 
+              // **Every control on the lighting rows is bound both ways** (the audit's H10). A
+              // one-way binding dies the first time the control is used, and the next rule picked
+              // went on showing this one's effect, unit or duration — and a focus-out then wrote
+              // it into that rule.
+              //
               // The effect, which for a lighting rule is what the address is for an OSC one:
               // the first thing decided and the thing that decides what the rest of the row is
               // even asking.
               if root.sends-dmx : ComboBox {
                 model: root.effect-kinds;
-                current-index: root.effect-index;
+                current-index <=> root.effect-index;
                 enabled: root.selected >= 0;
                 preferred-width: 152px;
                 max-width: 152px;
@@ -1359,7 +1364,7 @@ export component RulesWindow inherits Window {
 
               if root.sends-dmx && root.effect-takes-role : ComboBox {
                 model: root.effect-roles;
-                current-index: root.effect-role-index;
+                current-index <=> root.effect-role-index;
                 enabled: root.selected >= 0;
                 preferred-width: 130px;
                 max-width: 130px;
@@ -1372,7 +1377,7 @@ export component RulesWindow inherits Window {
 
               if root.sends-dmx && root.effect-takes-shape : ComboBox {
                 model: root.effect-shapes;
-                current-index: root.effect-shape-index;
+                current-index <=> root.effect-shape-index;
                 enabled: root.selected >= 0;
                 width: 120px;
                 selected => {
@@ -1406,7 +1411,7 @@ export component RulesWindow inherits Window {
 
               ComboBox {
                 model: root.color-modes;
-                current-index: root.color-mode-index;
+                current-index <=> root.color-mode-index;
                 enabled: root.selected >= 0;
                 preferred-width: 210px;
                 max-width: 210px;
@@ -1491,7 +1496,7 @@ export component RulesWindow inherits Window {
               }
 
               Field {
-                text: root.effect-duration;
+                text <=> root.effect-duration;
                 placeholder-text: "1";
                 font-size: 12px;
                 width: 76px;
@@ -1513,7 +1518,7 @@ export component RulesWindow inherits Window {
 
               ComboBox {
                 model: root.follow-up-units;
-                current-index: root.effect-unit;
+                current-index <=> root.effect-unit;
                 enabled: root.selected >= 0;
                 width: 92px;
                 selected => {
@@ -1523,7 +1528,7 @@ export component RulesWindow inherits Window {
 
               if root.effect-takes-curve : ComboBox {
                 model: root.effect-curves;
-                current-index: root.effect-curve-index;
+                current-index <=> root.effect-curve-index;
                 enabled: root.selected >= 0;
                 width: 124px;
                 selected => {
@@ -1539,7 +1544,7 @@ export component RulesWindow inherits Window {
               }
 
               if root.effect-takes-base : SpinBox {
-                value: root.effect-base;
+                value <=> root.effect-base;
                 minimum: 0;
                 maximum: 255;
                 enabled: root.selected >= 0;
@@ -1557,7 +1562,7 @@ export component RulesWindow inherits Window {
               }
 
               if root.effect-takes-cycles : Field {
-                text: root.effect-cycles;
+                text <=> root.effect-cycles;
                 placeholder-text: "1";
                 font-size: 12px;
                 width: 60px;
@@ -1574,7 +1579,7 @@ export component RulesWindow inherits Window {
               }
 
               if root.effect-takes-hue : Field {
-                text: root.effect-hue;
+                text <=> root.effect-hue;
                 placeholder-text: "0 - 360";
                 font-size: 12px;
                 width: 96px;
@@ -1609,7 +1614,7 @@ export component RulesWindow inherits Window {
               Slider {
                 minimum: 1;
                 maximum: 99;
-                value: root.effect-duty;
+                value <=> root.effect-duty;
                 enabled: root.selected >= 0;
                 width: 220px;
                 changed(v) => {
@@ -1639,7 +1644,7 @@ export component RulesWindow inherits Window {
               Slider {
                 minimum: 0;
                 maximum: 100;
-                value: root.effect-size;
+                value <=> root.effect-size;
                 enabled: root.selected >= 0;
                 width: 220px;
                 changed(v) => {

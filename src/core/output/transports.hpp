@@ -162,10 +162,21 @@ public:
     /// thread to ask every round.
     std::size_t lostMidiCount() const noexcept;
 
-    /// Enables Link and starts the MIDI clock. `now` is the seconds-since-start clock
-    /// `advance` and `publish` are given.
+    /// Joins Link, if its switch is on. `now` is the seconds-since-start clock `advance` and
+    /// `publish` are given. **Not the MIDI clock** — see `startClock`.
     void startOutputs(double now);
+    /// Leaves Link and stops the MIDI clock.
     void stopOutputs() noexcept;
+
+    /// Sends MIDI Start and begins ticking; `stopClock` sends Stop.
+    ///
+    /// Its own switch, not the outputs', since the outputs run for the application's whole
+    /// life (the audit's H5): a drum machine or a sequencer given a Start the moment takt4
+    /// opened would play at the clock's opening tempo before anything was listening. It follows
+    /// the tracker's Start and Stop instead — `OutputRunner::setTracking`.
+    void startClock(double now);
+    void stopClock() noexcept;
+    bool clockRunning() const noexcept { return clockRunning_; }
 
     /// Ticks the MIDI clock up to `now` and republishes any OSC state that moved. Called
     /// every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one.
@@ -258,6 +269,8 @@ private:
     std::unique_ptr<MidiClock> midi_;
     bool linkEnabled_ = false;
     bool started_ = false;
+    /// Whether the MIDI clock is meant to be ticking — see `startClock`.
+    bool clockRunning_ = false;
     /// The most recent time the transports were driven with. A MIDI port opened mid-set
     /// has to start its clock from now: starting it from when the *outputs* started would
     /// make `advance` try to emit every tick since.

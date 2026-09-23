@@ -452,12 +452,154 @@ TEST_CASE("re-patching keeps the rig lit", "[dmx][engine]") {
     CHECK(at(engine, 0, 1) == 200);
     CHECK(at(engine, 0, 16) == 255); // the new head's shutter, parked open
 
-    SECTION("running effects stop, because their channels may have moved under them") {
+    SECTION("running effects carry on, re-aimed at the same fixture by name") {
+        // They were all cancelled, so every fade, strobe and path froze where it was whenever a
+        // name was typed in the patch editor (the audit's H8). A fixture added *ahead* of the
+        // par moves it in the list, and the fade follows it there.
         engine.setPatch({rgb("par", 1)});
         engine.start(0b1, level(Role::Red, 0, 10.0), 0.0);
+        REQUIRE(engine.running() == 1);
+        engine.setPatch({rgb("new", 20), rgb("par", 1)});
         CHECK(engine.running() == 1);
-        engine.setPatch({rgb("par", 1), rgb("par2", 4)});
+        engine.tick(5.0);
+        CHECK(at(engine, 0, 1) == Catch::Approx(100).margin(2)); // half way from 200 to 0
+        CHECK(at(engine, 0, 20) == 0);                            // and nothing on the new one
+
+        SECTION("and moved to another address, the fade goes with it") {
+            engine.setPatch({rgb("new", 20), rgb("par", 40)});
+            CHECK(at(engine, 0, 1) == 0); // the old channels, released
+            engine.tick(7.5);
+            CHECK(at(engine, 0, 40) == Catch::Approx(50).margin(2));
+        }
+
+        SECTION("an effect on a fixture that has gone stops there") {
+            engine.setPatch({rgb("new", 20)});
+            CHECK(engine.running() == 0);
+        }
+    }
+}
+
+TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][engine]") {
+    // The audit's H8. Coverage was copied forward and only ever set, so a channel that had ever
+    // been patched never took a new parked level: an edited parked value, a changed mode, or a
+    // fixture deleted and added again kept the old bytes until a restart — a head re-moded from
+    // 8-bit to 16-bit inherited a closed shutter.
+    DmxEngine engine;
+
+    SECTION("a parked level edited is laid down") {
+        Fixture head = head16("head", 1);
+        engine.setPatch({head});
+        REQUIRE(at(engine, 0, 7) == 255); // the shutter, parked open
+        head.parked[6] = 128;
+        engine.setPatch({head});
+        CHECK(at(engine, 0, 7) == 128);
+    }
+
+    SECTION("a fixture re-moded takes the new mode's parked levels") {
+        // Channel 7 is the 8-bit map's green, parked at zero, and the 16-bit map's shutter,
+        // parked open — the audit's own example.
+        engine.setPatch({takt4::dmx::fixtureFromMode("head", 5, 0, 1)}); // 8-bit head
+        REQUIRE(at(engine, 0, 7) == 0);
+        engine.setPatch({head16("head", 1)});
+        CHECK(at(engine, 0, 7) == 255);
+    }
+
+    SECTION("a channel that keeps its meaning keeps its level") {
+        engine.setPatch({rgb("par", 1)});
+        engine.start(0b1, level(Role::Red, 200), 0.0);
+        Fixture renamed = rgb("wash", 1);
+        engine.setPatch({renamed});
+        CHECK(at(engine, 0, 1) == 200);
+    }
+
+    SECTION("a fixture switched off goes dark, and one deleted does too") {
+        // "Switched off contributes no channels": it used to go on transmitting its last
+        // levels, out of reach of every rule — Blackout included.
+        Fixture par = rgb("par", 1);
+        engine.setPatch({par, rgb("other", 10)});
+        engine.start(0b11, level(Role::Red, 200), 0.0);
+        REQUIRE(at(engine, 0, 1) == 200);
+        par.enabled = false;
+        engine.setPatch({par, rgb("other", 10)});
+        CHECK(at(engine, 0, 1) == 0);
+        CHECK(at(engine, 0, 10) == 200); // and the one still on is untouched
+
+        engine.setPatch({rgb("other", 10)});
+        CHECK(at(engine, 0, 1) == 0);
+    }
+
+    SECTION("deleted and added again, it starts from its parked levels") {
+        engine.setPatch({head16("head", 1)});
+        engine.start(0b1, level(Role::Dimmer, 255), 0.0);
+        REQUIRE(at(engine, 0, 6) == 255);
+        engine.setPatch({rgb("par", 100)});
+        engine.setPatch({head16("head", 1), rgb("par", 100)});
+        CHECK(at(engine, 0, 6) == 0);   // dimmer, parked down
+        CHECK(at(engine, 0, 7) == 255); // shutter, parked open
+    }
+
+    SECTION("a TEST held when the patch changes is let go, and its channel put back") {
+        engine.setPatch({rgb("par", 1)});
+        engine.start(0b1, level(Role::Green, 40), 0.0);
+        engine.tick(0.0); // the snap is done and gone
+        engine.holdChannel(0, 2, 255, 3.0, 0.0);
+        REQUIRE(at(engine, 0, 2) == 255);
+        engine.setPatch({rgb("par", 1), rgb("other", 10)});
+        CHECK(at(engine, 0, 2) == 40);
         CHECK(engine.running() == 0);
+    }
+}
+
+TEST_CASE("an LED par keeps its color apart from its brightness", "[dmx][engine]") {
+    // The audit's H9. A dimmer effect on a fixture with no dimmer channel took its hue from the
+    // channels' current levels, so once a flash had decayed to zero the fixture read as dark
+    // and was taken as white: a color rule and a beat flash gave the chosen color on the first
+    // flash and white on every flash after.
+    DmxEngine engine;
+    engine.setPatch({rgb("par", 1)});
+    Payload red;
+    red.kind = EffectKind::Color;
+    red.color = Color{255, 0, 0};
+    Payload flash;
+    flash.kind = EffectKind::Flash;
+    flash.role = Role::Dimmer;
+    flash.level = 255;
+    flash.base = 0;
+    flash.curve = Curve::Linear;
+    flash.durationSeconds = 0.4f;
+
+    engine.start(0b1, red, 0.0);
+    engine.start(0b1, flash, 1.0);
+    CHECK(at(engine, 0, 1) == 255);
+    engine.tick(1.5); // decayed
+    REQUIRE(at(engine, 0, 1) == 0);
+    REQUIRE(at(engine, 0, 2) == 0);
+
+    engine.start(0b1, flash, 2.0);
+    // Red, not white.
+    CHECK(at(engine, 0, 1) == 255);
+    CHECK(at(engine, 0, 2) == 0);
+    CHECK(at(engine, 0, 3) == 0);
+
+    SECTION("a color change during a flash changes its hue, not where the flash is") {
+        engine.tick(2.2); // half way down
+        REQUIRE(at(engine, 0, 1) == Catch::Approx(128).margin(1));
+        Payload blue = red;
+        blue.color = Color{0, 0, 255};
+        engine.start(0b1, blue, 2.2);
+        CHECK(at(engine, 0, 1) == 0);
+        CHECK(at(engine, 0, 3) == Catch::Approx(128).margin(1));
+        engine.tick(2.3); // and the flash goes on decaying, in blue
+        CHECK(at(engine, 0, 3) == Catch::Approx(64).margin(1));
+        CHECK(engine.running() == 1);
+    }
+
+    SECTION("a Stop's blackout leaves it neutral, so a color rule alone lights it again") {
+        engine.tick(3.0);
+        engine.blackout(3.0);
+        CHECK(at(engine, 0, 1) == 0);
+        engine.start(0b1, red, 4.0);
+        CHECK(at(engine, 0, 1) == 255);
     }
 }
 

@@ -106,6 +106,13 @@ including everything that was tried and rejected.
 Each output has a name, a kind, a destination, an enable and an offset, and rules can be
 routed to any subset of them. Link and MIDI clock are their own rows.
 
+The outputs are live from the moment takt4 opens, not from **START**: Link is joined as
+soon as its switch is on, and a fixture can be identified or tested before any music is
+playing. **START** and **STOP** start and stop the listening, and the MIDI clock with it, so
+a DAW following the clock starts and stops with you. **STOP** also puts the lights out, and
+so does quitting: that last dark frame is sent before takt4 goes, so no node is left holding
+the rig lit.
+
 The generic OSC namespace goes to every OSC target, whatever else is configured:
 
 ```
@@ -150,7 +157,8 @@ reachable from OSC, so a Stream Deck can drop a layer out for eight bars.
 
 Rig presets build a working setup in one pick: clips on three Resolume layers, Resolume's
 tempo and resync, a breathing dashboard, Euclidean MIDI stabs. Everything a preset writes
-is ordinary editable data, and a preset can be exported to another machine. **PANIC** — the
+is ordinary editable data, and **EXPORT** writes the tempo settings, the rules, the outputs and
+the lighting patch to a file that **IMPORT** loads on another machine. **PANIC** — the
 button, or **Esc** — stops every rule instantly and stays engaged, however many times it is
 pressed, until you press **RELEASE** beside it.
 
@@ -261,7 +269,8 @@ later that fades to zero over a beat. The *delay* is when the follow-up starts; 
 last frame**. The lights freeze rather than going dark — if takt4 is one source among
 several, or your node is merging it with a desk, a panic button that drove everything to
 zero would black out a stage that was not takt4's to black out. A deliberate blackout is an
-effect a rule can fire.
+effect a rule can fire — and **STOP** is one: stopping the tracker, or quitting, takes
+takt4's lights to dark.
 
 ### Notes on the wire
 

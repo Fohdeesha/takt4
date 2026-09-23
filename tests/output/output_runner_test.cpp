@@ -1,10 +1,12 @@
 #include "core/audio/rates.hpp"
 #include "core/control/rule_control.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/midi_ports.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/rule.hpp"
@@ -14,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -22,8 +25,11 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using takt4::audio::kHopSize;
@@ -536,7 +542,11 @@ TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
     runner.start();
     runner.post(OutputCommand::testRule("laser"));
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-    while (std::chrono::steady_clock::now() < until && runner.triggers().pending() == 0) {
+    // Read between the output thread's rounds — it is running, and it owns the rules.
+    const auto pending = [&runner] {
+        return runner.inspect([](const auto& rules, const auto&, const auto&) { return rules.pending(); });
+    };
+    while (std::chrono::steady_clock::now() < until && pending() == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     runner.stop();
@@ -967,4 +977,251 @@ TEST_CASE("a negative offset lands a beat's cue before that beat from live audio
     CHECK(onTime + 1 >= predictable);
     CHECK(beforeItsBeat >= onTime);
     CHECK(runner.scheduler().predictedFires() >= predictable);
+}
+
+namespace {
+
+/// The 512 levels of one ArtDmx datagram, or nothing for anything that is not one.
+std::vector<std::uint8_t> artDmxLevels(const std::string& datagram) {
+    if (datagram.size() < 18 || datagram.compare(0, 8, std::string("Art-Net\0", 8)) != 0) {
+        return {};
+    }
+    const std::size_t length = static_cast<std::size_t>(static_cast<std::uint8_t>(datagram[16])) *
+                                   256 +
+                               static_cast<std::uint8_t>(datagram[17]);
+    if (datagram.size() < 18 + length) {
+        return {};
+    }
+    return std::vector<std::uint8_t>(datagram.begin() + 18,
+                                     datagram.begin() + 18 + static_cast<std::ptrdiff_t>(length));
+}
+
+/// An RGB par at address 1 of universe 0, and an Art-Net node on loopback that feeds it.
+Transports::Config parOnNode(std::uint16_t port) {
+    Transports::Config config;
+    takt4::output::OutputTarget node;
+    node.name = "truss";
+    node.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    node.host = "127.0.0.1";
+    node.port = port;
+    config.outputs.push_back(node);
+    config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    return config;
+}
+
+/// Reads frames off `node` until one's first three channels are `rgb`, or the node goes quiet.
+bool sawRgb(LoopbackReceiver& node, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const std::string datagram = node.receive();
+        if (datagram.empty()) {
+            return false;
+        }
+        const std::vector<std::uint8_t> levels = artDmxLevels(datagram);
+        if (levels.size() >= 3 && levels[0] == r && levels[1] == g && levels[2] == b) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The par to a colour, the way the patch editor's IDENTIFY and colour preview reach it.
+OutputCommand paint(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    takt4::dmx::Payload payload;
+    payload.kind = takt4::dmx::EffectKind::Color;
+    payload.color = takt4::dmx::Color{r, g, b};
+    return OutputCommand::effect(0b1, payload);
+}
+
+/// A MIDI device that notes every message sent down it.
+class NotingPort final : public takt4::output::MidiPort {
+public:
+    explicit NotingPort(std::shared_ptr<std::vector<unsigned char>> heard) : heard_(std::move(heard)) {}
+    std::string open(std::string_view spec) override { return std::string(spec); }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char> message) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!message.empty()) {
+            heard_->push_back(message[0]);
+        }
+    }
+
+private:
+    std::shared_ptr<std::vector<unsigned char>> heard_;
+    std::mutex mutex_;
+};
+
+} // namespace
+
+TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
+    // The audit's H5. The runner started and stopped with the tracker, so before Start nothing
+    // was transmitted at all: IDENTIFY and a colour preview changed a buffer nobody sent. It
+    // runs for the application's life now, and the tracker's Start and Stop are `setTracking`.
+    LoopbackReceiver node;
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, parOnNode(node.port()));
+    runner.start();
+    REQUIRE_FALSE(runner.tracking());
+
+    runner.post(paint(255, 0, 0));
+    CHECK(sawRgb(node, 255, 0, 0));
+
+    SECTION("and a Stop blacks the lights out and goes on sending") {
+        // The operator's call of 2026-09-23 (Q3): Stop is a blackout — every light-emitting
+        // channel to zero — and the node goes on hearing takt4, so it does not fall back to a
+        // failsafe of its own.
+        runner.setTracking(true);
+        runner.post(paint(0, 0, 255));
+        REQUIRE(sawRgb(node, 0, 0, 255));
+        runner.setTracking(false);
+        CHECK(sawRgb(node, 0, 0, 0));
+        REQUIRE(runner.sync());
+        CHECK_FALSE(runner.tracking());
+        // And the keep-alive: frames keep coming with nothing moving.
+        int frames = 0;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{2200};
+        while (std::chrono::steady_clock::now() < until) {
+            if (!artDmxLevels(node.receive()).empty()) {
+                ++frames;
+            }
+        }
+        CHECK(frames >= 2);
+    }
+
+    SECTION("and PANIC freezes rather than blacking out") {
+        // PANIC keeps the operator's call of 2026-09-16: the lights stay where they are.
+        runner.post(OutputCommand::panic(true));
+        REQUIRE(runner.sync());
+        const std::vector<std::uint8_t> levels =
+            runner.inspect([](const auto&, const Transports& transports, const auto&) {
+                const std::span<const std::uint8_t> frame = transports.dmx().levels(0);
+                return std::vector<std::uint8_t>(frame.begin(), frame.begin() + 3);
+            });
+        CHECK(levels == std::vector<std::uint8_t>{255, 0, 0});
+    }
+    runner.stop();
+}
+
+TEST_CASE("quitting sends the blackout frame itself", "[output][dmx]") {
+    // The way out of the application: the lights out (Q3), and that frame actually sent. Art-Net
+    // only went out in `advance`, paced at 44 Hz, so a change made a moment before quitting was
+    // never transmitted and the node held the rig lit after takt4 had gone (the audit's H6).
+    LoopbackReceiver node;
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, parOnNode(node.port()));
+    runner.start();
+    runner.post(paint(255, 255, 255));
+    REQUIRE(sawRgb(node, 255, 255, 255));
+    runner.stop();
+
+    std::vector<std::uint8_t> last;
+    for (std::string datagram = node.receive(); !datagram.empty(); datagram = node.receive()) {
+        if (std::vector<std::uint8_t> levels = artDmxLevels(datagram); !levels.empty()) {
+            last = std::move(levels);
+        }
+    }
+    REQUIRE(last.size() >= 3);
+    CHECK(last[0] == 0);
+    CHECK(last[1] == 0);
+    CHECK(last[2] == 0);
+}
+
+TEST_CASE("quitting sends a release held for a delayed output", "[output][trigger]") {
+    // The audit's H6: a release parked for an OSC target's delay went out at the *next* Start,
+    // so a Resolume clip stayed latched until then.
+    LoopbackReceiver server;
+    Transports::Config config;
+    takt4::output::OutputTarget media;
+    media.name = "media";
+    media.host = "127.0.0.1";
+    media.port = server.port();
+    media.delaySeconds = 0.8;
+    config.outputs = {media};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+
+    Rule::Config rule;
+    rule.id = "clip";
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.address = "/clip";
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 0.05;
+    rule.followUps.push_back(release);
+    runner.post(OutputCommand::rules({rule}));
+    runner.start();
+    runner.post(OutputCommand::testRule("clip"));
+    // Past the release's own delay, and well short of the output's: both are held.
+    std::this_thread::sleep_for(std::chrono::milliseconds{150});
+    runner.stop();
+
+    int clips = 0;
+    for (std::string datagram = server.receive(); !datagram.empty(); datagram = server.receive()) {
+        if (datagram.rfind("/clip", 0) == 0) {
+            ++clips;
+        }
+    }
+    CHECK(clips == 2); // the press and its release, not the press alone
+}
+
+TEST_CASE("the MIDI clock starts and stops with the tracker, not with the outputs",
+          "[output][midi]") {
+    // The outputs run from launch (H5); a drum machine given a Start then would play at the
+    // clock's opening tempo before anything was listening.
+    auto heard = std::make_shared<std::vector<unsigned char>>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [heard](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<NotingPort>(heard));
+    };
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    REQUIRE(runner.sync());
+    const auto count = [&heard, &runner](unsigned char status) {
+        // Read between rounds: the output thread is the one writing.
+        return runner.inspect([&](const auto&, const auto&, const auto&) {
+            return std::count(heard->begin(), heard->end(), status);
+        });
+    };
+    CHECK(count(takt4::output::MidiClock::kStart) == 0);
+    CHECK(count(takt4::output::MidiClock::kTick) == 0);
+
+    runner.setTracking(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    CHECK(count(takt4::output::MidiClock::kStart) == 1);
+    CHECK(count(takt4::output::MidiClock::kTick) > 5);
+
+    runner.setTracking(false);
+    REQUIRE(runner.sync());
+    CHECK(count(takt4::output::MidiClock::kStop) == 1);
+    const auto ticks = count(takt4::output::MidiClock::kTick);
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    CHECK(count(takt4::output::MidiClock::kTick) == ticks);
+    runner.stop();
+}
+
+TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][dmx]") {
+    // A beat fired ahead of time holds its lighting until the beat. PANIC freezes the lights,
+    // and starting a held flash only to freeze it on its first frame would hold a lamp at full.
+    Transports::Config config;
+    config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    Transports transports(config);
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::Message flash;
+    flash.kind = takt4::trigger::Message::Kind::Dmx;
+    flash.fixtures = 0b1;
+    flash.payload.kind = takt4::dmx::EffectKind::Flash;
+    flash.payload.role = takt4::dmx::Role::Dimmer;
+    flash.payload.level = 255;
+    flash.payload.durationSeconds = 0.4f;
+    flash.moment = 10.5;
+    sink.setNow(10.2);
+    sink.send(flash);
+    REQUIRE(sink.queued() == 1);
+    sink.dropQueuedLighting();
+    sink.flushQueued();
+    CHECK(sink.queued() == 0);
+    CHECK(transports.dmx().running() == 0);
+    CHECK(transports.dmx().levels(0)[0] == 0);
 }

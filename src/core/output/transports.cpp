@@ -61,17 +61,27 @@ void Transports::startOutputs(double now) {
     if (linkEnabled_) {
         link_->enable(true);
     }
+}
+
+void Transports::stopOutputs() noexcept {
+    stopClock();
+    started_ = false;
+    link_->enable(false);
+}
+
+void Transports::startClock(double now) {
+    clockRunning_ = true;
+    lastNow_ = now;
     if (midi_) {
         midi_->start(now);
     }
 }
 
-void Transports::stopOutputs() noexcept {
-    started_ = false;
-    if (midi_) {
+void Transports::stopClock() noexcept {
+    if (clockRunning_ && midi_) {
         midi_->stop();
     }
-    link_->enable(false);
+    clockRunning_ = false;
 }
 
 void Transports::setLinkEnabled(bool on) {
@@ -230,9 +240,9 @@ void Transports::setMidiClockPort(const std::optional<std::string>& port) {
     midi_ = std::move(clock);
     midiClockPort_ = port;
     closeUnusedDevices();
-    if (started_) {
-        // From now, not from when the outputs started: `advance` would otherwise try to
-        // emit every tick of the intervening set at once.
+    if (clockRunning_) {
+        // From now, not from when the clock started: `advance` would otherwise try to emit
+        // every tick of the intervening set at once.
         midi_->start(lastNow_);
     }
 }

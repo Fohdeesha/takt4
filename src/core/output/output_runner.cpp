@@ -1,7 +1,9 @@
 #include "core/output/output_runner.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -306,6 +308,13 @@ void OutputRunner::stop() noexcept {
             // used to sit in the queue until the next Start (the audit's H6).
             sink_.flushQueued();
             transports_.osc().flushAll();
+            // Then the lights out — the operator's call for quit as for Stop (Q3) — and that
+            // frame actually sent. Art-Net only goes out in `advance`, paced at 44 Hz, and there
+            // is no round after this one: a node left holding the last frame before it would
+            // hold the rig lit after takt4 had gone.
+            const double now = elapsed();
+            transports_.dmx().blackout(now);
+            (void)transports_.artnet().flush(transports_.dmx(), now);
         } catch (...) {
             // Nothing useful to do while shutting down, and letting it out of a noexcept
             // function would call std::terminate.
@@ -374,7 +383,10 @@ void OutputRunner::apply(const OutputCommand& command) {
                 triggers_.panic(contextAt(now));
                 // What is held for an output's offset goes now too. A release among it must not
                 // wait, and a press among it is at most one lead's worth early — and would
-                // otherwise be a rule firing after PANIC was pressed.
+                // otherwise be a rule firing after PANIC was pressed. Except the lighting, which
+                // PANIC freezes: an effect started now would be frozen on its first frame, and a
+                // flash frozen there is a lamp held at full.
+                sink_.dropQueuedLighting();
                 sink_.flushQueued();
                 transports_.osc().flushAll();
                 // And the lights stop animating — but keep their levels, and keep being sent.
@@ -421,6 +433,23 @@ void OutputRunner::apply(const OutputCommand& command) {
             transports_.dmx().holdChannel(command.universe, command.channel, command.level,
                                           command.factor, now);
             break;
+        case OutputCommand::Kind::Tracking:
+            if (command.enabled) {
+                // A new run: nothing predicted from the last one's beats, and the clock's Start
+                // on the press that starts listening.
+                scheduler_.reset();
+                transports_.startClock(now);
+            } else {
+                transports_.stopClock();
+                // Held lighting for a beat that will now never come goes with it, and the lights
+                // go out and stay out — sent, because the outputs keep running (Q3).
+                sink_.dropQueuedLighting();
+                transports_.dmx().blackout(now);
+            }
+            tracking_.store(command.enabled, std::memory_order_relaxed);
+            break;
+        case OutputCommand::Kind::Sync:
+            break;
         case OutputCommand::Kind::Manual:
             triggers_.manual(contextAt(now));
             break;
@@ -439,6 +468,44 @@ void OutputRunner::apply(const OutputCommand& command) {
     // Whether it worked or not: what a reader must see is what the transports are *now*, and
     // a command that threw part-way through has still changed some of them.
     takeSnapshot();
+    if (command.ticket != 0) {
+        // Somebody is waiting on this one in `postAndWait`: its own answer, which the next
+        // command could otherwise overwrite before the waiter wakes.
+        std::string answer = lastError();
+        {
+            const std::lock_guard<std::mutex> lock(answerMutex_);
+            // Bounded: a waiter that gave up never collects its answer.
+            if (answers_.size() >= 16) {
+                answers_.erase(answers_.begin());
+            }
+            answers_.emplace_back(command.ticket, std::move(answer));
+        }
+        answered_.notify_all();
+    }
+}
+
+std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
+    std::uint64_t ticket = 0;
+    {
+        const std::lock_guard<std::mutex> lock(answerMutex_);
+        ticket = ++lastTicket_;
+    }
+    command.ticket = ticket;
+    post(std::move(command));
+    std::unique_lock<std::mutex> lock(answerMutex_);
+    const auto mine = [this, ticket] {
+        return std::find_if(answers_.begin(), answers_.end(),
+                            [ticket](const auto& answer) { return answer.first == ticket; });
+    };
+    if (!answered_.wait_for(lock, kWaitForApply, [&] { return mine() != answers_.end(); })) {
+        // Not applied yet. Its answer is thrown away when it comes — `lastError` still has it.
+        std::erase_if(answers_, [ticket](const auto& answer) { return answer.first < ticket; });
+        return std::nullopt;
+    }
+    const auto found = mine();
+    std::string answer = std::move(found->second);
+    answers_.erase(found);
+    return answer;
 }
 
 void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {

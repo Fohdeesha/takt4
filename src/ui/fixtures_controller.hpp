@@ -120,6 +120,9 @@ private:
 
     /// Hands the patch to the output thread and tells the owner. Every edit ends here.
     void commit();
+    /// Applies what the name, group and universe boxes hold to the fixture they belong to.
+    /// Called before anything moves the selection — see the definition.
+    void commitDrafts();
     void publishAll();
     void publishList();
     void publishSelected();
