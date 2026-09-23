@@ -84,7 +84,7 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
     // because it moved Link and the MIDI clock and never touched the publisher — and
     // Resolume listens to OSC. This is the wiring that closed that.
     Transports::Config config;
-    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", 7000}});
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", 57000}});
     config.latencySeconds = -0.200;
     Transports transports(config);
     transports.startOutputs(0.0);
@@ -155,7 +155,7 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
     transports.stopOutputs();
 }
 
-TEST_CASE("Link is built whether or not it is switched on", "[output][link]") {
+TEST_CASE("Link is built whether or not it is switched on", "[output][link][network]") {
     // The invariant the audio thread depends on. `BeatEngine::setHostTimeSource` is handed
     // this session and reads it every hop (§4.3), so building it on demand would mean
     // destroying one under a running audio thread the first time Link was switched off.
@@ -175,7 +175,7 @@ TEST_CASE("Link is built whether or not it is switched on", "[output][link]") {
     CHECK(&transports.link() == before); // the same session throughout
 }
 
-TEST_CASE("switching Link on before the outputs start does not join yet", "[output][link]") {
+TEST_CASE("switching Link on before the outputs start does not join yet", "[output][link][network]") {
     // Setting something up is not the same as doing it: an operator ticks Link while the
     // tracker is stopped, and nothing should appear to peers until Start.
     Transports transports{Transports::Config{}};
@@ -193,7 +193,7 @@ TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[outp
     Transports transports{Transports::Config{}};
     CHECK(transports.osc().targetCount() == 0);
 
-    transports.setOscTargets({{"127.0.0.1", 7000}, {"127.0.0.1", 7001}});
+    transports.setOscTargets({{"127.0.0.1", 57000}, {"127.0.0.1", 57001}});
     CHECK(transports.osc().targetCount() == 2);
     CHECK(transports.oscTargets().size() == 2);
     CHECK(transports.any());
@@ -214,7 +214,7 @@ TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[outp
 
     // A target added mid-set has never been told the tempo. It must not have to wait for
     // the tempo to change before it learns what it is.
-    transports.setOscTargets({{"127.0.0.1", 7002}});
+    transports.setOscTargets({{"127.0.0.1", 57002}});
     CHECK(transports.osc().targetCount() == 1);
     transports.advance(0.3, state);
     CHECK(transports.osc().messagesSent() > afterFirst);
@@ -363,7 +363,7 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
     transports.stopOutputs();
 }
 
-TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link]") {
+TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link][network]") {
     // The wiring, held to Link's own counters and to its own timeline. What the calls then
     // *mean* between two peers is link_peers_test.cpp's business; this is about which calls
     // are made, and when — the audit's C3 and H15.

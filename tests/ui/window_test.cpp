@@ -1048,7 +1048,7 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
     }
 }
 
-TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[ui]") {
+TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[ui][network]") {
     // §5.7's listening socket, which nothing opened until 2026-09-06 — the library existed
     // and no application built one. Three separate decisions live here and each is the
     // operator's: listen at all, on which port, and whether past this machine.
@@ -1455,15 +1455,15 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     // The format this row always took, before targets had names — still a target, named
     // after its own address.
-    controller.setOscTargets("127.0.0.1:7000");
+    controller.setOscTargets("127.0.0.1:57000");
     CHECK(live().oscTargets == 1);
     REQUIRE(live().targets.size() == 1);
-    CHECK(live().targets[0].name == "127.0.0.1:7000");
+    CHECK(live().targets[0].name == "127.0.0.1:57000");
     CHECK(controller.window().get_osc_on());
 
     // §5.6's "multiple simultaneous targets", each with a name a rule can use. One piece of
     // text still holds several — a settings line, or a rig pasted in.
-    controller.setOscTargets("deck = 127.0.0.1:7000, wall = 127.0.0.1:7001");
+    controller.setOscTargets("deck = 127.0.0.1:57000, wall = 127.0.0.1:57001");
     CHECK(live().oscTargets == 2);
     REQUIRE(live().targets.size() == 2);
     CHECK(live().targets[0].name == "deck");
@@ -1473,19 +1473,19 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 2);
         CHECK(std::string(rows->row_data(0)->name) == "deck");
-        CHECK(std::string(rows->row_data(0)->address) == "127.0.0.1:7000");
+        CHECK(std::string(rows->row_data(0)->address) == "127.0.0.1:57000");
         CHECK(std::string(rows->row_data(1)->name) == "wall");
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
     }
 
     SECTION("a target named after its own address leaves the name box empty") {
-        // It is still called "127.0.0.1:7000" and a rule can still route to it by that; the
+        // It is still called "127.0.0.1:57000" and a rule can still route to it by that; the
         // box the operator types a *name* into is not where to say so.
-        controller.setOscTargets("127.0.0.1:7000");
+        controller.setOscTargets("127.0.0.1:57000");
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 1);
         CHECK(std::string(rows->row_data(0)->name).empty());
-        CHECK(live().targets[0].name == "127.0.0.1:7000");
+        CHECK(live().targets[0].name == "127.0.0.1:57000");
     }
 
     SECTION("each target carries its own delay, and only its own") {
@@ -1505,7 +1505,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
         // The address box never shows it — the slider is where it lives, and a delay
         // appearing in the text an operator is typing into would be edited by accident.
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
 
         // Past either limit is clamped rather than refused: a slider cannot get there, but
         // §5.7's inbound OSC and a hand-edited settings file both can.
@@ -1574,7 +1574,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     SECTION("two targets with one name is said rather than silently resolved") {
         // `resolveOutputs` would take the first, and a rule routed to the second would go
         // somewhere its operator did not choose.
-        controller.acceptTarget(1, "deck", "127.0.0.1:7001");
+        controller.acceptTarget(1, "deck", "127.0.0.1:57001");
         CHECK(controller.statusIsError());
         // And said as what it is: both addresses are fine, and calling one of them "not a
         // target" would send somebody looking at the wrong thing.
@@ -1599,16 +1599,16 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     SECTION("a keystroke is remembered and not applied") {
         // Applying opens and closes a socket. Doing that per character would rebuild it
         // halfway through an address.
-        controller.editTarget(1, "wall", "127.0.0.1:7009");
-        CHECK(live().targets[1].port == 7001);
+        controller.editTarget(1, "wall", "127.0.0.1:57009");
+        CHECK(live().targets[1].port == 57001);
 
         // And the draft still has to survive the list being republished, which is what [+]
         // does — the row is drawn from the model, so a draft kept only in the widget would go.
         controller.addTarget();
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 3);
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7009");
-        CHECK(live().targets[1].port == 7009);
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57009");
+        CHECK(live().targets[1].port == 57009);
     }
 
     SECTION("an added row is a target already") {
@@ -1628,11 +1628,11 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("a row asks for a host and a port, not for one string holding both") {
         // The two boxes are edited one at a time and merged here — see `setTargetHost`.
-        controller.setTargetHost(0, "192.168.1.40", false);
+        controller.setTargetHost(0, "192.0.2.40", false);
         CHECK(live().targets[0].host == "127.0.0.1"); // a keystroke, not applied
         controller.setTargetPort(0, "7010", true);
         REQUIRE(live().targets.size() == 2);
-        CHECK(live().targets[0].host == "192.168.1.40");
+        CHECK(live().targets[0].host == "192.0.2.40");
         CHECK(live().targets[0].port == 7010);
         CHECK(live().targets[0].name == "deck");
     }
@@ -1704,7 +1704,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
               "reaches 1 output");
 
-        controller.setOscTargets("hall = 127.0.0.1:7002");
+        controller.setOscTargets("hall = 127.0.0.1:57002");
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
               "1 output it was routed to is gone");
     }
@@ -2015,12 +2015,12 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK_FALSE(controller.window().get_running());
 }
 
-TEST_CASE("the window switches the outputs back on", "[ui]") {
+TEST_CASE("the window switches the outputs back on", "[ui][network]") {
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     saved.preset.link = true;
     saved.preset.oscPrefix = "/vj";
-    saved.preset.outputs = takt4::output::oscOutputs({{"127.0.0.1", 7000}, {"127.0.0.1", 7001}});
+    saved.preset.outputs = takt4::output::oscOutputs({{"127.0.0.1", 57000}, {"127.0.0.1", 57001}});
 
     WindowController controller(tracker, saved);
     CHECK(seen(controller).link);
@@ -2031,7 +2031,7 @@ TEST_CASE("the window switches the outputs back on", "[ui]") {
     // And into the rows that edit them, seeded once from what the runner was built with.
     const auto rows = controller.window().get_outputs_list();
     REQUIRE(rows->row_count() == 2);
-    CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:7001");
+    CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
 }
 
 TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[ui]") {
@@ -2056,7 +2056,7 @@ TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     for (const char* line : {"lights = midi takt4 test - a device left at home",
-                             "hall = no-such-host.invalid:7000", "main = 127.0.0.1:7000"}) {
+                             "hall = no-such-host.invalid:57000", "main = 127.0.0.1:57000"}) {
         takt4::output::OutputTarget target;
         REQUIRE(takt4::output::parseOutputTarget(line, target));
         saved.preset.outputs.push_back(target);
@@ -2145,11 +2145,11 @@ TEST_CASE("the settings are saved on their own a moment after a change", "[ui][s
     CHECK_THAT(takt4::settings::load(file).preset.tempo.minBpm, WithinAbs(91.0, 1e-6));
 }
 
-TEST_CASE("what the window hands back is what it was given", "[ui]") {
+TEST_CASE("what the window hands back is what it was given", "[ui][network]") {
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     saved.preset.link = true;
-    saved.preset.outputs = takt4::output::oscOutputs({{"192.168.1.40", 7000}});
+    saved.preset.outputs = takt4::output::oscOutputs({{"192.0.2.40", 7000}});
     saved.preset.oscPrefix = "/vj";
 
     WindowController controller(tracker, saved);
@@ -2161,7 +2161,7 @@ TEST_CASE("what the window hands back is what it was given", "[ui]") {
     const takt4::settings::Settings out = controller.currentSettings();
     CHECK(out.preset.link);
     REQUIRE(out.preset.outputs.size() == 1);
-    CHECK(out.preset.outputs[0].host == "192.168.1.40");
+    CHECK(out.preset.outputs[0].host == "192.0.2.40");
     CHECK(out.preset.oscPrefix == "/vj");
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.025, 1e-9));
@@ -2694,7 +2694,7 @@ TEST_CASE("an Art-Net row offers no delay of its own", "[ui]") {
     // back. Driven by real clicks: what is under test is what the row draws.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
-    for (const char* line : {"deck = 127.0.0.1:7000", "node = artnet 127.0.0.1:6454"}) {
+    for (const char* line : {"deck = 127.0.0.1:57000", "node = artnet 127.0.0.1:6454"}) {
         takt4::output::OutputTarget target;
         REQUIRE(takt4::output::parseOutputTarget(line, target));
         saved.preset.outputs.push_back(target);

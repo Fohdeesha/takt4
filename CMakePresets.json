@@ -87,34 +87,38 @@
   ],
   "testPresets": [
     {
-      "name": "windows-msvc",
-      "configurePreset": "windows-msvc",
-      "configuration": "Release",
-      "output": { "outputOnFailure": true }
+      "name": "off-rig",
+      "hidden": true,
+      "description": "Leaves out the tests tagged [network] (Link, real sockets) and [hardware] (the audio interface and MIDI devices themselves), and gives the test binaries no ASIO: running these while Resolume or Live is up disturbs them (the audit's T2).",
+      "output": { "outputOnFailure": true },
+      "filter": { "exclude": { "label": "^(network|hardware)$" } }
     },
     {
-      "name": "windows-msvc-debug",
-      "configurePreset": "windows-msvc",
-      "configuration": "Debug",
-      "output": { "outputOnFailure": true }
+      "name": "all-tests",
+      "hidden": true,
+      "description": "Every test, on the network and the audio interface too. Close Resolume and Live first.",
+      "output": { "outputOnFailure": true },
+      "environment": { "TAKT4_TEST_HARDWARE": "1" }
     },
-    { "name": "macos", "configurePreset": "macos", "output": { "outputOnFailure": true } },
-    { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
-    {
-      "name": "windows-core",
-      "configurePreset": "windows-core",
-      "configuration": "Release",
-      "output": { "outputOnFailure": true }
-    },
-    { "name": "macos-core", "configurePreset": "macos-core", "output": { "outputOnFailure": true } },
-    { "name": "linux-core", "configurePreset": "linux-core", "output": { "outputOnFailure": true } },
-    {
-      "name": "windows-asan",
-      "configurePreset": "windows-asan",
-      "configuration": "Release",
-      "output": { "outputOnFailure": true }
-    },
-    { "name": "linux-asan", "configurePreset": "linux-asan", "output": { "outputOnFailure": true } },
-    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true } }
+    { "name": "windows-msvc", "inherits": "off-rig", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "windows-msvc-all", "inherits": "all-tests", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "windows-msvc-debug", "inherits": "off-rig", "configurePreset": "windows-msvc", "configuration": "Debug" },
+    { "name": "windows-msvc-debug-all", "inherits": "all-tests", "configurePreset": "windows-msvc", "configuration": "Debug" },
+    { "name": "macos", "inherits": "off-rig", "configurePreset": "macos" },
+    { "name": "macos-all", "inherits": "all-tests", "configurePreset": "macos" },
+    { "name": "linux", "inherits": "off-rig", "configurePreset": "linux" },
+    { "name": "linux-all", "inherits": "all-tests", "configurePreset": "linux" },
+    { "name": "windows-core", "inherits": "off-rig", "configurePreset": "windows-core", "configuration": "Release" },
+    { "name": "windows-core-all", "inherits": "all-tests", "configurePreset": "windows-core", "configuration": "Release" },
+    { "name": "macos-core", "inherits": "off-rig", "configurePreset": "macos-core" },
+    { "name": "macos-core-all", "inherits": "all-tests", "configurePreset": "macos-core" },
+    { "name": "linux-core", "inherits": "off-rig", "configurePreset": "linux-core" },
+    { "name": "linux-core-all", "inherits": "all-tests", "configurePreset": "linux-core" },
+    { "name": "windows-asan", "inherits": "off-rig", "configurePreset": "windows-asan", "configuration": "Release" },
+    { "name": "windows-asan-all", "inherits": "all-tests", "configurePreset": "windows-asan", "configuration": "Release" },
+    { "name": "linux-asan", "inherits": "off-rig", "configurePreset": "linux-asan" },
+    { "name": "linux-asan-all", "inherits": "all-tests", "configurePreset": "linux-asan" },
+    { "name": "linux-tsan", "inherits": "off-rig", "configurePreset": "linux-tsan" },
+    { "name": "linux-tsan-all", "inherits": "all-tests", "configurePreset": "linux-tsan" }
   ]
 }

@@ -82,8 +82,10 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel
 
+      # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
+      # tests the default presets leave out on a rig (the audit's T2).
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset ${{ matrix.preset }}-all
 
       # The Windows and Linux runners have no audio devices; the macOS runner exposes
       # virtual CoreAudio ones, which the [hardware] test above opens. This proves the

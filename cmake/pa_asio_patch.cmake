@@ -14,6 +14,11 @@
 #      change, a sample-rate change and a resync each set a bit that takt4 reads and clears
 #      (PaAsio_Takt4_TakeDriverEvents) and answers by reopening the stream. Upstream
 #      acknowledges all four and does nothing ("FIXME … ticket #108"; #472, PR #519).
+#   4. A process with TAKT4_NO_ASIO in its environment **gets no ASIO host at all**. The test
+#      binaries set it (tests/support/crt_dialogs.cpp) unless TAKT4_TEST_HARDWARE is set:
+#      every window test builds a real tracker, a tracker enumerates the devices, and
+#      enumerating ASIO loads and initialises every installed driver — sixty times over, on the
+#      machine a show may be running from (the audit's T2).
 #
 # Written like the asiolist.cpp patch in asiosdk.cmake: the vendored file is never touched,
 # the patched copy goes to the build tree, and every edit is an exact-text replacement that
@@ -137,6 +142,22 @@ extern \"C\" void PaAsio_Takt4_ForgetClockedRate( void )
     takt4_clockedRate_ = 0.;
 }
 ")
+
+takt4_patch_pa_asio("no ASIO in a test process"
+"PaError PaAsio_Initialize( PaUtilHostApiRepresentation **hostApi, PaHostApiIndex hostApiIndex )
+{
+    PaError result = paNoError;"
+"PaError PaAsio_Initialize( PaUtilHostApiRepresentation **hostApi, PaHostApiIndex hostApiIndex )
+{
+    /* takt4 (cmake/pa_asio_patch.cmake): a process that asks for no ASIO gets none. The test
+       binaries ask, unless they are run against the rig on purpose (tests/support/
+       crt_dialogs.cpp). A null host API is one PortAudio skips. */
+    if( GetEnvironmentVariableA( \"TAKT4_NO_ASIO\", NULL, 0 ) != 0 )
+    {
+        *hostApi = NULL;
+        return paNoError;
+    }
+    PaError result = paNoError;")
 
 # Only rewrite when the content changes, so a reconfigure does not force a rebuild.
 set(pa_asio_existing "")

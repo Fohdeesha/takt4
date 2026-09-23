@@ -4,8 +4,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -163,9 +165,16 @@ TEST_CASE("truncating a real message at any length never reads past the end", "[
     const std::vector<std::byte> whole(full.begin(), full.end());
     REQUIRE(whole.size() > 16);
 
+    // **Each prefix in an allocation of exactly its own length.** Sliced out of `whole`, a
+    // read one byte past the end of a prefix is still inside `whole`, so no sanitizer can see
+    // it — which made the "never reads past the end" of this test's name a claim nothing
+    // checked (the audit's T1). A heap block of `length` bytes puts ASan's redzone straight
+    // after the last one.
     std::size_t parsed = 0;
     for (std::size_t length = 0; length < whole.size(); ++length) {
-        const auto view = parseOsc(std::span<const std::byte>(whole.data(), length));
+        const std::unique_ptr<std::byte[]> prefix(new std::byte[length == 0 ? 1 : length]);
+        std::copy_n(whole.begin(), length, prefix.get());
+        const auto view = parseOsc(std::span<const std::byte>(prefix.get(), length));
         if (view) {
             ++parsed;
             // Anything that did parse has to be self-consistent.

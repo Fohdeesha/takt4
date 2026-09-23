@@ -9,10 +9,14 @@
 #include "core/tracking/state_space.hpp"
 
 #include "support/recording_rules.hpp"
+#include "support/tap_rhythm.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -21,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+using Catch::Approx;
 using Catch::Matchers::WithinAbs;
 using takt4::control::ControlAction;
 using takt4::control::MidiBinding;
@@ -298,7 +303,11 @@ TEST_CASE("a rule control that is not there refuses rather than swallows", "[con
     CHECK(rules.panics() == std::vector<bool>{true});
 }
 
-TEST_CASE("three taps on a pad make a tempo", "[control][midi]") {
+TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[control][midi]") {
+    // This used to stop at "handled", which is how a pad that tapped twice per press went
+    // unseen (the audit's H1 and T1). A rhythm played in real time, every press retriggering
+    // 5 ms later the way a worn pad does, and where the tracker's tempo window ends up: centred
+    // on the tempo tapped (a seed, §7) — which, without the bounce guard, it is not.
     auto engine = makeEngine();
     MidiControl control(*engine, offline());
 
@@ -307,14 +316,20 @@ TEST_CASE("three taps on a pad make a tempo", "[control][midi]") {
     tap.target = ControlAction::Tap;
     REQUIRE(control.bind(tap));
 
-    // The first two say nothing, which is not the same as failing: the control was
-    // understood either way, so all three count as handled.
-    CHECK(control.dispatch(note(36)));
-    CHECK(control.dispatch(note(36)));
-    CHECK(control.dispatch(note(36)));
-    CHECK(control.handled() == 3);
+    const takt4::testing::TappedRhythm rhythm = takt4::testing::tapWithBounces(
+        [&control] { CHECK(control.dispatch(note(36))); }, 3, std::chrono::milliseconds{400});
+    const double heard = rhythm.tempoOfThree();
+    INFO("tapped at " << heard << " BPM; the slowest bounce came " << rhythm.longestBounce()
+                      << " s after its press");
+    REQUIRE(rhythm.longestBounce() < 0.1);
+    REQUIRE(heard == Approx(150.0).margin(8.0));
+
+    // Every press was understood, the bounces included: a bounce is ignored, not refused.
+    CHECK(control.handled() == 6);
     (void)engine->step();
     CHECK(engine->commandsDropped() == 0);
+    const auto window = engine->tempoOptions();
+    CHECK(std::sqrt(window.minBpm * window.maxBpm) == Approx(heard).margin(0.5));
 }
 
 TEST_CASE("the binding table is restored the way it was saved", "[control][midi]") {

@@ -407,6 +407,8 @@ TEST_CASE("start() clears everything and reseeds the filter", "[engine]") {
 
     const std::vector<std::uint32_t> first = runOnce();
     REQUIRE(first.size() == hops - 1);
+    const auto beatsFirst = engine->state().beats;
+    REQUIRE(beatsFirst > 0);
 
     // Without a reset the second run would start with the filter and the model where the
     // first left them, and a stream stopped and started would not be the same tracker.
@@ -414,7 +416,9 @@ TEST_CASE("start() clears everything and reseeds the filter", "[engine]") {
     engine->stop();
     const std::vector<std::uint32_t> second = runOnce();
     CHECK(second == first);
-    CHECK(engine->state().beats == 0 + engine->state().beats); // state is live, not stale
+    // And the state a reader sees is the second run's, counted from nothing again: a count
+    // carried over from the first run would read twice as many beats.
+    CHECK(engine->state().beats == beatsFirst);
 }
 
 TEST_CASE("a consumer that never drains loses frames instead of blocking", "[engine]") {

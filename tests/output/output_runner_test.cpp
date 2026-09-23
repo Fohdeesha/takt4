@@ -242,7 +242,7 @@ TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
     CHECK(running.running());
 }
 
-TEST_CASE("a change posted while stopped applies at once", "[output]") {
+TEST_CASE("a change posted while stopped applies at once", "[output][network]") {
     // An app is configured before it is started, and an operator ticking Link with nothing
     // running should not have to press Start to find out whether it took.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
@@ -251,12 +251,12 @@ TEST_CASE("a change posted while stopped applies at once", "[output]") {
 
     runner.post(takt4::output::OutputCommand::linkEnabled(true));
     CHECK(runner.transports().linkEnabled());
-    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 7000}}));
+    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 57000}}));
     CHECK(runner.transports().osc().targetCount() == 1);
     CHECK(runner.lastError().empty());
 }
 
-TEST_CASE("a change posted while running reaches the transports", "[output]") {
+TEST_CASE("a change posted while running reaches the transports", "[output][network]") {
     // The other half: the output thread owns them once it is going, so the change has to
     // travel rather than be made by the caller.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
@@ -265,7 +265,7 @@ TEST_CASE("a change posted while running reaches the transports", "[output]") {
     REQUIRE_FALSE(runner.transports().linkEnabled());
 
     runner.post(takt4::output::OutputCommand::linkEnabled(true));
-    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 7000}}));
+    runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 57000}}));
 
     // The thread applies them at the top of a round, so within a period or two.
     //
@@ -289,7 +289,7 @@ TEST_CASE("a change posted while running reaches the transports", "[output]") {
     runner.stop();
 }
 
-TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output]") {
+TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output][network]") {
     // `transports()` hands back references the output thread replaces whole — a vector of
     // targets, an optional port — so a reader at redraw rate races with a freed buffer
     // rather than merely with a stale number. `snapshot()` is taken under a lock, and is
@@ -306,7 +306,7 @@ TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output]") {
     takt4::output::OutputTarget deck;
     deck.name = "deck";
     deck.host = "127.0.0.1";
-    deck.port = 7000;
+    deck.port = 57000;
     runner.post(OutputCommand::outputs({deck}));
     runner.post(OutputCommand::linkEnabled(true));
 
@@ -354,8 +354,9 @@ TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "
     CHECK_FALSE(runner.lastError().empty());
     CHECK(runner.transports().midiClock() == nullptr);
 
-    // And a change that works clears it again.
-    runner.post(takt4::output::OutputCommand::linkEnabled(true));
+    // And a change that works clears it again. (Any change: this one used to be switching
+    // Link on, which joined the real session on whatever network the suite ran on.)
+    runner.post(takt4::output::OutputCommand::oscTargets({}));
     CHECK(runner.lastError().empty());
 }
 
@@ -516,12 +517,46 @@ TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
     CHECK(runner.errors() == 0);
 }
 
+namespace {
+
+/// A MIDI port that keeps every message it is sent, whole.
+class KeepingPort final : public takt4::output::MidiPort {
+public:
+    explicit KeepingPort(std::shared_ptr<std::vector<std::vector<unsigned char>>> sent)
+        : sent_(std::move(sent)) {}
+    std::string open(std::string_view spec) override { return std::string(spec); }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char> message) override {
+        sent_->emplace_back(message.begin(), message.end());
+    }
+
+private:
+    std::shared_ptr<std::vector<std::vector<unsigned char>>> sent_;
+};
+
+} // namespace
+
 TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
     // A note on whose note off has not yet come round is a laser still lit, and an operator
     // pressing Stop has said the opposite. `TriggerEngine::flushFollowUps` on the way down —
     // the same argument `panic` and `setRules` already make.
+    //
+    // **To a port, not only to the log.** This test used to have no outputs at all and read
+    // the runner's record of what it fired, which says the release was *owed* and nothing
+    // about whether it left — and leaving is what the audit's H6 found it did not do (T1).
+    auto sent = std::make_shared<std::vector<std::vector<unsigned char>>>();
+    Transports::Config config;
+    takt4::output::OutputTarget desk;
+    desk.id = "o-0000a5e7";
+    desk.name = "laser desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "Laser";
+    config.outputs = {desk};
+    config.openMidi = [sent](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<KeepingPort>(sent));
+    };
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
-    OutputRunner runner(*engine, Transports::Config{});
+    OutputRunner runner(*engine, config);
 
     Rule::Config rule;
     rule.id = "laser";
@@ -564,6 +599,10 @@ TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
     // ignores. See `trigger::Message::Kind`.
     CHECK(owed[0].message == "note off 60 ch 1");
     CHECK(runner.triggers().pending() == 0);
+
+    // And on the cable: the Note On, then its Note Off, and nothing left owing.
+    const std::vector<std::vector<unsigned char>> want{{0x90, 60, 100}, {0x80, 60, 0}};
+    CHECK(*sent == want);
 }
 
 TEST_CASE("panic reaches the rules through the same queue as everything else",
@@ -735,7 +774,7 @@ TEST_CASE("a target list that would not open still moves the routing with it",
     wall.id = "o-000000aa";
     wall.name = "wall";
     wall.host = "127.0.0.1";
-    wall.port = 7000;
+    wall.port = 57000;
 
     Transports::Config config;
     config.outputs = {wall};

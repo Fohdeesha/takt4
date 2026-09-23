@@ -96,7 +96,16 @@ target_link_libraries(takt4_tests
 takt4_enable_rt_guard(takt4_tests ALWAYS)
 
 include(Catch)
-catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST)
+# Tags as ctest labels, so the default test presets can leave out what touches the rig —
+# [network] (Link, real sockets on well-known ports) and [hardware] (the audio interface and MIDI
+# devices themselves). The `-all` presets run everything. See the audit's T2.
+#
+# And a timeout, so a test that hangs fails instead of holding ctest until somebody notices.
+# The slowest test measured was 37 s under ASan with four running at once; 300 s is eight times
+# that.
+set(TAKT4_TEST_TIMEOUT 300)
+catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
+                     PROPERTIES TIMEOUT ${TAKT4_TEST_TIMEOUT})
 
 # ---------------------------------------------------------------------------------------
 # takt4_ui_tests — the window, under Slint's testing backend.
@@ -139,5 +148,6 @@ if(TAKT4_BUILD_UI)
       takt4::warnings
   )
 
-  catch_discover_tests(takt4_ui_tests DISCOVERY_MODE PRE_TEST)
+  catch_discover_tests(takt4_ui_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
+                       PROPERTIES TIMEOUT ${TAKT4_TEST_TIMEOUT})
 endif()

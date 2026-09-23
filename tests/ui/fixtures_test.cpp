@@ -1,9 +1,15 @@
-// The lighting half of §5.9's editing, driven the way an operator drives it.
+// The lighting half of §5.9's editing.
 //
 // The engine tests say what a fade does; these say that a fade can be *built* — that patching
-// a moving head and aiming a rule at it is a sequence of clicks, and that what the clicks
+// a moving head and aiming a rule at it is a sequence of window callbacks, and that what they
 // produce is the configuration the engine was tested against. That pairing is the whole point
 // of a controller test: neither half on its own says the app works.
+//
+// **A callback is not a click.** The two long tests below invoke the window's own callbacks,
+// which proves the wiring from the markup's callback to the controller and nothing about the
+// markup itself — they used to be called "by clicking" and called the controller's methods
+// directly (the audit's T1). What is proved by real pointer and key events is at the bottom
+// of the file: the list's buttons, the name box, a channel's dropdown.
 
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/fixture.hpp"
@@ -19,6 +25,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <slint-platform.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -88,40 +95,41 @@ int effectIndexOf(takt4::dmx::EffectKind kind) {
 
 } // namespace
 
-TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
+TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     Rig rig;
     FixturesController patch(rig.runner, {});
     REQUIRE(patch.fixtures().empty());
+    auto& window = patch.window();
 
     // 1. A fixture, which arrives usable rather than blank — an RGB par at universe 0
     //    channel 1, which is what a rig with nothing on it should get.
-    patch.add();
+    window.invoke_added();
     REQUIRE(patch.fixtures().size() == 1);
     CHECK(patch.selected() == 0);
     CHECK(takt4::dmx::problemWith(patch.fixtures()[0]).empty());
 
     // 2. Named, grouped, and told where it is.
-    patch.rename("wash L");
-    patch.setGroup("washes");
-    patch.setAddress(1);
+    window.invoke_name_edited("wash L");
+    window.invoke_group_edited("washes");
+    window.invoke_address_changed(1);
     CHECK(patch.fixtures()[0].name == "wash L");
     CHECK(patch.fixtures()[0].group == "washes");
 
     // 3. A second one, which lands *after* the first rather than on top of it. That is the
     //    arithmetic an operator would otherwise do by hand for every fixture in a row.
-    patch.add();
+    window.invoke_added();
     REQUIRE(patch.fixtures().size() == 2);
     CHECK(patch.fixtures()[1].address == 4); // the par occupies 1-3
-    patch.rename("wash R");
-    patch.setGroup("washes");
+    window.invoke_name_edited("wash R");
+    window.invoke_group_edited("washes");
 
     // 4. And a moving head, which is a different shape — picked from the mode list rather
     //    than assembled a channel at a time.
-    patch.add();
-    patch.rename("head 1");
-    patch.setGroup("heads");
-    patch.setAddress(11);
-    patch.pickMode(modeIndexOf("moving head 16-bit (12ch)"));
+    window.invoke_added();
+    window.invoke_name_edited("head 1");
+    window.invoke_group_edited("heads");
+    window.invoke_address_changed(11);
+    window.invoke_mode_picked(modeIndexOf("moving head 16-bit (12ch)"));
 
     const Fixture& head = patch.fixtures()[2];
     CHECK(head.channels.size() == 12);
@@ -134,7 +142,7 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
 
     SECTION("picking a mode keeps everything the operator decided") {
         // "This fixture is shaped like that", not "start again".
-        patch.pickMode(modeIndexOf("RGB (3ch)"));
+        window.invoke_mode_picked(modeIndexOf("RGB (3ch)"));
         CHECK(patch.fixtures()[2].name == "head 1");
         CHECK(patch.fixtures()[2].group == "heads");
         CHECK(patch.fixtures()[2].address == 11);
@@ -142,8 +150,8 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
     }
 
     SECTION("the movement window is set from the stage, in percentages") {
-        patch.setPanRange(20, 80);
-        patch.setTiltRange(70, 45); // dragged past each other, which is an ordinary gesture
+        window.invoke_pan_range_changed(20, 80);
+        window.invoke_tilt_range_changed(70, 45); // dragged past each other, an ordinary gesture
         CHECK(patch.fixtures()[2].panMin == 0.2);
         CHECK(patch.fixtures()[2].panMax == 0.8);
         // Sorted rather than refused: the two sliders are independent.
@@ -152,11 +160,11 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
     }
 
     SECTION("a channel map can be edited one channel at a time") {
-        patch.pickChannelRole(4, roleIndexOf(Role::Unused)); // the head's speed channel
+        window.invoke_channel_role_picked(4, roleIndexOf(Role::Unused)); // the speed channel
         CHECK(patch.fixtures()[2].channels[4] == Role::Unused);
-        patch.setChannelParked(4, 200);
+        window.invoke_channel_parked_changed(4, 200);
         CHECK(patch.fixtures()[2].parked[4] == 200);
-        patch.removeChannel(11);
+        window.invoke_channel_removed(11);
         CHECK(patch.fixtures()[2].channels.size() == 11);
         // The parked levels stay the same length as the map, or a fixture patched later
         // would take its levels from the wrong channels.
@@ -164,17 +172,17 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
     }
 
     SECTION("a universe that is not one is refused rather than written half-typed") {
-        patch.setUniverse("4");
+        window.invoke_universe_edited("4");
         CHECK(patch.fixtures()[2].universe == 4);
-        patch.setUniverse("not a universe");
+        window.invoke_universe_edited("not a universe");
         CHECK(patch.fixtures()[2].universe == 4); // unchanged, not zeroed on the way past
-        patch.setUniverse("1:2:3");
+        window.invoke_universe_edited("1:2:3");
         CHECK(patch.fixtures()[2].universe == 0x123);
     }
 
     SECTION("a duplicate lands after the fixture it came from, with a name of its own") {
-        patch.pick(0);
-        patch.duplicate();
+        window.invoke_picked(0);
+        window.invoke_duplicated();
         REQUIRE(patch.fixtures().size() == 4);
         CHECK(patch.fixtures()[1].name != "wash L");
         CHECK(patch.fixtures()[1].address == 4); // straight after the par at 1-3
@@ -189,8 +197,8 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
         // at a fixture by name stopped reaching it the moment it was renamed.
         const std::string id = patch.fixtures()[0].id;
         REQUIRE_FALSE(id.empty());
-        patch.pick(0);
-        patch.rename("front wash");
+        window.invoke_picked(0);
+        window.invoke_name_edited("front wash");
         CHECK(patch.fixtures()[0].id == id);
         CHECK(takt4::dmx::resolveFixtures(patch.fixtures(), {id}) == 0b001);
     }
@@ -207,7 +215,8 @@ TEST_CASE("a rig is patched by clicking", "[ui][dmx]") {
     }
 }
 
-TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") {
+TEST_CASE("a lighting rule is built through the window's callbacks, against a patch",
+          "[ui][dmx]") {
     Rig rig;
     FixturesController patch(rig.runner, {});
     patch.add();
@@ -222,32 +231,33 @@ TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") 
 
     RulesController editor(rig.runner, {});
     editor.setPatch(patch.fixtures());
+    auto& rules = editor.window();
 
     // 1. A rule, on every fourth bar.
-    editor.add();
-    editor.rename("Heads move on the phrase");
-    editor.pickTrigger(1); // bars
-    editor.setEvery(4);
+    rules.invoke_rule_added();
+    rules.invoke_rule_renamed("Heads move on the phrase");
+    rules.invoke_trigger_picked(1); // bars
+    rules.invoke_every_changed(4);
 
     // 2. Sending DMX, which is the last entry of the send list.
     const int dmxSend = static_cast<int>(takt4::trigger::kMessageKinds.size()) - 1;
     REQUIRE(takt4::trigger::kMessageKinds[static_cast<std::size_t>(dmxSend)] ==
             takt4::trigger::Message::Kind::Dmx);
-    editor.pickSend(dmxSend);
+    rules.invoke_send_picked(dmxSend);
 
     // 3. Aimed at a *group*, which is one tick rather than one per head.
-    editor.setFixtureChosen("heads", true);
+    rules.invoke_fixture_chosen("heads", true);
 
     // 4. A random position over a bar.
-    editor.pickEffect(effectIndexOf(takt4::dmx::EffectKind::Position));
-    editor.pickDurationUnit(2); // bars
-    editor.setDuration("1");
+    rules.invoke_effect_picked(effectIndexOf(takt4::dmx::EffectKind::Position));
+    rules.invoke_effect_unit_picked(2); // bars
+    rules.invoke_effect_duration_edited("1");
     // Pan drawn at random across the window the patch allows; tilt held.
-    editor.pickSlotKind(0, 1); // random — `kGeneratorKinds[1]`
+    rules.invoke_slot_kind_picked(0, 1); // random — `kGeneratorKinds[1]`
     REQUIRE(takt4::trigger::kGeneratorKinds[1] == takt4::trigger::GeneratorKind::Random);
-    editor.setSlotRange(0, "0 - 100");
-    editor.pickSlotKind(1, 4); // fixed
-    editor.setSlotFixed(1, "40");
+    rules.invoke_slot_range_edited(0, "0 - 100");
+    rules.invoke_slot_kind_picked(1, 4); // fixed
+    rules.invoke_slot_fixed_edited(1, "40");
 
     const Rule::Config& built = editor.rules().front();
     CHECK(built.sendKind == takt4::trigger::Message::Kind::Dmx);
@@ -270,7 +280,7 @@ TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") 
     }
 
     SECTION("a rule that names nothing says so rather than reaching everything") {
-        editor.chooseNoFixtures();
+        rules.invoke_no_fixtures_chosen();
         const Rule rule(editor.rules().front());
         CHECK_FALSE(rule.valid());
         CHECK(rule.problem().find("fixture") != std::string::npos);
@@ -280,9 +290,9 @@ TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") 
         // A position has pan and tilt; a fade has a level. Switching between them must not
         // leave a pan box bound to the level it used to be — which is what the rebuild in
         // `publishSlots` is for, and what this checks from the outside.
-        editor.pickEffect(effectIndexOf(takt4::dmx::EffectKind::Level));
-        editor.pickRole(0); // dimmer
-        editor.setSlotFixed(0, "200");
+        rules.invoke_effect_picked(effectIndexOf(takt4::dmx::EffectKind::Level));
+        rules.invoke_effect_role_picked(0); // dimmer
+        rules.invoke_slot_fixed_edited(0, "200");
         CHECK(editor.rules().front().dmx.level.fixed.asInt() == 200);
         // The pan generator the operator set earlier is untouched, so switching back brings
         // it with them rather than making them type it again.
@@ -290,9 +300,9 @@ TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") 
     }
 
     SECTION("a color palette is a list on the color slot, and nothing more") {
-        editor.pickEffect(effectIndexOf(takt4::dmx::EffectKind::Color));
-        editor.pickSlotKind(0, 0); // shuffle — the default, and the first of the kinds
-        editor.setSlotValues(0, "#ff2040, #20ff80, #2040ff");
+        rules.invoke_effect_picked(effectIndexOf(takt4::dmx::EffectKind::Color));
+        rules.invoke_slot_kind_picked(0, 0); // shuffle — the default, and the first of the kinds
+        rules.invoke_slot_values_edited(0, "#ff2040, #20ff80, #2040ff");
         const takt4::trigger::Generator::Config& color = editor.rules().front().dmx.color;
         CHECK(color.kind == takt4::trigger::GeneratorKind::Shuffle);
         CHECK(color.pool == takt4::trigger::Pool::List);
@@ -304,11 +314,11 @@ TEST_CASE("a lighting rule is built by clicking, against a patch", "[ui][dmx]") 
         // The operator's own first example: fade up on the downbeat, fade down two bars
         // later. The *delay* is when it starts and the *duration* is how long it runs, and
         // they are different numbers on the same row.
-        editor.pickEffect(effectIndexOf(takt4::dmx::EffectKind::Level));
-        editor.addFollowUp();
+        rules.invoke_effect_picked(effectIndexOf(takt4::dmx::EffectKind::Level));
+        rules.invoke_follow_up_added();
         REQUIRE(editor.rules().front().followUps.size() == 1);
-        editor.pickFollowUnit(0, 2); // bars
-        editor.setFollowDelay(0, "2");
+        rules.invoke_follow_unit_picked(0, 2); // bars
+        rules.invoke_follow_delay_edited(0, "2");
         CHECK(editor.rules().front().followUps[0].delayBeats == 2.0);
         CHECK(editor.rules().front().followUps[0].unit == takt4::trigger::DelayUnit::Bars);
     }
@@ -517,4 +527,91 @@ TEST_CASE("a channel's role follows a new mode after it was picked by hand", "[u
     // One more step from what the dropdown now shows: from dimmer, not from the pick before.
     stepDropdown(window, kDoesColumn, found);
     CHECK(patch.fixtures()[0].channels[0] == takt4::dmx::kRoles[static_cast<std::size_t>(roleIndexOf(Role::Dimmer)) + 1]);
+}
+
+TEST_CASE("the list's ADD, COPY and DELETE buttons do what they say when clicked", "[ui][dmx]") {
+    // The audit's T1: the patching test above said "by clicking" and called the controller.
+    // These are the three buttons under the list, pressed with the pointer.
+    //
+    // Every click is judged by what it did to the patch, with the selection put back on the
+    // moving head before the next one, so the three cannot be mistaken for each other or for a
+    // miss: ADD puts a three-channel par at the end, COPY puts a second head straight after the
+    // first, and DELETE takes the head away.
+    Rig rig;
+    const auto headMode = static_cast<std::size_t>(modeIndexOf("moving head 16-bit (12ch)") - 1);
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("head", headMode, 0, 1)});
+    REQUIRE(patch.fixtures()[0].channels.size() == 12);
+    const std::string headId = patch.fixtures()[0].id;
+    REQUIRE_FALSE(headId.empty());
+    patch.show();
+    auto& window = patch.window().window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+    window.dispatch_window_active_changed_event(true);
+    patch.tick();
+    slint::platform::update_timers_and_animations();
+
+    const auto headAt = [&patch, &headId] {
+        const std::vector<Fixture>& now = patch.fixtures();
+        for (std::size_t i = 0; i < now.size(); ++i) {
+            if (now[i].id == headId) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    };
+
+    bool added = false;
+    bool copied = false;
+    bool deleted = false;
+    std::string misread;
+    // The buttons are the bottom row of the list column; swept from the bottom up, so the row
+    // is met before anything the clicks have added to the list above it.
+    for (float y = 790.0f; y > 400.0f && !deleted; y -= 6.0f) {
+        for (float x = 16.0f; x < 330.0f && !deleted; x += 12.0f) {
+            const int head = headAt();
+            patch.pick(head);
+            patch.tick();
+            slint::platform::update_timers_and_animations();
+            const std::vector<Fixture> before = patch.fixtures();
+
+            clickAt(window, x, y);
+            patch.tick();
+            slint::platform::update_timers_and_animations();
+
+            const std::vector<Fixture>& now = patch.fixtures();
+            if (now.size() == before.size() + 1) {
+                // The new one is the fixture whose id was not there before.
+                std::size_t fresh = now.size();
+                for (std::size_t i = 0; i < now.size() && fresh == now.size(); ++i) {
+                    const bool known = std::any_of(before.begin(), before.end(), [&](const Fixture& f) {
+                        return f.id == now[i].id;
+                    });
+                    if (!known) {
+                        fresh = i;
+                    }
+                }
+                const bool headStayed = headAt() == head;
+                if (headStayed && fresh + 1 == now.size() && now[fresh].channels.size() == 3) {
+                    added = true;
+                } else if (headStayed && fresh == static_cast<std::size_t>(head) + 1 &&
+                           now[fresh].channels.size() == 12) {
+                    copied = true;
+                } else {
+                    misread = "a click added a fixture that was neither a par nor a copy";
+                }
+            } else if (now.size() + 1 == before.size()) {
+                if (headAt() < 0) {
+                    deleted = true;
+                } else {
+                    misread = "a click removed a fixture other than the selected one";
+                }
+            }
+        }
+    }
+    INFO(misread);
+    CHECK(misread.empty());
+    CHECK(added);
+    CHECK(copied);
+    CHECK(deleted);
 }

@@ -10,11 +10,14 @@
 #include "core/tracking/state_space.hpp"
 
 #include "support/recording_rules.hpp"
+#include "support/tap_rhythm.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -26,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+using Catch::Approx;
 using Catch::Matchers::WithinAbs;
 using takt4::control::OscControl;
 using takt4::control::OscReceiver;
@@ -102,13 +106,45 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
     CHECK(control.dispatch("/takt4/ctl/downbeat", std::nullopt));
     (void)engine->step();
 
-    // Three taps make a tempo. The first two say nothing, which is not the same as
-    // failing: the address was understood either way.
+    // Three taps at machine speed are one tap and two bounces, which is no tempo at all —
+    // where they used to be thousands of BPM (the audit's H1). The address was understood
+    // each time, which is not the same as acting on it. "taps over OSC make the tempo they
+    // were tapped at" is the rhythm a hand gives.
+    const auto before = engine->tempoOptions();
     CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt));
     CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt));
     CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt));
     (void)engine->step();
     CHECK(engine->commandsDropped() == 0);
+    // A tap tempo moves the tempo window onto itself; nothing moved it.
+    CHECK_THAT(engine->tempoOptions().minBpm, WithinAbs(before.minBpm, 1e-9));
+    CHECK_THAT(engine->tempoOptions().maxBpm, WithinAbs(before.maxBpm, 1e-9));
+}
+
+TEST_CASE("taps over OSC make the tempo they were tapped at", "[control]") {
+    // The tap tests above used to stop at "the address was understood", which is how a tap
+    // button that tapped twice per press went unseen (the audit's H1 and T1). So: a rhythm
+    // played in real time, from a TouchOSC button that chatters — every press followed 5 ms
+    // later by a second — and where the tracker's tempo window ends up. A tap is a seed, not
+    // an override (§7): it centres the window on the tempo tapped, an octave wide, and the
+    // decoder weighs that as evidence. Without the bounce guard the chatter halves the median
+    // gap, and the window is centred on twice the tempo tapped, or not moved at all.
+    auto engine = makeEngine();
+    OscControl control(*engine, localConfig(kAnyPort));
+
+    const takt4::testing::TappedRhythm rhythm = takt4::testing::tapWithBounces(
+        [&control] { CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt)); }, 3,
+        std::chrono::milliseconds{400});
+    const double heard = rhythm.tempoOfThree();
+    INFO("tapped at " << heard << " BPM; the slowest bounce came " << rhythm.longestBounce()
+                      << " s after its press");
+    REQUIRE(rhythm.longestBounce() < 0.1);
+    REQUIRE(heard == Approx(150.0).margin(8.0)); // the sleeps did roughly what was asked
+
+    (void)engine->step();
+    CHECK(engine->commandsDropped() == 0);
+    const auto window = engine->tempoOptions();
+    CHECK(std::sqrt(window.minBpm * window.maxBpm) == Approx(heard).margin(0.5));
 }
 
 TEST_CASE("an address for another app is not ours to act on", "[control]") {
