@@ -45,7 +45,11 @@ std::vector<Frame> featureFrames(const std::filesystem::path& path) {
 }
 
 std::vector<std::string> weightSets() {
-    return {"generic", "generic-main", "af-non-percussive"};
+    // `electronic` is the set the app ships by default, fine-tuned from `generic`; its traces
+    // come from the checkpoint it was converted from (tools/model_reference.py --checkpoint),
+    // which the script checks against assets/weights/electronic.json to the byte (the audit's
+    // T3: until then no test ran the shipped weights against PyTorch at all).
+    return {"generic", "generic-main", "af-non-percussive", "electronic"};
 }
 
 std::vector<std::filesystem::path> referenceTraces(const std::string& set) {
@@ -72,9 +76,9 @@ std::vector<std::filesystem::path> referenceTraces(const std::string& set) {
 // regression shows up in the feature test rather than muddying this one.
 TEST_CASE("the C++ model matches PyTorch on every golden excerpt", "[model][golden]") {
     // Measured first, then set above what was measured, the way the feature tolerance
-    // was. On MSVC 2022 x64, Release, across all 54 excerpt-and-weight-set pairs: the
+    // was. On MSVC 2022 x64, Release, across all 72 excerpt-and-weight-set pairs: the
     // largest logit difference is 1.29e-5 and the largest probability difference
-    // 3.58e-6. For scale, PyTorch's own frame-by-frame and whole-sequence runs of the
+    // 3.58e-6 (both `af-non-percussive`; the shipped `electronic`, 5.48e-6 and 1.49e-6). For scale, PyTorch's own frame-by-frame and whole-sequence runs of the
     // same weights differ by up to 7.3e-6 (tests/data/model/*.json), so this is within
     // a factor of two of what float32 reordering costs PyTorch itself, and there is
     // nothing left to chase below it. The margin is for the other two compilers.

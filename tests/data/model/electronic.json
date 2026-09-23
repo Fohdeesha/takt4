@@ -1,0 +1,212 @@
+{
+  "weights": "electronic",
+  "use_case": "the operator's library: electronic music at 85-140 BPM, breakbeat, electro, IDM, house; drum and bass at half time",
+  "source": "soup-48-80.pt",
+  "source_sha256": "de0f3bf2cc01d97fa1bffd7fa8fcf1363d31e24d6f53ed4e259bec8b036f7f06",
+  "upstream_commit": "bb90eb0a9065b101a4b4c4cb2b2061950266cb4b",
+  "input": "tests/data/features/<name>.npy, madmom's features for the same excerpt",
+  "columns": "0..2 logits (beat, downbeat, non-beat), 3..5 softmax of them",
+  "worst_streaming_vs_sequence": 3.576e-06,
+  "torch": "2.14.0+cu130",
+  "numpy": "2.5.2",
+  "excerpts": {
+    "big-brown-beaver": {
+      "frames": 500,
+      "sha256": "fb8f2cde20caf1cd2a6641a3c2e45942414cad09fc3c83cacbee87413679b0ad",
+      "logit_range": [
+        -4.0425,
+        6.2484
+      ],
+      "max_beat_probability": 0.9806,
+      "max_downbeat_probability": 0.9327,
+      "streaming_vs_sequence": 3.338e-06
+    },
+    "complicated-geometry": {
+      "frames": 500,
+      "sha256": "6aac22eb0af9d8aa1c5c183c7f52026d4427988bcbb7b5aaa8b24de3d616e97f",
+      "logit_range": [
+        -3.6301,
+        5.939
+      ],
+      "max_beat_probability": 0.7719,
+      "max_downbeat_probability": 0.9403,
+      "streaming_vs_sequence": 2.265e-06
+    },
+    "good-times": {
+      "frames": 500,
+      "sha256": "bbc11bc3e643cacb32c2adf9cad128fb4217299b32bdd79b551a6db39fd44962",
+      "logit_range": [
+        -5.3143,
+        7.6741
+      ],
+      "max_beat_probability": 0.9923,
+      "max_downbeat_probability": 0.9988,
+      "streaming_vs_sequence": 2.384e-06
+    },
+    "hell-of-a-ride": {
+      "frames": 500,
+      "sha256": "c27e4a7c2e2e556934611a08e0ec702b3ab3c1b29bf7ac8b291eb652f4fbc7ee",
+      "logit_range": [
+        -3.9761,
+        6.062
+      ],
+      "max_beat_probability": 0.9563,
+      "max_downbeat_probability": 0.9763,
+      "streaming_vs_sequence": 2.384e-06
+    },
+    "in-yer-face": {
+      "frames": 500,
+      "sha256": "d0fb8e0aad2eb7f371da51e750bc082caa72a5bea7a323da988cce0f98929220",
+      "logit_range": [
+        -4.9096,
+        6.5271
+      ],
+      "max_beat_probability": 0.9846,
+      "max_downbeat_probability": 0.9949,
+      "streaming_vs_sequence": 2.861e-06
+    },
+    "jack-yourself": {
+      "frames": 500,
+      "sha256": "fcce66a1f823deaa12bc241fd5c2c705accbd99d044cef49bd6d1eef35718ba6",
+      "logit_range": [
+        -3.6245,
+        6.4565
+      ],
+      "max_beat_probability": 0.9421,
+      "max_downbeat_probability": 0.9384,
+      "streaming_vs_sequence": 2.861e-06
+    },
+    "keman-rhythm": {
+      "frames": 500,
+      "sha256": "94dcc1d43b41b919b20db3f34f181c9bd6d96d702d02cb8d2542127fa06ee197",
+      "logit_range": [
+        -3.4546,
+        4.9395
+      ],
+      "max_beat_probability": 0.9162,
+      "max_downbeat_probability": 0.8831,
+      "streaming_vs_sequence": 2.146e-06
+    },
+    "model-2029": {
+      "frames": 500,
+      "sha256": "5f78060f9d24e81e47dbff4a0d430a3a8c09fe4653a4d8bfa882736095179966",
+      "logit_range": [
+        -4.4412,
+        7.1864
+      ],
+      "max_beat_probability": 0.9848,
+      "max_downbeat_probability": 0.9742,
+      "streaming_vs_sequence": 3.576e-06
+    },
+    "outside-plume": {
+      "frames": 500,
+      "sha256": "414c08003cdd0460b6686962f3390656669a6272d6e089646dd1beef84beb9ea",
+      "logit_range": [
+        -3.733,
+        5.6258
+      ],
+      "max_beat_probability": 0.9806,
+      "max_downbeat_probability": 0.9929,
+      "streaming_vs_sequence": 3.457e-06
+    },
+    "pirates": {
+      "frames": 500,
+      "sha256": "857f2cd76154bcc74f56172d95e49e204ea21a33f6de82485ad0b6446ad97d70",
+      "logit_range": [
+        -4.7765,
+        7.8572
+      ],
+      "max_beat_probability": 0.9905,
+      "max_downbeat_probability": 0.9961,
+      "streaming_vs_sequence": 3.338e-06
+    },
+    "rale": {
+      "frames": 500,
+      "sha256": "e9e3222600ab77958cd62aad34996a6b45ad03b12b80ff66aa0c0b924e7be339",
+      "logit_range": [
+        -4.7537,
+        7.1245
+      ],
+      "max_beat_probability": 0.9964,
+      "max_downbeat_probability": 0.995,
+      "streaming_vs_sequence": 2.772e-06
+    },
+    "synthetic": {
+      "frames": 500,
+      "sha256": "989fbcf0584c9d3f93a171de8c4a16b72aacbd4ff85ed2577d9a5df376963277",
+      "logit_range": [
+        -3.9432,
+        6.2728
+      ],
+      "max_beat_probability": 0.9911,
+      "max_downbeat_probability": 0.9663,
+      "streaming_vs_sequence": 2.384e-06
+    },
+    "the-galaxist": {
+      "frames": 500,
+      "sha256": "c692d2d59e954ad825e92fdcc2dcccfb392197283f24ba7f01f6be0f87840410",
+      "logit_range": [
+        -3.7533,
+        5.6972
+      ],
+      "max_beat_probability": 0.9655,
+      "max_downbeat_probability": 0.9787,
+      "streaming_vs_sequence": 3.338e-06
+    },
+    "trigger-finger": {
+      "frames": 500,
+      "sha256": "1b3c30b391a7f3c82f4ce72d162b46d372d262190dfa724d2b9901222be01e39",
+      "logit_range": [
+        -2.8301,
+        4.0533
+      ],
+      "max_beat_probability": 0.8408,
+      "max_downbeat_probability": 0.9634,
+      "streaming_vs_sequence": 2.146e-06
+    },
+    "true-believer": {
+      "frames": 500,
+      "sha256": "697194774ec87f41143ce8b4ae36ed35dc27132951ef6b177c74293722b76112",
+      "logit_range": [
+        -3.1037,
+        3.5416
+      ],
+      "max_beat_probability": 0.9282,
+      "max_downbeat_probability": 0.9673,
+      "streaming_vs_sequence": 3.576e-06
+    },
+    "vic-acid": {
+      "frames": 500,
+      "sha256": "a6a865d5f7e4736d63052d201661cb76132101360065f9f26b272f65620e229b",
+      "logit_range": [
+        -3.6588,
+        6.1632
+      ],
+      "max_beat_probability": 0.7101,
+      "max_downbeat_probability": 0.8531,
+      "streaming_vs_sequence": 2.265e-06
+    },
+    "winter-now": {
+      "frames": 500,
+      "sha256": "329fd514932882dd9da0d979219bae5b282f11e8651c3e2c60000ab0bb86cc27",
+      "logit_range": [
+        -3.8153,
+        5.8824
+      ],
+      "max_beat_probability": 0.8983,
+      "max_downbeat_probability": 0.9601,
+      "streaming_vs_sequence": 2.384e-06
+    },
+    "your-sweet-boom": {
+      "frames": 500,
+      "sha256": "5fa39c3a4ef6b6eda79e93956e1b78adef1bcb733dfb27fc1eeda94653db6735",
+      "logit_range": [
+        -4.7984,
+        7.2438
+      ],
+      "max_beat_probability": 0.9956,
+      "max_downbeat_probability": 0.9923,
+      "streaming_vs_sequence": 2.861e-06
+    }
+  }
+}

@@ -9,6 +9,13 @@ against them forever without torch, without the .pt files, and without Python.
     python tools/convert_weights.py references/beatnet-plus/src/BeatNetPlus/models
     python tools/model_reference.py
 
+A fine-tuned set — `electronic`, which is what the app ships by default — is traced from
+the checkpoint it was converted from, which is not published and lives with the training
+runs; its sha256 is the `source_sha256` in assets/weights/<name>.json, and this checks it:
+
+    python tools/model_reference.py --checkpoint <training>/runs/electronic-library-v2/soup-48-80.pt \
+        --name electronic
+
 The input is tests/data/features/<name>.npy — madmom's own (500, 288) features, not
 anything C++ produced. That keeps this a test of the model alone: a Phase 2 regression
 fails the feature test, not this one.
@@ -79,6 +86,34 @@ def streaming_logits(model, feats):
     return out
 
 
+def sets_to_trace(args):
+    """(set name, use case, .pt path, what to record as its source) for every set asked for."""
+    if args.checkpoint is not None:
+        if not args.name:
+            raise SystemExit("--checkpoint needs --name: the weight set it was converted into")
+        sidecar = ROOT / "assets" / "weights" / f"{args.name}.json"
+        if not sidecar.is_file():
+            raise SystemExit(f"{sidecar} not found: trace a checkpoint only for a set that ships")
+        converted = json.loads(sidecar.read_text(encoding="utf-8"))
+        have = hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
+        # The trace is only a test of the shipped blob if it comes from the checkpoint that
+        # blob was made from — so the checkpoint has to be that one, to the byte.
+        if have != converted.get("source_sha256"):
+            raise SystemExit(f"{args.checkpoint} has sha256 {have}, but {sidecar.name} says "
+                             f"{args.name} was converted from {converted.get('source_sha256')}")
+        return [(args.name, converted.get("use_case", ""), args.checkpoint, args.checkpoint.name)]
+    wanted = set(args.sets) if args.sets else None
+    chosen = []
+    for source_name, (set_name, use_case) in WEIGHT_SETS.items():
+        if wanted is not None and set_name not in wanted:
+            continue
+        source = args.models / source_name
+        if not source.is_file():
+            raise SystemExit(f"{source} not found; see tools/convert_weights.py for where to get it")
+        chosen.append((set_name, use_case, source, source_name))
+    return chosen
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -87,19 +122,16 @@ def main():
     parser.add_argument("--set", dest="sets", action="append", choices=sorted(n for n, _ in WEIGHT_SETS.values()),
                         help="only this weight set (repeatable; default: all three)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help=f"default: {DEFAULT_OUT_DIR}")
+    parser.add_argument("--checkpoint", type=Path,
+                        help="a fine-tuned branch .pt instead of the three published ones; with --name")
+    parser.add_argument("--name", help="with --checkpoint: the weight set it was converted into")
     args = parser.parse_args()
 
     excerpts = sorted(FEATURES_DIR.glob("*.npy"))
     if not excerpts:
         raise SystemExit(f"no golden features in {FEATURES_DIR}")
 
-    wanted = set(args.sets) if args.sets else None
-    for source_name, (set_name, use_case) in WEIGHT_SETS.items():
-        if wanted is not None and set_name not in wanted:
-            continue
-        source = args.models / source_name
-        if not source.is_file():
-            raise SystemExit(f"{source} not found; see tools/convert_weights.py for where to get it")
+    for set_name, use_case, source, source_name in sets_to_trace(args):
         model = load_branch(source)
 
         out_dir = args.out_dir / set_name
