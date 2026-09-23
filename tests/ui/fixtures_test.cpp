@@ -529,6 +529,83 @@ TEST_CASE("a channel's role follows a new mode after it was picked by hand", "[u
     CHECK(patch.fixtures()[0].channels[0] == takt4::dmx::kRoles[static_cast<std::size_t>(roleIndexOf(Role::Dimmer)) + 1]);
 }
 
+TEST_CASE("a channel's dropdown survives the redraws while it is open, and its pick lands",
+          "[ui][dmx]") {
+    // The audit's T3: popups inside repeaters were tested only for the two color pickers. The
+    // channel rows are a repeater the controller rebuilds when a fixture's shape changes, and
+    // a row rebuilt with its dropdown open takes the popup away under the pointer. Opened with
+    // the pointer, left open through ten redraws, then an entry clicked — which only lands if
+    // the popup is still there.
+    Rig rig;
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("par", 2, 0, 1)}); // RGBW
+    patch.show();
+    auto& window = patch.window().window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+    window.dispatch_window_active_changed_event(true);
+    const auto settle = [&patch] {
+        patch.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto reset = [&patch, &settle] {
+        patch.window().invoke_channel_role_picked(0, roleIndexOf(Role::Red));
+        settle();
+    };
+    settle();
+    REQUIRE(patch.fixtures()[0].channels[0] == Role::Red);
+
+    // The first channel's dropdown, found as the test above finds it.
+    constexpr float kDoesColumn = 440.0f;
+    float comboY = -1.0f;
+    for (float y = 250.0f; y < 500.0f && comboY < 0.0f; y += 6.0f) {
+        stepDropdown(window, kDoesColumn, y);
+        if (patch.fixtures()[0].channels[0] != Role::Red) {
+            comboY = y;
+        }
+        reset();
+    }
+    {
+        INFO("no click landed on the first channel's dropdown");
+        REQUIRE(comboY >= 0.0f);
+    }
+
+    // **An entry in the list, found with nothing redrawing**, and the role it picks noted.
+    // Found this way and not during the redraws, because a probe that misses the popup lands
+    // on whatever is under it — and more than one control in this window can move a channel's
+    // role, so "the role changed" alone is not "the popup was clicked".
+    float entryY = -1.0f;
+    Role picked = Role::Red;
+    for (float dy = -300.0f; dy <= 300.0f && entryY < 0.0f; dy += 6.0f) {
+        if (dy > -14.0f && dy < 14.0f) {
+            continue; // the dropdown itself
+        }
+        reset();
+        clickAt(window, kDoesColumn, comboY);
+        slint::platform::update_timers_and_animations();
+        clickAt(window, kDoesColumn, comboY + dy);
+        settle();
+        if (patch.fixtures()[0].channels[0] != Role::Red) {
+            entryY = comboY + dy;
+            picked = patch.fixtures()[0].channels[0];
+        }
+    }
+    {
+        INFO("no click opened the dropdown and landed on its list");
+        REQUIRE(entryY >= 0.0f);
+    }
+
+    // Then the gesture: opened, left open through ten redraws, and that same entry clicked.
+    reset();
+    clickAt(window, kDoesColumn, comboY);
+    for (int redraw = 0; redraw < 10; ++redraw) {
+        settle();
+    }
+    clickAt(window, kDoesColumn, entryY);
+    settle();
+    INFO("dropdown at " << kDoesColumn << ", " << comboY << "; entry at " << entryY);
+    CHECK(patch.fixtures()[0].channels[0] == picked);
+}
+
 TEST_CASE("the list's ADD, COPY and DELETE buttons do what they say when clicked", "[ui][dmx]") {
     // The audit's T1: the patching test above said "by clicking" and called the controller.
     // These are the three buttons under the list, pressed with the pointer.

@@ -571,9 +571,44 @@ TEST_CASE("a save killed half way through leaves a whole file", "[settings]") {
 }
 #endif
 
+namespace {
+
+/// Clears `TAKT4_SETTINGS_DIR` for as long as it lives, and puts it back. Every test process
+/// is given one (tests/support/crt_dialogs.cpp); the two tests below are about where the
+/// program itself keeps its settings, so they ask with it gone.
+class NoSettingsFolder {
+public:
+    NoSettingsFolder() {
+#if defined(_WIN32)
+        wchar_t* value = nullptr;
+        std::size_t size = 0;
+        if (_wdupenv_s(&value, &size, L"TAKT4_SETTINGS_DIR") == 0 && value != nullptr) {
+            saved_ = value;
+            std::free(value);
+        }
+        _wputenv_s(L"TAKT4_SETTINGS_DIR", L"");
+#endif
+    }
+    ~NoSettingsFolder() {
+#if defined(_WIN32)
+        if (!saved_.empty()) {
+            _wputenv_s(L"TAKT4_SETTINGS_DIR", saved_.c_str());
+        }
+#endif
+    }
+    NoSettingsFolder(const NoSettingsFolder&) = delete;
+    NoSettingsFolder& operator=(const NoSettingsFolder&) = delete;
+
+private:
+    std::wstring saved_;
+};
+
+} // namespace
+
 TEST_CASE("the settings file lives beside the program", "[settings]") {
     // What makes takt4 something an operator can copy onto a stick: the settings travel
     // with the executable rather than staying in a profile on one machine.
+    const NoSettingsFolder programs;
     const std::filesystem::path file = takt4::settings::settingsFile();
     if (file.empty()) {
         SKIP("this environment names neither an executable nor a config directory");
@@ -604,6 +639,7 @@ TEST_CASE("settings left by an older build are still read", "[settings]") {
     // The per-user location is where these used to be kept. A rig that has one there must
     // not lose its outputs, its device and its MIDI bindings just because the file moved,
     // so it is read until a save writes one beside the executable.
+    const NoSettingsFolder programs;
     const std::filesystem::path beside = takt4::settings::settingsFile();
     const std::filesystem::path user = takt4::settings::userSettingsDirectory();
     if (beside.empty()) {

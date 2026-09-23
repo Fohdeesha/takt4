@@ -39,6 +39,10 @@
 #include <tuple>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 using Catch::Matchers::WithinAbs;
 using takt4::audio::InputDevice;
 using takt4::engine::LiveTracker;
@@ -2734,3 +2738,148 @@ TEST_CASE("an Art-Net row offers no delay of its own", "[ui]") {
     CHECK(rows->row_data(1)->delay_ms == 0.0f);
     CHECK(seen(controller).targets[1].delaySeconds == 0.0);
 }
+
+
+TEST_CASE("an output's kind dropdown survives the redraws while it is open, and its pick lands",
+          "[ui]") {
+    // The audit's T3: popups inside repeaters were tested only for the two color pickers. The
+    // output rows are a repeater the window builds again whenever a row cannot be updated in
+    // place, and a row rebuilt with its dropdown open takes the popup away under the pointer.
+    //
+    // Swept only down one column, x = 302, where the row's kind dropdown sits (padding, the
+    // "targets" label, the tick box and the name come first), and only near the rows: SAVE is
+    // in that column too, which a test process may press safely (it saves into a folder of its
+    // own), and nothing that opens a dialog or the audio device is.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget deck;
+    REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:57000", deck));
+    saved.preset.outputs = {deck};
+    WindowController controller(tracker, saved);
+    layOut(controller, 1000.0f, 1400.0f);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto reset = [&controller, &settle] {
+        controller.setOscTargets("deck = 127.0.0.1:57000");
+        settle();
+    };
+    const auto kindOf = [&controller] {
+        const auto rows = controller.window().get_outputs_list();
+        return rows->row_count() == 1 ? rows->row_data(0)->kind_index : -1;
+    };
+    settle();
+    REQUIRE(kindOf() == 0);
+
+    // The row, found by its name box: the first click down the name column after which a typed
+    // letter lands in the row's name. Not by the dropdown and an arrow key — a click on nothing
+    // leaves the keyboard where an earlier probe put it, so a key proves nothing about where
+    // the click went. The kind dropdown is on the same row.
+    constexpr float kNameColumn = 200.0f;
+    constexpr float kKindColumn = 302.0f;
+    const auto nameOf = [&controller] {
+        const auto rows = controller.window().get_outputs_list();
+        return rows->row_count() == 1 ? std::string(rows->row_data(0)->name) : std::string();
+    };
+    //
+    // Every probe starts with a click on the window's own background, off to the right where
+    // nothing is drawn, so that the box has lost the focus and a letter can only land in it by
+    // the probe's own click. Both edges are found, and the row is aimed at in the middle: the
+    // dropdown is shorter than the box, and its top edge is not where the box's is.
+    constexpr float kBackgroundX = 985.0f;
+    constexpr float kBackgroundY = 1080.0f;
+    float top = -1.0f;
+    float bottom = -1.0f;
+    for (float y = 1080.0f; y < 1320.0f; y += 2.0f) {
+        clickAt(window, kBackgroundX, kBackgroundY);
+        const std::string before = nameOf();
+        clickAt(window, kNameColumn, y);
+        press(window, "Q");
+        slint::platform::update_timers_and_animations();
+        const bool landed = nameOf().size() > before.size();
+        if (landed && top < 0.0f) {
+            top = y;
+        }
+        if (landed) {
+            bottom = y;
+        } else if (top >= 0.0f) {
+            break;
+        }
+    }
+    {
+        INFO("no click in the name column reached the row's name box");
+        REQUIRE(top >= 0.0f);
+    }
+    const float comboY = (top + bottom) / 2.0f;
+    clickAt(window, kBackgroundX, kBackgroundY); // commit it, then put the row back
+    reset();
+    REQUIRE(kindOf() == 0);
+
+    // What one step of the open dropdown picks, with nothing redrawing: opened with the
+    // pointer, then an arrow key and Enter. **Keys, not a click on the list**, which is where
+    // the other two tests put the pointer: the list of an output's dropdown could not be found
+    // by clicking in the headless window, while the keys reach it every time. A key proves
+    // where it went here because the click that opened the dropdown is on a row found by its
+    // name box, at the column the dropdown is drawn in.
+    const std::string down = "\xEF\x9C\x81"; // Key.DownArrow
+    clickAt(window, kKindColumn, comboY);
+    slint::platform::update_timers_and_animations();
+    press(window, down);
+    press(window, "\n");
+    settle();
+    const int picked = kindOf();
+    {
+        INFO("a click at " << kKindColumn << ", " << comboY << " and a step did not move the kind");
+        REQUIRE(picked > 0);
+    }
+
+    // Then the gesture: opened, left open through ten redraws, and the same step taken.
+    reset();
+    REQUIRE(kindOf() == 0);
+    clickAt(window, kKindColumn, comboY);
+    for (int redraw = 0; redraw < 10; ++redraw) {
+        settle();
+    }
+    press(window, down);
+    press(window, "\n");
+    settle();
+    INFO("dropdown at " << kKindColumn << ", " << comboY);
+    CHECK(kindOf() == picked);
+}
+
+#if defined(_WIN32)
+TEST_CASE("SAVE in a test process writes to a folder of its own, not over the rig's",
+          "[ui][settings]") {
+    // Settings live beside the program, and the test binaries are built into the same folder
+    // as takt4.exe — where, on the rig, settings.json is a real show's. A window test whose
+    // click landed on SAVE would have written over it. So every test process is given a
+    // folder of its own (tests/support/crt_dialogs.cpp, `settings::settingsDirectory`), and
+    // here SAVE is pressed on purpose.
+    std::wstring self(32768, L'\0');
+    self.resize(GetModuleFileNameW(nullptr, self.data(), static_cast<DWORD>(self.size())));
+    const std::filesystem::path programs = std::filesystem::path(self).parent_path();
+    const std::filesystem::path beside = programs / "settings.json";
+    std::error_code code;
+    const bool existed = std::filesystem::exists(beside, code);
+    const auto stamp = existed ? std::filesystem::last_write_time(beside, code)
+                               : std::filesystem::file_time_type{};
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    REQUIRE(controller.saveNow());
+
+    const std::filesystem::path written = takt4::settings::settingsFile();
+    INFO("saved to " << written.string());
+    CHECK(std::filesystem::exists(written, code));
+    CHECK(written.parent_path() != programs);
+    // And the file beside the program is exactly as it was: still there if it was, not
+    // written, and not created if it was not.
+    CHECK(std::filesystem::exists(beside, code) == existed);
+    if (existed) {
+        CHECK(std::filesystem::last_write_time(beside, code) == stamp);
+    }
+    std::filesystem::remove_all(written.parent_path(), code);
+}
+#endif

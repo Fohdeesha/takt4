@@ -2875,3 +2875,102 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
     editor.tick();
     CHECK_FALSE(editor.pickerOpen());
 }
+
+TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick lands",
+          "[ui][trigger]") {
+    // The audit's T3: of all the popups inside repeaters, only the two color pickers had a
+    // test. A repeated row rebuilt while its dropdown is open takes the popup away under the
+    // pointer — the color picker's crash in another shape. So the slot row's generator
+    // dropdown is opened with the pointer, the editor redraws ten times while it is open, and
+    // then an entry in its list is clicked, which only lands if the popup is still there.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+    window.window().dispatch_window_active_changed_event(true);
+
+    const auto settle = [] { slint::platform::update_timers_and_animations(); };
+    const auto click = [&window, &settle](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+        settle();
+    };
+    const auto key = [&window](const slint::SharedString& text) {
+        window.window().dispatch_key_press_event(text);
+        window.window().dispatch_key_release_event(text);
+    };
+    // A rule with one slot, built afresh before every probe: a probe that misses lands on
+    // whatever is underneath it.
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/fire/{what}");
+        editor.tick();
+        settle();
+    };
+    const auto kind = [&editor] { return editor.rules().front().segments.front().kind; };
+    build();
+    REQUIRE(editor.rules().front().segments.size() == 1);
+    const GeneratorKind initial = kind();
+
+    // The dropdown, found by what one step of it does: a click on it, one arrow key, and the
+    // slot is on the next kind.
+    float comboX = -1.0f;
+    float comboY = -1.0f;
+    for (float y = 440.0f; y < 720.0f && comboX < 0.0f; y += 8.0f) {
+        for (float x = 300.0f; x < 620.0f && comboX < 0.0f; x += 16.0f) {
+            click(x, y);
+            key(u8"\uF701"); // Key.DownArrow
+            key(u8"\u001b"); // Key.Escape
+            settle();
+            if (kind() != initial) {
+                comboX = x;
+                comboY = y;
+            }
+            build();
+        }
+    }
+    {
+        INFO("no click in the slot rows reached the generator dropdown");
+        REQUIRE(comboX >= 0.0f);
+    }
+
+    // An entry in the list, found with nothing redrawing, and the kind it picks noted. The
+    // popup opens wherever Slint finds room, so it is hunted above and below — and hunted
+    // without the redraws, because a probe that misses lands on whatever is underneath, and
+    // "the kind changed" alone is not "the popup was clicked".
+    float entryY = -1.0f;
+    GeneratorKind picked = initial;
+    for (float dy = -320.0f; dy <= 320.0f && entryY < 0.0f; dy += 6.0f) {
+        if (dy > -14.0f && dy < 14.0f) {
+            continue; // the dropdown itself
+        }
+        build();
+        click(comboX, comboY);
+        click(comboX, comboY + dy);
+        if (kind() != initial) {
+            entryY = comboY + dy;
+            picked = kind();
+        }
+    }
+    {
+        INFO("no click opened the dropdown and landed on its list");
+        REQUIRE(entryY >= 0.0f);
+    }
+
+    // Then the gesture: opened, left open through ten redraws, and that same entry clicked.
+    build();
+    click(comboX, comboY);
+    for (int redraw = 0; redraw < 10; ++redraw) {
+        editor.tick();
+        settle();
+    }
+    click(comboX, entryY);
+    INFO("dropdown at " << comboX << ", " << comboY << "; entry at " << entryY);
+    CHECK(kind() == picked);
+}
