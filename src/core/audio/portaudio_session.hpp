@@ -26,6 +26,20 @@ public:
 
     PortAudioSession(const PortAudioSession&) = delete;
     PortAudioSession& operator=(const PortAudioSession&) = delete;
+
+    /// Terminates and initialises again, which is the only thing that makes PortAudio look at
+    /// the machine's devices a second time: it builds its device table once, in
+    /// `Pa_Initialize`, and a nested initialise only counts. An interface switched on after
+    /// takt4 started, or one unplugged and plugged back in, is invisible until this runs.
+    ///
+    /// Every device index and every stream from before is meaningless afterwards, so nothing
+    /// may be open. And it only re-enumerates if this is the last session alive — another one
+    /// holds PortAudio's count above zero, and then this terminates nothing. Throws
+    /// PortAudioError if the new initialise fails, leaving the session uninitialised.
+    void restart();
+
+private:
+    bool initialised_ = false;
 };
 
 } // namespace takt4::audio

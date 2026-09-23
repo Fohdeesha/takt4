@@ -60,43 +60,96 @@ unsigned int findPort(RtMidiOut& out, std::string_view spec) {
 
 } // namespace
 
-struct MidiOutput::Impl {
-    RtMidiOut out;
+namespace {
+
+/// RtMidi's output port, as a `MidiPort`.
+class RtMidiPort final : public MidiPort {
+public:
+    RtMidiPort() {
+        try {
+            out_ = std::make_unique<RtMidiOut>();
+        } catch (const RtMidiError& error) {
+            // A machine can have no usable MIDI API at all — a headless Linux box without an
+            // ALSA sequencer is the ordinary case, and CI runs on one — and RtMidi reports
+            // that by throwing from its own constructor rather than offering an empty port
+            // list. listMidiOutputPorts() swallows the same thing to keep a listing simple;
+            // here it has to become an error the caller can print.
+            throw std::runtime_error("MIDI output: no usable MIDI API on this machine (" +
+                                     error.getMessage() + ")");
+        }
+    }
+
+    std::string open(std::string_view spec) override {
+        try {
+            // Looked up afresh every time: a device that went away and came back can come
+            // back at another index, and RtMidi enumerates again on every count.
+            const unsigned int index = findPort(*out_, spec);
+            std::string name = out_->getPortName(index);
+            out_->openPort(index, "takt4");
+            return name;
+        } catch (const RtMidiError& error) {
+            throw std::runtime_error("MIDI output: " + error.getMessage());
+        }
+    }
+
+    void close() noexcept override {
+        try {
+            out_->closePort();
+        } catch (...) {
+            // A port that is already gone cannot be closed any more gone.
+        }
+    }
+
+    void send(std::span<const unsigned char> message) override {
+        out_->sendMessage(message.data(), message.size());
+    }
+
+private:
+    std::unique_ptr<RtMidiOut> out_;
 };
 
-MidiOutput::MidiOutput(std::string_view portName) {
-    std::unique_ptr<Impl> impl;
-    try {
-        impl = std::make_unique<Impl>();
-    } catch (const RtMidiError& error) {
-        // A machine can have no usable MIDI API at all — a headless Linux box without an
-        // ALSA sequencer is the ordinary case, and CI runs on one — and RtMidi reports
-        // that by throwing from its own constructor rather than offering an empty port
-        // list. listMidiOutputPorts() swallows the same thing to keep a listing simple;
-        // here it has to become an error the caller can print.
-        throw std::runtime_error("MIDI output: no usable MIDI API on this machine (" +
-                                 error.getMessage() + ")");
-    }
-    try {
-        const unsigned int index = findPort(impl->out, portName);
-        portName_ = impl->out.getPortName(index);
-        impl->out.openPort(index, "takt4");
-    } catch (const RtMidiError& error) {
-        throw std::runtime_error("MIDI output: " + error.getMessage());
-    }
-    impl_ = std::move(impl);
+} // namespace
+
+MidiOutput::MidiOutput(std::string_view portName)
+    : MidiOutput(portName, std::make_unique<RtMidiPort>()) {}
+
+MidiOutput::MidiOutput(std::string_view portName, std::unique_ptr<MidiPort> port)
+    : port_(std::move(port)), requested_(portName) {
+    portName_ = port_->open(portName); // throws: no such port
 }
 
-MidiOutput::~MidiOutput() = default;
+MidiOutput::~MidiOutput() {
+    if (port_) {
+        port_->close();
+    }
+}
 
 void MidiOutput::send(std::span<const unsigned char> message) noexcept {
     try {
-        impl_->out.sendMessage(message.data(), message.size());
+        port_->send(message);
         ++sent_;
+        failedInARow_ = 0;
     } catch (...) {
         // RtMidi throws on a port that has gone away. A dropped clock tick is not worth
-        // taking the tracker down for; the counter is what says it is happening.
+        // taking the tracker down for; the counters are what say it is happening, and a run of
+        // them is what `lost()` — and so the reconnect — is keyed on.
         ++failed_;
+        if (failedInARow_ < kLostAfterFailures) {
+            ++failedInARow_;
+        }
+    }
+}
+
+bool MidiOutput::reconnect() noexcept {
+    try {
+        port_->close();
+        portName_ = port_->open(requested_);
+        failedInARow_ = 0;
+        return true;
+    } catch (...) {
+        // Not back yet. Still lost, so the next look tries again.
+        failedInARow_ = kLostAfterFailures;
+        return false;
     }
 }
 

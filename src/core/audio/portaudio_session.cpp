@@ -12,12 +12,28 @@ PortAudioSession::PortAudioSession() {
     if (err != paNoError) {
         throw PortAudioError(err, std::string("Pa_Initialize failed: ") + Pa_GetErrorText(err));
     }
+    initialised_ = true;
 }
 
 PortAudioSession::~PortAudioSession() {
-    // Pa_Terminate only fails if PortAudio was never initialised, which the constructor
-    // guarantees against; nothing useful can be done with the result in a destructor.
-    Pa_Terminate();
+    // Pa_Terminate only fails if PortAudio was never initialised; nothing useful can be done
+    // with the result in a destructor. Not called at all after a restart that failed, which
+    // would take away another session's count.
+    if (initialised_) {
+        Pa_Terminate();
+    }
+}
+
+void PortAudioSession::restart() {
+    if (initialised_) {
+        Pa_Terminate();
+        initialised_ = false;
+    }
+    const PaError err = Pa_Initialize();
+    if (err != paNoError) {
+        throw PortAudioError(err, std::string("Pa_Initialize failed: ") + Pa_GetErrorText(err));
+    }
+    initialised_ = true;
 }
 
 } // namespace takt4::audio

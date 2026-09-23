@@ -36,6 +36,14 @@ std::vector<audio::InputDevice> LiveTracker::devices() const {
     return audio::listInputDevices(session_);
 }
 
+bool LiveTracker::rescan() {
+    if (stream_) {
+        return false;
+    }
+    session_.restart();
+    return true;
+}
+
 void LiveTracker::start(const audio::InputDevice& device,
                         const audio::ChannelSelection& selection) {
     stop();

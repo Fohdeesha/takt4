@@ -97,6 +97,9 @@ endblock()
 if(WIN32)
   takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_ASIO=1 PA_USE_WASAPI=1)
   takt4_forbid_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_WMME=1 PA_USE_DS=1 PA_USE_WDMKS=1)
+  # PortAudio's ASIO host, with the current rate as the default, no re-clocking on open, and
+  # the driver's reset/rate/buffer messages kept for takt4. See the file for why each.
+  include("${CMAKE_CURRENT_LIST_DIR}/pa_asio_patch.cmake")
 elseif(APPLE)
   takt4_require_definitions(portaudio INTERFACE_COMPILE_DEFINITIONS PA_USE_COREAUDIO=1)
 elseif(LINUX)
