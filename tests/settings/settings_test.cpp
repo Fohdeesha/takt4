@@ -54,6 +54,7 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.preset.meters = {3, 4, 0, 0};
     in.preset.tempo.confidenceThreshold = 0.25;
     in.preset.tempo.latencyOffsetSeconds = -0.030;
+    in.preset.tempo.keepOctaveShift = true;
     in.preset.link = true;
     in.preset.oscPrefix = "/vj";
     in.preset.outputs = takt4::output::oscOutputs({{"192.168.1.40", 7000}, {"127.0.0.1", 7001}});
@@ -108,6 +109,11 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
           std::array<std::uint8_t, 4>{4, 0, 0, 0});
     CHECK_THAT(out.preset.tempo.confidenceThreshold, WithinAbs(0.25, 1e-9));
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.030, 1e-9));
+    // "Keep ÷2 / ×2 for the next track", and its default — drop them — for a file that
+    // predates it (the audit's H2).
+    CHECK(out.preset.tempo.keepOctaveShift);
+    CHECK_FALSE(Settings{}.preset.tempo.keepOctaveShift);
+    CHECK_FALSE(takt4::settings::fromJson(R"({"preset": {"tempo": {}}})").preset.tempo.keepOctaveShift);
     CHECK(out.preset.link);
     CHECK(out.preset.oscPrefix == "/vj");
     REQUIRE(out.preset.outputs.size() == 4);

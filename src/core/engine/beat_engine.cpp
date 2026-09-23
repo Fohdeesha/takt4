@@ -86,6 +86,15 @@ void BeatEngine::start() {
     }
     decoder_->reset();
     tempo_.reset();
+    // The tempo hold goes with the pin. `reset()` keeps a decoder's hold by design — it is a
+    // setting, not tracking state — and the tracker's reset lets go of the pin, so a stop and
+    // start while pinned left the window showing no pin while the decoder went on penalising
+    // every tempo but the old one: the next track at a new tempo could not be acquired (the
+    // audit's H3).
+    if (decoder_->canHoldTempo()) {
+        decoder_->holdTempo(0.0);
+    }
+    pinHoldPending_ = false;
     havePrevious_ = false;
     // Anything posted while the engine was stopped applies to the run about to start, not
     // to the one that ended: a latency offset set on a settings screen has to survive the
@@ -183,11 +192,26 @@ void BeatEngine::applyCommands() noexcept {
             break;
         case Command::Kind::SetLockPinned:
             tempo_.setLockPinned(command.pinned);
-            // And on a decoder that can, the pin is also the tempo hold — the tempo being
-            // published, which is what the operator is looking at when they press it. See
-            // Command::Kind::SetLockPinned.
+            // And on a decoder that can, the pin is also the tempo hold. **In the decoder's own
+            // terms** (`TempoTracker::decoderBpm`), which is the only tempo it can hold: the hold
+            // picks the interval nearest the tempo it is given. It was given the *published*
+            // tempo, which carries any ÷2 or ×2 — so pinning while halved held the filter at
+            // half its real tempo (the audit's H3).
+            //
+            // And only once a lock has been earned, as the tracker's own pin raises the flag
+            // only then: holding a hunting decoder to whatever it was trying at the moment of
+            // the press would be pinning noise. A pin pressed before the lock is kept, and the
+            // hold taken on the frame the lock arrives — see `trackOne`.
             if (decoder_->canHoldTempo()) {
-                decoder_->holdTempo(command.pinned ? tempo_.state().bpm : 0.0);
+                pinHoldPending_ = false;
+                if (!command.pinned) {
+                    decoder_->holdTempo(0.0);
+                } else if (tempo_.state().locked && tempo_.decoderBpm() > 0.0) {
+                    decoder_->holdTempo(tempo_.decoderBpm());
+                } else {
+                    decoder_->holdTempo(0.0);
+                    pinHoldPending_ = true;
+                }
             }
             break;
         case Command::Kind::HoldTempo:
@@ -259,6 +283,11 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     const std::optional<tracking::BeatEvent> event = tempo_.process(frame.tracked);
     frame.state = tempo_.state();
     frame.beat = event.has_value();
+    // A pin pressed while hunting takes hold here, on the first frame there is a lock to hold.
+    if (pinHoldPending_ && frame.state.locked && tempo_.decoderBpm() > 0.0) {
+        decoder_->holdTempo(tempo_.decoderBpm());
+        pinHoldPending_ = false;
+    }
 
     // The state before the rings: a consumer that reads state() rather than draining
     // should never see a frame on the ring that is newer than the state.
@@ -269,7 +298,18 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     intensity_.publish(EngineIntensity{activation.intensity, onsets_, activation.flux});
     if (event) {
         beatsCalled_.fetch_add(1, std::memory_order_relaxed);
-        if (!beats_.tryPush(EngineBeat{*event, frame.state, activation.hostMicros})) {
+        // The host time of the *beat*, not of the frame it was called on: the decoder can put
+        // a beat a fraction of a frame either side of the frame's own instant
+        // (`TrackedFrame::beatOffsetFrames`), and the tracker already adds that to the beat's
+        // time. Left out here, every stamp Link and the output scheduler were given was off
+        // by that fraction — at least a frame late under the default emission, and by a
+        // different amount on every beat (the audit's H15).
+        std::int64_t hostMicros = activation.hostMicros;
+        if (hostMicros != 0) {
+            hostMicros += static_cast<std::int64_t>(std::llround(
+                frame.tracked.beatOffsetFrames * decoder_->secondsPerFrame() * 1e6));
+        }
+        if (!beats_.tryPush(EngineBeat{*event, frame.state, hostMicros})) {
             beatsDropped_.fetch_add(1, std::memory_order_relaxed);
         }
     }

@@ -240,6 +240,8 @@ void OutputRunner::start() {
     // start` zeroes its own, so a stale one here made the first round after a restart see a
     // count that had "moved" and fire every onset rule once for nothing.
     onsetsSeen_ = 0;
+    // And nothing predicted from the last run's beats.
+    scheduler_.reset();
     try {
         // Before the thread: startOutputs enables Link and starts the MIDI clock, and the
         // thread's first round must not find them half up. On the same clock the rounds use,
@@ -300,6 +302,10 @@ void OutputRunner::stop() noexcept {
             // and an operator pressing Stop has said the opposite. Same argument as `panic`
             // and `setRules`; this is the third place that owed a flush and did not have one.
             triggers_.flushFollowUps();
+            // And everything held for an output's offset, releases included — a held datagram
+            // used to sit in the queue until the next Start (the audit's H6).
+            sink_.flushQueued();
+            transports_.osc().flushAll();
         } catch (...) {
             // Nothing useful to do while shutting down, and letting it out of a noexcept
             // function would call std::terminate.
@@ -338,7 +344,13 @@ void OutputRunner::apply(const OutputCommand& command) {
     // `Manual`, `TestRule` and `Panic` all fire rules from here rather than from `drainOnce`,
     // and a lighting effect needs to know when it started. Set once for every command rather
     // than on the three that need it, so a fourth cannot be added without one.
-    sink_.setNow(elapsed());
+    //
+    // **One reading of the clock for the whole command.** A rule's message is held until the
+    // moment it is about, and a TEST fired with a context read a few microseconds after the
+    // sink's "now" was a message about the future: held, and — with the thread stopped and
+    // nothing flushing — never sent at all.
+    const double now = elapsed();
+    sink_.setNow(now);
     try {
         switch (command.kind) {
         case OutputCommand::Kind::LinkEnabled:
@@ -359,7 +371,12 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Panic:
             if (command.enabled) {
-                triggers_.panic(contextAt(elapsed()));
+                triggers_.panic(contextAt(now));
+                // What is held for an output's offset goes now too. A release among it must not
+                // wait, and a press among it is at most one lead's worth early — and would
+                // otherwise be a rule firing after PANIC was pressed.
+                sink_.flushQueued();
+                transports_.osc().flushAll();
                 // And the lights stop animating — but keep their levels, and keep being sent.
                 // The operator's own call on 2026-09-16: takt4 may be one source among several
                 // on a rig, and a panic that blacked out the stage would take down lights that
@@ -389,6 +406,8 @@ void OutputRunner::apply(const OutputCommand& command) {
             });
             break;
         case OutputCommand::Kind::Patch:
+            // A held effect's fixture mask names fixtures by their place in *this* patch.
+            sink_.flushQueued();
             transports_.setPatch(command.fixtures);
             resolveRouting();
             break;
@@ -396,17 +415,17 @@ void OutputRunner::apply(const OutputCommand& command) {
             // Straight to the engine, past the rules. `sink_.setNow` was called at the top of
             // `apply`, and this uses the same clock so that a hand-fired effect and a rule's
             // land on one timeline.
-            transports_.dmx().start(command.fixtureMask, command.payload, elapsed());
+            transports_.dmx().start(command.fixtureMask, command.payload, now);
             break;
         case OutputCommand::Kind::ChannelTest:
             transports_.dmx().holdChannel(command.universe, command.channel, command.level,
-                                          command.factor, elapsed());
+                                          command.factor, now);
             break;
         case OutputCommand::Kind::Manual:
-            triggers_.manual(contextAt(elapsed()));
+            triggers_.manual(contextAt(now));
             break;
         case OutputCommand::Kind::TestRule:
-            (void)triggers_.test(command.ruleId, contextAt(elapsed()));
+            (void)triggers_.test(command.ruleId, contextAt(now));
             break;
         }
         const std::lock_guard<std::mutex> lock(errorMutex_);
@@ -423,6 +442,8 @@ void OutputRunner::apply(const OutputCommand& command) {
 }
 
 void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
+    // A held MIDI message names its output by its place in *this* list, which is about to move.
+    sink_.flushQueued();
     // The routing is resolved either way — see the declaration. A target that would not open
     // still took its place in the list, so every bit below it has moved.
     try {
@@ -516,29 +537,59 @@ trigger::Context OutputRunner::contextAt(double now) const {
     return context;
 }
 
+void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
+    transports_.publishBeat(beat.event, beat.moment, now);
+    // §5.8's beat-counting triggers, off the state *at this beat* rather than off the engine's
+    // newest: a round can fire several beats, and a rule counting bars has to see each of them
+    // where it happened. And *about* the beat's own moment, which every message it sends is
+    // then held to — see `trigger::Message::moment`.
+    trigger::Context context = contextAt(now);
+    context.bpm = beat.event.bpm;
+    context.confidence = beat.event.confidence;
+    context.locked = beat.event.locked;
+    context.meter = beat.event.beatsPerBar;
+    context.beatInBar = beat.event.beatInBar;
+    context.beats = beat.beats;
+    context.bars = beat.bars;
+    context.moment = beat.moment;
+    triggers_.onBeat(context);
+}
+
 void OutputRunner::drainOnce(double now) {
     // Before any rule is evaluated: a lighting effect starts at an instant and runs for a
     // duration, so the sink has to know where on this clock the round is. See
     // `RuleSink::setNow`.
     sink_.setNow(now);
+    // Link's clock and this one read together, which is what turns a beat's §4.3 stamp — the
+    // moment it was in the audio, on Link's clock — into a moment on the clock the rounds run on.
+    const std::int64_t linkNow = transports_.link().now().count();
+    const double lead = transports_.leadSeconds();
+    // How late a beat may be heard and still be worth firing: as late as the latest output
+    // wants it, plus the pipeline and some. See `kStaleSeconds`.
+    const double staleAfter = transports_.tailSeconds() + kStaleSeconds;
     engine::EngineBeat beat;
     while (engine_.popBeat(beat)) {
-        transports_.publish(beat.event, beat.hostMicros, now);
-        // §5.8's beat-counting triggers, off the state *at this beat* rather than off the
-        // engine's newest: a round can drain several beats, and a rule counting bars has to
-        // see each of them where it happened.
-        trigger::Context context = contextAt(now);
-        context.bpm = beat.state.bpm;
-        context.confidence = beat.state.confidence;
-        context.locked = beat.state.locked;
-        context.meter = beat.state.beatsPerBar;
-        context.beatInBar = beat.state.beatInBar;
-        context.beats = beat.state.beats;
-        context.bars = beat.state.bars;
-        triggers_.onBeat(context);
+        // Offline, and in the tests that feed audio faster than it plays, there is no host
+        // clock and no timeline: such a beat fires as it arrives. See `BeatScheduler::heard`.
+        std::optional<double> moment;
+        if (beat.hostMicros != 0) {
+            moment = now - static_cast<double>(linkNow - beat.hostMicros) / 1e6;
+        }
+        // The two clocks, on every beat heard: they are grids running on from the last beat
+        // and want every one, fired already or not.
+        transports_.publishClocks(beat.event, beat.hostMicros, moment.value_or(now));
+        if (const std::optional<ScheduledBeat> late =
+                scheduler_.heard(beat, moment, now, staleAfter)) {
+            fireBeat(*late, now);
+        }
         if (observer_) {
             observer_(beat);
         }
+    }
+    // And the beats that are due before they are heard — the audit's H4. See `BeatScheduler`.
+    scheduler_.restate(engine_.state());
+    while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
+        fireBeat(*next, now);
     }
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
@@ -556,6 +607,9 @@ void OutputRunner::drainOnce(double now) {
     }
     // Last: the triggers that do not wait for a beat, and any follow-up now due.
     triggers_.advance(context);
+    // Then whatever MIDI and lighting a rule sent this round or earlier that has come due — after
+    // the triggers, so a message with nothing to wait for goes in the round it was sent.
+    sink_.releaseDue(now);
     // And a copy of the lighting frames for anything watching at redraw rate. After the
     // triggers, so a fade started this round is in the very frame that is mirrored.
     mirrorLevels(now);

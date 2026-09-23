@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -828,4 +829,142 @@ TEST_CASE("two control surfaces can post to a stopped runner at once", "[output]
     CHECK(runner.triggers().rule(set.size() - 1).id() == last);
     runner.panic(false);
     CHECK_FALSE(runner.panicked());
+}
+
+namespace {
+
+/// An OSC int argument's value, from a datagram that carries exactly one: the last four bytes,
+/// big-endian.
+int lastInt(const std::string& datagram) {
+    if (datagram.size() < 4) {
+        return -1;
+    }
+    const auto byte = [&datagram](std::size_t at) {
+        return static_cast<int>(static_cast<std::uint8_t>(datagram[at]));
+    };
+    const std::size_t at = datagram.size() - 4;
+    return (byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) | byte(at + 3);
+}
+
+} // namespace
+
+TEST_CASE("a negative offset lands a beat's cue before that beat from live audio",
+          "[output][trigger][slow]") {
+    // The audit's H4 at the far end of the chain, where an operator meets it: the excerpt fed
+    // in real time through the real engine and the real output thread, stamped on Link's clock
+    // as a sound card's audio is, and a rule sending each beat's place in the bar to a media
+    // server set 200 ms early.
+    //
+    // The *value* is what tells the fix from what it replaced. The old hold also delivered a
+    // cue about 200 ms before a beat — but it was the cue for the beat *before*, held for what
+    // was left of it: the `2` of a bar arrived just before beat 3, and a bar-1 clip cue landed
+    // before beat 2. Here the cue arriving 200 ms before a beat has to be that beat's own.
+    LoopbackReceiver media;
+    Transports::Config config;
+    takt4::output::OutputTarget server;
+    server.name = "media";
+    server.host = "127.0.0.1";
+    server.port = media.port();
+    server.delaySeconds = -0.200;
+    config.outputs = {server};
+
+    // The default decoder, which is what ships.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, config);
+    engine->setHostTimeSource(&runner.hostTimeClock());
+
+    Rule::Config rule;
+    rule.id = "position";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/cue";
+    rule.value = takt4::trigger::Generator::Config{};
+    rule.value.kind = takt4::trigger::GeneratorKind::Live;
+    rule.value.source = takt4::trigger::LiveSource::BeatInBar;
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().rule(0).valid());
+
+    // Every beat heard, with its moment put on the runner's clock the way the runner does it.
+    struct Heard {
+        double moment = 0.0;
+        std::uint32_t beatInBar = 0;
+        bool locked = false;
+    };
+    std::mutex mutex;
+    std::vector<Heard> heard;
+    runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
+        const double moment =
+            runner.elapsed() -
+            static_cast<double>(runner.transports().link().now().count() - beat.hostMicros) / 1e6;
+        const std::lock_guard<std::mutex> lock(mutex);
+        heard.push_back({moment, beat.event.beatInBar, beat.state.locked});
+    });
+
+    // Every cue as it arrives, on the same clock.
+    struct Cue {
+        double at = 0.0;
+        int value = 0;
+    };
+    std::vector<Cue> cues;
+    std::atomic<bool> listening{true};
+    std::thread listener([&] {
+        while (listening.load(std::memory_order_acquire)) {
+            const std::string datagram = media.receive();
+            if (datagram.rfind("/cue", 0) == 0) {
+                const double at = runner.elapsed();
+                const std::lock_guard<std::mutex> lock(mutex);
+                cues.push_back({at, lastInt(datagram)});
+            }
+        }
+    });
+
+    runner.start();
+    engine->start();
+    const std::vector<float>& samples = excerpt();
+    const std::size_t hops = samples.size() / kHopSize;
+    const double hopSeconds = static_cast<double>(kHopSize) / takt4::audio::kInternalSampleRate;
+    const auto began = std::chrono::steady_clock::now();
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        std::this_thread::sleep_until(
+            began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    engine->stop();
+    runner.stop();
+    listening.store(false, std::memory_order_release);
+    listener.join();
+
+    // Every beat heard while locked after the one before it was — so there was a lock to
+    // predict from — should have had its own cue 200 ms before its moment.
+    std::size_t predictable = 0;
+    std::size_t onTime = 0;
+    std::size_t beforeItsBeat = 0;
+    for (std::size_t i = 1; i < heard.size(); ++i) {
+        if (!heard[i].locked || !heard[i - 1].locked || heard[i].beatInBar == 0) {
+            continue;
+        }
+        ++predictable;
+        for (const Cue& cue : cues) {
+            if (cue.value != static_cast<int>(heard[i].beatInBar)) {
+                continue;
+            }
+            const double early = heard[i].moment - cue.at;
+            if (early > 0.0 && early < 0.45) {
+                ++beforeItsBeat;
+            }
+            if (std::abs(early - 0.200) < 0.035) {
+                ++onTime;
+                break;
+            }
+        }
+    }
+    INFO(heard.size() << " beats heard, " << predictable << " of them predictable, " << onTime
+                      << " with their own cue 200 ms early, " << cues.size() << " cues");
+    CHECK(runner.errors() == 0);
+    CHECK(predictable >= 8);
+    // Every one, give or take the beat where the tracker's tempo was still settling.
+    CHECK(onTime + 1 >= predictable);
+    CHECK(beforeItsBeat >= onTime);
+    CHECK(runner.scheduler().predictedFires() >= predictable);
 }

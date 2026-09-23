@@ -264,6 +264,8 @@ TEST_CASE("a fade really is a stream of frames, not one", "[dmx][artnet][slow]")
     // giving the output thread any particular slice.
     INFO("distinct levels seen on channel 1: " << seen.size());
     CHECK(seen.size() >= 4);
-    // And it arrived: whatever the middle looked like, the fade finished at full.
+    // And it arrived: whatever the middle looked like, the fade finished at full. Required
+    // non-empty first — reading the back of an empty list is a crash, not a failed check.
+    REQUIRE_FALSE(seen.empty());
     CHECK(seen.back() == 255);
 }

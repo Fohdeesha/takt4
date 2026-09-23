@@ -131,6 +131,67 @@ TEST_CASE("an activation carries the host time of the audio it was made from", "
     }
 }
 
+TEST_CASE("a stamp stays on the audio it was made from after hops were dropped",
+          "[model][engine]") {
+    // The audit's H15. The stamp was worked back from the hop's own index, which counts every
+    // hop the audio thread saw — including the ones dropped because the worker's queue was
+    // full. So after one stall every later frame was stamped with audio that many hops older
+    // than its own, and every beat after it reached Link that many 20 ms early, to the end of
+    // the run.
+    struct RulerClock final : takt4::audio::HostTimeSource {
+        std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
+            return kClockOrigin + static_cast<std::int64_t>(sampleTime * 1e6 / 22050.0);
+        }
+    };
+    const std::vector<float> signal = syntheticExcerpt();
+    const std::unique_ptr<ActivationEngine> engine = makeEngine();
+    RulerClock clock;
+    engine->setHostTimeSource(&clock);
+    std::vector<FrameActivation> frames;
+    const auto feed = [&](std::size_t h) {
+        engine->processHop(signal.data() + (h % 400) * kHopSize, h);
+    };
+    const auto work = [&] {
+        while (engine->step()) {
+        }
+        FrameActivation activation;
+        while (engine->pop(activation)) {
+            frames.push_back(activation);
+        }
+    };
+
+    for (std::size_t h = 0; h < 100; ++h) {
+        feed(h);
+        work();
+    }
+    // A stall: a hundred hops arrive and nobody works them, so the queue fills and the rest
+    // are dropped.
+    for (std::size_t h = 100; h < 200; ++h) {
+        feed(h);
+    }
+    REQUIRE(engine->hopsDropped() > 0);
+    work();
+    for (std::size_t h = 200; h < 300; ++h) {
+        feed(h);
+        work();
+    }
+    REQUIRE(engine->framesDropped() == 0);
+
+    // Past the frame that straddles the gap, every frame is centred on the hop before the one
+    // that completed it — as before the stall, and as the ruler says.
+    std::size_t checked = 0;
+    for (const FrameActivation& activation : frames) {
+        if (activation.hopIndex < 202 && activation.hopIndex >= 100) {
+            continue; // the queued backlog and the frame across the gap
+        }
+        INFO("frame completed by hop " << activation.hopIndex);
+        CHECK(activation.hostMicros ==
+              kClockOrigin + static_cast<std::int64_t>(activation.hopIndex - 1) * 20000);
+        ++checked;
+    }
+    CHECK(checked > 150);
+}
+
 TEST_CASE("the worker thread produces the same activations as stepping by hand",
           "[model][engine]") {
     const std::vector<float> signal = syntheticExcerpt();

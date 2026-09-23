@@ -220,6 +220,16 @@ bool MidiControl::dispatch(const MidiEvent& event) {
             learned = std::move(*learning_);
             learning_.reset();
         } else {
+            // The release of the gesture that was just learned. See `learnedRelease_`.
+            const bool releaseOfLearned =
+                learnedRelease_ && event.kind == MidiEvent::Kind::ControlChange &&
+                event.channel == learnedRelease_->channel &&
+                event.number == learnedRelease_->number && event.value < 64;
+            learnedRelease_.reset();
+            if (releaseOfLearned) {
+                handled_.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            }
             for (const MidiBinding& binding : bindings_) {
                 if (binding.matches(event)) {
                     matched.push_back(binding.target);
@@ -237,6 +247,11 @@ bool MidiControl::dispatch(const MidiEvent& event) {
         (void)bind(binding);
         // Learned, not acted on. The gesture that assigns a control should not also fire
         // it: an operator binding `tempo/halve` would otherwise halve the tempo to do it.
+        // And nor should that gesture's release, when the control is a CC that sends one.
+        if (event.kind == MidiEvent::Kind::ControlChange) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            learnedRelease_ = event;
+        }
         return true;
     }
 
@@ -247,6 +262,14 @@ bool MidiControl::dispatch(const MidiEvent& event) {
     // A table with two bindings for one control cannot happen through `bind`, but a
     // caller can build one; act on all of them rather than silently picking.
     for (const ControlTarget& target : matched) {
+        // **PANIC from a MIDI control only engages** — as the window's PANIC does since the
+        // audit's H18. A CC reads below 64 as "off", which made a momentary CC pad
+        // hold-to-panic: the halt let go the moment the finger came up. Releasing is the
+        // window's RELEASE, or OSC's explicit `panic 0`, never the end of a button press.
+        if (target.action == ControlAction::Panic && event.kind == MidiEvent::Kind::ControlChange &&
+            event.value < 64) {
+            continue;
+        }
         (void)surface_.apply(target, argumentOf(event));
     }
     handled_.fetch_add(1, std::memory_order_relaxed);

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,7 +64,8 @@ public:
     /// Anything past `kMaxRoutableTargets` is given `kAllOutputs`, so it still receives
     /// everything a rule sends everywhere.
     /// `delaySeconds` offsets everything bound for this target — later when positive, earlier
-    /// (that is, ahead of the *next* beat) when negative. See `OutputTarget::delaySeconds`.
+    /// when negative, measured from the moment a message is about. See
+    /// `OutputTarget::delaySeconds`.
     void addTarget(std::string_view host, std::uint16_t port, std::size_t bit,
                    double delaySeconds = 0.0);
 
@@ -71,11 +73,6 @@ public:
     /// anything is published so a message queued this round is due relative to *this* round.
     void setNow(double now) noexcept { now_ = now; }
     double now() const noexcept { return now_; }
-
-    /// How long one beat currently lasts, in seconds — what a negative offset is subtracted
-    /// from. Zero when no tempo is known, which makes a negative offset hold nothing rather
-    /// than invent a beat length.
-    void setBeatSeconds(double seconds) noexcept { beatSeconds_ = seconds > 0.0 ? seconds : 0.0; }
 
     /// §5.5's latency offset, added to every target's own before either is applied.
     ///
@@ -87,6 +84,10 @@ public:
     /// Sends everything whose delay has run out. Called every round by `Transports::advance`
     /// — a delayed message is not waiting for the next beat, it is waiting for a clock.
     void flushDue();
+    /// Sends everything waiting, now, whatever it was waiting for. For a PANIC and a stop: a
+    /// release held back for a delayed target is still a release, and a rig told to halt must
+    /// not be left latched on until the next Start.
+    void flushAll();
 
     /// Datagrams waiting on a delay, and those dropped because too many were. The queue is
     /// bounded: a target delayed a second while a rule fires on every 32nd note holds tens
@@ -105,8 +106,10 @@ public:
     std::size_t targetCount() const noexcept { return targets_.size(); }
     const OscSender& target(std::size_t index) const noexcept { return *targets_[index].sender; }
 
-    /// Publishes one beat, and any state that changed with it.
-    void publishBeat(const tracking::BeatEvent& event);
+    /// Publishes one beat, and any state that changed with it. `moment` is when the beat is in
+    /// the music, on the clock `setNow` is given — ahead of now when the output thread fires it
+    /// on a prediction — and each target has it at that moment plus its offset. Unset is now.
+    void publishBeat(const tracking::BeatEvent& event, std::optional<double> moment = std::nullopt);
 
     /// Publishes state that changed since the last call, without a beat. Cheap to call
     /// every frame: when nothing has changed it sends nothing.
@@ -136,10 +139,18 @@ public:
 
     /// The same, to the targets `outputs` selects — §5.6's *"rule subset"*. `kAllOutputs`
     /// is every one of them and is what an unrouted rule carries.
-    void sendAddressTo(std::uint64_t outputs, std::string_view address);
-    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::int32_t value);
-    void sendAddressTo(std::uint64_t outputs, std::string_view address, float value);
-    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::string_view value);
+    ///
+    /// `moment` is when the thing the message is about happens — `trigger::Message::moment` —
+    /// and each target has it at that moment plus the rig's offset plus its own, or now if that
+    /// has already gone. Unset is now.
+    void sendAddressTo(std::uint64_t outputs, std::string_view address,
+                       std::optional<double> moment = std::nullopt);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::int32_t value,
+                       std::optional<double> moment = std::nullopt);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, float value,
+                       std::optional<double> moment = std::nullopt);
+    void sendAddressTo(std::uint64_t outputs, std::string_view address, std::string_view value,
+                       std::optional<double> moment = std::nullopt);
 
     /// Whether any target is selected by `outputs`. What tells "the rule sent nothing
     /// because it is routed nowhere" from "the rule never fired", which look identical.
@@ -149,20 +160,22 @@ public:
     std::uint64_t messagesFailed() const noexcept { return failed_; }
 
 private:
-    /// How long a message offset by `delaySeconds` waits, in seconds — the whole-rig offset
-    /// included. Never negative: see `OutputTarget::delaySeconds` for why "earlier" is a
-    /// shorter wait and not an earlier clock, and `kMinOutputDelaySeconds` for why it stops
-    /// at zero rather than going back another beat.
-    double holdFor(double delaySeconds) const noexcept;
-
     /// One assembled message to the selected targets, counting what each one did with it.
     /// The only place a datagram leaves this class.
-    void sendPacket(OscMessage& message, std::uint64_t outputs);
-    void sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs);
-    void sendFloat(std::string_view address, float value, std::uint64_t outputs);
+    ///
+    /// Each target has it at `moment` plus the rig's offset plus its own delay, or at once
+    /// when that has already gone. **Nothing else decides when**, and that is the audit's H4:
+    /// this used to turn a negative offset into "hold for what is left of a beat" and apply it
+    /// to every message, so a bar-1 clip cue landed just before beat 2 and a manual cue nearly
+    /// a beat late. A message about a beat the output thread is firing ahead of time now carries
+    /// that beat's own moment, and "earlier" means earlier than it; a message about now goes now.
+    void sendPacket(OscMessage& message, std::uint64_t outputs, double moment);
+    void sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs,
+                 double moment);
+    void sendFloat(std::string_view address, float value, std::uint64_t outputs, double moment);
     /// Sends the four state addresses whose value has moved, and remembers them.
     void sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
-                          bool force);
+                          bool force, double moment);
 
     std::string prefix_;
     // The addresses, built once so publishing never touches a string.
@@ -191,13 +204,13 @@ private:
         std::size_t target = 0;
         std::vector<std::byte> packet;
     };
-    /// FIFO, and in due order because a target's delay is constant while its messages queue:
-    /// two messages to one target keep the order they were sent in, which is the whole point
-    /// of delaying rather than dropping. Changing a delay does not reorder what is already
-    /// queued — see `flushDue`.
+    /// Kept in the order queued, and sent in that order among whatever has come due. Two
+    /// messages about the same moment to one target — a beat's state and then the beat —
+    /// keep their order, which is the whole point of delaying rather than dropping. A message
+    /// about *now* can overtake one about a beat still to come, and should: the beat has not
+    /// happened yet.
     std::vector<Pending> pending_;
     double now_ = 0.0;
-    double beatSeconds_ = 0.0;
     double offsetSeconds_ = 0.0;
     std::uint64_t dropped_ = 0;
 

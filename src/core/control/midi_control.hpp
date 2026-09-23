@@ -141,6 +141,12 @@ private:
     std::vector<MidiBinding> bindings_;
     std::optional<ControlTarget> learning_;
     std::optional<MidiEvent> lastEvent_;
+    /// The CC just learned, whose release is still to come. Learn binds on the press; a CC
+    /// button then sends its release, and that used to be dispatched through the brand-new
+    /// binding — so learning a CC pad fired its action after all, which is what learn promises
+    /// not to do (the audit's H1). The next event from this control, if it is a release, is
+    /// swallowed.
+    std::optional<MidiEvent> learnedRelease_;
     std::string portName_;
 };
 

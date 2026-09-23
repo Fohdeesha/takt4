@@ -1227,6 +1227,45 @@ TEST_CASE("the settings sliders send whole options, clamped to what they offer",
     CHECK(options.maxBpm - options.minBpm >= takt4::ui::kFoldLeastSpanBpm);
 }
 
+TEST_CASE("the latency slider moves the outputs and not only the tracker", "[ui]") {
+    // The audit's C6. The slider posted to the tracker, which applies the offset only to a
+    // timestamp nothing in the app reads; the transports took theirs once, at construction. So
+    // dragging it moved nothing on Link, the MIDI clock or OSC that night, and the value saved
+    // took effect at the *next* launch.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    REQUIRE(controller.outputs().transports().latencySeconds() == 0.0);
+
+    controller.window().invoke_latency_changed(-40.0f);
+    CHECK_THAT(controller.outputs().transports().latencySeconds(), WithinAbs(-0.040, 1e-9));
+    controller.window().invoke_latency_changed(25.0f);
+    CHECK_THAT(controller.outputs().transports().latencySeconds(), WithinAbs(0.025, 1e-9));
+}
+
+TEST_CASE("keep for the next track reaches the tracker and the settings file", "[ui]") {
+    // The audit's H2 setting, through the controller. The click on the box itself is tested
+    // below with the other gestures.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE_FALSE(tracker.engine().tempoOptions().keepOctaveShift);
+    REQUIRE_FALSE(controller.window().get_keep_shift());
+
+    controller.window().invoke_keep_shift_changed(true);
+    run.applyPosted();
+    CHECK(tracker.engine().tempoOptions().keepOctaveShift);
+    CHECK(controller.window().get_keep_shift());
+    controller.window().invoke_keep_shift_changed(false);
+    run.applyPosted();
+    CHECK_FALSE(tracker.engine().tempoOptions().keepOctaveShift);
+
+    SECTION("and it is saved with the rest of the tempo settings") {
+        controller.window().invoke_keep_shift_changed(true);
+        run.applyPosted();
+        CHECK(controller.currentSettings().preset.tempo.keepOctaveShift);
+    }
+}
+
 TEST_CASE("two settings changes in a row do not undo each other", "[ui]") {
     // The engine applies a posted command on its own thread, which has not run yet here —
     // exactly as it would not have two milliseconds after a drag. An edit that started
@@ -2190,6 +2229,37 @@ TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "
     // the one that matters, reached nothing at all.
     press(window, kEscape);
     CHECK(controller.outputs().panicked());
+}
+
+TEST_CASE("the keep for the next track box is ticked by a click", "[ui]") {
+    // Found on the laid-out window by clicking down the settings column until the box ticks —
+    // not assumed from the markup — and read back from the engine, which is what an operator's
+    // click has to reach.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    layOut(controller, 1000.0f, 760.0f);
+    auto& window = controller.window().window();
+    REQUIRE_FALSE(controller.window().get_keep_shift());
+
+    // The column the fold switch is in, which is where the box lines up.
+    constexpr float kColumn = 118.0f;
+    float boxY = 0.0f;
+    for (float y = 150.0f; y < 700.0f && boxY == 0.0f; y += 3.0f) {
+        clickAt(window, kColumn, y);
+        if (controller.window().get_keep_shift()) {
+            boxY = y;
+        }
+    }
+    INFO("no click in the settings column ticked the box");
+    REQUIRE(boxY > 0.0f);
+    run.applyPosted();
+    CHECK(tracker.engine().tempoOptions().keepOctaveShift);
+
+    clickAt(window, kColumn, boxY);
+    CHECK_FALSE(controller.window().get_keep_shift());
+    run.applyPosted();
+    CHECK_FALSE(tracker.engine().tempoOptions().keepOctaveShift);
 }
 
 TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {

@@ -45,6 +45,7 @@ void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Optio
     window.set_fold_min(static_cast<float>(options.minBpm));
     window.set_fold_max(static_cast<float>(options.maxBpm));
     window.set_latency_ms(static_cast<float>(options.latencyOffsetSeconds * 1000.0));
+    window.set_keep_shift(options.keepOctaveShift);
 }
 
 void publishControlLimits(MainWindow& window) {

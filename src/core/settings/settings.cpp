@@ -172,6 +172,7 @@ json tempoToJson(const tracking::TempoTracker::Options& tempo) {
         {"octaveFold", tempo.octaveFold},
         {"confidenceThreshold", tempo.confidenceThreshold},
         {"latencyOffsetSeconds", tempo.latencyOffsetSeconds},
+        {"keepOctaveShift", tempo.keepOctaveShift},
     };
 }
 
@@ -185,6 +186,7 @@ tracking::TempoTracker::Options tempoFromJson(const json& object) {
     read(object, "octaveFold", tempo.octaveFold);
     read(object, "confidenceThreshold", tempo.confidenceThreshold);
     read(object, "latencyOffsetSeconds", tempo.latencyOffsetSeconds);
+    read(object, "keepOctaveShift", tempo.keepOctaveShift);
 
     // `TempoTracker::setOptions` is noexcept and trusts its caller, and `foldInto` returns
     // the tempo *unfolded* when the window is inverted — which reads as the fold quietly

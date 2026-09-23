@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -157,6 +158,7 @@ MidiClock::MidiClock(MidiSink& sink, double bpm) : sink_(&sink), bpm_(bpm) {
     if (!(bpm > 0.0)) {
         throw std::invalid_argument("MidiClock: the tempo must be positive");
     }
+    spacing_ = tickSeconds();
 }
 
 double MidiClock::tickSeconds() const noexcept {
@@ -169,18 +171,20 @@ void MidiClock::emit(unsigned char status) noexcept {
 }
 
 double MidiClock::nextTick() const noexcept {
-    return origin_ + static_cast<double>(sinceOrigin_) * tickSeconds();
+    return origin_ + static_cast<double>(sinceOrigin_) * spacing_;
 }
 
-void MidiClock::anchor(double at) noexcept {
+void MidiClock::anchor(double at, double spacing) noexcept {
     origin_ = at;
     sinceOrigin_ = 0;
+    spacing_ = spacing;
 }
 
 void MidiClock::start(double now, bool asContinue) noexcept {
     emit(asContinue ? kContinue : kStart);
     running_ = true;
-    anchor(now);
+    steering_ = 0;
+    anchor(now, tickSeconds());
     pulse_ = 0;
 }
 
@@ -195,38 +199,57 @@ void MidiClock::setTempo(double bpm) noexcept {
     if (!(bpm > 0.0)) {
         return;
     }
-    // Re-anchor on the tick that was already scheduled, so the interval in flight is not
-    // retimed underneath the receiver.
-    const double pending = nextTick();
     bpm_ = bpm;
-    anchor(pending);
+    if (steering_ == 0) {
+        // Re-anchored on the tick that was already scheduled, so the interval in flight is
+        // not retimed underneath the receiver. A steered stretch keeps its spacing: it was
+        // worked out to land a pulse 0 on a beat, and the next sync works from the new tempo.
+        anchor(nextTick(), tickSeconds());
+    }
 }
 
-void MidiClock::syncToBeat(double now) noexcept {
+void MidiClock::syncToBeat(double beatTime) noexcept {
     if (!running_) {
         return;
     }
-    // A beat is pulse 0 of a quarter note. Putting the next tick here rather than
-    // wherever the free-running schedule had reached is what stops the clock drifting
-    // away from the audio between tempo updates.
-    anchor(now);
-    pulse_ = 0;
+    const double tick = tickSeconds();
+    const double beat = tick * static_cast<double>(kPulsesPerQuarterNote);
+    // The pulse 0 to steer: the next one at least a tick away. When the next tick *is* a
+    // pulse 0 it is left alone — it is due within one tick, and moving it would mean moving
+    // a tick that is about to go — and the one after it is steered instead.
+    const std::size_t remaining = kPulsesPerQuarterNote - pulse_; // 24 when pulse_ is 0
+    const double next = nextTick();
+    // Where that pulse 0 lands at the tempo's own spacing, which is the question — not where
+    // a spacing steered for the last beat would have put it.
+    const double unsteered = next + static_cast<double>(remaining) * tick;
+    // The nearest beat of the grid the tracker's beat sits on, which is what the pulse 0 is
+    // pulled towards. Past or future, it makes no difference: the grid runs both ways.
+    const double target = beatTime + std::round((unsteered - beatTime) / beat) * beat;
+    const double error = unsteered - target; // positive: the clock is late
+    const double landing = unsteered - kSteerGain * error;
+    const double spacing = std::clamp((landing - next) / static_cast<double>(remaining),
+                                      tick * kSteerMin, tick * kSteerMax);
+    // From the tick already scheduled, which stays where it is.
+    anchor(next, spacing);
+    steering_ = remaining;
 }
 
 std::size_t MidiClock::advance(double now) noexcept {
     if (!running_) {
         return 0;
     }
-    const double interval = tickSeconds();
     std::size_t emitted = 0;
     while (nextTick() <= now) {
         if (emitted >= kMaxBurst) {
             // Something stalled for longer than the burst allows. Skip the backlog and
-            // start again from here rather than flooding the port.
+            // start again from here rather than flooding the port. The only place a tick is
+            // ever dropped, and it is counted.
+            const double interval = tickSeconds();
             const auto behind = static_cast<std::uint64_t>((now - nextTick()) / interval) + 1;
             skipped_ += behind;
             pulse_ = (pulse_ + behind) % kPulsesPerQuarterNote;
-            anchor(now + interval);
+            steering_ = 0;
+            anchor(now + interval, interval);
             break;
         }
         emit(kTick);
@@ -234,6 +257,12 @@ std::size_t MidiClock::advance(double now) noexcept {
         ++emitted;
         ++sinceOrigin_;
         pulse_ = (pulse_ + 1) % kPulsesPerQuarterNote;
+        if (steering_ != 0 && --steering_ == 0) {
+            // The steered pulse 0 has just gone. From here the tempo's own spacing again, until
+            // the next beat asks for a correction — so a clock left without beats (a quiet
+            // passage, an unlocked tracker) runs on at the tempo rather than at a correction.
+            anchor(nextTick(), tickSeconds());
+        }
     }
     return emitted;
 }

@@ -1,8 +1,11 @@
 #include "core/output/link_session.hpp"
+#include "core/output/transports.hpp"
+#include "core/tracking/tempo_tracker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -118,4 +121,80 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[.link-networ
     // Leaving the network has to be seen too, or a stopped takt4 would haunt a peer's
     // peer count for as long as it kept running.
     CHECK(eventually([&] { return peer.numPeers() == 0; }));
+}
+
+TEST_CASE("a peer that was there first is put on the music's phase", "[.link-network]") {
+    // The audit's C3, as its experiment ran it: Resolume on Link first, takt4 enabling Link
+    // after, so takt4's session adopts Resolume's timeline on join — and the music's beats fall
+    // 180 ms off it. With a peer present `requestBeatAtTime` does not move the session's phase
+    // ("the next time value ... with the same phase"), so takt4 used to change only the tempo:
+    // measured, both sessions stayed 180 ms off the music for every beat, the bar 1.6 beats
+    // wrong. The first locked beat now forces the phase — the operator's call, snap once and
+    // then nudge — and the peer reads the music's bar.
+    LinkSession peer(128.0);
+    peer.enable(true);
+    // The peer's own bar, somewhere the music is not.
+    peer.forceBeat(0.0, peer.now() + std::chrono::milliseconds{300}, 4.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+
+    takt4::output::Transports::Config config;
+    config.link = true;
+    takt4::output::Transports app(config);
+    app.startOutputs(0.0);
+    LinkSession& ours = app.link();
+    REQUIRE(eventually([&] { return ours.numPeers() >= 1 && peer.numPeers() >= 1; }));
+    // Joined, and on one timeline — whichever side won it, the music is not on it, which is
+    // the case a request cannot fix. Brought to the music's tempo first, so the only thing
+    // wrong is the phase.
+    REQUIRE(eventually([&] { return std::abs(ours.tempoBpm() - peer.tempoBpm()) < 1e-6; }));
+    ours.setTempo(128.0, ours.now());
+    REQUIRE(eventually([&] { return std::abs(peer.tempoBpm() - 128.0) < 1e-6; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+    // The music: 128 BPM, its bar starting 180 ms after the peer's.
+    const double beat = 60.0 / 128.0;
+    const std::chrono::microseconds peerBar =
+        ours.now() + std::chrono::seconds{2} -
+        std::chrono::microseconds{static_cast<std::int64_t>(ours.phaseAtTime(
+                                                                  ours.now() + std::chrono::seconds{2}, 4.0) *
+                                                              beat * 1e6)};
+    const std::int64_t musicBar = peerBar.count() + 180'000;
+    REQUIRE(std::abs(peer.phaseAtTime(std::chrono::microseconds{musicBar}, 4.0) -
+                     0.180 / beat) < 0.05);
+
+    for (std::uint32_t k = 0; k < 8; ++k) {
+        takt4::tracking::BeatEvent event;
+        event.bpm = 128.0;
+        event.locked = true;
+        event.confidence = 0.9;
+        event.beatsPerBar = 4;
+        event.beatInBar = k % 4 + 1;
+        event.downbeat = event.beatInBar == 1;
+        const std::int64_t at = musicBar + static_cast<std::int64_t>(k * beat * 1e6);
+        app.publish(event, at, 0.0);
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    }
+
+    // The peer now reads the music's bar at the music's beats — within a fortieth of a beat,
+    // for two sessions' clocks and a network round trip.
+    const auto onTheMusic = [&] {
+        for (std::uint32_t k = 8; k < 16; ++k) {
+            const std::chrono::microseconds when{musicBar + static_cast<std::int64_t>(k * beat * 1e6)};
+            const double phase = peer.phaseAtTime(when, 4.0);
+            double apart = std::fmod(phase - static_cast<double>(k % 4) + 8.0, 4.0);
+            apart = std::min(apart, 4.0 - apart);
+            if (apart > 0.025) {
+                return false;
+            }
+        }
+        return true;
+    };
+    INFO("peer phase at the music's bar: "
+         << peer.phaseAtTime(std::chrono::microseconds{musicBar + static_cast<std::int64_t>(
+                                                          8 * beat * 1e6)},
+                             4.0));
+    CHECK(eventually(onTheMusic, std::chrono::seconds{5}));
+
+    app.stopOutputs();
+    peer.enable(false);
 }

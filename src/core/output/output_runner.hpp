@@ -3,6 +3,7 @@
 #include "core/audio/host_time.hpp"
 #include "core/control/rule_control.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/output/beat_scheduler.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
 #include "core/trigger/trigger_engine.hpp"
@@ -239,6 +240,12 @@ public:
     /// loop has to come round well inside that or the ticks inherit its period as jitter.
     static constexpr std::chrono::milliseconds kPeriod{1};
 
+    /// How much later than the latest output wants it a beat may be heard and still be fired.
+    /// The pipeline from audio to a called beat is tens of milliseconds; a beat heard a third
+    /// of a second late is a backlog from a worker that stalled, and firing the lot would be a
+    /// burst of cues for music already gone (the audit's M15). The clocks still take it.
+    static constexpr double kStaleSeconds = 0.35;
+
     /// The engine must outlive this. The transports are built here and owned here, which
     /// is what makes "one thread touches them" structural rather than a comment: nothing
     /// else can reach a mutating member of them. Changes go through `post`.
@@ -443,10 +450,16 @@ public:
     /// and small enough that nothing has to think about it.
     static constexpr std::size_t kFiredCapacity = 512;
 
+    /// When beats have been fired, for a test to read. Output thread only, like `triggers()`.
+    const BeatScheduler& scheduler() const noexcept { return scheduler_; }
+
 private:
     void run() noexcept;
-    /// One round: every beat waiting, then the clock. **The caller must hold `ownerMutex_`.**
+    /// One round: every beat heard, every beat predicted and due, then the clock. **The caller
+    /// must hold `ownerMutex_`.**
     void drainOnce(double now);
+    /// One beat to §5.6's namespace and §5.8's beat triggers, about its own moment.
+    void fireBeat(const ScheduledBeat& beat, double now);
     /// Everything posted since the last round, in order, under `ownerMutex_` — so this is
     /// the way in for a thread that is not the output thread, and the output thread's own
     /// way in as well.
@@ -485,6 +498,9 @@ private:
     /// both references alive for as long as they are used.
     RuleSink sink_;
     trigger::TriggerEngine triggers_;
+    /// When each beat is fired: as it is heard, or ahead of it on a prediction. See
+    /// `BeatScheduler`.
+    BeatScheduler scheduler_;
     /// The onset count last seen from the engine. The output thread has no frames of its
     /// own, so a count that moved is how it learns one happened.
     std::uint64_t onsetsSeen_ = 0;

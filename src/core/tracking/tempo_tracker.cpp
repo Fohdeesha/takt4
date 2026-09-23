@@ -134,6 +134,7 @@ void TempoTracker::reset() noexcept {
     // than surviving as a pin on a tempo that no longer exists.
     lockPinned_ = false;
     octaveShift_ = 0;
+    shiftFromTap_ = false;
     beatOctave_ = 0;
     beatOctaveCandidate_ = 0;
     beatOctaveRun_ = 0;
@@ -321,6 +322,12 @@ double TempoTracker::calledBpm(double cloudBpm) const noexcept {
     return applyShift(cloudBpm, beatOctave_);
 }
 
+double TempoTracker::decoderBpm() const noexcept {
+    // The inverse of the three steps between the cloud and the published number: the beats'
+    // octave (`calledBpm`), then the fold's and the operator's (`inChosenOctave`).
+    return applyShift(state_.bpm, -(beatOctave_ + foldOctave_ + octaveShift_));
+}
+
 double TempoTracker::publishedPeriodFrames() const noexcept {
     return static_cast<double>(filterIntervalFrames_) * static_cast<double>(foldDivisor()) *
            applyShift(1.0, -beatOctave_);
@@ -431,7 +438,11 @@ void TempoTracker::chooseOctave(double bpm) noexcept {
 }
 
 void TempoTracker::halve() noexcept {
+    if (octaveShift_ <= -kMaxOctaveShift) {
+        return; // two octaves down already; see kMaxOctaveShift
+    }
     --octaveShift_;
+    shiftFromTap_ = false;
     // The operator's shift moves the tempo now, whether or not the tracker is locked: this
     // is the one case where a hunting tracker's published tempo is allowed to move without
     // a lock behind it, because it moved because they asked.
@@ -449,7 +460,11 @@ void TempoTracker::halve() noexcept {
 }
 
 void TempoTracker::redouble() noexcept {
+    if (octaveShift_ >= kMaxOctaveShift) {
+        return; // two octaves up already; see kMaxOctaveShift
+    }
     ++octaveShift_;
+    shiftFromTap_ = false;
     refinedBpm_ = 0.0;
     lockHeld_ = 0;
     chooseOctave(state_.calledBpm);
@@ -473,6 +488,7 @@ void TempoTracker::seedTempo(double bpm) noexcept {
         options_.minBpm = bpm / half;
         options_.maxBpm = bpm * half;
         octaveShift_ = 0;
+        shiftFromTap_ = false;
         forgetFold(); // a new window, so a new question about which octave
     } else if (state_.calledBpm > 0.0) {
         // **A tap does not switch the fold on**, and that is the whole of this branch.
@@ -493,7 +509,13 @@ void TempoTracker::seedTempo(double bpm) noexcept {
         // Against the tempo the beats are on, not the cloud's: an operator tapping 100 over
         // Moonlake — cloud at 200, beats at 100, readout already 100 — has named the octave
         // being published and asked for nothing to move.
-        octaveShift_ = std::llround(std::log2(bpm / state_.calledBpm));
+        //
+        // Bounded like ÷2 and ×2 (see kMaxOctaveShift), and marked as a tap's, which is what
+        // lets the next track drop it: "for as long as the tracker is on this tempo" is the
+        // promise above, and until the audit's H2 nothing kept it.
+        octaveShift_ = std::clamp<std::int64_t>(std::llround(std::log2(bpm / state_.calledBpm)),
+                                                -kMaxOctaveShift, kMaxOctaveShift);
+        shiftFromTap_ = octaveShift_ != 0;
     }
 
     refinedBpm_ = 0.0;
@@ -738,6 +760,18 @@ void TempoTracker::updateLock(double folded) noexcept {
             // holds. (Measured on Moonlake, clearing it and not clearing it give the same
             // trace to the frame, so the argument above is the reason rather than the
             // measurement: that track's cloud sits on interval 15 throughout.)
+            //
+            // **And the operator's octave shift, unless they asked for it to stay** — the audit's
+            // H2, and the operator's call on 2026-09-23. A different tempo taking the lock is
+            // the next record of the set, and a ÷2 that fitted the last one halved this one
+            // with its beats divided until somebody pressed ×2. A tap's shift always goes: it
+            // named the last record's tempo, not an octave for the rest of the night. The
+            // candidate was agreed with under the shift, so the shift comes back out of it.
+            if (octaveShift_ != 0 && (shiftFromTap_ || !options_.keepOctaveShift)) {
+                candidate_ = applyShift(candidate_, -octaveShift_);
+                octaveShift_ = 0;
+                shiftFromTap_ = false;
+            }
         }
         state_.locked = true;
         everLocked_ = true;

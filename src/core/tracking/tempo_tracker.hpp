@@ -411,6 +411,18 @@ public:
         /// Negative fires early, which is the useful direction.
         double latencyOffsetSeconds = 0.0;
 
+        /// Whether a ÷2 or ×2 the operator pressed **carries on into the next track** — the
+        /// next time a different tempo earns the lock — or is dropped there. Off by default,
+        /// which is the operator's call of 2026-09-23: a set is one record after another, and
+        /// a ÷2 that suited a 174 drum-and-bass track turned the 128 house record after it into
+        /// 64, with the beats divided, until somebody noticed (the audit's H2). On, the shift
+        /// is a set-wide preference that lasts until pressed again or a restart.
+        ///
+        /// A tapped tempo's octave is never carried either way: a tap names *this* record's
+        /// tempo, and `seedTempo` has always promised its shift lasts only as long as the
+        /// tracker stays on it.
+        bool keepOctaveShift = false;
+
         /// How many beat-to-beat gaps the refined tempo is averaged over, and how many of
         /// them have to survive outlier rejection before it is published at all. Twenty-four
         /// gaps is about six bars of 4/4.
@@ -583,6 +595,17 @@ public:
     void setLockPinned(bool pinned) noexcept;
     bool lockPinned() const noexcept { return lockPinned_; }
 
+    /// The published tempo **in the decoder's own terms**: with the operator's ÷2 or ×2, the
+    /// fold's octave and the octave the beats sit at against the cloud all taken back out.
+    /// What a tempo hold on the decoder is given when the lock is pinned (`BeatEngine`).
+    ///
+    /// Not the published tempo, which carries the shift — pinning under ÷2 held the filter at
+    /// half its real tempo — and not the cloud's `rawBpm`, which is the right octave but
+    /// wanders: caught at the moment a lock is earned it read 132.9 over a 128 BPM track, and a
+    /// hold there would have pushed the filter off the music it had just locked to. The audit's
+    /// H3.
+    double decoderBpm() const noexcept;
+
     /// The octave fold on its own, with no memory of what has been tracked: what a given
     /// tempo folds to from a standing start. For tests and for the UI to preview. The
     /// tracker itself folds *with* memory — see `Options::foldHysteresis`.
@@ -682,6 +705,14 @@ private:
     bool foldChosen_ = false;
     bool lockPinned_ = false;      ///< the operator is holding the lock up; see setLockPinned
     std::int64_t octaveShift_ = 0; ///< manual ×2 (+1) and ÷2 (-1) steps, applied after folding
+    /// Whether the shift above came from a tap rather than from ÷2 or ×2 — the one that is
+    /// dropped at the next track whatever `Options::keepOctaveShift` says.
+    bool shiftFromTap_ = false;
+    /// The furthest the manual shift goes either way: two octaves, a quarter or four times the
+    /// tracked tempo. Past that it is not an octave preference but a tempo nothing can be
+    /// playing, and unbounded ÷2 presses — or a tap of a wildly wrong tempo with the fold off —
+    /// sent Link and the MIDI clock a tempo of a few BPM or a few hundred (the audit's H1).
+    static constexpr std::int64_t kMaxOctaveShift = 2;
     /// How many octaves the beats the filter *calls* sit away from the tempo it *reports* —
     /// negative when the beats are slower, which is the case that has been seen. Applied to
     /// the cloud's tempo before the fold and the lock ever see it (`calledBpm`), so that

@@ -72,22 +72,15 @@ void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::siz
     targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector, delay});
 }
 
-double OscPublisher::holdFor(double delaySeconds) const noexcept {
-    const double offset = delaySeconds + offsetSeconds_;
-    if (offset >= 0.0) {
-        return offset;
+void OscPublisher::flushAll() {
+    for (const Pending& item : pending_) {
+        if (item.target < targets_.size() && targets_[item.target].sender->send(item.packet)) {
+            ++sent_;
+        } else {
+            ++failed_;
+        }
     }
-    // Earlier than a beat we have already heard is not a thing that can be sent, so it is
-    // taken off the *next* beat instead: hold for what is left of a beat after the offset.
-    // With no tempo yet there is no beat to take it off, and holding an arbitrary amount
-    // would be worse than not holding at all.
-    if (beatSeconds_ <= 0.0) {
-        return 0.0;
-    }
-    // Clamped rather than stepped back another beat: an offset longer than the beat is an
-    // operator describing a rig problem, and two beats of anticipation would be a stranger
-    // answer than "as early as it can go".
-    return std::max(0.0, beatSeconds_ + offset);
+    pending_.clear();
 }
 
 void OscPublisher::flushDue() {
@@ -148,25 +141,27 @@ void OscPublisher::sendAddress(std::string_view address, std::string_view value)
     sendAddressTo(kAllOutputs, address, value);
 }
 
-void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address) {
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
+                                 std::optional<double> moment) {
     OscMessage message(address);
-    sendPacket(message, outputs);
+    sendPacket(message, outputs, moment.value_or(now_));
 }
 
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
-                                 std::int32_t value) {
-    sendInt(address, value, outputs);
+                                 std::int32_t value, std::optional<double> moment) {
+    sendInt(address, value, outputs, moment.value_or(now_));
 }
 
-void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address, float value) {
-    sendFloat(address, value, outputs);
+void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address, float value,
+                                 std::optional<double> moment) {
+    sendFloat(address, value, outputs, moment.value_or(now_));
 }
 
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
-                                 std::string_view value) {
+                                 std::string_view value, std::optional<double> moment) {
     OscMessage message(address);
     message.addString(value);
-    sendPacket(message, outputs);
+    sendPacket(message, outputs, moment.value_or(now_));
 }
 
 bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
@@ -178,15 +173,19 @@ bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
     return false;
 }
 
-void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs) {
+void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double moment) {
     const auto packet = message.packet();
     for (std::size_t i = 0; i < targets_.size(); ++i) {
         const Target& target = targets_[i];
         if ((target.bit & outputs) == 0) {
             continue; // routed away from this one
         }
-        const double hold = holdFor(target.delaySeconds);
-        if (hold <= 0.0) {
+        // The moment the message is about, moved by the rig's offset and then by this target's
+        // own. Already gone is sent now: earlier than now is not a time anything can be sent at,
+        // and a message about a beat that was only heard after its moment is as early as it can
+        // be the moment it is sent.
+        const double due = moment + offsetSeconds_ + target.delaySeconds;
+        if (due <= now_) {
             if (target.sender->send(packet)) {
                 ++sent_;
             } else {
@@ -201,63 +200,66 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs) {
             ++dropped_;
             continue;
         }
-        pending_.push_back(
-            Pending{now_ + hold, i, std::vector<std::byte>(packet.begin(), packet.end())});
+        pending_.push_back(Pending{due, i, std::vector<std::byte>(packet.begin(), packet.end())});
     }
 }
 
-void OscPublisher::sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs) {
+void OscPublisher::sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs,
+                           double moment) {
     OscMessage message(address);
     message.addInt(value);
-    sendPacket(message, outputs);
+    sendPacket(message, outputs, moment);
 }
 
-void OscPublisher::sendFloat(std::string_view address, float value, std::uint64_t outputs) {
+void OscPublisher::sendFloat(std::string_view address, float value, std::uint64_t outputs,
+                             double moment) {
     OscMessage message(address);
     message.addFloat(value);
-    sendPacket(message, outputs);
+    sendPacket(message, outputs, moment);
 }
 
 void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
-                                    bool force) {
+                                    bool force, double moment) {
     if (force || std::abs(bpm - lastBpm_) > kBpmEpsilon) {
-        sendFloat(bpmAddress_, static_cast<float>(bpm), kAllOutputs);
+        sendFloat(bpmAddress_, static_cast<float>(bpm), kAllOutputs, moment);
         lastBpm_ = bpm;
     }
     if (force || std::abs(confidence - lastConfidence_) > kConfidenceEpsilon) {
-        sendFloat(confidenceAddress_, static_cast<float>(confidence), kAllOutputs);
+        sendFloat(confidenceAddress_, static_cast<float>(confidence), kAllOutputs, moment);
         lastConfidence_ = confidence;
     }
     const int lockedNow = locked ? 1 : 0;
     if (force || lockedNow != lastLocked_) {
-        sendInt(lockedAddress_, lockedNow, kAllOutputs);
+        sendInt(lockedAddress_, lockedNow, kAllOutputs, moment);
         lastLocked_ = lockedNow;
     }
     if (force || meter != lastMeter_) {
-        sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs);
+        sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs, moment);
         lastMeter_ = meter;
     }
 }
 
-void OscPublisher::publishBeat(const tracking::BeatEvent& event) {
+void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<double> moment) {
+    const double at = moment.value_or(now_);
     // State first: a consumer that reads the beat and then looks at the tempo should see
-    // the tempo of the beat it just got, not the one before it.
-    sendChangedState(event.bpm, event.confidence, event.locked, event.beatsPerBar, true);
-    sendInt(beatAddress_, 1, kAllOutputs);
+    // the tempo of the beat it just got, not the one before it. Both at the beat's own moment,
+    // so a target delayed or brought forward keeps them in that order.
+    sendChangedState(event.bpm, event.confidence, event.locked, event.beatsPerBar, true, at);
+    sendInt(beatAddress_, 1, kAllOutputs, at);
     if (event.beatInBar > 0) {
-        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs);
+        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs, at);
     }
     if (event.downbeat) {
-        sendInt(downbeatAddress_, 1, kAllOutputs);
+        sendInt(downbeatAddress_, 1, kAllOutputs, at);
     }
 }
 
 void OscPublisher::publishState(const tracking::TempoState& state) {
-    sendChangedState(state.bpm, state.confidence, state.locked, state.beatsPerBar, false);
+    sendChangedState(state.bpm, state.confidence, state.locked, state.beatsPerBar, false, now_);
 }
 
 void OscPublisher::publishResync() {
-    sendInt(resyncAddress_, 1, kAllOutputs);
+    sendInt(resyncAddress_, 1, kAllOutputs, now_);
 }
 
 } // namespace takt4::output

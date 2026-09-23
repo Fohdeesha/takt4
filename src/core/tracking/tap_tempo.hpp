@@ -30,6 +30,17 @@ public:
         /// which is the least that can be called a tempo; eight is about two bars of 4/4.
         std::size_t needTaps = 3;
         std::size_t keepTaps = 8;
+        /// A tap closer than this to the one before is a **bounce** — a switch that chattered,
+        /// a pad that retriggered, a key held down — and is ignored outright rather than
+        /// counted. A tenth of a second is 600 BPM; nobody taps that, and a switch bounces in a
+        /// few milliseconds. Without it two taps 20 ms apart were a tempo of 3000 BPM, and with
+        /// the fold off that went straight to Link and the MIDI clock as an octave shift (the
+        /// audit's H1).
+        double bounceSeconds = 0.1;
+        /// The tempi a set of taps may offer. Outside this nothing is offered and the set goes
+        /// on counting: a tap tempo of 12 or 900 BPM is a set that went wrong, not a tempo.
+        double minBpm = 30.0;
+        double maxBpm = 300.0;
     };
 
     /// Two constructors rather than `Options options = {}`: a default argument is written

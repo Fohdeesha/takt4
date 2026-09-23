@@ -42,13 +42,14 @@ slint::SharedString shared(const std::string& text) {
 
 /// Whether the engine has taken the settings the window sent it.
 ///
-/// Only the four fields the window can change. Comparing the rest would leave a control
+/// Only the five fields the window can change. Comparing the rest would leave a control
 /// frozen over a difference this window did not cause and cannot fix — and exact equality
-/// is the right test for all four, because what comes back is the value that was posted,
+/// is the right test for all five, because what comes back is the value that was posted,
 /// stored and read back, never a number arrived at by arithmetic.
 bool sameSettings(const Options& a, const Options& b) noexcept {
     return a.octaveFold == b.octaveFold && a.minBpm == b.minBpm && a.maxBpm == b.maxBpm &&
-           a.latencyOffsetSeconds == b.latencyOffsetSeconds;
+           a.latencyOffsetSeconds == b.latencyOffsetSeconds &&
+           a.keepOctaveShift == b.keepOctaveShift;
 }
 
 /// "note 36 ch 10" — the control half of a binding, without the action.
@@ -440,6 +441,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_fold_min_changed([this](float bpm) { setFoldMin(static_cast<double>(bpm)); });
     window_->on_fold_max_changed([this](float bpm) { setFoldMax(static_cast<double>(bpm)); });
     window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
+    window_->on_keep_shift_changed([this](bool keep) { setKeepShift(keep); });
 
     window_->on_link_toggled([this](bool on) { setLinkEnabled(on); });
     window_->on_output_name_edited([this](int index, const slint::SharedString& name) {
@@ -1715,6 +1717,12 @@ void WindowController::setLatencyMs(double milliseconds) {
     postOptions(options);
 }
 
+void WindowController::setKeepShift(bool keep) {
+    Options options = settings();
+    options.keepOctaveShift = keep;
+    postOptions(options);
+}
+
 tracking::TempoTracker::Options WindowController::settings() const {
     // §7 deviation 8 says to edit from what the engine has and never from a copy kept
     // since startup, because a tap moves the fold window underneath one. `posted_` is not
@@ -1731,6 +1739,14 @@ void WindowController::postOptions(const Options& options) {
         posted_.reset();
         return;
     }
+    // **And to the transports**, which is where the latency offset does anything at all: the
+    // tracker applies it only to `BeatEvent::time`, which nothing in the application reads.
+    // Until the audit (C6) this was the one place it was sent, so dragging "latency" to pull
+    // the rig earlier moved nothing — and the value was saved, and took effect at the *next*
+    // launch, offsetting a later show by an amount nobody chose that night. One atomic,
+    // safe from this thread; every way a setting changes comes through here, the slider and
+    // an import alike.
+    runner_.setLatencySeconds(options.latencyOffsetSeconds);
     posted_ = options;
     settling_ = 0;
     publishTempoOptions(*window_, options);

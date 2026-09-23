@@ -64,6 +64,16 @@ public:
     /// to peers by design."
     void forceBeat(double beat, std::chrono::microseconds at, double quantum);
 
+    /// The tempo and a forced beat **in one commit** — the snap `Transports` makes on the first
+    /// locked beat and on a DOWNBEAT.
+    ///
+    /// One commit, not `setTempo` then `forceBeat`: Link's own thread writes the session's
+    /// timeline back into the app's copy as it handles each commit (`Controller::
+    /// updateSessionTiming`), so a second commit made before the first has been handled can be
+    /// overwritten by the first one's echo. Measured: one run in four lost the snap that way when
+    /// beats were published back to back.
+    void snap(double bpm, double beat, std::chrono::microseconds at, double quantum);
+
     /// The beat Link's timeline is on at `at`, for display and for tests.
     double beatAtTime(std::chrono::microseconds at, double quantum) const;
     /// Where in the bar that beat falls, 0 to quantum.

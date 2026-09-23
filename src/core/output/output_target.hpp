@@ -74,35 +74,32 @@ struct OutputTarget {
     /// the next output is doing. §5.5's single slider moves all of them together, which is
     /// the one adjustment that cannot help a rig with two different lags in it.
     ///
-    /// **Positive is later, negative is earlier, and both are real** — but they are not
-    /// symmetrical underneath, and the asymmetry is worth stating because it is the whole
-    /// reason this comment is long.
+    /// **Positive is later, negative is earlier, and both are real**: a target at −300 ms has
+    /// a beat's messages 300 ms before the beat is in the music. It is the number an operator
+    /// actually has in their head — *this device is 300 ms slow, take 300 ms off it* — and it
+    /// stays right as the tempo moves, because it is measured from the beat, not from a clock.
     ///
-    /// A message cannot be sent before the beat that caused it has been heard. So "earlier"
-    /// cannot mean *before this beat*; it means **before the next one**. A target at −300 ms
-    /// is held for one beat less 300 ms, and what arrives is a message 300 ms ahead of the
-    /// beat it lands on. Downstream cannot tell the difference — a clip change that arrives
-    /// 300 ms before a beat is a clip change that arrives 300 ms before a beat, whichever
-    /// beat we counted from — and it is the number an operator actually has in their head:
-    /// *this device is 300 ms slow, take 300 ms off it.*
+    /// Earlier than a beat has been *heard* works because the output thread does not wait to
+    /// hear it: while the tracker is locked it fires each beat ahead of time on a prediction,
+    /// by as much as the earliest target needs (`BeatScheduler`, `Transports::leadSeconds`),
+    /// and each target is then held until the beat's moment plus §5.5's rig-wide offset plus
+    /// this. Until the audit (H4) a negative offset instead held every message for what was
+    /// left of a beat — so a bar-1 cue landed just before beat 2, and a message about nothing
+    /// in particular waited most of a beat. Two things a prediction cannot do: a beat heard
+    /// while the tracker is hunting goes the moment it is heard, which is as early as it can;
+    /// and a message about *now* — a manual fire, a lock change — goes now plus whatever of the
+    /// offset is positive.
     ///
-    /// It follows the tempo, which a fixed delay cannot. At 92 BPM −300 ms holds for 352 ms;
-    /// at 128 BPM the same −300 ms holds for 169 ms. The operator sets the lag of their
-    /// device once and it stays right as the music changes. `OscPublisher::setBeatSeconds`
-    /// is where the current beat comes from; with no tempo yet, a negative offset holds
-    /// nothing rather than guessing.
-    ///
-    /// Held on the output thread and sent when it comes due (`OscPublisher::flushDue`), so
-    /// the resolution is that thread's round — 1 ms, which is why it raises Windows' timer
-    /// granularity. Nothing is reordered: one target's queue is FIFO.
+    /// Held on the output thread and sent when it comes due (`OscPublisher::flushDue`, and
+    /// `RuleSink::releaseDue` for MIDI), so the resolution is that thread's round — 1 ms,
+    /// which is why it raises Windows' timer granularity.
     ///
     /// **Ignored for `ArtNet`**, and the reason is what DMX is rather than an omission. The
     /// other two send *events*, and an event can be held in a queue and let go later. A DMX
     /// universe is a continuous stream of frames that is never not being sent, so there is no
     /// message to hold back — what would need moving is the moment an *effect starts*, which
     /// belongs to the rule that fired it and not to the cable it goes down. §5.5's rig-wide
-    /// latency already moves that, because it moves when beats are published and so when rules
-    /// fire.
+    /// latency already moves that: `RuleSink` starts an effect at its beat's moment plus it.
     double delaySeconds = 0.0;
 
     friend bool operator==(const OutputTarget&, const OutputTarget&) = default;
@@ -112,9 +109,9 @@ struct OutputTarget {
 /// in the state space's 55-215 BPM, so any phase of any beat is reachable from either
 /// direction; past that an operator is describing a rig problem rather than a latency.
 ///
-/// A negative offset larger than the beat would ask for a hold shorter than nothing. That is
-/// clamped to zero rather than wrapped further back, because two beats of anticipation is
-/// not a latency either — see `OscPublisher::holdFor`.
+/// A negative offset reaches as far ahead as the prediction does — `BeatScheduler::kMaxAhead`
+/// beats past the last one heard. Further than that a beat is fired as soon as it is within
+/// reach, and each target has it as close to its time as it can.
 inline constexpr double kMaxOutputDelaySeconds = 1.0;
 inline constexpr double kMinOutputDelaySeconds = -1.0;
 

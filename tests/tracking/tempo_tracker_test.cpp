@@ -1118,6 +1118,113 @@ TEST_CASE("the manual octave shift moves the published tempo and keeps the lock"
     CHECK(tracker.state().bpm == Approx(bpmOf(23) * 2.0));
 }
 
+TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking][tempo]") {
+    // The audit's H1: ÷2 and ×2 were unbounded, and so was the shift a tap turned into with the
+    // fold off, so a few presses sent Link and the MIDI clock a tempo of eight BPM or a
+    // thousand. Past two octaves it is not an octave preference but a tempo nothing plays.
+    TempoTracker::Options options;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 23, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+
+    for (int press = 0; press < 5; ++press) {
+        tracker.halve();
+    }
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) / 4.0));
+    for (int press = 0; press < 9; ++press) {
+        tracker.redouble();
+    }
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) * 4.0));
+    // And one press back from the top is one octave down, not the fifth of the presses above.
+    tracker.halve();
+    CHECK(tracker.state().bpm == Approx(bpmOf(23) * 2.0));
+
+    SECTION("a tap with the fold off is held to the same two octaves") {
+        TempoTracker::Options off = options;
+        off.octaveFold = false;
+        TempoTracker unfolded(kFramePeriod, off);
+        std::uint64_t at = 0;
+        settle(unfolded, at, 23, 0.9, 20);
+        unfolded.seedTempo(bpmOf(23) / 16.0);
+        CHECK(unfolded.state().bpm == Approx(bpmOf(23) / 4.0));
+        unfolded.seedTempo(bpmOf(23) * 16.0);
+        CHECK(unfolded.state().bpm == Approx(bpmOf(23) * 4.0));
+    }
+}
+
+TEST_CASE("a halving is dropped at the next track unless the operator asked to keep it",
+          "[tracking][tempo]") {
+    // The audit's H2, and the operator's call of 2026-09-23: a set is one record after another,
+    // and a ÷2 that suited a drum-and-bass record turned the house record after it into half
+    // time with the beats divided, until somebody noticed. Dropped at the next track by
+    // default; kept when the operator ticks "keep for the next track".
+    TempoTracker::Options options;
+    options.octaveFold = false; // as a fresh install ships
+    options.lockAfter = 5;
+    options.unlockAfter = 10;
+    options.relockAfter = 10;
+    options.confidenceSmoothing = 2.0;
+
+    const auto nextTrack = [&](bool keep, bool tapped) {
+        TempoTracker::Options chosen = options;
+        chosen.keepOctaveShift = keep;
+        TempoTracker tracker(kFramePeriod, chosen);
+        std::uint64_t index = 0;
+        settle(tracker, index, 23, 0.9, 30); // 130.4
+        REQUIRE(tracker.state().locked);
+        if (tapped) {
+            tracker.seedTempo(bpmOf(23) / 2.0); // the operator taps half time
+        } else {
+            tracker.halve();
+        }
+        settle(tracker, index, 23, 0.9, 30);
+        REQUIRE(tracker.state().locked);
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+        REQUIRE(tracker.state().beatDivisor == 2);
+        // The next record: 31 frames a beat, 96.8, for long enough to take the lock.
+        settle(tracker, index, 31, 0.9, 120);
+        REQUIRE(tracker.state().locked);
+        return tracker.state();
+    };
+
+    SECTION("by default the next track is published at the tempo it is heard at") {
+        const auto state = nextTrack(false, false);
+        CHECK(state.bpm == Approx(bpmOf(31)));
+        CHECK(state.beatDivisor == 1);
+    }
+
+    SECTION("kept, the halving goes on to the next track") {
+        const auto state = nextTrack(true, false);
+        CHECK(state.bpm == Approx(bpmOf(31) / 2.0));
+        CHECK(state.beatDivisor == 2);
+    }
+
+    SECTION("a tapped octave is never carried, whatever the setting") {
+        // A tap names *this* record's tempo, not an octave for the rest of the night.
+        const auto state = nextTrack(true, true);
+        CHECK(state.bpm == Approx(bpmOf(31)));
+        CHECK(state.beatDivisor == 1);
+    }
+
+    SECTION("a breakdown and back is not a new track") {
+        // The lock let go and came back to the tempo it had: the same record, and the halving
+        // the operator pressed for it stays.
+        TempoTracker tracker(kFramePeriod, options);
+        std::uint64_t index = 0;
+        settle(tracker, index, 23, 0.9, 30);
+        tracker.halve();
+        settle(tracker, index, 23, 0.9, 30);
+        settle(tracker, index, 31, 0.9, 10); // long enough to unlock, not to relock
+        REQUIRE_FALSE(tracker.state().locked);
+        settle(tracker, index, 23, 0.9, 30);
+        REQUIRE(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    }
+}
+
 TEST_CASE("a tapped tempo moves the fold window onto the octave the operator meant",
           "[tracking][tempo]") {
     // The failure §7 deviation 4 measured: under a 70-140 window a Quickstep at 204 BPM

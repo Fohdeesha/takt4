@@ -106,14 +106,23 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         const BeatModel::Activation activation = model_.process(extractor_.frame());
         recordWorst(worstModelMicros_, microsSince(modelStart));
 
-        // The hop's stamp is the host time of its first sample; the frame is centred on
-        // sample kHopSize · frameIndex, which is that many hops earlier. The regression
+        // The hop's stamp is the host time of its first sample; the frame is centred a fixed
+        // number of hops back in the audio the extractor has been *fed*. The regression
         // behind the stamp is linear, so this is the same answer it would have given.
+        //
+        // **Counted in hops fed, not in `hop.index`.** The index counts every hop the audio
+        // thread saw, including any this worker never received because its queue was full; the
+        // frame index counts only the ones that reached the extractor. Their difference was the
+        // framing delay until the first dropped hop and that delay plus every hop dropped since
+        // for the rest of the run — so after one stall of the model, every later beat reached
+        // Link N × 20 ms early (the audit's H15). The worker's own count of hops worked is the
+        // hop's position among those fed, and stays a constant distance from the frame index.
         const std::uint64_t frameIndex = extractor_.frameIndex();
+        const std::uint64_t fedIndex = hopsWorked_.load(std::memory_order_relaxed);
         const std::int64_t hostMicros =
             hop.hostMicros == 0
                 ? 0
-                : hop.hostMicros - static_cast<std::int64_t>(hop.index - frameIndex) *
+                : hop.hostMicros - static_cast<std::int64_t>(fedIndex - frameIndex) *
                                        static_cast<std::int64_t>(audio::kHopMicros);
         FrameActivation out;
         out.frameIndex = frameIndex;

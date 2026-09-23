@@ -206,6 +206,15 @@ struct Message {
     /// §5.8 says a pending release is still sent after the rule set has been replaced, so
     /// anything the message pointed *at* would dangle exactly when it was needed.
     std::uint64_t outputs = ~std::uint64_t{0};
+
+    /// When the thing this message is about **happens**, on `Context::now`'s clock — which is
+    /// not always when it is sent. The output thread fires a beat ahead of time on a
+    /// prediction, so a message about it carries the beat's own time here, and the release that
+    /// follows it carries that plus its delay. `output::RuleSink` offsets every target's latency
+    /// from this, never from the round that happens to send it: that is what lets a negative
+    /// offset put a message *before* the beat it belongs to (the audit's H4). Stamped by
+    /// `TriggerEngine` as it sends; zero before that.
+    double moment = 0.0;
 };
 
 inline constexpr std::array<Message::Kind, 7> kMessageKinds{

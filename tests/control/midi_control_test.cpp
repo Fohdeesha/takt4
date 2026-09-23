@@ -225,7 +225,12 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
         CHECK(rules.panics() == std::vector<bool>{true, true});
     }
 
-    SECTION("a switch bound to panic is a switch, so the same control lets go") {
+    SECTION("a CC bound to panic engages it, and letting go of the pad does not release it") {
+        // The audit's H1. A CC reads below 64 as "off", which made a momentary CC pad —
+        // 127 on the press, 0 on the release, the commonest pad there is — hold-to-panic: the
+        // halt let go the moment the finger came up. PANIC from a control surface engages and
+        // nothing else, as the window's has since H18; RELEASE is the window's, or OSC's
+        // explicit `panic 0`.
         MidiBinding knob;
         knob.kind = MidiEvent::Kind::ControlChange;
         knob.number = 64;
@@ -234,7 +239,7 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
 
         CHECK(control.dispatch(cc(64, 127)));
         CHECK(control.dispatch(cc(64, 0)));
-        CHECK(rules.panics() == std::vector<bool>{true, false});
+        CHECK(rules.panics() == std::vector<bool>{true});
     }
 
     SECTION("a binding to a rule carries which rule, because a gesture cannot") {
@@ -450,5 +455,93 @@ TEST_CASE("the machine's MIDI inputs can be listed without opening one", "[contr
     for (const std::string& port : ports) {
         INFO(port);
         CHECK_FALSE(port.empty());
+    }
+}
+
+TEST_CASE("a CC pad's release is not a second press", "[control][midi]") {
+    // The audit's H1. A pad in CC mode sends 127 on the press and 0 on the release, and every
+    // CC value used to be dispatched — so ÷2 halved twice, a tap button tapped twice about
+    // 120 ms apart, and a downbeat snapped again, late, on the release.
+    auto engine = makeEngine();
+    MidiControl control(*engine, offline());
+    trackUntilLocked(*engine);
+    REQUIRE(engine->state().locked);
+
+    MidiBinding halve;
+    halve.kind = MidiEvent::Kind::ControlChange;
+    halve.number = 20;
+    halve.target = ControlAction::TempoHalve;
+    REQUIRE(control.bind(halve));
+
+    const double raw = engine->state().rawBpm;
+    CHECK(control.dispatch(cc(20, 127)));
+    CHECK(control.dispatch(cc(20, 0)));
+    (void)engine->step();
+    // Halved once, not quartered.
+    CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+}
+
+TEST_CASE("learning a CC fires it neither on the press nor on the release", "[control][midi]") {
+    // Learn promises the gesture that assigns a control does not also fire it. The press was
+    // swallowed; the release that followed went through the brand-new binding and fired it —
+    // which for a state action is not a no-op: learning a pad for a rule's mute, on a rule the
+    // operator had muted, unmuted it on the way up.
+    auto engine = makeEngine();
+    takt4::testing::RecordingRules rules;
+    MidiControl control(*engine, offline(), &rules);
+
+    control.learn(takt4::control::ControlTarget(ControlAction::RuleMute, "stabs"));
+    CHECK(control.dispatch(cc(21, 127)));
+    CHECK(control.dispatch(cc(21, 0)));
+    CHECK(rules.mutes().empty());
+    REQUIRE(control.bindings().size() == 1);
+
+    // And from then on it is that control: a switch, as a state action is.
+    CHECK(control.dispatch(cc(21, 127)));
+    CHECK(control.dispatch(cc(21, 0)));
+    const std::vector<std::pair<std::string, bool>> expected{{"stabs", true}, {"stabs", false}};
+    CHECK(rules.mutes() == expected);
+
+    SECTION("only the learned control's own release is swallowed") {
+        control.learn(takt4::control::ControlTarget(ControlAction::RuleMute, "pads"));
+        CHECK(control.dispatch(cc(22, 127)));
+        // Another control moving in between is its own gesture, and acts.
+        CHECK(control.dispatch(cc(21, 127)));
+        CHECK(rules.mutes().size() == 3);
+    }
+}
+
+TEST_CASE("a push button that sends 1 then 0 taps once a press", "[control]") {
+    // TouchOSC's push button, a Stream Deck's, and a CC pad through `argumentOf`: 1 on the
+    // press and 0 on the release. Driven with the times supplied, the way `TapTempo` is built
+    // to be, and the release 120 ms after the press — past the bounce window, so this is the
+    // release being recognised and not the bounce filter hiding it.
+    auto engine = makeEngine();
+    takt4::testing::RecordingRules rules;
+    takt4::control::ControlSurface surface(*engine, &rules);
+    const takt4::control::ControlTarget tap(ControlAction::Tap);
+    for (int press = 0; press < 4; ++press) {
+        const double at = 10.0 + 0.5 * press; // 120 BPM
+        CHECK(surface.apply(tap, 1.0, at));
+        CHECK(surface.apply(tap, 0.0, at + 0.120));
+    }
+    CHECK(surface.taps().taps() == 4);
+    CHECK_THAT(surface.taps().bpm(), WithinAbs(120.0, 1e-6));
+
+    SECTION("but the four actions that hold a state still read 0 as off") {
+        const takt4::control::ControlTarget arm(ControlAction::RuleEnable, "intro");
+        CHECK(surface.apply(arm, 1.0, 20.0));
+        CHECK(surface.apply(arm, 0.0, 20.2));
+        const std::vector<std::pair<std::string, bool>> expected{{"intro", true}, {"intro", false}};
+        CHECK(rules.enables() == expected);
+    }
+
+    SECTION("and an explicit panic 0 still lets go, from a surface that means it") {
+        // OSC's `panic 0` is how a Stream Deck releases a PANIC; only a CC's release — a pad
+        // coming up — is kept from doing it. See `MidiControl::dispatch`.
+        const takt4::control::ControlTarget panic(ControlAction::Panic);
+        CHECK(surface.apply(panic, 1.0, 30.0));
+        CHECK(surface.apply(panic, 0.0, 30.5));
+        CHECK(rules.panics() == std::vector<bool>{true, false});
     }
 }

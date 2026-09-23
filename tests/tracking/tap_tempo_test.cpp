@@ -88,14 +88,49 @@ TEST_CASE("a clock that does not move forward is not a tempo", "[tracking][tempo
     }
     REQUIRE(tap.bpm() == Approx(140.0));
 
-    // Two taps in the same instant would be an infinite tempo; going backwards would be
-    // a negative one. Both start again rather than publishing either.
+    // Two taps in the same instant would be an infinite tempo. It is the same press seen
+    // twice — a bounce — and is ignored outright, so the set being counted is kept.
     const double at = tapAt(2, 140.0);
     CHECK_FALSE(tap.tap(at).has_value());
-    CHECK(tap.taps() == 1);
+    CHECK(tap.taps() == 3);
+    CHECK(tap.bpm() == Approx(140.0));
+
+    // Going backwards would be a negative one, and starts again rather than publishing it.
     CHECK_FALSE(tap.tap(at - 1.0).has_value());
     CHECK(tap.taps() == 1);
     CHECK(tap.bpm() == 0.0);
+}
+
+TEST_CASE("a switch that bounces taps once, not twice", "[tracking][tempo]") {
+    // The audit's H1: two taps 20 ms apart used to be a tempo of 3000 BPM, and with the fold
+    // off that went to Link and the MIDI clock as an octave shift. A tap inside the bounce
+    // window is not a tap at all — not counted, and not a reason to start the set again.
+    TapTempo tap;
+    for (int n = 0; n < 4; ++n) {
+        (void)tap.tap(tapAt(n, 120.0));
+        // Every press chatters: a second edge 8 ms after the first.
+        CHECK_FALSE(tap.tap(tapAt(n, 120.0) + 0.008).has_value());
+    }
+    CHECK(tap.taps() == 4);
+    CHECK(tap.bpm() == Approx(120.0));
+}
+
+TEST_CASE("a burst of taps too fast to be a tempo offers none", "[tracking][tempo]") {
+    // 150 ms apart is 400 BPM: past the bounce window, and past anything a person means. The
+    // set is counted but no tempo leaves it, so nothing absurd reaches the tracker.
+    TapTempo tap;
+    for (int n = 0; n < 6; ++n) {
+        CHECK_FALSE(tap.tap(1000.0 + 0.150 * n).has_value());
+    }
+    CHECK(tap.bpm() == 0.0);
+
+    SECTION("and slower than 30 BPM is a new attempt each time") {
+        TapTempo slow;
+        for (int n = 0; n < 4; ++n) {
+            CHECK_FALSE(slow.tap(2000.0 + 2.5 * n).has_value());
+        }
+        CHECK(slow.taps() == 1);
+    }
 }
 
 TEST_CASE("a reset forgets the taps", "[tracking][tempo]") {

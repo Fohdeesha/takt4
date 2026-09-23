@@ -23,8 +23,11 @@ namespace takt4::ui {
 /// Only the first show. Whatever the operator drags a window to afterwards is theirs.
 inline constexpr float kMainWindowWidth = 1000.0f;
 /// Tall enough for the status bar — which holds the version — to be on screen with a couple
-/// of output rows above it. Short of this the bottom row is simply cut off.
-inline constexpr float kMainWindowHeight = 900.0f;
+/// of output rows above it. Short of this the bottom row is simply cut off. 900 until the
+/// "keep for the next track" row went in under the latency slider (the audit's H2); the 34 px
+/// it takes are given back here, so five outputs and their ADD OUTPUT row still fit, and it
+/// still opens whole on a 1080-line screen under a title bar and a taskbar.
+inline constexpr float kMainWindowHeight = 934.0f;
 /// Measured on a rig: what the editor was dragged to and asked to open at.
 inline constexpr float kRulesWindowWidth = 1164.0f;
 inline constexpr float kRulesWindowHeight = 872.0f;

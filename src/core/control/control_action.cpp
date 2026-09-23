@@ -167,6 +167,17 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         return false;
     }
 
+    // **A button's release is not a second press.** A pad in CC mode sends 127 on the press
+    // and 0 on the release, and a TouchOSC push button sends 1 and then 0; every one of these
+    // used to act on both, so a tap button tapped twice 120 ms apart, a ÷2 halved twice, and a
+    // DOWNBEAT snapped late on the release (the audit's H1). An explicit zero to a button is
+    // its release, and it is accepted — the message was understood — and does nothing. The
+    // four actions that hold a state read zero as "off" below, as they always did.
+    if (!takesArgument(target.action) && target.action != ControlAction::Panic && argument &&
+        *argument == 0.0) {
+        return true;
+    }
+
     switch (target.action) {
     case ControlAction::Tap: {
         const std::optional<double> tapped = taps_.tap(nowSeconds);
@@ -223,8 +234,8 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
             return false;
         }
         // Relative, so a button can be pressed twice and mean four times the interval. Bare —
-        // these are buttons, not switches — and an argument of zero is read as a press rather
-        // than as a release, because a pad that sends note-off would otherwise undo itself.
+        // these are buttons, not switches. A zero is a release and never reaches here (see the
+        // top of this function); a note-off never did, because `readMidiEvent` drops them.
         rules_->setRuleRate(target.rule, target.action == ControlAction::RuleDouble ? 2.0 : 0.5,
                             true);
         return true;

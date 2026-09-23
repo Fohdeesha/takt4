@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -272,56 +273,77 @@ TEST_CASE("a target's delay holds its datagrams and nobody else's", "[output][os
     }
 }
 
-TEST_CASE("a negative offset lands ahead of the next beat", "[output][osc]") {
+TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][osc]") {
     // The user's question of 2026-09-07: the whole-rig latency slider goes both ways, so why
-    // can a target's not? It can. A message about a beat already heard cannot be sent before
-    // that beat, so "earlier" is measured from the *next* one instead — the publisher holds
-    // it for what is left of a beat after the offset. See `OutputTarget::delaySeconds`.
+    // can a target's not? It can — and since the audit (H4) it means what it says. The output
+    // thread fires a locked beat ahead of time, and a message *about that beat* carries its
+    // moment: each target has it at the moment plus its offset. See `OutputTarget::delaySeconds`.
     LoopbackReceiver early;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", early.port(), 0, -0.300);
 
-    // 92 BPM: a beat is 652.17 ms, so 300 ms early is 352.17 ms late.
-    publisher.setBeatSeconds(60.0 / 92.0);
-    publisher.setNow(0.0);
-    publisher.sendAddress("/cue");
+    // A beat in the music at 1.0, fired at 0.5 on a prediction: 300 ms early is 0.7.
+    publisher.setNow(0.5);
+    publisher.sendAddressTo(takt4::output::kAllOutputs, "/cue", std::optional<double>{1.0});
     REQUIRE(publisher.pending() == 1);
+    CHECK(early.receive().empty());
 
-    publisher.setNow(0.352);
+    publisher.setNow(0.6999);
     publisher.flushDue();
-    CHECK(early.receive().empty()); // 352.17 ms, not 352
-    publisher.setNow(0.3522);
+    CHECK(early.receive().empty());
+    publisher.setNow(0.7001);
     publisher.flushDue();
     CHECK_FALSE(early.receive().empty());
+    CHECK(publisher.pending() == 0);
 
-    SECTION("and it follows the tempo, which a fixed delay cannot") {
-        // The same −300 ms at 128 BPM, where a beat is 468.75 ms: the hold is 168.75 ms. An
-        // operator sets the lag of their device once and it stays right as the music moves.
-        publisher.setBeatSeconds(60.0 / 128.0);
-        publisher.setNow(10.0);
-        publisher.sendAddress("/cue");
-        publisher.setNow(10.168);
-        publisher.flushDue();
-        CHECK(early.receive().empty());
-        publisher.setNow(10.169);
-        publisher.flushDue();
-        CHECK_FALSE(early.receive().empty());
-    }
-
-    SECTION("with no tempo yet it waits for nothing rather than inventing a beat") {
-        publisher.setBeatSeconds(0.0);
+    SECTION("a message about now goes now, not most of a beat later") {
+        // Which is what every message used to do under a negative offset — held for what was
+        // left of a beat, so a manual cue or a lock change arrived nearly a beat late.
         publisher.setNow(20.0);
         publisher.sendAddress("/cue");
         CHECK(publisher.pending() == 0);
         CHECK_FALSE(early.receive().empty());
     }
 
-    SECTION("an offset longer than the beat is as early as it can go, not two beats early") {
-        // 55 BPM is the slowest the state space tracks and its beat is 1.09 s, so this is
-        // only reachable from a hand-edited file — but it must not send a cue a bar early.
-        publisher.setBeatSeconds(60.0 / 240.0); // 250 ms
+    SECTION("a beat heard after its time is sent at once") {
+        // Hunting, nothing is predicted and a beat fires as it is heard: its moment is gone
+        // and earlier than now is not a time anything can be sent at.
         publisher.setNow(30.0);
-        publisher.sendAddress("/cue");
+        publisher.sendAddressTo(takt4::output::kAllOutputs, "/cue", std::optional<double>{29.95});
+        CHECK(publisher.pending() == 0);
+        CHECK_FALSE(early.receive().empty());
+    }
+
+    SECTION("the namespace keeps a beat's state ahead of the beat, both at its moment") {
+        takt4::tracking::BeatEvent event;
+        event.bpm = 128.0;
+        event.confidence = 0.9;
+        event.locked = true;
+        event.beatsPerBar = 4;
+        event.beatInBar = 1;
+        event.downbeat = true;
+        publisher.setNow(40.0);
+        publisher.publishBeat(event, 40.5);
+        CHECK(publisher.pending() == 7);
+        publisher.setNow(40.1999);
+        publisher.flushDue();
+        CHECK(early.receive().empty());
+        publisher.setNow(40.2001);
+        publisher.flushDue();
+        std::vector<std::string> got;
+        for (std::string packet = early.receive(); !packet.empty(); packet = early.receive()) {
+            got.push_back(packet.substr(0, packet.find('\0')));
+        }
+        CHECK(got == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
+                                              "/takt4/meter", "/takt4/beat", "/takt4/beat/bar",
+                                              "/takt4/downbeat"});
+    }
+
+    SECTION("flushing sends everything held, whatever it was waiting for") {
+        publisher.setNow(50.0);
+        publisher.sendAddressTo(takt4::output::kAllOutputs, "/held", std::optional<double>{51.0});
+        REQUIRE(publisher.pending() == 1);
+        publisher.flushAll();
         CHECK(publisher.pending() == 0);
         CHECK_FALSE(early.receive().empty());
     }
@@ -334,7 +356,6 @@ TEST_CASE("the whole-rig offset and a target's own add up", "[output][osc]") {
     LoopbackReceiver target;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", target.port(), 0, 0.100);
-    publisher.setBeatSeconds(0.5);
 
     // +100 ms of its own, −40 ms for the rig: 60 ms. Straddled rather than landed on,
     // because 0.1 − 0.04 is not exactly 0.06 in a double and the deadline is a `>`.
@@ -348,12 +369,12 @@ TEST_CASE("the whole-rig offset and a target's own add up", "[output][osc]") {
     publisher.flushDue();
     CHECK_FALSE(target.receive().empty());
 
-    SECTION("and a total that comes out negative is measured from the next beat") {
-        // +100 ms of its own against −250 ms for the rig is −150 ms, which on a 500 ms beat
-        // is a 350 ms hold.
+    SECTION("and a total that comes out negative is measured from the beat's own moment") {
+        // +100 ms of its own against −250 ms for the rig is −150 ms: a beat at 10.5, fired at
+        // 10.0, is 10.35.
         publisher.setOffsetSeconds(-0.250);
         publisher.setNow(10.0);
-        publisher.sendAddress("/cue");
+        publisher.sendAddressTo(takt4::output::kAllOutputs, "/cue", std::optional<double>{10.5});
         publisher.setNow(10.3499);
         publisher.flushDue();
         CHECK(target.receive().empty());
@@ -368,10 +389,9 @@ TEST_CASE("the whole-rig offset and a target's own add up", "[output][osc]") {
         LoopbackReceiver plain;
         OscPublisher rig;
         rig.addTarget("127.0.0.1", plain.port(), 0);
-        rig.setBeatSeconds(0.5);
         rig.setOffsetSeconds(-0.150);
         rig.setNow(0.0);
-        rig.sendAddress("/cue");
+        rig.sendAddressTo(takt4::output::kAllOutputs, "/cue", std::optional<double>{0.5});
         CHECK(rig.pending() == 1);
         CHECK(plain.receive().empty());
         rig.setNow(0.350);

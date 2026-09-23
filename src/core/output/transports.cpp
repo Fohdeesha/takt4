@@ -1,5 +1,6 @@
 #include "core/output/transports.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <exception>
@@ -14,6 +15,18 @@ namespace {
 /// hundredth of a BPM, which no peer can act on and which the refined tempo produces on
 /// almost every beat.
 constexpr double kLinkTempoEpsilon = 0.005;
+
+/// A phase error in beats below which Link is sent the plain tempo and nothing is nudged. A
+/// beat's stamp jitters by a few milliseconds, and nudging on that would put the jitter into
+/// every peer's tempo display; 0.02 of a beat is 9 ms at 128 BPM.
+constexpr double kLinkPhaseDeadband = 0.02;
+/// How many beats a nudge spreads a phase error over. Eight: a quarter-beat error is gone to
+/// within a hundredth in about three bars, and no peer's tempo moves by more than the clamp.
+constexpr double kLinkNudgeBeats = 8.0;
+/// The most a nudge moves the tempo Link is sent, either way — 2.6 BPM at 128. Gentle enough
+/// that a peer's own tempo display barely wavers, and a peer following Link's tempo — Resolume
+/// scrubbing video to it — does not visibly speed up.
+constexpr double kLinkMaxNudge = 0.02;
 
 std::int64_t toMicros(double seconds) noexcept {
     return static_cast<std::int64_t>(seconds * 1e6);
@@ -42,6 +55,9 @@ void Transports::setPatch(std::vector<dmx::Fixture> patch) {
 void Transports::startOutputs(double now) {
     started_ = true;
     lastNow_ = now;
+    // A session joined now may already be somebody else's, with their phase; the first locked
+    // beat has to put it under the music again. See `publishToLink`.
+    linkSnapped_ = false;
     if (linkEnabled_) {
         link_->enable(true);
     }
@@ -63,11 +79,11 @@ void Transports::setLinkEnabled(bool on) {
     // Only actually joined while the outputs are running: switching Link on before Start
     // says what to do, not to do it now.
     link_->enable(on && started_);
-    if (!on) {
-        // A session rejoined later starts from nothing, so the next beat must resend the
-        // tempo rather than find it unchanged.
-        lastLinkBpm_ = -1.0;
-    }
+    // A session joined or rejoined starts from nothing — or from a peer's timeline, which is
+    // older than ours and wins on join — so the next locked beat snaps it and resends the tempo
+    // rather than finding it unchanged.
+    lastLinkBpm_ = -1.0;
+    linkSnapped_ = false;
 }
 
 MidiOutput* Transports::midiPort() const noexcept {
@@ -264,10 +280,9 @@ void Transports::advance(double now, const tracking::TempoState& state) {
         (void)midi_->advance(now);
     }
     osc_->setNow(now);
-    setOscOffsets(state.bpm);
+    setOscOffset();
     // Before this round's state, so a message held from an earlier round goes out ahead of
-    // one sent now. A per-target delay reorders against the *other* targets on purpose and
-    // must never reorder a target against itself.
+    // one sent now.
     osc_->flushDue();
     osc_->publishState(state);
 
@@ -283,54 +298,75 @@ void Transports::advance(double now, const tracking::TempoState& state) {
     artnet_->publish(*dmx_, now);
 }
 
-void Transports::setOscOffsets(double bpm) noexcept {
+void Transports::setOscOffset() noexcept {
     // §5.5's offset applies to OSC as well as to the two clock transports. It did not, for
     // most of this file's life, and that was a hole rather than a decision: an operator
     // pulling the slider back to put a media server's clip change on the beat moved Link and
     // the MIDI clock and left the OSC the media server actually listens to exactly where it
-    // was. The three now agree about what the number means.
-    //
-    // What differs is what each can do with it, and only the sign is affected. Link and the
-    // MIDI clock carry a running grid whose phase can be moved either way, so they take the
-    // offset as it stands. An OSC message is one datagram about one beat that has already
-    // happened, so "earlier" has to become "earlier than the next one" — see
-    // `OscPublisher::holdFor`, which is why it needs the beat length.
-    osc_->setOffsetSeconds(static_cast<double>(latencyMicros_.load(std::memory_order_relaxed)) /
-                           1e6);
-    // Only ever *updated*, never cleared. `advance` runs on every round and is handed the
-    // published state, which reports no tempo while the tracker is between locks — and
-    // forgetting the beat length there would make a negative offset stop holding for a bar
-    // at a time, so a rig would slide on and off the beat as the tracker's confidence moved.
-    // Zero until the first tempo is known, which is what `holdFor` treats as "no beat yet".
-    if (bpm > 0.0) {
-        osc_->setBeatSeconds(60.0 / bpm);
-    }
+    // was. The three now agree about what the number means, and so does a rule's MIDI and
+    // lighting — see `RuleSink`.
+    osc_->setOffsetSeconds(latencySeconds());
 }
 
-void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double now) {
-    lastNow_ = now;
-    // A beat queued for a delayed target is due `delaySeconds` after *this* beat, not after
-    // whenever the next round happens to run.
-    osc_->setNow(now);
-    // From the beat's own tempo rather than the last round's state: a negative offset is a
-    // fraction of *this* beat, and on the beat that changes tempo the two differ.
-    setOscOffsets(event.bpm);
-    beats_.fetch_add(1, std::memory_order_relaxed);
-    if (event.downbeat) {
-        downbeats_.fetch_add(1, std::memory_order_relaxed);
+double Transports::leadSeconds() const noexcept {
+    double earliest = 0.0;
+    for (const OutputTarget& target : outputs_) {
+        // The two kinds that hold a message to a delay of their own. An Art-Net node has none;
+        // a switched-off target sends nothing, so its delay asks for nothing either.
+        if (target.enabled &&
+            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi)) {
+            earliest = std::min(earliest, std::clamp(target.delaySeconds, kMinOutputDelaySeconds,
+                                                     kMaxOutputDelaySeconds));
+        }
     }
-    const std::int64_t latencyMicros = latencyMicros_.load(std::memory_order_relaxed);
+    return std::min(0.0, latencySeconds() + earliest);
+}
 
-    osc_->publishBeat(event);
+double Transports::tailSeconds() const noexcept {
+    double latest = 0.0;
+    for (const OutputTarget& target : outputs_) {
+        if (target.enabled &&
+            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi)) {
+            latest = std::max(latest, std::clamp(target.delaySeconds, kMinOutputDelaySeconds,
+                                                 kMaxOutputDelaySeconds));
+        }
+    }
+    return std::max(0.0, latencySeconds() + latest);
+}
+
+void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t hostMicros,
+                               double beatTime) {
+    const std::int64_t latencyMicros = latencyMicros_.load(std::memory_order_relaxed);
     if (midi_) {
         midi_->setTempo(event.bpm);
-        // The beat's audio arrived a pipeline's worth of time ago; the latency offset is
-        // the one place that is compensated (§5.5).
-        midi_->syncToBeat(now + static_cast<double>(latencyMicros) / 1e6);
+        // The beat's own time, not the round that drained it: the audio arrived a pipeline's
+        // worth of time before the beat was called, and the clock used to be synced to when it
+        // was *drained* — late by that pipeline, plus the offset (§5.5). The clock steers
+        // towards the beat rather than jumping to it; see `MidiClock::syncToBeat`.
+        midi_->syncToBeat(beatTime + static_cast<double>(latencyMicros) / 1e6);
     }
     if (linkEnabled_) {
         publishToLink(event, hostMicros, latencyMicros);
     }
+}
+
+void Transports::publishBeat(const tracking::BeatEvent& event, double moment, double now) {
+    // A beat queued for a delayed target is due its delay after *this* beat's moment, not
+    // after whenever the next round happens to run.
+    osc_->setNow(now);
+    setOscOffset();
+    beats_.fetch_add(1, std::memory_order_relaxed);
+    if (event.downbeat) {
+        downbeats_.fetch_add(1, std::memory_order_relaxed);
+    }
+    osc_->publishBeat(event, moment);
+}
+
+void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros,
+                         double beatTime) {
+    lastNow_ = beatTime;
+    publishClocks(event, hostMicros, beatTime);
+    publishBeat(event, beatTime, beatTime);
 }
 
 void Transports::setLatencySeconds(double seconds) noexcept {
@@ -348,28 +384,85 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     if (hostMicros == 0) {
         return;
     }
+    // **Nothing while the tracker is hunting** — neither tempo nor phase. Before the first lock
+    // the tempo is the hunt's, octave flips and all, and every Start used to overwrite
+    // Resolume's tempo with it for a few seconds (the audit's H15). And the next lock snaps
+    // again: whatever the session did in between, it is put back under the music then.
+    if (!event.locked || !(event.bpm > 0.0)) {
+        linkSnapped_ = false;
+        return;
+    }
+    // A peer joining can bring its own timeline — the older session wins on join — so a new
+    // peer is a reason to snap again too. Cheap: one beat, one question.
+    const std::size_t peers = link_->numPeers();
+    if (peers > linkPeers_) {
+        linkSnapped_ = false;
+    }
+    linkPeers_ = peers;
+
     const std::chrono::microseconds at{hostMicros + latencyMicros};
-    if (std::abs(event.bpm - lastLinkBpm_) > kLinkTempoEpsilon) {
-        link_->setTempo(event.bpm, at);
-        lastLinkBpm_ = event.bpm;
-    }
-    // The rest is bar phase, and there is none to publish before the first downbeat.
-    // §5.6: phase through requestBeatAtTime with the detected meter as the quantum. The
-    // beat number is the bar position, so peers line up on our downbeat; before the first
-    // downbeat the bar phase is unknown and only the tempo is published.
-    if (event.beatInBar > 0 && event.beatsPerBar > 0) {
-        const double beat = static_cast<double>(event.beatInBar - 1);
-        const double quantum = static_cast<double>(event.beatsPerBar);
-        if (event.snapped) {
-            // §5.6 reserves forceBeatAtTime for exactly this beat. A requestBeat here
-            // would be moved to the next time the session's phase already matches — which
-            // is the phase the operator just said was wrong — so the snap would move
-            // takt4's own bar and leave every peer where it was.
-            link_->forceBeat(beat, at, quantum);
-        } else {
-            link_->requestBeat(beat, at, quantum);
+    // Bar phase needs a bar: before the first downbeat only the tempo goes.
+    const bool phased = event.beatInBar > 0 && event.beatsPerBar > 0;
+    const double beat = phased ? static_cast<double>(event.beatInBar - 1) : 0.0;
+    const double quantum = phased ? static_cast<double>(event.beatsPerBar) : 1.0;
+    const auto sendTempo = [&](double bpm) {
+        if (std::abs(bpm - lastLinkBpm_) > kLinkTempoEpsilon) {
+            link_->setTempo(bpm, at);
+            lastLinkBpm_ = bpm;
         }
+    };
+
+    // **Snap once, then nudge** — the operator's call of 2026-09-23 (the audit's C3, Q4).
+    //
+    // With a peer in the session, `requestBeatAtTime` does not move the session's phase at all:
+    // Link's own header says the request is moved to "the next time value greater than the
+    // given time with the same phase". This used to request on every beat, so with Resolume on
+    // Link the bar sat wherever the session happened to be — measured, 180 ms off the music for
+    // every beat of a 32-beat run and the bar position 1.6 beats wrong. So the first locked beat
+    // *forces* the phase, and so does a DOWNBEAT (§5.6 reserves force for that, and Link's
+    // header names bridging an external clock as its legitimate use).
+    if (phased && (!linkSnapped_ || event.snapped)) {
+        link_->snap(event.bpm, beat, at, quantum);
+        lastLinkBpm_ = event.bpm;
+        linkSnapped_ = true;
+        barsApart_ = 0;
+        return;
     }
+    if (!phased) {
+        sendTempo(event.bpm);
+        return;
+    }
+
+    // Afterwards the phase is *measured* on every beat and pulled back with the tempo, a little
+    // at a time, which peers follow smoothly — where a force on every beat would jerk every
+    // peer's playhead by whatever the beat's stamp jittered.
+    double apart = link_->phaseAtTime(at, quantum) - beat; // positive: the session is ahead
+    apart -= quantum * std::floor(apart / quantum + 0.5);    // the nearer way round the bar
+    const double wholeBeats = std::round(apart);
+    const double error = apart - wholeBeats; // within a beat, -0.5 to 0.5
+    if (wholeBeats != 0.0) {
+        // The session is on a different beat of the bar from the one the tracker is counting —
+        // the tracker changed its mind about where the bar starts, which is a musical event,
+        // not drift. A tempo nudge would take a hundred beats over a whole beat, so a bar's
+        // worth of disagreement in a row is answered the way a DOWNBEAT is.
+        if (++barsApart_ >= event.beatsPerBar) {
+            link_->snap(event.bpm, beat, at, quantum);
+            lastLinkBpm_ = event.bpm;
+            barsApart_ = 0;
+            return;
+        }
+    } else {
+        barsApart_ = 0;
+    }
+    if (std::abs(error) < kLinkPhaseDeadband) {
+        sendTempo(event.bpm);
+        return;
+    }
+    // A session ahead is slowed and one behind is hurried, by the share of the error a beat
+    // should take out. `setTempo` pins the beat at `at` and changes the tempo from there, so
+    // the nudge moves nobody's playhead: it changes how fast the next beat arrives.
+    const double nudge = std::clamp(error / kLinkNudgeBeats, -kLinkMaxNudge, kLinkMaxNudge);
+    sendTempo(event.bpm * (1.0 - nudge));
 }
 
 } // namespace takt4::output

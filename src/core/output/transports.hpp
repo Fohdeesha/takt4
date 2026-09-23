@@ -171,21 +171,48 @@ public:
     /// every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one.
     void advance(double now, const tracking::TempoState& state);
 
-    /// One beat, to whichever transports are on. `hostMicros` is the frame's §4.3 stamp
-    /// — zero offline, where there is no host clock to align to and Link is left alone.
+    /// One beat's effect on the two clocks: the MIDI clock is steered towards it and Link's
+    /// timeline is put under it. Called as each beat is **detected**, whenever that is — both
+    /// are grids that run on from a beat already heard, so neither needs it predicted.
+    ///
+    /// `beatTime` is when the beat was in the audio, on the clock `advance` is given;
+    /// `hostMicros` is the same instant on Link's clock, the frame's §4.3 stamp — zero
+    /// offline, where there is no host clock to align to and Link is left alone.
     ///
     /// The tempo state at the beat is not wanted here: `BeatEvent` already carries the
     /// tempo, the bar position and the meter, which is everything §5.6's addresses send.
     /// A caller that wants the rest of the state has it on `engine::EngineBeat`.
-    void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double now);
+    void publishClocks(const tracking::BeatEvent& event, std::int64_t hostMicros,
+                       double beatTime);
+    /// One beat's messages: §5.6's namespace to every OSC target, each held until the beat's
+    /// `moment` plus the rig's offset plus its own delay. The moment is on the clock `advance`
+    /// is given, and ahead of `now` when the output thread fires the beat on a prediction.
+    /// Counted in `beats()`.
+    void publishBeat(const tracking::BeatEvent& event, double moment, double now);
+    /// Both at once, with the beat's moment taken to be now — for a caller with no scheduler
+    /// of its own: `takt4-cli`'s file mode, and the tests.
+    void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double beatTime);
+
+    /// How far ahead of a beat's own moment it must be fired for the earliest output to have
+    /// it on time: the rig's offset plus the most negative delay of any OSC or MIDI target,
+    /// and never later than the beat itself. Zero or negative. See `OutputRunner`.
+    double leadSeconds() const noexcept;
+    /// How long after a beat's own moment the latest output still wants it: the rig's offset
+    /// plus the largest delay, and never less than zero. What tells a beat heard late from one
+    /// so stale that firing it would be a burst of cues for music long gone.
+    double tailSeconds() const noexcept;
 
     /// Follows §5.5's latency offset when the operator moves it. The tracker applies it
-    /// to `event.time`; this is the same number applied to the host times the transports
-    /// fire on, and the two must not be allowed to drift apart.
+    /// to `event.time`; this is the same number applied to the times the transports fire on,
+    /// and the two must not be allowed to drift apart. `ui::WindowController::postOptions` is
+    /// what sends it, every time the setting changes — until the audit (C6) nothing did, and the
+    /// slider moved nothing until the next launch.
     ///
-    /// It reaches all three transports. Link and the MIDI clock shift their grid by it in
-    /// either direction; OSC can only ever wait, so a negative offset there lands the message
-    /// ahead of the *next* beat instead. See `setOscOffsets`.
+    /// It reaches everything. Link and the MIDI clock shift their grid by it in either
+    /// direction. A beat's messages — the namespace and every rule's OSC, MIDI and lighting —
+    /// go at the beat's moment plus it, and a negative offset is honoured because the output
+    /// thread fires a locked beat ahead of time on a prediction. A message about something
+    /// already happened can only go now; see `RuleSink`.
     ///
     /// The one member safe to call from another thread — a UI slider, §5.7's inbound OSC
     /// — because it writes a single atomic and reads nothing.
@@ -197,10 +224,11 @@ public:
     std::uint64_t downbeats() const noexcept { return downbeats_.load(std::memory_order_relaxed); }
 
 private:
-    /// Hands the OSC publisher §5.5's offset and the current beat length, which is what lets
-    /// a negative offset mean anything there. Called before anything is published or flushed.
-    void setOscOffsets(double bpm) noexcept;
+    /// Hands the OSC publisher §5.5's offset. Called before anything is published or flushed.
+    void setOscOffset() noexcept;
 
+    /// Link's half of `publishClocks`: nothing while hunting, a forced phase on the first
+    /// locked beat, and a nudged tempo after that. See the definition.
     void publishToLink(const tracking::BeatEvent& event, std::int64_t hostMicros,
                        std::int64_t latencyMicros);
 
@@ -242,6 +270,14 @@ private:
     std::string oscPrefix_;
     std::optional<std::string> midiClockPort_;
     double lastLinkBpm_ = -1.0;
+    /// Whether Link's phase has been forced under the music since the tracker last locked —
+    /// false again whenever it hunts, Link is switched on, the outputs start or a peer joins.
+    bool linkSnapped_ = false;
+    /// Link's peer count at the last beat, so a new peer is noticed.
+    std::size_t linkPeers_ = 0;
+    /// Locked beats in a row on which Link's session sat on a different beat of the bar from
+    /// the tracker's. A bar's worth forces the phase again.
+    std::uint32_t barsApart_ = 0;
     std::atomic<std::uint64_t> beats_{0};
     std::atomic<std::uint64_t> downbeats_{0};
 };

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -54,6 +55,11 @@ std::size_t midiLengthFor(trigger::Message::Kind kind) noexcept {
 
 RuleSink::RuleSink(Transports& transports) noexcept : transports_(transports) {}
 
+void RuleSink::setNow(double now) noexcept {
+    now_ = now;
+    transports_.osc().setNow(now);
+}
+
 void RuleSink::send(const trigger::Message& message) {
     if (message.kind == trigger::Message::Kind::Osc) {
         sendOsc(message);
@@ -64,23 +70,87 @@ void RuleSink::send(const trigger::Message& message) {
     }
 }
 
+void RuleSink::startDmx(std::uint64_t fixtures, const dmx::Payload& payload) {
+    // So "delivered" means something different for this kind than for the other two: it means
+    // the effect reached at least one real channel, not that a datagram left. That is the
+    // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
+    // message routed to a target that is switched off, and looks the same from outside.
+    const std::uint64_t before = transports_.dmx().missed();
+    transports_.dmx().start(fixtures, payload, now_);
+    if (transports_.dmx().missed() != before) {
+        ++undeliverable_;
+        return;
+    }
+    ++delivered_;
+}
+
 void RuleSink::sendDmx(const trigger::Message& message) {
     // **Nothing goes on a wire here, and that is the whole shape of DMX.** The effect is
     // handed to the engine, which owns the universe buffers and spends the next two bars
     // turning "fade to full" into forty frames a second of slightly different levels.
     // `Transports::advance` is what puts those frames on the network.
     //
-    // So "delivered" means something different for this kind than for the other two: it means
-    // the effect reached at least one real channel, not that a datagram left. That is the
-    // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
-    // message routed to a target that is switched off, and looks the same from outside.
-    const std::uint64_t before = transports_.dmx().missed();
-    transports_.dmx().start(message.fixtures, message.payload, now_);
-    if (transports_.dmx().missed() != before) {
-        ++undeliverable_;
+    // What can be held is the *start*. An Art-Net node has no delay of its own — see
+    // `OutputTarget::delaySeconds` — so only the rig's offset moves it: a beat fired ahead of
+    // time on a prediction starts its fade on the beat, or on the beat less a negative offset.
+    const double due = message.moment + transports_.latencySeconds();
+    if (due <= now_) {
+        startDmx(message.fixtures, message.payload);
         return;
     }
-    ++delivered_;
+    if (dmxQueue_.size() >= kMaxQueued) {
+        ++dropped_;
+        return;
+    }
+    dmxQueue_.push_back(HeldDmx{due, message.fixtures, message.payload});
+}
+
+void RuleSink::releaseDue(double now) {
+    setNow(now);
+    // Partitioned rather than erased one at a time, as `OscPublisher::flushDue` does and for
+    // the same reason: a round can retire a whole beat's worth.
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < midiQueue_.size(); ++i) {
+        HeldMidi& held = midiQueue_[i];
+        if (held.due > now) {
+            if (kept != i) {
+                midiQueue_[kept] = held;
+            }
+            ++kept;
+            continue;
+        }
+        if (MidiOutput* const port = transports_.midiTarget(held.target)) {
+            port->send(std::span<const unsigned char>(held.bytes.data(), held.length));
+        }
+    }
+    midiQueue_.resize(kept);
+
+    kept = 0;
+    for (std::size_t i = 0; i < dmxQueue_.size(); ++i) {
+        HeldDmx& held = dmxQueue_[i];
+        if (held.due > now) {
+            if (kept != i) {
+                dmxQueue_[kept] = held;
+            }
+            ++kept;
+            continue;
+        }
+        startDmx(held.fixtures, held.payload);
+    }
+    dmxQueue_.resize(kept);
+}
+
+void RuleSink::flushQueued() {
+    for (const HeldMidi& held : midiQueue_) {
+        if (MidiOutput* const port = transports_.midiTarget(held.target)) {
+            port->send(std::span<const unsigned char>(held.bytes.data(), held.length));
+        }
+    }
+    midiQueue_.clear();
+    for (const HeldDmx& held : dmxQueue_) {
+        startDmx(held.fixtures, held.payload);
+    }
+    dmxQueue_.clear();
 }
 
 void RuleSink::sendOsc(const trigger::Message& message) {
@@ -92,22 +162,26 @@ void RuleSink::sendOsc(const trigger::Message& message) {
         ++undeliverable_;
         return;
     }
+    // Spelled as an optional so the overload is chosen by the argument before it, never by a
+    // double quietly converting to the int one. The publisher holds each target to its own
+    // offset from this moment.
+    const std::optional<double> moment{message.moment};
     if (!message.hasArgument) {
-        osc.sendAddressTo(message.outputs, message.address);
+        osc.sendAddressTo(message.outputs, message.address, moment);
     } else {
         // The argument goes out as the type the generator produced. An operator who chose a
         // float generator meant a float: OSC is typed, and a host expecting one and given
         // the other ignores the message rather than guessing.
         switch (message.argument.kind()) {
         case trigger::Value::Kind::Float:
-            osc.sendAddressTo(message.outputs, message.address, message.argument.asFloat());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.asFloat(), moment);
             break;
         case trigger::Value::Kind::Text:
-            osc.sendAddressTo(message.outputs, message.address, message.argument.text());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.text(), moment);
             break;
         case trigger::Value::Kind::Int:
         case trigger::Value::Kind::Bool:
-            osc.sendAddressTo(message.outputs, message.address, message.argument.asInt());
+            osc.sendAddressTo(message.outputs, message.address, message.argument.asInt(), moment);
             break;
         }
     }
@@ -141,14 +215,31 @@ void RuleSink::sendMidi(const trigger::Message& message) {
     }
     bool sent = false;
     const std::vector<OutputTarget>& targets = transports_.outputs();
+    const double latency = transports_.latencySeconds();
     for (std::size_t i = 0; i < targets.size() && i < kMaxRoutableTargets; ++i) {
         if ((message.outputs & (std::uint64_t{1} << i)) == 0) {
             continue; // routed away from this one
         }
-        if (MidiOutput* const port = transports_.midiTarget(i)) {
-            port->send(std::span<const unsigned char>(bytes.data(), length));
-            sent = true;
+        MidiOutput* const port = transports_.midiTarget(i);
+        if (port == nullptr) {
+            continue;
         }
+        sent = true;
+        // A MIDI target's own delay, which the window has always offered on its row and which
+        // nothing applied until the audit (M9): the desk on the end of a MIDI cable has a lag of
+        // its own exactly as a media server on OSC does.
+        const double delay =
+            std::clamp(targets[i].delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        const double due = message.moment + latency + delay;
+        if (due <= now_) {
+            port->send(std::span<const unsigned char>(bytes.data(), length));
+            continue;
+        }
+        if (midiQueue_.size() >= kMaxQueued) {
+            ++dropped_;
+            continue;
+        }
+        midiQueue_.push_back(HeldMidi{due, i, bytes, length});
     }
     if (sent) {
         ++delivered_;

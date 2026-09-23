@@ -2,9 +2,14 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -119,27 +124,215 @@ TEST_CASE("the tick rate follows the tempo", "[output][midi]") {
     }
 }
 
-TEST_CASE("syncing to a beat puts a tick on it", "[output][midi]") {
+TEST_CASE("syncing steers the next beat tick towards the beat and adds no tick",
+          "[output][midi]") {
     Recorder recorder;
-    MidiClock clock(recorder, 120.0);
+    MidiClock clock(recorder, 120.0); // a tick every 1/48 s, a beat tick every half second
     clock.start(0.0);
     (void)clock.advance(0.7);
-    REQUIRE(clock.pulseInQuarter() != 0);
+    REQUIRE(clock.ticksSent() == 34); // k/48 for k = 0..33
+    REQUIRE(clock.pulseInQuarter() == 10);
 
-    // The tracker calls a beat at 0.7s, a little off where the free-running schedule had
-    // got to. The clock has to put pulse 0 there rather than carry on drifting.
-    clock.syncToBeat(0.7);
+    // The tracker calls a beat at 1.02, twenty milliseconds after the clock's own beat tick
+    // at 1.0. The clock does not jump there — that is what added a tick (the audit's C2) —
+    // it respaces the fourteen ticks left so the beat tick lands half-way, at 1.01.
+    clock.syncToBeat(1.02);
+    CHECK(clock.pulseInQuarter() == 10);
+    CHECK(clock.advance(1.0099) == 14); // pulses 10 to 23
     CHECK(clock.pulseInQuarter() == 0);
-    const std::uint64_t before = clock.ticksSent();
-    CHECK(clock.advance(0.7) == 1); // the tick due exactly on the beat
-    CHECK(clock.ticksSent() == before + 1);
-    CHECK(clock.pulseInQuarter() == 1);
+    CHECK_THAT(clock.nextTickAt(), Catch::Matchers::WithinAbs(1.01, 1e-9));
+    CHECK(clock.advance(1.0101) == 1);
+    // Exactly two quarter notes since the start: 48 intervals, so the third beat's tick is the
+    // 49th — not one more, which is what re-anchoring on the beat used to make it.
+    CHECK(clock.ticksSent() == 49);
+
+    SECTION("and the spacing goes back to the tempo's own after it") {
+        CHECK_THAT(clock.nextTickAt() - 1.01, Catch::Matchers::WithinAbs(1.0 / 48.0, 1e-9));
+    }
+
+    SECTION("a wild beat is steered towards within bounds, never with a burst or a gap") {
+        // Half a beat off: the spacing is clamped, so nothing is sent at once and nothing waits.
+        clock.syncToBeat(1.26);
+        const double before = clock.nextTickAt();
+        CHECK(clock.advance(before) == 1);
+        const double gap = clock.nextTickAt() - before;
+        CHECK(gap >= MidiClock::kSteerMin / 48.0 - 1e-12);
+        CHECK(gap <= MidiClock::kSteerMax / 48.0 + 1e-12);
+    }
 
     SECTION("syncing while stopped does nothing") {
         clock.stop();
-        clock.syncToBeat(1.0);
+        clock.syncToBeat(1.5);
         CHECK(clock.advance(2.0) == 0);
     }
+}
+
+namespace {
+
+/// A recorder that also notes *when* each tick went, on the clock the loop drives.
+class TimedRecorder final : public MidiSink {
+public:
+    void send(std::span<const unsigned char> message) noexcept override {
+        if (!message.empty() && message[0] == MidiClock::kTick) {
+            ticks.push_back(now);
+        }
+    }
+    double now = 0.0;
+    std::vector<double> ticks;
+};
+
+/// When each beat really was, and when each tick went.
+struct ClockRun {
+    std::vector<double> beats;
+    std::vector<double> ticks;
+    std::uint64_t skipped = 0;
+};
+
+/// What the output thread does, round by round: beats reach it a pipeline after they were in
+/// the music, with their stamps jittered, and it syncs the clock to each one — offset by the
+/// latency — then advances it.
+ClockRun runClock(double bpm, double latency, std::size_t count, double changeTo = 0.0,
+                  std::size_t changeAt = 0) {
+    TimedRecorder recorder;
+    MidiClock clock(recorder, bpm);
+    ClockRun run;
+    // The music's own grid, starting somewhere the clock's start has nothing to do with.
+    double at = 0.137;
+    for (std::size_t k = 0; k < count; ++k) {
+        run.beats.push_back(at);
+        at += 60.0 / (changeTo > 0.0 && k >= changeAt ? changeTo : bpm);
+    }
+    // A fixed generator, so the run is the same every time: stamps ±10 ms, which is more
+    // than a real beat's jitter, and a pipeline of 60 ms.
+    std::mt19937 random(20260923);
+    std::vector<double> stamps;
+    stamps.reserve(count);
+    for (std::size_t k = 0; k < count; ++k) {
+        stamps.push_back(run.beats[k] +
+                         (static_cast<double>(random()) / 4294967296.0) * 0.020 - 0.010);
+    }
+    constexpr double kPipeline = 0.060;
+    clock.start(0.0);
+    std::size_t next = 0;
+    const double end = run.beats.back() + kPipeline + 0.5;
+    for (std::size_t round = 0;; ++round) {
+        const double now = static_cast<double>(round) * 0.001;
+        if (now >= end) {
+            break;
+        }
+        while (next < count && run.beats[next] + kPipeline <= now) {
+            clock.setTempo(changeTo > 0.0 && next >= changeAt ? changeTo : bpm);
+            clock.syncToBeat(stamps[next] + latency);
+            ++next;
+        }
+        recorder.now = now;
+        (void)clock.advance(now);
+    }
+    run.ticks = recorder.ticks;
+    run.skipped = clock.ticksSkipped();
+    return run;
+}
+
+/// Ticks between two instants, the first included.
+std::size_t ticksBetween(const std::vector<double>& ticks, double from, double to) {
+    return static_cast<std::size_t>(std::lower_bound(ticks.begin(), ticks.end(), to) -
+                                    std::lower_bound(ticks.begin(), ticks.end(), from));
+}
+
+/// Where a receiver counting ticks from Start puts its beats — every 24th tick — against the
+/// music's: how far the worst lands from the nearest beat, and how many times the nearest beat
+/// was not the one after the last. A slip is a tick added or dropped, which is exactly what a
+/// drum machine counting 24 to a beat cannot survive. From the receiver's beat `settle` on,
+/// and only while there is music: the clock runs on after the last beat.
+struct Landing {
+    double worst = 0.0;
+    std::size_t slips = 0;
+    std::size_t beats = 0;
+};
+
+Landing landing(const ClockRun& run, double latency, std::size_t settle) {
+    Landing out;
+    std::size_t last = 0;
+    bool any = false;
+    for (std::size_t n = 24 * settle; n < run.ticks.size(); n += 24) {
+        const double t = run.ticks[n] - latency;
+        if (t > run.beats.back() + 0.05) {
+            break;
+        }
+        const auto after = std::lower_bound(run.beats.begin(), run.beats.end(), t);
+        std::size_t nearest = static_cast<std::size_t>(after - run.beats.begin());
+        if (after == run.beats.end() ||
+            (after != run.beats.begin() && t - *(after - 1) < *after - t)) {
+            nearest -= 1;
+        }
+        out.worst = std::max(out.worst, std::abs(run.beats[nearest] - t));
+        if (any && nearest != last + 1) {
+            ++out.slips;
+        }
+        last = nearest;
+        any = true;
+        ++out.beats;
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("the clock sends exactly 24 ticks a beat against jittered beats", "[output][midi]") {
+    // The audit's C2, as it asked for it: beats with ±10 ms of jitter, thousands of them, and
+    // exactly 24 ticks to every one. The clock this replaced sent 25 on 44 % of beats at 128
+    // BPM with no offset, and 26 to 28 on every beat at −40 ms, in zero-gap bursts — a drum
+    // machine counting ticks walked off the music by two beats a minute.
+    for (const double latency : {0.0, -0.040, 0.030}) {
+        for (const double bpm : {128.0, 174.0, 93.7}) {
+            INFO("latency " << latency * 1000.0 << " ms at " << bpm << " BPM");
+            const ClockRun run = runClock(bpm, latency, 2000);
+            const double beat = 60.0 / bpm;
+            const double tick = beat / 24.0;
+            CHECK(run.skipped == 0);
+
+            // Every beat once the clock has pulled in: the receiver's beat lands on the next
+            // beat of the music, every time — no tick added, none dropped — and on it within the
+            // jitter's reach, halved by the steering, plus a round of the loop.
+            const Landing landed = landing(run, latency, 16);
+            INFO("worst beat-tick error " << landed.worst * 1000.0 << " ms over " << landed.beats
+                                          << " beats");
+            CHECK(landed.beats > 1900);
+            CHECK(landed.slips == 0);
+            CHECK(landed.worst < 0.012);
+
+            // And never a burst or a hole: every gap within the steering's bounds, less the
+            // millisecond a round can add or take.
+            double narrowest = 1.0;
+            double widest = 0.0;
+            for (std::size_t i = 1; i < run.ticks.size(); ++i) {
+                narrowest = std::min(narrowest, run.ticks[i] - run.ticks[i - 1]);
+                widest = std::max(widest, run.ticks[i] - run.ticks[i - 1]);
+            }
+            CHECK(narrowest >= tick * MidiClock::kSteerMin - 0.0011);
+            CHECK(widest <= tick * MidiClock::kSteerMax + 0.0011);
+        }
+    }
+}
+
+TEST_CASE("the clock follows a tempo change without adding or dropping a tick",
+          "[output][midi]") {
+    // 128 to 140 BPM half-way through: a new record. Within a few beats of the change every
+    // beat is 24 ticks again and the beat tick is on the beat.
+    const ClockRun run = runClock(128.0, 0.0, 1000, 140.0, 500);
+    CHECK(run.skipped == 0);
+    // No slip anywhere after the clock first pulled in — the change included — and on the beat
+    // again within a few beats of it.
+    const Landing whole = landing(run, 0.0, 16);
+    CHECK(whole.slips == 0);
+    const Landing after = landing(run, 0.0, 520);
+    CHECK(after.worst < 0.012);
+    // Over the whole run the ticks are the beats times 24, give or take the half beat the
+    // clock started out of phase by.
+    const std::size_t total =
+        ticksBetween(run.ticks, run.beats.front() - 0.2, run.beats.back() + 0.2);
+    CHECK(total + 24 >= 24 * run.beats.size());
+    CHECK(total <= 24 * run.beats.size() + 24);
 }
 
 TEST_CASE("a long stall is skipped rather than flooded", "[output][midi]") {

@@ -158,6 +158,11 @@ export component MainWindow inherits Window {
   // timestamps so events fire early enough". Negative is the useful direction.
   in-out property <float> latency-ms;
 
+  /// Whether a ÷2 or ×2 carries on into the next track — `TempoTracker::Options::
+  /// keepOctaveShift`. Off by default: the next record is dropped back to the tempo the
+  /// tracker hears.
+  in-out property <bool> keep-shift;
+
   // Taps in the set being counted in and taps needed before a tempo is offered, so
   // the TAP button can say that a press registered. 0 when no set is in progress.
   in-out property <int> tap-count;
@@ -303,6 +308,8 @@ export component MainWindow inherits Window {
   callback fold-min-changed(float);
   callback fold-max-changed(float);
   callback latency-changed(float);
+  /// The new state of the "keep for the next track" box, not a flip.
+  callback keep-shift-changed(bool);
 
   callback link-toggled(bool);
   /// A keystroke in one box of row N: remembered, not applied. Applying opens and closes a
@@ -877,6 +884,35 @@ export component MainWindow inherits Window {
                     + (root.latency-ms == 0 ? "" : "  all");
                 moved(v) => {
                   root.latency-changed(v);
+                }
+              }
+
+              // What the ÷2 and ×2 above do when the record changes. A setting, so it sits with
+              // the settings and is live while stopped; the audit's H2, and the operator's call
+              // of 2026-09-23 that the default is to drop a shift at the next track.
+              HorizontalLayout {
+                spacing: 10px;
+                vertical-stretch: 0;
+
+                Text {
+                  // Words, not the buttons' own "÷2 / ×2": at this size and in this colour the ÷
+                  // reads as a +, and "+2 / ×2" names nothing on the window (measured on a render).
+                  text: "halve, double";
+                  color: Theme.dim;
+                  font-size: 12px;
+                  width: 74px;
+                  vertical-alignment: center;
+                }
+
+                CheckBox {
+                  // Says what ticking it does, in the words of what the operator hears: left
+                  // off, a new record that the tracker locks onto comes back at the tempo it
+                  // hears. A tapped tempo is never carried; see `keepOctaveShift`.
+                  text: "keep for the next track";
+                  checked <=> root.keep-shift;
+                  toggled => {
+                    root.keep-shift-changed(self.checked);
+                  }
                 }
               }
             }

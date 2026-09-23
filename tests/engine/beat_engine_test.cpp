@@ -1,3 +1,4 @@
+#include "core/audio/host_time.hpp"
 #include "core/audio/rates.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -861,6 +863,9 @@ TEST_CASE("the forward decoder runs at twice the network's rate and tracks the e
         REQUIRE(engine->post(Command::setLockPinned(true)));
         CHECK(engine->step() == 0);
         CHECK(engine->state().pinned);
+        // The published tempo in the decoder's own terms, which with no ÷2 or ×2 pressed is
+        // the published tempo itself.
+        CHECK(forward->heldBpm() == Approx(engine->tempo().decoderBpm()));
         CHECK(forward->heldBpm() == Approx(engine->state().bpm));
         REQUIRE(engine->post(Command::setLockPinned(false)));
         CHECK(engine->step() == 0);
@@ -870,6 +875,78 @@ TEST_CASE("the forward decoder runs at twice the network's rate and tracks the e
         CHECK(engine->step() == 0);
         CHECK(forward->heldBpm() == Approx(120.0));
     }
+
+    SECTION("pinned while halved holds the filter at its real tempo, not half of it") {
+        // The audit's H3: the hold was given the published tempo, so a pin under ÷2 held the
+        // decoder at 64 against a 128 BPM track and the tracker was penalised off the music.
+        const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+        REQUIRE(forward != nullptr);
+        REQUIRE(engine->post(Command::halve()));
+        (void)engine->step();
+        REQUIRE(engine->state().bpm == Approx(64.0).margin(1.5));
+        REQUIRE(engine->post(Command::setLockPinned(true)));
+        (void)engine->step();
+        CHECK(forward->heldBpm() == Approx(128.0).margin(2.0));
+    }
+
+    SECTION("a stop and a start let go of the hold with the pin") {
+        // The other half of H3. The tracker's reset drops the pin; the decoder's reset keeps a
+        // hold by design. So after a stop and a start the window showed no pin while the
+        // decoder went on holding the old tempo, and a new track could not be acquired.
+        const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+        REQUIRE(forward != nullptr);
+        REQUIRE(engine->post(Command::setLockPinned(true)));
+        (void)engine->step();
+        REQUIRE(forward->heldBpm() > 0.0);
+        engine->start();
+        engine->stop();
+        CHECK_FALSE(engine->state().pinned);
+        CHECK(forward->heldBpm() == 0.0);
+    }
+}
+
+TEST_CASE("a pin pressed before the lock holds nothing until the lock arrives",
+          "[engine][forward]") {
+    // Holding a hunting decoder to whatever it was trying at the moment of the press would be
+    // pinning noise (the audit's H3). The pin is kept, and the hold is taken on the frame the
+    // lock is earned — at the tempo that earned it.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+    REQUIRE(forward != nullptr);
+    REQUIRE(engine->post(Command::setLockPinned(true)));
+    (void)engine->step();
+    CHECK(forward->heldBpm() == 0.0);
+
+    EngineFrame frame;
+    EngineBeat beat;
+    bool heldAtLock = false;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popFrame(frame)) {
+        }
+        while (engine->popBeat(beat)) {
+        }
+        if (!heldAtLock && engine->state().locked) {
+            heldAtLock = true;
+            // The tempo the lock was earned at — not the cloud's raw reading at that moment,
+            // which wanders several BPM either side of it. A hop is two frames, so the tempo
+            // read here may have been refined by a fraction since.
+            CHECK(forward->heldBpm() == Approx(engine->state().bpm).margin(1.0));
+        }
+        if (!engine->state().locked) {
+            CHECK(forward->heldBpm() == 0.0);
+        }
+    }
+    CHECK(heldAtLock);
+    // The first lock on this track is a whole-frame interval, 130.9 — the hold keeps one
+    // interval either side of it, which still has 128 in it, so the tracker stays on the music
+    // under the pin rather than being dragged off it.
+    CHECK(forward->heldBpm() == Approx(128.0).margin(4.0));
+    CHECK(engine->state().bpm == Approx(128.0).margin(2.0));
+    CHECK(engine->state().locked);
 }
 
 TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {
@@ -905,4 +982,53 @@ TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {
     }
     REQUIRE(a.size() == b.size());
     CHECK(a != b);
+}
+
+TEST_CASE("a beat's host time is the beat's own, not the frame it was called on",
+          "[engine][forward]") {
+    // The audit's H15. The decoder puts a beat a fraction of a frame either side of the frame
+    // that calls it (`TrackedFrame::beatOffsetFrames`) — a frame or more back under the default
+    // emission — and the tracker adds that to the beat's time. The stamp Link and the output
+    // scheduler are given took the frame's instead, so every beat reached them late by an
+    // amount that changed from beat to beat.
+    constexpr std::int64_t kOrigin = 3'000'000'000;
+    struct RulerClock final : takt4::audio::HostTimeSource {
+        std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
+            return 3'000'000'000 + static_cast<std::int64_t>(sampleTime * 1e6 / 22050.0);
+        }
+    };
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    RulerClock clock;
+    engine->setHostTimeSource(&clock);
+
+    std::vector<EngineBeat> beats;
+    EngineBeat beat;
+    EngineFrame frame;
+    for (std::size_t h = 0; h < hops; ++h) {
+        engine->processHop(signal.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popFrame(frame)) {
+        }
+        while (engine->popBeat(beat)) {
+            beats.push_back(beat);
+        }
+    }
+    REQUIRE(beats.size() > 15);
+    std::size_t offFrame = 0;
+    for (const EngineBeat& called : beats) {
+        INFO("beat at " << called.event.time << " s");
+        // The ruler starts at sample 0, which is decoder frame 0, so a beat's host time is its
+        // own time on the ruler — to the microsecond the stamp is rounded to, and the one the
+        // interpolated frames between two activations are.
+        const double expected = static_cast<double>(kOrigin) + called.event.time * 1e6;
+        CHECK(std::abs(static_cast<double>(called.hostMicros) - expected) <= 2.0);
+        const double frameTime =
+            static_cast<double>(called.event.frameIndex) * engine->secondsPerFrame();
+        offFrame += std::abs(called.event.time - frameTime) > 1e-9 ? 1 : 0;
+    }
+    // And the case was worth testing: most beats are not on the frame that called them — a
+    // frame back or more under the default emission, which is the lateness the stamp had.
+    CHECK(offFrame > beats.size() / 2);
 }

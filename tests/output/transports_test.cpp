@@ -1,5 +1,7 @@
+#include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "core/trigger/trigger_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -11,6 +13,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -93,35 +97,57 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
     steady.locked = true;
     steady.beatsPerBar = 4;
 
-    // A beat at 120 BPM, where a beat is 500 ms: 200 ms early is a 300 ms hold. Nothing has
-    // left yet, which is the assertion — before this, everything went out immediately.
-    transports.publish(beatAt(1.0, 1, 120.0), 0, 1.0);
+    // A beat in the music at 1.0, fired at 0.7 on a prediction — which is what the output
+    // thread does while the tracker is locked (`BeatScheduler`). 200 ms early is 0.8, and
+    // nothing has left before then.
+    transports.publishBeat(beatAt(1.0, 1, 120.0), 1.0, 0.7);
     const std::size_t held = transports.osc().pending();
     CHECK(held > 0);
     CHECK(transports.osc().messagesSent() == 0);
 
-    transports.advance(1.2999, steady);
+    transports.advance(0.7999, steady);
     CHECK(transports.osc().messagesSent() == 0);
     CHECK(transports.osc().pending() == held);
 
-    transports.advance(1.3001, steady);
+    transports.advance(0.8001, steady);
     CHECK(transports.osc().messagesSent() == held);
     CHECK(transports.osc().pending() == 0);
 
-    SECTION("and moving it mid-set leaves what is already queued where it was") {
-        // A held message keeps the deadline it was given: a target's queue is FIFO, and
-        // rewriting deadlines under it would reorder a rig in the middle of a bar.
+    SECTION("a beat heard after its moment goes at once, not most of a beat later") {
+        // Hunting, nothing is predicted, and a beat reaches the outputs a pipeline after its
+        // moment. It used to be held for what was left of a beat after the offset — 300 ms
+        // here — so a cue for this beat landed just before the next one (the audit's H4).
+        const std::uint64_t before = transports.osc().messagesSent();
         transports.publish(beatAt(2.0, 2, 120.0), 0, 2.0);
+        CHECK(transports.osc().messagesSent() > before);
+        CHECK(transports.osc().pending() == 0);
+    }
+
+    SECTION("a positive offset holds even a beat heard as it happens") {
+        transports.setLatencySeconds(0.050);
+        transports.publish(beatAt(3.0, 3, 120.0), 0, 3.0);
+        const std::size_t queued = transports.osc().pending();
+        CHECK(queued > 0);
+        transports.advance(3.0499, steady);
+        CHECK(transports.osc().pending() == queued);
+        transports.advance(3.0501, steady);
+        CHECK(transports.osc().pending() == 0);
+    }
+
+    SECTION("and moving it mid-set leaves what is already queued where it was") {
+        // A held message keeps the deadline it was given: rewriting deadlines under a queue
+        // would reorder a rig in the middle of a bar.
+        transports.publishBeat(beatAt(2.0, 2, 120.0), 2.0, 1.7);
         const std::size_t queued = transports.osc().pending();
         REQUIRE(queued > 0);
 
         transports.setLatencySeconds(0.0);
-        transports.advance(2.1, steady); // before the 2.3 those are due at
+        transports.advance(1.75, steady); // before the 1.8 those are due at
         CHECK(transports.osc().pending() == queued);
 
-        // The next beat feels the new offset and goes out at once.
+        // The next beat feels the new offset: at its own moment, which is now.
         const std::uint64_t before = transports.osc().messagesSent();
-        transports.publish(beatAt(2.5, 3, 120.0), 0, 2.5);
+        transports.publish(beatAt(1.76, 3, 120.0), 0, 1.76);
         CHECK(transports.osc().messagesSent() > before);
         CHECK(transports.osc().pending() == queued);
     }
@@ -336,58 +362,222 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
 }
 
 TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link]") {
-    // The wiring only, held to Link's own counters so that nothing here depends on
-    // timing. What those calls then *mean* — that only the phase survives a capture, that
-    // a request is moved to where the phase already matches — is link_session_test.cpp's
-    // business.
+    // The wiring, held to Link's own counters and to its own timeline. What the calls then
+    // *mean* between two peers is link_peers_test.cpp's business; this is about which calls
+    // are made, and when — the audit's C3 and H15.
     Transports::Config config;
     config.link = true;
     Transports transports(config);
     transports.startOutputs(0.0);
+    // Link's own thread resets the timeline once when first enabled, and writes each commit's
+    // result back as it handles it. Real beats are half a second apart and come seconds after
+    // Start; these are paced enough for Link to have finished with each before the next.
+    const auto paced = [&transports](const BeatEvent& event, std::int64_t at, double beatTime) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        transports.publish(event, at, beatTime);
+    };
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
 
-    const std::int64_t hostMicros = transports.link().now().count();
+    // Beats on a 128 BPM grid on Link's own clock, so the phase Link reports is the phase the
+    // beats were put at.
+    const std::int64_t origin = transports.link().now().count();
+    const auto micros = [origin](double beats, double bpm) {
+        return origin + static_cast<std::int64_t>(beats * 60.0e6 / bpm);
+    };
 
     // Offline, there is no host clock to align to, so Link is deliberately left alone.
-    transports.publish(beatAt(0.5, 1, 120.0), 0, 0.5);
+    paced(beatAt(0.5, 1, 120.0), 0, 0.5);
     CHECK(transports.link().tempoUpdates() == 0);
     CHECK(transports.link().beatRequests() == 0);
 
-    // Live, the same beat is a tempo and a bar position.
-    transports.publish(beatAt(1.0, 1, 128.0), hostMicros, 1.0);
+    // Hunting, nothing either: not the tempo, which is the hunt's and flips octaves, and not a
+    // phase. Every Start used to overwrite Resolume's tempo with it for a few seconds.
+    BeatEvent hunting = beatAt(0.6, 1, 64.0);
+    hunting.locked = false;
+    paced(hunting, micros(0.0, 128.0), 0.6);
+    CHECK(transports.link().tempoUpdates() == 0);
+    CHECK(transports.link().beatRequests() == 0);
+
+    // The first locked beat snaps: the tempo, and the phase *forced* under the beat. A request
+    // would be moved to wherever a peer's phase already matched, which is no phase at all.
+    paced(beatAt(1.0, 1, 128.0), micros(0.0, 128.0), 1.0);
+    CHECK(transports.link().tempoUpdates() == 1);
+    CHECK(transports.link().beatRequests() == 1);
+    CHECK_THAT(transports.link().phaseAtTime(std::chrono::microseconds{micros(0.0, 128.0)}, 4.0),
+               WithinAbs(0.0, 1e-6));
+
+    // A beat on the grid it set moves nothing: no request, and a tempo that has not moved is
+    // not resent — the refined tempo wobbles by hundredths of a BPM, and no peer can act on it.
+    paced(beatAt(1.5, 2, 128.001), micros(1.0, 128.0), 1.5);
     CHECK(transports.link().tempoUpdates() == 1);
     CHECK(transports.link().beatRequests() == 1);
 
-    // A tempo that has not moved is not resent: the refined tempo wobbles by hundredths of
-    // a BPM on almost every beat, and no peer can act on that.
-    transports.publish(beatAt(1.5, 2, 128.001), hostMicros, 1.5);
-    CHECK(transports.link().tempoUpdates() == 1);
-    CHECK(transports.link().beatRequests() == 2);
-
-    // A tempo that really moved is.
-    transports.publish(beatAt(2.0, 3, 130.0), hostMicros, 2.0);
+    // A tempo that really moved is sent.
+    paced(beatAt(2.0, 3, 130.0), micros(2.0, 128.0), 2.0);
     CHECK(transports.link().tempoUpdates() == 2);
-    CHECK(transports.link().beatRequests() == 3);
+    CHECK(transports.link().beatRequests() == 1);
+
+    // A beat 20 ms late against Link's timeline is the session ahead of the music, and it is
+    // pulled back with the tempo — a little, never with a jump.
+    const std::int64_t beat4 = micros(2.0, 128.0) + static_cast<std::int64_t>(60.0e6 / 130.0) + 20000;
+    paced(beatAt(2.5, 4, 130.0), beat4, 2.5);
+    CHECK(transports.link().tempoUpdates() == 3);
+    CHECK(transports.link().beatRequests() == 1);
+    CHECK(transports.link().tempoBpm() < 130.0);
+    CHECK(transports.link().tempoBpm() > 130.0 * 0.98);
 
     // Before the first downbeat the bar phase is unknown, and publishing a guess would put
-    // every peer on the wrong beat of the bar. Nothing goes out for it.
-    BeatEvent unphased = beatAt(2.5, 0, 130.0);
+    // every peer on the wrong beat of the bar. Only the tempo goes.
+    BeatEvent unphased = beatAt(3.0, 0, 130.0);
     unphased.beatsPerBar = 0;
-    transports.publish(unphased, hostMicros, 2.5);
-    CHECK(transports.link().beatRequests() == 3);
-    CHECK(transports.link().tempoUpdates() == 2);
+    paced(unphased, beat4, 3.0);
+    CHECK(transports.link().beatRequests() == 1);
+
+    // Losing the lock and finding it again snaps again: whatever the session did in between,
+    // it is put back under the music.
+    BeatEvent lost = beatAt(3.2, 1, 130.0);
+    lost.locked = false;
+    paced(lost, beat4, 3.2);
+    const std::uint64_t tempos = transports.link().tempoUpdates();
+    CHECK(transports.link().beatRequests() == 1);
+    paced(beatAt(3.5, 1, 130.0), beat4, 3.5);
+    CHECK(transports.link().beatRequests() == 2);
+    CHECK(transports.link().tempoUpdates() == tempos + 1);
 
     // Switched off, a beat stops reaching it at all.
     transports.setLinkEnabled(false);
-    transports.publish(beatAt(3.0, 4, 135.0), hostMicros, 3.0);
-    CHECK(transports.link().tempoUpdates() == 2);
+    paced(beatAt(4.0, 2, 135.0), beat4, 4.0);
+    CHECK(transports.link().beatRequests() == 2);
+
+    // Switched on again, it snaps and resends the tempo even though nothing has changed: the
+    // session rejoined knowing nothing, or knowing a peer's timeline.
+    transports.setLinkEnabled(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    const std::uint64_t before = transports.link().tempoUpdates();
+    paced(beatAt(4.5, 1, 130.0), beat4, 4.5);
+    CHECK(transports.link().tempoUpdates() == before + 1);
     CHECK(transports.link().beatRequests() == 3);
 
-    // Switched on again, the tempo is resent even though it has not changed since: the
-    // session rejoined knowing nothing.
-    transports.setLinkEnabled(true);
-    transports.publish(beatAt(3.5, 1, 135.0), hostMicros, 3.5);
-    CHECK(transports.link().tempoUpdates() == 3);
-
     transports.stopOutputs();
-    CHECK(transports.beats() == 7);
+    CHECK(transports.beats() == 11);
+}
+
+namespace {
+
+/// A MIDI device that notes when each message reached it, and what it was.
+struct Wire {
+    double now = 0.0;
+    std::vector<std::pair<std::string, double>> heard; ///< "desk on", "laser off", ...
+};
+
+class RecordingPort final : public takt4::output::MidiPort {
+public:
+    RecordingPort(std::string name, std::shared_ptr<Wire> wire)
+        : name_(std::move(name)), wire_(std::move(wire)) {}
+    std::string open(std::string_view spec) override { return std::string(spec); }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char> message) override {
+        const bool on = !message.empty() && (message[0] & 0xF0) == 0x90;
+        wire_->heard.emplace_back(name_ + (on ? " on" : " off"), wire_->now);
+    }
+
+private:
+    std::string name_;
+    std::shared_ptr<Wire> wire_;
+};
+
+} // namespace
+
+TEST_CASE("a press and its release keep their gap on every output however each is offset",
+          "[output][midi][trigger]") {
+    // The audit's H4, at the rule's end, and M9's MIDI half. Two MIDI devices: a desk with no
+    // lag and a laser controller set 150 ms early. A note rule fires on a beat in the music at
+    // 10.5 — fired at 10.35 on a prediction, the earliest either output needs it — with its
+    // note off 100 ms later. Each device must hear the note at the beat's moment plus its own
+    // offset, and the note off exactly 100 ms after that: measuring the release from the round
+    // that sends it would put the desk's note off *before* the desk's note on.
+    auto wire = std::make_shared<Wire>();
+    Transports::Config config;
+    for (const auto& [name, delay] : {std::pair<std::string, double>{"desk", 0.0},
+                                      std::pair<std::string, double>{"laser", -0.150}}) {
+        takt4::output::OutputTarget target;
+        target.name = name;
+        target.kind = takt4::output::OutputTarget::Kind::Midi;
+        target.device = name;
+        target.delaySeconds = delay;
+        config.outputs.push_back(target);
+    }
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<RecordingPort>(name, wire));
+    };
+    Transports transports(config);
+    CHECK_THAT(transports.leadSeconds(), WithinAbs(-0.150, 1e-12));
+    CHECK_THAT(transports.tailSeconds(), WithinAbs(0.0, 1e-12));
+
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "laser-hit";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 0.100;
+    rule.followUps.push_back(release);
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    context.beatInBar = 1;
+    context.beats = 1;
+    context.bars = 1;
+    context.now = 10.35;
+    context.moment = 10.5;
+    wire->now = context.now;
+    sink.setNow(context.now);
+    triggers.onBeat(context);
+
+    takt4::trigger::Context round = context;
+    round.moment.reset();
+    for (int step = 0; step <= 700; ++step) {
+        const double now = 10.35 + 0.001 * step;
+        wire->now = now;
+        sink.setNow(now);
+        round.now = now;
+        triggers.advance(round);
+        sink.releaseDue(now);
+    }
+
+    const auto when = [&wire](const std::string& what) {
+        for (const auto& [heard, at] : wire->heard) {
+            if (heard == what) {
+                return at;
+            }
+        }
+        return -1.0;
+    };
+    REQUIRE(wire->heard.size() == 4);
+    CHECK_THAT(when("laser on"), WithinAbs(10.35, 0.0011));
+    CHECK_THAT(when("laser off"), WithinAbs(10.45, 0.0011));
+    CHECK_THAT(when("desk on"), WithinAbs(10.50, 0.0011));
+    CHECK_THAT(when("desk off"), WithinAbs(10.60, 0.0011));
+    CHECK(sink.queued() == 0);
+
+    SECTION("a PANIC sends what is held at once rather than leaving it to go later") {
+        context.now = 20.0;
+        context.moment = 20.4;
+        context.beats = 2;
+        wire->heard.clear();
+        wire->now = 20.0;
+        sink.setNow(20.0);
+        triggers.onBeat(context);
+        REQUIRE(sink.queued() > 0);
+        sink.flushQueued();
+        CHECK(sink.queued() == 0);
+        CHECK(wire->heard.size() >= 2);
+    }
 }
