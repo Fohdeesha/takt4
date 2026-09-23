@@ -39,6 +39,10 @@ struct ArtNetSender::Impl {
     std::optional<net::AsyncAddress> where;
     /// Set when the address was known and a socket for it still could not be had.
     int socketError = 0;
+    /// Why the last send failed, and zero once one succeeds. A network that is down or a cable
+    /// that is out fails every send, and before this nothing said so: the target simply went
+    /// quiet (the audit's T3 and M12).
+    int sendError = 0;
 
     ~Impl() {
         if (socket != kInvalidSocket) {
@@ -106,7 +110,8 @@ std::string ArtNetSender::problem() const {
         return "not open";
     }
     if (impl_->socket != kInvalidSocket) {
-        return {};
+        return impl_->sendError == 0 ? std::string()
+                                     : "sends are failing: " + net::sendFailure(impl_->sendError);
     }
     if (impl_->socketError != 0) {
         return "cannot open a UDP socket (" + std::to_string(impl_->socketError) + ")";
@@ -161,9 +166,11 @@ bool ArtNetSender::sendDmx(PortAddress universe, std::span<const std::uint8_t> l
         ::sendto(impl_->socket, data, size, 0, reinterpret_cast<const sockaddr*>(&impl_->address),
                  impl_->addressLength);
     if (written < 0 || static_cast<std::size_t>(written) != length) {
+        impl_->sendError = written < 0 ? lastSocketError() : -1;
         ++failed_;
         return false;
     }
+    impl_->sendError = 0;
     ++sent_;
     return true;
 }

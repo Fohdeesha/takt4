@@ -3,6 +3,8 @@
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/trigger_engine.hpp"
 
+#include "support/loopback_receiver.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -222,6 +224,49 @@ TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[outp
     transports.setOscTargets({});
     CHECK(transports.osc().targetCount() == 0);
     CHECK_FALSE(transports.any());
+    transports.stopOutputs();
+}
+
+TEST_CASE("an output the network will not send to says so, and the others carry on",
+          "[output][osc]") {
+    // The audit's T3 — sends failing because the network is down had no test — and the part
+    // of M12 that goes with it: nothing said so, and the target just went quiet. The socket
+    // refuses every send to 0.0.0.0, which is what a network that is down does to all of them.
+    takt4::testing::LoopbackReceiver receiver;
+    takt4::output::OutputTarget deck;
+    deck.id = "o-0000d0c0";
+    deck.name = "deck";
+    deck.host = "0.0.0.0";
+    deck.port = 57000;
+    takt4::output::OutputTarget lights;
+    lights.id = "o-0000e1e1";
+    lights.name = "lights";
+    lights.host = "127.0.0.1";
+    lights.port = receiver.port();
+    Transports transports{Transports::Config{}};
+    transports.setOutputs({deck, lights});
+    transports.startOutputs(0.0);
+    TempoState state;
+    state.bpm = 128.0;
+    state.confidence = 0.7;
+    state.locked = true;
+    state.beatsPerBar = 4;
+    transports.advance(0.1, state);
+
+    // The one that works got the tempo; the one that cannot is named, with why.
+    CHECK_FALSE(receiver.receive().empty());
+    std::vector<std::string> problems = transports.outputProblems();
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].rfind("deck: sends are failing: ", 0) == 0);
+    CHECK(problems[0].find("not an address this machine can send to") != std::string::npos);
+
+    // Pointed somewhere it can reach, it stops saying so.
+    deck.host = "127.0.0.1";
+    deck.port = receiver.port();
+    transports.setOutputs({deck, lights});
+    state.bpm = 130.0;
+    transports.advance(0.2, state);
+    CHECK(transports.outputProblems().empty());
     transports.stopOutputs();
 }
 

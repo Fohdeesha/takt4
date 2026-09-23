@@ -243,6 +243,19 @@ TEST_CASE("an Art-Net node that cannot be resolved is reported, not swallowed", 
     CHECK_THAT(unknown.problem(), ContainsSubstring("cannot resolve"));
 }
 
+TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][artnet]") {
+    // The audit's T3 and M12: a network that is down, or a cable that is out, fails every
+    // send — and nothing said so; the node simply went dark. The socket refuses every send to
+    // 0.0.0.0, which stands in for that here, since a cable cannot be pulled from a test.
+    ArtNetSender node("0.0.0.0", 6454);
+    CHECK(node.problem().empty()); // nothing has been tried yet
+    const std::array<std::uint8_t, 3> levels{255, 0, 0};
+    CHECK_FALSE(node.sendDmx(0, levels));
+    CHECK(node.failed() == 1);
+    CHECK_THAT(node.problem(), ContainsSubstring("sends are failing"));
+    CHECK_THAT(node.problem(), ContainsSubstring("not an address this machine can send to"));
+}
+
 // The pacing rules are the whole of what this class does, and both of them are felt on a rig:
 // too fast and a node drops frames mid-fade, too slow and a node decides takt4 has gone away.
 TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][artnet]") {

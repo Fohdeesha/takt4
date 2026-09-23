@@ -94,6 +94,65 @@ struct WinsockGuard {};
 
 #endif
 
+/// Why a datagram could not be sent, in words an operator can act on, with the code after
+/// it for anyone who has to look it up. For the errors a network that is down, unplugged or
+/// wrongly addressed gives; anything else is its code.
+inline std::string sendFailure(int error) {
+    std::string why;
+#if defined(_WIN32)
+    switch (error) {
+    case WSAENETUNREACH:
+        why = "the network is unreachable";
+        break;
+    case WSAEHOSTUNREACH:
+        why = "there is no route to that address";
+        break;
+    case WSAENETDOWN:
+        why = "the network is down";
+        break;
+    case WSAEADDRNOTAVAIL:
+        why = "that is not an address this machine can send to";
+        break;
+    case WSAEACCES:
+        why = "not permitted (a broadcast address?)";
+        break;
+    case WSAENOBUFS:
+    case WSAEWOULDBLOCK:
+        why = "the network is not keeping up";
+        break;
+    default:
+        why = "error";
+        break;
+    }
+#else
+    switch (error) {
+    case ENETUNREACH:
+        why = "the network is unreachable";
+        break;
+    case EHOSTUNREACH:
+        why = "there is no route to that address";
+        break;
+    case ENETDOWN:
+        why = "the network is down";
+        break;
+    case EADDRNOTAVAIL:
+        why = "that is not an address this machine can send to";
+        break;
+    case EACCES:
+        why = "not permitted (a broadcast address?)";
+        break;
+    case ENOBUFS:
+    case EAGAIN:
+        why = "the network is not keeping up";
+        break;
+    default:
+        why = "error";
+        break;
+    }
+#endif
+    return why + " (" + std::to_string(error) + ")";
+}
+
 /// "host:port" for an address, numeric, or "?" when it cannot be named. For logs and for
 /// a UI that has to say where a message came from.
 inline std::string describe(const sockaddr* address, socklen_t length) {

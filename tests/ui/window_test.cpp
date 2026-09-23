@@ -2849,6 +2849,33 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     CHECK(kindOf() == picked);
 }
 
+
+TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
+    // Where the operator meets the audit's T3: a network that is down, or a cable that is
+    // out, fails every send, and the window said nothing — the output just went quiet (M12).
+    // The socket refuses every send to 0.0.0.0, the stand-in here, since no test can pull a
+    // cable. Nothing is started: the outputs run from launch (H5), and the status has to say
+    // so before anybody presses anything.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget deck;
+    REQUIRE(takt4::output::parseOutputTarget("deck = 0.0.0.0:57000", deck));
+    saved.preset.outputs = {deck};
+    WindowController controller(tracker, saved);
+
+    std::string status;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (status.find("deck") == std::string::npos && std::chrono::steady_clock::now() < until) {
+        controller.tick();
+        status = std::string(controller.window().get_status());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    INFO(status);
+    CHECK(status.find("deck: sends are failing") != std::string::npos);
+    CHECK(status.find("not an address this machine can send to") != std::string::npos);
+    CHECK(controller.statusIsError());
+}
+
 #if defined(_WIN32)
 TEST_CASE("SAVE in a test process writes to a folder of its own, not over the rig's",
           "[ui][settings]") {
