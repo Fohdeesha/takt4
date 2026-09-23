@@ -43,8 +43,10 @@ but Windows is the only platform currently built and tested.
   Edited by clicking, not by typing JSON.
 - **Stays hands-on while it plays.** Tap the tempo, snap the downbeat, ÷2, ×2, pin the
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
-  stops the tracker, reseeds anything or drops the lock. From the keyboard: **T** taps,
-  **D** snaps the downbeat and **Esc** is PANIC (in a text box, Esc just leaves the box).
+  stops the tracker, reseeds anything or drops the lock. A ÷2 or ×2 lasts for the record
+  it was pressed on and is dropped when the next one takes over, unless you tick **keep
+  for the next track**. From the keyboard: **T** taps, **D** snaps the downbeat and **Esc**
+  is PANIC (in a text box, Esc just leaves the box).
 - **Rides out the rig failing.** If the interface stops sending — unplugged, power-cycled,
   reset by its driver, or moved to another sample rate by another program — the readout
   says **NO AUDIO** and takt4 reopens it as soon as it answers, while Link and the MIDI clock
@@ -178,7 +180,9 @@ toggle depends on a state the sender cannot see, so a surface that missed one me
 be inverted for the rest of the set. The rest are buttons and are sent bare.
 
 Every one of these is also bindable to a MIDI note or CC through **LEARN** — except the
-ones that name a rule, because pressing a pad says which button and never which rule.
+ones that name a rule, because pressing a pad says which button and never which rule. A
+button acts on the press, never again on the release, and PANIC from a pad only engages:
+let go of it with **RELEASE** or `/takt4/ctl/panic 0`.
 
 ## Lights
 
@@ -277,17 +281,17 @@ around the beat and they add up — one **latency** for the whole rig, and one *
 output**, because the lag belongs to the thing on the end of each cable and one number
 cannot describe a rig with a media server and a laser on it.
 
-Both are signed, and **positive is later, negative is earlier**. Link and MIDI clock carry
-a running grid, so a negative offset really does shift them earlier; an OSC message is one
-datagram about a beat that has already happened and cannot be sent into the past, so
-"earlier" there is measured from the **next** beat — the message is held and arrives that
-far ahead of the beat it lands on, which downstream cannot tell apart.
+Both are signed, and **positive is later, negative is earlier** — earlier than the beat
+itself. While the tempo is locked takt4 does not wait to hear a beat: it knows when the next
+one is due and sends each output its messages that far ahead, so a clip cue set −300 ms
+arrives 300 ms before the beat it belongs to, carrying that beat's bar position. Link and the
+MIDI clock are steered onto the beat the same way. While takt4 is still finding the tempo
+there is nothing to predict from, and a beat's messages go the moment it is heard.
 
 **What you type is milliseconds and has nothing to do with the tempo**: measure your
-device's lag once and it stays right as the music changes. What varies is the wait — a
-device told −300 ms is held 352 ms at 92 BPM and 169 ms at 128, landing on a beat both
-times — and each row also shows the offset as a fraction of the beat now playing, for when
-you would rather think in beats.
+device's lag once and it stays right as the music changes. Each row also shows the offset
+as a fraction of the beat now playing, for when you would rather think in beats. The
+per-output offset applies to OSC and MIDI outputs; an Art-Net node has only the rig's.
 
 ## Building
 

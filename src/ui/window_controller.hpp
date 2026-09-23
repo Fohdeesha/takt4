@@ -148,6 +148,8 @@ public:
     void setFoldMin(double bpm);
     void setFoldMax(double bpm);
     void setLatencyMs(double milliseconds);
+    /// Whether ÷2 and ×2 carry on into the next track; see `Options::keepOctaveShift`.
+    void setKeepShift(bool keep);
 
     /// The settings as the engine has them — or as it is about to, when a change posted
     /// moments ago has not been applied yet. This is what the window is showing, and it

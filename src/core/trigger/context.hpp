@@ -3,6 +3,7 @@
 #include "core/features/intensity.hpp"
 
 #include <cstdint>
+#include <optional>
 
 namespace takt4::trigger {
 
@@ -46,6 +47,11 @@ struct Context {
     /// Seconds since the outputs started, on the same clock `output::OutputRunner` drives
     /// the transports from. Cooldowns and follow-up delays are measured against it.
     double now = 0.0;
+    /// When the thing being judged happens, where that is not `now`: a beat the output thread
+    /// is firing ahead of time on a prediction, whose own moment is still to come — or one
+    /// heard late, whose moment has gone. Unset for everything that happens as it is judged.
+    /// Carried onto every message sent from it; see `Message::moment`.
+    std::optional<double> moment;
 };
 
 } // namespace takt4::trigger

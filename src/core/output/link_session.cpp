@@ -80,6 +80,15 @@ void LinkSession::forceBeat(double beat, std::chrono::microseconds at, double qu
     ++beatRequests_;
 }
 
+void LinkSession::snap(double bpm, double beat, std::chrono::microseconds at, double quantum) {
+    auto state = impl_->link.captureAppSessionState();
+    state.setTempo(bpm, at);
+    state.forceBeatAtTime(beat, at, quantum);
+    impl_->link.commitAppSessionState(state);
+    ++tempoUpdates_;
+    ++beatRequests_;
+}
+
 double LinkSession::beatAtTime(std::chrono::microseconds at, double quantum) const {
     return impl_->link.captureAppSessionState().beatAtTime(at, quantum);
 }

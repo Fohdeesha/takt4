@@ -108,11 +108,15 @@ void TriggerEngine::deliver(const Message& message, std::string_view ruleId, boo
 }
 
 bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
-    const std::optional<Message> message = rule.fire(context);
+    std::optional<Message> message = rule.fire(context);
     if (!message) {
         ++dropped_;
         return false;
     }
+    // What the message is about, and so what every target's offset is measured from: the
+    // beat's own moment when one was given, and now for everything that happens as it is
+    // judged. See `Message::moment`.
+    message->moment = context.moment.value_or(context.now);
     if (rule.muted() && !force) {
         // **The rule has run.** Its generators advanced, its cooldown started and its fire
         // count moved, which is the whole difference between muted and disabled: unmuting
@@ -133,13 +137,18 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
     // first. Cleared here rather than by the callee, which appends.
     owed_.clear();
     rule.followUpsFor(context, *message, owed_);
-    for (const auto& [index, follow] : owed_) {
+    for (auto& [index, follow] : owed_) {
         // Never in the past, however the delay was configured: a follow-up due before the
         // message it follows would be sent in the same round and read as a rule that sends
         // its release first. `Rule::followUpDelay` is what turns "two beats" into seconds,
         // and it does it here — against the tempo the press went out at, not the one playing
         // when the release comes due.
         const double delay = std::max(0.0, rule.followUpDelay(context, index));
+        // Handed over a delay after the press was, and *about* a moment a delay after the
+        // press's — so every target, however it is offset, hears the release exactly `delay`
+        // after it heard the press. Measuring the release from the round that sends it instead
+        // would put it ahead of its own press on a target offset later than the earliest one.
+        follow.moment = message->moment + delay;
         pending_.push_back(Pending{context.now + delay, follow, rule.id()});
     }
     return true;

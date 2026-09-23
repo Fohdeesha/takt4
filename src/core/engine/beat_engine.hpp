@@ -249,6 +249,9 @@ private:
     /// touches these.
     model::FrameActivation previous_;
     bool havePrevious_ = false;
+    /// The operator pinned before there was a lock; the decoder's tempo hold is taken on the
+    /// frame one arrives. See `Command::Kind::SetLockPinned` in `applyCommands`.
+    bool pinHoldPending_ = false;
 
     rt::SpscRing<EngineFrame, kFrameQueueCapacity> frames_;
     rt::SpscRing<EngineBeat, kBeatQueueCapacity> beats_;
