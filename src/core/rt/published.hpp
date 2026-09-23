@@ -31,13 +31,19 @@ namespace takt4::rt {
 /// Requires `T` to be trivially copyable: a reader may copy a value that is being
 /// overwritten and then throw it away, which is only safe for bytes.
 ///
-/// **The value is kept as relaxed atomic words, not as a `T`.** A reader's copy races with
-/// the writer's by design — that is what the retry is for — and a plain copy racing with a
-/// plain write is a data race under the C++ memory model, whatever the hardware does with
-/// it: harmless on x64, reported by ThreadSanitizer every time (the audit's Low items). The
-/// words are Boehm's answer ("Can seqlocks get along with programming language memory
-/// models?", 2012): every access is atomic, so there is no race to report, and the fences
-/// around the counter are what make a whole copy a whole copy.
+/// **The value is kept as atomic words, not as a `T`.** A reader's copy races with the
+/// writer's by design — that is what the retry is for — and a plain copy racing with a plain
+/// write is a data race under the C++ memory model, whatever the hardware does with it:
+/// harmless on x64, reported by ThreadSanitizer every time (the audit's Low items). The words
+/// are Boehm's answer ("Can seqlocks get along with programming language memory models?",
+/// 2012): every access is atomic, so there is no race to report.
+///
+/// **Ordered by the words themselves, with no fences** — Boehm's other form: the writer
+/// stores each word with release, so its odd counter cannot be seen after any of them; the
+/// reader loads each with acquire, so its second look at the counter cannot happen before
+/// any of them. On x64 that is the same instructions as relaxed. The fence form would do the
+/// same, and GCC refuses to build `atomic_thread_fence` under ThreadSanitizer, which cannot
+/// model a fence on its own (the first linux-tsan run, 2026-09-23).
 template <class T>
 class Published {
     static_assert(std::is_trivially_copyable_v<T>, "a published value is copied bitwise");
@@ -76,9 +82,8 @@ public:
         const Words words = toWords(value);
         const std::uint64_t before = sequence_.load(std::memory_order_relaxed);
         sequence_.store(before + 1, std::memory_order_relaxed); // now odd: writing
-        std::atomic_thread_fence(std::memory_order_release);
         for (std::size_t i = 0; i < kWords; ++i) {
-            words_[i].store(words[i], std::memory_order_relaxed);
+            words_[i].store(words[i], std::memory_order_release);
         }
         sequence_.store(before + 2, std::memory_order_release); // even again: settled
     }
@@ -93,9 +98,8 @@ public:
             }
             Words words;
             for (std::size_t i = 0; i < kWords; ++i) {
-                words[i] = words_[i].load(std::memory_order_relaxed);
+                words[i] = words_[i].load(std::memory_order_acquire);
             }
-            std::atomic_thread_fence(std::memory_order_acquire);
             if (sequence_.load(std::memory_order_relaxed) == before) {
                 std::array<std::byte, sizeof(T)> bytes;
                 std::memcpy(bytes.data(), words.data(), sizeof(T));
