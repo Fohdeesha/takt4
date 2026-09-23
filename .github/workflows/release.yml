@@ -1,0 +1,87 @@
+name: release
+
+# A release is built here, from its tag — by the user's choice on 2026-09-23 (the audit found
+# releases built by hand from a working tree, with a different compiler than CI, and v0.9.7
+# published before CI had finished). Pushing an annotated tag `vX.Y.Z` builds that commit on a
+# clean runner, runs every test, checks the binary names the tag as its commit, and attaches
+# the executables and their symbols to the GitHub Release for the tag, with the tag's message
+# as the notes. The PDBs go with them because a crash report without them cannot be read
+# (the audit noted 0.9.4-0.9.6 shipped none).
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          # Every tag and every commit, so `git describe` names the tag rather than a hash.
+          fetch-depth: 0
+
+      # A tag that is not the version in CMakeLists.txt would build a binary that calls itself
+      # something else. Refused before anything is built.
+      - name: The tag is the version
+        run: |
+          version=$(sed -n 's/^  VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)
+          echo "CMakeLists.txt says $version; the tag is $GITHUB_REF_NAME"
+          test "v$version" = "$GITHUB_REF_NAME"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          rustc --version || true
+          cargo --version || true
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        run: cmake --build --preset windows-msvc --parallel
+
+      - name: Test
+        run: ctest --preset windows-msvc-all
+
+      # What the release will say about itself: the tag exactly — not "-dirty", not a commit
+      # after it. `--version` prints "commit: <git describe>".
+      - name: The binaries name the tag
+        run: |
+          bin=build/windows-msvc/bin/Release
+          "$bin/takt4.exe" --version | tee app.txt
+          "$bin/takt4-cli.exe" --version | tee cli.txt
+          grep -qx "  commit:        $GITHUB_REF_NAME" app.txt
+          grep -qx "  commit:        $GITHUB_REF_NAME" cli.txt
+
+      - name: Package
+        run: |
+          bin=build/windows-msvc/bin/Release
+          mkdir dist
+          cp "$bin/takt4.exe" "$bin/takt4.pdb" "$bin/takt4-cli.exe" "$bin/takt4-cli.pdb" dist/
+          cp LICENSE dist/
+          if [ -f THIRD-PARTY-NOTICES.txt ]; then cp THIRD-PARTY-NOTICES.txt dist/; fi
+          ls -l dist
+
+      # Attached to the Release for this tag: created from the tag's message if there is none
+      # yet, and the files replaced if one was already made by hand.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-from-tag \
+              --title "takt4 $VERSION"
+          fi

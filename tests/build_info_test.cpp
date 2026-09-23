@@ -27,6 +27,25 @@ TEST_CASE("build info reports every dependency", "[build_info]") {
     CHECK(info.kohlhoffAsio == "1.36.0");
 }
 
+TEST_CASE("a build names the commit it came from", "[build_info]") {
+    // The audit: releases were built by hand from a working tree and `--version` carried no
+    // commit and no dirty flag, so a binary could not say what it was built from.
+    const takt4::BuildInfo info = takt4::buildInfo();
+    CHECK_FALSE(info.commit.empty());
+    CHECK(info.commit != "unknown"); // this tree is a git checkout, and git is there to ask
+    CHECK_THAT(takt4::describe(info), ContainsSubstring("commit:        " + info.commit));
+
+    // The bare version only for a clean build of its own release tag.
+    takt4::BuildInfo release = info;
+    release.version = "0.9.7";
+    release.commit = "v0.9.7";
+    CHECK(takt4::versionLabel(release) == "0.9.7");
+    release.commit = "v0.9.7-dirty";
+    CHECK(takt4::versionLabel(release) == "0.9.7 (v0.9.7-dirty)");
+    release.commit = "v0.9.7-12-gfccd01d";
+    CHECK(takt4::versionLabel(release) == "0.9.7 (v0.9.7-12-gfccd01d)");
+}
+
 TEST_CASE("describe() renders one line per component", "[build_info]") {
     const std::string text = takt4::describe(takt4::buildInfo());
 

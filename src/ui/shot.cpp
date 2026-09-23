@@ -815,7 +815,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     // As the real app does it: the build belongs in the title bar and the status bar's
     // corner, where a status cannot take it away. A screenshot that did not carry it would
     // be a picture with no way of saying which build it is a picture of.
-    window->set_version(slint::SharedString(buildInfo().version));
+    window->set_version(slint::SharedString(versionLabel(buildInfo())));
 
     // show() creates the adapter; the two dispatches give the scene its scale and size,
     // which nothing else would do without a window manager to hear from.

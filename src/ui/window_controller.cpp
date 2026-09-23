@@ -421,7 +421,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // title bar and the corner of the status bar, so "which build is this?" is answerable
     // at a glance and stays answerable — the opening status line used to be the only place
     // it was said, and the first status after it took the answer away.
-    window_->set_version(slint::SharedString(buildInfo().version));
+    window_->set_version(slint::SharedString(versionLabel(buildInfo())));
 
     // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
