@@ -1288,7 +1288,11 @@ TEST_CASE("a name server that does not answer does not stop the output thread",
     const std::uint64_t during = runner.rounds() - before;
     runner.stop();
     INFO("rounds in half a second: " << during);
-    CHECK(during > 250);
+    // A thread stuck in the lookup does next to none in that half second — the lookup takes
+    // seconds — and a free one does 250 to 500, one a millisecond where the timer allows it.
+    // So the line is well below the second and far above the first: a CI runner gave exactly
+    // 250 on 2026-09-23, a coarser timer rather than a stuck thread, and failed `> 250`.
+    CHECK(during > 100);
     // And the target is there, waiting for its address rather than refused.
     CHECK(runner.snapshot().outputs.size() == 1);
 }
