@@ -1364,6 +1364,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         published.push_back(beat);
     });
     runner.start();
+    // Listening from the start, which is what gives the MIDI clock its Start — the console's
+    // run is the tracker's run, where the window's outputs outlive both.
+    runner.setTracking(true);
 
     auto lastStatus = start;
     std::vector<takt4::engine::EngineBeat> toPrint;

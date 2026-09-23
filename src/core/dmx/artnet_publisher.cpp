@@ -94,4 +94,29 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     return datagrams;
 }
 
+std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {
+    std::size_t datagrams = 0;
+    for (Target& target : targets_) {
+        const std::vector<PortAddress>& carried =
+            target.universes.empty() ? engine.universes() : target.universes;
+        for (const PortAddress universe : carried) {
+            const std::span<const std::uint8_t> levels = engine.levels(universe);
+            if (levels.empty()) {
+                continue;
+            }
+            Paced& paced = pacedFor(target, universe);
+            if (target.sender->sendDmx(universe, levels)) {
+                ++sent_;
+                ++datagrams;
+            } else {
+                ++failed_;
+            }
+            paced.lastSentAt = now;
+            paced.lastRevision = engine.revision(universe);
+            paced.everSent = true;
+        }
+    }
+    return datagrams;
+}
+
 } // namespace takt4::dmx

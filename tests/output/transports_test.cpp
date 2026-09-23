@@ -297,6 +297,7 @@ TEST_CASE("a MIDI device pulled out mid-set comes back on its own", "[output][mi
     Transports transports(config);
     const TempoState state;
     transports.startOutputs(0.0);
+    transports.startClock(0.0);
     double now = 0.0;
     const auto runFor = [&](double seconds) {
         const double until = now + seconds;
@@ -348,6 +349,7 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
     Transports transports(config);
     const TempoState state;
     transports.startOutputs(0.0);
+    transports.startClock(0.0);
     transports.advance(0.1, state);
     cable->plugged = false;
     for (double now = 0.101; now < 0.4; now += 0.001) {

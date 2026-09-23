@@ -44,35 +44,60 @@ std::size_t DmxEngine::bufferOf(PortAddress universe) const noexcept {
 }
 
 void DmxEngine::setPatch(std::vector<Fixture> patch) {
-    // Effects point at buffer indices and channel numbers that a re-patch can move under
-    // them. Cancelling holds the levels; see the header.
-    running_.clear();
+    // Where each fixture of the old patch is in the new one, by name — each new fixture taken
+    // once, in order, so two fixtures of one name keep their order rather than both landing on
+    // the first. This is what lets a running effect and a virtual fixture's state carry on
+    // across an edit.
+    std::vector<std::uint16_t> mapped(patch_.size(), kNoFixture);
+    {
+        std::vector<bool> taken(patch.size(), false);
+        for (std::size_t i = 0; i < patch_.size(); ++i) {
+            for (std::size_t j = 0; j < patch.size() && j < kNoFixture; ++j) {
+                if (!taken[j] && patch[j].name == patch_[i].name) {
+                    mapped[i] = static_cast<std::uint16_t>(j);
+                    taken[j] = true;
+                    break;
+                }
+            }
+        }
+    }
 
-    patch_ = std::move(patch);
-    universes_ = universesOf(patch_);
+    // A channel TEST hold is let go, and its channel put back where the hold found it — before
+    // the patch is laid over the levels, so a channel the new patch re-parks is re-parked from
+    // what it really was rather than from the test's level.
+    for (Running& running : running_) {
+        for (const Track& track : running.tracks) {
+            if (track.fixture == kNoFixture && !track.isVirtual && track.buffer < buffers_.size() &&
+                track.channel < kChannelsPerUniverse) {
+                buffers_[track.buffer].levels[track.channel] = static_cast<std::uint8_t>(
+                    std::lround(std::clamp(track.from, 0.0, 1.0) * 255.0));
+                ++buffers_[track.buffer].revision;
+            }
+        }
+        std::erase_if(running.tracks,
+                      [](const Track& track) { return track.fixture == kNoFixture; });
+    }
 
+    const std::vector<PortAddress> universes = universesOf(patch);
     std::vector<Buffer> rebuilt;
-    rebuilt.reserve(universes_.size());
-    for (const PortAddress universe : universes_) {
+    rebuilt.reserve(universes.size());
+    for (const PortAddress universe : universes) {
         Buffer buffer;
         buffer.universe = universe;
         const std::size_t old = bufferOf(universe);
         if (old != static_cast<std::size_t>(-1)) {
-            // Keep what this universe was already showing. Only channels the old patch did
-            // not reach are given a parked level below, so adding a fixture does not reset
-            // the ones already lit.
             buffer.levels = buffers_[old].levels;
-            buffer.covered = buffers_[old].covered;
+            buffer.meaning = buffers_[old].meaning;
             buffer.revision = buffers_[old].revision;
         }
         rebuilt.push_back(buffer);
     }
 
-    // Now lay the patch over it: every patched channel is marked covered, and one that was
-    // not covered before takes its fixture's parked level.
-    for (const Fixture& fixture : patch_) {
+    // What the new patch makes of every channel.
+    std::vector<std::array<Meaning, kChannelsPerUniverse>> after(rebuilt.size());
+    for (const Fixture& fixture : patch) {
         if (!fixture.enabled || fixture.channels.empty()) {
-            continue;
+            continue; // switched off contributes no channels — see `Fixture::enabled`
         }
         std::size_t index = static_cast<std::size_t>(-1);
         for (std::size_t i = 0; i < rebuilt.size(); ++i) {
@@ -84,34 +109,244 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         if (index == static_cast<std::size_t>(-1)) {
             continue;
         }
-        Buffer& buffer = rebuilt[index];
         for (std::size_t i = 0; i < fixture.channels.size(); ++i) {
             const std::size_t channel = std::size_t{fixture.address} + i;
             if (channel < 1 || channel > kChannelsPerUniverse) {
                 continue;
             }
-            const std::size_t at = channel - 1;
-            if (!buffer.covered[at]) {
-                buffer.levels[at] = i < fixture.parked.size() ? fixture.parked[i] : 0;
-                ++buffer.revision;
+            Meaning& meaning = after[index][channel - 1];
+            meaning.covered = true;
+            meaning.position = static_cast<std::uint16_t>(i);
+            meaning.role = fixture.channels[i];
+            meaning.parked = i < fixture.parked.size() ? fixture.parked[i] : 0;
+        }
+    }
+    // And each channel put right against what it was. See the header.
+    for (std::size_t b = 0; b < rebuilt.size(); ++b) {
+        Buffer& buffer = rebuilt[b];
+        for (std::size_t at = 0; at < kChannelsPerUniverse; ++at) {
+            const Meaning& was = buffer.meaning[at];
+            const Meaning& now = after[b][at];
+            if (now.covered && now != was) {
+                // Newly patched, or patched to mean something else: parked.
+                if (buffer.levels[at] != now.parked) {
+                    buffer.levels[at] = now.parked;
+                    ++buffer.revision;
+                }
+            } else if (!now.covered && was.covered) {
+                // Nobody's any more: released, which is zero.
+                if (buffer.levels[at] != 0) {
+                    buffer.levels[at] = 0;
+                    ++buffer.revision;
+                }
             }
-            buffer.covered[at] = true;
+            buffer.meaning[at] = now;
         }
     }
 
+    // Each virtual fixture's state carried by name, or read from its channels as they now stand.
+    std::vector<Virtual> carried(patch.size());
+    std::vector<bool> carries(patch.size(), false);
+    for (std::size_t i = 0; i < mapped.size(); ++i) {
+        if (mapped[i] != kNoFixture && i < virtuals_.size() && virtuals_[i].active) {
+            carried[mapped[i]] = virtuals_[i];
+            carries[mapped[i]] = true;
+        }
+    }
+
+    patch_ = std::move(patch);
+    universes_ = universes;
     buffers_ = std::move(rebuilt);
+    std::vector<Virtual> virtuals(patch_.size());
+    for (std::size_t j = 0; j < patch_.size(); ++j) {
+        const Fixture& fixture = patch_[j];
+        if (!fixture.enabled || has(fixture, Role::Dimmer) || !emits(fixture)) {
+            continue;
+        }
+        virtuals[j] = carries[j] ? carried[j] : virtualFromLevels(fixture);
+        virtuals[j].active = true;
+        virtuals[j].dirty = carries[j];
+    }
+    virtuals_ = std::move(virtuals);
+
+    retarget(mapped);
+    composeVirtuals();
+}
+
+void DmxEngine::retarget(const std::vector<std::uint16_t>& mapped) {
+    const auto target = [&](std::uint16_t fixture) -> const Fixture* {
+        if (fixture >= mapped.size() || mapped[fixture] == kNoFixture) {
+            return nullptr;
+        }
+        const Fixture& found = patch_[mapped[fixture]];
+        return found.enabled ? &found : nullptr;
+    };
+    const auto isEmitter = [](Role role) {
+        return std::find(kEmitters.begin(), kEmitters.end(), role) != kEmitters.end();
+    };
+    for (Running& running : running_) {
+        std::erase_if(running.tracks, [&](Track& track) {
+            const Fixture* fixture = target(track.fixture);
+            if (fixture == nullptr) {
+                return true; // the fixture has gone, or is switched off
+            }
+            const std::uint16_t moved = mapped[track.fixture];
+            const bool nowVirtual = moved < virtuals_.size() && virtuals_[moved].active;
+            if (track.isVirtual) {
+                if (!nowVirtual) {
+                    return true;
+                }
+                track.fixture = moved;
+                return false;
+            }
+            const std::uint16_t channel = channelOf(*fixture, track.source);
+            const std::size_t buffer = bufferOf(fixture->universe);
+            if (channel == 0 || buffer == static_cast<std::size_t>(-1) ||
+                (nowVirtual && isEmitter(track.source))) {
+                // No such channel any more — or it has become a virtual fixture's emitter, whose
+                // level is written from its color and intensity rather than driven raw.
+                return true;
+            }
+            track.fixture = moved;
+            track.buffer = static_cast<std::uint32_t>(buffer);
+            track.channel = static_cast<std::uint16_t>(channel - 1);
+            const Role partner = track.source == Role::Pan    ? Role::PanFine
+                                 : track.source == Role::Tilt ? Role::TiltFine
+                                                              : Role::Unused;
+            if (partner != Role::Unused) {
+                const std::uint16_t fine = channelOf(*fixture, partner);
+                track.fine = fine == 0 ? kNoChannel : static_cast<std::uint16_t>(fine - 1);
+            }
+            return false;
+        });
+        std::erase_if(running.moves, [&](Move& move) {
+            const Fixture* fixture = target(move.fixture);
+            if (fixture == nullptr) {
+                return true;
+            }
+            const std::uint16_t pan = channelOf(*fixture, Role::Pan);
+            const std::uint16_t tilt = channelOf(*fixture, Role::Tilt);
+            const std::size_t buffer = bufferOf(fixture->universe);
+            if ((pan == 0 && tilt == 0) || buffer == static_cast<std::size_t>(-1)) {
+                return true;
+            }
+            move.fixture = mapped[move.fixture];
+            move.buffer = static_cast<std::uint32_t>(buffer);
+            const std::uint16_t panFine = channelOf(*fixture, Role::PanFine);
+            const std::uint16_t tiltFine = channelOf(*fixture, Role::TiltFine);
+            move.pan = pan == 0 ? kNoChannel : static_cast<std::uint16_t>(pan - 1);
+            move.tilt = tilt == 0 ? kNoChannel : static_cast<std::uint16_t>(tilt - 1);
+            move.panFine = panFine == 0 ? kNoChannel : static_cast<std::uint16_t>(panFine - 1);
+            move.tiltFine = tiltFine == 0 ? kNoChannel : static_cast<std::uint16_t>(tiltFine - 1);
+            // The window as the new patch has it, so a limit just tightened holds at once.
+            const double panA = std::clamp(fixture->panMin, 0.0, 1.0);
+            const double panB = std::clamp(fixture->panMax, 0.0, 1.0);
+            const double tiltA = std::clamp(fixture->tiltMin, 0.0, 1.0);
+            const double tiltB = std::clamp(fixture->tiltMax, 0.0, 1.0);
+            move.panLow = std::min(panA, panB);
+            move.panHigh = std::max(panA, panB);
+            move.tiltLow = std::min(tiltA, tiltB);
+            move.tiltHigh = std::max(tiltA, tiltB);
+            move.toPan = std::clamp(move.toPan, move.panLow, move.panHigh);
+            move.toTilt = std::clamp(move.toTilt, move.tiltLow, move.tiltHigh);
+            return false;
+        });
+    }
+    std::erase_if(running_, [](const Running& r) { return r.tracks.empty() && r.moves.empty(); });
+}
+
+DmxEngine::Virtual DmxEngine::virtualFromLevels(const Fixture& fixture) const {
+    // As the channels stand, at full intensity: color × intensity is then exactly what is being
+    // sent, so taking a fixture over changes nothing a node can see.
+    Virtual state;
+    const std::size_t buffer = bufferOf(fixture.universe);
+    for (std::size_t e = 0; e < kEmitters.size(); ++e) {
+        const std::uint16_t channel = channelOf(fixture, kEmitters[e]);
+        if (channel != 0 && buffer != static_cast<std::size_t>(-1)) {
+            state.color[e] = readChannel(static_cast<std::uint32_t>(buffer),
+                                         static_cast<std::uint16_t>(channel - 1), kNoChannel);
+        }
+    }
+    return state;
+}
+
+void DmxEngine::composeVirtuals() noexcept {
+    for (std::size_t index = 0; index < virtuals_.size() && index < patch_.size(); ++index) {
+        Virtual& state = virtuals_[index];
+        if (!state.active || !state.dirty) {
+            continue;
+        }
+        state.dirty = false;
+        const Fixture& fixture = patch_[index];
+        const std::size_t buffer = bufferOf(fixture.universe);
+        if (buffer == static_cast<std::size_t>(-1)) {
+            continue;
+        }
+        for (std::size_t e = 0; e < kEmitters.size(); ++e) {
+            const std::uint16_t channel = channelOf(fixture, kEmitters[e]);
+            if (channel != 0) {
+                writeChannel(static_cast<std::uint32_t>(buffer),
+                             static_cast<std::uint16_t>(channel - 1), kNoChannel,
+                             state.color[e] * state.intensity);
+            }
+        }
+    }
+}
+
+void DmxEngine::writeTrack(const Track& track, double unit) noexcept {
+    if (!track.isVirtual) {
+        writeChannel(track.buffer, track.channel, track.fine, unit);
+        return;
+    }
+    if (track.fixture >= virtuals_.size()) {
+        return;
+    }
+    Virtual& state = virtuals_[track.fixture];
+    const double clamped = std::clamp(unit, 0.0, 1.0);
+    double& slot =
+        track.component == kIntensity ? state.intensity : state.color[track.component - 1u];
+    if (slot != clamped) {
+        slot = clamped;
+        state.dirty = true;
+    }
 }
 
 void DmxEngine::cancelAll() noexcept {
     running_.clear();
 }
 
+void DmxEngine::blackout(double now) {
+    running_.clear();
+    Payload dark;
+    dark.kind = EffectKind::Blackout;
+    // Every fixture a mask can reach, which is all of them: the patch is capped at that.
+    start(~std::uint64_t{0}, dark, now);
+    // A snap: nothing to animate, so nothing left running to be advanced on the next tick.
+    running_.clear();
+    // And every virtual fixture back to neutral — dark, and at full intensity — so the rig
+    // comes back on the rules alone after a Start: a color rule lights an LED par again, as it
+    // did before the stop. Intensity left at a flash's zero would keep it dark until a dimmer
+    // rule happened to fire.
+    for (Virtual& state : virtuals_) {
+        if (state.active) {
+            state.intensity = 1.0;
+            state.color.fill(0.0);
+            state.dirty = true;
+        }
+    }
+    composeVirtuals();
+}
+
 void DmxEngine::reset() {
     running_.clear();
     for (Buffer& buffer : buffers_) {
         buffer.levels.fill(0);
-        buffer.covered.fill(false);
+        buffer.meaning.fill(Meaning{});
         ++buffer.revision;
+    }
+    // Nothing carried over: a reset is the rig from nothing.
+    for (Virtual& state : virtuals_) {
+        state.active = false;
     }
     // Re-laying the patch puts every parked level back, which is what "reset" means: the rig
     // as it sits before anything has fired, shutters open and dimmers down.
@@ -172,17 +407,51 @@ double DmxEngine::readChannel(std::uint32_t buffer, std::uint16_t channel,
     return word / 65535.0;
 }
 
-bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running& running) {
-    const std::size_t index = bufferOf(fixture.universe);
-    if (index == static_cast<std::size_t>(-1)) {
+bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& running) {
+    const Fixture& fixture = patch_[index];
+    const std::size_t found = bufferOf(fixture.universe);
+    if (found == static_cast<std::size_t>(-1)) {
         return false;
     }
-    const auto buffer = static_cast<std::uint32_t>(index);
+    const auto buffer = static_cast<std::uint32_t>(found);
+    const auto fixtureIndex = static_cast<std::uint16_t>(index);
+    /// Whether this fixture's brightness is kept apart from its color — see `Virtual`.
+    const bool isVirtualFixture = index < virtuals_.size() && virtuals_[index].active;
+    const auto emitterOf = [](Role role) -> std::size_t {
+        const auto at = std::find(kEmitters.begin(), kEmitters.end(), role);
+        return at == kEmitters.end() ? kEmitters.size()
+                                     : static_cast<std::size_t>(at - kEmitters.begin());
+    };
+
+    /// One of this fixture's emitters as a track on its virtual color, or nothing when the
+    /// fixture is not virtual or has not got that emitter.
+    const auto addVirtualColor = [&](Role role, double from, double to, Role tag) {
+        const std::size_t emitter = emitterOf(role);
+        if (!isVirtualFixture || emitter == kEmitters.size() || !has(fixture, role)) {
+            return false;
+        }
+        Track track;
+        track.isVirtual = true;
+        track.component = static_cast<std::uint8_t>(emitter + 1);
+        track.fixture = fixtureIndex;
+        track.source = role;
+        track.role = tag;
+        track.from = std::clamp(from, 0.0, 1.0);
+        track.to = std::clamp(to, 0.0, 1.0);
+        running.tracks.push_back(track);
+        return true;
+    };
 
     /// One channel of this fixture as a track, or nothing when it has not got it. `fine`
     /// picks up the 16-bit partner where there is one, so a `Level` aimed at pan is smooth on
     /// a head that can be and stepped on one that cannot, without the rule saying which.
+    ///
+    /// On a virtual fixture an emitter is its color, not its channel: see `Virtual`.
     const auto addTrack = [&](Role role, double to, Role tag) {
+        if (isVirtualFixture && emitterOf(role) != kEmitters.size()) {
+            const double from = virtuals_[index].color[emitterOf(role)];
+            return addVirtualColor(role, from, to, tag);
+        }
         const std::uint16_t channel = channelOf(fixture, role);
         if (channel == 0) {
             return false;
@@ -191,6 +460,8 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
         track.buffer = buffer;
         track.channel = static_cast<std::uint16_t>(channel - 1);
         track.role = tag;
+        track.fixture = fixtureIndex;
+        track.source = role;
         const Role partner = role == Role::Pan    ? Role::PanFine
                              : role == Role::Tilt ? Role::TiltFine
                                                   : Role::Unused;
@@ -204,100 +475,69 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
         return true;
     };
 
-    /// **A level aimed at a dimmer the fixture has not got.**
+    /// The same with both ends given — a flash, a pulse, a strobe.
+    const auto addSweep = [&](Role role, double from, double to) {
+        if (isVirtualFixture && emitterOf(role) != kEmitters.size()) {
+            return addVirtualColor(role, from, to, Role::Unused);
+        }
+        const std::uint16_t channel = channelOf(fixture, role);
+        if (channel == 0) {
+            return false;
+        }
+        Track track;
+        track.buffer = buffer;
+        track.channel = static_cast<std::uint16_t>(channel - 1);
+        track.fixture = fixtureIndex;
+        track.source = role;
+        track.from = std::clamp(from, 0.0, 1.0);
+        track.to = std::clamp(to, 0.0, 1.0);
+        running.tracks.push_back(track);
+        return true;
+    };
+
+    /// **A dimmer aimed at a fixture that has not got one** drives its virtual intensity.
     ///
     /// Most LED pars have no master intensity channel at all: their brightness *is* their
     /// color, scaled. `Role::Dimmer` has said so since it was written — *"a fixture without
-    /// one has its color scaled instead"* — and nothing implemented it, so the commonest
-    /// rig in the world (an RGB par, the default effect, the default channel) fired and the
-    /// lamp stayed dark. Reported from a rig on 2026-09-16: *"Choosing the closest thing
-    /// available right now, dimmer, does absolutely nothing — the light is not coming on at
-    /// all."*
+    /// one has its color scaled instead"* — and nothing implemented it, so the commonest rig
+    /// in the world (an RGB par, the default effect, the default channel) fired and the lamp
+    /// stayed dark. Reported from a rig on 2026-09-16: *"Choosing the closest thing available
+    /// right now, dimmer, does absolutely nothing — the light is not coming on at all."*
     ///
-    /// **The weights are the color the fixture is showing**, so "fade to half" on a fixture
-    /// lit red is half red rather than half white, and a color rule followed by a dimmer
-    /// rule does what the two of them say. A fixture sitting dark has no color to scale and
-    /// would stay dark however far the fade went, so it is taken as **white** — its white LED
-    /// where it has one, its three color LEDs where it has not. That is what an operator
-    /// aiming a dimmer at an unlit par means, and it is the only reading under which the
-    /// lamp comes on.
-    ///
-    /// `from` is left to `addTrack`, which reads the channel: a fade starts where the
-    /// fixture is. The peak/base kinds pass both ends and build their own tracks.
-    const auto dimmerWeights = [&]() {
-        std::array<std::pair<Role, double>, kEmitters.size()> weights{};
-        std::size_t count = 0;
-        double lit = 0.0;
-        for (const Role role : kEmitters) {
-            const std::uint16_t channel = channelOf(fixture, role);
-            if (channel == 0) {
-                continue;
-            }
-            const double level = readChannel(buffer, static_cast<std::uint16_t>(channel - 1),
-                                             DmxEngine::kNoChannel);
-            weights[count++] = {role, level};
-            lit = std::max(lit, level);
-        }
-        if (lit <= 0.0) {
-            // Dark: white. On a fixture with a white LED that is the white channel alone —
-            // the same judgement `EffectKind::Color` makes, and for the same reason, since
-            // three colored LEDs make a worse white than the one built for it.
+    /// The color is kept apart and scaled by this (`Virtual`), so "fade to half" on a fixture
+    /// lit red is half red, and a flash after a flash is still red. A fixture that has no color
+    /// at all — dark, never given one — is taken as **white**: its white LED where it has one,
+    /// its color LEDs where it has not, which is what an operator aiming a dimmer at an unlit
+    /// par means and the only reading under which the lamp comes on.
+    const auto addIntensity = [&](double from, double to) {
+        Virtual& state = virtuals_[index];
+        const bool colorless = std::all_of(state.color.begin(), state.color.end(),
+                                           [](double component) { return component <= 0.0; });
+        if (colorless) {
             const bool white = has(fixture, Role::White);
-            for (std::size_t i = 0; i < count; ++i) {
-                const Role role = weights[i].first;
-                weights[i].second = white ? (role == Role::White ? 1.0 : 0.0)
-                                          : (isColor(role) ? 1.0 : 0.0);
+            for (std::size_t e = 0; e < kEmitters.size(); ++e) {
+                const Role role = kEmitters[e];
+                if (has(fixture, role)) {
+                    state.color[e] = white ? (role == Role::White ? 1.0 : 0.0)
+                                           : (isColor(role) ? 1.0 : 0.0);
+                }
             }
-            return std::pair{weights, count};
+            state.dirty = true;
         }
-        // **Normalised against the brightest channel, which is what makes the dimmer a
-        // dimmer.** Taken raw, a par already faded to half would read as weights of 0.5 and
-        // a second rule asking for full would reach a quarter — each fade compounding the
-        // last, so the lamp walks down to nothing over a set and nothing on screen says why.
-        // Divided through, the weights are the *hue* the fixture is showing and the level is
-        // the whole of the brightness.
-        for (std::size_t i = 0; i < count; ++i) {
-            weights[i].second /= lit;
-        }
-        return std::pair{weights, count};
+        Track track;
+        track.isVirtual = true;
+        track.component = kIntensity;
+        track.fixture = fixtureIndex;
+        track.source = Role::Dimmer;
+        track.from = std::clamp(from, 0.0, 1.0);
+        track.to = std::clamp(to, 0.0, 1.0);
+        running.tracks.push_back(track);
+        return true;
     };
 
-    /// One `Level` on a virtual dimmer: each emitter to its share of the target.
-    const auto addVirtualLevel = [&](double toUnit) {
-        const auto [weights, count] = dimmerWeights();
-        bool any = false;
-        for (std::size_t i = 0; i < count; ++i) {
-            any |= addTrack(weights[i].first, toUnit * weights[i].second, Role::Unused);
-        }
-        return any;
-    };
-
-    /// The same for the kinds that sweep between two levels — a flash, a pulse, a strobe.
-    /// Both ends are scaled, so a strobe between 0 and full on a red par strobes red.
-    const auto addVirtualSweep = [&](double fromUnit, double toUnit) {
-        const auto [weights, count] = dimmerWeights();
-        bool any = false;
-        for (std::size_t i = 0; i < count; ++i) {
-            const std::uint16_t channel = channelOf(fixture, weights[i].first);
-            if (channel == 0) {
-                continue;
-            }
-            Track track;
-            track.buffer = buffer;
-            track.channel = static_cast<std::uint16_t>(channel - 1);
-            track.from = std::clamp(fromUnit * weights[i].second, 0.0, 1.0);
-            track.to = std::clamp(toUnit * weights[i].second, 0.0, 1.0);
-            running.tracks.push_back(track);
-            any = true;
-        }
-        return any;
-    };
-
-    /// Whether this payload's role has to be faked. Only the dimmer is, and only on a
-    /// fixture that emits — a "level on pan" aimed at a wash still reaches nothing, which is
-    /// `missed()`'s job to count.
-    const bool virtualDimmer =
-        payload.role == Role::Dimmer && !has(fixture, Role::Dimmer) && emits(fixture);
+    /// Whether this payload's role is the virtual dimmer. A "level on pan" aimed at a wash still
+    /// reaches nothing, which is `missed()`'s job to count.
+    const bool virtualDimmer = payload.role == Role::Dimmer && isVirtualFixture;
 
     /// The pan/tilt pair, with the fixture's own window. Nothing when the fixture cannot move.
     const auto addMove = [&](double toPanUnit, double toTiltUnit, bool windowRelative) {
@@ -307,6 +547,7 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
             return false;
         }
         Move move;
+        move.fixture = fixtureIndex;
         move.buffer = buffer;
         move.pan = pan == 0 ? kNoChannel : static_cast<std::uint16_t>(pan - 1);
         move.tilt = tilt == 0 ? kNoChannel : static_cast<std::uint16_t>(tilt - 1);
@@ -344,40 +585,22 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
     switch (payload.kind) {
     case EffectKind::Level:
         if (virtualDimmer) {
-            return addVirtualLevel(unitOfByte(payload.level));
+            return addIntensity(virtuals_[index].intensity, unitOfByte(payload.level));
         }
         return addTrack(payload.role, unitOfByte(payload.level), Role::Unused);
     case EffectKind::Flash:
         // Starts *at* the peak: `from` is the peak and `to` is the base, so evaluating at
         // progress zero writes full immediately and the duration is the decay.
         if (virtualDimmer) {
-            return addVirtualSweep(unitOfByte(payload.level), unitOfByte(payload.base));
+            return addIntensity(unitOfByte(payload.level), unitOfByte(payload.base));
         }
-        if (const std::uint16_t channel = channelOf(fixture, payload.role); channel != 0) {
-            Track track;
-            track.buffer = buffer;
-            track.channel = static_cast<std::uint16_t>(channel - 1);
-            track.from = unitOfByte(payload.level);
-            track.to = unitOfByte(payload.base);
-            running.tracks.push_back(track);
-            return true;
-        }
-        return false;
+        return addSweep(payload.role, unitOfByte(payload.level), unitOfByte(payload.base));
     case EffectKind::Pulse:
     case EffectKind::Strobe:
         if (virtualDimmer) {
-            return addVirtualSweep(unitOfByte(payload.base), unitOfByte(payload.level));
+            return addIntensity(unitOfByte(payload.base), unitOfByte(payload.level));
         }
-        if (const std::uint16_t channel = channelOf(fixture, payload.role); channel != 0) {
-            Track track;
-            track.buffer = buffer;
-            track.channel = static_cast<std::uint16_t>(channel - 1);
-            track.from = unitOfByte(payload.base);
-            track.to = unitOfByte(payload.level);
-            running.tracks.push_back(track);
-            return true;
-        }
-        return false;
+        return addSweep(payload.role, unitOfByte(payload.base), unitOfByte(payload.level));
     case EffectKind::Color: {
         bool any = false;
         // An RGBW fixture makes a far better white from its white LED than from three
@@ -409,6 +632,8 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
         return any;
     }
     case EffectKind::Blackout: {
+        // Every emitter to zero — on a virtual fixture its color, so the next dimmer effect
+        // finds it colorless and comes up white rather than in a hue from before the blackout.
         bool any = false;
         for (const Role role : kBlackoutRoles) {
             any |= addTrack(role, 0.0, Role::Unused);
@@ -428,32 +653,58 @@ bool DmxEngine::buildFor(const Fixture& fixture, const Payload& payload, Running
 }
 
 void DmxEngine::preempt(const Running& running) {
-    // Which channels the new effect is about to drive. Small and on the stack in every real
-    // case — a color is three, a head is two, and the biggest is a blackout's seven.
-    const auto collides = [&running](std::uint32_t buffer, std::uint16_t channel) {
-        if (channel == kNoChannel) {
-            return false;
-        }
+    // Which channels — or which half of which virtual fixture — the new effect is about to
+    // drive. Small and on the stack in every real case: a color is three, a head is two, and
+    // the biggest is a blackout's seven.
+    const auto collides = [&running](const Track& older) {
         for (const Track& track : running.tracks) {
-            if (track.buffer == buffer && (track.channel == channel || track.fine == channel)) {
+            if (older.isVirtual || track.isVirtual) {
+                if (older.isVirtual && track.isVirtual && older.fixture == track.fixture &&
+                    older.component == track.component) {
+                    return true;
+                }
+                continue;
+            }
+            if (track.buffer == older.buffer &&
+                (track.channel == older.channel || track.fine == older.channel)) {
                 return true;
             }
         }
         for (const Move& move : running.moves) {
-            if (move.buffer == buffer && (move.pan == channel || move.panFine == channel ||
-                                          move.tilt == channel || move.tiltFine == channel)) {
+            if (!older.isVirtual && move.buffer == older.buffer &&
+                (move.pan == older.channel || move.panFine == older.channel ||
+                 move.tilt == older.channel || move.tiltFine == older.channel)) {
                 return true;
             }
         }
         return false;
     };
+    const auto movesCollide = [&running](const Move& older) {
+        const auto hits = [&](std::uint16_t channel) {
+            if (channel == kNoChannel) {
+                return false;
+            }
+            for (const Track& track : running.tracks) {
+                if (!track.isVirtual && track.buffer == older.buffer &&
+                    (track.channel == channel || track.fine == channel)) {
+                    return true;
+                }
+            }
+            for (const Move& move : running.moves) {
+                if (move.buffer == older.buffer &&
+                    (move.pan == channel || move.panFine == channel || move.tilt == channel ||
+                     move.tiltFine == channel)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        return hits(older.pan) || hits(older.tilt);
+    };
 
     for (Running& older : running_) {
-        std::erase_if(older.tracks,
-                      [&](const Track& track) { return collides(track.buffer, track.channel); });
-        std::erase_if(older.moves, [&](const Move& move) {
-            return collides(move.buffer, move.pan) || collides(move.buffer, move.tilt);
-        });
+        std::erase_if(older.tracks, collides);
+        std::erase_if(older.moves, movesCollide);
     }
     std::erase_if(running_, [](const Running& r) { return r.tracks.empty() && r.moves.empty(); });
 }
@@ -470,11 +721,10 @@ void DmxEngine::start(std::uint64_t fixtures, const Payload& payload, double now
         if ((fixtures & (std::uint64_t{1} << i)) == 0) {
             continue;
         }
-        const Fixture& fixture = patch_[i];
-        if (!fixture.enabled) {
+        if (!patch_[i].enabled) {
             continue;
         }
-        buildFor(fixture, payload, staging_);
+        buildFor(i, payload, staging_);
     }
 
     ++started_;
@@ -489,6 +739,7 @@ void DmxEngine::start(std::uint64_t fixtures, const Payload& payload, double now
     // that a flash is at full in the same frame the rule fired in. A one-round delay is a
     // millisecond and would not be visible; landing a *frame* late would be 23 ms and is.
     evaluate(running_.back(), now);
+    composeVirtuals();
 }
 
 void DmxEngine::evaluate(const Running& running, double now) {
@@ -504,7 +755,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
         // half way up would flash on every fire.
         const double wave = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * phase);
         for (const Track& track : running.tracks) {
-            writeChannel(track.buffer, track.channel, track.fine,
+            writeTrack(track,
                          track.from + (track.to - track.from) * wave);
         }
         return;
@@ -516,7 +767,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
         // finished leaves the fixture off rather than wherever the square wave happened to be.
         const bool on = progress < 1.0 && phase < duty;
         for (const Track& track : running.tracks) {
-            writeChannel(track.buffer, track.channel, track.fine, on ? track.to : track.from);
+            writeTrack(track, on ? track.to : track.from);
         }
         return;
     }
@@ -533,7 +784,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
                                 : track.role == Role::Green ? unitOfByte(swept.g)
                                 : track.role == Role::Blue  ? unitOfByte(swept.b)
                                                             : 0.0;
-            writeChannel(track.buffer, track.channel, track.fine, unit);
+            writeTrack(track, unit);
         }
         return;
     }
@@ -605,7 +856,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
 
     const double shaped = curveAt(payload.curve, progress);
     for (const Track& track : running.tracks) {
-        writeChannel(track.buffer, track.channel, track.fine,
+        writeTrack(track,
                      track.from + (track.to - track.from) * shaped);
     }
 }
@@ -648,6 +899,10 @@ void DmxEngine::tick(double now) {
     for (const Running& running : running_) {
         evaluate(running, now);
     }
+    // Every virtual fixture an effect moved this round, written once from its color and its
+    // intensity — after every effect, so a color change and a flash in the same round compose
+    // rather than the later one's write replacing the earlier one's.
+    composeVirtuals();
     // Finished effects leave their last value in the buffer and are dropped. Holding rather
     // than releasing is what makes a fade to 40% *stay* at 40% — a lighting level is a state,
     // and an effect that undid itself when it ended would be a fade that flickered back.
