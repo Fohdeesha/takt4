@@ -2797,7 +2797,10 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
         const std::string before = nameOf();
         clickAt(window, kNameColumn, y);
         press(window, "Q");
-        slint::platform::update_timers_and_animations();
+        // The letter goes to the controller's draft; the row reads it back on a redraw. Run one
+        // here rather than hoping the window's own 30 Hz timer falls inside this probe — under
+        // load it mostly did not, and the sweep found no box at all (1 run in 32, 8 at once).
+        settle();
         const bool landed = nameOf().size() > before.size();
         if (landed && top < 0.0f) {
             top = y;
