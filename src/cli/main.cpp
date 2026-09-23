@@ -71,7 +71,6 @@ namespace {
 
 using namespace std::chrono_literals;
 using takt4::cli::KeyReader;
-using takt4::cli::resolveWeights;
 
 std::atomic<bool> g_interrupted{false};
 
@@ -898,15 +897,6 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
     return out;
 }
 
-/// A name under assets/statespace/ — "default", "fps100" — or a path to a blob.
-std::filesystem::path stateSpacePath(const std::string& which = "default") {
-    const std::filesystem::path given(which);
-    if (given.has_extension() || given.has_parent_path()) {
-        return given;
-    }
-    return std::filesystem::path(TAKT4_STATESPACE_DIR) / (which + ".bin");
-}
-
 std::string beatLine(const takt4::tracking::BeatEvent& event,
                      const takt4::tracking::TempoState& state) {
     std::ostringstream line;
@@ -1450,10 +1440,8 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
 
 int runTrack(const std::vector<std::string_view>& args) {
     const TrackArgs parsed = parseTrackArgs(args);
-    const takt4::model::ModelWeights weights =
-        takt4::model::ModelWeights::fromFile(resolveWeights(parsed.beats.weights));
-    const takt4::tracking::StateSpaceModel model =
-        takt4::tracking::StateSpaceModel::fromFile(stateSpacePath(parsed.stateSpace));
+    const takt4::model::ModelWeights weights = takt4::cli::loadWeights(parsed.beats.weights);
+    const takt4::tracking::StateSpaceModel model = takt4::cli::loadStateSpace(parsed.stateSpace);
     if (parsed.beats.file) {
         return runTrackFile(*parsed.beats.file, weights, model, parsed);
     }
@@ -1462,8 +1450,7 @@ int runTrack(const std::vector<std::string_view>& args) {
 
 int runBeats(const std::vector<std::string_view>& args) {
     const BeatsArgs parsed = parseBeatsArgs(args);
-    const takt4::model::ModelWeights weights =
-        takt4::model::ModelWeights::fromFile(resolveWeights(parsed.weights));
+    const takt4::model::ModelWeights weights = takt4::cli::loadWeights(parsed.weights);
     if (parsed.file) {
         return runBeatsFile(*parsed.file, weights);
     }
