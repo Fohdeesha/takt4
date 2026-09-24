@@ -1,5 +1,20 @@
 add_subdirectory(core)
 
+# takt4_version_resource(<target> <file name> <description>): the Windows version resource
+# from src/version.rc.in — FileVersion the release, ProductVersion the commit (the audit found
+# none, which made a crash report from the field harder to place).
+function(takt4_version_resource target file description)
+  if(NOT WIN32)
+    return()
+  endif()
+  set(TAKT4_RC_NAME "${target}")
+  set(TAKT4_RC_FILE "${file}")
+  set(TAKT4_RC_DESCRIPTION "${description}")
+  set(rc "${PROJECT_BINARY_DIR}/generated/${target}_version.rc")
+  configure_file("${PROJECT_SOURCE_DIR}/src/version.rc.in" "${rc}" @ONLY)
+  target_sources(${target} PRIVATE "${rc}")
+endfunction()
+
 # takt4-cli: the development console (HANDOFF §8 Phase 1). Built in every configuration
 # including UI-less ones, and attached to every release beside the app. Its allocation guard
 # is on in Debug so a real-time violation found on the bench aborts rather than hides.
@@ -25,6 +40,7 @@ if(TARGET takt4_assets)
   target_compile_definitions(takt4-cli PRIVATE TAKT4_CLI_EMBEDDED_ASSETS=1)
 endif()
 takt4_enable_rt_guard(takt4-cli DEBUG_ONLY)
+takt4_version_resource(takt4-cli takt4-cli.exe "takt4-cli - the takt4 development console")
 
 if(TAKT4_BUILD_UI)
   add_subdirectory(ui)
@@ -32,6 +48,7 @@ if(TAKT4_BUILD_UI)
   add_executable(takt4 main.cpp)
   target_link_libraries(takt4 PRIVATE takt4::ui takt4::core takt4::warnings)
   takt4_enable_rt_guard(takt4 DEBUG_ONLY)
+  takt4_version_resource(takt4 takt4.exe "takt4 - beat, downbeat and tempo tracker")
 
   if(WIN32)
     # **A window application, not a console one.** Launched from Explorer, a console-subsystem

@@ -3,7 +3,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <filesystem>
 #include <regex>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 using Catch::Matchers::ContainsSubstring;
 
@@ -62,6 +69,61 @@ TEST_CASE("the build does not need the newest C++ runtime to lock a mutex", "[bu
     SKIP("only the Microsoft C++ runtime has this");
 #endif
 }
+
+#if defined(_WIN32)
+namespace {
+
+/// One string from an executable's version resource, or empty.
+std::wstring versionString(const std::filesystem::path& exe, const wchar_t* name) {
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(exe.c_str(), &ignored);
+    if (size == 0) {
+        return {};
+    }
+    std::vector<unsigned char> data(size);
+    if (!GetFileVersionInfoW(exe.c_str(), 0, size, data.data())) {
+        return {};
+    }
+    wchar_t* value = nullptr;
+    UINT length = 0;
+    const std::wstring key = std::wstring(L"\\StringFileInfo\\040904b0\\") + name;
+    if (!VerQueryValueW(data.data(), key.c_str(), reinterpret_cast<void**>(&value), &length) ||
+        value == nullptr) {
+        return {};
+    }
+    return std::wstring(value, length > 0 ? length - 1 : 0);
+}
+
+std::wstring widen(const std::string& text) {
+    return std::wstring(text.begin(), text.end()); // version strings are ASCII
+}
+
+} // namespace
+
+TEST_CASE("the executables say which release and which commit they are", "[build_info]") {
+    // The audit: no version resource, so a crash report's module list and Explorer's
+    // Properties said nothing about which build it was. The real executables beside this
+    // test binary, read the way Windows reads them.
+    std::wstring self(32768, L'\0');
+    self.resize(GetModuleFileNameW(nullptr, self.data(), static_cast<DWORD>(self.size())));
+    const std::filesystem::path bin = std::filesystem::path(self).parent_path();
+    const takt4::BuildInfo info = takt4::buildInfo();
+    int checked = 0;
+    for (const wchar_t* name : {L"takt4-cli.exe", L"takt4.exe"}) {
+        const std::filesystem::path exe = bin / name;
+        if (!std::filesystem::exists(exe)) {
+            continue; // a core-only build has no takt4.exe
+        }
+        INFO(exe.string());
+        CHECK(versionString(exe, L"FileVersion") == widen(info.version));
+        CHECK(versionString(exe, L"ProductVersion") == widen(info.commit));
+        CHECK(versionString(exe, L"ProductName") == L"takt4");
+        CHECK(versionString(exe, L"OriginalFilename") == name);
+        ++checked;
+    }
+    CHECK(checked >= 1);
+}
+#endif
 
 TEST_CASE("describe() renders one line per component", "[build_info]") {
     const std::string text = takt4::describe(takt4::buildInfo());
