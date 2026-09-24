@@ -81,8 +81,9 @@ def components(build):
         component("Skia, prebuilt by rust-skia", "https://skia.org", "BSD-3-Clause", "drawing the user interface",
                   [skia / "skia-LICENSE.txt"]),
         component("expat, in Skia", "https://libexpat.github.io", "MIT", "", [skia / "expat-COPYING.txt"]),
-        component("HarfBuzz, in Skia", "https://harfbuzz.github.io", "Old MIT", "", [skia / "harfbuzz-COPYING.txt"]),
-        component("ICU, in Skia", "https://icu.unicode.org", "Unicode-3.0 and others", "", [skia / "icu-LICENSE.txt"]),
+        # HarfBuzz and ICU came in with Skia's textlayout, which Slint stopped enabling in 1.18.
+        # Checked 2026-09-24: none of their symbols (hb_shape, hb_buffer_create, ubidi_open,
+        # u_errorName) is in skia-bindings 0.153.3's skia.lib, where 0.99.0's archive had them.
         component("libjpeg-turbo, in Skia", "https://libjpeg-turbo.org", "IJG, BSD-3-Clause, zlib", "",
                   [skia / "libjpeg-turbo-LICENSE.md", skia / "libjpeg-turbo-README.ijg.txt"]),
         component("libpng, in Skia", "http://www.libpng.org", "libpng-2.0", "", [skia / "libpng-LICENSE.txt"]),

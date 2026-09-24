@@ -11,18 +11,17 @@
 #
 #   cmake -DROOT=<build tree> -P cmake/check_skia.cmake
 
-set(expected_key "a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-d3d-gl-jpegd-jpege-pdf-textlayout")
-set(expected_tag "0.99.0")
+# skia-bindings 0.153.3, which Slint 1.18.1 uses, recorded 2026-09-24. No textlayout since
+# Slint 1.18, so the archive holds two libraries where 0.99.0's held six.
+set(expected_key "b7f043e0b1e2a850e702-x86_64-pc-windows-msvc-d3d-ganesh-gl-jpegd-jpege-pdf")
+set(expected_tag "0.153.3")
 set(expected_hashes
-  "skia-bindings.lib=9633c9646c6e780e23ca5c994795890822c11b95f80a0ea99589dd2fc2bf4930"
-  "skia.lib=2e58b336bc6f5c57668bad59d782c416371fb0a75c853d7f85cc3865ad814853"
-  "skparagraph.lib=6cd4f80073e0a0000fafdf2878478edb6850bdd80a6459a028759fdc2aa9e480"
-  "skshaper.lib=75083b2117b73a4975f01c816f31e15926f862327bbaf2f4d3b9e7625e66959a"
-  "skunicode_core.lib=12c4c5531f21860474fce4f00493a7b926bdd59c810477ea85ae81c77946aa0c"
-  "skunicode_icu.lib=7b24cd096cd4702d098c623015ab09e1d99df497c3dbdd34e9fa51ffd32a1953")
+  "skia-bindings.lib=d1aed821c5e83e7b658ea1cea7cd90f50bd367abf5253d11b3d25bcc2752da13"
+  "skia.lib=639cdebf3f049e2f1aa615746c1e99c04bc8914c80fe29e6ea2a0480c37bb75d")
 
 file(GLOB_RECURSE keys "${ROOT}/key.txt")
 set(checked 0)
+set(stale "")
 foreach(key_file IN LISTS keys)
   get_filename_component(dir "${key_file}" DIRECTORY)
   if(NOT dir MATCHES "skia-bindings-[0-9a-f]+/out/skia$")
@@ -32,9 +31,12 @@ foreach(key_file IN LISTS keys)
   string(STRIP "${key}" key)
   file(READ "${dir}/tag.txt" tag)
   string(STRIP "${tag}" tag)
+  # Another version's copy is what cargo left behind from before a bump: it keeps every build
+  # script's output directory, and nothing links the old ones. Said, and not checked. A bump
+  # with no hashes recorded still fails below, because then no copy is the version expected.
   if(NOT key STREQUAL expected_key OR NOT tag STREQUAL expected_tag)
-    message(FATAL_ERROR "${dir}: Skia archive ${tag} ${key}, but ${expected_tag} ${expected_key} "
-                        "is what was checked")
+    list(APPEND stale "${tag}")
+    continue()
   endif()
   foreach(pair IN LISTS expected_hashes)
     string(REPLACE "=" ";" parts "${pair}")
@@ -49,6 +51,16 @@ foreach(key_file IN LISTS keys)
 endforeach()
 
 if(checked EQUAL 0)
-  message(FATAL_ERROR "no unpacked Skia archive under ${ROOT}: has Slint been built?")
+  set(only "")
+  if(stale)
+    set(only " (only leftovers of skia-bindings ${stale})")
+  endif()
+  message(FATAL_ERROR "no unpacked Skia archive ${expected_tag} ${expected_key} under ${ROOT}"
+                      "${only}: has Slint been built, or has skia-bindings moved without its "
+                      "hashes being recorded here?")
+endif()
+if(stale)
+  list(REMOVE_DUPLICATES stale)
+  message(STATUS "left alone: cargo's leftover unpacked archive(s) of skia-bindings ${stale}")
 endif()
 message(STATUS "Skia prebuilt ${expected_tag} ${expected_key}: ${checked} unpacked cop(ies), every library as checked")
