@@ -45,9 +45,10 @@ enum class EffectKind : std::uint8_t {
     /// locked to the music; a fixture's own strobe channel is faster and is reachable as
     /// `Level` on `Role::Strobe`.
     Strobe,
-    /// The hue wheel from one angle to another over the duration, at a fixed saturation and
-    /// value. The one color move that a straight `Color` fade deliberately does not do —
-    /// see `mix`.
+    /// The hue wheel from one angle to another over the duration, at the saturation and value
+    /// of the rule's color — full saturation for a color that has none, such as the white a
+    /// rule starts with, which would otherwise sweep nothing. The one color move that a
+    /// straight `Color` fade deliberately does not do — see `mix`.
     HueSweep,
     /// Pan and tilt to one position, over the duration. The position is drawn when the rule
     /// fires (so a "random position" is a random *number*, resolved once, and the engine that

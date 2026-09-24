@@ -362,6 +362,23 @@ TEST_CASE("a hue sweep travels round the wheel", "[dmx][engine]") {
     CHECK(at(engine, 0, 1) == 0);
     engine.tick(2.0);
     CHECK(at(engine, 0, 3) == 255); // 240 is blue
+
+    SECTION("from the white a rule starts with, too") {
+        // The audit's M21: the sweep took its saturation from the rule's color, and a rule's
+        // color is white until somebody picks one — so the default sweep was white from end to
+        // end, an effect that changed nothing. A color with no saturation sweeps at full.
+        DmxEngine fresh;
+        fresh.setPatch({rgb("par", 1)});
+        Payload white = payload;
+        white.color = Color{255, 255, 255};
+        fresh.start(0b1, white, 0.0);
+        CHECK(at(fresh, 0, 1) == 255); // red, not white
+        CHECK(at(fresh, 0, 2) == 0);
+        CHECK(at(fresh, 0, 3) == 0);
+        fresh.tick(1.0);
+        CHECK(at(fresh, 0, 2) == 255); // green
+        CHECK(at(fresh, 0, 1) == 0);
+    }
 }
 
 TEST_CASE("a blackout kills the light and leaves the fixture usable", "[dmx][engine]") {

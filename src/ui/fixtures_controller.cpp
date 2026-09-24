@@ -360,6 +360,20 @@ std::string FixturesController::summary() const {
     } else {
         text += ", going to " + std::to_string(nodes) + (nodes == 1 ? " node" : " nodes");
     }
+    // And two fixtures on the same channels, which drive each other — a par that dims when the
+    // head beside it pans — and which nothing said (the audit's M21). The first pair, and how
+    // many more, since one is enough to go and look.
+    const std::vector<dmx::Overlap> overlaps = dmx::overlappingFixtures(fixtures_);
+    if (!overlaps.empty()) {
+        const dmx::Overlap& one = overlaps.front();
+        text += ". " + fixtures_[one.first].name + " and " + fixtures_[one.second].name +
+                " share channel " + std::to_string(one.channel) + " of universe " +
+                dmx::describePortAddress(fixtures_[one.first].universe);
+        if (overlaps.size() > 1) {
+            text += " (and " + std::to_string(overlaps.size() - 1) + " more overlap" +
+                    (overlaps.size() == 2 ? "" : "s") + ")";
+        }
+    }
     return text;
 }
 
@@ -400,11 +414,12 @@ void FixturesController::pick(int index) {
 void FixturesController::add() {
     commitDrafts();
     if (fixtures_.size() >= dmx::kMaxRoutableFixtures) {
-        // Past this a fixture can still be patched and driven by its own rules; what it
-        // cannot be is *named* by one, because a rule carries its fixtures as a bit each.
-        // Said out loud rather than discovered — see `dmx::kMaxRoutableFixtures`.
-        setStatus("64 fixtures is as many as a rule can aim at by name. Add more only if you "
-                  "are driving them from rules that already exist.",
+        // Past this a fixture can still be patched, parked and tested from here; what it
+        // cannot be is reached by a rule, by name or by group, because a rule carries its
+        // fixtures as a bit each (`dmx::resolveFixtures` stops at the 64th). Said out loud
+        // rather than discovered — see `dmx::kMaxRoutableFixtures`.
+        setStatus("Rules can aim at the first 64 fixtures only. This one and any after it can "
+                  "be patched and tested here, but no rule will reach them.",
                   true);
     }
     // Patched after the last one on its universe rather than at 1, because that is what an
@@ -630,8 +645,15 @@ void FixturesController::setTiltRange(float low, float high) {
 
 void FixturesController::identify() {
     const dmx::Fixture* const fixture = current();
-    if (fixture == nullptr || static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures ||
-        refusedForPanic()) {
+    if (fixture == nullptr || refusedForPanic()) {
+        return;
+    }
+    if (static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures) {
+        // An effect is aimed by a bit per fixture, like a rule's, so this one cannot be flashed;
+        // said, rather than a button that does nothing (the audit's M21). TEST reaches it.
+        setStatus("IDENTIFY reaches the first 64 fixtures only. Use a channel's TEST for this "
+                  "one.",
+                  true);
         return;
     }
     const std::uint64_t mask = std::uint64_t{1} << static_cast<std::size_t>(selected_);

@@ -293,6 +293,32 @@ std::vector<PortAddress> universesOf(const std::vector<Fixture>& patch) {
     return universes;
 }
 
+std::vector<Overlap> overlappingFixtures(const std::vector<Fixture>& patch) {
+    std::vector<Overlap> out;
+    // Pairwise: a patch is tens of fixtures, and a sweep over channels would need a buffer per
+    // universe for an answer this gives in a few hundred comparisons. Switched-off fixtures
+    // send nothing, so they overlap nothing.
+    for (std::size_t i = 0; i < patch.size(); ++i) {
+        const Fixture& a = patch[i];
+        if (!a.enabled || a.channels.empty()) {
+            continue;
+        }
+        const std::size_t aEnd = std::size_t{a.address} + a.channels.size(); // one past
+        for (std::size_t j = i + 1; j < patch.size(); ++j) {
+            const Fixture& b = patch[j];
+            if (!b.enabled || b.channels.empty() || b.universe != a.universe) {
+                continue;
+            }
+            const std::size_t bEnd = std::size_t{b.address} + b.channels.size();
+            const std::size_t from = std::max<std::size_t>(a.address, b.address);
+            if (from < std::min(aEnd, bEnd)) {
+                out.push_back(Overlap{i, j, static_cast<std::uint16_t>(from)});
+            }
+        }
+    }
+    return out;
+}
+
 std::span<const FixtureMode> builtinModes() noexcept {
     return kModes;
 }

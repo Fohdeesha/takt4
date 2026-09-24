@@ -2969,7 +2969,12 @@ void RulesController::publishFixtureChoices() {
         row.missing = false;
         rows.push_back(std::move(row));
     }
-    for (const dmx::Fixture& fixture : patch_) {
+    // Only the first 64: a rule carries its fixtures as a bit each, and `dmx::resolveFixtures`
+    // reaches no further, so a tick on the 65th looked like aiming at it and reached nothing
+    // (the audit's M21). The patch editor says as much when the 65th is added.
+    const std::size_t reachable = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
+    for (std::size_t i = 0; i < reachable; ++i) {
+        const dmx::Fixture& fixture = patch_[i];
         OutputChoice row{};
         row.key = shared(fixture.id);
         row.name = shared(fixture.name);

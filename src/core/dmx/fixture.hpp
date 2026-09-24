@@ -244,6 +244,19 @@ const Fixture* findFixture(const std::vector<Fixture>& patch, std::string_view i
 /// universe list carries, and what the frame buffers are built from.
 std::vector<PortAddress> universesOf(const std::vector<Fixture>& patch);
 
+/// Two fixtures of the patch whose channels share at least one DMX channel on one universe:
+/// their indices, and the first channel they share.
+struct Overlap {
+    std::size_t first = 0;
+    std::size_t second = 0;
+    std::uint16_t channel = 0;
+};
+
+/// Every pair of fixtures that overlap, in patch order. Two fixtures on the same channels
+/// drive each other's lamps — a par that dims when the head beside it pans — and nothing said
+/// so (the audit's M21); the patch editor shows the first of these.
+std::vector<Overlap> overlappingFixtures(const std::vector<Fixture>& patch);
+
 /// A ready-made channel map, for the patch editor's "mode" dropdown.
 ///
 /// Not a fixture library — there are thousands of fixtures and takt4 is not going to ship a

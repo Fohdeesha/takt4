@@ -443,6 +443,54 @@ void typeText(slint::Window& window, const std::string& text) {
 
 } // namespace
 
+TEST_CASE("the patch says when two fixtures share channels, and what no rule can reach",
+          "[ui][dmx]") {
+    // The audit's M21: overlapping fixtures were never reported, and fixtures past the 64th
+    // were offered to rules that could not reach them.
+    Rig rig;
+    FixturesController patch(rig.runner, {});
+    patch.add();
+    patch.rename("left");
+    patch.pickMode(modeIndexOf("RGB (3ch)")); // 1-3
+    patch.add();
+    patch.rename("right");
+    patch.pickMode(modeIndexOf("RGB (3ch)")); // placed after it
+    REQUIRE(patch.fixtures().size() == 2);
+    CHECK(std::string(patch.window().get_summary()).find("share channel") == std::string::npos);
+
+    patch.setAddress(3); // "right" onto 3-5: its red is the left one's blue
+    const std::string summary(patch.window().get_summary());
+    INFO(summary);
+    CHECK(summary.find("left and right share channel 3 of universe 0") != std::string::npos);
+
+    SECTION("past the 64th") {
+        while (patch.fixtures().size() < 64) {
+            patch.add();
+        }
+        CHECK_FALSE(patch.window().get_status_error());
+        patch.add(); // the 65th
+        CHECK(patch.window().get_status_error());
+        CHECK(std::string(patch.window().get_status()).find("first 64") != std::string::npos);
+
+        // IDENTIFY cannot aim at it — said, rather than a button that does nothing.
+        patch.pick(64);
+        patch.identify();
+        CHECK(std::string(patch.window().get_status()).find("IDENTIFY reaches the first 64") !=
+              std::string::npos);
+
+        // And a rule is offered the 64 it can reach, not the 65th.
+        RulesController editor(rig.runner, {});
+        editor.setPatch(patch.fixtures());
+        editor.add();
+        const auto dmx = std::find(takt4::trigger::kMessageKinds.begin(),
+                                   takt4::trigger::kMessageKinds.end(),
+                                   takt4::trigger::Message::Kind::Dmx) -
+                         takt4::trigger::kMessageKinds.begin();
+        editor.pickSend(static_cast<int>(dmx));
+        CHECK(editor.window().get_fixture_choices()->row_count() == 64);
+    }
+}
+
 TEST_CASE("a name typed for one fixture stays with it when another is clicked", "[ui][dmx]") {
     // The audit's H10, with the gestures an operator makes. The name box was bound one way, and
     // a one-way binding dies on the first keystroke: after typing a name and clicking another

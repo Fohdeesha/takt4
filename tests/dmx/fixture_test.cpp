@@ -149,6 +149,34 @@ TEST_CASE("the patch's universes are what gets buffers and frames", "[dmx][fixtu
     }
 }
 
+TEST_CASE("two fixtures on the same channels are found", "[dmx][fixture]") {
+    // The audit's M21: an RGB par at 1 and another at 3 on one universe share channel 3 — the
+    // first's blue is the second's red — and they drive each other, and nothing said so.
+    std::vector<Fixture> patch;
+    patch.push_back(takt4::dmx::fixtureFromMode("left", 1, 0, 1));  // 1-3
+    patch.push_back(takt4::dmx::fixtureFromMode("right", 1, 0, 3)); // 3-5
+    patch.push_back(takt4::dmx::fixtureFromMode("next", 1, 0, 6));  // 6-8: touches, no overlap
+    patch.push_back(takt4::dmx::fixtureFromMode("far", 1, 1, 1));   // another universe
+    const std::vector<takt4::dmx::Overlap> found = takt4::dmx::overlappingFixtures(patch);
+    REQUIRE(found.size() == 1);
+    CHECK(found[0].first == 0);
+    CHECK(found[0].second == 1);
+    CHECK(found[0].channel == 3);
+
+    SECTION("a fixture switched off overlaps nothing, since it sends nothing") {
+        patch[1].enabled = false;
+        CHECK(takt4::dmx::overlappingFixtures(patch).empty());
+    }
+    SECTION("one inside another is an overlap too") {
+        patch.push_back(takt4::dmx::fixtureFromMode("inside", 1, 1, 1)); // same as "far"
+        const auto more = takt4::dmx::overlappingFixtures(patch);
+        REQUIRE(more.size() == 2);
+        CHECK(more[1].first == 3);
+        CHECK(more[1].second == 4);
+        CHECK(more[1].channel == 1);
+    }
+}
+
 TEST_CASE("every role round-trips through the name a settings file holds", "[dmx][fixture]") {
     for (const Role role : takt4::dmx::kRoles) {
         const std::string name(takt4::dmx::nameOf(role));

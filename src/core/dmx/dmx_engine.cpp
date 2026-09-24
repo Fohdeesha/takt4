@@ -783,6 +783,14 @@ void DmxEngine::evaluate(const Running& running, double now) {
         double saturation = 1.0;
         double value = 1.0;
         toHsv(payload.color, baseHue, saturation, value);
+        // A color with no saturation — white, which is what a rule's color is until somebody
+        // picks one — would sweep the hue of white, which is white: an effect that changed
+        // nothing while the editor offered its hue range (the audit's M21). It sweeps at full
+        // saturation instead, at the color's own brightness; a grey sweep is not a thing
+        // anybody means.
+        if (saturation <= 0.0) {
+            saturation = 1.0;
+        }
         const Color swept = fromHsv(hue, saturation, value);
         for (const Track& track : running.tracks) {
             const double unit = track.role == Role::Red     ? unitOfByte(swept.r)

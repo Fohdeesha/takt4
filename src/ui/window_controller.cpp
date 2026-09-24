@@ -7,6 +7,7 @@
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/rates.hpp"
 #include "core/build_info.hpp"
+#include "core/dmx/artnet_packet.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
 #include "core/io/utf8.hpp"
@@ -164,6 +165,28 @@ std::string_view trim(std::string_view text) noexcept {
 /// A row's address box holds one address — that is the point of there being rows — but a
 /// line pasted from the field this list replaced holds the whole rig, and `setOscTargets`
 /// still takes one. Both end up here, and both end up as rows.
+/// Whether `part` ends in an Art-Net universe list so far — " u0" or " u0,1" as its last word —
+/// so that a comma after it is the list's, not a new target. See `splitTargets`.
+bool endsInUniverseList(std::string_view part) noexcept {
+    const std::size_t space = part.find_last_of(" \t");
+    if (space == std::string_view::npos || part.find("artnet") == std::string_view::npos) {
+        return false;
+    }
+    const std::string_view last = part.substr(space + 1);
+    if (last.size() < 2 || last[0] != 'u') {
+        return false;
+    }
+    return last.substr(1).find_first_not_of("0123456789,") == std::string_view::npos;
+}
+
+/// Whether `part` begins with a plain number as its whole first word: the next universe of a
+/// list that a comma split, with perhaps the target's delay and id after it.
+bool startsWithUniverse(std::string_view part) noexcept {
+    const std::size_t end = part.find_first_of(" \t");
+    const std::string_view first = part.substr(0, end);
+    return !first.empty() && first.find_first_not_of("0123456789") == std::string_view::npos;
+}
+
 std::vector<std::string_view> splitTargets(std::string_view text) {
     std::vector<std::string_view> parts;
     std::size_t at = 0;
@@ -172,7 +195,21 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
         const std::string_view part = trim(
             text.substr(at, next == std::string_view::npos ? std::string_view::npos : next - at));
         if (!part.empty()) {
-            parts.push_back(part);
+            // **A comma inside an Art-Net universe list is the list's.** `artnet h:6454 u0,1,4`
+            // is one target, and splitting it at every comma left "1" and "4" as targets that
+            // would not parse — so the whole row was refused and a node fed more than one
+            // universe was never sent anything (found while fixing the audit's M21). Joined
+            // back onto the target it belongs to, as the text it was: the views are into `text`.
+            if (!parts.empty() && text[at - 1] == ',' && endsInUniverseList(parts.back()) &&
+                startsWithUniverse(part)) {
+                const std::size_t begin =
+                    static_cast<std::size_t>(parts.back().data() - text.data());
+                const std::size_t end = static_cast<std::size_t>(part.data() - text.data()) +
+                                        part.size();
+                parts.back() = text.substr(begin, end - begin);
+            } else {
+                parts.push_back(part);
+            }
         }
         if (next == std::string_view::npos) {
             break;
@@ -189,6 +226,10 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
 /// asked for. A prefilled port is worth having at all because it is the half of an OSC
 /// destination that has a conventional answer, where the host does not.
 constexpr std::uint16_t kNewTargetPort = 9000;
+/// The most universes one range in an Art-Net target's box may name. More than any node takt4
+/// is pointed at carries, and a typo like `0-32767` must not turn into thirty thousand
+/// universes of frames every 23 ms.
+constexpr unsigned int kMaxUniverseRange = 64;
 
 /// An outage's pacing (see `WindowController::superviseInput`). The first try is soon: a
 /// driver that paused for a buffer-size change is usually back within it. After that every
@@ -222,15 +263,17 @@ int deviceIndexOf(const std::vector<std::string>& ports, const std::string& devi
 /// what an unnamed one is called (`parseOutputTarget`). Filling it in with the address would
 /// be true and useless: it is the box the operator types a name into, and it would come back
 /// holding a copy of the box beside it every time they did not.
-/// "0, 1, 4" — an Art-Net target's universe list as its box holds it. Empty for a node fed
-/// everything, which is the default and what the box's placeholder explains.
+/// "0, 1, 4" — an Art-Net target's universe list as its box holds it, and "4:2:1" past the
+/// first Net, as a node's front panel spells it (`dmx::describePortAddress`, which the box
+/// reads back). Empty for a node fed everything, which is the default and what the box's
+/// placeholder explains.
 std::string universeList(const std::vector<std::uint16_t>& universes) {
     std::string text;
     for (const std::uint16_t universe : universes) {
         if (!text.empty()) {
             text += ", ";
         }
-        text += std::to_string(static_cast<unsigned int>(universe));
+        text += dmx::describePortAddress(universe);
     }
     return text;
 }
@@ -261,7 +304,8 @@ OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::strin
 /// Empty for a row that is not a destination yet: no host typed, or MIDI with no device
 /// picked. Empty is how `applyTargets` already spells "this row is being filled in", so an
 /// unfinished row costs no error message and sends nothing.
-std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts) {
+std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts,
+                      std::vector<std::string>* refused = nullptr) {
     if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi)) {
         const auto device = static_cast<std::size_t>(row.device_index);
         if (row.device_index <= 0 || device > midiPorts.size()) {
@@ -282,22 +326,41 @@ std::string addressOf(const OutputRow& row, const std::vector<std::string>& midi
         return where;
     }
     // The universe box is free text, so what the operator typed has to be turned into the
-    // `u0,1,4` the line format uses — and anything that is not a universe is dropped rather
+    // `u0,1,4` the line format uses — and anything that is not a universe is left out rather
     // than making the whole row unparseable. A box being typed into holds "0, " for a moment.
+    //
+    // **Each field whole** (the audit's M21): a flat number, the `net:sub:uni` a node's front
+    // panel shows, or a range like `1-4`. This read a leading number and ignored the rest, so
+    // `1:0:0` — universe 256 as the node spells it — went to universe 1, and `1-4` to 1 alone,
+    // and nothing said so. What cannot be read goes to `refused`, for the caller to say.
     std::string list;
+    const auto add = [&list](dmx::PortAddress universe) {
+        list += list.empty() ? "" : ",";
+        list += std::to_string(static_cast<unsigned int>(universe));
+    };
     const std::string typed(row.universes);
     std::size_t at = 0;
     while (at < typed.size()) {
         const std::size_t comma = typed.find(',', at);
         const std::string_view field = trim(
             std::string_view(typed).substr(at, comma == std::string::npos ? comma : comma - at));
-        unsigned int universe = 0;
-        const char* const begin = field.data();
-        const char* const end = begin + field.size();
-        if (!field.empty() && std::from_chars(begin, end, universe).ec == std::errc{} &&
-            universe <= dmx::kMaxPortAddress) {
-            list += list.empty() ? "" : ",";
-            list += std::to_string(universe);
+        if (!field.empty()) {
+            dmx::PortAddress single = 0;
+            const std::size_t dash = field.find('-');
+            dmx::PortAddress low = 0;
+            dmx::PortAddress high = 0;
+            if (dash == std::string_view::npos && dmx::parsePortAddress(field, single)) {
+                add(single);
+            } else if (dash != std::string_view::npos &&
+                       dmx::parsePortAddress(field.substr(0, dash), low) &&
+                       dmx::parsePortAddress(field.substr(dash + 1), high) && low <= high &&
+                       high - low < kMaxUniverseRange) {
+                for (unsigned int universe = low; universe <= high; ++universe) {
+                    add(static_cast<dmx::PortAddress>(universe));
+                }
+            } else if (refused != nullptr) {
+                refused->emplace_back(field);
+            }
         }
         if (comma == std::string::npos) {
             break;
@@ -1158,13 +1221,27 @@ void WindowController::setTargetUniverses(int index, const std::string& universe
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    // Kept exactly as typed. `addressOf` is what turns it into the line format, and it drops
-    // anything that is not a universe — so a box holding "0, " mid-edit is a node on universe
-    // 0 rather than a row that has stopped parsing.
+    // Kept exactly as typed. `addressOf` is what turns it into the line format, and it leaves
+    // out anything that is not a universe — so a box holding "0, " mid-edit is a node on
+    // universe 0 rather than a row that has stopped parsing.
     row.universes = shared(universes);
-    row.address = shared(addressOf(row, midiPorts_));
+    std::vector<std::string> refused;
+    row.address = shared(addressOf(row, midiPorts_, &refused));
     if (apply) {
         applyTargets();
+        // Once the edit is finished, what was left out is said rather than dropped (the audit's
+        // M21) — mid-edit a half-typed field is not worth a word.
+        if (!refused.empty()) {
+            std::string list;
+            for (const std::string& field : refused) {
+                list += (list.empty() ? "\"" : ", \"") + field + "\"";
+            }
+            setStatus("Art-Net universes: " + list + (refused.size() == 1 ? " is" : " are") +
+                          " not a universe, so left out. Write 0 to 32767, a node's 4:2:1, or "
+                          "a range like 1-4 of up to " +
+                          std::to_string(kMaxUniverseRange) + ".",
+                      true);
+        }
     }
 }
 

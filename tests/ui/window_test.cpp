@@ -1533,6 +1533,40 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     CHECK(live().targets[0].name == "deck");
     CHECK(live().targets[1].name == "wall");
 
+    SECTION("an Art-Net row's universes are read whole, and what is not one is said") {
+        // The audit's M21. The box read a leading number and ignored the rest: `1:0:0` — the
+        // universe a node's panel calls 1:0:0, which is 256 — went to universe 1, `2-4` to 2
+        // alone, and a word to nothing, without a word.
+        controller.setTargetKind(0, static_cast<int>(takt4::output::OutputTarget::Kind::ArtNet));
+        controller.setTargetHost(0, "192.0.2.10", false);
+        controller.setTargetUniverses(0, "1:0:0, 2-4, lights, 0-9999", true);
+        REQUIRE(live().targets.size() == 2);
+        CHECK(live().targets[0].universes == std::vector<std::uint16_t>{256, 2, 3, 4});
+        CHECK(controller.statusIsError());
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("\"lights\"") != std::string::npos);
+        CHECK(status.find("\"0-9999\"") != std::string::npos);
+        // And a destination arriving whole — a pasted line, a settings file — fills the box the
+        // way a node spells it, which the box reads back.
+        controller.setOscTargets("node = artnet 192.0.2.10:6454 u256,3");
+        CHECK(std::string(controller.window().get_outputs_list()->row_data(0)->universes) ==
+              "1:0:0, 3");
+    }
+
+    SECTION("a node fed several universes is one target, not one per comma") {
+        // Found while fixing M21: a row's address is split at commas into targets, and the
+        // commas of `u0,1,4` split one Art-Net target into pieces that would not parse, so the
+        // whole row was refused and a node fed more than one universe was never sent anything.
+        controller.setOscTargets("node = artnet 192.0.2.10:6454 u0,1,4 +50ms, wall = 127.0.0.1:57001");
+        REQUIRE(live().targets.size() == 2);
+        CHECK(live().targets[0].name == "node");
+        CHECK(live().targets[0].universes == std::vector<std::uint16_t>{0, 1, 4});
+        CHECK(live().targets[0].delaySeconds == Catch::Approx(0.05));
+        CHECK(live().targets[1].name == "wall");
+        CHECK_FALSE(controller.statusIsError());
+    }
+
     SECTION("and a line holding several becomes a row each, name and address apart") {
         const auto rows = controller.window().get_outputs_list();
         REQUIRE(rows->row_count() == 2);
