@@ -246,6 +246,23 @@ void TriggerEngine::onOnset(const Context& context) {
     }
 }
 
+void TriggerEngine::onBarDeclared(const Context& context) {
+    if (panicked_) {
+        return;
+    }
+    for (Rule& rule : rules_) {
+        const Trigger trigger = rule.config().trigger;
+        if ((trigger != Trigger::Bar && trigger != Trigger::Downbeat) || !rule.enabled() ||
+            !rule.valid()) {
+            continue;
+        }
+        if (!beatSatisfies(rule, context) || !rule.conditionsHold(context)) {
+            continue;
+        }
+        dispatch(rule, context);
+    }
+}
+
 void TriggerEngine::manual(const Context& context) {
     if (panicked_) {
         return;
