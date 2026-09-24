@@ -1,0 +1,10 @@
+# The Rust toolchain Slint is built with, pinned. The audit found it unpinned: whatever
+# rustc happened to be installed built the UI, on this machine and on CI alike.
+#
+# rustup reads this file for every cargo run under the repository, and the build trees are
+# under it (build/<preset>/), so Corrosion's cargo builds of Slint use exactly this version;
+# rustup installs it the first time if it is missing. Move it on purpose — a clean build and
+# the suites — and not as a side effect of somebody updating their machine.
+[toolchain]
+channel = "1.96.0"
+profile = "minimal"

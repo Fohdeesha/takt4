@@ -104,6 +104,16 @@ include(Catch)
 # The slowest test measured was 37 s under ASan with four running at once; 300 s is eight times
 # that.
 set(TAKT4_TEST_TIMEOUT 300)
+# The Skia takt4 draws with is the prebuilt archive it was checked against, library by library
+# (cmake/check_skia.cmake). Windows x64 with the UI built, which is what ships.
+if(TAKT4_BUILD_UI AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  add_test(NAME "the prebuilt Skia is the archive takt4 was checked against"
+           COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_BINARY_DIR}"
+                   -P "${PROJECT_SOURCE_DIR}/cmake/check_skia.cmake")
+  set_tests_properties("the prebuilt Skia is the archive takt4 was checked against"
+                       PROPERTIES LABELS "deps" TIMEOUT 300)
+endif()
+
 # The console that ships beside the app, run as it is shipped: the built-in weights and the
 # default state space have to come from inside it, not from this source tree — which is what
 # made the released takt4-cli fail on every other machine (the audit's H19). Only where the

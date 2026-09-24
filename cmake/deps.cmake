@@ -345,6 +345,26 @@ if(TAKT4_BUILD_UI)
   endblock()
   set(TAKT4_SLINT_VERSION "1.17.1")
 
+  # **Slint is the commit v1.17.1 names today, or nothing is built.** It is fetched by tag, and
+  # a tag can be moved (the audit: "Slint is fetched by git tag with no hash"). A full clone to
+  # pin the commit itself would be hundreds of megabytes on every clean build, so the shallow
+  # checkout of the tag is kept and what it checked out is compared with the commit recorded
+  # here, on every configure.
+  set(TAKT4_SLINT_COMMIT "cf62c975c311e7036d599ed8ed0b7e6a8386a934")
+  FetchContent_GetProperties(Slint SOURCE_DIR takt4_slint_source)
+  find_package(Git REQUIRED)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${takt4_slint_source}" rev-parse HEAD
+    OUTPUT_VARIABLE takt4_slint_head
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE takt4_slint_result)
+  if(NOT takt4_slint_result EQUAL 0 OR NOT takt4_slint_head STREQUAL TAKT4_SLINT_COMMIT)
+    message(FATAL_ERROR
+      "Slint v${TAKT4_SLINT_VERSION} checked out as '${takt4_slint_head}', but "
+      "${TAKT4_SLINT_COMMIT} is the commit that tag named when takt4 was checked against it. "
+      "The tag has moved, or the checkout is not what it should be: see cmake/deps.cmake.")
+  endif()
+
   if(NOT TARGET slint_cpp-static)
     message(FATAL_ERROR "Slint did not produce slint_cpp-static; a static build was expected")
   endif()
