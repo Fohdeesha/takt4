@@ -82,7 +82,9 @@ void RuleSink::send(const trigger::Message& message) {
     if (message.kind == trigger::Message::Kind::Osc) {
         sendOsc(message);
     } else if (message.kind == trigger::Message::Kind::Dmx) {
-        sendDmx(message);
+        if (!lightingHeld_) {
+            sendDmx(message);
+        }
     } else {
         sendMidi(message);
     }
