@@ -180,6 +180,13 @@ void ForwardFilter::buildTransitions() {
             tempoTransition_[from * n + to] /= sum;
         }
     }
+    // The same numbers, a column to a row, for `transition` to read in order.
+    tempoTransposed_.assign(n * n, 0.0);
+    for (std::size_t from = 0; from < n; ++from) {
+        for (std::size_t to = 0; to < n; ++to) {
+            tempoTransposed_[to * n + from] = tempoTransition_[from * n + to];
+        }
+    }
 }
 
 double ForwardFilter::bpmOfInterval(std::size_t interval) const noexcept {
@@ -285,10 +292,15 @@ void ForwardFilter::transition(bool keepTempo) noexcept {
             if (keepTempo) {
                 std::copy(lastMass_.begin(), lastMass_.end(), incoming_.begin());
             } else {
+                // Along a row of the transposed matrix: the same terms in the same order as
+                // walking down a column of `tempoTransition_`, so the same sum to the bit, and
+                // read from consecutive memory rather than one element a row apart (the
+                // audit's Low items).
                 for (std::size_t to = 0; to < n; ++to) {
+                    const double* const into = tempoTransposed_.data() + to * n;
                     double sum = 0.0;
                     for (std::size_t from = 0; from < n; ++from) {
-                        sum += tempoTransition_[from * n + to] * lastMass_[from];
+                        sum += into[from] * lastMass_[from];
                     }
                     incoming_[to] = sum;
                 }
@@ -499,13 +511,19 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
     const std::size_t chainEnd = chainBegin + static_cast<std::size_t>(mapPattern.meter) * statesPerBeat_;
     std::size_t map = chainBegin;
     double best = -1.0;
+    // The circular mean of the phase is `Emission::MeanPhase`'s alone. Summed on every frame
+    // whatever the rule, it was two multiplies a state for nothing under the default (the
+    // audit's Low items); what else this loop adds up is summed in the same order either way.
+    const bool meanWanted = options_.emission == Emission::MeanPhase;
     double cosSum = 0.0;
     double sinSum = 0.0;
     for (std::size_t s = chainBegin; s < chainEnd; ++s) {
         const double mass = posterior_[s];
         intervalMass_[stateInterval_[s]] += mass;
-        cosSum += mass * static_cast<double>(phaseCos_[s]);
-        sinSum += mass * static_cast<double>(phaseSin_[s]);
+        if (meanWanted) {
+            cosSum += mass * static_cast<double>(phaseCos_[s]);
+            sinSum += mass * static_cast<double>(phaseSin_[s]);
+        }
         if (mass > best) {
             best = mass;
             map = s;
@@ -544,6 +562,9 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
     const double spacing = options_.minimumBeatFraction * static_cast<double>(frame.intervalFrames);
     const bool spaced = !everEmitted_ || now - lastEmitFrame_ >= spacing;
     const double meanPhase = [&] {
+        if (!meanWanted) {
+            return 0.0;
+        }
         const double angle = std::atan2(sinSum, cosSum) / (2.0 * std::numbers::pi);
         return angle < 0.0 ? angle + 1.0 : angle;
     }();

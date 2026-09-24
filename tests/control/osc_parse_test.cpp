@@ -77,7 +77,7 @@ TEST_CASE("an address on its own is a message", "[control]") {
     REQUIRE(view.has_value());
     CHECK(view->address() == "/ctl/tap");
     CHECK(view->argumentCount() == 0);
-    CHECK_FALSE(view->flag(0).has_value()); // "the sender did not say", not "false"
+    CHECK_FALSE(view->number(0).has_value()); // "the sender did not say", not "zero"
 
     // And with an empty tag string, which is the same message spelled properly.
     OscMessage message("/ctl/tap");
@@ -88,25 +88,26 @@ TEST_CASE("an address on its own is a message", "[control]") {
 }
 
 TEST_CASE("a flag argument reads the way a control surface sends it", "[control]") {
-    // §5.7's `<0|1>`. A Stream Deck sending a boolean means what one sending 1 or 0 means.
+    // §5.7's `<0|1>`. A Stream Deck sending a boolean means what one sending 1 or 0 means, so
+    // `T` and `F` read as the numbers they stand for.
     OscMessage one("/ctl/lock");
     one.addInt(1);
-    CHECK(parseOsc(one.packet())->flag(0) == true);
+    CHECK(parseOsc(one.packet())->number(0) == 1.0);
 
     OscMessage zero("/ctl/lock");
     zero.addInt(0);
-    CHECK(parseOsc(zero.packet())->flag(0) == false);
+    CHECK(parseOsc(zero.packet())->number(0) == 0.0);
 
     OscMessage half("/ctl/lock");
     half.addFloat(0.5f);
-    CHECK(parseOsc(half.packet())->flag(0) == true);
+    CHECK(parseOsc(half.packet())->number(0) == 0.5);
 
     const auto boolean = packet("/ctl/lock...,TF.");
     const auto view = parseOsc(boolean);
     REQUIRE(view.has_value());
     REQUIRE(view->argumentCount() == 2);
-    CHECK(view->flag(0) == true);
-    CHECK(view->flag(1) == false);
+    CHECK(view->number(0) == 1.0);
+    CHECK(view->number(1) == 0.0);
 }
 
 TEST_CASE("a datagram that is not a message is refused, not guessed at", "[control]") {

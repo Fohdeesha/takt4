@@ -82,14 +82,6 @@ std::optional<double> OscView::number(std::size_t index) const noexcept {
     return std::nullopt;
 }
 
-std::optional<bool> OscView::flag(std::size_t index) const noexcept {
-    const std::optional<double> value = number(index);
-    if (!value) {
-        return std::nullopt;
-    }
-    return *value != 0.0;
-}
-
 std::optional<OscView> parseOsc(std::span<const std::byte> packet) noexcept {
     // A packet that is not a whole number of four-byte words cannot be OSC whatever else
     // is true of it, and checking first means nothing below has to handle a ragged end.

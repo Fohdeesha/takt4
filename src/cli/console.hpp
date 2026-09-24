@@ -1,8 +1,9 @@
 #pragma once
 
-// What the console's commands share: single keys from the terminal, and the rule that
-// turns a weight set's name into a file. Header-only, so `annotate` and `track` read the
-// keyboard the same way without either owning the class.
+// What the console's commands share: single keys from the terminal, Ctrl+C as a flag rather
+// than the end of the process, and the rule that turns a weight set's name into a file.
+// Header-only, so `annotate` and `track` read the keyboard the same way without either
+// owning the class.
 
 #include "core/model/weights.hpp"
 #include "core/tracking/state_space.hpp"
@@ -11,6 +12,8 @@
 #include "core/assets/embedded.hpp"
 #endif
 
+#include <atomic>
+#include <csignal>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -172,6 +175,43 @@ private:
     struct termios saved_{};
     bool restore_ = false;
 #endif
+};
+
+/// Ctrl+C, and a request to terminate, as a flag the loop can look at — for as long as this
+/// lives — instead of the end of the process. `annotate` had nothing of the kind: a Ctrl+C in
+/// the middle of tapping along killed it and every tap with it, because a key reader never
+/// sees Ctrl+C at all (`_getch` cannot read it, and the terminal's ISIG turns it into a signal
+/// on the other platforms), and the default handler for the signal ends the process (the
+/// audit's Low items). The handlers in force before are put back after.
+class Interrupts {
+public:
+    Interrupts() noexcept {
+        flag().store(false);
+        previousInt_ = std::signal(SIGINT, &Interrupts::raise);
+        previousTerm_ = std::signal(SIGTERM, &Interrupts::raise);
+    }
+    ~Interrupts() {
+        (void)std::signal(SIGINT, previousInt_);
+        (void)std::signal(SIGTERM, previousTerm_);
+    }
+    Interrupts(const Interrupts&) = delete;
+    Interrupts& operator=(const Interrupts&) = delete;
+
+    /// Whether one has arrived since this was made.
+    static bool requested() noexcept { return flag().load(); }
+
+private:
+    using Handler = void (*)(int);
+    /// A lock-free atomic, and first touched by the constructor, so a signal handler only
+    /// ever stores to one that already exists — the one thing a handler may safely do.
+    static std::atomic<bool>& flag() noexcept {
+        static std::atomic<bool> raised{false};
+        return raised;
+    }
+    static void raise(int) { flag().store(true); }
+
+    Handler previousInt_ = SIG_DFL;
+    Handler previousTerm_ = SIG_DFL;
 };
 
 } // namespace takt4::cli

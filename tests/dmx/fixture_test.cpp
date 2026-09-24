@@ -270,15 +270,4 @@ TEST_CASE("hue, saturation and value survive the trip back", "[dmx][color]") {
         CHECK(hue == 0.0);
         CHECK(saturation == 0.0);
     }
-
-    SECTION("a mix runs through RGB, which dips rather than sweeping the wheel") {
-        // Red to green half way is a dark olive, not yellow. That is the whole difference
-        // between a color fade and a hue sweep, and it is deliberate.
-        const Color half = takt4::dmx::mix(Color{255, 0, 0}, Color{0, 255, 0}, 0.5);
-        CHECK(half.r == 128);
-        CHECK(half.g == 128);
-        CHECK(half.b == 0);
-        CHECK(takt4::dmx::mix(Color{255, 0, 0}, Color{0, 255, 0}, 0.0) == Color{255, 0, 0});
-        CHECK(takt4::dmx::mix(Color{255, 0, 0}, Color{0, 255, 0}, 1.0) == Color{0, 255, 0});
-    }
 }

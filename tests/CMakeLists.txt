@@ -7,6 +7,7 @@
 add_executable(takt4_tests
   build_info_test.cpp
   audio/channel_picker_test.cpp
+  cli/console_test.cpp
   audio/devices_test.cpp
   audio/hop_accumulator_test.cpp
   audio/hop_fanout_test.cpp
@@ -33,6 +34,7 @@ add_executable(takt4_tests
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   features/intensity_test.cpp
+  io/blob_file_test.cpp
   io/npy_file_test.cpp
   io/utf8_test.cpp
   io/wav_file_test.cpp
@@ -152,6 +154,15 @@ set_tests_properties("the console refuses an empty number rather than reading it
                      "the console refuses nan as a number"
                      "the console names an option it does not know"
                      PROPERTIES LABELS "cli" TIMEOUT 60)
+
+# The console's live path, on the default input — see the script. ASIO kept out of it, as the
+# default presets keep it out of every test: the MOTU's driver belongs to the rig.
+add_test(NAME "the console tracks a live input through the application's own chain"
+         COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:takt4-cli>"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cli_track_device.cmake")
+set_tests_properties("the console tracks a live input through the application's own chain"
+                     PROPERTIES LABELS "cli;hardware" TIMEOUT 120 ENVIRONMENT "TAKT4_NO_ASIO=1"
+                                SKIP_REGULAR_EXPRESSION "SKIP")
 
 if(WIN32)
   # GetFileVersionInfoW, for the test that reads the executables' version resources.

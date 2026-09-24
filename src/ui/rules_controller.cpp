@@ -978,75 +978,28 @@ void RulesController::commitTyping() {
 }
 
 void RulesController::choseSlot(int slot) noexcept {
-    // The number is slot 0 on every kind that sends one — see `slotConfig` below.
     Rule::Config* rule = current();
-    if (rule != nullptr && slot == 0 && trigger::sendsNumber(rule->sendKind)) {
+    if (rule == nullptr || slot < 0) {
+        return;
+    }
+    const std::vector<trigger::Slot> layout = trigger::slotLayout(*rule);
+    const auto index = static_cast<std::size_t>(slot);
+    if (index < layout.size() && layout[index].role == trigger::SlotRole::Number) {
         rule->numberChosen = true;
     }
 }
 
 Generator::Config* RulesController::slotConfig(int slot) noexcept {
+    // Through `trigger::slotLayout`, which `publishSlots` builds the rows from and which is
+    // tested against the order a fire records: the index of a row is the index of the slot,
+    // for every kind and every effect, with no second walk of the conditions to keep in step.
     Rule::Config* rule = current();
     if (rule == nullptr || slot < 0) {
         return nullptr;
     }
+    const std::vector<trigger::Slot> layout = trigger::slotLayout(*rule);
     const auto index = static_cast<std::size_t>(slot);
-    if (rule->sendKind == trigger::Message::Kind::Osc) {
-        if (index < rule->segments.size()) {
-            return &rule->segments[index];
-        }
-        return index == rule->segments.size() ? &rule->value : nullptr;
-    }
-    if (rule->sendKind == trigger::Message::Kind::Dmx) {
-        // The order `publishSlots` builds them in, and the order `Rule::lastSlots` promises:
-        // the level for the kinds that take one, then the color, then pan and tilt. Only the
-        // slots the effect actually uses are built, so the indices shift with the effect —
-        // which is why this walks the same conditions rather than indexing a fixed table.
-        std::size_t at = 0;
-        if (dmx::takesRole(rule->dmx.effect)) {
-            if (index == at) {
-                return &rule->dmx.level;
-            }
-            ++at;
-        }
-        if (dmx::takesColor(rule->dmx.effect)) {
-            // One slot for a palette, three for a mix — `trigger::ColorMode`, and the same
-            // branch `Rule::buildPayload` takes when it draws them.
-            if (rule->dmx.colorMode == trigger::ColorMode::Mix) {
-                if (index == at) {
-                    return &rule->dmx.red;
-                }
-                if (index == at + 1) {
-                    return &rule->dmx.green;
-                }
-                if (index == at + 2) {
-                    return &rule->dmx.blue;
-                }
-                at += 3;
-            } else {
-                if (index == at) {
-                    return &rule->dmx.color;
-                }
-                ++at;
-            }
-        }
-        if (rule->dmx.effect == dmx::EffectKind::Position) {
-            if (index == at) {
-                return &rule->dmx.pan;
-            }
-            if (index == at + 1) {
-                return &rule->dmx.tilt;
-            }
-        }
-        return nullptr;
-    }
-    // MIDI: the note or controller number first, then the velocity or value. Pitch bend has
-    // no number at all, so its value is slot 0 — `publishSlots` builds the rows in exactly
-    // this order and the two must not drift apart.
-    if (!trigger::sendsNumber(rule->sendKind)) {
-        return index == 0 ? &rule->value : nullptr;
-    }
-    return index == 0 ? &rule->number : index == 1 ? &rule->value : nullptr;
+    return index < layout.size() ? &trigger::slotGenerator(*rule, layout[index]) : nullptr;
 }
 
 void RulesController::commit() {
@@ -3286,67 +3239,74 @@ void RulesController::publishSlots() {
         rows.push_back(std::move(row));
     };
 
-    if (rule->sendKind == trigger::Message::Kind::Osc) {
-        // Named by the placeholder they fill, so a chip and the address read together —
-        // §5.9's "template segments render as editable chips".
-        const std::vector<std::string> names = [&rule] {
-            std::vector<std::string> found;
-            std::size_t at = 0;
-            while ((at = rule->address.find('{', at)) != std::string::npos) {
-                const std::size_t close = rule->address.find('}', at);
-                if (close == std::string::npos) {
-                    break;
-                }
-                found.push_back(rule->address.substr(at, close - at + 1));
-                at = close + 1;
+    // Named by the placeholder they fill, so a chip and the address read together — §5.9's
+    // "template segments render as editable chips".
+    const std::vector<std::string> names = [&rule] {
+        std::vector<std::string> found;
+        std::size_t at = 0;
+        while ((at = rule->address.find('{', at)) != std::string::npos) {
+            const std::size_t close = rule->address.find('}', at);
+            if (close == std::string::npos) {
+                break;
             }
-            return found;
-        }();
-        for (std::size_t i = 0; i < rule->segments.size(); ++i) {
-            push(i < names.size() ? names[i] : "{?}", rule->segments[i]);
+            found.push_back(rule->address.substr(at, close - at + 1));
+            at = close + 1;
         }
-    } else if (rule->sendKind == trigger::Message::Kind::Dmx) {
-        // Only the generators this effect actually uses, in `Rule::lastSlots`' own order.
-        // `slotConfig` walks the same conditions; the two must not drift apart.
-        if (dmx::takesRole(rule->dmx.effect)) {
-            push(std::string(dmx::labelOf(rule->dmx.role)), rule->dmx.level);
-        }
-        if (dmx::takesColor(rule->dmx.effect)) {
-            // A palette is one chip holding colors; a mix is three chips holding numbers,
-            // and the numbers are DMX bytes, so they are labelled and ranged like every other
-            // byte in this window rather than pretending to be colors.
-            if (rule->dmx.colorMode == trigger::ColorMode::Mix) {
-                push("red", rule->dmx.red);
-                push("green", rule->dmx.green);
-                push("blue", rule->dmx.blue);
-            } else {
-                push("color", rule->dmx.color, /*color=*/true);
+        return found;
+    }();
+    // One row per generator the rule draws, in `trigger::slotLayout`'s order — the order a fire
+    // records in `Rule::lastSlots`, and the order `slotConfig` finds a row's generator by. It
+    // used to be walked here and in `slotConfig` beside the core's own, with comments saying the
+    // three must not drift apart (the audit's Low items); there is one walk now, and a test
+    // holds it to what a fire records. Program change has nowhere to put a value and pitch
+    // bend is nothing but one; a lighting effect has only the generators it uses.
+    for (const trigger::Slot& slot : trigger::slotLayout(*rule)) {
+        const Generator::Config& generator = trigger::slotGenerator(*rule, slot);
+        switch (slot.role) {
+        case trigger::SlotRole::Segment:
+            push(slot.segment < names.size() ? names[slot.segment] : "{?}", generator);
+            break;
+        case trigger::SlotRole::Value:
+            push(valueLabelOf(rule->sendKind), generator);
+            break;
+        case trigger::SlotRole::Number:
+            push(numberLabelOf(rule->sendKind), generator);
+            if (!rule->numberChosen) {
+                // An empty box asking for one, not the zero a fixed generator holds — a zero
+                // would read as a number already chosen, and the rule is not firing because it
+                // is not.
+                rows.back().fixed = slint::SharedString("");
+                rows.back().wanting = true;
             }
+            break;
+        case trigger::SlotRole::Level:
+            push(std::string(dmx::labelOf(rule->dmx.role)), generator);
+            break;
+        case trigger::SlotRole::Color:
+            push("color", generator, /*color=*/true);
+            break;
+        // A mix is three chips holding numbers, and the numbers are DMX bytes, so they are
+        // labelled and ranged like every other byte in this window rather than pretending to be
+        // colors.
+        case trigger::SlotRole::Red:
+            push("red", generator);
+            break;
+        case trigger::SlotRole::Green:
+            push("green", generator);
+            break;
+        case trigger::SlotRole::Blue:
+            push("blue", generator);
+            break;
+        // Percentages of each fixture's own movement window — see `DmxSend::pan`. Labelled with
+        // the unit, because 50 meaning "half way across what I allowed" rather than "DMX 50" is
+        // the one thing about this pair that is not obvious.
+        case trigger::SlotRole::Pan:
+            push("pan %", generator);
+            break;
+        case trigger::SlotRole::Tilt:
+            push("tilt %", generator);
+            break;
         }
-        if (rule->dmx.effect == dmx::EffectKind::Position) {
-            // Percentages of each fixture's own movement window — see `DmxSend::pan`. Labelled
-            // with the unit, because 50 meaning "half way across what I allowed" rather than
-            // "DMX 50" is the one thing about this pair that is not obvious.
-            push("pan %", rule->dmx.pan);
-            push("tilt %", rule->dmx.tilt);
-        }
-    } else if (trigger::sendsNumber(rule->sendKind)) {
-        push(numberLabelOf(rule->sendKind), rule->number);
-        if (!rule->numberChosen) {
-            // An empty box asking for one, not the zero a fixed generator holds — a zero would
-            // read as a number already chosen, and the rule is not firing because it is not.
-            rows.back().fixed = slint::SharedString("");
-            rows.back().wanting = true;
-        }
-    }
-    // Program change has nowhere to put a value; pitch bend is nothing but one. `slotConfig`
-    // indexes the rows in this same order. DMX built all of its own above.
-    if (rule->sendKind == trigger::Message::Kind::Dmx) {
-        // nothing more
-    } else if (rule->sendKind == trigger::Message::Kind::Osc
-                   ? rule->sendValue
-                   : trigger::sendsValue(rule->sendKind)) {
-        push(valueLabelOf(rule->sendKind), rule->value);
     }
     // In place, and this is the one that mattered: these rows are the generator chips, they
     // are full of text boxes, and `tick` republishes them every time a rule fires. See

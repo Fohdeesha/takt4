@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -89,6 +91,46 @@ TEST_CASE("SpscRing carries every item across threads in order", "[rt]") {
 
     CHECK(misordered == 0);
     CHECK(ring.empty());
+}
+
+TEST_CASE("SpscRing's size read from a third thread is never more than it holds", "[rt]") {
+    // The audit's Low items: read head-then-tail from a thread that is neither end, a consumer
+    // popping in between made the tail pass the head that was read, and the count wrapped to
+    // the quintillions. A producer and a consumer running flat out on a small ring, which is
+    // the ring nearly empty and both indices moving — the state that race needs — and a third
+    // thread asking the size as fast as it can.
+    constexpr std::uint64_t kItems = 2000000;
+    takt4::rt::SpscRing<Item, 8> ring;
+    std::atomic<bool> done{false};
+    std::uint64_t largest = 0;
+    std::uint64_t asked = 0;
+
+    std::thread watcher([&] {
+        while (!done.load(std::memory_order_relaxed)) {
+            largest = std::max<std::uint64_t>(largest, ring.size());
+            ++asked;
+        }
+    });
+    std::thread producer([&] {
+        for (std::uint64_t i = 0; i < kItems;) {
+            if (ring.tryPush({i, 0.0f})) {
+                ++i;
+            }
+        }
+    });
+    Item item{};
+    for (std::uint64_t popped = 0; popped < kItems;) {
+        if (ring.tryPop(item)) {
+            ++popped;
+        }
+    }
+    producer.join();
+    done.store(true, std::memory_order_relaxed);
+    watcher.join();
+
+    INFO(asked << " sizes read; the largest " << largest);
+    CHECK(asked > 1000);
+    CHECK(largest <= decltype(ring)::capacity());
 }
 
 TEST_CASE("SpscRing push and pop do not touch the heap", "[rt]") {

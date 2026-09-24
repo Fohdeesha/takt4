@@ -489,6 +489,9 @@ private:
     std::vector<std::string> outputProblemsShown_;
     /// The output thread's counters as the window last showed them. See `publishOutputTrouble`.
     output::OutputRunner::Snapshot::Trouble outputTroubleShown_;
+    /// The runner's snapshot as `publishOutputs` last copied it, and which one that was.
+    output::OutputRunner::Snapshot snapshot_;
+    std::uint64_t snapshotShown_ = 0;
 
     /// §C4's watch on the running input. See `superviseInput`.
     audio::InputWatchdog watchdog_;
@@ -622,6 +625,8 @@ private:
 
     /// §5.8's rules as this window has them; see `rules()`.
     std::vector<trigger::Rule::Config> rules_;
+    /// How many of them are active, counted whenever they change. See `publishTriggers`.
+    int rulesActive_ = 0;
     /// The lighting patch, as this class has it for saving. `patch_` owns the editing; this is
     /// the copy that goes into a settings file, kept in step by its changed callback.
     std::vector<dmx::Fixture> fixtures_;

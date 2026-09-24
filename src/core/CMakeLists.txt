@@ -95,6 +95,8 @@ add_library(takt4_core STATIC
   features/intensity.hpp
   io/atomic_file.cpp
   io/atomic_file.hpp
+  io/blob_file.cpp
+  io/blob_file.hpp
   io/npy_file.cpp
   io/npy_file.hpp
   io/utf8.cpp

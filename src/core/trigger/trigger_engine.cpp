@@ -60,14 +60,6 @@ Rule* TriggerEngine::find(std::string_view id) noexcept {
     return nullptr;
 }
 
-void TriggerEngine::reset() noexcept {
-    for (Rule& rule : rules_) {
-        rule.reset();
-    }
-    pending_.clear();
-    panicked_ = false;
-}
-
 bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noexcept {
     const Rule::Config& config = rule.config();
     // `effectiveEvery` and not `config.every`: §5.7's `double` and `halve` are a live gesture

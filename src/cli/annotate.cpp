@@ -281,6 +281,9 @@ std::vector<tracking::Tap> tapAlong(const io::WavData& audio, AnnotateArgs& a) {
     std::cout << std::flush;
 
     [[maybe_unused]] const TimerResolution resolution;
+    // Before the first tap, so a Ctrl+C at any point from here finishes the session as q does
+    // — the taps written — rather than ending the process with them. See `Interrupts`.
+    const Interrupts interrupts;
     std::vector<tracking::Tap> taps;
     tracking::TapTempo counting;
     player.start();
@@ -332,7 +335,6 @@ std::vector<tracking::Tap> tapAlong(const io::WavData& audio, AnnotateArgs& a) {
                 break;
             case 'q':
             case 'Q':
-            case 3: // Ctrl+C, which _getch() hands over as a character
                 done = true;
                 break;
             default:
@@ -341,6 +343,10 @@ std::vector<tracking::Tap> tapAlong(const io::WavData& audio, AnnotateArgs& a) {
         }
         if (player.finished()) {
             std::cout << "  the track has ended\n";
+            done = true;
+        }
+        if (Interrupts::requested() && !done) {
+            std::cout << "  interrupted: writing what was tapped\n";
             done = true;
         }
         const auto now = std::chrono::steady_clock::now();

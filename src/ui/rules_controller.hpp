@@ -256,7 +256,7 @@ public:
     void pickFollowUnit(int index, int unit);
 
     /// The generators, one per `{...}` of the address plus the value and the MIDI note.
-    /// `slot` indexes what the window is showing, which `slotConfigs()` decides.
+    /// `slot` indexes what the window is showing, which `trigger::slotLayout` decides.
     void pickSlotKind(int slot, int kind);
     void setSlotPool(int slot, bool list);
     void setSlotRange(int slot, const std::string& text);
@@ -286,8 +286,8 @@ private:
     /// The selected rule, or null when there is none.
     trigger::Rule::Config* current() noexcept;
     const trigger::Rule::Config* current() const noexcept;
-    /// The generator a slot index names, in the order `publishSlots` lists them: the
-    /// address's placeholders, then the value, then the MIDI number.
+    /// The generator a slot index names, in the order `publishSlots` lists them — both are
+    /// `trigger::slotLayout`, which is the order `Rule::lastSlots` records.
     trigger::Generator::Config* slotConfig(int slot) noexcept;
     /// Says an edit to `slot` has landed: if that slot is a MIDI rule's note or controller, the
     /// number is one the operator chose and the rule may fire (the audit's C7). Called by each

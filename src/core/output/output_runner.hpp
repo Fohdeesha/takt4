@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -409,6 +410,13 @@ public:
         Trouble trouble;
     };
     Snapshot snapshot() const;
+    /// How many snapshots have been taken. Any thread. A reader at redraw rate copies the
+    /// snapshot only when this has moved: the copy is every target and every fixture, and
+    /// thirty of them a second of the same thing was the audit's Low items. Read before
+    /// `snapshot()`, so a snapshot taken between the two is caught by the next look.
+    std::uint64_t snapshotVersion() const noexcept {
+        return snapshotVersion_.load(std::memory_order_acquire);
+    }
 
     /// One rule's live switches as the output thread has them: the three things a control
     /// surface can change behind §5.9's editor. See `liveRules`.
@@ -674,6 +682,7 @@ private:
     /// never waits behind a command reporting what went wrong.
     mutable std::mutex snapshotMutex_;
     Snapshot snapshot_;
+    std::atomic<std::uint64_t> snapshotVersion_{0};
     /// See `liveRules`.
     mutable std::mutex liveMutex_;
     std::vector<LiveRule> live_;
@@ -699,7 +708,7 @@ private:
     /// rather than a ring because the entries hold strings and both sides are far from the
     /// audio thread — the output thread already takes two of these every round.
     mutable std::mutex firedMutex_;
-    std::vector<Fired> fired_;
+    std::deque<Fired> fired_;
     std::thread worker_;
     std::atomic<bool> running_{false};
     /// A reader-safe mirror of `triggers_.panicked()`; see `panicked()`.

@@ -778,9 +778,9 @@ public:
     /// kind does not carry one — a pitch bend has no number and a program change no value,
     /// so each of those has a single entry.
     ///
-    /// That ordering is the contract. The editor pairs these with its rows by position
-    /// (`RulesController::slotConfig` indexes them the same way), and one extra entry moves
-    /// every chip after it onto the wrong generator.
+    /// That ordering is the contract, and `slotLayout` is it written down once: the editor
+    /// builds its rows from it and finds the generator a row edits through it, and one extra
+    /// entry here would move every chip after it onto the wrong generator.
     ///
     /// Empty before the rule has fired, and cleared by a fire that could not build its
     /// message — there is nothing to show for a fire that did not happen.
@@ -851,5 +851,37 @@ std::size_t countPlaceholders(std::string_view address) noexcept;
 /// untouched — when the counts do not match or the result would not be a legal OSC address.
 bool fillAddress(std::string_view address, const Value* values, std::size_t count,
                  std::string& out);
+
+/// Which of a rule's generators a slot is: a field of `Rule::Config`, and for `Segment`,
+/// which of the address's segments.
+enum class SlotRole : std::uint8_t {
+    Segment,
+    Value,
+    Number,
+    Level,
+    Color,
+    Red,
+    Green,
+    Blue,
+    Pan,
+    Tilt,
+};
+struct Slot {
+    SlotRole role = SlotRole::Value;
+    std::size_t segment = 0;
+    bool operator==(const Slot&) const = default;
+};
+
+/// The generators `config` draws when it fires, in the order `Rule::lastSlots` records what
+/// they drew. **The one walk of that order**: §5.9's editor builds its chips from it and
+/// finds the generator a chip edits through it, where it used to walk the same conditions
+/// twice beside `Rule::fire`'s own, held together by comments saying they must not drift
+/// apart (the audit's Low items). Tested against what a fire records, for every kind.
+std::vector<Slot> slotLayout(const Rule::Config& config);
+
+/// The generator configuration a slot of `config` stands for. `slot` has to be one
+/// `slotLayout(config)` gave.
+Generator::Config& slotGenerator(Rule::Config& config, const Slot& slot) noexcept;
+const Generator::Config& slotGenerator(const Rule::Config& config, const Slot& slot) noexcept;
 
 } // namespace takt4::trigger

@@ -446,6 +446,19 @@ std::string counted(std::uint64_t n, const char* one, const char* many, const st
     return std::to_string(n) + " " + (n == 1 ? one : many) + " — " + meaning;
 }
 
+/// How many of `rules` would fire if their moment came, which is what "active" means to an
+/// operator. A rule switched off and one that cannot fire are both not going to, and counting
+/// them would make the TRIGGERS row lie in the direction that matters.
+int activeRules(const std::vector<trigger::Rule::Config>& rules) {
+    int active = 0;
+    for (const trigger::Rule::Config& config : rules) {
+        if (config.enabled && trigger::Rule(config).valid()) {
+            ++active;
+        }
+    }
+    return active;
+}
+
 /// The counters that are not zero, joined for one line of the window.
 std::string joined(const std::vector<std::string>& parts) {
     std::string out;
@@ -609,8 +622,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
 
     // The editor owns the editing and this owns the file, so a change there comes back
     // here rather than the editor knowing where settings live.
-    editor_.setRulesChanged(
-        [this](const std::vector<trigger::Rule::Config>& rules) { rules_ = rules; });
+    editor_.setRulesChanged([this](const std::vector<trigger::Rule::Config>& rules) {
+        rules_ = rules;
+        rulesActive_ = activeRules(rules_);
+    });
     // The same for the patch — and one more thing: a rule aims at a fixture by *name*, so the
     // rule editor's "send to" list has to be rebuilt whenever the patch changes or a rule will
     // go on offering a fixture that has been renamed out from under it.
@@ -1672,6 +1687,7 @@ void WindowController::releasePanic() {
 
 void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
     rules_ = std::move(rules);
+    rulesActive_ = activeRules(rules_);
     // The editor's copy too, or it would go on showing the set it was built with — and the
     // next edit there would post that stale set back over this one.
     editor_.setRules(rules_);
@@ -1872,16 +1888,10 @@ void WindowController::publishMidiControl() {
 }
 
 void WindowController::publishTriggers() {
-    int active = 0;
-    for (const trigger::Rule::Config& config : rules_) {
-        // What "active" means to an operator: it would fire if its moment came. A rule that
-        // is switched off and one that cannot fire are both not going to, and counting them
-        // as active would make the row lie in the direction that matters.
-        if (config.enabled && trigger::Rule(config).valid()) {
-            ++active;
-        }
-    }
-    window_->set_rules_active(active);
+    // Counted when the rules change, not here: this runs thirty times a second, and building
+    // a whole `Rule` per rule to ask whether it is valid was that many times the work for a
+    // number that moves only when somebody edits (the audit's Low items).
+    window_->set_rules_active(rulesActive_);
     window_->set_rules_total(static_cast<int>(rules_.size()));
     window_->set_fixtures_total(static_cast<int>(fixtures_.size()));
     window_->set_panicked(runner_.panicked());
@@ -2317,7 +2327,16 @@ void WindowController::publishOutputs() {
     // this — so on a running rig the two overlap by design, sixty times through a delay-slider
     // drag. Copying a vector while another thread reassigns it is a freed buffer, not a stale
     // number. `OutputRunner::snapshot` is taken under a lock and is at worst a millisecond old.
-    const output::OutputRunner::Snapshot live = runner_.snapshot();
+    //
+    // And copied only when a new one has been taken: this runs thirty times a second, the copy
+    // is every target and every fixture, and between edits it is the same one every time.
+    const std::uint64_t version = runner_.snapshotVersion();
+    const bool fresh = version != snapshotShown_;
+    if (fresh) {
+        snapshot_ = runner_.snapshot();
+        snapshotShown_ = version;
+    }
+    const output::OutputRunner::Snapshot& live = snapshot_;
     window_->set_link_on(live.link);
     // Link's own, and safe to ask from any thread — as is the beat count, which is atomic.
     window_->set_link_peers(static_cast<int>(runner_.transports().link().numPeers()));
@@ -2328,8 +2347,10 @@ void WindowController::publishOutputs() {
     window_->set_osc_on(!live.outputs.empty());
     // The editor names these when it routes a rule, so it has to know what there is. Told
     // here rather than read from the runner, because this is the one place already holding a
-    // safe copy.
-    editor_.setTargets(live.outputs);
+    // safe copy — and only when that copy is new.
+    if (fresh) {
+        editor_.setTargets(live.outputs);
+    }
 
     window_->set_midi_port_index(
         deviceIndexOf(midiPorts_, live.midiClockPort.value_or(std::string{})));

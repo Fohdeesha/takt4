@@ -33,6 +33,12 @@ enum class EffectKind : std::uint8_t {
     /// The three color channels to one color, with the same snap-or-fade duration. A
     /// fixture with a White channel has it driven to zero, so that a color is the color
     /// asked for and not that color plus whatever white was left over.
+    ///
+    /// **A fade is in RGB and not in HSV, deliberately**: each channel runs in a straight
+    /// line on its own, so red to green dims towards a dark olive and comes back up rather
+    /// than passing through yellow. That is what "fade this fixture from one color to
+    /// another" means to everyone who has done it on a desk; the wheel is `HueSweep`, a
+    /// different instruction.
     Color,
     /// Straight to a peak and decay back to a base over the duration — the beat hit. Distinct
     /// from `Level` because it starts by *jumping*, which no ramp does, and because the decay
@@ -48,7 +54,7 @@ enum class EffectKind : std::uint8_t {
     /// The hue wheel from one angle to another over the duration, at the saturation and value
     /// of the rule's color — full saturation for a color that has none, such as the white a
     /// rule starts with, which would otherwise sweep nothing. The one color move that a
-    /// straight `Color` fade deliberately does not do — see `mix`.
+    /// straight `Color` fade deliberately does not do — see `Color`.
     HueSweep,
     /// Pan and tilt to one position, over the duration. The position is drawn when the rule
     /// fires (so a "random position" is a random *number*, resolved once, and the engine that

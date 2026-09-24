@@ -156,10 +156,6 @@ public:
     /// would not let go.
     void flushFollowUps() { flushPending(); }
 
-    /// Every generator back to the start, every cooldown cleared, every follow-up dropped.
-    /// For a preset load; not for panic, which owes its follow-ups.
-    void reset() noexcept;
-
     /// Messages handed to the sink, follow-ups included.
     std::uint64_t sent() const noexcept { return sent_; }
     /// Fires whose message could not be built — an address that came out illegal once its

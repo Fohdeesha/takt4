@@ -55,11 +55,6 @@ public:
     /// be pedantry the operator pays for.
     std::optional<double> number(std::size_t index) const noexcept;
 
-    /// §5.7's `<0|1>` arguments. True for a non-zero number or `T`; false for zero or
-    /// `F`; nothing for a message that carried no argument at all, which callers treat as
-    /// "the sender did not say" rather than as false.
-    std::optional<bool> flag(std::size_t index) const noexcept;
-
 private:
     friend std::optional<OscView> parseOsc(std::span<const std::byte> packet) noexcept;
 

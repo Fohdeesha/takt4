@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -685,4 +686,78 @@ TEST_CASE("a note is a note on or off, and nothing else is the same number", "[t
     CHECK_FALSE(sameNumber(Message::Kind::Osc, Message::Kind::MidiNote));
     CHECK_FALSE(sameNumber(Message::Kind::MidiPitchBend, Message::Kind::MidiPitchBend));
     CHECK_FALSE(sameNumber(Message::Kind::Dmx, Message::Kind::MidiCc));
+}
+
+TEST_CASE("the slot layout is the order a fire records its slots in, for every kind",
+          "[trigger]") {
+    // The audit's Low items. The editor walked the order of a rule's generators twice — once
+    // to build its chips, once to find the generator a chip edits — beside `Rule::fire`'s own,
+    // held together by comments saying the three must not drift apart. There is one walk now,
+    // `slotLayout`, and this holds it to what a fire records: every slot given its own number,
+    // fired, and each recorded value checked against the slot it came from.
+    std::vector<Rule::Config> configs;
+    Rule::Config osc;
+    osc.address = "/a/{}/b/{}";
+    osc.segments = {Generator::Config{}, Generator::Config{}};
+    osc.sendValue = true;
+    configs.push_back(osc);
+    osc.sendValue = false;
+    configs.push_back(osc);
+    for (const Message::Kind kind : {Message::Kind::MidiNote, Message::Kind::MidiCc,
+                                     Message::Kind::MidiProgramChange,
+                                     Message::Kind::MidiPitchBend}) {
+        Rule::Config midi;
+        midi.sendKind = kind;
+        midi.numberChosen = true;
+        configs.push_back(midi);
+    }
+    for (const takt4::dmx::EffectKind effect : takt4::dmx::kEffectKinds) {
+        for (const takt4::trigger::ColorMode mode : takt4::trigger::kColorModes) {
+            Rule::Config lighting;
+            lighting.sendKind = Message::Kind::Dmx;
+            lighting.dmx.effect = effect;
+            lighting.dmx.colorMode = mode;
+            lighting.dmx.fixtures = {"par"}; // aimed at something, or it is not valid
+            configs.push_back(lighting);
+        }
+    }
+
+    const std::string colorText = "#0a0b0c";
+    const std::string colorRecorded =
+        takt4::dmx::formatColor(takt4::dmx::parseColor(colorText).value());
+    std::size_t checked = 0;
+    for (std::size_t c = 0; c < configs.size(); ++c) {
+        Rule::Config config = configs[c];
+        const std::vector<takt4::trigger::Slot> layout = takt4::trigger::slotLayout(config);
+        std::vector<Value> expected;
+        for (std::size_t i = 0; i < layout.size(); ++i) {
+            Generator::Config& generator = takt4::trigger::slotGenerator(config, layout[i]);
+            generator = Generator::Config{};
+            generator.kind = GeneratorKind::Fixed;
+            if (layout[i].role == takt4::trigger::SlotRole::Color) {
+                generator.fixed = Value::ofText(colorText);
+                expected.push_back(Value::ofText(colorRecorded));
+            } else {
+                // Distinct, and inside every range a slot clamps to: a percentage, a DMX byte,
+                // a MIDI number or value.
+                const int number = 11 + static_cast<int>(i) * 7;
+                generator.fixed = Value::ofInt(number);
+                expected.push_back(Value::ofInt(number));
+            }
+        }
+        Rule rule(config);
+        INFO("config " << c << ": " << rule.problem());
+        REQUIRE(rule.valid());
+        Context context;
+        REQUIRE(rule.fire(context).has_value());
+        const std::span<const Value> recorded = rule.lastSlots();
+        REQUIRE(recorded.size() == layout.size());
+        for (std::size_t i = 0; i < layout.size(); ++i) {
+            INFO("slot " << i);
+            CHECK(recorded[i] == expected[i]);
+        }
+        checked += layout.size();
+    }
+    // The walk covered something: segments, values, numbers, levels, colors and positions.
+    CHECK(checked > 30);
 }

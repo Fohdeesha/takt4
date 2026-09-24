@@ -3059,6 +3059,42 @@ TEST_CASE("a click made while START is still opening the input does not stop it 
     CHECK_FALSE(controller.window().get_running());
 }
 
+TEST_CASE("the TRIGGERS row counts the rules that would fire, as they are edited", "[ui]") {
+    // Counted when the rules change rather than on every redraw (the audit's Low items), so the
+    // count has to follow every way they change: a whole set arriving, and the editor.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config clips;
+    clips.id = "clips";
+    clips.address = "/clips";
+    takt4::trigger::Rule::Config off = clips;
+    off.id = "off";
+    off.enabled = false;
+    takt4::trigger::Rule::Config waiting;
+    waiting.id = "waiting";
+    waiting.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    waiting.numberChosen = false; // a note nobody has picked yet: cannot fire
+    controller.setRules({clips, off, waiting});
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 1);
+    CHECK(controller.window().get_rules_total() == 3);
+
+    // Switched on in the editor, it counts; the one still waiting for a number does not.
+    controller.editor().pick(1);
+    controller.editor().setEnabled(true);
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 2);
+    // One added there has no address yet, so it counts in the total and not as active — and
+    // counts the moment it is given one.
+    controller.editor().add();
+    controller.tick();
+    CHECK(controller.window().get_rules_total() == 4);
+    CHECK(controller.window().get_rules_active() == 2);
+    controller.editor().setAddress("/composition/layers/1/clear");
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 3);
+}
+
 TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]") {
     // The audit's M12: every rule message that reached no output was counted, and the count was
     // shown nowhere. A MIDI rule on a rig with no MIDI output, fired with TEST, the way an

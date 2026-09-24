@@ -17,6 +17,7 @@
 #include "core/build_info.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/control.hpp"
+#include "core/engine/live_tracker.hpp"
 #include "core/features/dimensions.hpp"
 #include "core/features/feature_extractor.hpp"
 #include "core/io/npy_file.hpp"
@@ -1175,42 +1176,55 @@ int runTrackFile(const std::filesystem::path& in, const takt4::model::ModelWeigh
 
 int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weights,
                    const takt4::tracking::StateSpaceModel& model) {
-    const takt4::audio::PortAudioSession session;
-    const auto devices = takt4::audio::listInputDevices(session);
+    // **The application's own chain**: `LiveTracker` for the input and the engine, and
+    // `OutputRunner` for what is sent. This used to wire the stream, the engine and the host
+    // clock by hand, and the copy had drifted — it never reset the host-time filter before a
+    // run, which `LiveTracker::start` does — so `track` was not exercising what the window
+    // runs (the audit's Low items).
+    takt4::engine::LiveTracker::Options options;
+    options.engine = engineOptions(args);
+    options.stream.sampleRate = args.beats.stream.rate;
+    options.stream.forceSoftwareSlice = args.beats.stream.software;
+    takt4::engine::LiveTracker tracker(weights, model, options);
+    const std::vector<takt4::audio::InputDevice> devices = tracker.devices();
     const auto& device = findDevice(devices, args.beats.stream.device);
     const takt4::audio::ChannelSelection selection =
         args.beats.stream.channel
             ? takt4::audio::ChannelSelection::single(*args.beats.stream.channel)
             : takt4::audio::ChannelSelection::pair(args.beats.stream.pair->first,
                                                    args.beats.stream.pair->second);
-
-    auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, model, engineOptions(args));
+    takt4::engine::BeatEngine* const engine = &tracker.engine();
     if (args.holdBpm > 0.0) {
         (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
     }
 
     // **The declaration order from here down is the destruction order reversed, and all of
-    // it is load-bearing.** Everything below runs to completion in the ordinary path, which
-    // is why this went unnoticed; what it is for is the path where something throws between
-    // here and the stop sequence at the end, and the scope unwinds instead.
+    // it is load-bearing.** Everything below runs to completion in the ordinary path; what
+    // it is for is the path where something throws between here and the stop sequence at the
+    // end, and the scope unwinds instead.
     //
     // The beats the output thread hands over, first, so they outlive the runner: its
     // observer holds a reference to both and its destructor joins the thread.
     std::mutex publishedMutex;
     std::vector<takt4::engine::EngineBeat> published;
-    // Then the runner, which owns the transports (§4.2): one thread touches them, and that
-    // is structural rather than a comment now.
+    // Then the runner, which owns the transports (§4.2) and reads the tracker's engine — the
+    // tracker, declared above, outlives it.
     takt4::output::OutputRunner runner(*engine, transportConfig(args));
     const takt4::output::Transports& transports = runner.transports();
-    // Then the stream, so it is torn down *first*. The audio thread stamps every hop through
-    // Link's regression (§4.3), and Link belongs to the runner — so a runner destroyed while
-    // the stream is still open would leave the audio callback reading a session that has
-    // gone. `LiveTracker` and `Transports` both go to some length to make that impossible;
-    // this is the console's copy of the same ordering.
-    takt4::audio::InputStreamOptions options;
-    options.sampleRate = args.beats.stream.rate;
-    options.forceSoftwareSlice = args.beats.stream.software;
-    takt4::audio::InputStream stream(session, device, selection, *engine, options);
+    // And the input is stopped before the runner goes, however this scope is left. The audio
+    // thread stamps every hop through Link's regression (§4.3), and Link belongs to the
+    // runner, so a runner destroyed with the stream still open would leave the audio callback
+    // reading a session that has gone. The window does the same in its destructor.
+    struct StopFirst {
+        takt4::engine::LiveTracker& tracker;
+        ~StopFirst() { tracker.stop(); }
+    } stopFirst{tracker};
+    // HANDOFF §4.3: the audio thread stamps each hop through Link's regression, so a beat
+    // carries the host time of the audio it was found in rather than of the moment this loop
+    // noticed it. `LiveTracker::start` installs it, and resets its filter, before the stream.
+    tracker.setHostTimeSource(&runner.hostTimeClock());
+    tracker.start(device, selection);
+    const takt4::audio::InputStream& stream = *tracker.stream();
     FrameTracer tracer;
     if (args.traceOut) {
         tracer.writeTo(*args.traceOut);
@@ -1219,12 +1233,6 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     if (args.beatsOut) {
         printer.writeTo(*args.beatsOut);
     }
-    // HANDOFF §4.3: the audio thread stamps each hop through Link's regression, so a
-    // beat carries the host time of the audio it was found in rather than of the moment
-    // this loop happened to notice it. Before the stream is started, because the stamp is
-    // taken on the audio thread and there has to be a clock in place before there is one.
-    engine->setHostTimeSource(&runner.hostTimeClock());
-
     std::cout << "device:    " << device.hostApiName << " / " << device.name << '\n'
               << "channel:   " << selection.channels[0] + 1;
     if (selection.count == 2) {
@@ -1268,8 +1276,6 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
-    engine->start();
-    stream.start();
 
     const auto start = std::chrono::steady_clock::now();
 
@@ -1347,7 +1353,8 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             printKeys(std::cout, true);
             break;
         case 'q':
-        case 3: // Ctrl+C, which _getch() hands over as a character rather than a signal
+            // Ctrl+C is not a key — `_getch` cannot read it — and reaches `onSignal` instead,
+            // which sets the same flag.
             g_interrupted.store(true);
             break;
         default:
@@ -1412,12 +1419,11 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         }
         std::cout << std::flush;
     }
-    stream.stop();
-    engine->stop(); // tracks whatever the model worker had left before joining
-    // The runner before the host time source: it is still sending, and Link is what it
-    // sends to. Its stop() drains the last beats and stops the transports.
+    // Read before the stop, which closes the stream and takes its counters with it.
+    const auto counters = stream.counters();
+    tracker.stop(); // the stream, then the engine, which tracks what the model had left
+    // Then the runner: its stop() drains the last beats and stops the transports.
     runner.stop();
-    engine->setHostTimeSource(nullptr);
     (void)drainFrames(*engine, tracer, engine->secondsPerFrame());
     {
         const std::lock_guard<std::mutex> lock(publishedMutex);
@@ -1427,7 +1433,6 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
         printer.print(beat);
     }
 
-    const auto counters = stream.counters();
     std::cout << "stopped after " << counters.hopsOut << " hops, " << engine->framesTracked()
               << " frames, " << transports.beats() << " beats (" << transports.downbeats()
               << " downbeats), " << counters.inputOverflows << " input overflows, "

@@ -46,10 +46,11 @@ namespace takt4::tracking {
 ///     neighbours down by `Options::holdPenalty` a frame, so the filter tracks phase and
 ///     nothing else — a DJ's beat grid, and the only thing that holds a track whose
 ///     periodicities are in non-octave ratios.
-///   * **It coasts through a break.** When the network has read no beat for a whole beat
-///     period of the slowest tempo, the filter stops taking evidence and steps its posterior
-///     forward unchanged, so phase and tempo carry through the silence exactly and re-anchor
-///     on the first beat back; the beats keep coming at the tempo the music left, and
+///   * **It coasts through a break.** When no beat has been heard for a beat and a half at
+///     the tempo of the last one, the filter stops taking evidence and steps its posterior
+///     forward unchanged — from the last beat heard, not from when it noticed — so phase and
+///     tempo carry through the silence exactly and re-anchor on the first beat back; the
+///     beats keep coming at the tempo the music left, and
 ///     `TempoTracker`'s confidence gate flags them `holding` (`Options::coastAfterFrames`).
 ///     The one exception is before the first beat of a run: nothing is emitted until the
 ///     network has once read a beat at `Options::armThreshold` or above, so a silent start
@@ -291,6 +292,8 @@ private:
     std::vector<float> phaseSin_;
     /// Dense, row-major, `from * numIntervals + to`.
     std::vector<double> tempoTransition_;
+    /// The same, `to * numIntervals + from`: what `transition` walks, in order.
+    std::vector<double> tempoTransposed_;
 
     // Evidence the operator adds: per interval, a window weight and a hold weight, and
     // their product, which is what a frame multiplies by.

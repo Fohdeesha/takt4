@@ -653,10 +653,10 @@ std::optional<Message> Rule::fire(const Context& context) {
     } else {
         message.channel = std::clamp(config_.channel, 1, kMidiChannels);
         // **Only the fields the kind actually puts on the wire**, and in the order
-        // `lastSlots` documents — which is the order §5.9's editor draws the chips and the
-        // order `RulesController::slotConfig` indexes them by. A pitch bend has no number
-        // and a program change no value, so neither has a chip; recording one anyway paired
-        // every chip with the wrong generator. Measured: a bend of 12000 read as 9 on
+        // `lastSlots` documents — `slotLayout`, which §5.9's editor draws its chips from and
+        // finds each chip's generator by, and which a test holds to this. A pitch bend has no
+        // number and a program change no value, so neither has a chip; recording one anyway
+        // paired every chip with the wrong generator. Measured: a bend of 12000 read as 9 on
         // screen, because slot 0 held the number generator nothing had sent.
         //
         // Not drawn either, for the same reason: a generator whose value never leaves should
@@ -698,8 +698,8 @@ dmx::Payload Rule::buildPayload(const Context& context) {
         musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
 
     // **Only the generators this effect actually uses are drawn**, and in the order
-    // `lastSlots` documents — which is the order §5.9's editor draws the chips and the order
-    // `RulesController::slotConfig` indexes them by. The reasoning is the one the MIDI branch
+    // `lastSlots` documents — `slotLayout`, which §5.9's editor draws its chips from and a
+    // test holds to this. The reasoning is the one the MIDI branch
     // already gives: a generator whose value never leaves should not be spending a shuffle's
     // bag on it, and recording one anyway pairs every chip after it with the wrong generator.
     if (dmx::takesRole(send.effect)) {
@@ -828,6 +828,75 @@ double Rule::followUpDelay(const Context& context, std::size_t index) const noex
     }
     const FollowUp& owed = config_.followUps[index];
     return musicalSeconds(context, owed.unit, owed.delaySeconds, owed.delayBeats);
+}
+
+std::vector<Slot> slotLayout(const Rule::Config& config) {
+    // The conditions `fire` and `buildPayload` draw under, in the order they draw.
+    std::vector<Slot> slots;
+    if (config.sendKind == Message::Kind::Osc) {
+        for (std::size_t i = 0; i < config.segments.size(); ++i) {
+            slots.push_back(Slot{SlotRole::Segment, i});
+        }
+        if (config.sendValue) {
+            slots.push_back(Slot{SlotRole::Value});
+        }
+    } else if (config.sendKind == Message::Kind::Dmx) {
+        const DmxSend& send = config.dmx;
+        if (dmx::takesRole(send.effect)) {
+            slots.push_back(Slot{SlotRole::Level});
+        }
+        if (dmx::takesColor(send.effect)) {
+            if (send.colorMode == ColorMode::Mix) {
+                slots.push_back(Slot{SlotRole::Red});
+                slots.push_back(Slot{SlotRole::Green});
+                slots.push_back(Slot{SlotRole::Blue});
+            } else {
+                slots.push_back(Slot{SlotRole::Color});
+            }
+        }
+        if (send.effect == dmx::EffectKind::Position) {
+            slots.push_back(Slot{SlotRole::Pan});
+            slots.push_back(Slot{SlotRole::Tilt});
+        }
+    } else {
+        if (sendsNumber(config.sendKind)) {
+            slots.push_back(Slot{SlotRole::Number});
+        }
+        if (sendsValue(config.sendKind)) {
+            slots.push_back(Slot{SlotRole::Value});
+        }
+    }
+    return slots;
+}
+
+Generator::Config& slotGenerator(Rule::Config& config, const Slot& slot) noexcept {
+    switch (slot.role) {
+    case SlotRole::Segment:
+        return config.segments[slot.segment];
+    case SlotRole::Number:
+        return config.number;
+    case SlotRole::Level:
+        return config.dmx.level;
+    case SlotRole::Color:
+        return config.dmx.color;
+    case SlotRole::Red:
+        return config.dmx.red;
+    case SlotRole::Green:
+        return config.dmx.green;
+    case SlotRole::Blue:
+        return config.dmx.blue;
+    case SlotRole::Pan:
+        return config.dmx.pan;
+    case SlotRole::Tilt:
+        return config.dmx.tilt;
+    case SlotRole::Value:
+        break;
+    }
+    return config.value;
+}
+
+const Generator::Config& slotGenerator(const Rule::Config& config, const Slot& slot) noexcept {
+    return slotGenerator(const_cast<Rule::Config&>(config), slot);
 }
 
 } // namespace takt4::trigger

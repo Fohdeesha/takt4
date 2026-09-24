@@ -477,6 +477,37 @@ TEST_CASE("a stage of a round that throws is counted and named, and the round ca
     CHECK(trouble.undeliverable == kExpectedDownbeats);
 }
 
+TEST_CASE("the fired log keeps the newest messages, in order, when nobody drains it",
+          "[output][trigger]") {
+    // It holds `kFiredCapacity` and drops the oldest past that — which it did by erasing the
+    // front of a vector, every message once it was full (the audit's Low items). Six hundred
+    // fired with nothing reading: the last 512, oldest first.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    Rule::Config rule;
+    rule.id = "count";
+    rule.address = "/n/{}";
+    rule.sendValue = false; // the address alone, so each entry is just the count
+    takt4::trigger::Generator::Config counter;
+    counter.kind = takt4::trigger::GeneratorKind::Cycle;
+    counter.low = 1;
+    counter.high = 1000;
+    rule.segments = {counter};
+    runner.post(OutputCommand::rules({rule}));
+    constexpr int kFired = 600;
+    for (int i = 0; i < kFired; ++i) {
+        runner.post(OutputCommand::testRule("count")); // stopped, so applied at once
+    }
+    const std::vector<OutputRunner::Fired> fired = runner.takeFired();
+    REQUIRE(fired.size() == OutputRunner::kFiredCapacity);
+    const int first = kFired - static_cast<int>(OutputRunner::kFiredCapacity) + 1;
+    for (std::size_t i = 0; i < fired.size(); ++i) {
+        INFO("entry " << i);
+        REQUIRE(fired[i].message == "/n/" + std::to_string(first + static_cast<int>(i)));
+    }
+    CHECK(runner.takeFired().empty());
+}
+
 TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][trigger]") {
     // The user's report of 2026-09-06, at the far end of the chain it actually mattered at.
     // A fold that moves the number and leaves `TrackedFrame::emitted` alone is invisible in
