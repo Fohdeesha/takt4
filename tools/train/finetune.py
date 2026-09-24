@@ -402,7 +402,12 @@ def write_cli_weights(model, path):
 
 
 def _cli_track(args):
-    """Run takt4-cli over one excerpt; (set, id, beat F, downbeat F, tempo acc1, beats)."""
+    """Run takt4-cli over one excerpt; (set, id, beat F, downbeat F, tempo acc1, beats, error).
+
+    `error` is None, or why the CLI did not run: that is not a score of zero, and it used to
+    be returned as one (the audit's Python-tools list), so a broken CLI or a missing weights
+    file read as a model that had forgotten every beat. An excerpt the CLI ran over and found
+    no beats in *is* a zero, and still scores as one."""
     import subprocess
     import tempfile
     import mir_eval
@@ -415,10 +420,11 @@ def _cli_track(args):
             cmd += ["--meters", str(meters)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0 or not out.exists():
-            return set_name, tid, 0.0, 0.0, 0, 0
+            why = (r.stderr or r.stdout).strip()[-300:] or "no beat file written"
+            return set_name, tid, 0.0, 0.0, 0, 0, f"exit {r.returncode}: {why}"
         rows = np.loadtxt(out, ndmin=2)
     if rows.size == 0:
-        return set_name, tid, 0.0, 0.0, 0, 0
+        return set_name, tid, 0.0, 0.0, 0, 0, None
     est_t, est_p = rows[:, 0], rows[:, 1].astype(int)
     bpm_col = rows[:, 2] if rows.shape[1] > 2 else None
     ref_b = mir_eval.beat.trim_beats(ref_t)
@@ -433,7 +439,7 @@ def _cli_track(args):
     else:
         published = 60.0 / np.median(np.diff(est_t)) if len(est_t) > 2 else 0.0
     acc1 = int(ref_bpm > 0 and published > 0 and abs(published - ref_bpm) / ref_bpm <= 0.04)
-    return set_name, tid, float(beat_f), float(down_f), acc1, int(len(est_t))
+    return set_name, tid, float(beat_f), float(down_f), acc1, int(len(est_t)), None
 
 
 def validate_cli(model, val_sets, cfg, cli, wavs, run_dir, pool):
@@ -450,11 +456,20 @@ def validate_cli(model, val_sets, cfg, cli, wavs, run_dir, pool):
             jobs.append((cli, weights, set_name, e.id, wav, t0, times[keep] - t0, positions[keep],
                          str(cfg.get("val_bpm", "off")), str(cfg.get("val_meters", "") or "")))
     per_set = {s: {"beat_f": [], "down_f": [], "acc1": [], "tracks": {}} for s in val_sets}
-    for set_name, tid, bf, df, a1, n in pool.map(_cli_track, jobs):
+    failed = []
+    for set_name, tid, bf, df, a1, n, error in pool.map(_cli_track, jobs):
+        if error is not None:
+            failed.append(f"{set_name}/{tid}: {error}")
+            continue
         per_set[set_name]["beat_f"].append(bf)
         per_set[set_name]["down_f"].append(df)
         per_set[set_name]["acc1"].append(a1)
         per_set[set_name]["tracks"][tid] = [round(bf, 4), round(df, 4), n, a1]
+    if failed:
+        # Stop rather than select on it: a validation missing some of its excerpts is a
+        # different validation, and one scored on failures is not a measurement at all.
+        raise RuntimeError(f"takt4-cli failed on {len(failed)} of {len(jobs)} validation "
+                           "excerpts:\n  " + "\n  ".join(failed[:10]))
     return {s: {"n": len(r["beat_f"]),
                 "beat_f": float(np.mean(r["beat_f"])) if r["beat_f"] else 0.0,
                 "down_f": float(np.mean(r["down_f"])) if r["down_f"] else 0.0,

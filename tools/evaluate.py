@@ -36,6 +36,7 @@ see what it is worth on material whose range is known.
 import argparse
 import concurrent.futures
 import json
+import os
 import platform
 import shlex
 import statistics
@@ -63,7 +64,11 @@ TRAINING_SETS = ("ballroom", "hainsworth", "rock_corpus", "rockcorpus", "musdb",
 def find_cli(given):
     """The takt4-cli to measure. An unoptimised build would be a different tracker only
     in speed, but it would take hours, so a Debug path is refused rather than run."""
-    if given is not None:
+    # --cli, then TAKT4_CLI — which is what the training runs and gate scripts set to freeze the
+    # decoder under a long job, and which this used to ignore (the audit's Python-tools list),
+    # so a gate "on the frozen CLI" measured whatever the build tree held that day.
+    given = given if given is not None else os.environ.get("TAKT4_CLI")
+    if given:
         path = Path(given)
         if not path.is_file():
             raise SystemExit(f"{path}: not found")
