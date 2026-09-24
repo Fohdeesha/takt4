@@ -839,7 +839,7 @@ export component RulesWindow inherits Window {
           // is hit in a hurry — halted the rig and let it go again at once. RELEASE appears
           // *above*, so PANIC stays anchored where the second click of a double-click lands.
           // An explicit height, because an `if` row in a vertical layout otherwise takes a
-          // share of the spare height in a tall window.
+          // share of the spare height — measured: `vertical-stretch: 0` does not stop it.
           if root.panicked : Press {
             text: "RELEASE";
             height: 40px;
