@@ -611,6 +611,8 @@ private:
     /// The onset count last seen from the engine. The output thread has no frames of its
     /// own, so a count that moved is how it learns one happened.
     std::uint64_t onsetsSeen_ = 0;
+    /// `TempoState::barsDeclared` last seen, likewise.
+    std::uint64_t barsDeclaredSeen_ = 0;
     BeatObserver observer_;
 
     /// **Who may touch the transports and the rules right now.** Held for a whole round by

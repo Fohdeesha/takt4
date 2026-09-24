@@ -583,6 +583,11 @@ void TempoTracker::snapDownbeat() noexcept {
         // already been beat 1 the bar was counted when it was called, and counting it twice
         // would make a snap that changed nothing move the bar number.
         ++state_.bars;
+        // And its first beat has already gone out as another beat, so no downbeat rule heard
+        // it. Said here so the output thread can fire that bar's rules now, late by however
+        // long the press took, rather than skip the bar (the audit's M4).
+        ++state_.barsDeclared;
+        state_.declaredBar = state_.bars;
     }
 }
 

@@ -517,6 +517,95 @@ TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
     CHECK(runner.errors() == 0);
 }
 
+TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules",
+          "[output][trigger]") {
+    // The audit's M4, as the operator meets it: they press DOWNBEAT on the downbeat they hear,
+    // a moment after the tracker called that beat as beat 3. The beat becomes the bar's first
+    // — but it has gone out already, so a downbeat rule (a laser on the one) used to skip that
+    // bar altogether. It fires on the press now, late by the press.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    std::mutex mutex;
+    std::uint64_t publishedDownbeats = 0;
+    runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        publishedDownbeats += beat.event.beatInBar == 1 ? 1 : 0;
+    });
+    Rule::Config rule;
+    rule.id = "lasers";
+    rule.trigger = takt4::trigger::Trigger::Downbeat;
+    rule.address = "/lasers";
+    runner.post(OutputCommand::rules({rule}));
+    runner.start();
+
+    // The excerpt a hop at a time, pressing on the first frame after a beat that is not a
+    // bar's first — the press the operator makes, and the one M4 is about.
+    const std::vector<float>& samples = excerpt();
+    const std::size_t hops = samples.size() / kHopSize;
+    std::uint64_t beatsSeen = 0;
+    bool pressed = false;
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+        (void)engine->step();
+        const takt4::tracking::TempoState state = engine->state();
+        if (!pressed && state.beats > beatsSeen) {
+            beatsSeen = state.beats;
+            if (state.bars >= 1 && state.beatInBar > 1) {
+                REQUIRE(engine->post(takt4::engine::Command::snapDownbeat()));
+                pressed = true;
+            }
+        }
+    }
+    REQUIRE(pressed);
+    REQUIRE(engine->state().barsDeclared == 1);
+    waitForBeats(runner, kExpectedBeats);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (runner.triggers().rule(0).fires() >= publishedDownbeats + 1) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    runner.stop();
+
+    const std::lock_guard<std::mutex> lock(mutex);
+    INFO(publishedDownbeats << " downbeats published");
+    // Every downbeat that went out, and the one the press declared.
+    CHECK(runner.triggers().rule(0).fires() == publishedDownbeats + 1);
+}
+
+TEST_CASE("starting the tracker again does not fire the onset rules", "[output][trigger]") {
+    // The runner keeps going across a Stop and a Start (the audit's H5); the engine zeroes its
+    // onset count on every start. Compared for plain inequality, the first round of every run
+    // after the first saw the old count "move" to zero and fired every onset rule once.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    Rule::Config rule;
+    rule.id = "hits";
+    rule.trigger = takt4::trigger::Trigger::Onset;
+    rule.address = "/hits";
+    runner.post(OutputCommand::rules({rule}));
+    runner.start();
+
+    feedExcerpt(*engine);
+    REQUIRE(engine->intensity().onsets > 0);
+    waitForFires(runner, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds{200}); // every onset seen
+    const std::uint64_t fired = runner.triggers().rule(0).fires();
+    REQUIRE(fired >= 1);
+
+    // A new run, with nothing played in it: the engine zeroes its counts as Start does.
+    engine->start();
+    engine->stop();
+    REQUIRE(engine->intensity().onsets == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds{200}); // a couple of hundred rounds
+    runner.stop();
+    CHECK(runner.triggers().rule(0).fires() == fired);
+}
+
 namespace {
 
 /// A MIDI port that keeps every message it is sent, whole.

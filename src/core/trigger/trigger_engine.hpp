@@ -114,6 +114,13 @@ public:
     /// intensity classifier's onset count moved, however far it moved.
     void onOnset(const Context& context);
 
+    /// A bar the operator declared with a late DOWNBEAT press: its first beat had already gone
+    /// out as another beat, so the bar and downbeat rules that should have fired on it did
+    /// not. They fire now, on `context` — which the caller gives `beatInBar` 1 and the
+    /// declared bar's number — late by however long the press took, rather than skipping the
+    /// bar (the audit's M4). Beat-counting rules are not touched: that beat did fire them.
+    void onBarDeclared(const Context& context);
+
     /// §5.8's *"on manual hotkey"* — fires every rule whose trigger is `Manual`, conditions
     /// and all.
     void manual(const Context& context);

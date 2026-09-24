@@ -811,9 +811,14 @@ TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking]
     // The operator presses the button on the downbeat they can hear, which is the beat the
     // tracker has just called — its second. That beat becomes the bar's first, and it does
     // so immediately: waiting for the next one is what put the bar a beat behind the music.
+    REQUIRE(tracker.state().barsDeclared == 0);
     tracker.snapDownbeat();
     CHECK(tracker.state().beatInBar == 1);
     CHECK(tracker.state().bars == barsBefore + 1);
+    // That beat went out as beat 2, so no downbeat rule heard it; the bar is declared, for the
+    // output thread to fire its rules late (the audit's M4).
+    CHECK(tracker.state().barsDeclared == 1);
+    CHECK(tracker.state().declaredBar == barsBefore + 1);
 
     // So the next beat called is the bar's second, and it is the one that carries the new
     // phase out to the transports — the beat the operator named went out before they
@@ -872,6 +877,8 @@ TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking]
         CHECK(event->downbeat);
         CHECK(event->snapped);
         CHECK(tracker.state().bars == bars + 1);
+        // This bar's first beat *is* a downbeat when it goes out, so nothing is owed.
+        CHECK(tracker.state().barsDeclared == 1); // still only the first snap's
     }
 
     SECTION("the two halves of the gap divide at the middle of it") {

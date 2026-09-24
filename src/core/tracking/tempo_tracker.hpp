@@ -34,6 +34,12 @@ struct TempoState {
     std::uint32_t beatInBar = 0;   ///< 1 on the downbeat, counting up; 0 before the first beat
     std::uint64_t bars = 0;        ///< downbeats seen since the last reset
     std::uint64_t beats = 0;       ///< beats seen since the last reset, downbeats included
+    /// How many times a DOWNBEAT press has declared that the bar began on the beat already
+    /// called — a bar whose first beat went out as some other beat, so nothing that waits for
+    /// a downbeat heard it (the audit's M4). The output thread fires that bar's rules when
+    /// this moves, late by the press. `declaredBar` is the bar number the press made it.
+    std::uint64_t barsDeclared = 0;
+    std::uint64_t declaredBar = 0;
     /// How many of the filter's beats go to one published beat — `foldDivisor`. One unless
     /// the fold has put the published tempo below the filter's grid *and* is dividing it.
     ///

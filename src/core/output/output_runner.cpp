@@ -18,6 +18,19 @@
 namespace takt4::output {
 namespace {
 
+/// Whether a count the engine keeps has moved since `seen`, bringing `seen` up to date.
+///
+/// **A count lower than the one last seen is a new run**, not a count that moved: the engine
+/// zeroes its counts every time the tracker starts, and since the audit's H5 this runner keeps
+/// going across a Stop and a Start. Compared for plain inequality, the first round of every
+/// run after the first saw the old count "move" to zero and fired every onset rule once for
+/// nothing. A new run counts as moved only if it has already counted something.
+bool countMoved(std::uint64_t now, std::uint64_t& seen) noexcept {
+    const bool moved = now < seen ? now > 0 : now != seen;
+    seen = now;
+    return moved;
+}
+
 /// Where each output of `before` is in `after`, by `OutputTarget::id`: the new index, or -1
 /// for one that is gone. See `trigger::remapBits`.
 std::vector<int> movedOutputs(const std::vector<OutputTarget>& before,
@@ -299,8 +312,10 @@ void OutputRunner::start() {
     raisedTimer_ = raiseTimerResolution();
     // A count from the run that just ended means nothing to the run beginning: `BeatEngine::
     // start` zeroes its own, so a stale one here made the first round after a restart see a
-    // count that had "moved" and fire every onset rule once for nothing.
+    // count that had "moved" and fire every onset rule once for nothing. (The tracker also
+    // restarts under a runner that keeps going — see `countMoved`, which is what handles that.)
     onsetsSeen_ = 0;
+    barsDeclaredSeen_ = 0;
     // And nothing predicted from the last run's beats.
     scheduler_.reset();
     try {
@@ -752,10 +767,17 @@ void OutputRunner::drainOnce(double now) {
     // Coalesced to one call however far it moved: two onsets inside one millisecond would
     // be one hit as far as anything downstream is concerned, and the classifier's own
     // minimum gap is sixty.
-    const std::uint64_t onsets = engine_.intensity().onsets;
-    if (onsets != onsetsSeen_) {
-        onsetsSeen_ = onsets;
+    if (countMoved(engine_.intensity().onsets, onsetsSeen_)) {
         triggers_.onOnset(context);
+    }
+    // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
+    // (the audit's M4): its bar and downbeat rules fire now, as that bar's.
+    const tracking::TempoState state = engine_.state();
+    if (countMoved(state.barsDeclared, barsDeclaredSeen_)) {
+        trigger::Context declared = context;
+        declared.beatInBar = 1;
+        declared.bars = state.declaredBar;
+        triggers_.onBarDeclared(declared);
     }
     // Last: the triggers that do not wait for a beat, and any follow-up now due.
     triggers_.advance(context);

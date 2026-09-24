@@ -666,6 +666,35 @@ TEST_CASE("manual and onset fire only the rules that asked for them", "[trigger]
     CHECK(engine.find("beat")->fires() == 0);
 }
 
+TEST_CASE("a bar declared late fires that bar's rules and no beat's", "[trigger][engine]") {
+    // The audit's M4. A DOWNBEAT pressed a moment after the beat it means turns that beat
+    // into the bar's first — but it has already gone out as beat 3, so the downbeat rules
+    // never heard it. They fire when the bar is declared, as that bar's; the beat rules did
+    // fire on that beat and must not fire twice.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    engine.setRules({simple("down", Trigger::Downbeat), simple("every-bar", Trigger::Bar),
+                     simple("odd-bars", Trigger::Bar, 2), simple("beat", Trigger::Beat)});
+
+    engine.onBarDeclared(beatAt(7, 1, 3, 3.1)); // bar 3, declared
+    CHECK(sink.addresses() ==
+          std::vector<std::string>{"/fire/down", "/fire/every-bar", "/fire/odd-bars"});
+    CHECK(engine.find("beat")->fires() == 0);
+
+    SECTION("an every-2-bars rule counts the declared bar's number, not the press") {
+        sink.sent.clear();
+        engine.onBarDeclared(beatAt(11, 1, 4, 5.1)); // bar 4: not one of every-2's
+        CHECK(sink.addresses() == std::vector<std::string>{"/fire/down", "/fire/every-bar"});
+    }
+
+    SECTION("and nothing while panicked") {
+        engine.panic(beatAt(11, 1, 5, 5.0));
+        sink.sent.clear();
+        engine.onBarDeclared(beatAt(11, 1, 5, 5.1));
+        CHECK(sink.sent.empty());
+    }
+}
+
 TEST_CASE("a rule whose address cannot be built is counted rather than hidden",
           "[trigger][engine]") {
     // A rule dropping every fire looks exactly like a rule that never triggers, and an
