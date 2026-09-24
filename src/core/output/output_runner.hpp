@@ -326,6 +326,10 @@ public:
     /// "the thread does the right thing", which are two separate claims.
     std::uint64_t rounds() const noexcept { return rounds_.load(std::memory_order_relaxed); }
 
+    /// Whether the output thread got a raised priority when it started (the audit's M13; see
+    /// rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
+    bool threadRaised() const noexcept { return threadRaised_.load(std::memory_order_acquire); }
+
     /// Stages of a round that threw. A transport failing must not take the process down — an
     /// OSC target can go away mid-set — but it must not be silent either, and it must not take
     /// the rest of the round with it: see `guarded`, and `Snapshot::Trouble` for what is said.
@@ -704,6 +708,7 @@ private:
     std::atomic<bool> tracking_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
+    std::atomic<bool> threadRaised_{false};
     /// The last stage that threw, as "stage: what". Whichever thread owns the transports; a
     /// reader has it from the snapshot.
     std::string lastRoundError_;

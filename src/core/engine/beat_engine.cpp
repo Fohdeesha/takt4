@@ -1,6 +1,7 @@
 #include "core/engine/beat_engine.hpp"
 
 #include "core/audio/rates.hpp"
+#include "core/rt/thread_priority.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -110,6 +111,7 @@ void BeatEngine::start() {
     worstFrameMicros_.store(0.0, std::memory_order_relaxed);
     totalFrameMicros_.store(0.0, std::memory_order_relaxed);
     framesTimed_.store(0, std::memory_order_relaxed);
+    workerRaised_.store(false, std::memory_order_relaxed);
 
     // The model worker first: it is this thread's producer, and it clears its own rings.
     activations_->start();
@@ -149,6 +151,11 @@ std::size_t BeatEngine::step() noexcept {
 }
 
 void BeatEngine::run() noexcept {
+    // Ahead of the window's drawing (the audit's M13). Not denormals-as-zero: the decoder's
+    // probabilities can be legitimately tiny before they are normalised — see
+    // rt/thread_priority.hpp.
+    const rt::PriorityScope priority(rt::ThreadWork::Compute);
+    workerRaised_.store(priority.raised(), std::memory_order_release);
     model::FrameActivation activation;
     while (running_.load(std::memory_order_acquire)) {
         // Every time round, not only when a frame is waiting: a ÷2 pressed during a

@@ -148,6 +148,13 @@ public:
     /// false when the queue is empty. Only valid while the worker is not running.
     bool step() noexcept;
 
+    /// What the worker got from the scheduler and the FPU when it started (the audit's M13;
+    /// see rt/thread_priority.hpp), as the worker itself saw it. False before it has started.
+    bool workerRaised() const noexcept { return workerRaised_.load(std::memory_order_acquire); }
+    bool workerFlushesDenormals() const noexcept {
+        return workerFlushes_.load(std::memory_order_acquire);
+    }
+
 private:
     struct QueuedHop {
         std::uint64_t index = 0;
@@ -177,6 +184,8 @@ private:
     std::atomic<double> worstModelMicros_{0.0};
     std::atomic<double> totalHopMicros_{0.0};
     std::atomic<std::uint64_t> hopsWorked_{0};
+    std::atomic<bool> workerRaised_{false};
+    std::atomic<bool> workerFlushes_{false};
 };
 
 } // namespace takt4::model

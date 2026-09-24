@@ -1,5 +1,7 @@
 #include "core/model/activation_engine.hpp"
 
+#include "core/rt/thread_priority.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -44,6 +46,8 @@ void ActivationEngine::start() {
     worstModelMicros_.store(0.0, std::memory_order_relaxed);
     totalHopMicros_.store(0.0, std::memory_order_relaxed);
     hopsWorked_.store(0, std::memory_order_relaxed);
+    workerRaised_.store(false, std::memory_order_relaxed);
+    workerFlushes_.store(false, std::memory_order_relaxed);
 
     running_.store(true, std::memory_order_release);
     worker_ = std::thread([this] { run(); });
@@ -98,6 +102,12 @@ bool ActivationEngine::step() noexcept {
 }
 
 void ActivationEngine::run() noexcept {
+    // Ahead of the window's drawing, and no denormal slow path through the network (the
+    // audit's M13). See rt/thread_priority.hpp for why one and not the other on the tracker.
+    const rt::PriorityScope priority(rt::ThreadWork::Compute);
+    const rt::DenormalsAsZero denormals;
+    workerRaised_.store(priority.raised(), std::memory_order_release);
+    workerFlushes_.store(rt::DenormalsAsZero::active(), std::memory_order_release);
     QueuedHop hop;
     while (running_.load(std::memory_order_acquire)) {
         if (hops_.tryPop(hop)) {

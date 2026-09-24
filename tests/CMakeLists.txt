@@ -54,6 +54,7 @@ add_executable(takt4_tests
   settings/settings_test.cpp
   rt/published_test.cpp
   rt/spsc_ring_test.cpp
+  rt/thread_priority_test.cpp
   tracking/annotation_test.cpp
   tracking/forward_filter_test.cpp
   tracking/particle_filter_test.cpp

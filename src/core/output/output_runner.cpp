@@ -1,5 +1,7 @@
 #include "core/output/output_runner.hpp"
 
+#include "core/rt/thread_priority.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -369,6 +371,7 @@ void OutputRunner::start() {
         throw;
     }
     running_.store(true, std::memory_order_release);
+    threadRaised_.store(false, std::memory_order_relaxed);
     try {
         worker_ = std::thread([this] { run(); });
     } catch (...) {
@@ -712,6 +715,10 @@ void OutputRunner::applyCommands() noexcept {
 }
 
 void OutputRunner::run() noexcept {
+    // Ahead of the window's drawing (the audit's M13): a round that waits behind a redraw is a
+    // late MIDI tick and a late cue. See rt/thread_priority.hpp.
+    const rt::PriorityScope priority(rt::ThreadWork::Output);
+    threadRaised_.store(priority.raised(), std::memory_order_release);
     while (running_.load(std::memory_order_acquire)) {
         applyCommands();
         {

@@ -222,6 +222,9 @@ public:
         return worstFrameMicros_.load(std::memory_order_relaxed);
     }
     double meanFrameMicros() const noexcept;
+    /// Whether the inference thread got a raised priority when it started (the audit's M13;
+    /// see rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
+    bool workerRaised() const noexcept { return workerRaised_.load(std::memory_order_acquire); }
 
 private:
     void run() noexcept;
@@ -274,6 +277,7 @@ private:
     std::atomic<double> worstFrameMicros_{0.0};
     std::atomic<double> totalFrameMicros_{0.0};
     std::atomic<std::uint64_t> framesTimed_{0};
+    std::atomic<bool> workerRaised_{false};
 };
 
 } // namespace takt4::engine

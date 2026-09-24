@@ -1396,6 +1396,111 @@ TEST_CASE("the MIDI clock starts and stops with the tracker, not with the output
     runner.stop();
 }
 
+namespace {
+
+/// A MIDI port that notes when each clock tick left, on the steady clock, from the thread that
+/// sent it — the output thread. Read once that thread has been stopped.
+class TickTimer final : public takt4::output::MidiPort {
+public:
+    explicit TickTimer(std::shared_ptr<std::vector<double>> ticks) : ticks_(std::move(ticks)) {}
+    std::string open(std::string_view spec) override { return std::string(spec); }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char> message) override {
+        if (!message.empty() && message[0] == takt4::output::MidiClock::kTick) {
+            ticks_->push_back(std::chrono::duration<double>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count());
+        }
+    }
+
+private:
+    std::shared_ptr<std::vector<double>> ticks_;
+};
+
+} // namespace
+
+TEST_CASE("the model, the tracker and the output thread each ask to run ahead",
+          "[output][engine]") {
+    // The audit's M13, read off the threads themselves: each asks for its own priority as it
+    // starts, and the model's also reads denormals as zero. What that does is the next test's.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    engine->start();
+    runner.start();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!(engine->workerRaised() && engine->activations().workerRaised() &&
+             runner.threadRaised()) &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+#if defined(_WIN32)
+    CHECK(engine->workerRaised());
+    CHECK(engine->activations().workerRaised());
+    CHECK(runner.threadRaised());
+#endif
+#if defined(_M_X64) || defined(__x86_64__)
+    CHECK(engine->activations().workerFlushesDenormals());
+#endif
+    runner.stop();
+    engine->stop();
+}
+
+TEST_CASE("the MIDI clock keeps its time while every core is busy", "[output][midi][hardware]") {
+    // The audit's M13 as a receiver meets it. The output thread ran at the priority every
+    // thread starts at, the window's included, so on a machine with its cores busy — Skia
+    // drawing, a video server, another program — a tick waited its turn behind them. Here
+    // every core is kept busy at that ordinary priority for three seconds, and the gaps between
+    // ticks are held to the tempo's spacing. Tagged `hardware` because it loads the whole
+    // machine, which on a live rig is as disruptive as opening its interface.
+    //
+    // Measured on the 16-thread rig, 2026-09-24: with nothing else running, 99% of gaps are
+    // within 1.4 ms of the spacing either way — the millisecond rounds. With every core busy,
+    // 1.7 ms at worst with the priority raised, and 26 to 34 ms at worst without it: a tick more
+    // than a whole tick late, and the next one bunched up behind it.
+    auto ticks = std::make_shared<std::vector<double>>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [ticks](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<TickTimer>(ticks));
+    };
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.start();
+    runner.setTracking(true); // 120 BPM until a beat says otherwise: a tick every 1/48 s
+
+    std::atomic<bool> busy{true};
+    std::vector<std::thread> load;
+    const unsigned int cores = std::max(1U, std::thread::hardware_concurrency());
+    for (unsigned int i = 0; i < cores; ++i) {
+        load.emplace_back([&busy] {
+            volatile double sum = 0.0;
+            while (busy.load(std::memory_order_relaxed)) {
+                sum = sum + 1.0;
+            }
+        });
+    }
+    std::this_thread::sleep_for(std::chrono::seconds{3});
+    busy.store(false, std::memory_order_relaxed);
+    for (std::thread& thread : load) {
+        thread.join();
+    }
+    runner.stop(); // the output thread is gone, so the ticks can be read
+
+    REQUIRE(ticks->size() > 100);
+    const double spacing = 60.0 / (120.0 * 24.0);
+    std::vector<double> errors;
+    for (std::size_t i = 1; i < ticks->size(); ++i) {
+        errors.push_back(std::abs((*ticks)[i] - (*ticks)[i - 1] - spacing));
+    }
+    std::sort(errors.begin(), errors.end());
+    const double worst = errors.back();
+    const double p99 = errors[errors.size() * 99 / 100];
+    INFO(ticks->size() << " ticks over " << cores << " busy cores: 99% within " << p99 * 1000.0
+                       << " ms of the spacing, the worst " << worst * 1000.0 << " ms");
+    CHECK(p99 < 0.004);
+    CHECK(worst < 0.008);
+}
+
 TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][dmx]") {
     // A beat fired ahead of time holds its lighting until the beat. PANIC freezes the lights,
     // and starting a held flash only to freeze it on its first frame would hold a lamp at full.
