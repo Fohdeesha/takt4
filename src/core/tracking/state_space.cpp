@@ -1,13 +1,12 @@
 #include "core/tracking/state_space.hpp"
 
+#include "core/io/blob_file.hpp"
+
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <ios>
-#include <iterator>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -54,16 +53,6 @@ constexpr std::size_t kHeaderBytes =
     kMagic.size() + 14 * sizeof(std::uint32_t) + 4 * sizeof(double);
 static_assert(kHeaderBytes == 96,
               "the fields of Header, packed the way struct.Struct('<...') does");
-
-/// FNV-1a over the payload, the same walk tools/dump_statespace.py makes.
-std::uint32_t fnv1a32(const void* data, std::size_t bytes) noexcept {
-    const auto* p = static_cast<const unsigned char*>(data);
-    std::uint32_t hash = 0x811C9DC5u;
-    for (std::size_t i = 0; i < bytes; ++i) {
-        hash = (hash ^ p[i]) * 0x01000193u;
-    }
-    return hash;
-}
 
 /// Walks the header and then the payload sections, in order, checking as it goes that
 /// the file is long enough for what it claims to hold.
@@ -217,16 +206,8 @@ std::span<const double> StateSpaceModel::meterTransitions(std::size_t meter) con
 }
 
 StateSpaceModel StateSpaceModel::fromFile(const std::filesystem::path& path) {
-    const std::string name = path.string();
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error(name + ": cannot open");
-    }
-    // Into `char` and viewed as bytes: `std::byte` is an enum class, so a vector of them
-    // cannot be filled from a stream iterator without a conversion per element.
-    const std::vector<char> read((std::istreambuf_iterator<char>(in)),
-                                 std::istreambuf_iterator<char>());
-    return fromBytes(std::as_bytes(std::span(read)), name);
+    const std::vector<std::byte> bytes = io::readWholeFile(path);
+    return fromBytes(bytes, path.string());
 }
 
 StateSpaceModel StateSpaceModel::fromBytes(std::span<const std::byte> blob,
@@ -272,7 +253,8 @@ StateSpaceModel StateSpaceModel::fromBytes(std::span<const std::byte> blob,
     require(bytes.size() == kHeaderBytes + header.payloadBytes, name,
             "state space blob holds " + std::to_string(bytes.size() - kHeaderBytes) +
                 " bytes of payload, its header says " + std::to_string(header.payloadBytes));
-    const std::uint32_t checksum = fnv1a32(bytes.data() + kHeaderBytes, header.payloadBytes);
+    const std::uint32_t checksum =
+        io::fnv1a32(blob.subspan(kHeaderBytes, header.payloadBytes));
     require(checksum == header.checksum, name,
             "state space blob checksum mismatch (file says " + std::to_string(header.checksum) +
                 ", contents give " + std::to_string(checksum) + ")");

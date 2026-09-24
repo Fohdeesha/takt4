@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -197,8 +198,9 @@ OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config&
         const std::lock_guard<std::mutex> lock(firedMutex_);
         if (fired_.size() >= kFiredCapacity) {
             // The oldest goes. A log that stops recording when it is full stops being a
-            // log, and what an operator wants is the last few seconds, not the first.
-            fired_.erase(fired_.begin());
+            // log, and what an operator wants is the last few seconds, not the first. Off
+            // the front of a deque: off a vector's, it moved all 511 others every time.
+            fired_.pop_front();
         }
         fired_.push_back(std::move(entry));
     });
@@ -220,6 +222,7 @@ void OutputRunner::takeSnapshot() {
     taken.trouble = currentTrouble();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
+    snapshotVersion_.fetch_add(1, std::memory_order_release);
 }
 
 OutputRunner::Snapshot::Trouble OutputRunner::currentTrouble() const {
@@ -306,10 +309,12 @@ std::vector<std::uint8_t> OutputRunner::levelsOf(dmx::PortAddress universe) cons
 }
 
 std::vector<OutputRunner::Fired> OutputRunner::takeFired() {
-    std::vector<Fired> out;
-    const std::lock_guard<std::mutex> lock(firedMutex_);
-    out.swap(fired_);
-    return out;
+    std::deque<Fired> taken;
+    {
+        const std::lock_guard<std::mutex> lock(firedMutex_);
+        taken.swap(fired_);
+    }
+    return {std::make_move_iterator(taken.begin()), std::make_move_iterator(taken.end())};
 }
 
 OutputRunner::~OutputRunner() {

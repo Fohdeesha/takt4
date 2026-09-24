@@ -39,16 +39,6 @@ Color fromHsv(double hueDegrees, double saturation, double value) noexcept;
 /// The inverse. Hue comes back in 0 to 360 and is zero for a grey, where it means nothing.
 void toHsv(Color color, double& hueDegrees, double& saturation, double& value) noexcept;
 
-/// Straight-line interpolation in RGB, `t` clamped to 0-1.
-///
-/// **In RGB and not in HSV, deliberately.** A fade from red to green through HSV sweeps the
-/// hue wheel and passes through yellow; through RGB it dims towards a dark olive and comes
-/// back up. The second is what "fade this fixture from one color to another" means to
-/// everyone who has done it on a desk, and the first is available on its own terms as
-/// `Effect::HueSweep` — which is a different instruction and should not be what a plain fade
-/// silently does.
-Color mix(Color from, Color to, double t) noexcept;
-
 /// Every component scaled by `level`, 0 to 1 — how a color is dimmed on a fixture that has
 /// no dimmer channel of its own, which is most LED pars.
 Color scale(Color color, double level) noexcept;

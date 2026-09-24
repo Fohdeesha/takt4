@@ -1,13 +1,12 @@
 #include "core/model/weights.hpp"
 
+#include "core/io/blob_file.hpp"
+
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <ios>
-#include <iterator>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -27,16 +26,6 @@ constexpr std::string_view kMagic = "TAKT4WTS";
 constexpr std::uint32_t kFormatVersion = 1;
 constexpr std::size_t kHeaderFields = 10; // version, eight dimensions, checksum
 constexpr std::size_t kHeaderBytes = kMagic.size() + kHeaderFields * sizeof(std::uint32_t);
-
-/// FNV-1a over the payload, the same walk tools/convert_weights.py makes.
-std::uint32_t fnv1a32(const void* data, std::size_t bytes) noexcept {
-    const auto* p = static_cast<const unsigned char*>(data);
-    std::uint32_t hash = 0x811C9DC5u;
-    for (std::size_t i = 0; i < bytes; ++i) {
-        hash = (hash ^ p[i]) * 0x01000193u;
-    }
-    return hash;
-}
 
 std::uint32_t readU32(const unsigned char* at) noexcept {
     return static_cast<std::uint32_t>(at[0]) | (static_cast<std::uint32_t>(at[1]) << 8) |
@@ -94,20 +83,11 @@ LstmWeights ModelWeights::lstm(std::size_t layer) const noexcept {
 }
 
 ModelWeights ModelWeights::fromFile(const std::filesystem::path& path) {
-    const std::string name = path.string();
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error(name + ": cannot open");
-    }
     // Read whole and then parsed, rather than parsed as it streams, so that a blob from a
     // file and a blob compiled into the program go through exactly the same checks. Three
     // megabytes read once at startup is not worth a second implementation to avoid.
-    //
-    // Into `char` and viewed as bytes: `std::byte` is an enum class, so a vector of them
-    // cannot be filled from a stream iterator without a conversion per element.
-    const std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
-                                  std::istreambuf_iterator<char>());
-    return fromBytes(std::as_bytes(std::span(bytes)), name);
+    const std::vector<std::byte> bytes = io::readWholeFile(path);
+    return fromBytes(bytes, path.string());
 }
 
 ModelWeights ModelWeights::fromBytes(std::span<const std::byte> blob, std::string_view from) {
@@ -152,7 +132,8 @@ ModelWeights ModelWeights::fromBytes(std::span<const std::byte> blob, std::strin
     // Byte-for-byte: the floats were written by a little-endian host and this is one, which
     // is what the static_assert at the top of this file is for.
     std::memcpy(weights.values_.data(), raw + kHeaderBytes, payload);
-    const std::uint32_t checksum = fnv1a32(weights.values_.data(), payload);
+    const std::uint32_t checksum =
+        io::fnv1a32(std::as_bytes(std::span(weights.values_)).first(payload));
     if (checksum != fields[9]) {
         throw std::runtime_error(name + ": weight blob checksum mismatch (file says " +
                                  std::to_string(fields[9]) + ", contents give " +

@@ -153,14 +153,6 @@ void toHsv(Color color, double& hueDegrees, double& saturation, double& value) n
     hueDegrees = hue;
 }
 
-Color mix(Color from, Color to, double t) noexcept {
-    t = std::clamp(t, 0.0, 1.0);
-    const auto step = [t](std::uint8_t a, std::uint8_t b) {
-        return static_cast<std::uint8_t>(std::lround(a + (static_cast<double>(b) - a) * t));
-    };
-    return Color{step(from.r, to.r), step(from.g, to.g), step(from.b, to.b)};
-}
-
 Color scale(Color color, double level) noexcept {
     level = std::clamp(level, 0.0, 1.0);
     const auto step = [level](std::uint8_t a) {
