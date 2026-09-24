@@ -75,7 +75,8 @@ void MidiControl::start() {
         // RtMidi reports "no usable MIDI API on this machine" by throwing from its own
         // constructor rather than offering an empty port list. A headless Linux box
         // without an ALSA sequencer is the ordinary case, and CI runs on one.
-        throw std::runtime_error("MIDI control: no usable MIDI API on this machine (" +
+        throw std::runtime_error("MIDI control: cannot open \"" + config_.port +
+                                 "\": no usable MIDI API on this machine (" +
                                  error.getMessage() + ")");
     }
 

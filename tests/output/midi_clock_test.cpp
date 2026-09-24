@@ -376,6 +376,9 @@ TEST_CASE("a MIDI port that is not there fails with something worth reading", "[
             // is what an operator with a differently-named interface needs.
             CHECK((message.find("no port matching") != std::string::npos ||
                    message.find("no usable MIDI API") != std::string::npos));
+            // Either way it says which port was wanted: the status line is all the operator
+            // sees, and "no usable MIDI API" alone does not say what was being opened.
+            CHECK_THAT(message, ContainsSubstring(std::string("\"") + spec + "\""));
         }
         CHECK(threw);
     }

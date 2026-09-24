@@ -245,15 +245,15 @@ TEST_CASE("an Art-Net node that cannot be resolved is reported, not swallowed", 
 
 TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][artnet]") {
     // The audit's T3 and M12: a network that is down, or a cable that is out, fails every
-    // send — and nothing said so; the node simply went dark. The socket refuses every send to
-    // 0.0.0.0, which stands in for that here, since a cable cannot be pulled from a test.
-    ArtNetSender node("0.0.0.0", 6454);
+    // send — and nothing said so; the node simply went dark. See `kUnsendableHost` for what
+    // stands in for that here.
+    ArtNetSender node(takt4::testing::kUnsendableHost, 6454);
     CHECK(node.problem().empty()); // nothing has been tried yet
     const std::array<std::uint8_t, 3> levels{255, 0, 0};
     CHECK_FALSE(node.sendDmx(0, levels));
     CHECK(node.failed() == 1);
     CHECK_THAT(node.problem(), ContainsSubstring("sends are failing"));
-    CHECK_THAT(node.problem(), ContainsSubstring("not an address this machine can send to"));
+    CHECK_THAT(node.problem(), ContainsSubstring(takt4::testing::kUnsendableReason));
 }
 
 TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][network]") {

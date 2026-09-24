@@ -74,13 +74,18 @@ public:
             // ALSA sequencer is the ordinary case, and CI runs on one — and RtMidi reports
             // that by throwing from its own constructor rather than offering an empty port
             // list. listMidiOutputPorts() swallows the same thing to keep a listing simple;
-            // here it has to become an error the caller can print.
-            throw std::runtime_error("MIDI output: no usable MIDI API on this machine (" +
-                                     error.getMessage() + ")");
+            // here it has to become an error the caller can print, and it is kept for
+            // `open` so that the error can say which port was wanted.
+            unusable_ = error.getMessage();
         }
     }
 
     std::string open(std::string_view spec) override {
+        if (!out_) {
+            throw std::runtime_error("MIDI output: cannot open \"" + std::string(spec) +
+                                     "\": no usable MIDI API on this machine (" + unusable_ +
+                                     ")");
+        }
         try {
             // Looked up afresh every time: a device that went away and came back can come
             // back at another index, and RtMidi enumerates again on every count.
@@ -94,6 +99,9 @@ public:
     }
 
     void close() noexcept override {
+        if (!out_) {
+            return;
+        }
         try {
             out_->closePort();
         } catch (...) {
@@ -102,11 +110,16 @@ public:
     }
 
     void send(std::span<const unsigned char> message) override {
+        if (!out_) {
+            throw std::runtime_error("MIDI output: no usable MIDI API on this machine");
+        }
         out_->sendMessage(message.data(), message.size());
     }
 
 private:
     std::unique_ptr<RtMidiOut> out_;
+    /// RtMidi's reason, when it could not start at all and `out_` is empty.
+    std::string unusable_;
 };
 
 } // namespace

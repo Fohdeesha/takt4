@@ -106,18 +106,24 @@ void waitForBeats(const OutputRunner& runner, std::uint64_t beats) {
     }
 }
 
+/// The first rule's count, read between two of the output thread's rounds. A plain read of
+/// `triggers()` while the thread runs is a data race even on an integer that only ever goes
+/// up — TSan reported exactly that here — so a running runner is read through `inspect`.
+std::uint64_t firesOf(const OutputRunner& runner) {
+    return runner.inspect([](const takt4::trigger::TriggerEngine& rules, const auto&, const auto&) {
+        return rules.ruleCount() > 0 ? rules.rule(0).fires() : std::uint64_t{0};
+    });
+}
+
 /// The same for a rule's own count, which is what a test about firing rather than about
 /// draining wants. Returns what it reached, so a caller can say how many rather than only
-/// that it waited. Safe to read here for `triggers()`' own reason — the count is a plain
-/// integer the output thread only ever increments, and the assertions that matter are made
-/// after the stop.
+/// that it waited.
 std::uint64_t waitForFires(const OutputRunner& runner, std::uint64_t fires) {
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
-    while (std::chrono::steady_clock::now() < until && runner.triggers().ruleCount() > 0 &&
-           runner.triggers().rule(0).fires() < fires) {
+    while (std::chrono::steady_clock::now() < until && firesOf(runner) < fires) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
-    return runner.triggers().ruleCount() > 0 ? runner.triggers().rule(0).fires() : 0;
+    return firesOf(runner);
 }
 
 } // namespace
@@ -262,7 +268,20 @@ TEST_CASE("a change posted while running reaches the transports", "[output][netw
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     runner.start();
-    REQUIRE_FALSE(runner.transports().linkEnabled());
+    // Read through `inspect`, which waits for the gap between two rounds: the transports are
+    // the output thread's now, and a plain read of them from here is the data race TSan
+    // reported on this very test.
+    const auto linkOn = [&runner] {
+        return runner.inspect([](const auto&, const Transports& transports, const auto&) {
+            return transports.linkEnabled();
+        });
+    };
+    const auto oscTargets = [&runner] {
+        return runner.inspect([](const auto&, const Transports& transports, const auto&) {
+            return transports.osc().targetCount();
+        });
+    };
+    REQUIRE_FALSE(linkOn());
 
     runner.post(takt4::output::OutputCommand::linkEnabled(true));
     runner.post(takt4::output::OutputCommand::oscTargets({{"127.0.0.1", 57000}}));
@@ -275,15 +294,13 @@ TEST_CASE("a change posted while running reaches the transports", "[output][netw
     // and a runner that preempts the output thread between the two turns that into a
     // failure. macOS did exactly that at `66173912`. Waiting on the conjunction is also
     // simply the honest thing: these are the two claims, so both are what to wait for.
-    const auto applied = [&runner] {
-        return runner.transports().linkEnabled() && runner.transports().osc().targetCount() == 1;
-    };
+    const auto applied = [&] { return linkOn() && oscTargets() == 1; };
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     while (std::chrono::steady_clock::now() < until && !applied()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
-    CHECK(runner.transports().linkEnabled());
-    CHECK(runner.transports().osc().targetCount() == 1);
+    CHECK(linkOn());
+    CHECK(oscTargets() == 1);
     CHECK(runner.lastError().empty());
 
     runner.stop();
@@ -563,7 +580,7 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     while (std::chrono::steady_clock::now() < until) {
         {
             const std::lock_guard<std::mutex> lock(mutex);
-            if (runner.triggers().rule(0).fires() >= publishedDownbeats + 1) {
+            if (firesOf(runner) >= publishedDownbeats + 1) {
                 break;
             }
         }
@@ -594,7 +611,7 @@ TEST_CASE("starting the tracker again does not fire the onset rules", "[output][
     REQUIRE(engine->intensity().onsets > 0);
     waitForFires(runner, 1);
     std::this_thread::sleep_for(std::chrono::milliseconds{200}); // every onset seen
-    const std::uint64_t fired = runner.triggers().rule(0).fires();
+    const std::uint64_t fired = firesOf(runner);
     REQUIRE(fired >= 1);
 
     // A new run, with nothing played in it: the engine zeroes its counts as Start does.

@@ -27,6 +27,25 @@
 
 namespace takt4::testing {
 
+/// A destination every send to fails, on every system CI runs on — the stand-in for a network
+/// that is down, since no test can pull a cable. Not 0.0.0.0, which the tests used first:
+/// Windows refuses that one, but Linux takes a zero destination to mean this machine and
+/// quietly delivers it over loopback, so those tests failed on the Linux runner. Anything else
+/// in 0.0.0.0/8 Linux refuses outright (`__mkroute_output` in net/ipv4/route.c), and Windows
+/// calls it an unreachable network (measured).
+inline constexpr const char* kUnsendableHost = "0.0.0.1";
+
+/// What `net::sendFailure` makes of a send to `kUnsendableHost` here — words, so a test can
+/// check the reason an operator is given and not merely that a send failed. Empty where it
+/// has not been measured, which any status contains.
+#if defined(_WIN32)
+inline constexpr const char* kUnsendableReason = "the network is unreachable";
+#elif defined(__linux__)
+inline constexpr const char* kUnsendableReason = "not an address this machine can send to";
+#else
+inline constexpr const char* kUnsendableReason = "";
+#endif
+
 /// A UDP socket bound to a free port on the loopback interface, so the sender can be
 /// tested against something that really receives. Only the tests need one: takt4 does
 /// not listen until Phase 5's control input (HANDOFF §5.7).

@@ -2955,13 +2955,14 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
 TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     // Where the operator meets the audit's T3: a network that is down, or a cable that is
     // out, fails every send, and the window said nothing — the output just went quiet (M12).
-    // The socket refuses every send to 0.0.0.0, the stand-in here, since no test can pull a
-    // cable. Nothing is started: the outputs run from launch (H5), and the status has to say
-    // so before anybody presses anything.
+    // The socket refuses every send to `kUnsendableHost`, the stand-in here, since no test can
+    // pull a cable. Nothing is started: the outputs run from launch (H5), and the status has
+    // to say so before anybody presses anything.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;
-    REQUIRE(takt4::output::parseOutputTarget("deck = 0.0.0.0:57000", deck));
+    REQUIRE(takt4::output::parseOutputTarget(
+        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000", deck));
     saved.preset.outputs = {deck};
     WindowController controller(tracker, saved);
 
@@ -2974,7 +2975,7 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     }
     INFO(status);
     CHECK(status.find("deck: sends are failing") != std::string::npos);
-    CHECK(status.find("not an address this machine can send to") != std::string::npos);
+    CHECK(status.find(takt4::testing::kUnsendableReason) != std::string::npos);
     CHECK(controller.statusIsError());
 }
 

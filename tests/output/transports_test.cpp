@@ -231,12 +231,13 @@ TEST_CASE("an output the network will not send to says so, and the others carry 
           "[output][osc]") {
     // The audit's T3 — sends failing because the network is down had no test — and the part
     // of M12 that goes with it: nothing said so, and the target just went quiet. The socket
-    // refuses every send to 0.0.0.0, which is what a network that is down does to all of them.
+    // refuses every send to `kUnsendableHost`, which is what a network that is down does to
+    // all of them.
     takt4::testing::LoopbackReceiver receiver;
     takt4::output::OutputTarget deck;
     deck.id = "o-0000d0c0";
     deck.name = "deck";
-    deck.host = "0.0.0.0";
+    deck.host = takt4::testing::kUnsendableHost;
     deck.port = 57000;
     takt4::output::OutputTarget lights;
     lights.id = "o-0000e1e1";
@@ -258,7 +259,7 @@ TEST_CASE("an output the network will not send to says so, and the others carry 
     std::vector<std::string> problems = transports.outputProblems();
     REQUIRE(problems.size() == 1);
     CHECK(problems[0].rfind("deck: sends are failing: ", 0) == 0);
-    CHECK(problems[0].find("not an address this machine can send to") != std::string::npos);
+    CHECK(problems[0].find(takt4::testing::kUnsendableReason) != std::string::npos);
 
     // Pointed somewhere it can reach, it stops saying so.
     deck.host = "127.0.0.1";
