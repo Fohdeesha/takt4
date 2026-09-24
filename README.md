@@ -326,8 +326,10 @@ anyway:
 
 - CMake 3.28+, a C++20 compiler (Visual Studio 2022 or 2026), and `git clone
   --recurse-submodules` (PortAudio and Ableton Link are submodules).
-- A Rust toolchain 1.92+ and `curl` on `PATH`, for the Slint UI. `TAKT4_BUILD_UI=OFF` —
-  the `windows-core` preset — builds the engine, the console and the tests without either.
+- For the UI: rustup (the Rust version itself is pinned, below), `curl` on `PATH` for Slint,
+  and Python 3, which embeds the built-in weights and notices into the executable.
+  `TAKT4_BUILD_UI=OFF` — the `windows-core` preset — builds the engine, the console and the
+  tests without any of them.
 - Network access on the first configure: the remaining dependencies are fetched from
   pinned, hash-checked archives. Slint is checked out by tag and checked against the commit
   the tag named; Skia's prebuilt archive is checked library by library (a test); the Rust
