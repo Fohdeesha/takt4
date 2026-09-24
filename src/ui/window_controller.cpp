@@ -2291,10 +2291,8 @@ void WindowController::setStatus(const std::string& text, bool error) {
 }
 
 void WindowController::writeTickProbe() {
-    std::FILE* probe = nullptr;
-    if (fopen_s(&probe, tickProbe_.c_str(), "w") == 0 && probe != nullptr) {
-        std::fprintf(probe, "%llu\n", static_cast<unsigned long long>(ticks_));
-        std::fclose(probe);
+    if (std::ofstream probe(tickProbe_, std::ios::trunc); probe) {
+        probe << static_cast<unsigned long long>(ticks_) << '\n';
     }
     // And a big, moving mark on screen, because the count in the file only says the round
     // happened — it says nothing about whether anything reached the screen, which is a

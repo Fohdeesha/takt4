@@ -2583,6 +2583,57 @@ TEST_CASE("a lighting rule is not offered a follow-up that is the release again"
     }
 }
 
+TEST_CASE("a lighting rule's release says what it does to the light", "[ui][trigger][dmx]") {
+    // The words came from the OSC branch: "release (same address)" and "the same address" on a
+    // rule that has no address. And a move's release is skipped by `Rule::followUpsFor`, so on
+    // a pan or tilt effect the row sends nothing and has to say so rather than offer a level
+    // that does nothing. The engine's half is in dmx_rule_test.cpp ("a release with no effect
+    // of its own dims what fired", "a release of a movement effect is skipped").
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    const auto indexIn = [](const auto& list, auto value) {
+        return static_cast<int>(std::find(list.begin(), list.end(), value) - list.begin());
+    };
+    editor.pickSend(indexIn(takt4::trigger::kMessageKinds, takt4::trigger::Message::Kind::Dmx));
+    editor.addFollowUp();
+    const auto row = [&editor] {
+        const auto rows = editor.window().get_follow_ups();
+        REQUIRE(rows->row_count() == 1);
+        return *rows->row_data(0);
+    };
+
+    CHECK(std::string(*editor.window().get_follow_kinds()->row_data(0)) ==
+          "release (same fixtures)");
+    // The default effect: a level on the dimmer.
+    CHECK(std::string(row().summary) == "dimmer to this level, same fixtures");
+    CHECK(row().takes_value);
+    CHECK(std::string(row().value_label) == "level");
+
+    SECTION("a color comes back at the release's level") {
+        editor.pickEffect(indexIn(takt4::dmx::kEffectKinds, takt4::dmx::EffectKind::Color));
+        CHECK(std::string(row().summary) == "the same color at this level, same fixtures");
+        CHECK(row().takes_value);
+    }
+
+    SECTION("a flash on another channel releases that channel") {
+        editor.pickEffect(indexIn(takt4::dmx::kEffectKinds, takt4::dmx::EffectKind::Flash));
+        editor.pickRole(indexIn(takt4::dmx::kAimableRoles, takt4::dmx::Role::Red));
+        CHECK(std::string(row().summary) == "red to this level, same fixtures");
+    }
+
+    SECTION("a move has no release, and the row says it sends nothing") {
+        for (const auto move : {takt4::dmx::EffectKind::Position, takt4::dmx::EffectKind::Path,
+                                takt4::dmx::EffectKind::Home}) {
+            editor.pickEffect(indexIn(takt4::dmx::kEffectKinds, move));
+            INFO("effect " << takt4::dmx::labelOf(move));
+            const std::string summary(row().summary);
+            CHECK(summary.find("sends nothing") != std::string::npos);
+            CHECK_FALSE(row().takes_value);
+        }
+    }
+}
+
 TEST_CASE("the rate buttons are greyed out on a trigger with no count", "[ui][trigger]") {
     // The audit's M10. ÷2 and ×2 multiply how many beats or bars a rule counts; a downbeat, a
     // lock change or a manual press has no count, so pressing them changed a number nothing

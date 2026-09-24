@@ -374,7 +374,7 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     for (int y = rows.front().first - 24; y < rows.front().first - 2; ++y) {
         std::size_t ink = 0;
         for (int px = 140; px < kWidth - 60; ++px) {
-            ink += shot.is(px, y, kPanel[0], kPanel[1], kPanel[2]) ? 0 : 1;
+            ink += shot.is(px, y, kPanel[0], kPanel[1], kPanel[2]) ? 0U : 1U;
         }
         if (ink > densest) {
             densest = ink;

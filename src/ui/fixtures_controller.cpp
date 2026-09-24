@@ -611,8 +611,8 @@ void FixturesController::setPanRange(float low, float high) {
     }
     // Sorted rather than refused: the two sliders are independent and dragging one past the
     // other is an ordinary gesture, not an error to report.
-    fixture->panMin = std::clamp(std::min(low, high) / 100.0, 0.0, 1.0);
-    fixture->panMax = std::clamp(std::max(low, high) / 100.0, 0.0, 1.0);
+    fixture->panMin = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
+    fixture->panMax = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
     commit();
 }
 
@@ -621,8 +621,8 @@ void FixturesController::setTiltRange(float low, float high) {
     if (fixture == nullptr) {
         return;
     }
-    fixture->tiltMin = std::clamp(std::min(low, high) / 100.0, 0.0, 1.0);
-    fixture->tiltMax = std::clamp(std::max(low, high) / 100.0, 0.0, 1.0);
+    fixture->tiltMin = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
+    fixture->tiltMax = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
     commit();
 }
 
