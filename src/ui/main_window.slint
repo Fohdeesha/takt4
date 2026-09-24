@@ -1009,7 +1009,7 @@ export component MainWindow inherits Window {
 
             // The input's own complaints, under the meter they are about. An explicit height,
             // because an `if` row in a vertical layout otherwise takes a share of the spare
-            // height in a tall window.
+            // height — measured: `vertical-stretch: 0` does not stop it.
             if root.input-trouble != "" : Text {
               text: root.input-trouble;
               color: Theme.holding;
