@@ -385,22 +385,36 @@ json ruleToJson(const Rule::Config& rule) {
     if (rule.trigger == trigger::Trigger::TempoChange) {
         out["tempoChangeTolerance"] = rule.tempoChangeTolerance;
     }
-    if (rule.sendKind == trigger::Message::Kind::Osc) {
+    // **Every half an operator has filled in, whichever kind the rule sends now** (the audit's
+    // M22). `Rule::Config::dmx` promises that a rule switched to MIDI and back gets its fixtures
+    // and its fade back, and the loader reads every half whatever the kind — but only the kind
+    // in force was written, so a lighting rule tried as MIDI and then saved lost its whole
+    // lighting setup, and a MIDI rule tried as OSC its channel and number. The halves not in
+    // use are written only where they differ from a fresh rule's, so a preset still says what
+    // was chosen rather than restating every default.
+    const Rule::Config fresh;
+    const bool osc = rule.sendKind == trigger::Message::Kind::Osc;
+    const bool lighting = rule.sendKind == trigger::Message::Kind::Dmx;
+    const bool midi = !osc && !lighting;
+    if (osc || !rule.address.empty() || !rule.segments.empty()) {
         out["address"] = rule.address;
         json segments = json::array();
         for (const Generator::Config& segment : rule.segments) {
             segments.push_back(generatorToJson(segment));
         }
         out["segments"] = segments;
-    } else if (rule.sendKind == trigger::Message::Kind::Dmx) {
+    }
+    if (lighting || dmxToJson(rule.dmx) != dmxToJson(fresh.dmx)) {
         out["dmx"] = dmxToJson(rule.dmx);
-    } else {
+    }
+    if (midi || rule.channel != fresh.channel || !rule.numberChosen ||
+        generatorToJson(rule.number) != generatorToJson(fresh.number)) {
         out["channel"] = rule.channel;
         // Null for a number nobody has chosen yet, so a half-built rule is still half-built
-        // after a restart rather than coming back armed with a generator's default.
-        out["number"] =
-            rule.numberChosen || !trigger::sendsNumber(rule.sendKind) ? generatorToJson(rule.number)
-                                                                       : json(nullptr);
+        // after a restart rather than coming back armed with a generator's default — and
+        // still after a trip through another kind, which is only a question of which kind
+        // reads it: pitch bend, which carries no number, never asks.
+        out["number"] = rule.numberChosen ? generatorToJson(rule.number) : json(nullptr);
     }
     if (!rule.followUps.empty()) {
         json owed = json::array();

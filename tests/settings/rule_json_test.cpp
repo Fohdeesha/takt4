@@ -216,6 +216,70 @@ TEST_CASE("a MIDI rule still waiting for its number is still waiting after a res
     }
 }
 
+TEST_CASE("a rule switched to another kind and saved keeps the half it is not using",
+          "[settings][trigger]") {
+    // The audit's M22. `Rule::Config::dmx` promises a rule switched to MIDI and back gets its
+    // fixtures and fade back; only the kind in force was written, so a SAVE in between lost
+    // the other half for good.
+    Rule::Config rule;
+    rule.id = "wash";
+    rule.sendKind = Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Pulse;
+    rule.dmx.fixtures = {"stage left"};
+    rule.dmx.cycles = 3.0;
+
+    SECTION("lighting tried as MIDI") {
+        rule.sendKind = Message::Kind::MidiNote;
+        rule.numberChosen = false; // as the editor leaves a rule just switched to MIDI
+        Rule::Config back = first(rulesToJson({rule}));
+        CHECK(back.sendKind == Message::Kind::MidiNote);
+        CHECK_FALSE(back.numberChosen);
+        back.sendKind = Message::Kind::Dmx;
+        CHECK(back.dmx.effect == takt4::dmx::EffectKind::Pulse);
+        CHECK(back.dmx.fixtures == std::vector<std::string>{"stage left"});
+        CHECK(back.dmx.cycles == Approx(3.0));
+
+        SECTION("and a MIDI number nobody chose stays unchosen through OSC too") {
+            back.sendKind = Message::Kind::Osc;
+            back.address = "/x";
+            Rule::Config again = first(rulesToJson({back}));
+            CHECK_FALSE(again.numberChosen);
+        }
+    }
+    SECTION("MIDI tried as OSC") {
+        Rule::Config midi;
+        midi.id = "stab";
+        midi.sendKind = Message::Kind::MidiCc;
+        midi.channel = 10;
+        midi.number.kind = GeneratorKind::Fixed;
+        midi.number.fixed = Value::ofInt(74);
+        midi.sendKind = Message::Kind::Osc;
+        midi.address = "/composition/tempo";
+        const Rule::Config back = first(rulesToJson({midi}));
+        CHECK(back.address == "/composition/tempo");
+        CHECK(back.channel == 10);
+        CHECK(back.number.fixed.asInt() == 74);
+    }
+    SECTION("OSC tried as lighting") {
+        Rule::Config osc = resolumeClip();
+        osc.sendKind = Message::Kind::Dmx;
+        const Rule::Config back = first(rulesToJson({osc}));
+        CHECK(back.address == "/composition/layers/{L}/clips/{C}/connect");
+        CHECK(back.segments.size() == 2);
+    }
+}
+
+TEST_CASE("a rule that never used another kind does not write that kind's defaults",
+          "[settings][trigger]") {
+    // The other side of keeping every half: a preset says what was chosen. An OSC rule that was
+    // never anything else writes no lighting block and no MIDI channel.
+    const std::string written = rulesToJson({resolumeClip()});
+    INFO(written);
+    CHECK(written.find("\"dmx\"") == std::string::npos);
+    CHECK(written.find("\"channel\"") == std::string::npos);
+    CHECK(written.find("\"number\"") == std::string::npos);
+}
+
 TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {
     // The contract `settings::load` sets and this has to keep: reading never fails.
     SECTION("nonsense is an empty rule set, not a throw") {
