@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace takt4::ui {
 
@@ -49,7 +50,9 @@ int run() {
     // session is taken first, since installing starts a new one in its place.
     const std::filesystem::path home = settings::settingsDirectory();
     const std::filesystem::path leftover = CrashReport::takeLeftoverLog(home);
-    CrashReport::install(home, environment("TAKT4_NO_CRASH_DIALOG").empty());
+    CrashReport::install(home, environment("TAKT4_NO_CRASH_DIALOG").empty()
+                                   ? CrashReport::kAfterCrashOption
+                                   : std::string_view{});
 
     // Whatever the last run left (Q7). Never fails: a settings file that is missing or
     // unreadable gives the defaults, because it must not be the reason the app will not
