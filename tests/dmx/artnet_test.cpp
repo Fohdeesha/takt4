@@ -256,6 +256,18 @@ TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][art
     CHECK_THAT(node.problem(), ContainsSubstring("not an address this machine can send to"));
 }
 
+TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][network]") {
+    // Art-Net's spec forbids broadcasting ArtDmx, and some rigs do it anyway; the socket has to
+    // be allowed to or every frame is refused. It goes through `net::prepareSender`, shared
+    // with OSC since the audit's M20, so this is what notices if the node stops calling it.
+    // One frame to the limited broadcast, on a port nothing uses.
+    ArtNetSender node("255.255.255.255", 57092);
+    const std::array<std::uint8_t, 3> levels{0, 0, 0};
+    CHECK(node.sendDmx(0, levels));
+    CHECK(node.failed() == 0);
+    CHECK(node.problem().empty());
+}
+
 // The pacing rules are the whole of what this class does, and both of them are felt on a rig:
 // too fast and a node drops frames mid-fade, too slow and a node decides takt4 has gone away.
 TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][artnet]") {

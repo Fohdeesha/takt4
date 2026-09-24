@@ -1,3 +1,4 @@
+#include "core/net/udp.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_publisher.hpp"
 #include "core/output/osc_sender.hpp"
@@ -5,6 +6,10 @@
 #include "core/tracking/tempo_tracker.hpp"
 
 #include "support/loopback_receiver.hpp"
+
+#if !defined(_WIN32)
+#include <sys/time.h>
+#endif
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -156,6 +161,59 @@ TEST_CASE("datagrams reach a socket that is really listening", "[output][osc]") 
         CHECK(sender.problem().empty());
         CHECK(sender.ready());
     }
+}
+
+TEST_CASE("a sending socket never waits", "[output][osc]") {
+    // The audit's M20: "a single non-blocking sendto", said the senders, of sockets that were
+    // blocking — so a full send buffer would have held the output thread, and the MIDI clock
+    // and every rule with it. A full send buffer cannot be made on demand, so this asks the
+    // socket the question it answers the same way: with nothing to read and a two-second
+    // receive timeout, a blocking socket waits the two seconds and a non-blocking one says
+    // "would block" at once.
+    namespace net = takt4::net;
+    const net::WinsockGuard winsock;
+    const net::Socket socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    REQUIRE(socket != net::kInvalidSocket);
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    local.sin_port = 0;
+    REQUIRE(::bind(socket, reinterpret_cast<const sockaddr*>(&local), sizeof local) == 0);
+#if defined(_WIN32)
+    const DWORD timeout = 2000;
+    ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+                 sizeof timeout);
+    constexpr int kWouldBlock = WSAEWOULDBLOCK;
+#else
+    const timeval timeout{2, 0};
+    ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    constexpr int kWouldBlock = EAGAIN;
+#endif
+
+    net::prepareSender(socket);
+
+    char byte = 0;
+    const auto asked = std::chrono::steady_clock::now();
+    const auto got = ::recvfrom(socket, &byte, 1, 0, nullptr, nullptr);
+    const int error = net::lastSocketError();
+    const auto waited = std::chrono::steady_clock::now() - asked;
+    net::closeSocket(socket);
+    CHECK(got < 0);
+    CHECK(error == kWouldBlock);
+    CHECK(waited < std::chrono::milliseconds(500));
+}
+
+TEST_CASE("an OSC target at a broadcast address really sends", "[output][osc][network]") {
+    // The other half of M20: the OSC socket was never allowed to broadcast, so a rig that
+    // aims OSC at its subnet's broadcast address got WSAEACCES on every send while Art-Net,
+    // which did ask, worked. One datagram to the limited broadcast, on a port nothing uses —
+    // [network], because it does leave the machine.
+    OscSender sender("255.255.255.255", 57091);
+    OscMessage message("/takt4/bpm");
+    message.addFloat(128.0f);
+    CHECK(sender.send(message.packet()));
+    CHECK(sender.failed() == 0);
+    CHECK(sender.problem().empty());
 }
 
 TEST_CASE("the generic namespace is published as HANDOFF 5.6 specifies", "[output][osc]") {

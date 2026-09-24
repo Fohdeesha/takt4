@@ -21,6 +21,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -93,6 +94,37 @@ inline int lastSocketError() noexcept {
 struct WinsockGuard {};
 
 #endif
+
+/// Makes a fresh datagram socket into one the output thread can send on. A new socket is
+/// neither of these, and both used to be claimed of it (the audit's M20):
+///
+/// - **Non-blocking.** A blocking `sendto` waits whenever the socket's send buffer is full — a
+///   link slower than the traffic, an adapter that is busy or going away — and on the output
+///   thread that wait stops the MIDI clock and every rule until the buffer drains. This way
+///   the send fails at once with `WSAEWOULDBLOCK` / `EAGAIN`, the sender counts it, and
+///   `sendFailure` calls it "the network is not keeping up". A dropped datagram is a missed
+///   cue; a stalled output thread is every cue.
+/// - **Allowed to broadcast.** A rig built around a broadcast address is one somebody
+///   already has, and a socket refuses to send to one until it is told it may.
+///
+/// Both are asked for and a refusal is ignored. A platform that will not broadcast still
+/// sends unicast perfectly well, and a socket left blocking still sends — it can only stall
+/// as it always could.
+inline void prepareSender(Socket socket) noexcept {
+    const int broadcast = 1;
+#if defined(_WIN32)
+    u_long nonBlocking = 1;
+    ::ioctlsocket(socket, FIONBIO, &nonBlocking);
+    ::setsockopt(socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&broadcast),
+                 sizeof broadcast);
+#else
+    const int flags = ::fcntl(socket, F_GETFL, 0);
+    if (flags >= 0) {
+        ::fcntl(socket, F_SETFL, flags | O_NONBLOCK);
+    }
+    ::setsockopt(socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof broadcast);
+#endif
+}
 
 /// Why a datagram could not be sent, in words an operator can act on, with the code after
 /// it for anyone who has to look it up. For the errors a network that is down, unplugged or

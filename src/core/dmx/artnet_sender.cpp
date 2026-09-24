@@ -85,18 +85,8 @@ bool ArtNetSender::ready() noexcept {
         impl_->socketError = 0;
         std::memcpy(&impl_->address, known->storage, static_cast<std::size_t>(known->length));
         impl_->addressLength = static_cast<socklen_t>(known->length);
-
-        // A rig built around a broadcast address is a rig somebody already has, and the socket
-        // has to be told before it will carry one. Asked for unconditionally and ignored when it
-        // fails: a platform that refuses the option still sends unicast perfectly well, and the
-        // operator who typed a unicast address is not affected either way.
-        const int broadcast = 1;
-#if defined(_WIN32)
-        ::setsockopt(impl_->socket, SOL_SOCKET, SO_BROADCAST,
-                     reinterpret_cast<const char*>(&broadcast), sizeof broadcast);
-#else
-        ::setsockopt(impl_->socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof broadcast);
-#endif
+        // Non-blocking, and allowed to broadcast: see `net::prepareSender`.
+        net::prepareSender(handle);
         resolved_ = describe(reinterpret_cast<const sockaddr*>(&impl_->address),
                              impl_->addressLength);
         return true;
