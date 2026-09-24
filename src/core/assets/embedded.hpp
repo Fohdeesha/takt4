@@ -31,4 +31,11 @@ std::span<const std::byte> weights();
 /// `StateSpaceModel::fromBytes`.
 std::span<const std::byte> stateSpace();
 
+/// takt4's own licence, the GPLv3 text in LICENSE, as UTF-8.
+std::span<const std::byte> licence();
+
+/// THIRD-PARTY-NOTICES.txt as UTF-8: every licence of every library built in, written by
+/// tools/third_party_notices.py. The About box opens both of these.
+std::span<const std::byte> notices();
+
 } // namespace takt4::assets

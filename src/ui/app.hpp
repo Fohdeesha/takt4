@@ -21,6 +21,8 @@ struct ShotOptions {
     /// at as much as the first — more, being newer — and it is the same problem: no display
     /// in these sessions, and a Slint layout bug that is silent rather than a compile error.
     bool rules = false;
+    /// Render the About box instead.
+    bool about = false;
     /// Render the lighting patch editor instead. The third window, and the same argument:
     /// a Slint layout bug is silent rather than a compile error, and nobody can see this one
     /// from a session with no display either.

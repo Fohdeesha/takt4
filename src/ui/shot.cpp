@@ -667,6 +667,16 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         });
     }
 
+    if (options.about) {
+        return renderWindow(out, width, height, [] {
+            auto window = AboutWindow::create();
+            window->set_version(slint::SharedString(versionLabel(buildInfo())));
+            window->set_opened(slint::SharedString(
+                "Opened C:\\Users\\someone\\AppData\\Local\\Temp\\takt4\\takt4-THIRD-PARTY-NOTICES.txt"));
+            return window;
+        });
+    }
+
     const auto w = static_cast<std::uint32_t>(width);
     const auto h = static_cast<std::uint32_t>(height);
 

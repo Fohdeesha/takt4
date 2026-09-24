@@ -1,5 +1,6 @@
 #include "ui/window_controller.hpp"
 
+#include "core/assets/embedded.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/hop_meter.hpp"
 #include "core/audio/input_stream.hpp"
@@ -21,12 +22,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <shellapi.h> // ShellExecuteW, which WIN32_LEAN_AND_MEAN leaves out of windows.h
+#endif
 
 namespace takt4::ui {
 namespace {
@@ -511,6 +518,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
 
     window_->on_rules_clicked([this] { openEditor(); });
+    window_->on_about_opened([this] { openAbout(); });
     window_->on_fixtures_clicked([this] { patch_.show(); });
     window_->on_panic_clicked([this] { engagePanic(); });
     window_->on_panic_released([this] { releasePanic(); });
@@ -1417,6 +1425,69 @@ void WindowController::setMidiControlPort(const std::string& name) {
 
 void WindowController::openEditor() {
     editor_.show();
+}
+
+namespace {
+
+std::string_view textOf(std::span<const std::byte> bytes) {
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+/// The machine's own viewer for a text file.
+bool openInViewer(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    const auto result = reinterpret_cast<std::intptr_t>(
+        ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    return result > 32; // ShellExecute's own convention: anything above 32 is success
+#else
+    (void)path;
+    return false; // said on screen as "written to", which is still somewhere to look
+#endif
+}
+
+} // namespace
+
+void WindowController::openAbout() {
+    if (!about_) {
+        about_ = AboutWindow::create();
+        AboutWindow& about = **about_;
+        about.set_version(slint::SharedString(versionLabel(buildInfo())));
+        about.on_licence_opened(
+            [this] { (void)openEmbeddedText("takt4-LICENSE.txt", textOf(assets::licence())); });
+        about.on_notices_opened([this] {
+            (void)openEmbeddedText("takt4-THIRD-PARTY-NOTICES.txt", textOf(assets::notices()));
+        });
+        about.on_closed([this] { (*about_)->hide(); });
+        // The size it was drawn for, before the first show — Slint opens a window at its
+        // content's minimum otherwise.
+        about.window().set_size(slint::LogicalSize({580.0f, 520.0f}));
+    }
+    (*about_)->show();
+}
+
+std::filesystem::path WindowController::openEmbeddedText(const std::string& name,
+                                                         std::string_view text) {
+    std::error_code code;
+    const std::filesystem::path folder = std::filesystem::temp_directory_path(code) / "takt4";
+    std::filesystem::create_directories(folder, code);
+    const std::filesystem::path path = folder / name;
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!out) {
+            if (about_) {
+                (*about_)->set_opened(slint::SharedString("Could not write " + io::pathText(path)));
+            }
+            return {};
+        }
+    }
+    const bool opened = openFile_ ? openFile_(path) : openInViewer(path);
+    if (about_) {
+        (*about_)->set_opened(slint::SharedString(
+            opened ? "Opened " + io::pathText(path)
+                   : "Written to " + io::pathText(path) + " — open it in any text viewer"));
+    }
+    return path;
 }
 
 void WindowController::engagePanic() {
