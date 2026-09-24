@@ -3141,6 +3141,65 @@ TEST_CASE("the TRIGGERS row counts the rules that would fire, as they are edited
     CHECK(controller.window().get_rules_active() == 3);
 }
 
+TEST_CASE("an edit is kept while the output thread has not yet got to it", "[ui]") {
+    // Found by the ASan run of 2026-09-24, as the test above failing four runs in six there and
+    // never in Release. The editor takes the output thread's live switches, to show what a
+    // control surface changed (the audit's H7), and it took them whenever they moved — the set
+    // before its own last edit included, while the thread had not got to that edit yet. So a
+    // rule switched on went off again at the next redraw, and the next edit posted it off.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config clips;
+    clips.id = "clips";
+    clips.address = "/clips";
+    takt4::trigger::Rule::Config off = clips;
+    off.id = "off";
+    off.enabled = false;
+    const std::uint64_t before = controller.outputs().liveRulesVersion();
+    controller.setRules({clips, off});
+    // The set applied and its switches published, with the editor yet to read them: no tick.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (controller.outputs().liveRulesVersion() == before &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(controller.outputs().liveRulesVersion() != before);
+
+    // All of this with the output thread held between two of its rounds, so what is posted in
+    // here waits: the moment the race needed a slow thread to reach, every time.
+    controller.outputs().inspect([&](const auto&, const auto&, const auto&) {
+        controller.editor().pick(1);
+        controller.editor().setEnabled(true);
+        controller.editor().tick(); // the switches it can read are the set before this edit's
+        controller.editor().pick(0);
+        controller.editor().setAddress("/clips/2"); // and the next edit posts the whole set
+    });
+    const auto applied = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!controller.outputs().liveRulesCurrent() &&
+           std::chrono::steady_clock::now() < applied) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    controller.tick();
+
+    const std::vector<takt4::trigger::Rule::Config> saved =
+        controller.currentSettings().preset.rules;
+    REQUIRE(saved.size() == 2);
+    CHECK(saved[1].id == "off");
+    CHECK(saved[1].enabled);
+    CHECK(saved[0].address == "/clips/2");
+    CHECK(controller.window().get_rules_active() == 2);
+    // And on the output thread, which is what fires.
+    CHECK(controller.outputs().inspect(
+        [](const takt4::trigger::TriggerEngine& rules, const auto&, const auto&) {
+            for (std::size_t i = 0; i < rules.ruleCount(); ++i) {
+                if (rules.rule(i).id() == "off") {
+                    return rules.rule(i).enabled();
+                }
+            }
+            return false;
+        }));
+}
+
 TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]") {
     // The audit's M12: every rule message that reached no output was counted, and the count was
     // shown nowhere. A MIDI rule on a rig with no MIDI output, fired with TEST, the way an

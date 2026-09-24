@@ -269,6 +269,9 @@ void OutputRunner::publishLiveRules() {
         now.push_back(LiveRule{rule.id(), rule.enabled(), rule.muted(), rule.rate()});
     }
     const std::lock_guard<std::mutex> lock(liveMutex_);
+    // Whichever set these came from, even when the switches read the same: that is what says
+    // the set has been got to. See `liveRulesCurrent`.
+    liveGeneration_ = rulesApplied_;
     if (now != live_) {
         live_ = std::move(now);
         liveVersion_.fetch_add(1, std::memory_order_release);
@@ -278,6 +281,16 @@ void OutputRunner::publishLiveRules() {
 std::vector<OutputRunner::LiveRule> OutputRunner::liveRules() const {
     const std::lock_guard<std::mutex> lock(liveMutex_);
     return live_;
+}
+
+bool OutputRunner::liveRulesCurrent() const {
+    std::uint64_t posted = 0;
+    {
+        const std::lock_guard<std::mutex> lock(commandMutex_);
+        posted = rulesPosted_;
+    }
+    const std::lock_guard<std::mutex> lock(liveMutex_);
+    return liveGeneration_ == posted;
 }
 
 void OutputRunner::mirrorLevels(double now) {
@@ -448,6 +461,11 @@ void OutputRunner::post(OutputCommand command) {
     // on the queue it is taken exactly once, by whichever thread gets to it.
     {
         const std::lock_guard<std::mutex> lock(commandMutex_);
+        // Numbered here, under the lock that orders the queue, so the numbers are the order in
+        // which the sets will be applied. See `liveRulesCurrent`.
+        if (command.kind == OutputCommand::Kind::Rules) {
+            command.generation = ++rulesPosted_;
+        }
         pending_.push_back(std::move(command));
     }
     if (running()) {
@@ -492,6 +510,7 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Rules:
             triggers_.setRules(command.ruleConfigs);
+            rulesApplied_ = command.generation;
             resolveRouting();
             break;
         case OutputCommand::Kind::Panic:

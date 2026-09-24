@@ -2552,8 +2552,12 @@ void RulesController::tick() {
     if (rowsDirty_) {
         rebuildRows();
     }
-    // What a control surface changed behind this editor's back. See `adoptLive`.
-    if (const std::uint64_t version = runner_.liveRulesVersion(); version != liveSeen_) {
+    // What a control surface changed behind this editor's back. See `adoptLive`. Only once the
+    // output thread has got to the last set posted — this editor's own last edit, most often:
+    // before then the switches it reports are the set before, and adopting them undid the edit.
+    // The version is left unseen meanwhile, so they are read the moment they are current.
+    if (const std::uint64_t version = runner_.liveRulesVersion();
+        version != liveSeen_ && runner_.liveRulesCurrent()) {
         liveSeen_ = version;
         adoptLive(runner_.liveRules());
     }
