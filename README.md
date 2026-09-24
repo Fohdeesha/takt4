@@ -24,8 +24,8 @@ Your rig is saved on its own a few seconds after every change, and each save rep
 file whole, so a crash or a power cut never leaves half of one. Each clean start also keeps
 a copy as `settings.json.bak`. If the file is ever damaged, takt4 sets it aside as
 `settings.json.corrupt-<date>`, starts from that copy and tells you so. If takt4 itself
-falls over, it writes a crash report (`takt4-crash-<date>.dmp`) beside the executable and
-offers to start again.
+falls over, it stops at once, writes a crash report (`takt4-crash-<date>.dmp`) beside the
+executable, and offers to start again.
 
 Windows today. The macOS and Linux presets are in the tree and the code is kept portable,
 but Windows is the only platform currently built and tested.
@@ -58,7 +58,9 @@ but Windows is the only platform currently built and tested.
   says **NO AUDIO** and takt4 reopens it as soon as it answers, while Link and the MIDI clock
   carry the last tempo on. It never changes an interface's sample rate: it opens at whatever
   the interface is already running at. **RESCAN** finds devices switched on after takt4
-  started, and a MIDI device unplugged mid-set is picked up again when it comes back.
+  started, and a MIDI device unplugged mid-set is picked up again when it comes back. The
+  ASIO drivers are asked what they are from a separate process, so a driver that crashes
+  while the devices are listed takes that process with it, not takt4.
 - **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
   your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
   often from a Stream Deck, mid-set.
