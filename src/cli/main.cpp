@@ -5,6 +5,7 @@
 
 #include "cli/annotate.hpp"
 #include "cli/console.hpp"
+#include "core/audio/asio_scan.hpp"
 #include "core/audio/channel_meter.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
@@ -313,6 +314,10 @@ int runDevices() {
                   << (api.deviceCount == 1 ? " device)" : " devices)");
     }
     std::cout << '\n';
+    // Why the ASIO devices are missing, when a driver fell over as it was asked.
+    if (const std::string problem = takt4::audio::asioScanProblem(); !problem.empty()) {
+        std::cout << "ASIO: " << problem << '\n';
+    }
     const auto devices = takt4::audio::listInputDevices(session);
     if (devices.empty()) {
         std::cout << "no input devices\n";

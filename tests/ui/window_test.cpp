@@ -21,6 +21,7 @@
 #include "ui/window_state.hpp"
 
 #include "support/loopback_receiver.hpp"
+#include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -2079,6 +2080,51 @@ TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
     CHECK(after.hostApiName == api);
     CHECK_FALSE(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("Found ") != std::string::npos);
+}
+
+TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN clears it", "[ui]") {
+    // The ASIO drivers are asked from a process of their own (core/audio/asio_scan.hpp). When
+    // that process falls over twice the interface is missing from the list, and the operator
+    // has to be told why — or it reads as unplugged. Made to fall over before it loads any
+    // driver, so this touches nothing on the rig.
+    std::optional<LiveTracker> tracker;
+    {
+        const takt4::test::ScopedVariable asio("TAKT4_NO_ASIO", nullptr);
+        const takt4::test::ScopedVariable fall("TAKT4_TEST_ASIO_SCAN", "fall-over");
+        tracker.emplace(kWeights, kStateSpace); // its PortAudio session scans here
+    }
+    WindowController controller(*tracker);
+    for (const InputDevice& device : controller.devices()) {
+        CHECK(device.hostApi != takt4::audio::HostApiKind::Asio);
+    }
+    CHECK(controller.statusIsError());
+    const std::string status(controller.window().get_status());
+    INFO("status: " << status);
+    CHECK(status.find("An ASIO driver fell over twice") != std::string::npos);
+    CHECK(status.find("Press RESCAN") != std::string::npos);
+
+    // RESCAN is what it says to press. A driver that falls over again is said again, over
+    // everything else RESCAN reports: the MIDI ports and outputs it goes on to re-read used to
+    // leave "Found ..." on the line instead.
+    {
+        const takt4::test::ScopedVariable asio("TAKT4_NO_ASIO", nullptr);
+        const takt4::test::ScopedVariable fall("TAKT4_TEST_ASIO_SCAN", "fall-over");
+        controller.window().invoke_rescan_clicked();
+    }
+    const std::string again(controller.window().get_status());
+    INFO("after a RESCAN that fell over again: " << again);
+    CHECK(controller.statusIsError());
+    CHECK(again.find("An ASIO driver fell over twice") != std::string::npos);
+
+    // And a RESCAN that finds nothing wrong — with no ASIO wanted this time, as in every other
+    // test — says so, and what was said goes with the problem.
+    controller.window().invoke_rescan_clicked();
+    const std::string after(controller.window().get_status());
+    INFO("after RESCAN: " << after);
+    CHECK(after.find("ASIO") == std::string::npos);
+    // What a RESCAN with nothing wrong says, which a problem kept from before would stop.
+    CHECK_FALSE(controller.statusIsError());
+    CHECK(after.find("Found ") != std::string::npos);
 }
 
 TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {

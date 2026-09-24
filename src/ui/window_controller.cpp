@@ -1,6 +1,7 @@
 #include "ui/window_controller.hpp"
 
 #include "core/assets/embedded.hpp"
+#include "core/audio/asio_scan.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/hop_meter.hpp"
 #include "core/audio/input_stream.hpp"
@@ -797,11 +798,17 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
         names->push_back(shared(describeDevice(device)));
     }
     window_->set_devices(names);
+    // Said whenever it is true, and last, so nothing below talks over it: an interface missing
+    // from the list for a reason the operator cannot see would otherwise read as unplugged.
+    const std::string asioProblem = audio::asioScanProblem();
 
     if (devices_.empty()) {
         device_ = -1;
         window_->set_channels(std::make_shared<slint::VectorModel<slint::SharedString>>());
-        setStatus("No input device. Connect an interface and start takt4 again.", true);
+        setStatus(asioProblem.empty()
+                      ? "No input device. Connect an interface and start takt4 again."
+                      : asioProblem,
+                  true);
         return;
     }
 
@@ -851,6 +858,9 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
         remembered.channel < devices_[static_cast<std::size_t>(device_)].maxInputChannels) {
         pickChannel(remembered.channel);
         window_->set_channel_index(remembered.channel);
+    }
+    if (!asioProblem.empty()) {
+        setStatus(asioProblem, true);
     }
 }
 
@@ -925,7 +935,11 @@ void WindowController::rescanDevices() {
     }
     applyTargets();
     publishControl();
-    if (!statusIsError_) {
+    // An ASIO scan that fell over again is said again, and last: pressing RESCAN is what that
+    // message told the operator to do, and the steps above say things of their own over it.
+    if (const std::string asioProblem = audio::asioScanProblem(); !asioProblem.empty()) {
+        setStatus(asioProblem, true);
+    } else if (!statusIsError_) {
         setStatus("Found " + std::to_string(devices_.size()) + " inputs, " +
                       std::to_string(midiPorts_.size()) + " MIDI outputs and " +
                       std::to_string(midiInputPorts_.size()) + " MIDI inputs.",

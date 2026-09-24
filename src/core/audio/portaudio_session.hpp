@@ -19,6 +19,10 @@ private:
 ///
 /// PortAudio reference-counts initialisation, so sessions may nest. A session must
 /// outlive every stream opened while it was alive.
+///
+/// The initialise that builds the device table — the first, and each `restart` — is preceded
+/// by a scan of the ASIO drivers in a process of its own (`asio_scan.hpp`), so no ASIO driver
+/// is loaded here until a stream is opened on one.
 class PortAudioSession {
 public:
     PortAudioSession(); // throws PortAudioError if Pa_Initialize() fails
