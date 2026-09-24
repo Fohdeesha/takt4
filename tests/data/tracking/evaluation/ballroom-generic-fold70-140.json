@@ -3,8 +3,8 @@
   "beatnet_plus_trained_on_this": [
     "ballroom"
   ],
-  "cli": "C:\\build\\takt4\\windows-msvc\\bin\\Release\\takt4-cli.exe",
-  "cli_args": "",
+  "cli": "\\\\192.168.1.2\\Personal\\Programs\\Git\\takt4\\build\\windows-msvc\\bin\\Release\\takt4-cli.exe",
+  "cli_args": "--meters 3,4",
   "confidence_threshold": 0.15,
   "dataset": "Ballroom (references/ballroom-audio), not vendored",
   "failures": {},
@@ -13,7 +13,7 @@
   "per_group": {
     "ChaChaCha": {
       "Downbeat F-measure": 0.9688132885234335,
-      "F-measure": 0.9757570369827335,
+      "F-measure": 0.9757507007986113,
       "files": 111
     },
     "Jive": {
@@ -22,8 +22,8 @@
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.9419655170014567,
-      "F-measure": 0.9536961848159471,
+      "Downbeat F-measure": 0.9422487950955616,
+      "F-measure": 0.9536920277265469,
       "files": 82
     },
     "Rumba-American": {
@@ -37,28 +37,28 @@
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8632938177177811,
-      "F-measure": 0.9087340539576921,
+      "Downbeat F-measure": 0.8625795320034955,
+      "F-measure": 0.9088704803592386,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.9243817397683609,
-      "F-measure": 0.9516379723072034,
+      "Downbeat F-measure": 0.9237273553930464,
+      "F-measure": 0.9513065666771098,
       "files": 86
     },
     "Tango": {
       "Downbeat F-measure": 0.9544334824239639,
-      "F-measure": 0.9644991251464421,
+      "F-measure": 0.9649013130486299,
       "files": 86
     },
     "VienneseWaltz": {
       "Downbeat F-measure": 0.9636932665559674,
-      "F-measure": 0.9667283221300533,
+      "F-measure": 0.96701793093639,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.9076200386878304,
-      "F-measure": 0.9183442569751907,
+      "Downbeat F-measure": 0.9074925298330487,
+      "F-measure": 0.9174271167151422,
       "files": 110
     }
   },
@@ -67,43 +67,43 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9062357733304797,
+      "mean": 0.9062114986472454,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.930201285437998,
+      "mean": 0.9301834337936103,
       "median": 0.9358974358974359
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8863565224989941,
-      "median": 0.9107132487149439
+      "mean": 0.8862733247388291,
+      "median": 0.9107845845055611
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8874911156201174,
-      "median": 0.9107132487149439
+      "mean": 0.8874079178599522,
+      "median": 0.9107845845055611
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9043327802113655,
+      "mean": 0.9043085055281312,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.9281513523438637,
+      "mean": 0.928133500699476,
       "median": 0.9358974358974359
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.9418980541533538,
+      "mean": 0.941789679289231,
       "median": 0.9615384615384615
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9551153153751558,
-      "median": 0.9659863945578232
+      "mean": 0.9550127928500843,
+      "median": 0.9662921348314606
     },
     "Goto": {
       "files": 698,
@@ -112,12 +112,12 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6083928409375893,
-      "median": 0.6130258931763102
+      "mean": 0.6084195654135978,
+      "median": 0.6126879384311066
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9396983301452522,
+      "mean": 0.9396579731516396,
       "median": 0.9375
     },
     "Tempo accuracy 1": {

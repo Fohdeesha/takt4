@@ -3,8 +3,8 @@
   "beatnet_plus_trained_on_this": [
     "ballroom"
   ],
-  "cli": "C:\\build\\takt4\\windows-msvc\\bin\\Release\\takt4-cli.exe",
-  "cli_args": "",
+  "cli": "\\\\192.168.1.2\\Personal\\Programs\\Git\\takt4\\build\\windows-msvc\\bin\\Release\\takt4-cli.exe",
+  "cli_args": "--meters 3,4",
   "confidence_threshold": 0.15,
   "dataset": "Ballroom (references/ballroom-audio), not vendored",
   "failures": {},
@@ -13,7 +13,7 @@
   "per_group": {
     "ChaChaCha": {
       "Downbeat F-measure": 0.9682242012676796,
-      "F-measure": 0.9756768670868172,
+      "F-measure": 0.975670530902695,
       "files": 111
     },
     "Jive": {
@@ -22,8 +22,8 @@
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.957354048109081,
-      "F-measure": 0.961960633783371,
+      "Downbeat F-measure": 0.9576373262031861,
+      "F-measure": 0.9620302474276452,
       "files": 82
     },
     "Rumba-American": {
@@ -37,28 +37,28 @@
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8573933590725892,
-      "F-measure": 0.9131093097327323,
+      "Downbeat F-measure": 0.8590158015278322,
+      "F-measure": 0.9137017353745115,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.9189632005126125,
-      "F-measure": 0.9463372321348956,
+      "Downbeat F-measure": 0.9180562544084975,
+      "F-measure": 0.9462624765059949,
       "files": 86
     },
     "Tango": {
       "Downbeat F-measure": 0.9525307147232812,
-      "F-measure": 0.9639262766426459,
+      "F-measure": 0.9643284645448337,
       "files": 86
     },
     "VienneseWaltz": {
       "Downbeat F-measure": 0.9646232666562216,
-      "F-measure": 0.9693250232861395,
+      "F-measure": 0.9696149659495562,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.9056070073928036,
-      "F-measure": 0.9158650638571703,
+      "Downbeat F-measure": 0.9063775096178514,
+      "F-measure": 0.9157469238508132,
       "files": 110
     }
   },
@@ -67,43 +67,43 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9064963953359088,
+      "mean": 0.9064618853211359,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.9306633887777042,
+      "mean": 0.9307249084112093,
       "median": 0.9367088607594937
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8867006546725241,
-      "median": 0.9105106658041018
+      "mean": 0.8867362912224332,
+      "median": 0.9107132487149439
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8878838369689552,
-      "median": 0.9106139473861601
+      "mean": 0.8879142568822405,
+      "median": 0.9107845845055611
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9037820451403699,
+      "mean": 0.9037475351255971,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.9276762066260593,
-      "median": 0.9364395367627256
+      "mean": 0.9276949601474315,
+      "median": 0.9367088607594937
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.9420280559570438,
+      "mean": 0.9421639934666822,
       "median": 0.962962962962963
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9554522219295563,
-      "median": 0.9660440447365388
+      "mean": 0.9555420673106301,
+      "median": 0.9662921348314606
     },
     "Goto": {
       "files": 698,
@@ -112,17 +112,17 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6076361351183952,
-      "median": 0.6118614953263204
+      "mean": 0.6077200194542077,
+      "median": 0.6116568578541406
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9396610317576373,
+      "mean": 0.9397405863463848,
       "median": 0.9375
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.9828080229226361,
+      "mean": 0.9813753581661891,
       "median": 1.0
     },
     "Tempo accuracy 2": {

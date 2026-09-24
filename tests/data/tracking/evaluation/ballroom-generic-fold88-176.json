@@ -3,8 +3,8 @@
   "beatnet_plus_trained_on_this": [
     "ballroom"
   ],
-  "cli": "C:\\build\\takt4\\windows-msvc\\bin\\Release\\takt4-cli.exe",
-  "cli_args": "",
+  "cli": "\\\\192.168.1.2\\Personal\\Programs\\Git\\takt4\\build\\windows-msvc\\bin\\Release\\takt4-cli.exe",
+  "cli_args": "--meters 3,4",
   "confidence_threshold": 0.15,
   "dataset": "Ballroom (references/ballroom-audio), not vendored",
   "failures": {},
@@ -13,17 +13,17 @@
   "per_group": {
     "ChaChaCha": {
       "Downbeat F-measure": 0.9683537813972597,
-      "F-measure": 0.976151646488349,
+      "F-measure": 0.9761453103042268,
       "files": 111
     },
     "Jive": {
       "Downbeat F-measure": 0.9673602856312347,
-      "F-measure": 0.9744273342776528,
+      "F-measure": 0.974533352634804,
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.9436857060174138,
-      "F-measure": 0.9552835972162166,
+      "Downbeat F-measure": 0.9434017691370433,
+      "F-measure": 0.9552794401268164,
       "files": 82
     },
     "Rumba-American": {
@@ -37,28 +37,28 @@
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8471978556695543,
-      "F-measure": 0.9129222689107648,
+      "Downbeat F-measure": 0.8478981357815991,
+      "F-measure": 0.9136752220050566,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.918259857680857,
-      "F-measure": 0.9475133088663009,
+      "Downbeat F-measure": 0.9176164161880729,
+      "F-measure": 0.9466919094574298,
       "files": 86
     },
     "Tango": {
       "Downbeat F-measure": 0.9535201793855607,
-      "F-measure": 0.964612837126108,
+      "F-measure": 0.9650151078000396,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9642588226537684,
-      "F-measure": 0.9693115679743184,
+      "Downbeat F-measure": 0.9639687658026256,
+      "F-measure": 0.9696002391194357,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.8982822167613481,
-      "F-measure": 0.913318512094929,
+      "Downbeat F-measure": 0.8987308000106674,
+      "F-measure": 0.9130546866337214,
       "files": 110
     }
   },
@@ -67,62 +67,62 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.903545531132609,
+      "mean": 0.903558584242605,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.9281807980513663,
-      "median": 0.9354838709677419
+      "mean": 0.9282263167797021,
+      "median": 0.9358974358974359
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8858507229299782,
+      "mean": 0.8858019364142481,
       "median": 0.9112526642508457
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8870719126774851,
+      "mean": 0.8870188118312838,
       "median": 0.911319345250021
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9000108162834248,
+      "mean": 0.9000238693934209,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.9246033170900494,
-      "median": 0.9354838709677419
+      "mean": 0.9246060697062525,
+      "median": 0.9358974358974359
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.9388093645464067,
+      "mean": 0.9387805434490039,
       "median": 0.9615384615384615
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9545289283574909,
-      "median": 0.9659863945578232
+      "mean": 0.9545133592742924,
+      "median": 0.9662921348314606
     },
     "Goto": {
       "files": 698,
-      "mean": 0.9183381088825215,
+      "mean": 0.9169054441260746,
       "median": 1.0
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6066396708776596,
-      "median": 0.6116358943501945
+      "mean": 0.6065335707130359,
+      "median": 0.609922131091068
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9379498598167674,
+      "mean": 0.9379447964618188,
       "median": 0.9375
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.9813753581661891,
+      "mean": 0.9799426934097422,
       "median": 1.0
     },
     "Tempo accuracy 2": {

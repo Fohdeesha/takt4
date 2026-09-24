@@ -12,12 +12,22 @@ common, to full float precision. Keys on only one side are reported rather than 
 the committed reports have their per-file `groups` stripped, so the fresh side always has
 thousands more, and that asymmetry must stay visible instead of quietly widening.
 
-Two differences are expected against a committed report and mean nothing: `dataset` and
-`annotations` are provenance strings, hand-edited when the report was trimmed. Any third
-difference is a real one.
+A few differences are expected against a committed report and mean nothing: `dataset` and
+`annotations` are provenance strings, hand-edited when the report was trimmed, and `cli` and
+`platform` say where it ran. Any other difference is a real one — `cli_args` included, so the
+fresh report has to be made the way the committed one was, which since the decoder's default
+became a bar of four alone is with the waltz put back:
 
+    .venv/Scripts/python.exe tools/evaluate.py references/ballroom-audio \
+        --annotations references/ballroom-annotations --weights generic \
+        --cli-args "--meters 3,4" --jobs 4 --report fresh.json
     .venv/Scripts/python.exe tools/diff_eval.py \
         tests/data/tracking/evaluation/ballroom-generic-nofold.json fresh.json
+
+(The committed reports carried `cli_args ""` from before that default changed until
+2026-09-24, so this procedure failed on `cli_args` every time it was followed, and a gate that
+is always red teaches people to read past it — the audit's Python-tools list. They were
+regenerated that day, with `--meters 3,4` recorded.)
 
 Exit status is 1 when any shared value differs, so it can gate a script.
 """
