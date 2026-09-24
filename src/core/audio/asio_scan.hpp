@@ -11,7 +11,8 @@ namespace takt4::audio {
 ///
 /// **Why.** Asking an ASIO driver what it is means loading it, initialising it and letting it
 /// go again, and PortAudio does that to every installed driver each time it starts: at launch,
-/// at RESCAN, and every ten seconds while a lost input is being looked for. The MOTU's driver
+/// at RESCAN, and every third try, ten seconds apart at the least, while a lost input is being
+/// reopened (`WindowController::superviseInput`). The MOTU's driver
 /// falls over as it is let go, about one time in 840 — a fast fail inside its `ASIOExit`
 /// (caught on 2026-09-23), which no handler in the process can catch. In takt4's own process
 /// that was the rig going dark with no report; the operator's call on 2026-09-24 was to move the
