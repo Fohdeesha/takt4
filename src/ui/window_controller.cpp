@@ -959,7 +959,7 @@ void WindowController::toggleRun() {
     std::fill(trace_.begin(), trace_.end(), TracePoint{});
     publishTrace();
     peak_ = 0.0f;
-    // After the tracker, so the MIDI clock is not given a Start for a run that failed to open.
+    // After the tracker, so the MIDI clock does not tick for a run that failed to open.
     runner_.setTracking(true);
     wantRunning_ = true;
     input_ = tracker_.current();

@@ -525,8 +525,8 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Tracking:
             if (command.enabled) {
-                // A new run: nothing predicted from the last one's beats, and the clock's Start
-                // on the press that starts listening.
+                // A new run: nothing predicted from the last one's beats, and the clock ticking
+                // from the press that starts listening — its Start waits for a locked downbeat.
                 scheduler_.reset();
                 transports_.startClock(now);
             } else {
