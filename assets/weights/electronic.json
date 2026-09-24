@@ -1,7 +1,7 @@
 {
   "name": "electronic",
   "use_case": "the operator's library: electronic music at 85-140 BPM, breakbeat, electro, IDM, house; drum and bass at half time",
-  "source": "C:\\build\\takt4\\training\\runs\\electronic-library-v2\\soup-48-80.pt",
+  "source": "build/training/runs/electronic-library-v2/soup-48-80.pt",
   "source_bytes": 3075445,
   "source_sha256": "de0f3bf2cc01d97fa1bffd7fa8fcf1363d31e24d6f53ed4e259bec8b036f7f06",
   "upstream": "https://github.com/mjhydri/BeatNet-Plus",
@@ -12,9 +12,52 @@
   "sha256": "abd5d0bd91cb317241d6ef3fd9d64f9e4e696fd68e41dc571242e7b25f09bfe0",
   "torch": "2.14.0+cu130",
   "numpy": "2.5.2",
-  "training": {},
+  "training": {
+    "run": "electronic-library-v2",
+    "config": "tools/train/configs/electronic-library-v2.yaml",
+    "pretrained": "BeatNet+ generic (references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt)",
+    "recipe": {
+      "sets": {
+        "ballroom": 1,
+        "library": 3,
+        "osu2beat": 1,
+        "raveform": 1
+      },
+      "learning_rate": 0.0002,
+      "batch_size": 40,
+      "seq_len": 750,
+      "seed": 42,
+      "selection": "library beat F, window off, meters 4"
+    },
+    "train_tracks": {
+      "ballroom": 1025,
+      "library": 967,
+      "osu2beat": 218,
+      "raveform": 1104
+    },
+    "val_tracks": {
+      "ballroom": 70,
+      "library": 80,
+      "osu2beat": 24,
+      "raveform": 80
+    },
+    "torch": "2.14.0+cu130",
+    "soup": {
+      "method": "the mean of the checkpoints state dicts, tools/train/average_checkpoints.py",
+      "checkpoints": [
+        "epoch_048.pt",
+        "epoch_056.pt",
+        "epoch_064.pt",
+        "epoch_072.pt",
+        "epoch_080.pt",
+        "best-e52.pt",
+        "best-e76.pt"
+      ],
+      "verified": "recomputed on 2026-09-24 from the checkpoints in the run: every parameter within 2.4e-7 of soup-48-80.pt (float32 rounding); no other combination of the run's checkpoints came as close"
+    }
+  },
   "replaces": {
-    "source": "C:\\build\\takt4\\training\\runs\\electronic-library-v2\\best-e76.pt",
+    "source": "build/training/runs/electronic-library-v2/best-e76.pt",
     "sha256": "c4cc143a56cbb6baebeee43d8dbf917c9551acee4ec6e377d0839dfa3680b104",
     "why": "checkpoint average of the same run; measured better on the operator's library and on GiantSteps, level on Ballroom beat F"
   }
