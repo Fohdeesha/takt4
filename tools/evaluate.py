@@ -31,6 +31,16 @@ F-measure needs the second column; without it only the beat numbers are reported
 tempo range nobody evaluating a tracker is allowed to assume — and the published numbers
 are measured without one. `--bpm LO-HI` turns it on, which is worth doing separately to
 see what it is worth on material whose range is known.
+
+**A fine-tune trained on most of Ballroom.** tools/train/layout.py puts about nine clips in
+ten of every set it lays out in the training split — 628 of Ballroom's 698 — so a fine-tuned
+set's Ballroom score over the whole set is a score on its own training data (the audit's
+Python-tools items). `--held-out MANIFEST` scores only the clips that manifest keeps out of
+training (its `val` split, or in no set at all), which is the comparison that means
+something between a fine-tune and the set it started from:
+
+    python tools/evaluate.py BallroomData --annotations BallroomAnnotations \
+        --weights electronic --cli-args "--meters 3,4" --held-out build/training/manifest.json
 """
 
 import argparse
@@ -238,6 +248,15 @@ def evaluate_one(cli, audio, annotation, options):
     return result
 
 
+def trained_ids(manifest_path):
+    """Every track id a tools/train/layout.py manifest puts in a training split. Ids are file
+    stems, as they are here, so a file is matched to its track by name."""
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    return {t["id"] for info in manifest.get("sets", {}).values()
+            for t in info.get("tracks", []) if t.get("split") == "train"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -260,6 +279,9 @@ def main():
     parser.add_argument("--jobs", type=int, default=1,
                         help="files in parallel; each one is a whole takt4-cli run")
     parser.add_argument("--report", type=Path, help="write the per-file scores here as JSON")
+    parser.add_argument("--held-out", type=Path, metavar="MANIFEST",
+                        help="score only the files tools/train/layout.py's MANIFEST keeps out "
+                             "of training: its `val` split, or in no set at all")
     options = parser.parse_args()
 
     cli = find_cli(options.cli)
@@ -284,6 +306,14 @@ def main():
             # how their results are normally read: a mean over the whole set hides which
             # material the tracker cannot follow.
             groups[audio.stem] = audio.parent.name
+    held_out_note = None
+    if options.held_out:
+        trained = trained_ids(options.held_out)
+        before = len(pairs)
+        pairs = [(audio, annotation) for audio, annotation in pairs if audio.stem not in trained]
+        held_out_note = (f"held out: {len(pairs)} of {before} files; the other {before - len(pairs)} "
+                         f"are in the training split of {options.held_out}")
+        print(held_out_note)
     if options.limit:
         pairs = pairs[: options.limit]
     if not pairs:
@@ -382,6 +412,8 @@ def main():
             "confidence_threshold": options.confidence,
             "seed": options.seed,
             "cli_args": options.cli_args,
+            "held_out": str(options.held_out) if options.held_out else None,
+            "held_out_note": held_out_note,
             "platform": platform.platform(),
             "beatnet_plus_trained_on_this": trained_on,
             "files": len(results),

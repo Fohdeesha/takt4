@@ -374,6 +374,41 @@ LAYOUTS = {"raveform": layout_raveform, "osu2beat": layout_osu2beat,
            "library": layout_library, "operator": layout_operator}
 
 
+#: What octave.py and shift_labels.py write into a track's manifest entry. Their `.gt.npy`
+#: labels are rebuilt on disk as they go, so these fields are the manifest's half of a change
+#: that has already been made to the labels.
+LABEL_FIELDS = ("beats", "beats_original", "beats_annotated", "octave", "label_shift_frames")
+
+
+def carry_label_changes(old_tracks, new_tracks):
+    """Carries octave.py's and shift_labels.py's changes from the manifest being replaced.
+
+    Re-running this used to rebuild every track from its annotation, which put `beats` back
+    on the original file while the `.gt.npy` that octave.py halved and shift_labels.py moved
+    stayed as they had left it — so training read halved labels and selection unhalved ones
+    (the audit's Python-tools items). A change is carried when the files it names are still
+    there; one whose file has gone is dropped and said, since then the labels on disk have to
+    be rebuilt by running those scripts again. Returns (carried, dropped) track ids."""
+    old = {t["id"]: t for t in old_tracks}
+    carried, dropped = [], []
+    for t in new_tracks:
+        before = old.get(t["id"])
+        if before is None or not any(k in before for k in ("octave", "label_shift_frames",
+                                                           "beats_annotated")):
+            continue
+        paths = [before[k] for k in ("beats", "beats_original", "beats_annotated") if k in before]
+        if not all(Path(p).exists() for p in paths):
+            dropped.append(t["id"])
+            continue
+        for key in LABEL_FIELDS:
+            if key in before:
+                t[key] = before[key]
+            else:
+                t.pop(key, None)
+        carried.append(t["id"])
+    return carried, dropped
+
+
 def assign_split(tracks, seed, val_fraction):
     """A seeded, per-set split. Flagged tracks are split too, so that lifting a flag
     later does not move any other track between train and validation."""
@@ -404,6 +439,12 @@ def main(argv):
         print(f"{name}: ", end="", flush=True)
         tracks, notes = LAYOUTS[name]()
         assign_split(tracks, a.seed, a.val_fraction)
+        carried, dropped = carry_label_changes(
+            manifest["sets"].get(name, {}).get("tracks", []), tracks)
+        if carried:
+            notes["label_changes_carried"] = len(carried)
+        if dropped:
+            notes["label_changes_dropped"] = dropped
         flagged = sum(1 for t in tracks if t["flags"])
         hours = sum(t["seconds"] for t in tracks) / 3600
         manifest["sets"][name] = {
