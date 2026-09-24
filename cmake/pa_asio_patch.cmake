@@ -19,6 +19,11 @@
 #      every window test builds a real tracker, a tracker enumerates the devices, and
 #      enumerating ASIO loads and initialises every installed driver — sixty times over, on the
 #      machine a show may be running from (the audit's T2).
+#   5. PortAudio can be handed **what each driver would have said**, and then loads none of
+#      them to find out (PaAsio_Takt4_SetProbe, src/core/audio/asio_probe.h). takt4 asks the
+#      drivers from a process of its own and hands the answers over, so that a driver which
+#      falls over as it is released — the MOTU's does, now and then — takes that process with
+#      it rather than takt4 (src/core/audio/asio_scan.hpp).
 #
 # Written like the asiolist.cpp patch in asiosdk.cmake: the vendored file is never touched,
 # the patched copy goes to the build tree, and every edit is an exact-text replacement that
@@ -60,7 +65,63 @@ takt4_patch_pa_asio("the driver-event state"
    driver calls in on its own thread, so the bits are set with interlocked operations. */
 static volatile LONG takt4_driverEvents_ = 0;
 static volatile double takt4_clockedRate_ = 0.;
+
+/* takt4: what each driver would say, from a scan made in another process; null to ask them. */
+#include \"asio_probe.h\"
+static PaAsioTakt4Probe takt4_probe_ = 0;
 ")
+
+takt4_patch_pa_asio("describe a driver without loading it"
+"    asioDeviceInfo->asioChannelInfos = 0; /* we check this below to handle error cleanup */
+
+    result = LoadAsioDriver( asioHostApi, driverName, &paAsioDriver.info, asioHostApi->systemSpecific );"
+"    asioDeviceInfo->asioChannelInfos = 0; /* we check this below to handle error cleanup */
+
+    /* takt4: described by a scan that asked the driver in another process, so it is not loaded
+       here at all — a driver that falls over as it is released takes that process with it. */
+    if( takt4_probe_ )
+    {
+        PaAsioTakt4Device probed;
+        memset( &probed, 0, sizeof(probed) );
+        if( !takt4_probe_( driverName, &probed ) )
+            return paDeviceUnavailable;
+        deviceInfo->maxInputChannels = probed.inputChannels;
+        deviceInfo->maxOutputChannels = probed.outputChannels;
+        deviceInfo->defaultSampleRate = probed.defaultSampleRate;
+        deviceInfo->defaultLowInputLatency = probed.defaultLowInputLatency;
+        deviceInfo->defaultLowOutputLatency = probed.defaultLowOutputLatency;
+        deviceInfo->defaultHighInputLatency = probed.defaultHighInputLatency;
+        deviceInfo->defaultHighOutputLatency = probed.defaultHighOutputLatency;
+        asioDeviceInfo->minBufferSize = probed.minBufferSize;
+        asioDeviceInfo->maxBufferSize = probed.maxBufferSize;
+        asioDeviceInfo->preferredBufferSize = probed.preferredBufferSize;
+        asioDeviceInfo->bufferGranularity = probed.bufferGranularity;
+        const long channels = probed.inputChannels + probed.outputChannels;
+        if( channels > 0 )
+        {
+            asioDeviceInfo->asioChannelInfos = (ASIOChannelInfo*)PaUtil_GroupAllocateZeroInitializedMemory(
+                    asioHostApi->allocations, sizeof(ASIOChannelInfo) * channels );
+            if( !asioDeviceInfo->asioChannelInfos )
+                return paInsufficientMemory;
+            for( long a = 0; a < channels; ++a )
+            {
+                ASIOChannelInfo *channel = &asioDeviceInfo->asioChannelInfos[a];
+                channel->isInput = a < probed.inputChannels ? ASIOTrue : ASIOFalse;
+                channel->channel = a < probed.inputChannels ? a : a - probed.inputChannels;
+                if( probed.channelNames && probed.channelNames[a] )
+                {
+                    /* Zeroed above, so the name stays terminated. */
+                    size_t length = strlen( probed.channelNames[a] );
+                    if( length > sizeof(channel->name) - 1 )
+                        length = sizeof(channel->name) - 1;
+                    memcpy( channel->name, probed.channelNames[a], length );
+                }
+            }
+        }
+        return paNoError;
+    }
+
+    result = LoadAsioDriver( asioHostApi, driverName, &paAsioDriver.info, asioHostApi->systemSpecific );")
 
 takt4_patch_pa_asio("the current rate as the default rate"
 "        deviceInfo->defaultSampleRate = 0.;
@@ -141,6 +202,11 @@ extern \"C\" void PaAsio_Takt4_ForgetClockedRate( void )
 {
     takt4_clockedRate_ = 0.;
 }
+
+extern \"C\" void PaAsio_Takt4_SetProbe( PaAsioTakt4Probe probe )
+{
+    takt4_probe_ = probe;
+}
 ")
 
 takt4_patch_pa_asio("no ASIO in a test process"
@@ -181,6 +247,8 @@ list(REMOVE_AT pa_sources ${pa_asio_at})
 list(INSERT pa_sources ${pa_asio_at} "${pa_asio_out}")
 set_property(TARGET portaudio PROPERTY SOURCES "${pa_sources}")
 target_include_directories(portaudio PRIVATE "${TAKT4_THIRD_PARTY_DIR}/portaudio/src/hostapi/asio")
+# And takt4's own header for the fifth part, the one thing the patch shares with takt4's code.
+target_include_directories(portaudio PRIVATE "${PROJECT_SOURCE_DIR}/src/core/audio")
 
 unset(pa_asio_source)
 unset(pa_asio_patched)

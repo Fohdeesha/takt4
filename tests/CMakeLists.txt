@@ -6,6 +6,7 @@
 
 add_executable(takt4_tests
   build_info_test.cpp
+  audio/asio_scan_test.cpp
   audio/channel_picker_test.cpp
   cli/console_test.cpp
   audio/devices_test.cpp
@@ -71,6 +72,7 @@ add_executable(takt4_tests
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
   support/loopback_receiver.hpp
+  support/scoped_env.hpp
   support/temp_dir.hpp
 )
 
@@ -88,6 +90,9 @@ target_compile_definitions(takt4_tests PRIVATE
 target_link_libraries(takt4_tests
   PRIVATE
     takt4::core
+    # Directly too, for the test that holds what PortAudio here says of each ASIO device
+    # against what the scanning process found (audio/asio_scan_test.cpp).
+    portaudio
     RTNeural
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain

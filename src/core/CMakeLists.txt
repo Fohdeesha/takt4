@@ -20,6 +20,9 @@ add_library(takt4_core STATIC
   build_info.hpp
   audio/asio_driver.cpp
   audio/asio_driver.hpp
+  audio/asio_probe.h
+  audio/asio_scan.cpp
+  audio/asio_scan.hpp
   audio/channel_meter.cpp
   audio/channel_meter.hpp
   audio/channel_picker.cpp
