@@ -230,7 +230,12 @@ export component Press inherits Rectangle {
   touch := TouchArea {
     enabled: root.enabled;
     clicked => {
-      // Focus first, action second, so that what the box committed is what the action sees.
+      // Focus first, action second — but that is not the order they are sure to finish in.
+      // Taking the focus makes the box let go, and its `changed has-focus` commit can run a
+      // turn of the event loop later, after the action (the audit found exactly that). So the
+      // controllers do not lean on this order: they keep what is typed as it is typed and
+      // commit it themselves at the start of an action that depends on it
+      // (`RulesController::commitTyping`, `FixturesController::commitDrafts`).
       sink.take();
       root.clicked();
     }

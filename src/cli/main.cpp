@@ -1,6 +1,7 @@
 // takt4-cli — the development console (HANDOFF §8 Phase 1: list devices, open one
-// channel, print RMS; Phase 2: run the feature front end over a file). Links
-// takt4_core only; never packaged.
+// channel, print RMS; Phase 2: run the feature front end over a file; since then the
+// tracker, the evaluations and `annotate`). Links takt4_core, and the built-in weights where
+// the build has them; attached to every release beside the app (the audit's Q7).
 
 #include "cli/annotate.hpp"
 #include "cli/console.hpp"

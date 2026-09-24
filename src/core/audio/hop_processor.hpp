@@ -5,8 +5,9 @@
 namespace takt4::audio {
 
 /// Consumer of the input pipeline's output: mono hops of kHopSize samples at
-/// kInternalSampleRate. The feature front end and tracker (HANDOFF §5.2, §5.3) sit
-/// behind this in later phases; Phase 1 has a level meter.
+/// kInternalSampleRate. `engine::BeatEngine` is the one that tracks — the feature front end
+/// and the model behind it (HANDOFF §5.2, §5.3) — and `audio::HopMeter` is the level meter
+/// the console prints from.
 ///
 /// processHop runs on the audio thread and is bound by HANDOFF §4.2: no allocation,
 /// no locks, no I/O, fixed buffers, results out through a lock-free ring only.

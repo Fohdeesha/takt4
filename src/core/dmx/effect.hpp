@@ -18,8 +18,10 @@ namespace takt4::dmx {
 /// rule that was going to stop it was disabled, edited or never fired, and it is the kind of
 /// failure that happens in front of an audience. takt4's whole shape is *rules that fire on
 /// the music*, so a strobe for two bars re-fired every two bars is both the natural gesture
-/// and the one that cannot get stuck. Panic and a rule being switched off both stop
-/// everything without leaving anything latched.
+/// and the one that cannot get stuck. A rule switched off fires no more, and whatever it had
+/// already started runs out its duration — nothing stops it early, which is exactly why the
+/// duration has to be there. PANIC stops every effect at once and freezes the levels where
+/// they are (`DmxEngine::cancelAll`).
 enum class EffectKind : std::uint8_t {
     /// One role to one level. With a duration it is a fade; with none it is a snap, and the
     /// two are the same instruction because *"fade this to full over two bars"* and *"put
@@ -57,10 +59,10 @@ enum class EffectKind : std::uint8_t {
     /// Its own kind rather than a `Position` at 0.5/0.5 because "home" should stay home when
     /// the operator changes the window.
     Home,
-    /// Every light-emitting channel this fixture has to zero, over the duration. Dimmer,
-    /// color and white; not the shutter, not the movement, not the speed — those go back to
-    /// the fixture's parked levels, which is where a fixture that is *dark* should sit rather
-    /// than where a fixture that has been switched off should.
+    /// Every light-emitting channel this fixture has to zero, over the duration: dimmer,
+    /// color, white, amber and UV. Not the shutter, not the movement, not the speed — those
+    /// stay where they are, because a fixture that is *dark* should still be ready for the
+    /// next rule, and a shutter closed by a blackout would stay dark when it fires.
     Blackout,
 };
 

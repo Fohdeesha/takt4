@@ -110,8 +110,8 @@ public:
     /// that is what makes a follow-up delay mean milliseconds rather than beats.
     void advance(const Context& context);
 
-    /// §5.8's *"on onset"*. Nothing calls this yet; the spectral-flux classifier that will
-    /// is the next piece of Phase 6.
+    /// §5.8's *"on onset"*. `output::OutputRunner` calls it once per round in which the
+    /// intensity classifier's onset count moved, however far it moved.
     void onOnset(const Context& context);
 
     /// §5.8's *"on manual hotkey"* — fires every rule whose trigger is `Manual`, conditions

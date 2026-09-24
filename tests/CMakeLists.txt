@@ -1,8 +1,8 @@
 # The test binary links takt4_core only — never takt4_ui — so it doubles as the proof
 # that the engine stands on its own without Slint.
 #
-# RTNeural and nlohmann/json are linked here directly for their smoke tests; the engine
-# does not use them yet.
+# RTNeural and nlohmann/json are also linked here directly, for the smoke tests that pin
+# their behaviour on their own; the engine uses both (the model and the settings file).
 
 add_executable(takt4_tests
   build_info_test.cpp
@@ -145,9 +145,10 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
 # A second binary rather than more files in the first, so that takt4_tests keeps meaning
 # "the engine stands up with no Slint anywhere near it" (HANDOFF §4.2). This one drives
 # the real component: it presses the real button, steps the real redraw timer and reads
-# the real properties back. slint::testing::init() gives it a backend whose windows never
-# reach a screen, which is what makes it runnable on a machine with no display — see
-# tests/ui/main.cpp.
+# the real properties back. takt4's own headless platform (`ui::installHeadlessPlatform`,
+# the one takt4-shot renders through) gives it windows that never reach a screen, which is
+# what makes it runnable on a machine with no display — see tests/ui/main.cpp for why it is
+# not slint::testing::init().
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests

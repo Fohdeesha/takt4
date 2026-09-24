@@ -135,7 +135,7 @@ DWORD runChild(const std::filesystem::path& dir, const std::string& how) {
 #if defined(__SANITIZE_ADDRESS__)
     // Where the sanitizer's own report goes, said outright. The child runs detached, with no
     // console: with MSVC 19.44 the report reached takt4's log through the stderr it redirects,
-    // and with the newer toolchain on the CI runners it went nowhere at all (2026-09-24) —
+    // and with the newer toolchain on the CI runners it went nowhere at all (2026-09-23) —
     // the test found neither a report nor a dump. A file of its own in the test's folder
     // leaves nothing to chance.
     char previousAsan[4096] = {};
@@ -240,7 +240,7 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
         // its own handler reports it — with far more than a minidump would say — and ends the
         // process before an unhandled-exception filter is ever consulted, so the report has to
         // be *kept*, which is the log's job. With the newer toolchain on the CI runners the log
-        // came back empty (2026-09-24), which is the fault reaching takt4's own filter instead;
+        // came back empty (2026-09-23), which is the fault reaching takt4's own filter instead;
         // then it is the minidump below that has to be there. Either way the crash is recorded,
         // and a run with neither fails. The shipped build has no sanitizer.
         if (std::string_view(c.how) == "access-violation") {

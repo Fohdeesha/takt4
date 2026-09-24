@@ -237,9 +237,8 @@ inline constexpr std::string_view kAllRules = "all";
 /// ring is a different ring with a different consumer — §5.9's activation trace — and is
 /// not touched here.
 ///
-/// `takt4-cli track` obeys that already. §5.9's window still drains beats and throws them
-/// away, purely so the ring does not fill, and **that loop has to go the moment the window
-/// owns one of these**; `ui::WindowController::tick` says so at the point it happens.
+/// The window owns one of these and reads beats only through it. `takt4-cli track`
+/// drains the ring itself and runs no runner, which is the same rule kept the other way.
 ///
 /// The caller still owns two things that have to happen around it:
 ///

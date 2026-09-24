@@ -7,16 +7,18 @@
 // meter. All of that is here, with §5.5's manual downbeat, octave-fold window and
 // latency offset alongside.
 //
-// What is deliberately not here yet: the outputs row (it waits on the output thread),
-// the trigger cards and PANIC (Phase 6), and §5.1's two-channel input options.
+// Since then the OUTPUTS row, the TRIGGERS line with PANIC and RELEASE, and the buttons that
+// open the rule and patch editors have joined it. What is still not here is §5.1's
+// two-channel input: the window starts a tracker on one channel.
 //
 // Every control here *sends* through engine::BeatEngine::post(), and none of them talks
 // to the tracker directly. The controller behind this window is the only thing that
 // touches the engine; see window_controller.cpp for why a posted change is not read
 // straight back.
 //
-// Nothing in this file assumes a meter of four. `beats-per-bar` comes from the particle
-// filter's downbeat stage and the bar indicator is drawn from it, as §5.5 requires.
+// Nothing in this file assumes a meter of four. `beats-per-bar` comes from the decoder's
+// bar position — the forward filter's, by default — and the bar indicator is drawn from it,
+// as §5.5 requires.
 
 import { CheckBox, ComboBox, Palette, ScrollView, Slider } from "std-widgets.slint";
 import { Bar, Field, Press, Setting, Theme } from "theme.slint";
