@@ -313,7 +313,7 @@ if(TAKT4_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------------------
-# Slint 1.17.1 (UI only). Built from source through Corrosion and cargo, so a Rust
+# Slint 1.18.1 (UI only). Built from source through Corrosion and cargo, so a Rust
 # toolchain (1.92 or newer) must be on PATH. Linked statically: takt4 is one executable
 # and this removes any question of where a shared slint_cpp library has to live.
 # The interpreter is not built; .slint files are compiled ahead of time.
@@ -321,7 +321,7 @@ endif()
 if(TAKT4_BUILD_UI)
   FetchContent_Declare(Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG v1.17.1
+    GIT_TAG v1.18.1
     GIT_SHALLOW ON
     SOURCE_SUBDIR api/cpp
     SYSTEM
@@ -329,6 +329,9 @@ if(TAKT4_BUILD_UI)
   block()
     # BUILD_SHARED_LIBS is OFF at top level; Slint reads it and builds slint_cpp-static.
     set(SLINT_FEATURE_INTERPRETER OFF)
+    # On by default since 1.18, for the SystemTrayIcon element takt4 has no use for: off, so its
+    # crates are neither built nor linked (nor owed a line in THIRD-PARTY-NOTICES.txt).
+    set(SLINT_FEATURE_SYSTEM_TRAY OFF)
     set(SLINT_STYLE "fluent")
     # Skia rather than FemtoVG (HANDOFF §2): Metal on macOS, OpenGL elsewhere. Skia itself
     # is not compiled here: skia-bindings' build script downloads rust-skia's prebuilt
@@ -344,14 +347,14 @@ if(TAKT4_BUILD_UI)
     endif()
     FetchContent_MakeAvailable(Slint)
   endblock()
-  set(TAKT4_SLINT_VERSION "1.17.1")
+  set(TAKT4_SLINT_VERSION "1.18.1")
 
-  # **Slint is the commit v1.17.1 names today, or nothing is built.** It is fetched by tag, and
+  # **Slint is the commit v1.18.1 names today, or nothing is built.** It is fetched by tag, and
   # a tag can be moved (the audit: "Slint is fetched by git tag with no hash"). A full clone to
   # pin the commit itself would be hundreds of megabytes on every clean build, so the shallow
   # checkout of the tag is kept and what it checked out is compared with the commit recorded
   # here, on every configure.
-  set(TAKT4_SLINT_COMMIT "cf62c975c311e7036d599ed8ed0b7e6a8386a934")
+  set(TAKT4_SLINT_COMMIT "372cf0ee5577c3dfec309a45e7b778ba4e81b734")
   FetchContent_GetProperties(Slint SOURCE_DIR takt4_slint_source)
   find_package(Git REQUIRED)
   execute_process(
@@ -380,7 +383,7 @@ if(TAKT4_BUILD_UI)
   # slint_cpp is a Rust staticlib. Corrosion attaches the system libraries the Rust
   # standard library needs, but not the ones Slint's crates request with #[link] or from
   # their build scripts; those only surface as unresolved symbols when takt4 is linked.
-  # The lists below are for slint-cpp 1.17.1 with the features Slint's CMake passes, minus
+  # The lists below are for slint-cpp 1.18.1 with the features Slint's CMake passes, minus
   # what Corrosion and CMake link anyway: on Windows, what rustc reports when the cargo
   # command from the cargo-build_slint_cpp build rule is re-run with
   # `--print native-static-libs` appended; on the other two, what the crates in
@@ -394,10 +397,11 @@ if(TAKT4_BUILD_UI)
     # final rustc invocation instead: cargo passes skia-bindings' link-search path to that
     # invocation, and rustc bundles static libraries into a staticlib by default. This is
     # what rust-skia itself does on every other platform. The names are rust-skia's
-    # binaries_config.rs list for the textlayout feature set Slint enables.
+    # binaries_config.rs list for the features Slint enables: since 1.18 that no longer
+    # includes textlayout, so skparagraph, skshaper and the two skunicode libraries are not in
+    # the archive, and asking for them fails the build.
     corrosion_add_target_local_rustflags(slint_cpp
       -lstatic=skia -lstatic=skia-bindings
-      -lstatic=skparagraph -lstatic=skshaper -lstatic=skunicode_core -lstatic=skunicode_icu
     )
     # opengl32: glutin's WGL bindings and Skia's GL backend. imm32: winit's IME support,
     # declared through windows-targets 0.52, which resolves against its bundled
@@ -406,8 +410,9 @@ if(TAKT4_BUILD_UI)
     # d3d12, dxgi, d3dcompiler: rust-skia's platform/windows.rs list for the gl and d3d
     # features, minus the libraries CMake links by default (user32 gdi32 ole32 advapi32).
     set_property(TARGET slint_cpp-static APPEND PROPERTY INTERFACE_LINK_LIBRARIES
-      opengl32 imm32 shlwapi usp10 fontsub d3d12 dxgi d3dcompiler
+      opengl32 imm32 shlwapi usp10 fontsub d3d12 dxgi d3dcompiler uxtheme
     )
+    # uxtheme since 1.18.1: winit's dark mode calls SetWindowTheme.
     if(MSVC)
       # Slint's headers declare the runtime's entry points __declspec(dllimport) whether or
       # not it was built as a DLL (slint_config.h). Against the static library the linker
