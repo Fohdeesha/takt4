@@ -329,7 +329,9 @@ anyway:
 - A Rust toolchain 1.92+ and `curl` on `PATH`, for the Slint UI. `TAKT4_BUILD_UI=OFF` —
   the `windows-core` preset — builds the engine, the console and the tests without either.
 - Network access on the first configure: the remaining dependencies are fetched from
-  pinned, hash-checked archives.
+  pinned, hash-checked archives. Slint is checked out by tag and checked against the commit
+  the tag named; Skia's prebuilt archive is checked library by library (a test); the Rust
+  toolchain is pinned in `rust-toolchain.toml`, and rustup fetches it if it is missing.
 
 ```sh
 cmake --preset windows-msvc
