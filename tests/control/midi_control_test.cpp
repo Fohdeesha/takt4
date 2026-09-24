@@ -319,7 +319,9 @@ TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[c
     const takt4::testing::TappedRhythm rhythm = takt4::testing::tapWithBounces(
         [&control] { CHECK(control.dispatch(note(36))); }, 3, std::chrono::milliseconds{400});
     const double heard = rhythm.tempoOfThree();
-    INFO("tapped at " << heard << " BPM; the slowest bounce came " << rhythm.longestBounce()
+    INFO("tapped at " << heard << " BPM (" << rhythm.slowestOfThree() << " to "
+                      << rhythm.fastestOfThree() << " as the surface could have stamped it); "
+                      << "the slowest bounce came " << rhythm.longestBounce()
                       << " s after its press");
     REQUIRE(rhythm.longestBounce() < 0.1);
     REQUIRE(heard == Approx(150.0).margin(8.0));
@@ -328,8 +330,11 @@ TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[c
     CHECK(control.handled() == 6);
     (void)engine->step();
     CHECK(engine->commandsDropped() == 0);
+    // Within what the surface's own stamps allow — see `TappedRhythm::slowestOfThree`.
     const auto window = engine->tempoOptions();
-    CHECK(std::sqrt(window.minBpm * window.maxBpm) == Approx(heard).margin(0.5));
+    const double centre = std::sqrt(window.minBpm * window.maxBpm);
+    CHECK(centre >= rhythm.slowestOfThree() - 0.5);
+    CHECK(centre <= rhythm.fastestOfThree() + 0.5);
 }
 
 TEST_CASE("the binding table is restored the way it was saved", "[control][midi]") {
