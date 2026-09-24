@@ -14,6 +14,12 @@ beforehand — point it at the sound coming out of the mixer and it follows.
 copy the executable anywhere and run it. It keeps a `settings.json` beside itself, which
 makes two copies in two folders two rigs — a rehearsal setup and a show setup.
 
+It needs the Microsoft Visual C++ runtime, which most Windows machines already have. If
+takt4 will not start and Windows names `VCRUNTIME140.dll` or `MSVCP140.dll`, install the
+[Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) from
+Microsoft once. takt4 is not signed, so the first time you run a new download Windows may
+say it "protected your PC": choose **More info**, then **Run anyway**.
+
 Your rig is saved on its own a few seconds after every change, and each save replaces the
 file whole, so a crash or a power cut never leaves half of one. Each clean start also keeps
 a copy as `settings.json.bak`. If the file is ever damaged, takt4 sets it aside as
