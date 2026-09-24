@@ -318,6 +318,8 @@ const char* valueLabelOf(trigger::Message::Kind kind) {
         return "velocity";
     case trigger::Message::Kind::MidiPitchBend:
         return "bend";
+    case trigger::Message::Kind::Dmx:
+        return "level"; // a lighting release's value is the brightness it lets go to
     default:
         return "value"; // OSC's argument and a CC's value are both just a value
     }
@@ -346,10 +348,27 @@ std::string releaseLabelOf(trigger::Message::Kind sent) {
         return "release (same program)";
     case trigger::Message::Kind::MidiPitchBend:
         return "release (centre)";
+    case trigger::Message::Kind::Dmx:
+        return "release (same fixtures)";
     case trigger::Message::Kind::Osc:
         break;
     }
     return "release (same address)";
+}
+
+/// What a lighting rule's release does to the light, which depends on the effect it lets go of.
+/// `Rule::followUpsFor` is the engine's half of this and the two must say the same thing: a
+/// color comes back at the row's level, a flash, pulse, strobe or plain level becomes a plain
+/// level on the rule's channel, and a move has no release at all and is skipped. That last one
+/// is a row that sends nothing, so it has to say so rather than look like it works.
+std::string describeDmxRelease(const trigger::DmxSend& send) {
+    if (dmx::takesMovement(send.effect)) {
+        return "nothing — a move has no release, so this row sends nothing";
+    }
+    if (dmx::takesColor(send.effect)) {
+        return "the same color at this level, same fixtures";
+    }
+    return std::string(dmx::labelOf(send.role)) + " to this level, same fixtures";
 }
 
 /// What a follow-up row will *really* send, beside the row that configures it.
@@ -398,6 +417,8 @@ std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config&
         return "the same program — nothing to release";
     case trigger::Message::Kind::MidiPitchBend:
         return "pitch bend, ch " + std::to_string(rule.channel);
+    case trigger::Message::Kind::Dmx:
+        return describeDmxRelease(rule.dmx);
     case trigger::Message::Kind::Osc:
         break;
     }
@@ -2797,6 +2818,12 @@ void RulesController::publishFollowUps() {
         row.number = entry.number;
         row.takes_value = !entry.kind || trigger::sendsValue(*entry.kind) ||
                           *entry.kind == trigger::Message::Kind::Osc;
+        // Except the release of a move, which is skipped whole: a level box beside it would
+        // be a setting that does nothing. The summary says why.
+        if (!entry.kind && rule->sendKind == trigger::Message::Kind::Dmx &&
+            dmx::takesMovement(rule->dmx.effect)) {
+            row.takes_value = false;
+        }
         // Named for whatever the row resolves to, which for a release is the *released* kind
         // and not the rule's: a note on's release carries a release velocity, and a box
         // holding a bare 0 had an operator asking what it was.
