@@ -1130,6 +1130,65 @@ TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[u
         }
     }
 
+    SECTION("a new port that will not bind leaves it listening on the old one") {
+        // The audit's M24: the working socket was closed first and the new number tried after,
+        // so a typo — or a port another program has — left the Stream Deck with nobody
+        // listening, mid-show. A fixed port rather than 0 here, since 0 rebound would be a
+        // different "any free one" and the test could not tell where it came back.
+        std::uint16_t free = 0;
+        {
+            const takt4::testing::LoopbackReceiver probe;
+            free = probe.port();
+        }
+        controller.window().invoke_osc_control_port_edited(slint::SharedString(std::to_string(free)));
+        controller.window().invoke_osc_control_toggled(true);
+        REQUIRE(controller.oscControl().running());
+        REQUIRE(controller.oscControlPort() == free);
+
+        const takt4::testing::LoopbackReceiver taken; // something else is on this one
+        controller.window().invoke_osc_control_port_edited(
+            slint::SharedString(std::to_string(taken.port())));
+        CHECK(controller.oscControl().running());
+        CHECK(controller.oscControlPort() == free);
+        CHECK(controller.statusIsError());
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("Still listening on " + std::to_string(free)) != std::string::npos);
+        CHECK(std::string(controller.window().get_osc_control_port()) == std::to_string(free));
+    }
+
+    SECTION("a port that was busy at launch is still asked for next time") {
+        // The other half of M24. Saving `running()` turned a port that was only briefly busy —
+        // another copy of takt4 still closing — into OSC control switched off for good, with
+        // nothing at the next launch to say so.
+        const takt4::testing::LoopbackReceiver taken;
+        takt4::settings::Settings settings;
+        settings.machine.oscControlEnabled = true;
+        settings.machine.oscControlPort = taken.port();
+        // And a control surface left at home, so the launch meets two problems: both are said
+        // (the audit's M25) — each used to write the one before it away.
+        settings.machine.midiControlPort = "takt4 test - a control surface left at home";
+        LiveTracker second(kWeights, kStateSpace);
+        WindowController busy(second, settings);
+        CHECK_FALSE(busy.oscControl().running());
+        CHECK(busy.statusIsError());
+        CHECK(busy.currentSettings().machine.oscControlEnabled);
+        const std::string status(busy.window().get_status());
+        INFO(status);
+        CHECK(status.find("OSC control") != std::string::npos);
+        CHECK(status.find("a control surface left at home") != std::string::npos);
+
+        // And a new number is tried at once, since it is still wanted.
+        std::uint16_t free = 0;
+        {
+            const takt4::testing::LoopbackReceiver probe;
+            free = probe.port();
+        }
+        busy.window().invoke_osc_control_port_edited(slint::SharedString(std::to_string(free)));
+        CHECK(busy.oscControl().running());
+        CHECK(busy.oscControlPort() == free);
+    }
+
     SECTION("a port that is not a number is refused rather than silently ignored") {
         controller.window().invoke_osc_control_port_edited(slint::SharedString("70o1"));
         CHECK(controller.statusIsError());
@@ -1993,6 +2052,9 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK_FALSE(controller.window().get_input_lost());
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("Audio is back") != std::string::npos);
+    // Said, and not in red: it is fixed, and a red status that asks for nothing stays red until
+    // something else is said (the audit's M25).
+    CHECK_FALSE(controller.statusIsError());
 
     // A clock moved by another program: reopened at once, and said.
     Reading moved;
@@ -2001,6 +2063,7 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     controller.superviseInput(moved, nothing, 102.0);
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("moved from") != std::string::npos);
+    CHECK_FALSE(controller.statusIsError());
 
     // A driver asking to be reset: the same.
     takt4::audio::AsioDriverEvents reset;
@@ -2009,6 +2072,7 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("asked to be reset") !=
           std::string::npos);
+    CHECK_FALSE(controller.statusIsError());
 
     // And STOP during an outage stops, rather than reading "not running" and starting.
     controller.superviseInput(silent, nothing, 104.0);

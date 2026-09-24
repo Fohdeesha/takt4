@@ -661,6 +661,19 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         setStatus(std::string("Cannot start the outputs: ") + e.what(), true);
     }
 
+    // **Every error the window met on the way up, not only the last** (the audit's M25). Each
+    // `setStatus` replaces the one before, so a launch that found the MIDI clock port missing
+    // and the OSC control port taken said only the second, and the first was never seen.
+    constructing_ = false;
+    if (startupErrors_.size() > 1) {
+        std::string all;
+        for (const std::string& error : startupErrors_) {
+            all += (all.empty() ? "" : "  ·  ") + error;
+        }
+        setStatus(all, true);
+    }
+    startupErrors_.clear();
+
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
 
@@ -943,7 +956,9 @@ void WindowController::restartInput(const std::string& why, double now) {
     std::string error;
     if (reopenInput(error)) {
         const audio::InputStream* stream = tracker_.stream();
-        setStatus(why + "; reopened at " + fixed(stream->sampleRate(), 0) + " Hz.", true);
+        // Not red: it is fixed, and an error colour on a status that asks for nothing stays
+        // there until something else is said (the audit's M25).
+        setStatus(why + "; reopened at " + fixed(stream->sampleRate(), 0) + " Hz.", false);
         return;
     }
     beginOutage(why + ", and it would not open again (" + error + ")", now, now);
@@ -986,7 +1001,7 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
             setStatus("Audio is back from " + name + " after " + fixed(lasted, 0) +
                           " s without it; reopened at " +
                           fixed(tracker_.stream()->sampleRate(), 0) + " Hz.",
-                      true);
+                      false); // fixed, so not red — see `restartInput`
         } else {
             outage_->nextTry = now + kOutageRetrySeconds;
             setStatus(outage_->why + " — still no audio after " +
@@ -1533,6 +1548,8 @@ void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
 }
 
 void WindowController::setOscControlEnabled(bool on) {
+    // What was asked for, before anything can fail: see `oscControlWanted_`.
+    oscControlWanted_ = on;
     if (on == oscControl_.running()) {
         return;
     }
@@ -1574,6 +1591,7 @@ void WindowController::setOscControlPort(int port) {
     if (config.port == static_cast<std::uint16_t>(port)) {
         return;
     }
+    const std::uint16_t previousPort = oscControl_.config().port;
     config.port = static_cast<std::uint16_t>(port);
 
     // A socket is bound at `start()`, so changing the port means going round again — but
@@ -1583,11 +1601,29 @@ void WindowController::setOscControlPort(int port) {
     oscControl_.stop();
     config.enabled = false;
     oscControl_.setConfig(config);
-    if (wasRunning) {
-        setOscControlEnabled(true);
-    } else {
+    // Wanted but not listening — its port was taken at launch — is a new number to try too:
+    // that is usually why the operator is changing it.
+    if (!wasRunning && !oscControlWanted_) {
         publishControl();
+        return;
     }
+    setOscControlEnabled(true);
+    if (oscControl_.running() || !wasRunning) {
+        return;
+    }
+    // **The new port would not bind, so the old one comes back** (the audit's M24). This
+    // closed the working socket first and then tried the new number, so a typo — or a port
+    // another program has — left a Stream Deck with no one listening, mid-show. What
+    // `setOscControlEnabled` said about the new port is kept; this adds where it still is.
+    const std::string refusal(window_->get_status());
+    config.port = previousPort;
+    oscControl_.setConfig(config);
+    setOscControlEnabled(true);
+    if (oscControl_.running()) {
+        setStatus(refusal + " Still listening on " + std::to_string(oscControl_.port()) + ".",
+                  true);
+    }
+    publishControl();
 }
 
 void WindowController::setOscControlNetwork(bool allowNetwork) {
@@ -1925,12 +1961,15 @@ settings::Settings WindowController::currentSettings() const {
         out.machine.midiBindings.push_back(control::formatMidiBinding(binding));
     }
 
-    // §5.7's other surface. `running()` rather than `config().enabled`, so a port that was
-    // taken at startup is remembered as *off* — the operator saw the error and did not get
-    // a listener, and a file that claims otherwise would fail the same way every launch.
+    // §5.7's other surface: **what was asked for, not whether it bound** (the audit's M24).
+    // This used to save `running()`, on the reasoning that a port taken at startup should not
+    // be claimed in the file — but a port that was only briefly busy (another copy of takt4
+    // still closing, say) then switched OSC control off for every launch after, silently,
+    // since nothing tried again: the Stream Deck simply stopped working at the next show. A
+    // port that stays taken says so at every launch instead, in the status line.
     // The port asked for, not `port()`: with 0 meaning "any free one", saving what the
     // platform happened to hand out would silently pin next launch to it.
-    out.machine.oscControlEnabled = oscControl_.running();
+    out.machine.oscControlEnabled = oscControlWanted_;
     out.machine.oscControlPort = oscControl_.config().port;
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
 
@@ -2285,6 +2324,9 @@ void WindowController::publishPin() {
 }
 
 void WindowController::setStatus(const std::string& text, bool error) {
+    if (constructing_ && error) {
+        startupErrors_.push_back(text); // shown together once the window is up; see there
+    }
     statusIsError_ = error;
     // Through `shared`, and so through `io::validUtf8`: this is where exception messages land,
     // and those carry driver and device names in whatever encoding their library used.

@@ -1909,6 +1909,11 @@ export component MainWindow inherits Window {
           color: root.status-is-error ? Theme.holding : Theme.dim;
           font-size: 12px;
           vertical-alignment: center;
+          // Two lines before it elides — the bar is tall enough for them. One line cut every
+          // longer message off, and the longest are the ones that say what to do: an ASIO
+          // interface held by another program, a port taken, every output that cannot be
+          // reached (the audit's M25).
+          wrap: word-wrap;
           overflow: elide;
         }
 

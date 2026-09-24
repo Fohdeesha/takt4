@@ -468,6 +468,13 @@ private:
     /// opened. Saved as it is, so a port that was not plugged in at one launch is still
     /// wanted at the next.
     std::string midiClockWanted_;
+    /// OSC control asked for — by the settings or by its switch — whether or not its port
+    /// bound. Saved as it is, for the same reason as `midiClockWanted_` (the audit's M24).
+    bool oscControlWanted_ = false;
+    /// True until the constructor has finished, and the errors it met meanwhile — shown
+    /// together at the end of it rather than each writing the last away (the audit's M25).
+    bool constructing_ = true;
+    std::vector<std::string> startupErrors_;
     /// The lost MIDI devices the status line last reported.
     std::vector<std::string> lostMidiShown_;
     /// The output problems the status line last reported. See `publishOutputProblems`.
