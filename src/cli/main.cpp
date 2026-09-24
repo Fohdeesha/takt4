@@ -196,8 +196,10 @@ int parseInt(std::string_view text, std::string_view what) {
     } catch (const std::exception&) {
         consumed = 0;
     }
-    if (consumed != s.size()) {
-        throw std::invalid_argument(std::string(what) + ": not a number: " + s);
+    // An empty value consumed all of its nothing, and used to come back as 0: `--device ""`
+    // opened device 0 (the audit's Low list).
+    if (s.empty() || consumed != s.size()) {
+        throw std::invalid_argument(std::string(what) + ": not a number: \"" + s + "\"");
     }
     return value;
 }
@@ -211,8 +213,10 @@ double parseDouble(std::string_view text, std::string_view what) {
     } catch (const std::exception&) {
         consumed = 0;
     }
-    if (consumed != s.size()) {
-        throw std::invalid_argument(std::string(what) + ": not a number: " + s);
+    // Empty, as for parseInt; and `stod` reads "nan" and "inf" as numbers, which no option
+    // here can mean.
+    if (s.empty() || consumed != s.size() || !std::isfinite(value)) {
+        throw std::invalid_argument(std::string(what) + ": not a number: \"" + s + "\"");
     }
     return value;
 }
@@ -595,8 +599,19 @@ BeatsArgs parseBeatsArgs(const std::vector<std::string_view>& args) {
         }
     }
     if (out.file) {
-        if (!forwarded.empty()) {
-            throw std::invalid_argument("beats over a file takes no device options");
+        // Named, and told apart: this said "no device options" of every option it did not
+        // know, so a misspelt one read as a complaint about devices.
+        for (const std::string_view option : forwarded) {
+            if (!option.starts_with("--")) {
+                continue; // a device option's value
+            }
+            const bool device = option == "--device" || option == "--channel" ||
+                                option == "--channels" || option == "--all" ||
+                                option == "--software" || option == "--rate" ||
+                                option == "--seconds";
+            throw std::invalid_argument(device ? "a file takes no device options: " +
+                                                     std::string(option)
+                                               : "unknown option: " + std::string(option));
         }
         return out;
     }

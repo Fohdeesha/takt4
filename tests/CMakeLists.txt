@@ -131,6 +131,27 @@ if(TARGET takt4_assets)
                TIMEOUT 300)
 endif()
 
+# The console's own parsing (the audit's Low list): an empty value was read as 0, so
+# `--device ""` opened device 0; "nan" was a number; and a misspelt option over a file was
+# reported as a device option. Each is refused now, in words that name what was wrong.
+set(synthetic_wav "${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav")
+add_test(NAME "the console refuses an empty number rather than reading it as zero"
+         COMMAND takt4-cli meter --device "" --channel 1)
+add_test(NAME "the console refuses nan as a number"
+         COMMAND takt4-cli track "${synthetic_wav}" --latency nan)
+add_test(NAME "the console names an option it does not know"
+         COMMAND takt4-cli track "${synthetic_wav}" --no-such-option)
+set_tests_properties("the console refuses an empty number rather than reading it as zero"
+                     PROPERTIES PASS_REGULAR_EXPRESSION "--device: not a number: \"\"")
+set_tests_properties("the console refuses nan as a number"
+                     PROPERTIES PASS_REGULAR_EXPRESSION "--latency: not a number: \"nan\"")
+set_tests_properties("the console names an option it does not know"
+                     PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --no-such-option")
+set_tests_properties("the console refuses an empty number rather than reading it as zero"
+                     "the console refuses nan as a number"
+                     "the console names an option it does not know"
+                     PROPERTIES LABELS "cli" TIMEOUT 60)
+
 if(WIN32)
   # GetFileVersionInfoW, for the test that reads the executables' version resources.
   target_link_libraries(takt4_tests PRIVATE version)
