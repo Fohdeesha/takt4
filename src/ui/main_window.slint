@@ -27,6 +27,7 @@ export { RulesWindow, RuleRow, SlotRow } from "rules_window.slint";
 // And the patch editor, for the same reason — see src/ui/CMakeLists.txt on why there is one
 // generated header rather than one per window.
 export { FixturesWindow, FixtureRow, ChannelRow } from "fixtures_window.slint";
+export { AboutWindow } from "about_window.slint";
 
 /// One 50 Hz frame of the activation trace. The network's two probabilities, and
 /// whether the tracker actually called a beat on this frame — which is the difference
@@ -279,6 +280,8 @@ export component MainWindow inherits Window {
   in-out property <bool> panicked;
 
   callback rules-clicked();
+  /// ABOUT in the status line: the licence, the source and the notices.
+  callback about-opened();
   /// How many fixtures are patched, for the button that opens the patch editor. Zero is a rig
   /// with no lights on it, and the button says "PATCH LIGHTS" rather than "0 FIXTURES".
   in-out property <int> fixtures-total;
@@ -1896,9 +1899,9 @@ export component MainWindow inherits Window {
 
         Text {
           x: 16px;
-          // Stops short of the version, which is the one thing in this bar that never
-          // changes and so must never be the thing that gets elided.
-          width: parent.width - 32px - build.width - 16px;
+          // Stops short of the version and ABOUT, which never change and so must never be
+          // the thing that gets elided.
+          width: parent.width - 32px - build.width - 16px - about.width - 10px;
           height: 100%;
           text: root.status;
           color: root.status-is-error ? Theme.holding : Theme.dim;
@@ -1914,6 +1917,24 @@ export component MainWindow inherits Window {
           color: Theme.dim;
           font-size: 12px;
           vertical-alignment: center;
+        }
+
+        // The licence, the source and the notices of what is built in (GPLv3 §5(d)). Beside
+        // the version, which is where anyone looking for "what is this" looks. A `Press` like
+        // every other button, so a click here finishes an edit as they all do; placed by hand
+        // at the bar's height rather than laid out at a button's.
+        about := Press {
+          x: build.x - self.width - 10px;
+          y: (parent.height - self.height) / 2;
+          // Its own width, said outright: outside a layout an element takes its parent's
+          // whole width, and this one first drew as a bar across the status line, hiding it
+          // (caught by "a short window scrolls rather than losing its bottom row").
+          width: self.preferred-width;
+          height: 24px;
+          text: "ABOUT";
+          font: 11px;
+          pad: 8px;
+          clicked => { root.about-opened(); }
         }
       }
     }

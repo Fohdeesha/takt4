@@ -368,7 +368,9 @@ arguments lists everything it takes.
 
 ## License
 
-GPLv3 — see [LICENSE](LICENSE).
+GPLv3 — see [LICENSE](LICENSE). The licences of everything built into takt4 are in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which is also inside the program:
+**ABOUT**, beside the version at the bottom of the window, opens both.
 
 | Component | Used for | License |
 |---|---|---|

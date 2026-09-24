@@ -1,0 +1,131 @@
+// About takt4: what it is, the licence it is under, where its source is, and the notices of
+// everything built into it.
+//
+// **GPLv3 §5(d) asks a program with an interactive interface to show "Appropriate Legal
+// Notices"** — a copyright notice, that there is no warranty, that it may be passed on under
+// the licence, and how to see the licence — and BSD, MIT, Apache, MPL and the Unicode licence
+// ask for their notices to go wherever the binary goes (the audit's licensing finding; the
+// user's answer to its Q8). takt4 is one file somebody copies to a stick, so the notices are
+// built into it and opened from here rather than left in a folder that may not have come
+// along. `WindowController` writes the text out and opens it in the machine's text viewer.
+
+import { FocusSink, Press, Theme } from "theme.slint";
+
+export component AboutWindow inherits Window {
+  title: "About takt4";
+  background: Theme.background;
+  preferred-width: 580px;
+  // Measured, not guessed: at 440 x 420 both OPEN buttons elided and CLOSE fell off the
+  // bottom. At 520 x 480 everything is whole.
+  min-width: 520px;
+  preferred-height: 520px;
+  min-height: 480px;
+
+  /// `versionLabel`: the version, and the commit after it for anything but a clean release.
+  in property <string> version;
+  /// What the last OPEN did: where the file was written, or why it could not be.
+  in property <string> opened;
+  callback licence-opened();
+  callback notices-opened();
+  callback closed();
+
+  // Nothing here takes typing, but a click on the background still lands somewhere, as it
+  // does in every other window.
+  sink := FocusSink { }
+  TouchArea {
+    clicked => { sink.take(); }
+  }
+
+  VerticalLayout {
+    padding: 24px;
+    spacing: 10px;
+    alignment: start;
+
+    Text {
+      text: "takt4";
+      color: Theme.text;
+      font-size: 28px;
+      font-weight: 700;
+    }
+    Text {
+      text: root.version;
+      color: Theme.dim;
+      font-size: 13px;
+      overflow: elide;
+    }
+    Text {
+      text: "Beat, downbeat, tempo and meter from one channel of audio, sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
+      color: Theme.text;
+      font-size: 13px;
+      wrap: word-wrap;
+    }
+
+    Rectangle { height: 1px; background: Theme.line; }
+
+    Text {
+      text: "Copyright © 2026 Jon Sands";
+      color: Theme.text;
+      font-size: 13px;
+    }
+    Text {
+      text: "takt4 is free software: you can pass it on and change it under the terms of the GNU General Public License, version 3. It comes with ABSOLUTELY NO WARRANTY. You are entitled to its complete source code under that licence.";
+      color: Theme.text;
+      font-size: 13px;
+      wrap: word-wrap;
+    }
+    Text {
+      text: "Source: https://github.com/Fohdeesha/takt4";
+      color: Theme.accent;
+      font-size: 13px;
+      overflow: elide;
+    }
+    Text {
+      text: "ASIO is a trademark and software of Steinberg Media Technologies GmbH.";
+      color: Theme.dim;
+      font-size: 12px;
+      wrap: word-wrap;
+    }
+
+    Rectangle { height: 1px; background: Theme.line; }
+
+    Text {
+      text: "takt4 is built with software from other projects, each under its own licence — PortAudio, Ableton Link, Slint, Skia and more. The licence and all of their notices are inside this program; these open them:";
+      color: Theme.text;
+      font-size: 13px;
+      wrap: word-wrap;
+    }
+    HorizontalLayout {
+      spacing: 8px;
+      alignment: start;
+      Press {
+        text: "OPEN THE LICENCE";
+        font: 14px;
+        pad: 12px;
+        clicked => { root.licence-opened(); }
+      }
+      Press {
+        text: "OPEN THIRD-PARTY NOTICES";
+        font: 14px;
+        pad: 12px;
+        clicked => { root.notices-opened(); }
+      }
+    }
+    Text {
+      text: root.opened;
+      color: Theme.dim;
+      font-size: 12px;
+      wrap: word-wrap;
+    }
+
+    HorizontalLayout {
+      alignment: end;
+      Press {
+        text: "CLOSE";
+        primary: true;
+        font: 14px;
+        pad: 16px;
+        clicked => { root.closed(); }
+      }
+    }
+  }
+}

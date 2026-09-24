@@ -23,6 +23,8 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <functional>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -277,6 +279,18 @@ public:
     FixturesController& patchEditor() noexcept { return patch_; }
     /// Opens the editor, or brings it forward.
     void openEditor();
+    /// Opens the About box, or brings it forward.
+    void openAbout();
+    /// The About box once it has been opened, for the tests; null before.
+    AboutWindow* about() noexcept { return about_ ? &**about_ : nullptr; }
+    /// What opening a written-out licence does. The default hands it to the machine's viewer;
+    /// takt4_ui_tests replaces it, since a test must not launch one. False when it could not.
+    void setFileOpener(std::function<bool(const std::filesystem::path&)> opener) {
+        openFile_ = std::move(opener);
+    }
+    /// Writes `text` to `name` under the temp directory and opens it: what the About box's two
+    /// buttons do, the licence and the notices being built in. The file written, or empty.
+    std::filesystem::path openEmbeddedText(const std::string& name, std::string_view text);
     /// §5.8's PANIC from the main window's own row, so a halt never waits on a window.
     ///
     /// **Engage only, and release is separate** — the audit's H18. This was `togglePanic`, so a
@@ -620,6 +634,9 @@ private:
     /// as `editor_`, and for the same reason: a patch is set up once and then not touched,
     /// while the rules are edited during the set.
     FixturesController patch_;
+    /// The About box, built the first time ABOUT is pressed.
+    std::optional<slint::ComponentHandle<AboutWindow>> about_;
+    std::function<bool(const std::filesystem::path&)> openFile_;
 };
 
 } // namespace takt4::ui

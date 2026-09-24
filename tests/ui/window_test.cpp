@@ -2879,6 +2879,95 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     CHECK(controller.statusIsError());
 }
 
+
+TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
+    // The audit's licensing finding, the user's answer to its Q8: takt4 ships with no notices
+    // for what is built into it, and GPLv3 §5(d) asks its interface to show them. takt4 is one
+    // file, so they are inside it; the About box opens them. Driven by clicks — ABOUT in the
+    // status line, then the About box's own buttons — with the file opener replaced, since a
+    // test must not launch a text viewer.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    std::vector<std::filesystem::path> opened;
+    controller.setFileOpener([&opened](const std::filesystem::path& path) {
+        opened.push_back(path);
+        return true;
+    });
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 900.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    settle();
+    REQUIRE(controller.about() == nullptr);
+
+    // ABOUT, found along the status line by what a click on it does.
+    const float barY = kHeight - 17.0f;
+    for (float x = kWidth - 480.0f; x < kWidth - 10.0f && controller.about() == nullptr; x += 6.0f) {
+        clickAt(window, x, barY);
+        settle();
+    }
+    REQUIRE(controller.about() != nullptr);
+    AboutWindow& about = *controller.about();
+    CHECK(about.window().is_visible());
+    CHECK(std::string(about.get_version()) == takt4::versionLabel(takt4::buildInfo()));
+
+    about.window().dispatch_scale_factor_change_event(1.0f);
+    about.window().dispatch_resize_event(slint::LogicalSize({580.0f, 520.0f}));
+    about.window().dispatch_window_active_changed_event(true);
+    slint::platform::update_timers_and_animations();
+
+    // Its two buttons, found by the file each one opens.
+    const auto read = [](const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    std::string licence;
+    std::string notices;
+    for (float y = 280.0f; y < 440.0f && (licence.empty() || notices.empty()); y += 6.0f) {
+        for (float x = 30.0f; x < 560.0f && (licence.empty() || notices.empty()); x += 20.0f) {
+            opened.clear();
+            clickAt(about.window(), x, y);
+            slint::platform::update_timers_and_animations();
+            if (opened.size() != 1) {
+                continue;
+            }
+            const std::string name = opened.front().filename().string();
+            if (name == "takt4-LICENSE.txt") {
+                licence = read(opened.front());
+            } else if (name == "takt4-THIRD-PARTY-NOTICES.txt") {
+                notices = read(opened.front());
+            }
+        }
+    }
+    INFO("licence " << licence.size() << " bytes, notices " << notices.size() << " bytes");
+    REQUIRE_FALSE(licence.empty());
+    REQUIRE_FALSE(notices.empty());
+    // The texts themselves: the GPL, and the notices that name what is built in.
+    CHECK(licence.find("GNU GENERAL PUBLIC LICENSE") != std::string::npos);
+    CHECK(licence.find("Version 3, 29 June 2007") != std::string::npos);
+    CHECK(notices.rfind("takt4 — third-party notices", 0) == 0);
+    for (const char* name : {"PortAudio", "Ableton Link", "Slint", "Skia", "Steinberg ASIO SDK"}) {
+        INFO(name);
+        CHECK(notices.find(name) != std::string::npos);
+    }
+    CHECK(notices.find("ASIO is a trademark and software of Steinberg Media Technologies GmbH.") !=
+          std::string::npos);
+    CHECK(std::string(about.get_opened()).rfind("Opened ", 0) == 0);
+
+    // And CLOSE puts it away.
+    for (float y = 420.0f; y < 515.0f && about.window().is_visible(); y += 6.0f) {
+        for (float x = 440.0f; x < 575.0f && about.window().is_visible(); x += 12.0f) {
+            clickAt(about.window(), x, y);
+            slint::platform::update_timers_and_animations();
+        }
+    }
+    CHECK_FALSE(about.window().is_visible());
+}
+
 #if defined(_WIN32)
 TEST_CASE("SAVE in a test process writes to a folder of its own, not over the rig's",
           "[ui][settings]") {

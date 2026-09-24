@@ -22,6 +22,7 @@ void printUsage(std::ostream& out) {
            "  --stopped       draw the idle window — blank readouts and the manual\n"
            "                  controls disabled — instead of a tracker running\n"
            "  --rules         draw §5.9's rule editor instead of the main window\n"
+           "  --about         draw the About box instead of the main window\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
@@ -50,6 +51,8 @@ int main(int argc, char** argv) {
             options.rules = true;
         } else if (arg == "--fixtures") {
             options.fixtures = true;
+        } else if (arg == "--about") {
+            options.about = true;
         } else if (arg == "--dmx") {
             options.dmx = true;
         } else if (arg == "--size") {

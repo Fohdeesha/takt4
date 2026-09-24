@@ -220,17 +220,32 @@ if(TAKT4_BUILD_UI)
   # `electronic` is the built-in set since 0.9.1: BeatNet+'s `generic` fine-tuned on the
   # operator's own library (TRACKING-PROPOSAL.md §7.13). The three published sets stay in
   # assets/weights/ for the console and the tests.
-  foreach(entry "weights|${PROJECT_SOURCE_DIR}/assets/weights/electronic.bin"
-                "stateSpace|${PROJECT_SOURCE_DIR}/assets/statespace/default.bin")
+  #
+  # The licence and the third-party notices go in too: takt4 is one file, and the notices of
+  # what is built into it have to travel with it (GPLv3 §5(d), and the BSD, MIT, Apache, MPL
+  # and Unicode licences of the rest). The About box opens them.
+  #
+  # (name|file|sidecar): a blob with a sidecar must have the sha256 the sidecar records.
+  foreach(entry "weights|${PROJECT_SOURCE_DIR}/assets/weights/electronic.bin|${PROJECT_SOURCE_DIR}/assets/weights/electronic.json"
+                "stateSpace|${PROJECT_SOURCE_DIR}/assets/statespace/default.bin|${PROJECT_SOURCE_DIR}/assets/statespace/default.json"
+                "licence|${PROJECT_SOURCE_DIR}/LICENSE|"
+                "notices|${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt|")
     string(REPLACE "|" ";" parts "${entry}")
     list(GET parts 0 fn)
     list(GET parts 1 blob)
+    list(GET parts 2 manifest)
     set(generated "${takt4_assets_dir}/${fn}_blob.cpp")
+    set(manifest_args "")
+    set(manifest_deps "")
+    if(manifest)
+      set(manifest_args --manifest "${manifest}")
+      set(manifest_deps "${manifest}")
+    endif()
     add_custom_command(
       OUTPUT "${generated}"
       COMMAND "${Python3_EXECUTABLE}" "${takt4_embed_script}" "${blob}" "${generated}"
-              --name "${fn}"
-      DEPENDS "${blob}" "${takt4_embed_script}"
+              --name "${fn}" ${manifest_args}
+      DEPENDS "${blob}" "${takt4_embed_script}" ${manifest_deps}
       COMMENT "Embedding ${blob}"
       VERBATIM
     )
