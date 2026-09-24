@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <iterator>
 #include <stdexcept>
@@ -73,7 +74,9 @@ void Transports::startClock(double now) {
     clockRunning_ = true;
     lastNow_ = now;
     if (midi_) {
-        midi_->start(now);
+        // Ticks from the press, so a receiver has the tempo; Start waits for the first locked
+        // downbeat (the audit's M19). See `publishClocks`.
+        midi_->startTicking(now);
     }
 }
 
@@ -305,8 +308,9 @@ void Transports::setMidiClockPort(const std::optional<std::string>& port) {
     closeUnusedDevices();
     if (clockRunning_) {
         // From now, not from when the clock started: `advance` would otherwise try to emit
-        // every tick of the intervening set at once.
-        midi_->start(lastNow_);
+        // every tick of the intervening set at once. And started on the next locked downbeat,
+        // like any other, rather than at the moment the port was picked.
+        midi_->startTicking(lastNow_);
     }
 }
 
@@ -416,7 +420,18 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         // worth of time before the beat was called, and the clock used to be synced to when it
         // was *drained* — late by that pipeline, plus the offset (§5.5). The clock steers
         // towards the beat rather than jumping to it; see `MidiClock::syncToBeat`.
-        midi_->syncToBeat(beatTime + static_cast<double>(latencyMicros) / 1e6);
+        const double heardAt = beatTime + static_cast<double>(latencyMicros) / 1e6;
+        midi_->syncToBeat(heardAt);
+        // A receiver's bar 1 is the first tick after Start, so Start waits for a locked beat to
+        // say where the bars are, and then for the downbeat of the grid it sits on. Given again
+        // on every locked beat until it has gone, so the grid follows the tempo meanwhile.
+        if (event.locked && event.bpm > 0.0 && midi_->waitingToStart()) {
+            const double beat = 60.0 / event.bpm;
+            const std::uint32_t meter = std::max<std::uint32_t>(event.beatsPerBar, 1);
+            const std::uint32_t inBar = std::clamp<std::uint32_t>(event.beatInBar, 1, meter);
+            midi_->startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
+                                   static_cast<double>(meter) * beat);
+        }
     }
     if (linkEnabled_) {
         publishToLink(event, hostMicros, latencyMicros);

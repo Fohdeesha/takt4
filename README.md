@@ -118,7 +118,9 @@ status line says so if it cannot be found.
 The outputs are live from the moment takt4 opens, not from **START**: Link is joined as
 soon as its switch is on, and a fixture can be identified or tested before any music is
 playing. **START** and **STOP** start and stop the listening, and the MIDI clock with it, so
-a DAW following the clock starts and stops with you. **STOP** also puts the lights out, and
+a DAW following the clock starts and stops with you. The clock ticks from **START**, so a
+receiver can show the tempo, but it is told to play only on the first downbeat after the
+tempo locks: its bar 1 is a bar 1 of the music. **STOP** also puts the lights out, and
 so does quitting: that last dark frame is sent before takt4 goes, so no node is left holding
 the rig lit.
 

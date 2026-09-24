@@ -112,6 +112,13 @@ private:
 /// −40 ms sent 26 to 28 on every beat in zero-gap bursts). `syncToBeat` now *steers*: it
 /// spreads the ticks up to the next pulse 0 a little wider or a little closer so that pulse 0
 /// lands half-way nearer the beat, and every quarter note is still exactly 24 ticks.
+///
+/// **Start goes out on a downbeat, not on a press** (the audit's M19). A receiver starts its
+/// song on the first tick after Start, and counts its bars from there, so a Start sent when
+/// the operator pressed START put every drum machine's and sequencer's bar 1 wherever the
+/// press happened to fall. `startTicking` begins the ticks — a receiver can read the tempo off
+/// them while it waits — and `startOnDownbeat` sends Song Position 0 and Start just ahead of
+/// the tick that lands on a downbeat.
 class MidiClock {
 public:
     static constexpr std::size_t kPulsesPerQuarterNote = 24;
@@ -119,6 +126,10 @@ public:
     static constexpr unsigned char kStart = 0xFA;
     static constexpr unsigned char kContinue = 0xFB;
     static constexpr unsigned char kStop = 0xFC;
+    /// Song Position Pointer, followed by a 14-bit position in sixteenths, low seven bits
+    /// first. Sent as 0 ahead of Start, for a receiver that follows the position rather than
+    /// taking Start to mean the top of the song.
+    static constexpr unsigned char kSongPosition = 0xF2;
 
     /// A burst longer than this many ticks is not sent: something stalled, and flooding
     /// the port with catch-up ticks would be worse than skipping them. Two seconds at
@@ -143,9 +154,32 @@ public:
     /// Sends Start (or Continue) and begins ticking at `now`. The first tick goes out on
     /// the next advance() at or after `now`.
     void start(double now, bool asContinue = false) noexcept;
-    /// Sends Stop. advance() emits nothing until start() is called again.
+    /// Begins ticking at `now` and sends nothing else: the receiver hears a tempo and is not
+    /// told to play. See `startOnDownbeat`.
+    void startTicking(double now) noexcept;
+    /// Sends Song Position 0 and Start ahead of the pulse 0 that lands on a downbeat: the
+    /// first one at or after `downbeat` of the grid `downbeat + k * barSeconds`, on the clock
+    /// `advance` is given. They go out straight after the tick before it, so the tick on the
+    /// downbeat is the first one the receiver counts.
+    ///
+    /// Only a pulse 0 within `kStartWindow` of a beat of the tempo is taken as that downbeat.
+    /// A clock that has not pulled in on the beats yet waits a bar rather than starting a
+    /// receiver's bar off the music. Called again, it replaces the grid, which is how a caller
+    /// keeps it up to date with the tempo. Does nothing unless the clock is ticking and has
+    /// not been started.
+    void startOnDownbeat(double downbeat, double barSeconds) noexcept;
+    /// Sends Stop, if the receiver was told to play. advance() emits nothing until the clock is
+    /// started again.
     void stop() noexcept;
+    /// Whether ticks are going out.
     bool running() const noexcept { return running_; }
+    /// Whether the receiver has been told to play: Start or Continue sent, Stop not.
+    bool started() const noexcept { return started_; }
+    /// Ticking, and not yet started: what `startOnDownbeat` is for.
+    bool waitingToStart() const noexcept { return running_ && !started_; }
+
+    /// How far a pulse 0 may be from the downbeat it is to start on, in beats.
+    static constexpr double kStartWindow = 0.25;
 
     /// Emits every tick due at or before `now`. Returns how many went out.
     std::size_t advance(double now) noexcept;
@@ -182,10 +216,18 @@ private:
     double nextTick() const noexcept;
     void anchor(double at, double spacing) noexcept;
     void emit(unsigned char status) noexcept;
+    /// Sends Song Position 0 and Start if one is waiting and the next tick is the pulse 0 on
+    /// its downbeat. See `startOnDownbeat`.
+    void startIfDue() noexcept;
 
     MidiSink* sink_;
     double bpm_;
     bool running_ = false;
+    bool started_ = false;
+    /// A Start waiting for its downbeat: the grid `startAt_ + k * startBar_`.
+    bool startPending_ = false;
+    double startAt_ = 0.0;
+    double startBar_ = 0.0;
     double origin_ = 0.0;
     std::uint64_t sinceOrigin_ = 0;
     /// The spacing in force from `origin_`: the tempo's own, or a steered one.

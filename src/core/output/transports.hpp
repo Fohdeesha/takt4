@@ -185,7 +185,8 @@ public:
     /// Leaves Link and stops the MIDI clock.
     void stopOutputs() noexcept;
 
-    /// Sends MIDI Start and begins ticking; `stopClock` sends Stop.
+    /// Begins ticking the MIDI clock, and sends Start on the first locked downbeat after it
+    /// (the audit's M19; see `MidiClock::startOnDownbeat`); `stopClock` sends Stop.
     ///
     /// Its own switch, not the outputs', since the outputs run for the application's whole
     /// life (the audit's H5): a drum machine or a sequencer given a Start the moment takt4

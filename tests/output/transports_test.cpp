@@ -9,8 +9,11 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -407,6 +410,125 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
     transports.setMidiClockPort(std::string("Clock"));
     CHECK(transports.lostMidiCount() == 0);
     transports.stopOutputs();
+}
+
+namespace {
+
+/// Every MIDI message the transports send, and when, on the clock the test drives.
+struct TimedWire {
+    struct Message {
+        double at = 0.0;
+        std::vector<unsigned char> bytes;
+    };
+    double now = 0.0;
+    std::vector<Message> messages;
+};
+
+class TimedPort final : public takt4::output::MidiPort {
+public:
+    explicit TimedPort(std::shared_ptr<TimedWire> wire) : wire_(std::move(wire)) {}
+    std::string open(std::string_view spec) override { return std::string(spec); }
+    void close() noexcept override {}
+    void send(std::span<const unsigned char> message) override {
+        wire_->messages.push_back(
+            TimedWire::Message{wire_->now, std::vector<unsigned char>(message.begin(), message.end())});
+    }
+
+private:
+    std::shared_ptr<TimedWire> wire_;
+};
+
+} // namespace
+
+TEST_CASE("a MIDI receiver's bar 1 is a downbeat of the music", "[output][midi]") {
+    // The audit's M19, end to end: beats heard a pipeline late with their stamps jittered, the
+    // tracker unlocked for its first eight, and the clock ticking from the press all along. A
+    // receiver counts its bars from the first tick after Start, so that tick has to be on a
+    // downbeat — and every 96th after it, or the bars have slipped.
+    for (const double latency : {0.0, -0.040}) {
+        INFO("latency " << latency * 1000.0 << " ms");
+        auto wire = std::make_shared<TimedWire>();
+        Transports::Config config;
+        config.midiClockPort = "Clock";
+        config.openMidi = [wire](const std::string& name) {
+            return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<TimedPort>(wire));
+        };
+        Transports transports(config);
+        transports.setLatencySeconds(latency);
+        transports.startOutputs(0.0);
+        transports.startClock(0.0);
+
+        constexpr double kBpm = 128.0;
+        constexpr double kPipeline = 0.060;
+        constexpr std::size_t kBeats = 64;
+        constexpr std::size_t kLockedFrom = 8;
+        const double beat = 60.0 / kBpm;
+        std::vector<double> beats;
+        for (std::size_t k = 0; k < kBeats; ++k) {
+            beats.push_back(0.137 + static_cast<double>(k) * beat);
+        }
+        std::mt19937 random(20260924);
+        const TempoState state;
+        std::size_t next = 0;
+        double firstLockedHeard = -1.0;
+        for (double now = 0.0; now < beats.back() + 1.0; now += 0.001) {
+            while (next < kBeats && beats[next] + kPipeline <= now) {
+                BeatEvent event = beatAt(beats[next], static_cast<std::uint32_t>(next % 4) + 1, kBpm);
+                event.locked = next >= kLockedFrom;
+                if (event.locked && firstLockedHeard < 0.0) {
+                    firstLockedHeard = now;
+                }
+                const double jitter = (static_cast<double>(random()) / 4294967296.0) * 0.020 - 0.010;
+                transports.publish(event, 0, beats[next] + jitter);
+                ++next;
+            }
+            wire->now = now;
+            transports.advance(now, state);
+        }
+
+        std::size_t start = wire->messages.size();
+        for (std::size_t i = 0; i < wire->messages.size(); ++i) {
+            if (wire->messages[i].bytes[0] == takt4::output::MidiClock::kStart) {
+                start = i;
+                break;
+            }
+        }
+        REQUIRE(start < wire->messages.size());
+        // Not before the tracker said where the bars are.
+        CHECK(wire->messages[start].at >= firstLockedHeard);
+        REQUIRE(start >= 1);
+        CHECK(wire->messages[start - 1].bytes ==
+              std::vector<unsigned char>{takt4::output::MidiClock::kSongPosition, 0x00, 0x00});
+
+        // The receiver's bars: every 96th tick from the first after Start, while there is music.
+        std::vector<double> ticks;
+        for (std::size_t i = start + 1; i < wire->messages.size(); ++i) {
+            if (wire->messages[i].bytes[0] == takt4::output::MidiClock::kTick) {
+                ticks.push_back(wire->messages[i].at);
+            }
+        }
+        std::size_t bars = 0;
+        for (std::size_t n = 0; n < ticks.size(); n += 96) {
+            const double t = ticks[n] - latency;
+            if (t > beats.back() + 0.05) {
+                break;
+            }
+            std::size_t nearest = 0;
+            for (std::size_t k = 1; k < kBeats; ++k) {
+                if (std::abs(beats[k] - t) < std::abs(beats[nearest] - t)) {
+                    nearest = k;
+                }
+            }
+            INFO("receiver's bar " << bars + 1 << " at " << t << ", nearest beat " << nearest);
+            CHECK(nearest % 4 == 0);
+            CHECK(std::abs(beats[nearest] - t) < 0.015);
+            ++bars;
+        }
+        // Started within a couple of bars of the lock, and counted bars to the end.
+        CHECK(bars >= (kBeats - kLockedFrom) / 4 - 3);
+        transports.stopOutputs();
+        CHECK(wire->messages.back().bytes[0] == takt4::output::MidiClock::kStop);
+    }
 }
 
 TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link][network]") {

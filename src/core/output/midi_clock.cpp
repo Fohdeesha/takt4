@@ -195,17 +195,60 @@ void MidiClock::anchor(double at, double spacing) noexcept {
 
 void MidiClock::start(double now, bool asContinue) noexcept {
     emit(asContinue ? kContinue : kStart);
+    startTicking(now);
+    started_ = true;
+}
+
+void MidiClock::startTicking(double now) noexcept {
     running_ = true;
+    started_ = false;
+    startPending_ = false;
     steering_ = 0;
     anchor(now, tickSeconds());
     pulse_ = 0;
 }
 
+void MidiClock::startOnDownbeat(double downbeat, double barSeconds) noexcept {
+    if (!waitingToStart() || !std::isfinite(downbeat) || !std::isfinite(barSeconds) ||
+        !(barSeconds > 0.0)) {
+        return;
+    }
+    startPending_ = true;
+    startAt_ = downbeat;
+    startBar_ = barSeconds;
+    // The tick before the downbeat may already have gone, leaving the downbeat's own tick next.
+    startIfDue();
+}
+
+void MidiClock::startIfDue() noexcept {
+    if (!startPending_ || pulse_ != 0) {
+        return;
+    }
+    const double beat = tickSeconds() * static_cast<double>(kPulsesPerQuarterNote);
+    const double window = kStartWindow * beat;
+    const double at = nextTick();
+    // A downbeat already behind this pulse 0 by more than the window is gone; the grid runs
+    // on, and the first downbeat that is not is the one to aim at.
+    if (at > startAt_ + window) {
+        startAt_ += std::ceil((at - startAt_ - window) / startBar_) * startBar_;
+    }
+    if (std::abs(at - startAt_) > window) {
+        return; // a pulse 0 on another beat, or off the beat altogether: not yet
+    }
+    const unsigned char position[3] = {kSongPosition, 0x00, 0x00};
+    sink_->send(std::span<const unsigned char>(position, 3));
+    emit(kStart);
+    started_ = true;
+    startPending_ = false;
+}
+
 void MidiClock::stop() noexcept {
-    if (running_) {
+    if (started_) {
         emit(kStop);
     }
     running_ = false;
+    started_ = false;
+    startPending_ = false;
 }
 
 void MidiClock::setTempo(double bpm) noexcept {
@@ -276,6 +319,9 @@ std::size_t MidiClock::advance(double now) noexcept {
             // passage, an unlocked tracker) runs on at the tempo rather than at a correction.
             anchor(nextTick(), tickSeconds());
         }
+        // After the tick before a pulse 0, so a Start lands between the two and the pulse 0
+        // is the first tick the receiver counts.
+        startIfDue();
     }
     return emitted;
 }

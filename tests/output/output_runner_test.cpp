@@ -1313,7 +1313,8 @@ TEST_CASE("quitting sends a release held for a delayed output", "[output][trigge
 TEST_CASE("the MIDI clock starts and stops with the tracker, not with the outputs",
           "[output][midi]") {
     // The outputs run from launch (H5); a drum machine given a Start then would play at the
-    // clock's opening tempo before anything was listening.
+    // clock's opening tempo before anything was listening. Nothing is fed here, so this is
+    // about the ticks; when Start goes is the transports' test.
     auto heard = std::make_shared<std::vector<unsigned char>>();
     Transports::Config config;
     config.midiClockPort = "Clock";
@@ -1334,14 +1335,18 @@ TEST_CASE("the MIDI clock starts and stops with the tracker, not with the output
     CHECK(count(takt4::output::MidiClock::kStart) == 0);
     CHECK(count(takt4::output::MidiClock::kTick) == 0);
 
+    // Ticking from the press, so a receiver has a tempo; but not started, because nothing has
+    // been heard to say where a bar begins (the audit's M19 — see "a MIDI receiver's bar 1 is a
+    // downbeat of the music").
     runner.setTracking(true);
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    CHECK(count(takt4::output::MidiClock::kStart) == 1);
+    CHECK(count(takt4::output::MidiClock::kStart) == 0);
     CHECK(count(takt4::output::MidiClock::kTick) > 5);
 
     runner.setTracking(false);
     REQUIRE(runner.sync());
-    CHECK(count(takt4::output::MidiClock::kStop) == 1);
+    // A receiver never told to play is not told to stop — and the ticks stop.
+    CHECK(count(takt4::output::MidiClock::kStop) == 0);
     const auto ticks = count(takt4::output::MidiClock::kTick);
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
     CHECK(count(takt4::output::MidiClock::kTick) == ticks);

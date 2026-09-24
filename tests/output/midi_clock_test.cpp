@@ -104,6 +104,107 @@ TEST_CASE("the clock runs at 24 pulses per quarter note", "[output][midi]") {
     }
 }
 
+namespace {
+
+/// Every message, and when it went, on the clock the test drives.
+class Wire final : public MidiSink {
+public:
+    struct Message {
+        double at = 0.0;
+        std::vector<unsigned char> bytes;
+    };
+    void send(std::span<const unsigned char> message) noexcept override {
+        messages.push_back(Message{now, std::vector<unsigned char>(message.begin(), message.end())});
+    }
+    /// Where the first message starting with `status` is, or `messages.size()`.
+    std::size_t find(unsigned char status) const {
+        for (std::size_t i = 0; i < messages.size(); ++i) {
+            if (!messages[i].bytes.empty() && messages[i].bytes[0] == status) {
+                return i;
+            }
+        }
+        return messages.size();
+    }
+    double now = 0.0;
+    std::vector<Message> messages;
+};
+
+/// Runs `clock` a millisecond at a time up to `until`, as the output thread does.
+void runTo(MidiClock& clock, Wire& wire, double until) {
+    while (wire.now + 0.001 <= until + 1e-12) {
+        wire.now += 0.001;
+        (void)clock.advance(wire.now);
+    }
+}
+
+} // namespace
+
+TEST_CASE("MIDI Start waits for a downbeat, and the downbeat's tick is the first after it",
+          "[output][midi]") {
+    // The audit's M19. A receiver starts on the first tick after Start and counts its bars from
+    // there, and Start used to go out on the press — so a drum machine's bar 1 was wherever the
+    // operator's finger fell. The clock ticks from the press now, so the receiver has a tempo,
+    // and Start waits for the downbeat it is given.
+    Wire wire;
+    MidiClock clock(wire, 120.0); // a beat every half second, a tick every 1/48 s
+    clock.startTicking(0.0);
+    CHECK(clock.running());
+    CHECK_FALSE(clock.started());
+    CHECK(clock.waitingToStart());
+    runTo(clock, wire, 0.7);
+    CHECK(wire.find(MidiClock::kTick) < wire.messages.size());
+    CHECK(wire.find(MidiClock::kStart) == wire.messages.size());
+
+    SECTION("started just ahead of the downbeat it was given, with Song Position 0 first") {
+        // Bars of four from 0.5: 0.5 has gone, so the next downbeat is 2.5.
+        clock.startOnDownbeat(0.5, 2.0);
+        // Up to the tick before the tick before: Start follows the one at 2.479.
+        runTo(clock, wire, 2.47);
+        CHECK(wire.find(MidiClock::kStart) == wire.messages.size());
+        runTo(clock, wire, 2.6);
+        const std::size_t start = wire.find(MidiClock::kStart);
+        REQUIRE(start < wire.messages.size());
+        REQUIRE(start >= 2);
+        CHECK(wire.messages[start - 1].bytes ==
+              std::vector<unsigned char>{MidiClock::kSongPosition, 0x00, 0x00});
+        CHECK(wire.messages[start - 2].bytes[0] == MidiClock::kTick);
+        REQUIRE(start + 1 < wire.messages.size());
+        // The tick after Start — the receiver's bar 1 — is the downbeat's.
+        CHECK(wire.messages[start + 1].bytes[0] == MidiClock::kTick);
+        CHECK_THAT(wire.messages[start + 1].at, Catch::Matchers::WithinAbs(2.5, 0.0011));
+        CHECK(clock.started());
+        CHECK_FALSE(clock.waitingToStart());
+
+        clock.stop();
+        CHECK(wire.messages.back().bytes[0] == MidiClock::kStop);
+    }
+
+    SECTION("given the downbeat after the tick before it had gone, it still starts on it") {
+        runTo(clock, wire, 0.99); // pulse 23 at 0.979 has gone; the pulse 0 at 1.0 is next
+        REQUIRE(clock.pulseInQuarter() == 0);
+        clock.startOnDownbeat(1.0, 2.0);
+        const std::size_t start = wire.find(MidiClock::kStart);
+        REQUIRE(start < wire.messages.size());
+        runTo(clock, wire, 1.01);
+        REQUIRE(start + 1 < wire.messages.size());
+        CHECK_THAT(wire.messages[start + 1].at, Catch::Matchers::WithinAbs(1.0, 0.0011));
+    }
+
+    SECTION("a clock whose beat ticks are off the beats does not start a bar off the music") {
+        // Pulse 0s at 0, 0.5, 1.0, ... and downbeats at 0.3 + 2k: nowhere near each other.
+        clock.startOnDownbeat(0.3, 2.0);
+        runTo(clock, wire, 10.0);
+        CHECK(wire.find(MidiClock::kStart) == wire.messages.size());
+        CHECK(clock.waitingToStart());
+    }
+
+    SECTION("a receiver that was never told to play is not told to stop") {
+        clock.stop();
+        CHECK(wire.find(MidiClock::kStop) == wire.messages.size());
+        CHECK_FALSE(clock.running());
+    }
+}
+
 TEST_CASE("the tick rate follows the tempo", "[output][midi]") {
     Recorder recorder;
     MidiClock clock(recorder, 60.0); // one quarter note a second: 24 ticks
