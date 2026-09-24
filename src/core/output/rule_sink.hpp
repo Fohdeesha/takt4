@@ -76,6 +76,14 @@ public:
     /// lights where they are: an effect started only to be frozen on its first frame would be a
     /// flash held at full.
     void dropQueuedLighting() noexcept { dmxQueue_.clear(); }
+    /// While true, lighting is not sent: for the moment a PANIC pays out every release it owes,
+    /// which it does so that a clip or a laser note lets go. The lights are to be frozen where
+    /// they are (the operator's call, 2026-09-16), and a lighting release is the fired effect
+    /// again at the release level — on a rule that snaps, a lamp turned off (the audit's M6).
+    /// Most are held here until their moment and dropped with `dropQueuedLighting`; this is
+    /// for the rest — a release owed a little ahead on a rig whose offset is further ahead
+    /// still, whose moment has already passed and which would otherwise be started at once.
+    void holdLighting(bool held) noexcept { lightingHeld_ = held; }
     /// MIDI messages and lighting effects waiting for their time.
     std::size_t queued() const noexcept { return midiQueue_.size() + dmxQueue_.size(); }
 
@@ -107,6 +115,7 @@ private:
     std::uint64_t delivered_ = 0;
     std::uint64_t undeliverable_ = 0;
     std::uint64_t dropped_ = 0;
+    bool lightingHeld_ = false;
 
     /// One MIDI message held for one target. The target's index rather than its port: the
     /// port is looked up again when it goes, and `flushQueued` runs before the list changes,

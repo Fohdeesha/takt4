@@ -1532,6 +1532,83 @@ TEST_CASE("the MIDI clock keeps its time while every core is busy", "[output][mi
     CHECK(worst < 0.008);
 }
 
+TEST_CASE("PANIC leaves a lamp where it is, whatever its release would have done",
+          "[output][dmx]") {
+    // The audit's M6. PANIC pays out every release it owes, so that a clip or a laser note lets
+    // go, and then freezes the lights (the operator's call, 2026-09-16). A lighting release is
+    // the fired effect again at the release level over the rule's own fade time, so paying it
+    // could turn off a lamp whose rule snapped while leaving one whose rule faded. Here the
+    // rule snaps to full with a release owed, and an OSC rule owes one too.
+    //
+    // Two ways the release can stand at the moment of the PANIC. Owed well ahead, the sink
+    // holds it until its moment and the PANIC drops what is held. But owed a little ahead on
+    // a rig whose offset is further ahead still, its moment has passed once the offset is
+    // applied, and the sink would start it the moment PANIC paid it out.
+    struct Case {
+        const char* what;
+        double releaseAfter;
+        double offset;
+    };
+    for (const Case& c : {Case{"owed ten seconds ahead", 10.0, 0.0},
+                          Case{"owed 0.2 s ahead, with the rig 0.5 s early", 0.2, -0.5}}) {
+        INFO(c.what);
+        LoopbackReceiver server;
+        Transports::Config config;
+        config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+        config.patch[0].id = "par"; // what a rule aims at
+        takt4::output::OutputTarget deck;
+        deck.id = "o-00000dec";
+        deck.name = "deck";
+        deck.host = "127.0.0.1";
+        deck.port = server.port();
+        config.outputs = {deck};
+        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+        OutputRunner runner(*engine, config); // stopped, so every post applies at once
+        runner.setLatencySeconds(c.offset);
+
+        Rule::Config lamp;
+        lamp.id = "lamp";
+        lamp.sendKind = takt4::trigger::Message::Kind::Dmx;
+        lamp.dmx.effect = takt4::dmx::EffectKind::Level;
+        lamp.dmx.role = takt4::dmx::Role::Dimmer;
+        lamp.dmx.level = takt4::trigger::fixedNumber(255);
+        lamp.dmx.unit = takt4::trigger::DelayUnit::Milliseconds;
+        lamp.dmx.durationSeconds = 0.0; // a snap: its release would be one too
+        lamp.dmx.fixtures = {"par"};
+        takt4::trigger::FollowUp release;
+        release.delaySeconds = c.releaseAfter;
+        lamp.followUps = {release};
+        Rule::Config clip;
+        clip.id = "clip";
+        clip.address = "/clip";
+        clip.followUps = {release};
+        runner.post(OutputCommand::rules({lamp, clip}));
+        runner.post(OutputCommand::testRule("lamp"));
+        runner.post(OutputCommand::testRule("clip"));
+        // The brightest of the par's channels, wherever the level lands on this fixture.
+        const auto lit = [&runner] {
+            const auto levels = runner.transports().dmx().levels(0);
+            return *std::max_element(levels.begin(), levels.begin() + 8);
+        };
+        REQUIRE(lit() == 255);
+        int before = 0;
+        for (std::string datagram = server.receive(); !datagram.empty();
+             datagram = server.receive()) {
+            before += datagram.rfind("/clip", 0) == 0 ? 1 : 0;
+        }
+        REQUIRE(before == 1); // the press; its release is still owed
+
+        runner.post(OutputCommand::panic(true));
+        CHECK(lit() == 255);
+        int released = 0;
+        for (std::string datagram = server.receive(); !datagram.empty();
+             datagram = server.receive()) {
+            released += datagram.rfind("/clip", 0) == 0 ? 1 : 0;
+        }
+        CHECK(released == 1); // and the clip's release went, as PANIC promises
+    }
+}
+
 TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][dmx]") {
     // A beat fired ahead of time holds its lighting until the beat. PANIC freezes the lights,
     // and starting a held flash only to freeze it on its first frame would hold a lamp at full.

@@ -496,7 +496,13 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Panic:
             if (command.enabled) {
+                // Every release owed goes now — except the lighting's, which would move the lamps
+                // PANIC is about to freeze where they are. Most are still held for their moment
+                // and dropped below; a release the rig's negative offset has already made due
+                // would otherwise start at once (the audit's M6; see `holdLighting`).
+                sink_.holdLighting(true);
                 triggers_.panic(contextAt(now));
+                sink_.holdLighting(false);
                 // What is held for an output's offset goes now too. A release among it must not
                 // wait, and a press among it is at most one lead's worth early — and would
                 // otherwise be a rule firing after PANIC was pressed. Except the lighting, which
