@@ -123,6 +123,9 @@ private:
     /// Applies what the name, group and universe boxes hold to the fixture they belong to.
     /// Called before anything moves the selection — see the definition.
     void commitDrafts();
+    /// True, having said why in the status line, when PANIC is engaged — IDENTIFY and TEST
+    /// send nothing then (the audit's M17).
+    bool refusedForPanic();
     void publishAll();
     void publishList();
     void publishSelected();

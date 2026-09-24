@@ -399,6 +399,31 @@ TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
     }
 }
 
+TEST_CASE("TEST and IDENTIFY say PANIC is engaged instead of lighting anything",
+          "[ui][dmx]") {
+    // The audit's M17: both went to the lights past the rules, and so past a panic. The runner
+    // drops them now; this is the window saying why, rather than a button that did nothing.
+    Rig rig;
+    FixturesController patch(rig.runner, {});
+    patch.add();
+    patch.setUniverse("5");
+    patch.setAddress(70);
+    patch.pickMode(modeIndexOf("RGB (3ch)"));
+    takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
+    rig.runner.post(takt4::output::OutputCommand::panic(true));
+
+    patch.setTestLevel(180);
+    patch.testChannel(2);
+    CHECK(engine.levels(5)[71] == 0);
+    CHECK(std::string(patch.window().get_status()).find("PANIC") != std::string::npos);
+    CHECK(patch.window().get_status_error());
+
+    patch.identify();
+    CHECK(engine.running() == 0);
+    CHECK(engine.levels(5)[69] == 0);
+    CHECK(std::string(patch.window().get_status()).find("PANIC") != std::string::npos);
+}
+
 namespace {
 
 void clickAt(slint::Window& window, float x, float y) {

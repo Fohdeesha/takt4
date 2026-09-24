@@ -509,11 +509,19 @@ void OutputRunner::apply(const OutputCommand& command) {
             // Straight to the engine, past the rules. `sink_.setNow` was called at the top of
             // `apply`, and this uses the same clock so that a hand-fired effect and a rule's
             // land on one timeline.
-            transports_.dmx().start(command.fixtureMask, command.payload, now);
+            //
+            // **Not while PANIC is engaged** (the audit's M17). It went past the rules, and so
+            // past the halt too: a color-picker drag or an IDENTIFY lit fixtures in the middle
+            // of a panic. The editors check `panicked()` and say why nothing happened.
+            if (!panicked_.load(std::memory_order_relaxed)) {
+                transports_.dmx().start(command.fixtureMask, command.payload, now);
+            }
             break;
         case OutputCommand::Kind::ChannelTest:
-            transports_.dmx().holdChannel(command.universe, command.channel, command.level,
-                                          command.factor, now);
+            if (!panicked_.load(std::memory_order_relaxed)) { // M17, as above
+                transports_.dmx().holdChannel(command.universe, command.channel, command.level,
+                                              command.factor, now);
+            }
             break;
         case OutputCommand::Kind::Tracking:
             if (command.enabled) {

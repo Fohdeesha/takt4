@@ -2331,9 +2331,18 @@ void RulesController::previewColor(dmx::Color color) {
     // A snap, not a fade: a preview that took two bars to arrive would be a preview of
     // whatever the slider was doing two bars ago. And it is **left showing** afterwards, which
     // is what programming a light means — the next rule to fire on those fixtures takes them
-    // back, and PANIC or a blackout clears it.
+    // back, and Stop's blackout clears it. PANIC does not: it freezes the lights where they
+    // are, the preview with them (`DmxEngine::cancelAll`).
     const Rule::Config* rule = current();
     if (rule == nullptr || rule->sendKind != trigger::Message::Kind::Dmx) {
+        return;
+    }
+    // And none while PANIC is engaged — the runner drops it then (the audit's M17), so the
+    // editor says why the fixtures are not following the picker.
+    if (runner_.panicked()) {
+        setStatus("PANIC is engaged, so the preview is not sent to the lights. Press RELEASE "
+                  "on the main window first.",
+                  true);
         return;
     }
     const std::uint64_t mask = dmx::resolveFixtures(patch_, rule->dmx.fixtures);

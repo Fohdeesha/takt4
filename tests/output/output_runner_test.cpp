@@ -1356,6 +1356,47 @@ TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][
     CHECK(transports.dmx().levels(0)[0] == 0);
 }
 
+TEST_CASE("a hand-fired effect or channel test sends nothing while PANIC is engaged",
+          "[output][dmx]") {
+    // The audit's M17. The color-picker preview, IDENTIFY and a channel TEST go to the lights
+    // past the rules — and so past the halt too: a drag on the picker lit fixtures in the
+    // middle of a panic. Run on stopped runners, where a post applies at once.
+    Transports::Config config;
+    config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    takt4::dmx::Payload white;
+    white.kind = takt4::dmx::EffectKind::Color;
+    white.color = {255, 255, 255};
+    white.durationSeconds = 0.0f;
+    // The brightest of the par's channels, whichever of them the colour lands on.
+    const auto lit = [](const OutputRunner& runner) {
+        const auto levels = runner.transports().dmx().levels(0);
+        return *std::max_element(levels.begin(), levels.begin() + 8);
+    };
+
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    {
+        // Without a panic the preview lands — which is what makes the check below mean
+        // something.
+        OutputRunner runner(*engine, config);
+        runner.post(OutputCommand::effect(0b1, white));
+        CHECK(lit(runner) == 255);
+    }
+    OutputRunner runner(*engine, config);
+    runner.post(OutputCommand::panic(true));
+    REQUIRE(runner.panicked());
+    runner.post(OutputCommand::effect(0b1, white));
+    CHECK(lit(runner) == 0);
+    runner.post(OutputCommand::channelTest(0, 1, 255, 3.0));
+    CHECK(runner.transports().dmx().running() == 0);
+    CHECK(lit(runner) == 0);
+
+    SECTION("and after RELEASE it is sent again") {
+        runner.post(OutputCommand::panic(false));
+        runner.post(OutputCommand::effect(0b1, white));
+        CHECK(lit(runner) == 255);
+    }
+}
+
 TEST_CASE("a name server that does not answer does not stop the output thread",
           "[output][network]") {
     // The audit's H12. An output typed as a host name was resolved on the output thread — the

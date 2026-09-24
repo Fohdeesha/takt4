@@ -630,7 +630,8 @@ void FixturesController::setTiltRange(float low, float high) {
 
 void FixturesController::identify() {
     const dmx::Fixture* const fixture = current();
-    if (fixture == nullptr || static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures) {
+    if (fixture == nullptr || static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures ||
+        refusedForPanic()) {
         return;
     }
     const std::uint64_t mask = std::uint64_t{1} << static_cast<std::size_t>(selected_);
@@ -664,6 +665,18 @@ void FixturesController::identify() {
     setStatus("Identifying " + fixture->name + "…", false);
 }
 
+bool FixturesController::refusedForPanic() {
+    // The runner drops a hand-fired effect while PANIC is engaged (the audit's M17); this is
+    // the window saying so, rather than a button that did nothing.
+    if (!runner_.panicked()) {
+        return false;
+    }
+    setStatus("PANIC is engaged, so nothing is sent to the lights. Press RELEASE on the main "
+              "window first.",
+              true);
+    return true;
+}
+
 void FixturesController::setTestLevel(int level) {
     testLevel_ = std::clamp(level, 0, 255);
     window_->set_test_level(testLevel_);
@@ -672,7 +685,7 @@ void FixturesController::setTestLevel(int level) {
 void FixturesController::testChannel(int index) {
     const dmx::Fixture* const fixture = current();
     if (fixture == nullptr || index < 0 ||
-        static_cast<std::size_t>(index) >= fixture->channels.size()) {
+        static_cast<std::size_t>(index) >= fixture->channels.size() || refusedForPanic()) {
         return;
     }
     // The real DMX number, which is the fixture's start address plus the offset — the number
