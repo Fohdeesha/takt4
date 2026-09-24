@@ -131,8 +131,11 @@ jobs:
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
+      # Linux goes on past the first error (Ninja's -k 0), so a run reports every file GCC
+      # refuses rather than one per run: GCC warns about things MSVC does not, and this tree
+      # builds with warnings as errors.
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel
+        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os == 'Linux' && '-- -k 0' || '' }}
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).

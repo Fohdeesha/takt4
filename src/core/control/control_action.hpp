@@ -90,9 +90,9 @@ struct ControlTarget {
     ControlTarget() = default;
     /// Implicit, deliberately: six of the seven *are* just an action, and a call site that
     /// names one should not have to say so twice.
-    ControlTarget(ControlAction action) noexcept // NOLINT(google-explicit-constructor)
-        : action(action) {}
-    ControlTarget(ControlAction action, std::string rule) : action(action), rule(std::move(rule)) {}
+    ControlTarget(ControlAction which) noexcept // NOLINT(google-explicit-constructor)
+        : action(which) {}
+    ControlTarget(ControlAction which, std::string id) : action(which), rule(std::move(id)) {}
 
     ControlAction action = ControlAction::Tap;
     /// Which rule, for `RuleEnable`. Empty and meaningless for the rest. A rule id is
