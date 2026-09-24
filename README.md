@@ -76,9 +76,13 @@ that ship:
 
 Read honestly: Ballroom is a set the underlying model was **trained** on, so that row says
 the engine reproduces what the model can do over six hours of real audio and nothing about
-how it generalises. The other two were held out, and they are the rows that mean
-something — though there is no human ground truth for the 23, so on the eight where the
-reference systems disagree with each other a score is agreement with a convention. Every
+how it generalises. The fine-tune that made the shipped weights trained on 628 of those
+clips too. On the 70 it never saw, the shipped weights score **0.92** beat and **0.88**
+downbeat F, against 0.95 and 0.93 for the untuned weights on the same clips: the price, on
+ballroom music, of tuning for electronic music. The other two were held out, and they are
+the rows that mean something — though there is no human ground truth for the 23, so on the
+eight where the reference systems disagree with each other a score is agreement with a
+convention. Every
 number, including what was tried and rejected, is in
 [tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md) and
 [tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
