@@ -1,7 +1,7 @@
 #include "core/build_info.hpp"
 #include "ui/app.hpp"
+#include "ui/crash_report.hpp"
 
-#include <cstdlib>
 #include <iostream>
 #include <string_view>
 
@@ -63,19 +63,11 @@ void attachToLaunchingConsole() {
 } // namespace
 
 int main(int argc, char** argv) {
-    // The crash dialog's "start again" (`ui::CrashReport`): the instance that fell over names
-    // itself, and this one waits for it to be gone before opening anything — otherwise it would
-    // find the audio interface still held by a process that is only now being terminated.
-    // Not in the usage text: nobody types it.
-    if (argc == 3 && std::string_view(argv[1]) == "--after-crash") {
-#if defined(_WIN32)
-        const unsigned long pid = std::strtoul(argv[2], nullptr, 10);
-        if (const HANDLE crashed = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
-            WaitForSingleObject(crashed, 15000);
-            CloseHandle(crashed);
-        }
-#endif
-        return takt4::ui::run();
+    // Started by an instance that fell over (`ui::CrashReport`), which ended as soon as it had
+    // started this one: say so, and open the window only if the operator asks for it. Not in the
+    // usage text: nobody types it.
+    if (argc == 2 && std::string_view(argv[1]) == takt4::ui::CrashReport::kAfterCrashOption) {
+        return takt4::ui::CrashReport::tellAfterCrash() ? takt4::ui::run() : 0;
     }
 
     // Any other argument is a question answered in text — `--version`, `--help`, or an option

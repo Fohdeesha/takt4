@@ -38,8 +38,22 @@ MiniDumpWriteDumpFn g_writeDump = nullptr;
 wchar_t g_directory[kPathCapacity] = {};
 wchar_t g_executable[kPathCapacity] = {};
 wchar_t g_logPath[kPathCapacity] = {};
-bool g_dialog = true;
+/// What the executable is started with to tell the operator; empty when nobody is to be told.
+wchar_t g_notice[kPathCapacity] = {};
 HANDLE g_log = INVALID_HANDLE_VALUE;
+
+/// How the process that crashed hands itself to the one that tells the operator.
+constexpr const wchar_t* kCrashedPidVariable = L"TAKT4_CRASHED_PID";
+constexpr const wchar_t* kCrashDumpVariable = L"TAKT4_CRASH_DUMP";
+
+/// How long a report may take before the process is ended anyway. Writing the dump is well
+/// under a second; this is for the report that cannot finish — a crash inside the heap leaves
+/// its lock held, and starting a process needs the heap — which would otherwise hang for good
+/// the process it was meant to end.
+constexpr DWORD kReportLimitMs = 60000;
+/// How long the notice waits for the crashed process to go. It is ended as soon as the notice
+/// has been started, so this only matters if something has gone badly wrong.
+constexpr DWORD kCrashedGoneLimitMs = 60000;
 /// Set by the first failure. A second one — another thread falling over at the same moment —
 /// waits for the first report instead of racing it.
 std::atomic<bool> g_crashing{false};
@@ -54,16 +68,28 @@ struct Job {
     bool written = false;
 };
 
-void restartAfter(DWORD pid) {
-    // The new instance is told which process to wait for, so it does not try to open the
-    // audio interface while this one — about to be terminated — still holds it.
-    wchar_t command[kPathCapacity + 64] = {};
-    swprintf_s(command, L"\"%ls\" --after-crash %lu", g_executable, static_cast<unsigned long>(pid));
+/// Starts the process that tells the operator: this executable again, handed this process's id
+/// and the dump through its environment. Nothing waits for it. This process is ended the
+/// moment it returns, and the new one waits for that before it says anything — so it cannot
+/// open the audio interface, if the operator starts again, while this one still holds it.
+void startNotice(const Job& job) {
+    if (g_notice[0] == L'\0') {
+        return;
+    }
+    wchar_t pid[16] = {};
+    swprintf_s(pid, L"%lu", static_cast<unsigned long>(GetCurrentProcessId()));
+    SetEnvironmentVariableW(kCrashedPidVariable, pid);
+    SetEnvironmentVariableW(kCrashDumpVariable, job.written ? job.path : L"");
+    wchar_t command[kPathCapacity * 2 + 8] = {};
+    swprintf_s(command, L"\"%ls\" %ls", g_executable, g_notice);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (CreateProcessW(nullptr, command, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup,
-                       &process) != 0) {
+    // No handles inherited, so the notice holds nothing of this process's open. No window of
+    // a console's own either: ignored for takt4.exe, which is a window application, and what
+    // keeps a console test binary standing in for it from opening one.
+    if (CreateProcessW(nullptr, command, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                       nullptr, &startup, &process) != 0) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
     }
@@ -94,21 +120,7 @@ DWORD WINAPI writeAndTell(void* parameter) {
             }
         }
     }
-    if (!g_dialog) {
-        return 0;
-    }
-    wchar_t text[kPathCapacity * 2 + 512] = {};
-    swprintf_s(text,
-               L"takt4 has stopped because of an error.\n\n%ls%ls%ls\n"
-               L"Settings are saved automatically a few seconds after every change, so little "
-               L"or nothing should be lost.\n\nStart takt4 again now?",
-               job.written ? L"A crash report was saved as:\n" : L"No crash report could be written.",
-               job.written ? job.path : L"", job.written ? L"\n" : L"");
-    const int answer = MessageBoxW(nullptr, text, L"takt4 has stopped",
-                                   MB_YESNO | MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND);
-    if (answer == IDYES) {
-        restartAfter(GetCurrentProcessId());
-    }
+    startNotice(job);
     return 0;
 }
 
@@ -145,7 +157,7 @@ DWORD WINAPI writeAndTell(void* parameter) {
     const HANDLE worker = CreateThread(nullptr, 512 * 1024, writeAndTell, &job, 0, &reporter);
     if (worker != nullptr) {
         g_reporter.store(reporter);
-        WaitForSingleObject(worker, INFINITE);
+        WaitForSingleObject(worker, kReportLimitMs);
         CloseHandle(worker);
     } else {
         g_reporter.store(GetCurrentThreadId());
@@ -230,8 +242,9 @@ void copyInto(wchar_t (&out)[kPathCapacity], const std::wstring& text) {
 
 } // namespace
 
-void CrashReport::install(const std::filesystem::path& directory, bool dialog) {
-    g_dialog = dialog;
+void CrashReport::install(const std::filesystem::path& directory, std::string_view notice) {
+    // ASCII — an option or a test's name — so widened a character at a time.
+    copyInto(g_notice, std::wstring(notice.begin(), notice.end()));
     copyInto(g_directory, directory.native());
     copyInto(g_logPath, (directory / "takt4.log").native());
     GetModuleFileNameW(nullptr, g_executable, kPathCapacity);
@@ -255,6 +268,41 @@ void CrashReport::install(const std::filesystem::path& directory, bool dialog) {
     // No "abort() has been called" box of the runtime's own, and no Windows Error Reporting
     // pass after this one: the handler has said everything, and one dialog is enough.
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+}
+
+bool CrashReport::tellAfterCrash() {
+    wchar_t pid[16] = {};
+    wchar_t dump[kPathCapacity] = {};
+    const DWORD pidLength = GetEnvironmentVariableW(kCrashedPidVariable, pid, 16);
+    const DWORD dumpLength = GetEnvironmentVariableW(kCrashDumpVariable, dump, kPathCapacity);
+    // Gone from here on, so a takt4 started from this process does not carry them — and nor
+    // the bench switch that made the crash, or starting again would only crash again. From both
+    // copies of the environment: the runtime keeps one of its own, which is what `ui::run` reads
+    // the bench switch from, and SetEnvironmentVariable alone left it there (measured: the takt4
+    // that Yes started crashed again 1.5 s in); and the runtime's removal leaves Windows's copy
+    // alone for a variable its own copy never had.
+    for (const wchar_t* name : {kCrashedPidVariable, kCrashDumpVariable, L"TAKT4_TEST_CRASH"}) {
+        (void)_wputenv_s(name, L"");
+        SetEnvironmentVariableW(name, nullptr);
+    }
+    const bool hasDump = dumpLength > 0 && dumpLength < kPathCapacity;
+    if (pidLength > 0 && pidLength < 16) {
+        const DWORD crashed = std::wcstoul(pid, nullptr, 10);
+        if (const HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, crashed)) {
+            WaitForSingleObject(process, kCrashedGoneLimitMs);
+            CloseHandle(process);
+        }
+    }
+    wchar_t text[kPathCapacity * 2 + 512] = {};
+    swprintf_s(text,
+               L"takt4 has stopped because of an error, and is no longer sending anything.\n\n"
+               L"%ls%ls%ls\n"
+               L"Settings are saved automatically a few seconds after every change, so little "
+               L"or nothing should be lost.\n\nStart takt4 again now?",
+               hasDump ? L"A crash report was saved as:\n" : L"No crash report could be written.",
+               hasDump ? dump : L"", hasDump ? L"\n" : L"");
+    return MessageBoxW(nullptr, text, L"takt4 has stopped",
+                       MB_YESNO | MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND) == IDYES;
 }
 
 void CrashReport::cleanExit() {
@@ -337,7 +385,10 @@ void CrashReport::crashOnPurpose(const std::string& how) {
 
 namespace takt4::ui {
 
-void CrashReport::install(const std::filesystem::path&, bool) {}
+void CrashReport::install(const std::filesystem::path&, std::string_view) {}
+bool CrashReport::tellAfterCrash() {
+    return false;
+}
 void CrashReport::cleanExit() {}
 std::filesystem::path CrashReport::takeLeftoverLog(const std::filesystem::path&) {
     return {};
