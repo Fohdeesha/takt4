@@ -137,15 +137,21 @@ TEST_CASE("taps over OSC make the tempo they were tapped at", "[control]") {
         [&control] { CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt)); }, 3,
         std::chrono::milliseconds{400});
     const double heard = rhythm.tempoOfThree();
-    INFO("tapped at " << heard << " BPM; the slowest bounce came " << rhythm.longestBounce()
+    INFO("tapped at " << heard << " BPM (" << rhythm.slowestOfThree() << " to "
+                      << rhythm.fastestOfThree() << " as the surface could have stamped it); "
+                      << "the slowest bounce came " << rhythm.longestBounce()
                       << " s after its press");
     REQUIRE(rhythm.longestBounce() < 0.1);
     REQUIRE(heard == Approx(150.0).margin(8.0)); // the sleeps did roughly what was asked
 
     (void)engine->step();
     CHECK(engine->commandsDropped() == 0);
+    // Centred on the tempo tapped: within what the surface's own stamps allow, which is wider
+    // than a plain margin under a sanitizer — see `TappedRhythm::slowestOfThree`.
     const auto window = engine->tempoOptions();
-    CHECK(std::sqrt(window.minBpm * window.maxBpm) == Approx(heard).margin(0.5));
+    const double centre = std::sqrt(window.minBpm * window.maxBpm);
+    CHECK(centre >= rhythm.slowestOfThree() - 0.5);
+    CHECK(centre <= rhythm.fastestOfThree() + 0.5);
 }
 
 TEST_CASE("an address for another app is not ours to act on", "[control]") {

@@ -17,12 +17,20 @@
 namespace takt4::testing {
 
 struct TappedRhythm {
-    std::vector<double> pressed; // steady-clock seconds of each real press
-    std::vector<double> bounced; // and of the bounce after it
+    std::vector<double> pressed;  // steady-clock seconds of each real press, as it was made
+    std::vector<double> returned; // and as the surface handed it back
+    std::vector<double> bounced;  // and of the bounce after it
 
     /// The tempo `tracking::TapTempo` makes of three presses: the median of two gaps is their
     /// mean, which is the span over two.
     double tempoOfThree() const { return 120.0 / (pressed[2] - pressed[0]); }
+
+    /// The slowest and the fastest tempo the surface can have made of the same three presses.
+    /// Its stamp is taken somewhere inside the call, between `pressed` and `returned`, and
+    /// under AddressSanitizer a call can take a few milliseconds — measured: 1 to 3.6 ms for
+    /// the first and third, 0.04 ms for the second — which at 150 BPM is a whole BPM.
+    double slowestOfThree() const { return 120.0 / (returned[2] - pressed[0]); }
+    double fastestOfThree() const { return 120.0 / (pressed[2] - returned[0]); }
 
     /// The longest gap between a press and its bounce. A bounce that arrived later than
     /// `TapTempo::Options::bounceSeconds` is a tap, and the test would be measuring the sleep.
@@ -50,6 +58,7 @@ TappedRhythm tapWithBounces(Press press, int count, std::chrono::milliseconds pe
         std::this_thread::sleep_until(start + n * period);
         rhythm.pressed.push_back(seconds());
         press();
+        rhythm.returned.push_back(seconds());
         std::this_thread::sleep_for(bounce);
         rhythm.bounced.push_back(seconds());
         press();
