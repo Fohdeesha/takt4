@@ -1485,9 +1485,13 @@ TEST_CASE("the MIDI clock keeps its time while every core is busy", "[output][mi
     // machine, which on a live rig is as disruptive as opening its interface.
     //
     // Measured on the 16-thread rig, 2026-09-24: with nothing else running, 99% of gaps are
-    // within 1.4 ms of the spacing either way — the millisecond rounds. With every core busy,
-    // 1.7 ms at worst with the priority raised, and 26 to 34 ms at worst without it: a tick more
-    // than a whole tick late, and the next one bunched up behind it.
+    // within 1.4 ms of the spacing either way — the millisecond rounds. With every core busy and
+    // the priority raised, 99% within 1.7 to 2.2 ms over fifteen runs; without it, 20.8 ms every
+    // run, which is a tick a whole tick late and the next bunched up behind it. So the 99% is
+    // what tells the two apart. The single worst gap is not: raised, it was 1.7 ms in most runs
+    // and 8 to 15 ms in three of fifteen, where the first version of this test held it to 8 ms
+    // and failed one run in five. It is held to less than a whole tick, a tick the receiver
+    // still counts in its place; the 99% is the check that fails without the priority.
     auto ticks = std::make_shared<std::vector<double>>();
     Transports::Config config;
     config.midiClockPort = "Clock";
@@ -1529,7 +1533,7 @@ TEST_CASE("the MIDI clock keeps its time while every core is busy", "[output][mi
     INFO(ticks->size() << " ticks over " << cores << " busy cores: 99% within " << p99 * 1000.0
                        << " ms of the spacing, the worst " << worst * 1000.0 << " ms");
     CHECK(p99 < 0.004);
-    CHECK(worst < 0.008);
+    CHECK(worst < spacing);
 }
 
 TEST_CASE("PANIC leaves a lamp where it is, whatever its release would have done",
