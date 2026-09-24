@@ -103,6 +103,11 @@ public:
     void pickDevice(int index);
     void pickChannel(int index) { channel_ = index; }
     void toggleRun();
+    /// START or STOP as the button presses it: says so on the button, lets the window draw
+    /// that, and then `toggleRun` — refusing another press until a moment after it is done
+    /// (the audit's M23). `toggleRun` is the same thing at once, for a caller that is not a
+    /// hand on a button.
+    void requestToggleRun();
 
     /// Looks for input devices and MIDI ports again — the RESCAN button. Only while stopped:
     /// PortAudio renumbers every device when it looks. Keeps the choice that was made (or the
@@ -500,6 +505,12 @@ private:
     std::optional<Outage> outage_;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
+    /// See `requestToggleRun`. A member, so a press still waiting to be carried out goes with
+    /// the window rather than calling into it after it has gone.
+    slint::Timer runTimer_;
+    bool runPending_ = false;
+    /// When the last press finished being carried out; negative before any.
+    double runSettledAt_ = -1.0;
     /// What went missing between the input and the beats, as the window last showed it: the
     /// interface's overflows and the engine's drops, all of which start again with every run.
     struct InputTrouble {

@@ -110,6 +110,18 @@ private:
 };
 
 /// The same ranking the window itself uses, so a test picks what the window picked.
+/// Runs the window as its redraw timer and event loop would — `tick`, then whatever Slint timer
+/// has come due — until `done` says so, or ten seconds have passed.
+template <typename Done>
+void waitUntil(WindowController& controller, Done done) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done() && std::chrono::steady_clock::now() < until) {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
 std::optional<InputDevice> bestInputDevice(const LiveTracker& tracker) {
     std::optional<InputDevice> best;
     const auto rank = [](const InputDevice& d) {
@@ -660,14 +672,32 @@ TEST_CASE("the run callback opens a device and closes it again", "[ui][hardware]
     WindowController controller(tracker);
     REQUIRE_FALSE(tracker.running());
 
+    // The button says it has been pressed before the driver takes the thread, and the press is
+    // carried out a frame later (the audit's M23).
     controller.window().invoke_toggle_run();
+    CHECK(controller.window().get_run_busy());
+    CHECK(std::string(controller.window().get_run_busy_text()) == "OPENING\xE2\x80\xA6");
+    CHECK_FALSE(tracker.running());
+    waitUntil(controller, [&tracker] { return tracker.running(); });
     REQUIRE(tracker.running());
     CHECK(controller.window().get_running());
+    CHECK(std::string(controller.window().get_run_busy_text()).empty());
     CHECK_FALSE(controller.statusIsError());
     // The status line stops offering and starts reporting: it names the channel now.
     CHECK(std::string(controller.window().get_status()).find(" of ") != std::string::npos);
 
+    // A press straight after — the way one made while the driver held the thread arrives — is
+    // not taken for STOP, even after the redraw timer has run. A moment later the button is the
+    // operator's again.
+    controller.tick();
     controller.window().invoke_toggle_run();
+    waitUntil(controller, [&controller] { return !controller.window().get_run_busy(); });
+    CHECK(tracker.running());
+    CHECK_FALSE(controller.window().get_run_busy());
+
+    controller.window().invoke_toggle_run();
+    CHECK(std::string(controller.window().get_run_busy_text()) == "STOPPING\xE2\x80\xA6");
+    waitUntil(controller, [&tracker] { return !tracker.running(); });
     CHECK_FALSE(tracker.running());
     CHECK_FALSE(controller.window().get_running());
     // Stopping clears the readouts rather than freezing the last tempo on screen.
@@ -2977,6 +3007,56 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     CHECK(status.find("deck: sends are failing") != std::string::npos);
     CHECK(status.find(takt4::testing::kUnsendableReason) != std::string::npos);
     CHECK(controller.statusIsError());
+}
+
+TEST_CASE("a click made while START is still opening the input does not stop it again",
+          "[ui][hardware]") {
+    // The audit's M23, with the pointer on the button. Opening a driver holds the window's
+    // thread; a click made meanwhile is delivered once it is free, and pressed STOP on an input
+    // that had only just opened. Here the second click comes before the press has been carried
+    // out and a third straight after it has — the two moments such a click can arrive.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (!bestInputDevice(tracker)) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    constexpr float kWidth = 900.0f;
+    constexpr float kHeight = 836.0f;
+    constexpr float kButtonY = 31.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto click = [&window](float x) {
+        clickAt(window, x, kButtonY);
+        slint::platform::update_timers_and_animations();
+    };
+
+    // The run button, found from the right along the top row by what a click on it does.
+    float buttonX = -1.0f;
+    for (float x = kWidth - 20.0f; x > kWidth - 220.0f && buttonX < 0.0f; x -= 8.0f) {
+        click(x);
+        if (controller.window().get_run_busy()) {
+            buttonX = x;
+        }
+    }
+    REQUIRE(buttonX > 0.0f);
+    CHECK(std::string(controller.window().get_run_busy_text()) == "OPENING\xE2\x80\xA6");
+
+    click(buttonX);
+    waitUntil(controller, [&tracker] { return tracker.running(); });
+    REQUIRE(tracker.running());
+    // The redraw timer, overdue after a driver held the thread for seconds, can run before the
+    // clicks queued meanwhile are delivered: they are still refused.
+    controller.tick();
+    click(buttonX);
+    waitUntil(controller, [&controller] { return !controller.window().get_run_busy(); });
+    CHECK(tracker.running());
+    CHECK(controller.window().get_running());
+
+    // Once it is over, the button is the operator's again, and stops it.
+    click(buttonX);
+    waitUntil(controller, [&tracker] { return !tracker.running(); });
+    CHECK_FALSE(tracker.running());
+    CHECK_FALSE(controller.window().get_running());
 }
 
 TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]") {

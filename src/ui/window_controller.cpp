@@ -241,6 +241,13 @@ constexpr double kOutageFirstTrySeconds = 1.0;
 constexpr double kOutageRetrySeconds = 2.0;
 constexpr double kOutageRescanSeconds = 10.0;
 
+/// START and STOP as the button presses them (the audit's M23; see
+/// `WindowController::requestToggleRun`). Long enough for the window to draw "OPENING…" before
+/// the driver takes the thread — a frame is 16 ms — and a press after it is carried out that
+/// is refused, because a click made while the window could not draw arrives only then.
+constexpr std::chrono::milliseconds kRunDrawFirst{40};
+constexpr double kRunGraceSeconds = 0.3;
+
 /// Where a row's MIDI dropdown sits for this device — an index into the window's
 /// `output-devices`, whose entry 0 is its own "not chosen yet" label.
 ///
@@ -527,7 +534,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         deviceChosen_ = true;
         pickChannel(index);
     });
-    window_->on_toggle_run([this] { toggleRun(); });
+    window_->on_toggle_run([this] { requestToggleRun(); });
     window_->on_rescan_clicked([this] { rescanDevices(); });
 
     window_->on_halve([this] { halve(); });
@@ -928,6 +935,28 @@ void WindowController::pickDevice(int index) {
         // Whatever went wrong was about the device that is no longer selected.
         setStatus("Pick an input and press Start.", false);
     }
+}
+
+void WindowController::requestToggleRun() {
+    // The audit's M23. Opening an ASIO driver, and closing one, holds this thread for as long as
+    // the driver likes — seconds, on some — and nothing is drawn meanwhile, so the button went on
+    // saying START with no sign it had been pressed. A click made in that time is delivered once
+    // the thread is free, and pressed STOP on an input that had only just opened. So: say it on
+    // the button, give the window a frame to show it, carry it out, and take no press until a
+    // moment after — the button is disabled for all of it.
+    if (runPending_ || window_->get_run_busy()) {
+        return;
+    }
+    const bool stopping = wantRunning_ || tracker_.running();
+    runPending_ = true;
+    window_->set_run_busy(true);
+    window_->set_run_busy_text(shared(stopping ? "STOPPING\xE2\x80\xA6" : "OPENING\xE2\x80\xA6"));
+    runTimer_.start(slint::TimerMode::SingleShot, kRunDrawFirst, [this] {
+        toggleRun();
+        runPending_ = false;
+        runSettledAt_ = nowSeconds();
+        window_->set_run_busy_text(shared(""));
+    });
 }
 
 void WindowController::toggleRun() {
@@ -2515,6 +2544,12 @@ void WindowController::pumpWhileDragged(void* self) {
 
 void WindowController::tick() {
     ++ticks_;
+    // START or STOP carried out a moment ago: the button takes presses again. See
+    // `requestToggleRun`.
+    if (!runPending_ && window_->get_run_busy() &&
+        nowSeconds() - runSettledAt_ >= kRunGraceSeconds) {
+        window_->set_run_busy(false);
+    }
     // First, and outside every widget callback: `publishTargetRows` found a row it could not
     // honestly update in place, so the repeater is built again here rather than from inside
     // the × that was pressed on the row being destroyed. One redraw later is 33 ms.

@@ -307,6 +307,14 @@ export component MainWindow inherits Window {
   callback device-picked(int);
   callback channel-picked(int);
   callback toggle-run();
+  /// START or STOP has been pressed and is being carried out, or has only just been — an ASIO
+  /// driver can take seconds to open, and the window cannot draw while it does (the audit's
+  /// M23). The button takes no press until it is over: a second click made during the wait was
+  /// delivered after it, and turned the input straight back off.
+  in-out property <bool> run-busy;
+  /// What the button says while the press is being carried out — "OPENING…", "STOPPING…" —
+  /// or empty once it has been.
+  in-out property <string> run-busy-text;
 
   // §5.5's manual half. Each one is a `post` on the engine's control queue; none of
   // them touches the tracker from this thread.
@@ -511,9 +519,10 @@ export component MainWindow inherits Window {
               }
 
               run-button := Press {
-                text: root.running ? "STOP" : "START";
+                text: root.run-busy-text != "" ? root.run-busy-text
+                  : root.running ? "STOP" : "START";
                 primary: !root.running;
-                enabled: root.devices.length > 0;
+                enabled: root.devices.length > 0 && !root.run-busy;
                 min-width: 116px;
                 clicked => {
                   root.toggle-run();
