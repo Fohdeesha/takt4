@@ -132,6 +132,18 @@ DWORD runChild(const std::filesystem::path& dir, const std::string& how) {
         L"\"" + std::wstring(self) + L"\" \"crash report child\"";
     REQUIRE(SetEnvironmentVariableA(kDirectoryVariable, dir.string().c_str()) != 0);
     REQUIRE(SetEnvironmentVariableA(kHowVariable, how.c_str()) != 0);
+#if defined(__SANITIZE_ADDRESS__)
+    // Where the sanitizer's own report goes, said outright. The child runs detached, with no
+    // console: with MSVC 19.44 the report reached takt4's log through the stderr it redirects,
+    // and with the newer toolchain on the CI runners it went nowhere at all (2026-09-24) —
+    // the test found neither a report nor a dump. A file of its own in the test's folder
+    // leaves nothing to chance.
+    char previousAsan[4096] = {};
+    const DWORD hadAsan = GetEnvironmentVariableA("ASAN_OPTIONS", previousAsan, sizeof previousAsan);
+    // Quoted: ASAN_OPTIONS separates its options with ':', which a drive letter has one of.
+    const std::string asanLog = "log_path='" + (dir / "asan").string() + "'";
+    REQUIRE(SetEnvironmentVariableA("ASAN_OPTIONS", asanLog.c_str()) != 0);
+#endif
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION child{};
@@ -139,6 +151,9 @@ DWORD runChild(const std::filesystem::path& dir, const std::string& how) {
                                         DETACHED_PROCESS, nullptr, nullptr, &startup, &child);
     SetEnvironmentVariableA(kDirectoryVariable, nullptr);
     SetEnvironmentVariableA(kHowVariable, nullptr);
+#if defined(__SANITIZE_ADDRESS__)
+    SetEnvironmentVariableA("ASAN_OPTIONS", hadAsan > 0 ? previousAsan : nullptr);
+#endif
     REQUIRE(started != 0);
     const DWORD waited = WaitForSingleObject(child.hProcess, 60000);
     DWORD code = 0;
@@ -230,9 +245,16 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
         // and a run with neither fails. The shipped build has no sanitizer.
         if (std::string_view(c.how) == "access-violation") {
             const std::vector<unsigned char> bytes = readAll(dir.path() / "takt4.log");
-            const std::string log(bytes.begin(), bytes.end());
-            INFO("log:\n" << log);
-            if (log.find("AddressSanitizer") != std::string::npos) {
+            std::string reports(bytes.begin(), bytes.end());
+            // And the sanitizer's own file, `asan.<pid>`, which runChild points it at.
+            for (const auto& entry : std::filesystem::directory_iterator(dir.path())) {
+                if (entry.path().filename().string().rfind("asan", 0) == 0) {
+                    const std::vector<unsigned char> more = readAll(entry.path());
+                    reports.append(more.begin(), more.end());
+                }
+            }
+            INFO("log and sanitizer report:\n" << reports);
+            if (reports.find("AddressSanitizer") != std::string::npos) {
                 continue;
             }
         }
