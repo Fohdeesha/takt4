@@ -462,6 +462,35 @@ TEST_CASE("a port that is not there is reported rather than silently dead",
     CHECK_FALSE(control.running());
 }
 
+TEST_CASE("a real MIDI input opens and closes again and again", "[control][midi][hardware]") {
+    // The audit's M14: RtMidi's WinMM close held its lock across `midiInReset`, which hands
+    // pending SysEx buffers back through the input callback — which takes the same lock
+    // (cmake/rtmidi_patch.cmake). The deadlock itself wants a device sending SysEx at the
+    // moment of the close, which no test can arrange; what this does run is the patched close
+    // and open, against a real port and the real driver, over and over: every close returns,
+    // and every reopen works — which upstream's fix alone would not have kept, since it never
+    // lowered its flag again.
+    const std::vector<std::string> ports = takt4::output::listMidiInputPorts();
+    if (ports.empty()) {
+        SKIP("no MIDI input on this machine");
+    }
+    auto engine = makeEngine();
+    MidiControl::Config config;
+    config.enabled = true;
+    config.port = ports.front();
+    MidiControl control(*engine, config);
+    INFO("port " << ports.front());
+    for (int round = 0; round < 5; ++round) {
+        INFO("round " << round);
+        REQUIRE_NOTHROW(control.start());
+        CHECK(control.running());
+        const auto closing = std::chrono::steady_clock::now();
+        control.stop();
+        CHECK_FALSE(control.running());
+        CHECK(std::chrono::steady_clock::now() - closing < std::chrono::seconds(2));
+    }
+}
+
 TEST_CASE("the machine's MIDI inputs can be listed without opening one", "[control][midi]") {
     // Never throws, even where RtMidi has no usable API at all — it reports that by
     // throwing from its own constructor, and a listing has to swallow it.

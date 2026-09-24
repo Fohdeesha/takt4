@@ -174,6 +174,8 @@ block()
   endif()
   set(RTMIDI_TARGETNAME_UNINSTALL "rtmidi_uninstall")   # PortAudio already owns "uninstall"
   FetchContent_MakeAvailable(rtmidi)
+  # Its WinMM input's close could deadlock against its own callback (the audit's M14).
+  include("${CMAKE_CURRENT_LIST_DIR}/rtmidi_patch.cmake")
 endblock()
 set(TAKT4_RTMIDI_VERSION "6.0.0")
 
