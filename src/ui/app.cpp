@@ -120,6 +120,9 @@ int run() {
     // out of here any more — outputs and ports are applied after the window exists, and a bad
     // OSC prefix is refused on the way in (the audit's C1) — but if something still does, the
     // operator gets a sentence rather than a process that vanished before its window appeared.
+    // Every window opens no larger than this screen has room for (the audit's M26). Said here,
+    // by the application alone, so the tests' windows keep the sizes they are written against.
+    fitWindowsToScreen(true);
     std::unique_ptr<WindowController> controller;
     try {
         controller = std::make_unique<WindowController>(*tracker, saved);

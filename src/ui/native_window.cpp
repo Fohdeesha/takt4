@@ -1,5 +1,37 @@
 #include "ui/native_window.hpp"
 
+#include <algorithm>
+#include <atomic>
+
+namespace takt4::ui {
+namespace {
+
+/// Room left around a window fitted to the work area, in logical pixels: the title bar and
+/// the frame above and below, which `set_size` does not count, and a little either side.
+constexpr float kFrameAllowanceHeight = 48.0f;
+constexpr float kFrameAllowanceWidth = 16.0f;
+
+std::atomic<bool> g_fitToScreen{false};
+
+} // namespace
+
+LogicalExtent fitWithin(LogicalExtent wanted, LogicalExtent work) noexcept {
+    LogicalExtent out = wanted;
+    if (work.width > kFrameAllowanceWidth) {
+        out.width = std::min(wanted.width, work.width - kFrameAllowanceWidth);
+    }
+    if (work.height > kFrameAllowanceHeight) {
+        out.height = std::min(wanted.height, work.height - kFrameAllowanceHeight);
+    }
+    return out;
+}
+
+void fitWindowsToScreen(bool fit) noexcept {
+    g_fitToScreen.store(fit, std::memory_order_relaxed);
+}
+
+} // namespace takt4::ui
+
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -179,6 +211,28 @@ void reportFatal(std::string_view message) {
     MessageBoxW(nullptr, text.c_str(), L"takt4", MB_OK | MB_ICONERROR);
 }
 
+LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
+    if (!g_fitToScreen.load(std::memory_order_relaxed)) {
+        return wanted;
+    }
+    // The primary monitor, which is where a window opens when nothing has placed it. Its work
+    // area and the DPI come in the same units whatever this process's DPI awareness: physical
+    // pixels and the real DPI once winit has declared per-monitor awareness, 96-DPI pixels and
+    // 96 before — so the ratio is the logical size either way.
+    const HMONITOR monitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO info{};
+    info.cbSize = sizeof info;
+    if (monitor == nullptr || GetMonitorInfoW(monitor, &info) == 0) {
+        return wanted;
+    }
+    const UINT dpi = GetDpiForSystem();
+    const double scale = dpi > 0 ? static_cast<double>(dpi) / 96.0 : 1.0;
+    const LogicalExtent work{
+        static_cast<float>(static_cast<double>(info.rcWork.right - info.rcWork.left) / scale),
+        static_cast<float>(static_cast<double>(info.rcWork.bottom - info.rcWork.top) / scale)};
+    return fitWithin(wanted, work);
+}
+
 } // namespace takt4::ui
 
 #else
@@ -195,6 +249,10 @@ void keepPaintingWhileDragged(DragPump, void*) {}
 
 void reportFatal(std::string_view message) {
     std::cerr << "takt4: " << message << '\n';
+}
+
+LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
+    return wanted;
 }
 
 } // namespace takt4::ui

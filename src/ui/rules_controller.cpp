@@ -870,7 +870,9 @@ RulesController::RulesController(output::OutputRunner& runner,
     // `preferred-width` — so this window opened at its minimum, 900 x 560, whatever the
     // markup preferred. See `kRulesWindowWidth`. Before the first `show()`, which is what
     // makes the backend leave it alone; a later drag is the operator's and is kept.
-    window_->window().set_size(slint::LogicalSize({kRulesWindowWidth, kRulesWindowHeight}));
+    // No larger than the screen has room for, though: see `fitToScreen` (the audit's M26).
+    const LogicalExtent opening = fitToScreen({kRulesWindowWidth, kRulesWindowHeight});
+    window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
 
     resettle(0);
     publishAll();

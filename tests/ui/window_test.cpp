@@ -15,6 +15,7 @@
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
 #include "ui/model_watch.hpp"
+#include "ui/native_window.hpp"
 #include "ui/shot.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
@@ -2879,6 +2880,35 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     CHECK(controller.statusIsError());
 }
 
+
+TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
+    // The audit's M26. At 125 % a 1920 x 1080 screen with a 40-pixel taskbar has a work area of
+    // 1536 x 832 logical pixels, and the main window asked for 934: its status bar and PANIC
+    // opened under the taskbar. What a real small screen does cannot be seen from this desk;
+    // this is the arithmetic that decides it.
+    using takt4::ui::fitWithin;
+    using takt4::ui::LogicalExtent;
+    const LogicalExtent main{takt4::ui::kMainWindowWidth, takt4::ui::kMainWindowHeight};
+
+    const LogicalExtent laptop = fitWithin(main, {1536.0f, 832.0f});
+    CHECK(laptop.width == main.width);        // wide enough already
+    CHECK(laptop.height == Catch::Approx(784.0)); // the work area less the title bar and frame
+    CHECK(laptop.height + 48.0f <= 832.0f);
+
+    // A screen with room to spare changes nothing, and one that cannot be asked neither.
+    const LogicalExtent big = fitWithin(main, {2560.0f, 1400.0f});
+    CHECK(big.width == main.width);
+    CHECK(big.height == main.height);
+    const LogicalExtent unknown = fitWithin(main, {0.0f, 0.0f});
+    CHECK(unknown.width == main.width);
+    CHECK(unknown.height == main.height);
+
+    // And only the application asks the screen: a test process's windows keep the sizes their
+    // layout assertions were written against, whatever screen the runner has.
+    const LogicalExtent asked = takt4::ui::fitToScreen(main);
+    CHECK(asked.width == main.width);
+    CHECK(asked.height == main.height);
+}
 
 TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     // The audit's licensing finding, the user's answer to its Q8: takt4 ships with no notices

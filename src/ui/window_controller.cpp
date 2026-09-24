@@ -644,7 +644,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // markup's `preferred-width` does not size a Slint window; its content does, and with a
     // couple of output rows the content wanted more height than the window had, so the status
     // bar — which is where the version lives — was cut off the bottom.
-    window_->window().set_size(slint::LogicalSize({kMainWindowWidth, kMainWindowHeight}));
+    // And no taller than the screen has room for — see `fitToScreen` (the audit's M26).
+    const LogicalExtent opening = fitToScreen({kMainWindowWidth, kMainWindowHeight});
+    window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
 
     // **The outputs from now until the window goes**, not from Start to Stop — the audit's H5
     // and the operator's call of 2026-09-23. Last, after every setting above has been applied

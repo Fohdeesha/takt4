@@ -3,6 +3,7 @@
 #include "core/dmx/artnet_packet.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/io/utf8.hpp"
+#include "ui/native_window.hpp"
 #include "ui/window_state.hpp"
 
 #include <algorithm>
@@ -108,8 +109,9 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     // asks for, so a `preferred-width` in the markup decides nothing and this window opened
     // at its 820x520 minimum — a patch editor two thirds the size of the rule editor beside
     // it. Asked for on a rig on 2026-09-16, measured from the shot they sent.
-    window_->window().set_size(
-        slint::LogicalSize({kFixturesWindowWidth, kFixturesWindowHeight}));
+    // No larger than the screen has room for, though: see `fitToScreen` (the audit's M26).
+    const LogicalExtent opening = fitToScreen({kFixturesWindowWidth, kFixturesWindowHeight});
+    window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
 
     resettle(fixtures_.empty() ? -1 : 0);
     publishAll();

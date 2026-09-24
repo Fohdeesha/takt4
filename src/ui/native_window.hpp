@@ -49,6 +49,32 @@ using DragPump = void (*)(void* user);
 /// from the redraw timer every second or so.
 void keepPaintingWhileDragged(DragPump pump, void* user);
 
+/// A size in Slint's logical pixels, kept free of Slint's own types so this header is not.
+struct LogicalExtent {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+/// What a window asking to open at `wanted` may open at inside a screen whose work area — the
+/// screen without its taskbar — is `work` logical pixels: `wanted`, or less where the work
+/// area is smaller, keeping room for the title bar and frame. A zero work area is an unknown
+/// one, and leaves `wanted` alone. Pure arithmetic, for `fitToScreen` and its test.
+LogicalExtent fitWithin(LogicalExtent wanted, LogicalExtent work) noexcept;
+
+/// `wanted`, fitted to the primary monitor's work area — once `fitWindowsToScreen(true)` has
+/// been said, which the application does and the tests do not, so a test window opens at the
+/// size its layout assertions were written for.
+///
+/// **The audit's M26.** The main window opened at 1000 x 934 logical pixels, which at 125 %
+/// scaling is 1168 physical: taller than a 1080-line screen once its taskbar is off it, so the
+/// status bar and PANIC opened under the taskbar on exactly the laptop a show runs from. The
+/// rule and patch editors (872 and 800 tall) the same on a smaller screen. Only the first show
+/// is sized this way; a window the operator drags larger stays larger.
+///
+/// Away from Windows, or when the screen cannot be asked, `wanted` unchanged.
+LogicalExtent fitToScreen(LogicalExtent wanted) noexcept;
+void fitWindowsToScreen(bool fit) noexcept;
+
 /// Says something that stops takt4 starting, where somebody will see it.
 ///
 /// A window application has no console (see src/main.cpp), so the `std::cerr` this used to be
