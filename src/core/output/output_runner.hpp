@@ -194,6 +194,9 @@ struct OutputCommand {
     Kind kind = Kind::LinkEnabled;
     /// Non-zero for a command somebody is waiting on — see `OutputRunner::postAndWait`.
     std::uint64_t ticket = 0;
+    /// A `Rules` command's place among every rule set posted, given it by `OutputRunner::post`.
+    /// See `OutputRunner::liveRulesCurrent`.
+    std::uint64_t generation = 0;
     bool enabled = false;
     std::vector<Transports::OscTarget> targets;
     std::vector<OutputTarget> outputTargets;
@@ -436,6 +439,13 @@ public:
     std::uint64_t liveRulesVersion() const noexcept {
         return liveVersion_.load(std::memory_order_acquire);
     }
+    /// Whether `liveRules` comes from the last rule set posted. Until it does, a difference
+    /// between the two is the output thread not having got to that set yet, not a control
+    /// surface changing a rule — and taking it for one put an edit just made straight back:
+    /// the editor switched a rule on, read the switches of the set before, switched it off
+    /// again, and the next edit posted it off (found by the ASan run of 2026-09-24, where the
+    /// thread is slow enough to be caught between the two).
+    bool liveRulesCurrent() const;
 
     /// One universe's 512 levels as the output thread last sent them, copied under a lock.
     /// Empty when the patch does not use that universe.
@@ -687,6 +697,12 @@ private:
     mutable std::mutex liveMutex_;
     std::vector<LiveRule> live_;
     std::atomic<std::uint64_t> liveVersion_{0};
+    /// See `liveRulesCurrent`: the rule sets posted, numbered as they are queued (under
+    /// `commandMutex_`), the one the rules were last replaced with (the output thread's, like
+    /// the rules), and the one `live_` was taken from (under `liveMutex_`).
+    std::uint64_t rulesPosted_ = 0;
+    std::uint64_t rulesApplied_ = 0;
+    std::uint64_t liveGeneration_ = 0;
     /// See `levelsOf`. A universe and its 512 bytes, copied off the output thread at
     /// `kMirrorHz` so a patch editor can show a fade happening.
     struct MirroredUniverse {
