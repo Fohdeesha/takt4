@@ -16,6 +16,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # honour the plain variables set for them in cmake/deps.cmake instead of the cache.
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0126 NEW)
+# And this one makes them take the runtime library chosen below, which a sub-build that asks
+# for an older CMake would otherwise ignore.
+set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
 
 # takt4 is one statically linked executable. This is a plain variable, not an option(),
 # on purpose: RtMidi declares option(BUILD_SHARED_LIBS ... ON), which would otherwise
@@ -63,6 +66,18 @@ endif()
 # for everything compiled here; Skia's prebuilt archive is out of reach.
 if(MSVC)
   add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif()
+
+# **Every configuration links the release runtime, Debug included.**
+#
+# Rust links the release C runtime whatever the profile, and Skia's prebuilt archive is built
+# against it with `_ITERATOR_DEBUG_LEVEL` 0, so a Debug build of anything that links Slint
+# against the debug runtime (/MDd) is 2,032 × `LNK2038` — the audit found the Debug app
+# unbuildable, which meant its Debug-only allocation guard had never run in the app. A Debug
+# build is therefore /MD with the optimiser off, asserts on and the guard on; it gives up the
+# debug heap's checks, which the AddressSanitizer presets cover and more.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 endif()
 
 include("${PROJECT_SOURCE_DIR}/cmake/warnings.cmake")
