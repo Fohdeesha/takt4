@@ -349,6 +349,124 @@ TEST_CASE("the operator's window is evidence inside the filter", "[tracking][for
     CHECK(last.bpm == Approx(128.0).margin(3.0));
 }
 
+TEST_CASE("the forward filter coasts through silence at the tempo the music left",
+          "[tracking][forward]") {
+    // The audit's M5. Silence used to be evidence — "no beat here", every frame — and the
+    // posterior walked off the tempo while reporting a confidence of 0.85: on a 122 BPM kick
+    // pattern the published tempo was 119.4 fifteen seconds into a break. Now, a beat period
+    // of the slowest tempo after the last beat heard, the filter stops listening and carries
+    // phase and tempo forward exactly, and says the tempo is carried rather than measured.
+    const std::vector<std::pair<float, float>> music = upsampled("synthetic", 2);
+    std::vector<std::pair<float, float>> activations = music;
+    const std::size_t silenceBegins = activations.size();
+    activations.insert(activations.end(), 2000, {0.0f, 0.0f}); // twenty seconds at 100 fps
+    const std::size_t silenceEnds = activations.size();
+    activations.insert(activations.end(), music.begin(), music.end());
+
+    ForwardFilter filter;
+    TempoTracker tracker(filter.secondsPerFrame());
+    std::vector<double> beatsAt; // in frames, with each beat's sub-frame offset
+    std::vector<TrackedFrame> frames;
+    double trackedBpmBefore = 0.0;
+    double publishedBefore = 0.0;
+    double agreementBefore = 0.0;
+    for (std::size_t f = 0; f < activations.size(); ++f) {
+        const TrackedFrame frame = filter.process(activations[f].first, activations[f].second);
+        frames.push_back(frame);
+        (void)tracker.process(frame);
+        if (frame.emitted != TrackedFrame::Emitted::None) {
+            beatsAt.push_back(static_cast<double>(frame.frameIndex) + frame.beatOffsetFrames);
+        }
+        if (f + 1 == silenceBegins) {
+            trackedBpmBefore = frame.bpm;
+            publishedBefore = tracker.state().bpm;
+            agreementBefore = frame.tempoAgreement;
+            REQUIRE(tracker.state().locked);
+            REQUIRE(frame.bpm == Approx(128.0).margin(3.0));
+        }
+        if (f + 1 == silenceEnds) {
+            INFO("the filter's tempo went from " << trackedBpmBefore << " to " << frame.bpm);
+            // To the hundredth-and-a-bit, not the bit: coasting replays from the last beat
+            // heard, so the frames of music after that peak are not in it. Measured 0.017.
+            CHECK(frame.bpm == Approx(trackedBpmBefore).margin(0.05));
+            // Carried, not measured — so the tracker holds it and says so, and keeps the lock.
+            CHECK(frame.tempoAgreement == 0.0);
+            CHECK(tracker.state().holding);
+            CHECK(tracker.state().locked);
+            CHECK(tracker.state().bpm == Approx(publishedBefore).margin(0.01));
+        }
+    }
+
+    // The beats went on through the silence at the spacing the music left: every gap from
+    // the last beat heard to the end of the silence within a frame of the one before it.
+    std::vector<double> quiet;
+    for (const double at : beatsAt) {
+        if (at >= static_cast<double>(silenceBegins) && at < static_cast<double>(silenceEnds)) {
+            quiet.push_back(at);
+        }
+    }
+    const double period = 60.0 / (trackedBpmBefore * filter.secondsPerFrame());
+    INFO("beat period " << period << " frames, " << quiet.size() << " beats in the silence");
+    CHECK(quiet.size() >= static_cast<std::size_t>(2000.0 / period) - 1);
+    for (std::size_t i = 1; i < quiet.size(); ++i) {
+        INFO("gap " << i);
+        CHECK(quiet[i] - quiet[i - 1] == Approx(period).margin(1.0));
+    }
+
+    // And it listens again the moment the music does: the tempo is measured once more, and by
+    // the end of the excerpt the filter is as sure of it as it was the first time through.
+    CHECK(frames.back().tempoAgreement == Approx(agreementBefore).margin(0.05));
+    CHECK(frames.back().bpm == Approx(128.0).margin(3.0));
+    CHECK_FALSE(tracker.state().holding);
+}
+
+TEST_CASE("a plateau at the threshold is not a beat", "[tracking][forward]") {
+    // What the network actually does when the music stops: its memory carries on, and over
+    // silence after a 122 BPM kick pattern it sat on a smooth plateau with the downbeat at
+    // 0.40 to 0.45. Counted as beats by their level, that kept the filter from coasting and
+    // decoded the plateau as music. A beat is a peak; see ForwardFilter::Options::coastContrast.
+    //
+    // The shape is the measured one (`takt4-cli beats` over that file, 31 to 40 s): a trough of
+    // about 0.2 after the last beat, the downbeat rising over half a second to 0.44, then
+    // wandering between 0.37 and 0.45 with the beat at 0.18 to 0.26.
+    constexpr double kPi = 3.14159265358979323846;
+    const std::vector<std::pair<float, float>> music = upsampled("synthetic", 2);
+    std::vector<std::pair<float, float>> activations = music;
+    for (int f = 0; f < 1000; ++f) { // ten seconds at 100 fps
+        double down = 0.2;
+        if (f >= 30 && f < 80) {
+            down = 0.2 + 0.24 * (f - 30) / 50.0;
+        } else if (f >= 80) {
+            down = 0.41 + 0.035 * std::sin(2.0 * kPi * f / 150.0);
+        }
+        const double beat = 0.22 + 0.04 * std::sin(2.0 * kPi * f / 230.0);
+        activations.emplace_back(static_cast<float>(beat), static_cast<float>(down));
+    }
+
+    ForwardFilter filter;
+    TrackedFrame last;
+    double bpmBefore = 0.0;
+    double bpmCoasting = 0.0;
+    for (std::size_t f = 0; f < activations.size(); ++f) {
+        last = filter.process(activations[f].first, activations[f].second);
+        if (f + 1 == music.size()) {
+            bpmBefore = last.bpm;
+        }
+        if (f == music.size() + 400) {
+            REQUIRE(last.tempoAgreement == 0.0); // four seconds in: coasting
+            bpmCoasting = last.bpm;
+        }
+    }
+    // Coasting to the end, and once it coasts the tempo is carried exactly — not a hundredth
+    // of a BPM of it moves over the last six seconds of plateau.
+    CHECK(last.tempoAgreement == 0.0);
+    CHECK(last.bpm == Approx(bpmCoasting).epsilon(1e-12));
+    // What moved before it began is the rise onto the plateau, decoded as music until it
+    // stopped looking like a beat: a small part of a BPM.
+    INFO("the filter's tempo went from " << bpmBefore << " to " << last.bpm);
+    CHECK(last.bpm == Approx(bpmBefore).margin(0.5));
+}
+
 TEST_CASE("a frame of the forward filter touches no heap", "[tracking][forward][rt]") {
     const std::vector<std::pair<float, float>> activations = upsampled("vic-acid", 2);
     ForwardFilter filter;
@@ -393,5 +511,8 @@ TEST_CASE("nonsensical forward filter options are refused", "[tracking][forward]
     CHECK_THROWS_AS(ForwardFilter(bad), std::invalid_argument);
     bad = {};
     bad.meterChangeProbability = 1.0;
+    CHECK_THROWS_AS(ForwardFilter(bad), std::invalid_argument);
+    bad = {};
+    bad.coastContrast = -0.1;
     CHECK_THROWS_AS(ForwardFilter(bad), std::invalid_argument);
 }

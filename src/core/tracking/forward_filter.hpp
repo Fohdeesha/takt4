@@ -27,7 +27,8 @@ namespace takt4::tracking {
 ///
 /// `process` is one step of the forward algorithm — a sparse transition, a multiply by the
 /// observation densities, a normalisation — over about 39 k states at the default 100 fps
-/// with meters 3 and 4. That is deterministic, needs no seed, no injection, no information
+/// with meters 3 and 4, and fewer with a bar of four alone, the default since 0.9.1. That is
+/// deterministic, needs no seed, no injection, no information
 /// gate and no gather window, and its confidence is the posterior mass on the tempo it
 /// reports. Everything the state space needs is built here from the options; nothing is
 /// read from a blob.
@@ -45,12 +46,14 @@ namespace takt4::tracking {
 ///     neighbours down by `Options::holdPenalty` a frame, so the filter tracks phase and
 ///     nothing else — a DJ's beat grid, and the only thing that holds a track whose
 ///     periodicities are in non-octave ratios.
-///   * **It coasts through a break.** A chain whose position advances every frame carries
-///     phase and tempo through silence by construction and re-anchors on the first
-///     confident beats; the beats keep coming at the held tempo, and `TempoTracker`'s
-///     confidence gate flags them `holding`. The one exception is before the first beat
-///     of a run: nothing is emitted until the network has once read a beat at
-///     `Options::armThreshold` or above, so a silent start does not fire a rig.
+///   * **It coasts through a break.** When the network has read no beat for a whole beat
+///     period of the slowest tempo, the filter stops taking evidence and steps its posterior
+///     forward unchanged, so phase and tempo carry through the silence exactly and re-anchor
+///     on the first beat back; the beats keep coming at the tempo the music left, and
+///     `TempoTracker`'s confidence gate flags them `holding` (`Options::coastAfterFrames`).
+///     The one exception is before the first beat of a run: nothing is emitted until the
+///     network has once read a beat at `Options::armThreshold` or above, so a silent start
+///     does not fire a rig.
 ///
 /// Where the beats are read off the posterior is `Options::emission`, and it is the part
 /// §2.4 measured as unfinished: the MAP state crossing a beat boundary is a frame early as
@@ -166,8 +169,43 @@ public:
         /// No beat within this fraction of a period of the last one: the prototype's 0.5.
         double minimumBeatFraction = 0.5;
         /// Nothing is emitted until an activation has once reached this — BeatNet+'s own
-        /// emission threshold — so a silent start fires nothing.
+        /// emission threshold — so a silent start fires nothing. It is also what counts as
+        /// evidence of a beat for coasting: see `coastAfterFrames`.
         double armThreshold = 0.4;
+        /// **Coasting through a break.** Once a beat has been heard, if no activation reaches
+        /// `armThreshold` for this many frames, the filter stops listening until one does:
+        /// every state steps to the next and wraps into its own tempo, with no observation
+        /// and no tempo change, so phase and tempo carry through the silence exactly and the
+        /// beats go on at the tempo the music left. Zero, the default, means one and a half
+        /// beats at the tempo in force when the last beat was heard — a beat was due, and
+        /// did not come.
+        ///
+        /// **And it coasts from the last beat heard, not from when it noticed.** The frames
+        /// before that were decoded as music whose beat was still to come, and a beat that
+        /// does not come is strong evidence against the tempo expecting it — with exact
+        /// zeros, a 128 BPM posterior was at 106 within the second. So the posterior half a
+        /// beat after the last beat heard is kept, and on the first coasting frame the frames
+        /// since are replayed from it as coasting. What was already emitted from them stays
+        /// emitted.
+        ///
+        /// Without it silence was still evidence — "no beat here" on every frame — and how
+        /// hard each tempo is penalised for that depends on what share of its states are beat
+        /// states, which the rounding of the border to whole frames makes uneven (4 of 49, 4
+        /// of 50, 3 of 48). So the posterior drifted: measured on a 122 BPM kick pattern
+        /// followed by digital silence, the published tempo
+        /// walked down to 119.4 BPM over fifteen seconds with the confidence still at 0.85, so
+        /// nothing said it was guessing (the audit's M5). A frame spent coasting reports a
+        /// confidence of zero, so `TempoTracker` holds the tempo and says `holding`.
+        std::uint32_t coastAfterFrames = 0;
+        /// What counts as a beat *heard*, for coasting: an activation at `armThreshold` or
+        /// above that has also risen at least this far above its lowest over the half of the
+        /// slowest beat period before it. A level alone is not enough, because the network
+        /// does not go quiet when the music does — its memory carries on, and over digital
+        /// silence after a 122 BPM kick pattern it settled into a smooth plateau with the
+        /// downbeat at 0.40 to 0.45, crossing the threshold every second or so. Measured on
+        /// that file: the music's peaks rose 0.42 to 0.61 (median 0.51) above the trough
+        /// before them, the plateau never more than 0.09.
+        double coastContrast = 0.2;
         /// The meter in force keeps it until another carries this much more posterior
         /// mass, as `ParticleFilter::meterOf` does and for the same reason — and the beat,
         /// the tempo and the phase are read off the chain in force, so the bar that calls
@@ -225,6 +263,15 @@ private:
     void buildStateSpace();
     void buildTransitions();
     void combineWeights() noexcept;
+    /// One frame's transition, `posterior_` into `next_`; `keepTempo` wraps every beat into
+    /// the tempo it ended on instead of through the tempo-change rows.
+    void transition(bool keepTempo) noexcept;
+    /// The observation — or none, for a null `density` — then the operator's weights and the
+    /// normalisation, `next_` back into `posterior_`.
+    void weigh(const double* density) noexcept;
+    /// The posterior as the last beat heard left it, stepped forward as coasting over every
+    /// frame since. See Options::coastAfterFrames.
+    void rewindToEvidence() noexcept;
 
     Options options_;
 
@@ -266,6 +313,16 @@ private:
     // Between frames.
     std::uint64_t counter_ = 0;
     bool armed_ = false;
+    // Coasting: the last frame an activation reached armThreshold, the posterior it left, and
+    // the beat period in force then.
+    std::uint64_t lastEvidence_ = 0;
+    std::vector<double> evidencePosterior_;
+    std::uint64_t evidenceFrame_ = 0; ///< the frame evidencePosterior_ was taken after
+    std::uint32_t evidenceInterval_ = 0;
+    std::vector<double> recentLevel_; ///< max(beat, down), a ring over half the slowest beat
+    std::size_t recentAt_ = 0;
+    bool everHeard_ = false;
+    bool coasting_ = false; ///< the last frame was coasting
     double lastEmitFrame_ = 0.0;
     bool everEmitted_ = false;
     std::int64_t lastBeatIndex_ = -1; ///< the MAP state's beat of the bar, last frame

@@ -63,6 +63,9 @@ ForwardFilter::ForwardFilter(Options options) : options_(options) {
     if (!(options_.meterMargin >= 1.0)) {
         throw std::invalid_argument("ForwardFilter: the meter margin is at least one");
     }
+    if (!(options_.coastContrast >= 0.0) || !(options_.coastContrast <= 1.0)) {
+        throw std::invalid_argument("ForwardFilter: the coasting contrast is an activation, 0 to 1");
+    }
     buildStateSpace();
     buildTransitions();
 
@@ -72,6 +75,8 @@ ForwardFilter::ForwardFilter(Options options) : options_(options) {
     intervalWeight_.assign(n, 1.0);
     posterior_.assign(numStates_, 0.0);
     next_.assign(numStates_, 0.0);
+    evidencePosterior_.assign(numStates_, 0.0);
+    recentLevel_.assign(std::max<std::size_t>(1, intervals_.back() / 2), 0.0);
     lastMass_.assign(n, 0.0);
     incoming_.assign(n, 0.0);
     barIncoming_.assign(patterns_.size() * n, 0.0);
@@ -193,6 +198,13 @@ void ForwardFilter::reset() noexcept {
     std::fill(intervalMass_.begin(), intervalMass_.end(), 0.0);
     counter_ = 0;
     armed_ = false;
+    lastEvidence_ = 0;
+    evidenceFrame_ = 0;
+    evidenceInterval_ = 0;
+    std::fill(recentLevel_.begin(), recentLevel_.end(), 0.0);
+    recentAt_ = 0;
+    everHeard_ = false;
+    coasting_ = false;
     everEmitted_ = false;
     lastEmitFrame_ = 0.0;
     lastBeatIndex_ = -1;
@@ -254,6 +266,114 @@ void ForwardFilter::holdTempo(double bpm) noexcept {
     combineWeights();
 }
 
+void ForwardFilter::transition(bool keepTempo) noexcept {
+    const std::size_t n = intervals_.size();
+    // --- transition ---------------------------------------------------------------------
+    // Within a beat every state steps to the next: the posterior shifts by one. At the
+    // first state of each beat, what arrives is the mass that ended the previous beat on
+    // every tempo, redistributed by the tempo-change rows — or, with `keepTempo`, on the
+    // tempo it ended on, which is what coasting does so the tempo cannot wander while
+    // there is nothing to hold it.
+    for (std::size_t p = 0; p < patterns_.size(); ++p) {
+        const Pattern& pattern = patterns_[p];
+        for (std::uint32_t b = 0; b < pattern.meter; ++b) {
+            const std::uint32_t previous = b == 0 ? pattern.meter - 1 : b - 1;
+            const std::size_t fromBase = pattern.offset + static_cast<std::size_t>(previous) * statesPerBeat_;
+            for (std::size_t i = 0; i < n; ++i) {
+                lastMass_[i] = posterior_[fromBase + firstOfInterval_[i] + intervals_[i] - 1];
+            }
+            if (keepTempo) {
+                std::copy(lastMass_.begin(), lastMass_.end(), incoming_.begin());
+            } else {
+                for (std::size_t to = 0; to < n; ++to) {
+                    double sum = 0.0;
+                    for (std::size_t from = 0; from < n; ++from) {
+                        sum += tempoTransition_[from * n + to] * lastMass_[from];
+                    }
+                    incoming_[to] = sum;
+                }
+            }
+            const std::size_t toBase = pattern.offset + static_cast<std::size_t>(b) * statesPerBeat_;
+            if (b == 0) {
+                // Kept aside: a bar boundary may also be where the meter changes, and the
+                // other patterns' arrivals are not known until every pattern has been
+                // walked.
+                std::copy(incoming_.begin(), incoming_.end(), barIncoming_.begin() + static_cast<std::ptrdiff_t>(p * n));
+            }
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::size_t first = toBase + firstOfInterval_[i];
+                next_[first] = incoming_[i];
+                for (std::uint32_t phase = 1; phase < intervals_[i]; ++phase) {
+                    next_[first + phase] = posterior_[first + phase - 1];
+                }
+            }
+        }
+    }
+    if (options_.meterChangeProbability > 0.0 && patterns_.size() > 1 && !keepTempo) {
+        const double stay = 1.0 - options_.meterChangeProbability;
+        const double leave = options_.meterChangeProbability / static_cast<double>(patterns_.size() - 1);
+        for (std::size_t p = 0; p < patterns_.size(); ++p) {
+            const std::size_t base = patterns_[p].offset;
+            for (std::size_t i = 0; i < n; ++i) {
+                double mass = stay * barIncoming_[p * n + i];
+                for (std::size_t q = 0; q < patterns_.size(); ++q) {
+                    if (q != p) {
+                        mass += leave * barIncoming_[q * n + i];
+                    }
+                }
+                next_[base + firstOfInterval_[i]] = mass;
+            }
+        }
+    }
+}
+
+void ForwardFilter::weigh(const double* density) noexcept {
+    // --- observation, and the operator's evidence ---------------------------------------
+    double total = 0.0;
+    std::fill(intervalMass_.begin(), intervalMass_.end(), 0.0);
+    std::fill(patternMass_.begin(), patternMass_.end(), 0.0);
+    for (std::size_t s = 0; s < numStates_; ++s) {
+        // Coasting there is no `density`: the audio says nothing, so it weighs nothing. The
+        // operator's window and hold still do, being the operator's evidence, not the audio's.
+        double mass = density == nullptr ? next_[s] : next_[s] * density[statePointer_[s]];
+        if (anyWeight_) {
+            mass *= intervalWeight_[stateInterval_[s]];
+        }
+        next_[s] = mass;
+        total += mass;
+    }
+    if (!(total > 0.0) || !std::isfinite(total)) {
+        // Every hypothesis is impossible, which only rounding can bring about: start again
+        // from nothing rather than divide by it.
+        const double uniform = 1.0 / static_cast<double>(numStates_);
+        std::fill(next_.begin(), next_.end(), uniform);
+        total = 1.0;
+    }
+    const double scale = 1.0 / total;
+    const double keep = 1.0 - options_.floor;
+    const double spread = options_.floor / static_cast<double>(numStates_);
+    for (std::size_t s = 0; s < numStates_; ++s) {
+        const double mass = next_[s] * scale * keep + spread;
+        next_[s] = mass;
+        patternMass_[statePattern_[s]] += mass;
+    }
+    posterior_.swap(next_);
+}
+
+void ForwardFilter::rewindToEvidence() noexcept {
+    // Back to the posterior as it stood on the last frame a beat was heard, and forward
+    // again over every frame since as the coasting frames they turned out to be. The
+    // frames in between were decoded as music whose beat had not come yet, and a beat that
+    // never comes is strong evidence against the tempo that expected it: with exact zeros
+    // a 128 BPM posterior was at 106 before the silence was a second old. Replayed, it is
+    // as if the filter had coasted from the last beat on.
+    std::copy(evidencePosterior_.begin(), evidencePosterior_.end(), posterior_.begin());
+    for (std::uint64_t f = evidenceFrame_ + 1; f < counter_; ++f) {
+        transition(true);
+        weigh(nullptr);
+    }
+}
+
 TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivation) noexcept {
     const std::size_t n = intervals_.size();
     const double now = static_cast<double>(counter_);
@@ -278,90 +398,43 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
         std::max(beat, kDensityFloor),
         std::max(down, kDensityFloor),
     };
-    if (std::max(beat, down) >= options_.armThreshold) {
+    // A beat heard is the activation up at the threshold *and* well clear of the lowest it has
+    // been over half a slow beat — the top of a peak, not a plateau. See Options::coastContrast.
+    const double level = std::max(beat, down);
+    const double trough = *std::min_element(recentLevel_.begin(), recentLevel_.end());
+    recentLevel_[recentAt_] = level;
+    recentAt_ = (recentAt_ + 1) % recentLevel_.size();
+    if (level >= options_.armThreshold) {
         armed_ = true;
     }
+    const bool heard = level >= options_.armThreshold && level - trough >= options_.coastContrast;
+    // A beat that was due and never came: the music, or at least its beat, has stopped, and
+    // nothing is taken from it until it comes back — see Options::coastAfterFrames.
+    const std::uint64_t coastAfter =
+        options_.coastAfterFrames > 0
+            ? options_.coastAfterFrames
+            : static_cast<std::uint64_t>(std::ceil(1.5 * static_cast<double>(evidenceInterval_)));
+    const bool coasting = armed_ && !heard && everHeard_ && counter_ - lastEvidence_ > coastAfter;
+    if (coasting && !coasting_) {
+        rewindToEvidence();
+    }
+    coasting_ = coasting;
 
-    // --- transition ---------------------------------------------------------------------
-    // Within a beat every state steps to the next: the posterior shifts by one. At the
-    // first state of each beat, what arrives is the mass that ended the previous beat on
-    // every tempo, redistributed by the tempo-change rows.
-    for (std::size_t p = 0; p < patterns_.size(); ++p) {
-        const Pattern& pattern = patterns_[p];
-        for (std::uint32_t b = 0; b < pattern.meter; ++b) {
-            const std::uint32_t previous = b == 0 ? pattern.meter - 1 : b - 1;
-            const std::size_t fromBase = pattern.offset + static_cast<std::size_t>(previous) * statesPerBeat_;
-            for (std::size_t i = 0; i < n; ++i) {
-                lastMass_[i] = posterior_[fromBase + firstOfInterval_[i] + intervals_[i] - 1];
-            }
-            for (std::size_t to = 0; to < n; ++to) {
-                double sum = 0.0;
-                for (std::size_t from = 0; from < n; ++from) {
-                    sum += tempoTransition_[from * n + to] * lastMass_[from];
-                }
-                incoming_[to] = sum;
-            }
-            const std::size_t toBase = pattern.offset + static_cast<std::size_t>(b) * statesPerBeat_;
-            if (b == 0) {
-                // Kept aside: a bar boundary may also be where the meter changes, and the
-                // other patterns' arrivals are not known until every pattern has been
-                // walked.
-                std::copy(incoming_.begin(), incoming_.end(), barIncoming_.begin() + static_cast<std::ptrdiff_t>(p * n));
-            }
-            for (std::size_t i = 0; i < n; ++i) {
-                const std::size_t first = toBase + firstOfInterval_[i];
-                next_[first] = incoming_[i];
-                for (std::uint32_t phase = 1; phase < intervals_[i]; ++phase) {
-                    next_[first + phase] = posterior_[first + phase - 1];
-                }
-            }
-        }
+    transition(coasting);
+    weigh(coasting ? nullptr : density);
+    if (heard) {
+        lastEvidence_ = counter_;
+        everHeard_ = true;
     }
-    if (options_.meterChangeProbability > 0.0 && patterns_.size() > 1) {
-        const double stay = 1.0 - options_.meterChangeProbability;
-        const double leave = options_.meterChangeProbability / static_cast<double>(patterns_.size() - 1);
-        for (std::size_t p = 0; p < patterns_.size(); ++p) {
-            const std::size_t base = patterns_[p].offset;
-            for (std::size_t i = 0; i < n; ++i) {
-                double mass = stay * barIncoming_[p * n + i];
-                for (std::size_t q = 0; q < patterns_.size(); ++q) {
-                    if (q != p) {
-                        mass += leave * barIncoming_[q * n + i];
-                    }
-                }
-                next_[base + firstOfInterval_[i]] = mass;
-            }
-        }
+    // Kept for `rewindToEvidence`: the posterior as the last beat heard left it — through the
+    // half beat after it too, in which nothing is overdue yet, so the replay keeps what the
+    // music said between that beat and the next. Measured over the 23 electronic tracks, a
+    // copy taken at the beat's peak alone (with peaks alone as beats heard) fell below the
+    // old baseline on nine figures where this falls on one, and lost Alias's octave.
+    if (everHeard_ && !coasting && counter_ - lastEvidence_ <= evidenceInterval_ / 2) {
+        std::copy(posterior_.begin(), posterior_.end(), evidencePosterior_.begin());
+        evidenceFrame_ = counter_;
     }
-
-    // --- observation, and the operator's evidence ---------------------------------------
-    double total = 0.0;
-    std::fill(intervalMass_.begin(), intervalMass_.end(), 0.0);
-    std::fill(patternMass_.begin(), patternMass_.end(), 0.0);
-    for (std::size_t s = 0; s < numStates_; ++s) {
-        double mass = next_[s] * density[statePointer_[s]];
-        if (anyWeight_) {
-            mass *= intervalWeight_[stateInterval_[s]];
-        }
-        next_[s] = mass;
-        total += mass;
-    }
-    if (!(total > 0.0) || !std::isfinite(total)) {
-        // Every hypothesis is impossible, which only rounding can bring about: start again
-        // from nothing rather than divide by it.
-        const double uniform = 1.0 / static_cast<double>(numStates_);
-        std::fill(next_.begin(), next_.end(), uniform);
-        total = 1.0;
-    }
-    const double scale = 1.0 / total;
-    const double keep = 1.0 - options_.floor;
-    const double spread = options_.floor / static_cast<double>(numStates_);
-    for (std::size_t s = 0; s < numStates_; ++s) {
-        const double mass = next_[s] * scale * keep + spread;
-        next_[s] = mass;
-        patternMass_[statePattern_[s]] += mass;
-    }
-    posterior_.swap(next_);
 
     // --- the meter, and everything else read off its chain ------------------------------
     // The pattern with the most mass, held by the incumbent until another is ahead by the
@@ -446,6 +519,9 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
     const std::size_t mapInterval = stateInterval_[map];
     frame.gathering = static_cast<std::uint32_t>(map);
     frame.intervalFrames = intervals_[mapInterval];
+    if (heard) {
+        evidenceInterval_ = frame.intervalFrames; // how long until the next one is overdue
+    }
     // The tempo without the whole-frame quantisation: the posterior mean over the MAP
     // interval and its two neighbours, which is the particle filter's `refinedIntervalFrames`
     // read off a distribution rather than a cloud — and the mass there is the confidence.
@@ -458,7 +534,9 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
     frame.refinedIntervalFrames = nearMass > 0.0 ? nearPeriod / nearMass
                                                  : static_cast<double>(frame.intervalFrames);
     frame.bpm = 60.0 * static_cast<double>(options_.fps) / frame.refinedIntervalFrames;
-    frame.tempoAgreement = std::clamp(nearMass / chainMass, 0.0, 1.0);
+    // Coasting, the tempo is carried, not measured, and saying so is what makes `TempoTracker`
+    // hold it and report `holding` rather than present a guess as a reading.
+    frame.tempoAgreement = coasting ? 0.0 : std::clamp(nearMass / chainMass, 0.0, 1.0);
 
     // --- the beat -----------------------------------------------------------------------
     const double position = static_cast<double>(stateBeat_[map]) + static_cast<double>(statePhase_[map]);
