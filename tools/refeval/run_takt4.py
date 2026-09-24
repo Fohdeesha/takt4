@@ -14,10 +14,12 @@ Configurations, by tag:
     fwd, fwd70, fwdmap, fwdmean, pf100     the forward filter and its variants; see CONFIGS
 
 Output goes to references/refeval-work/takt4/<stem>.<tag>.{trace,beats}. Existing files
-are **overwritten**: this is the script that measures the build, so it must never hand
-back a stale result. `--only NAME` restricts it to tracks whose stem contains NAME.
+are **deleted before each run**, and any run that fails makes the script exit non-zero:
+this is the script that measures the build, so it must never hand back a stale result.
+`--only NAME` restricts it to tracks whose stem contains NAME.
 """
 import argparse
+import os
 import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -50,14 +52,32 @@ CONFIGS = {
 
 
 def run(cli: Path, wav: Path, tag: str, extra):
+    """One track through one configuration: (line to print, whether it worked)."""
     trace = TAKT4 / f"{wav.stem}.{tag}.trace"
     beats = TAKT4 / f"{wav.stem}.{tag}.beats"
+    # Gone before the run, not overwritten by it: a run that fails partway, or never starts,
+    # must leave nothing that gate.py could score as this build's. The audit found exactly
+    # that — a failed run left the last build's files in place, the script exited 0, and the
+    # gate reported every value identical.
+    trace.unlink(missing_ok=True)
+    beats.unlink(missing_ok=True)
     cmd = [str(cli), "track", str(wav), "--trace", str(trace), "--out", str(beats)] + extra
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        return f"{wav.stem:<45} {tag:<8} FAILED ({r.returncode}): {r.stderr.strip()[-200:]}"
+    if r.returncode != 0 or not beats.is_file():
+        why = r.stderr.strip()[-200:] or "no beat file written"
+        return f"{wav.stem:<45} {tag:<8} FAILED ({r.returncode}): {why}", False
     last = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-    return f"{wav.stem:<45} {tag:<8} {last}"
+    return f"{wav.stem:<45} {tag:<8} {last}", True
+
+
+def split_extra(text):
+    """`--extra` as arguments. On Windows the POSIX rules would eat every backslash in a path
+    (`--weights D:\\x\\y.bin` arrived as `D:xy.bin`), so there the quotes are honoured and
+    then removed, and the backslashes kept."""
+    if os.name != "nt":
+        return shlex.split(text)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t
+            for t in shlex.split(text, posix=False)]
 
 
 def main():
@@ -81,12 +101,16 @@ def main():
         wavs = [w for w in wavs if any(n in w.stem for n in a.only)]
     if not wavs:
         raise SystemExit(f"no WAVs under {AUDIO}; run decode_all.py first")
-    extra = shlex.split(a.extra) if a.extra else []
+    extra = split_extra(a.extra) if a.extra else []
     print(f"{cli}\n{len(wavs)} tracks x {a.tags} {' '.join(extra)}\n", flush=True)
     jobs = [(cli, w, a.tag or tag, CONFIGS[tag] + extra) for w in wavs for tag in a.tags]
+    failed = 0
     with ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        for line in pool.map(lambda j: run(*j), jobs):
+        for line, ok in pool.map(lambda j: run(*j), jobs):
             print(line, flush=True)
+            failed += 0 if ok else 1
+    if failed:
+        raise SystemExit(f"{failed} of {len(jobs)} runs failed; their files are gone, not stale")
 
 
 if __name__ == "__main__":
