@@ -19,7 +19,7 @@
 # **Windows has AddressSanitizer and nothing else.** MSVC ships `/fsanitize=address`; it has
 # no ThreadSanitizer and no UndefinedBehaviorSanitizer, and neither does clang-cl, because
 # neither runtime has a Windows port. So on this machine `windows-asan` is the whole of what
-# can be run locally and the other two are run on Linux.
+# can be run locally and the other two are run on Linux, where full.yml's linux-tsan job runs.
 
 set(TAKT4_SANITIZE "off" CACHE STRING
   "Runtime checks to build with: off, address, undefined, address+undefined, thread")
@@ -28,6 +28,15 @@ set_property(CACHE TAKT4_SANITIZE PROPERTY STRINGS
 
 if(TAKT4_SANITIZE STREQUAL "off")
   return()
+endif()
+
+# GCC warns, as an error here, that ThreadSanitizer does not model std::atomic_thread_fence —
+# and Kohlhoff asio, which Link bundles, uses fences in its executors, inlined into takt4's own
+# link_session.cpp (the second linux-tsan run, 2026-09-24). A fence is TSan's blind spot, not a
+# race; takt4's own code has none (rt::Published was changed to do without). Off for GCC's TSan
+# build only.
+if(TAKT4_SANITIZE STREQUAL "thread" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-tsan)
 endif()
 
 if(MSVC)
@@ -72,8 +81,7 @@ if(MSVC)
   # The tests have to be able to *run*. MSVC links AddressSanitizer as a DLL, the loader will
   # not find it on PATH, and Visual Studio only adds it when launching from the IDE — so a
   # `ctest` run would fail to start every binary with a missing-DLL box. Copied beside them
-  # instead, because the next session is told to run `ctest --preset windows-asan`
-  # and it has to work with no setup.
+  # instead, because `ctest --preset windows-asan` has to work with no setup.
   get_filename_component(_takt4_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
   set(_takt4_asan_dll "${_takt4_msvc_bin}/clang_rt.asan_dynamic-x86_64.dll")
   if(EXISTS "${_takt4_asan_dll}")

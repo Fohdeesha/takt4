@@ -645,7 +645,7 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         return any;
     }
     case EffectKind::Position:
-        return addMove(payload.pan, payload.tilt, true);
+        return addMove(static_cast<double>(payload.pan), static_cast<double>(payload.tilt), true);
     case EffectKind::Home:
         return addMove(0.5, 0.5, true);
     case EffectKind::Path:
@@ -718,7 +718,7 @@ void DmxEngine::start(std::uint64_t fixtures, const Payload& payload, double now
     staging_.moves.clear();
     staging_.payload = payload;
     staging_.start = now;
-    staging_.duration = payload.durationSeconds > 0.0f ? payload.durationSeconds : 0.0;
+    staging_.duration = payload.durationSeconds > 0.0f ? static_cast<double>(payload.durationSeconds) : 0.0;
 
     const std::size_t count = std::min(patch_.size(), kMaxRoutableFixtures);
     for (std::size_t i = 0; i < count; ++i) {
@@ -754,7 +754,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
 
     switch (payload.kind) {
     case EffectKind::Pulse: {
-        const double phase = cyclePhase(progress, payload.cycles);
+        const double phase = cyclePhase(progress, static_cast<double>(payload.cycles));
         // A cosine rather than a sine so the effect starts at its low end: a pulse that began
         // half way up would flash on every fire.
         const double wave = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * phase);
@@ -765,7 +765,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
         return;
     }
     case EffectKind::Strobe: {
-        const double phase = cyclePhase(progress, payload.cycles);
+        const double phase = cyclePhase(progress, static_cast<double>(payload.cycles));
         const double duty = std::clamp(static_cast<double>(payload.duty), 0.0, 1.0);
         // The last frame lands on the low end rather than mid-flash, so a strobe that has
         // finished leaves the fixture off rather than wherever the square wave happened to be.
@@ -777,7 +777,8 @@ void DmxEngine::evaluate(const Running& running, double now) {
     }
     case EffectKind::HueSweep: {
         const double shaped = curveAt(payload.curve, progress);
-        const double hue = payload.hueFrom + (payload.hueTo - payload.hueFrom) * shaped;
+        const double hue = static_cast<double>(payload.hueFrom) +
+                           static_cast<double>(payload.hueTo - payload.hueFrom) * shaped;
         double baseHue = 0.0;
         double saturation = 1.0;
         double value = 1.0;
@@ -793,7 +794,8 @@ void DmxEngine::evaluate(const Running& running, double now) {
         return;
     }
     case EffectKind::Path: {
-        const double turns = progress * (payload.cycles > 0.0f ? payload.cycles : 1.0f);
+        const double turns =
+            progress * static_cast<double>(payload.cycles > 0.0f ? payload.cycles : 1.0f);
         const double angle = 2.0 * std::numbers::pi * turns;
         const double size = std::clamp(static_cast<double>(payload.size), 0.0, 1.0);
         for (const Move& move : running.moves) {

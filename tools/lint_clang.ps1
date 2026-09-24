@@ -17,14 +17,21 @@
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1 src/core/control
 #
-# `src/core` and `tests` by default, which is exactly what core.yml compiles with -Werror.
-# `src/ui` is left out: it needs Slint's headers and the generated `main_window.h`. full.yml
-# is the workflow that builds it, and since 2026-09-14 it is enabled and runs on every push
-# touching src/ui/ — so that gap is now covered by CI rather than by nothing.
+# `src/core`, `src/cli` and `tests` by default — what core.yml compiles with -Werror, plus the
+# console, which it builds too. `src/ui` and `tests/ui` are left out, by name: they need
+# Slint's headers and the generated `main_window.h`, which the core tree does not have.
+# full.yml builds them on every push, with GCC as well since the linux-tsan job.
 #
-# Exits 1 if clang reports anything, 0 if not.
+# **A file clang could not parse is not a clean file.** It stops at the first header it cannot
+# find and then says nothing — which this script used to count as clean, for four tests/ui
+# files every run (the audit's build findings). Such a file is listed as not checked now, and
+# the run does not end on "clean".
+#
+# Exits 1 if clang reports anything, 3 if a file could not be checked, 0 only if every file
+# was checked and nothing was found.
 
-param([string[]]$Paths = @('src/core', 'tests'))
+param([string[]]$Paths = @('src/core', 'src/cli', 'tests'))
+$Exclude = @('src\ui\', 'tests\ui\')
 
 # NOT 'Stop': Windows PowerShell wraps a native command's stderr in ErrorRecords, and
 # clang-tidy writes its "N warnings generated" summary there — which under 'Stop' aborts
@@ -53,6 +60,8 @@ $flags = @(
     "-isystem$build\_deps\rtneural-src\modules\Eigen",
     "-isystem$build\_deps\rtneural-src\RTNeural\..\..\modules\json",
     "-isystem$build\_deps\rtmidi-src",
+    "-isystem$build\_deps\r8brain-src",
+    "-isystem$build\_deps\kissfft-src",
     "-isystem$repo\third_party\portaudio\include",
     "-isystem$repo\third_party\link\include",
     "-isystem$repo\third_party\link\modules\asio-standalone\asio\include",
@@ -69,6 +78,9 @@ $flags = @(
     # compiling — which looks like a tool failure and is actually a missing define.
     '-DEIGEN_STACK_ALLOCATION_LIMIT=0', '-DRTNEURAL_DEFAULT_ALIGNMENT=16',
     '-DRTNEURAL_NAMESPACE=RTNeural', '-DRTNEURAL_USE_EIGEN=1',
+    # KissFFT's, also from CI's compile line: without them it builds in float and
+    # real_fft.cpp's static_assert that it is double fails, which is the flags, not the code.
+    '-Dkiss_fft_scalar=double', '-DKISS_FFT_USE_ALLOCA',
     # The warnings CI turns on that MSVC has no equivalent for, plus the ones it spells
     # differently. -Wdangling-gsl is the one that caught the reference into a temporary.
     '-Wall', '-Wextra', '-Wpedantic', '-Wshadow', '-Wconversion', '-Wsign-conversion',
@@ -82,12 +94,14 @@ foreach ($path in $Paths) {
     $full = Join-Path $repo $path
     if (Test-Path $full -PathType Leaf) { $files += $full; continue }
     $files += Get-ChildItem -Path $full -Recurse -Include *.cpp -File |
-        Select-Object -ExpandProperty FullName
+        Select-Object -ExpandProperty FullName |
+        Where-Object { $relative = $_.Replace("$repo\", ''); -not ($Exclude | Where-Object { $relative.StartsWith($_) }) }
 }
 
 Write-Output "clang-tidy over $($files.Count) files"
 $found = 0
 $skipped = @()
+$unchecked = @()
 foreach ($file in $files) {
     # The compiler's own diagnostics only. clang-tidy refuses to run with nothing enabled,
     # and its own checks are a different conversation that would drown these in style
@@ -95,14 +109,19 @@ foreach ($file in $files) {
     # `clang-diagnostic-*` alone is not enough for clang-tidy to consider anything
     # enabled, so two checks that are on the same subject ride along; neither produces
     # style noise.
-    $out = & $tidy '-quiet' `
+    $raw = & $tidy '-quiet' `
         '-checks=-*,clang-diagnostic-*,bugprone-dangling-handle,bugprone-use-after-move' `
-        $file @flags 2>&1 |
+        $file @flags 2>&1 | ForEach-Object { "$_" }
+    # A header clang cannot find stops the whole file: whatever it would have reported after
+    # that point, it never gets to. So the file was not checked, which is said, not hidden.
+    $missing = $raw | Where-Object { $_ -match "'(.*)' file not found" } | Select-Object -First 1
+    if ($missing) {
+        $unchecked += "$($file.Replace("$repo\", ''))  ($($missing -replace '.*?(''[^'']*'' file not found).*', '$1'))"
+        continue
+    }
+    $out = $raw |
         Where-Object { $_ -match 'error:|warning:' } |
-        Where-Object { $_ -notmatch 'third_party|_deps|Program Files' } |
-        # A missing third-party header is this script's own flag list being incomplete,
-        # not a finding about the code. Say so once at the end rather than per file.
-        Where-Object { $_ -notmatch "'.*' file not found" }
+        Where-Object { $_ -notmatch 'third_party|_deps|Program Files' }
     # A few translation units run clang out of memory on Windows — the RTNeural model is
     # one, because it instantiates the whole template stack in a single unit. MSVC compiles
     # them and CI compiles them; this tool cannot, and skipping one loudly is worth far
@@ -119,9 +138,14 @@ foreach ($file in $files) {
 }
 
 if ($skipped.Count -gt 0) {
-    Write-Output "`nclang could not parse $($skipped.Count) file(s); CI still checks them:"
+    Write-Output "`nclang ran out of memory on $($skipped.Count) file(s); CI still checks them:"
     $skipped | ForEach-Object { Write-Output "  $_" }
 }
+if ($unchecked.Count -gt 0) {
+    Write-Output "`n$($unchecked.Count) file(s) not checked - a header clang could not find, which is this script's include list, not the code:"
+    $unchecked | ForEach-Object { Write-Output "  $_" }
+}
 if ($found -gt 0) { Write-Output "`n$found file(s) with findings"; exit 1 }
-Write-Output 'clean'
+if ($unchecked.Count -gt 0) { Write-Output "`nnothing found in the files that were checked, but not every file was"; exit 3 }
+Write-Output "clean: $($files.Count - $skipped.Count) file(s) checked"
 exit 0

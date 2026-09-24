@@ -104,8 +104,8 @@ std::string describeDmx(const trigger::Message& message) {
     case dmx::EffectKind::Position:
         // Percentages of each fixture's own window, which is what the operator typed and the
         // only form that means the same thing on two differently-rigged heads.
-        text += " pan " + std::to_string(std::lround(payload.pan * 100.0)) + "% tilt " +
-                std::to_string(std::lround(payload.tilt * 100.0)) + "%";
+        text += " pan " + std::to_string(std::lround(static_cast<double>(payload.pan) * 100.0)) + "% tilt " +
+                std::to_string(std::lround(static_cast<double>(payload.tilt) * 100.0)) + "%";
         break;
     case dmx::EffectKind::Path:
         text += ' ';
@@ -119,7 +119,7 @@ std::string describeDmx(const trigger::Message& message) {
         // Milliseconds, whatever unit the rule spelled it in: by the time it is a message the
         // duration has been settled against the tempo that was playing, and showing "2 bars"
         // here would be showing the configuration rather than what happened.
-        text += " over " + std::to_string(std::lround(payload.durationSeconds * 1000.0)) + "ms";
+        text += " over " + std::to_string(std::lround(static_cast<double>(payload.durationSeconds) * 1000.0)) + "ms";
     }
     return text;
 }
