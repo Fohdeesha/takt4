@@ -2979,6 +2979,43 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     CHECK(controller.statusIsError());
 }
 
+TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]") {
+    // The audit's M12: every rule message that reached no output was counted, and the count was
+    // shown nowhere. A MIDI rule on a rig with no MIDI output, fired with TEST, the way an
+    // operator finds out their laser rule goes nowhere.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config lasers;
+    lasers.id = "lasers";
+    lasers.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    lasers.channel = 3;
+    lasers.numberChosen = true;
+    controller.setRules({lasers});
+    controller.tick();
+    CHECK(std::string(controller.window().get_output_trouble()).empty());
+
+    controller.editor().pick(0);
+    controller.editor().test();
+    std::string trouble;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (trouble.empty() && std::chrono::steady_clock::now() < until) {
+        controller.tick();
+        trouble = std::string(controller.window().get_output_trouble());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    INFO(trouble);
+    CHECK(trouble == "1 rule message \xE2\x80\x94 reached no output");
+
+    controller.editor().test();
+    const auto again = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (trouble.rfind("1 ", 0) == 0 && std::chrono::steady_clock::now() < again) {
+        controller.tick();
+        trouble = std::string(controller.window().get_output_trouble());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(trouble == "2 rule messages \xE2\x80\x94 reached no output");
+}
+
 
 TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
     // The audit's M26. At 125 % a 1920 x 1080 screen with a 40-pixel taskbar has a work area of

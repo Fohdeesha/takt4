@@ -24,6 +24,7 @@ struct InputStreamCounters {
     std::uint64_t framesIn = 0;      // device frames delivered (HANDOFF §4.3 sample clock)
     std::uint64_t hopsOut = 0;       // hops handed to the processor
     std::uint32_t inputOverflows = 0; // callbacks flagged paInputOverflow: the device dropped input
+    std::uint64_t samplesRepaired = 0; // not a number, so passed on as silence — InputPipeline
 };
 
 /// One channel (or pair) of one device, open through PortAudio and feeding a

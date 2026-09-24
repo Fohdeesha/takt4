@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -432,6 +433,48 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     }
     INFO(seen << " datagrams arrived in all");
     CHECK(matched == kExpectedDownbeats);
+}
+
+TEST_CASE("a stage of a round that throws is counted and named, and the round carries on",
+          "[output][trigger]") {
+    // The audit's M12. One try block held the whole round, so a stage that threw took every
+    // stage after it down with it for that round — every round, if it threw every time — and
+    // all anybody could have seen was a count that nothing displayed. Here a stage throws on
+    // every beat, and every beat still reaches the rules and the transports, and the window's
+    // copy says which stage it was and what it said.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.setBeatObserver(
+        [](const takt4::engine::EngineBeat&) { throw std::runtime_error("the observer broke"); });
+    Rule::Config rule;
+    rule.id = "clips";
+    rule.trigger = takt4::trigger::Trigger::Downbeat;
+    rule.address = "/clips";
+    runner.post(OutputCommand::rules({rule}));
+
+    runner.start();
+    feedExcerpt(*engine);
+    waitForBeats(runner, kExpectedBeats);
+    // While it runs, with no command to take a snapshot: the window's copy catches up on its
+    // own, a refresh or two later.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (runner.snapshot().trouble.roundErrors < kExpectedBeats &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    CHECK(runner.snapshot().trouble.roundErrors == kExpectedBeats);
+    runner.stop();
+    REQUIRE(runner.sync()); // a command applied is a snapshot taken
+
+    CHECK(runner.transports().beats() == kExpectedBeats);
+    CHECK(runner.triggers().rule(0).fires() == kExpectedDownbeats);
+    CHECK(runner.errors() == kExpectedBeats);
+    const OutputRunner::Snapshot::Trouble trouble = runner.snapshot().trouble;
+    CHECK(trouble.roundErrors == kExpectedBeats);
+    CHECK(trouble.lastRoundError == "the beat observer: the observer broke");
+    // And the rule's messages, which had no OSC target to go to, are counted where the window
+    // reads them.
+    CHECK(trouble.undeliverable == kExpectedDownbeats);
 }
 
 TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][trigger]") {

@@ -326,8 +326,9 @@ public:
     /// "the thread does the right thing", which are two separate claims.
     std::uint64_t rounds() const noexcept { return rounds_.load(std::memory_order_relaxed); }
 
-    /// Rounds that threw. A transport failing must not take the process down — an OSC
-    /// target can go away mid-set — but it must not be silent either.
+    /// Stages of a round that threw. A transport failing must not take the process down — an
+    /// OSC target can go away mid-set — but it must not be silent either, and it must not take
+    /// the rest of the round with it: see `guarded`, and `Snapshot::Trouble` for what is said.
     std::uint64_t errors() const noexcept { return errors_.load(std::memory_order_relaxed); }
 
     /// Seconds since this runner was **constructed**, on the steady clock the transports are
@@ -385,6 +386,23 @@ public:
         /// that will not resolve is found out on a thread of its own, after the command that
         /// set it has long been answered, so this is where it is reported.
         std::vector<std::string> outputProblems;
+        /// What went wrong on the output thread that nothing else says — the audit's M12,
+        /// whose counters were kept and never shown. Counted since the runner started, which is
+        /// launch: the thread runs for the application's life.
+        struct Trouble {
+            /// Stages of a round that threw (`errors`), and the last one, as "stage: what".
+            std::uint64_t roundErrors = 0;
+            std::string lastRoundError;
+            /// Rule messages that reached no output — `RuleSink::undeliverable`.
+            std::uint64_t undeliverable = 0;
+            /// Messages held for an output's offset and dropped because too many were already
+            /// waiting, in the sink and in the OSC publisher.
+            std::uint64_t heldDropped = 0;
+            /// MIDI clock ticks skipped after the thread stalled — `MidiClock::ticksSkipped`.
+            std::uint64_t clockTicksSkipped = 0;
+            bool operator==(const Trouble&) const = default;
+        };
+        Trouble trouble;
     };
     Snapshot snapshot() const;
 
@@ -572,6 +590,13 @@ private:
     /// Copies what the transports are set to into `snapshot_`. Called by whichever thread
     /// owns them, at the end of every `apply`, so a reader never has to touch the live ones.
     void takeSnapshot();
+    /// `Snapshot::Trouble` as it stands. Whichever thread owns the transports.
+    Snapshot::Trouble currentTrouble() const;
+    /// Runs one stage of a round, and if it throws, counts it and keeps what it said — and the
+    /// round goes on to the next stage. See `drainOnce`.
+    template <typename Stage>
+    void guarded(const char* stage, Stage&& body) noexcept;
+    void noteRoundError(const char* stage, const char* what) noexcept;
     /// Copies every rule's live switches into `live_` when they differ from what is there. By
     /// whichever thread owns the rules, after a command that could have changed one.
     void publishLiveRules();
@@ -679,6 +704,9 @@ private:
     std::atomic<bool> tracking_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
+    /// The last stage that threw, as "stage: what". Whichever thread owns the transports; a
+    /// reader has it from the snapshot.
+    std::string lastRoundError_;
     /// Where `elapsed()` counts from. Const, so the monotonicity `start()` depends on is
     /// structural rather than a thing to remember — and so no thread can read it while
     /// another writes.

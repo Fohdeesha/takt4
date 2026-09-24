@@ -434,6 +434,20 @@ control::OscControl::Config oscControlConfig(const settings::Settings& settings)
     return config;
 }
 
+/// "1 hop" or "12 hops", with what it means after it.
+std::string counted(std::uint64_t n, const char* one, const char* many, const std::string& meaning) {
+    return std::to_string(n) + " " + (n == 1 ? one : many) + " — " + meaning;
+}
+
+/// The counters that are not zero, joined for one line of the window.
+std::string joined(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const std::string& part : parts) {
+        out += out.empty() ? part : "  ·  " + part;
+    }
+    return out;
+}
+
 } // namespace
 
 WindowController::WindowController(engine::LiveTracker& tracker)
@@ -964,7 +978,7 @@ void WindowController::toggleRun() {
     wantRunning_ = true;
     input_ = tracker_.current();
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
-    overflowsShown_ = 0;
+    inputTroubleShown_ = {};
     window_->set_input_trouble(shared(""));
     window_->set_running(true);
     publishOpenStream();
@@ -994,7 +1008,7 @@ bool WindowController::reopenInput(std::string& error) {
     }
     input_ = tracker_.current();
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
-    overflowsShown_ = 0;
+    inputTroubleShown_ = {};
     window_->set_input_trouble(shared(""));
     return true;
 }
@@ -1084,14 +1098,44 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         return;
     }
 
-    if (reading.inputOverflows != overflowsShown_) {
-        overflowsShown_ = reading.inputOverflows;
-        window_->set_input_trouble(shared(
-            overflowsShown_ == 0
-                ? std::string{}
-                : std::to_string(overflowsShown_) +
-                      (overflowsShown_ == 1 ? " input overflow" : " input overflows") +
-                      " — the interface dropped audio"));
+    // The interface's overflows, and what the engine lost after them — the audit's M12: the
+    // engine counted every hop, frame and beat it dropped and nothing showed one. All of them
+    // start again with the run, like the overflows.
+    const engine::BeatEngine& engine = tracker_.engine();
+    InputTrouble trouble;
+    trouble.overflows = reading.inputOverflows;
+    trouble.hopsDropped = engine.activations().hopsDropped();
+    trouble.framesDropped = engine.activations().framesDropped();
+    trouble.beatsDropped = engine.beatsDropped();
+    // Repaired where the stream picks its channel, and so never seen by the engine, whose own
+    // repair is for audio that did not come through a stream.
+    trouble.samplesRepaired =
+        engine.activations().samplesRepaired() +
+        (tracker_.stream() != nullptr ? tracker_.stream()->counters().samplesRepaired : 0);
+    if (trouble != inputTroubleShown_) {
+        inputTroubleShown_ = trouble;
+        std::vector<std::string> parts;
+        if (trouble.overflows != 0) {
+            parts.push_back(counted(trouble.overflows, "input overflow", "input overflows",
+                                    "the interface dropped audio"));
+        }
+        if (trouble.hopsDropped != 0) {
+            parts.push_back(counted(trouble.hopsDropped, "hop dropped", "hops dropped",
+                                    "the model fell behind the audio"));
+        }
+        if (trouble.framesDropped != 0) {
+            parts.push_back(counted(trouble.framesDropped, "frame dropped", "frames dropped",
+                                    "the tracker fell behind the model"));
+        }
+        if (trouble.beatsDropped != 0) {
+            parts.push_back(counted(trouble.beatsDropped, "beat dropped", "beats dropped",
+                                    "the outputs fell behind the tracker"));
+        }
+        if (trouble.samplesRepaired != 0) {
+            parts.push_back(counted(trouble.samplesRepaired, "sample", "samples",
+                                    "not a number, heard as silence"));
+        }
+        window_->set_input_trouble(shared(joined(parts)));
     }
 
     switch (reading.verdict) {
@@ -2271,6 +2315,41 @@ void WindowController::publishOutputs() {
     window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
     publishLostMidi(live.lostMidi);
     publishOutputProblems(live.outputProblems);
+    publishOutputTrouble(live.trouble);
+}
+
+void WindowController::publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble) {
+    if (trouble == outputTroubleShown_) {
+        return;
+    }
+    // A stage that threw with something new to say is said on the status line too. Not on every
+    // count: a stage throwing every round would otherwise write the line a thousand times a
+    // second and nothing else could ever be read there.
+    if (trouble.roundErrors > outputTroubleShown_.roundErrors &&
+        trouble.lastRoundError != outputTroubleShown_.lastRoundError) {
+        setStatus("The output thread met an error in " + trouble.lastRoundError +
+                      ". The rest of it carried on.",
+                  true);
+    }
+    outputTroubleShown_ = trouble;
+    std::vector<std::string> parts;
+    if (trouble.roundErrors != 0) {
+        parts.push_back(counted(trouble.roundErrors, "output error", "output errors",
+                                "the last in " + trouble.lastRoundError));
+    }
+    if (trouble.undeliverable != 0) {
+        parts.push_back(counted(trouble.undeliverable, "rule message", "rule messages",
+                                "reached no output"));
+    }
+    if (trouble.heldDropped != 0) {
+        parts.push_back(counted(trouble.heldDropped, "delayed message", "delayed messages",
+                                "dropped, too many were waiting"));
+    }
+    if (trouble.clockTicksSkipped != 0) {
+        parts.push_back(counted(trouble.clockTicksSkipped, "MIDI clock tick", "MIDI clock ticks",
+                                "skipped after a stall"));
+    }
+    window_->set_output_trouble(shared(joined(parts)));
 }
 
 void WindowController::publishOutputProblems(const std::vector<std::string>& problems) {

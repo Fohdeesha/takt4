@@ -392,6 +392,9 @@ private:
     /// The same for outputs that cannot be sent to — a host name that will not resolve, found
     /// out on a thread of its own long after the edit that typed it was applied.
     void publishOutputProblems(const std::vector<std::string>& problems);
+    /// The output thread's counters, from the runner's snapshot, on the line under the outputs
+    /// heading — and a stage that threw on the status line, when what it said is new.
+    void publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble);
     void publishStopped();
     void publishOpenStream();
     void publishOptions();
@@ -479,6 +482,8 @@ private:
     std::vector<std::string> lostMidiShown_;
     /// The output problems the status line last reported. See `publishOutputProblems`.
     std::vector<std::string> outputProblemsShown_;
+    /// The output thread's counters as the window last showed them. See `publishOutputTrouble`.
+    output::OutputRunner::Snapshot::Trouble outputTroubleShown_;
 
     /// §C4's watch on the running input. See `superviseInput`.
     audio::InputWatchdog watchdog_;
@@ -495,8 +500,17 @@ private:
     std::optional<Outage> outage_;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
-    /// The input overflows the window last showed.
-    std::uint32_t overflowsShown_ = 0;
+    /// What went missing between the input and the beats, as the window last showed it: the
+    /// interface's overflows and the engine's drops, all of which start again with every run.
+    struct InputTrouble {
+        std::uint64_t overflows = 0;
+        std::uint64_t hopsDropped = 0;
+        std::uint64_t framesDropped = 0;
+        std::uint64_t beatsDropped = 0;
+        std::uint64_t samplesRepaired = 0;
+        bool operator==(const InputTrouble&) const = default;
+    };
+    InputTrouble inputTroubleShown_;
 
     tracking::TapTempo taps_;
     /// When the last tap landed, so a set that has gone quiet stops claiming to be

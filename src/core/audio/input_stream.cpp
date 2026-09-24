@@ -179,6 +179,7 @@ InputStreamCounters InputStream::counters() const noexcept {
     c.framesIn = impl_->pipeline.framesIn();
     c.hopsOut = impl_->pipeline.hopsOut();
     c.inputOverflows = impl_->inputOverflows.load(std::memory_order_relaxed);
+    c.samplesRepaired = impl_->pipeline.samplesRepaired();
     return c;
 }
 

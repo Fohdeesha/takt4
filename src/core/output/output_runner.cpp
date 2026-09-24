@@ -215,8 +215,40 @@ void OutputRunner::takeSnapshot() {
     taken.lostMidi = transports_.lostMidiDevices();
     lostInSnapshot_ = taken.lostMidi.size();
     taken.outputProblems = transports_.outputProblems();
+    taken.trouble = currentTrouble();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
+}
+
+OutputRunner::Snapshot::Trouble OutputRunner::currentTrouble() const {
+    Snapshot::Trouble trouble;
+    trouble.roundErrors = errors_.load(std::memory_order_relaxed);
+    trouble.lastRoundError = lastRoundError_;
+    trouble.undeliverable = sink_.undeliverable();
+    trouble.heldDropped = sink_.dropped() + transports_.osc().dropped();
+    const MidiClock* const clock = transports_.midiClock();
+    trouble.clockTicksSkipped = clock != nullptr ? clock->ticksSkipped() : 0;
+    return trouble;
+}
+
+template <typename Stage>
+void OutputRunner::guarded(const char* stage, Stage&& body) noexcept {
+    try {
+        std::forward<Stage>(body)();
+    } catch (const std::exception& e) {
+        noteRoundError(stage, e.what());
+    } catch (...) {
+        noteRoundError(stage, "something that is not a std::exception");
+    }
+}
+
+void OutputRunner::noteRoundError(const char* stage, const char* what) noexcept {
+    errors_.fetch_add(1, std::memory_order_relaxed);
+    try {
+        lastRoundError_ = std::string(stage) + ": " + what;
+    } catch (...) {
+        // No memory for the words. The count has moved, which is what says so.
+    }
 }
 
 OutputRunner::Snapshot OutputRunner::snapshot() const {
@@ -389,10 +421,12 @@ void OutputRunner::stop() noexcept {
             const double now = elapsed();
             transports_.dmx().blackout(now);
             (void)transports_.artnet().flush(transports_.dmx(), now);
-        } catch (...) {
+        } catch (const std::exception& e) {
             // Nothing useful to do while shutting down, and letting it out of a noexcept
             // function would call std::terminate.
-            errors_.fetch_add(1, std::memory_order_relaxed);
+            noteRoundError("stopping", e.what());
+        } catch (...) {
+            noteRoundError("stopping", "something that is not a std::exception");
         }
         transports_.stopOutputs();
     }
@@ -682,14 +716,9 @@ void OutputRunner::run() noexcept {
         applyCommands();
         {
             const std::lock_guard<std::mutex> owner(ownerMutex_);
-            try {
-                drainOnce(elapsed());
-            } catch (...) {
-                // A transport that throws must not take the process down with it: an OSC
-                // target can go away mid-set, and Link's networking has its own opinions
-                // about sockets. Counted rather than swallowed, so it is visible.
-                errors_.fetch_add(1, std::memory_order_relaxed);
-            }
+            // Each stage has its own guard — see `drainOnce`. This one is for what is left
+            // between them, which is reading the engine's state.
+            guarded("the output round", [this] { drainOnce(elapsed()); });
         }
         rounds_.fetch_add(1, std::memory_order_relaxed);
         std::this_thread::sleep_for(kPeriod);
@@ -742,6 +771,11 @@ void OutputRunner::drainOnce(double now) {
     // How late a beat may be heard and still be worth firing: as late as the latest output
     // wants it, plus the pipeline and some. See `kStaleSeconds`.
     const double staleAfter = transports_.tailSeconds() + kStaleSeconds;
+    // **Every stage on its own, and every beat through each** (the audit's M12). One try round
+    // the whole round meant a stage that threw once skipped every stage after it, and one that
+    // threw every round switched them all off, silently: a clock throwing on each beat would
+    // have taken the rules, the lighting and the held releases with it. A stage that throws is
+    // counted and named now — `Snapshot::Trouble` — and the round carries on past it.
     engine::EngineBeat beat;
     while (engine_.popBeat(beat)) {
         // Offline, and in the tests that feed audio faster than it plays, there is no host
@@ -752,23 +786,29 @@ void OutputRunner::drainOnce(double now) {
         }
         // The two clocks, on every beat heard: they are grids running on from the last beat
         // and want every one, fired already or not.
-        transports_.publishClocks(beat.event, beat.hostMicros, moment.value_or(now));
-        if (const std::optional<ScheduledBeat> late =
-                scheduler_.heard(beat, moment, now, staleAfter)) {
-            fireBeat(*late, now);
-        }
+        guarded("the clocks", [&] {
+            transports_.publishClocks(beat.event, beat.hostMicros, moment.value_or(now));
+        });
+        guarded("a beat's rules", [&] {
+            if (const std::optional<ScheduledBeat> late =
+                    scheduler_.heard(beat, moment, now, staleAfter)) {
+                fireBeat(*late, now);
+            }
+        });
         if (observer_) {
-            observer_(beat);
+            guarded("the beat observer", [&] { observer_(beat); });
         }
     }
     // And the beats that are due before they are heard — the audit's H4. See `BeatScheduler`.
-    scheduler_.restate(engine_.state());
-    while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
-        fireBeat(*next, now);
-    }
+    guarded("a predicted beat's rules", [&] {
+        scheduler_.restate(engine_.state());
+        while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
+            fireBeat(*next, now);
+        }
+    });
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
-    transports_.advance(now, engine_.state());
+    guarded("the outputs", [&] { transports_.advance(now, engine_.state()); });
 
     const trigger::Context context = contextAt(now);
     // The output thread never sees a frame, so an onset reaches it as a count that moved.
@@ -776,41 +816,47 @@ void OutputRunner::drainOnce(double now) {
     // be one hit as far as anything downstream is concerned, and the classifier's own
     // minimum gap is sixty.
     if (countMoved(engine_.intensity().onsets, onsetsSeen_)) {
-        triggers_.onOnset(context);
+        guarded("the onset rules", [&] { triggers_.onOnset(context); });
     }
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
     // (the audit's M4): its bar and downbeat rules fire now, as that bar's.
     const tracking::TempoState state = engine_.state();
     if (countMoved(state.barsDeclared, barsDeclaredSeen_)) {
-        trigger::Context declared = context;
-        declared.beatInBar = 1;
-        declared.bars = state.declaredBar;
-        triggers_.onBarDeclared(declared);
+        guarded("a declared bar's rules", [&] {
+            trigger::Context declared = context;
+            declared.beatInBar = 1;
+            declared.bars = state.declaredBar;
+            triggers_.onBarDeclared(declared);
+        });
     }
     // Last: the triggers that do not wait for a beat, and any follow-up now due.
-    triggers_.advance(context);
+    guarded("the rules", [&] { triggers_.advance(context); });
     // Then whatever MIDI and lighting a rule sent this round or earlier that has come due — after
     // the triggers, so a message with nothing to wait for goes in the round it was sent.
-    sink_.releaseDue(now);
+    guarded("the held messages", [&] { sink_.releaseDue(now); });
     // And a copy of the lighting frames for anything watching at redraw rate. After the
     // triggers, so a fade started this round is in the very frame that is mirrored.
-    mirrorLevels(now);
-    // A MIDI device went lost or came back this round — neither is a command, so nothing else
-    // would refresh what a reader sees. Only when the count moves: a snapshot copies the
-    // targets and the patch, which is nothing to do a thousand times a second.
-    bool retake = transports_.lostMidiCount() != lostInSnapshot_;
-    // And now and then, the targets are let find their addresses — a name looked up on a thread
-    // of its own answers whenever it answers — and anything that changed is reported.
-    if (++sinceRefresh_ >= kRefreshRounds) {
-        sinceRefresh_ = 0;
-        transports_.refreshTargets();
-        std::vector<std::string> problems = transports_.outputProblems();
-        const std::lock_guard<std::mutex> lock(snapshotMutex_);
-        retake = retake || problems != snapshot_.outputProblems;
-    }
-    if (retake) {
-        takeSnapshot();
-    }
+    guarded("the lighting readout", [&] { mirrorLevels(now); });
+    guarded("the window's copy", [&] {
+        // A MIDI device went lost or came back this round — neither is a command, so nothing
+        // else would refresh what a reader sees. Only when the count moves: a snapshot copies
+        // the targets and the patch, which is nothing to do a thousand times a second.
+        bool retake = transports_.lostMidiCount() != lostInSnapshot_;
+        // And now and then, the targets are let find their addresses — a name looked up on a
+        // thread of its own answers whenever it answers — and anything that changed is
+        // reported, the round's own trouble included.
+        if (++sinceRefresh_ >= kRefreshRounds) {
+            sinceRefresh_ = 0;
+            transports_.refreshTargets();
+            std::vector<std::string> problems = transports_.outputProblems();
+            const Snapshot::Trouble trouble = currentTrouble();
+            const std::lock_guard<std::mutex> lock(snapshotMutex_);
+            retake = retake || problems != snapshot_.outputProblems || trouble != snapshot_.trouble;
+        }
+        if (retake) {
+            takeSnapshot();
+        }
+    });
 }
 
 } // namespace takt4::output

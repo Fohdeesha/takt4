@@ -125,8 +125,9 @@ export component MainWindow inherits Window {
   /// C4. While this is true the readouts are the last ones before the audio stopped, and the
   /// lock readout says NO AUDIO rather than LOCKED at a tempo nothing is producing any more.
   in-out property <bool> input-lost;
-  /// What the input itself has complained about — "3 overflows" — or empty. Shown under the
-  /// meter, because a device dropping input is otherwise visible nowhere.
+  /// What went missing between the input and the beats — "3 input overflows", "12 hops
+  /// dropped — the model fell behind the audio" — or empty. Shown under the meter, because a
+  /// device dropping input, or a machine too busy to keep up, is otherwise visible nowhere.
   in-out property <string> input-trouble;
   /// Look for input devices and MIDI ports again: an interface switched on after takt4
   /// started, a controller plugged in later. Only while stopped.
@@ -228,6 +229,10 @@ export component MainWindow inherits Window {
   in-out property <int> midi-port-index;
   in-out property <[string]> midi-ports;
   in-out property <int> beats-sent;
+  /// What has gone wrong on the way out that nothing else on screen says — "3 rule messages
+  /// reached no output", "12 MIDI clock ticks skipped" — or empty (the audit's M12). Shown
+  /// under the outputs heading, for the reason `input-trouble` is under the meter.
+  in-out property <string> output-trouble;
 
   // --- §5.7's control input --------------------------------------------------------
   // What drives the app from outside it. The port is a fact about this desk and lives in
@@ -1110,6 +1115,24 @@ export component MainWindow inherits Window {
                 width: 104px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
+              }
+            }
+
+            // What went wrong on the way out, under the heading it is about. An explicit
+            // height, for the reason the input's own line under the meter has one.
+            if root.output-trouble != "" : HorizontalLayout {
+              padding-left: 24px;
+              padding-right: 24px;
+              height: 16px;
+              vertical-stretch: 0;
+
+              Text {
+                text: root.output-trouble;
+                color: Theme.holding;
+                font-size: 11px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
               }
             }
 
