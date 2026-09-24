@@ -168,6 +168,10 @@ inline std::string sendFailure(int error) {
         why = "the network is down";
         break;
     case EADDRNOTAVAIL:
+    // Linux's word for the same thing: a UDP send to a port of 0, or to anything in 0.0.0.0/8
+    // other than 0.0.0.0 itself, is refused as an invalid argument (`udp_sendmsg` and
+    // `__mkroute_output` in the kernel). The address is the only argument an operator gave.
+    case EINVAL:
         why = "that is not an address this machine can send to";
         break;
     case EACCES:
