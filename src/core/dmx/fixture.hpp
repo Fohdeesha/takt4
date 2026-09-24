@@ -48,7 +48,8 @@ enum class Role : std::uint8_t {
     Tilt,
     /// The low byte of a 16-bit pan or tilt. **Optional and detected**: a head with these
     /// gets 65,536 positions and moves smoothly across a slow sweep; one without gets 256 and
-    /// steps. An effect never asks which it is — `writePan` and `writeTilt` look.
+    /// steps. An effect never asks which it is: `DmxEngine` looks, and writes the fine byte
+    /// beside the coarse one wherever the patch has one.
     PanFine,
     TiltFine,
     /// Shutter / strobe rate. A fixture's own strobe, which is not the same thing as takt4

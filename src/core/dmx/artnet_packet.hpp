@@ -16,7 +16,7 @@ namespace takt4::dmx {
 /// an independent implementation before it was written down, because a field in the wrong
 /// place here is a rig that does nothing and gives no reason.
 ///
-/// **Art-Net¨ Designed by and Copyright Artistic Licence** — the credit the specification
+/// **Art-Net™ Designed by and Copyright Artistic Licence** — the credit the specification
 /// requires of anything that implements it. It is also in the README, which is where a user
 /// will see it.
 ///
@@ -137,8 +137,8 @@ bool parsePortAddress(std::string_view text, PortAddress& out) noexcept;
 /// the range 2 to 512"*. A patch that only reaches channel 7 is sent as 8.
 ///
 /// `sequence` is field 5: *"incremented in the range 0x01 to 0xff to allow the receiving node
-/// to re-sequence packets ... set to 0x00 to disable this feature"*. See
-/// `ArtNetSender::nextSequence` for why it is per universe rather than per socket.
+/// to re-sequence packets ... set to 0x00 to disable this feature"*. `nextSequence` below
+/// counts it; `ArtNetSender::sendDmx` keeps one counter per universe, and says why.
 ///
 /// `physical` is field 6, which exists so a node can tell two of its *own* DMX inputs apart
 /// when merging. takt4 has no DMX inputs, so it sends zero, which is what every controller

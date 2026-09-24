@@ -25,10 +25,10 @@ namespace takt4::settings {
 /// Focusrite, channel 7" is useless on the other laptop, and one that carries no audio
 /// config forces a re-setup on every load.
 ///
-/// So the two halves are separate types even though they are written to one file today.
-/// Storing them together is a storage decision — there is no preset UI yet, and a preset
-/// without Phase 6's rules would be half of one — and keeping them apart in the format is
-/// what lets `preset` be lifted into a file of its own later without a migration.
+/// So the two halves are separate types even though they are written to one file. Storing
+/// them together is a storage decision; keeping them apart in the format is what lets IMPORT
+/// take the `preset` half of a file exported on another rig and leave this machine's devices
+/// alone.
 
 /// What only means anything on the machine it was saved on.
 struct MachineSettings {

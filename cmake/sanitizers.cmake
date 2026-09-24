@@ -32,7 +32,7 @@ endif()
 
 # GCC warns, as an error here, that ThreadSanitizer does not model std::atomic_thread_fence —
 # and Kohlhoff asio, which Link bundles, uses fences in its executors, inlined into takt4's own
-# link_session.cpp (the second linux-tsan run, 2026-09-24). A fence is TSan's blind spot, not a
+# link_session.cpp (the second linux-tsan run, 2026-09-23). A fence is TSan's blind spot, not a
 # race; takt4's own code has none (rt::Published was changed to do without). Off for GCC's TSan
 # build only.
 if(TAKT4_SANITIZE STREQUAL "thread" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

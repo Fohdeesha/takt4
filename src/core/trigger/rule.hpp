@@ -33,8 +33,9 @@ enum class Trigger : std::uint8_t {
     TempoChange,
     LockChange,
     IntensityChange,
-    /// Not produced yet: the spectral-flux classifier that will is the next piece of Phase
-    /// 6. A rule set to this is evaluated correctly and simply never sees one.
+    /// A hit the intensity classifier heard (`features::IntensityClassifier`, counted in
+    /// `engine::EngineIntensity::onsets`); the output thread calls `TriggerEngine::onOnset`
+    /// when that count moves.
     Onset,
     /// the *"manual hotkey"* — `TriggerEngine::manual`, which the design will reach from OSC
     /// and MIDI alongside the rest.
