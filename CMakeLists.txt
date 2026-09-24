@@ -48,6 +48,23 @@ if(MSVC)
                    $<$<CONFIG:Release>:/OPT:ICF>)
 endif()
 
+# **The Visual C++ runtime is a DLL, and an older copy of it must not crash takt4.**
+#
+# takt4.exe imports MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll, which come with the
+# Visual C++ redistributable (the audit's H17). Linking the runtime statically instead was
+# tried on 2026-09-23 and cannot be done: Slint draws with Skia, which rust-skia ships as a
+# prebuilt archive, and it publishes no static-runtime build of the one Slint needs (the
+# download for `...-d3d-gl-jpegd-jpege-pdf-textlayout-static` is a 404) — so it would mean
+# building Skia from source on every clean build. The README says what to install instead.
+#
+# What can be fixed is the other half of H17: from Visual Studio 2022 17.10, std::mutex has a
+# constexpr constructor that an *older* msvcp140.dll on the machine does not understand, and a
+# program built that way crashes on its first lock there. Microsoft's answer is this macro,
+# for everything compiled here; Skia's prebuilt archive is out of reach.
+if(MSVC)
+  add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif()
+
 include("${PROJECT_SOURCE_DIR}/cmake/warnings.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/sanitizers.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/deps.cmake")

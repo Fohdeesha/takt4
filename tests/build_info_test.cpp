@@ -46,6 +46,23 @@ TEST_CASE("a build names the commit it came from", "[build_info]") {
     CHECK(takt4::versionLabel(release) == "0.9.7 (v0.9.7-12-gfccd01d)");
 }
 
+TEST_CASE("the build does not need the newest C++ runtime to lock a mutex", "[build_info]") {
+    // The audit's H17: built with Visual Studio 2022 17.10 or later, std::mutex's constructor
+    // is constexpr, and an older msvcp140.dll on the machine crashes the program on its first
+    // lock. The macro that turns that off has to be in every file built here (CMakeLists.txt).
+    // Whether a machine with an old runtime then runs takt4 is not something a test here can
+    // show; that the build asks for it is.
+#if defined(_MSC_VER)
+#if defined(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+    SUCCEED("_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR is defined");
+#else
+    FAIL("_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR is not defined for this build");
+#endif
+#else
+    SKIP("only the Microsoft C++ runtime has this");
+#endif
+}
+
 TEST_CASE("describe() renders one line per component", "[build_info]") {
     const std::string text = takt4::describe(takt4::buildInfo());
 
