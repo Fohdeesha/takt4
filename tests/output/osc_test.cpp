@@ -171,7 +171,7 @@ TEST_CASE("a sending socket never waits", "[output][osc]") {
     // receive timeout, a blocking socket waits the two seconds and a non-blocking one says
     // "would block" at once.
     namespace net = takt4::net;
-    const net::WinsockGuard winsock;
+    [[maybe_unused]] const net::WinsockGuard winsock; // an empty struct off Windows
     const net::Socket socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     REQUIRE(socket != net::kInvalidSocket);
     sockaddr_in local{};
