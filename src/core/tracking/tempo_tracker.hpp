@@ -470,7 +470,8 @@ public:
     TempoTracker(double secondsPerFrame, Options options);
     explicit TempoTracker(double secondsPerFrame);
 
-    /// Feeds one frame from the particle filter. Returns a beat if one was called.
+    /// Feeds one frame from the decoder — the forward filter by default, or the particle
+    /// filter. Returns a beat if one was called.
     std::optional<BeatEvent> process(const TrackedFrame& frame) noexcept;
 
     void reset() noexcept;
@@ -478,12 +479,16 @@ public:
     const TempoState& state() const noexcept { return state_; }
     const Options& options() const noexcept { return options_; }
 
-    /// Changing the window or the gate takes effect on the next frame; the lock is kept
-    /// unless the published tempo no longer folds into the new window.
+    /// Changing the window or the gate takes effect on the next frame. Only a change of
+    /// window can cost the lock, and only one that puts the tempo in another octave: a
+    /// latency, gate or timing change never does, and neither does a window that a tempo
+    /// ÷2, ×2 or the hysteresis has put outside of (the audit's M3).
     void setOptions(const Options& options) noexcept;
 
-    /// Halves or doubles the published tempo, and the fold window with it if that is the
-    /// only way the new tempo can survive folding. §5.5's manual octave shift.
+    /// Halves or doubles the published tempo, keeping the lock. A manual octave shift,
+    /// applied after the fold, so it takes effect whatever the window says — the window
+    /// itself does not move. Bounded at `kMaxOctaveShift` either way. §5.5's manual octave
+    /// shift.
     void halve() noexcept;
     void redouble() noexcept;
 
@@ -500,8 +505,11 @@ public:
     /// This is the half of §5.5's "seeds or overrides the tracker" that costs nothing and
     /// is unambiguously right. It is what fixes the failure §7 deviation 4 measured: a
     /// Quickstep at 204 BPM under a 70-140 window is folded to 102 and there is no way
-    /// for the operator to say otherwise. Tapping it moves the window to 144-288 and the
-    /// tracker publishes 204 from the very next frame.
+    /// for the operator to say otherwise. Tapping it moves the window to 144-288. Under the
+    /// particle filter the fold then publishes 204 from the very next frame; under the forward
+    /// filter, the default, the window is evidence inside the decoder (`foldInDecoder`), so
+    /// the published tempo moves when the posterior does, which takes music that supports
+    /// the new octave.
     ///
     /// Moving the window rather than adding an octave shift is deliberate: the window is
     /// a setting the UI shows, so afterwards the readout and the setting agree on why the
@@ -618,6 +626,10 @@ private:
     /// answer badly, while the lock is a question about *which interval*, which is exactly
     /// what they answer.
     void chooseOctave(double bpm) noexcept;
+    /// The octave the window alone would put `bpm` in, with no memory of the last one: 0
+    /// anywhere inside the window widened by the hysteresis, else the fold's octave.
+    /// `chooseOctave`'s second and third rules, and what `setOptions` asks of a moved window.
+    std::int64_t windowOctave(double bpm) const noexcept;
     /// A tempo arrived at some other way, put in the octave the fold has settled on. The
     /// beat-spacing refinement measures a period in frames, so it has to be moved into the
     /// same octave as the value it refines or it would be rejected as a disagreement.

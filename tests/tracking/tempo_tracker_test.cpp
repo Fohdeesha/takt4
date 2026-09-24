@@ -1333,19 +1333,16 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
     CHECK(tracker.state().bpm == Approx(bpmOf(23)));
 
     options.minBpm = 60.0;
-    options.maxBpm = 120.0; // 130.43 does not
+    options.maxBpm = 120.0; // 130.43 is outside the window itself...
     tracker.setOptions(options);
-    CHECK_FALSE(tracker.state().locked);
     // ...but it is *not* halved, because 130.43 is inside 120 widened by the fold's
     // hysteresis. The window says which octave the material is in; it is not a fence, and
     // a 130 BPM track under a 60-120 window is a 130 BPM track. An operator who wants the
     // fence sets `foldHysteresis` to 0, and the section below is what that does.
     CHECK(tracker.state().bpm == Approx(bpmOf(23)));
-
-    // Let it settle again — the invalidation above only fires on a tracker that is
-    // *locked*, so a second window change with nothing tracked in between does nothing.
-    settle(tracker, index, 23, 0.9, 20);
-    REQUIRE(tracker.state().locked);
+    // And so the lock stays. This used to drop it while publishing the same tempo — a
+    // re-lock for nothing, which is the audit's M3.
+    CHECK(tracker.state().locked);
 
     options.maxBpm = 100.0; // and now it is out of reach of the hysteresis too
     tracker.setOptions(options);
@@ -1364,6 +1361,81 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
         settle(fenced, at, 21, 0.9, 40); // 142.9, just over the edge
         CHECK(fenced.state().bpm == Approx(bpmOf(21) / 2.0).margin(1.0));
     }
+}
+
+TEST_CASE("a settings change that leaves the window alone never costs the lock",
+          "[tracking][tempo]") {
+    // The audit's M3. Every `setOptions` tested the locked tempo against the window, so with
+    // ÷2 pressed — 65 BPM under a 70-140 window, exactly where the operator put it — moving
+    // the latency slider dropped the lock and the hunt started again. The same for a tempo
+    // the hysteresis holds just past the window's edge.
+    TempoTracker::Options options;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 23, 0.9, 20);
+    REQUIRE(tracker.state().locked);
+    tracker.halve();
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    REQUIRE(tracker.state().locked);
+
+    SECTION("the latency slider") {
+        options.latencyOffsetSeconds = 0.015;
+        tracker.setOptions(options);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    }
+    SECTION("the confidence gate") {
+        options.confidenceThreshold = 0.3;
+        tracker.setOptions(options);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    }
+    SECTION("a window that keeps the halved tempo's octave") {
+        options.maxBpm = 150.0; // 130.43 still in it, so the halving still stands
+        tracker.setOptions(options);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+    }
+    SECTION("a window that moves the octave still drops it") {
+        options.minBpm = 40.0;
+        options.maxBpm = 80.0; // 130.43 folds down an octave now, and then ÷2 on top
+        tracker.setOptions(options);
+        CHECK_FALSE(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23) / 4.0));
+    }
+}
+
+TEST_CASE("a tempo the hysteresis holds past the window's edge survives a settings change",
+          "[tracking][tempo]") {
+    // The other half of M3. A track folded down an octave that then drifts to just past the
+    // window's top — 150 under 70-140 — stays in the folded octave, because the hysteresis
+    // remembers the octave in force. A settings change that forgot that octave would flip the
+    // published tempo up to 150 and drop the lock, on a nudge of the latency slider.
+    TempoTracker::Options options;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 19, 0.9, 20); // 157.9: past the widened window, so folded
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(19) / 2.0));
+    settle(tracker, index, 20, 0.9, 30); // 150: inside the hysteresis, the octave kept
+    REQUIRE(tracker.state().locked);
+    const double folded = tracker.state().bpm;
+    REQUIRE(folded < 100.0);
+
+    options.latencyOffsetSeconds = 0.015;
+    tracker.setOptions(options);
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(folded));
+    settle(tracker, index, 20, 0.9, 5);
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm < 100.0);
 }
 
 TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate",

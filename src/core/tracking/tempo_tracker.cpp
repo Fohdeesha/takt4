@@ -341,13 +341,21 @@ void TempoTracker::setOptions(const Options& options) noexcept {
                              options.minBpm != options_.minBpm || options.maxBpm != options_.maxBpm;
     options_ = options;
     scaleFrameCounts();
-    if (windowMoved) {
-        forgetFold();
+    // **Only the window decides the octave, so only the window can cost the lock.** Every
+    // change used to test the locked tempo against the window, and a tempo that ÷2, ×2 or the
+    // hysteresis had legitimately put outside it was unlocked by a nudge of the latency slider
+    // (the audit's M3).
+    if (!windowMoved) {
+        return;
     }
-    // A window that no longer holds the locked tempo invalidates the lock; anything else
-    // leaves it alone, so nudging a slider does not drop sync.
-    if (state_.locked && options_.octaveFold &&
-        (lockedBpm_ < options_.minBpm || lockedBpm_ >= options_.maxBpm)) {
+    const std::int64_t octaveBefore = foldChosen_ ? foldOctave_ : 0;
+    forgetFold();
+    // And a moved window only when it puts the tempo in another octave. Compared as octaves
+    // rather than as tempi: the locked tempo is the refined one, which can sit a few BPM from
+    // the coarse tempo the octave is chosen from, and a window that leaves the octave alone has
+    // not excluded anything that was being published.
+    if (state_.locked && options_.octaveFold && state_.calledBpm > 0.0 &&
+        windowOctave(state_.calledBpm) != octaveBefore) {
         state_.locked = false;
         // The operator has excluded what was being published, so there is nothing left
         // worth holding on to: hunt from what is playing now, following the cloud as
@@ -391,7 +399,8 @@ void TempoTracker::chooseOctave(double bpm) noexcept {
     const bool inWindow = bpm >= options_.minBpm && bpm < options_.maxBpm;
     // The window widened by the hysteresis at both ends: more than an octave wide by
     // construction, so inside the overlap an estimate is legitimately in range in two
-    // octaves at once and something has to choose between them. Three rules, in order.
+    // octaves at once and something has to choose between them. Three rules, in order; the
+    // second and third are `windowOctave`, which `setOptions` asks as well.
     const double margin = 1.0 + std::max(0.0, options_.foldHysteresis);
     const double low = options_.minBpm / margin;
     const double high = options_.maxBpm * margin;
@@ -424,17 +433,20 @@ void TempoTracker::chooseOctave(double bpm) noexcept {
     //    single passage where the cloud ran to double time left the tempo halved for the
     //    rest of the track — which is exactly what "1 - Jungle - GOOD TIMES" did, reading
     //    66.7 for a cloud whose median was 133.7.
-    if (bpm >= low && bpm < high) {
-        foldOctave_ = 0;
-        foldChosen_ = true;
-        return;
-    }
     // 3. Out of range in both directions: fold, as the operator asked.
+    foldOctave_ = windowOctave(bpm);
+    foldChosen_ = true;
+}
+
+std::int64_t TempoTracker::windowOctave(double bpm) const noexcept {
+    const double margin = 1.0 + std::max(0.0, options_.foldHysteresis);
+    if (bpm >= options_.minBpm / margin && bpm < options_.maxBpm * margin) {
+        return 0; // chooseOctave's rule 2
+    }
     const double folded = foldInto(bpm, options_.minBpm, options_.maxBpm);
     // Recovered rather than counted, because foldInto gives up when the window is narrower
     // than an octave and the number of steps it took is not the number that lands there.
-    foldOctave_ = std::llround(std::log2(folded / bpm));
-    foldChosen_ = true;
+    return std::llround(std::log2(folded / bpm));
 }
 
 void TempoTracker::halve() noexcept {
