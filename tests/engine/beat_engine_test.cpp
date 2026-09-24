@@ -1030,7 +1030,7 @@ TEST_CASE("a beat's host time is the beat's own, not the frame it was called on"
         CHECK(std::abs(static_cast<double>(called.hostMicros) - expected) <= 2.0);
         const double frameTime =
             static_cast<double>(called.event.frameIndex) * engine->secondsPerFrame();
-        offFrame += std::abs(called.event.time - frameTime) > 1e-9 ? 1 : 0;
+        offFrame += std::abs(called.event.time - frameTime) > 1e-9 ? 1U : 0U;
     }
     // And the case was worth testing: most beats are not on the frame that called them — a
     // frame back or more under the default emission, which is the lateness the stamp had.

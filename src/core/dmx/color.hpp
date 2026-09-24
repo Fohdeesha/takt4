@@ -19,7 +19,9 @@ struct Color {
     std::uint8_t g = 0;
     std::uint8_t b = 0;
 
-    friend bool operator==(const Color, const Color) = default;
+    // By reference: a defaulted comparison takes `const Color&` or `Color`, and GCC and Clang
+    // refuse `const Color` by value, which MSVC let through (found by tools/lint_clang.ps1).
+    friend bool operator==(const Color&, const Color&) = default;
 };
 
 inline constexpr Color kBlack{0, 0, 0};

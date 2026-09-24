@@ -43,6 +43,7 @@ unsigned char midiStatusFor(trigger::Message::Kind kind, int channel) noexcept {
         status = kPitchBend;
         break;
     case trigger::Message::Kind::Osc:
+    case trigger::Message::Kind::Dmx:
     case trigger::Message::Kind::MidiNote:
         break;
     }
