@@ -121,6 +121,11 @@ if(TARGET takt4_assets)
                TIMEOUT 300)
 endif()
 
+if(WIN32)
+  # GetFileVersionInfoW, for the test that reads the executables' version resources.
+  target_link_libraries(takt4_tests PRIVATE version)
+endif()
+
 catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
                      PROPERTIES TIMEOUT ${TAKT4_TEST_TIMEOUT})
 
