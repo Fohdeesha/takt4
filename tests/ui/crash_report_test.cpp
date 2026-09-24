@@ -221,16 +221,20 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
         CHECK(exit != 0);
 
 #if defined(__SANITIZE_ADDRESS__)
-        // Under AddressSanitizer a hardware fault belongs to the sanitizer: its own handler
-        // reports it — with far more than a minidump would say — and ends the process before
-        // an unhandled-exception filter is ever consulted. The shipped build has no sanitizer.
-        // What must still hold is that its report is *kept*, which is the log's job.
+        // Under AddressSanitizer a hardware fault can belong to the sanitizer: with MSVC 19.44
+        // its own handler reports it — with far more than a minidump would say — and ends the
+        // process before an unhandled-exception filter is ever consulted, so the report has to
+        // be *kept*, which is the log's job. With the newer toolchain on the CI runners the log
+        // came back empty (2026-09-24), which is the fault reaching takt4's own filter instead;
+        // then it is the minidump below that has to be there. Either way the crash is recorded,
+        // and a run with neither fails. The shipped build has no sanitizer.
         if (std::string_view(c.how) == "access-violation") {
             const std::vector<unsigned char> bytes = readAll(dir.path() / "takt4.log");
             const std::string log(bytes.begin(), bytes.end());
             INFO("log:\n" << log);
-            CHECK(log.find("AddressSanitizer") != std::string::npos);
-            continue;
+            if (log.find("AddressSanitizer") != std::string::npos) {
+                continue;
+            }
         }
 #endif
 
