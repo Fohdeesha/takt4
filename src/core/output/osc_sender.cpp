@@ -84,6 +84,8 @@ bool OscSender::ready() noexcept {
         impl_->socketError = 0;
         std::memcpy(&impl_->address, known->storage, static_cast<std::size_t>(known->length));
         impl_->addressLength = static_cast<socklen_t>(known->length);
+        // Non-blocking, and allowed to broadcast: see `net::prepareSender`.
+        net::prepareSender(handle);
         resolved_ = describe(reinterpret_cast<const sockaddr*>(&impl_->address),
                              impl_->addressLength);
         return true;
