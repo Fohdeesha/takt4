@@ -118,6 +118,8 @@ add_library(takt4_core STATIC
   net/udp.hpp
   output/beat_scheduler.cpp
   output/beat_scheduler.hpp
+  output/link_peers.cpp
+  output/link_peers.hpp
   output/link_session.cpp
   output/link_session.hpp
   output/midi_clock.cpp
