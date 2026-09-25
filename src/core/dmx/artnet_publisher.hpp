@@ -4,6 +4,7 @@
 #include "core/dmx/artnet_sender.hpp"
 #include "core/dmx/dmx_engine.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -34,6 +35,19 @@ namespace takt4::dmx {
 /// universe keep their own clocks, so one that was added mid-set gets its first frame at once
 /// rather than waiting for the other one's turn.
 ///
+/// **Every node is fed every universe the patch uses.** A node sends on the universes it is set
+/// up for and ignores the rest, so a list per node only ever saved a few datagrams, and was one
+/// more box to misread; it went on 2026-09-25.
+///
+/// **A node can be delayed**, like every other output (`output::OutputTarget::delaySeconds`).
+/// A universe is a stream of frames rather than a message to hold back, so what is delayed is
+/// the stream: the node is sent the frame the patch had that long ago, from a history of each
+/// universe's frames kept while any node needs one. A node set *earlier* than the rest cannot be
+/// sent a frame nobody has made yet — so the lighting itself runs ahead by the largest such lead
+/// (`leadSeconds`, which `RuleSink` starts a beat's effects early by), and every node is sent a
+/// frame that much older again: the earliest node gets the lighting as it is made, the others
+/// their delay behind it.
+///
 /// On the output thread, like everything it touches. Nothing here throws once it is built —
 /// a node that has been unplugged is counted, not raised, because one dead node must not stop
 /// the others being fed.
@@ -42,10 +56,9 @@ public:
     struct TargetConfig {
         std::string host;
         std::uint16_t port = kArtNetPort;
-        /// Which universes this node is fed. **Empty means every universe the patch uses**,
-        /// which is the right default for the ordinary rig of one node, and the reason the
-        /// field can be left alone until there are two.
-        std::vector<PortAddress> universes;
+        /// How far behind the lighting this node is sent it, in seconds; negative is ahead of
+        /// the other nodes. See the class comment.
+        double delaySeconds = 0.0;
         /// Which bit of a rule's routing mask selects this target. Unused today — a DMX rule
         /// is routed by *fixture*, and a fixture already names its universe — and carried so
         /// that switching a target off is the same gesture here as everywhere else.
@@ -78,10 +91,22 @@ public:
 
     std::size_t targetCount() const noexcept { return targets_.size(); }
     const ArtNetSender& target(std::size_t index) const noexcept { return *targets_[index].sender; }
-    /// The universes target `index` carries, as configured — empty for "all of them".
-    const std::vector<PortAddress>& universesOf(std::size_t index) const noexcept {
-        return targets_[index].universes;
-    }
+
+    /// Moves the delay of the node on routing bit `bit`, and nothing else — what a dragged delay
+    /// slider sends. False when no node is on that bit.
+    bool setDelay(std::size_t bit, double seconds) noexcept;
+    /// How far ahead the lighting must run for the earliest node to have it on time: the most
+    /// negative node delay, as a positive number, or zero. See the class comment.
+    double leadSeconds() const noexcept;
+    /// How far behind the lighting as it is made node `index` is sent it: its own delay plus
+    /// `leadSeconds`. Never negative.
+    double lagOf(std::size_t index) const noexcept;
+
+    /// How finely the history is kept: a frame at most this often while a universe changes. A
+    /// node takes 44 frames a second, so a frame every 2 ms is far finer than it can show.
+    static constexpr double kHistoryStep = 0.002;
+    /// How far back the history reaches: the longest delay behind the longest lead, and a margin.
+    static constexpr double kHistorySpan = 2.05;
 
     /// Sends every frame that is due, and says how many datagrams left. Call every round.
     std::size_t publish(const DmxEngine& engine, double now);
@@ -97,6 +122,26 @@ public:
     std::uint64_t failed() const noexcept { return failed_; }
 
 private:
+    /// One universe as it was at `at`.
+    struct Frame {
+        double at = 0.0;
+        std::uint64_t revision = 0;
+        std::array<std::uint8_t, kChannelsPerUniverse> levels{};
+    };
+    /// One universe's frames, newest last, in a ring allocated once when it is first wanted.
+    struct History {
+        PortAddress universe = 0;
+        std::vector<Frame> ring;
+        std::size_t newest = 0;
+        std::size_t count = 0;
+        std::uint64_t lastRevision = 0;
+    };
+    /// Records every universe's frame into its history, if it has moved. Only while a node lags.
+    void record(const DmxEngine& engine, double now);
+    /// The frame `universe` had at `at` — the newest recorded at or before it, or the oldest the
+    /// history holds when it does not reach that far back. Null when there is no history yet.
+    const Frame* frameAt(PortAddress universe, double at) const noexcept;
+
     /// What one target knows about one universe: which frame it last sent and when.
     struct Paced {
         PortAddress universe = 0;
@@ -107,7 +152,7 @@ private:
 
     struct Target {
         std::unique_ptr<ArtNetSender> sender;
-        std::vector<PortAddress> universes;
+        double delay = 0.0;
         std::size_t bit = 0;
         std::string id;
         /// One per universe actually being fed, found or made on the first frame. Held per
@@ -119,6 +164,7 @@ private:
     Paced& pacedFor(Target& target, PortAddress universe);
 
     std::vector<Target> targets_;
+    std::vector<History> history_;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
 };

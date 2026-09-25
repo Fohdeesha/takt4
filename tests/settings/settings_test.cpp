@@ -40,7 +40,6 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.machine.deviceName = "MOTU Pro Audio";
     in.machine.hostApiName = "ASIO";
     in.machine.channel = 6;
-    in.machine.midiClockPort = "Microsoft GS Wavetable Synth 0";
     in.machine.midiControlPort = "MOTU Pro Audio Midi In 1";
     in.machine.midiBindings = {"note 36 ch 10 -> tap", "cc 64 ch 1 -> lock",
                                "cc 21 ch 1 -> rule/drop/enable"};
@@ -55,7 +54,6 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.preset.tempo.confidenceThreshold = 0.25;
     in.preset.tempo.latencyOffsetSeconds = -0.030;
     in.preset.tempo.keepOctaveShift = true;
-    in.preset.link = true;
     in.preset.oscPrefix = "/vj";
     in.preset.outputs = takt4::output::oscOutputs({{"192.168.1.40", 7000}, {"127.0.0.1", 7001}});
     // A named one, and a MIDI one, and one switched off — the three things a target can be
@@ -72,12 +70,23 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     spare.port = 9000;
     spare.enabled = false;
     in.preset.outputs.push_back(spare);
+    // And the two that were settings of their own until 2026-09-25: Link, switched on and
+    // late, and a MIDI clock, early.
+    takt4::output::OutputTarget drums;
+    drums.name = "drums";
+    drums.kind = takt4::output::OutputTarget::Kind::MidiClock;
+    drums.device = "Microsoft GS Wavetable Synth 0";
+    drums.delaySeconds = -0.012;
+    in.preset.outputs.push_back(drums);
+    REQUIRE(takt4::output::ensureLinkOutput(in.preset.outputs, true));
+    in.preset.outputs.front().delaySeconds = 0.025;
+    takt4::output::ensureOutputIds(in.preset.outputs);
 
     const Settings out = roundTrip(in);
     CHECK(out.machine.deviceName == in.machine.deviceName);
     CHECK(out.machine.hostApiName == in.machine.hostApiName);
     CHECK(out.machine.channel == 6);
-    CHECK(out.machine.midiClockPort == in.machine.midiClockPort);
+    CHECK(out.machine.midiClockPort.empty()); // a clock is an output now
     CHECK(out.machine.midiControlPort == in.machine.midiControlPort);
     CHECK(out.machine.midiBindings == in.machine.midiBindings);
     CHECK(out.machine.oscControlEnabled);
@@ -114,17 +123,54 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.preset.tempo.keepOctaveShift);
     CHECK_FALSE(Settings{}.preset.tempo.keepOctaveShift);
     CHECK_FALSE(takt4::settings::fromJson(R"({"preset": {"tempo": {}}})").preset.tempo.keepOctaveShift);
-    CHECK(out.preset.link);
     CHECK(out.preset.oscPrefix == "/vj");
-    REQUIRE(out.preset.outputs.size() == 4);
-    CHECK(out.preset.outputs[0].name == "wall");
-    CHECK(out.preset.outputs[0].host == "192.168.1.40");
-    CHECK(out.preset.outputs[0].port == 7000);
-    CHECK(out.preset.outputs[1].port == 7001);
-    CHECK(out.preset.outputs[2].kind == takt4::output::OutputTarget::Kind::Midi);
-    CHECK(out.preset.outputs[2].device == "MOTU Pro Audio Midi Out 1");
-    CHECK(out.preset.outputs[3].name == "spare");
-    CHECK_FALSE(out.preset.outputs[3].enabled);
+    // Every output as it went in, the Link output first, the clock among them.
+    CHECK(out.preset.outputs == in.preset.outputs);
+    REQUIRE(out.preset.outputs.size() == 6);
+    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(out.preset.outputs[0].enabled);
+    CHECK(out.preset.outputs[1].name == "wall");
+    CHECK(out.preset.outputs[3].kind == takt4::output::OutputTarget::Kind::Midi);
+    CHECK_FALSE(out.preset.outputs[4].enabled);
+    CHECK(out.preset.outputs[5].kind == takt4::output::OutputTarget::Kind::MidiClock);
+    CHECK(out.preset.outputs[5].device == "Microsoft GS Wavetable Synth 0");
+    // And written where an older build reads them, so it keeps its Link and its clock.
+    const std::string text = takt4::settings::toJson(in);
+    CHECK(text.find(R"("link": true)") != std::string::npos);
+    CHECK(text.find(R"("midiClockPort": "Microsoft GS Wavetable Synth 0")") != std::string::npos);
+}
+
+TEST_CASE("a file with Link and the MIDI clock as settings of their own loads them as outputs",
+          "[settings]") {
+    // What every file written before 2026-09-25 holds: a switch for Link and one port for the
+    // clock. They become the Link output, first and switched on as it was, and a clock output.
+    const Settings old = takt4::settings::fromJson(R"({
+        "machine": {"midiClockPort": "TR-8S"},
+        "preset": {"link": true, "outputs": ["deck = 127.0.0.1:7000"]}})");
+    REQUIRE(old.preset.outputs.size() == 3);
+    CHECK(old.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(old.preset.outputs[0].enabled);
+    CHECK(old.preset.outputs[0].name == "Link");
+    CHECK(old.preset.outputs[1].name == "deck");
+    CHECK(old.preset.outputs[2].kind == takt4::output::OutputTarget::Kind::MidiClock);
+    CHECK(old.preset.outputs[2].device == "TR-8S");
+    CHECK(old.preset.outputs[2].enabled);
+    CHECK(old.machine.midiClockPort.empty());
+    for (const takt4::output::OutputTarget& target : old.preset.outputs) {
+        CHECK_FALSE(target.id.empty());
+    }
+
+    SECTION("Link switched off stays off, and no port is no clock") {
+        const Settings off = takt4::settings::fromJson(R"({"preset": {"link": false}})");
+        REQUIRE(off.preset.outputs.size() == 1);
+        CHECK(off.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+        CHECK_FALSE(off.preset.outputs[0].enabled);
+    }
+
+    SECTION("a file this build wrote is not given a second clock or a second Link") {
+        const Settings again = roundTrip(old);
+        CHECK(again.preset.outputs == old.preset.outputs);
+    }
 }
 
 TEST_CASE("the two layers stay apart in the file", "[settings]") {
@@ -174,7 +220,10 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK(out.machine.deviceName.empty());
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(defaults.preset.tempo.minBpm, 1e-9));
     CHECK(out.preset.oscPrefix == defaults.preset.oscPrefix);
-    CHECK(out.preset.outputs.empty());
+    // Nothing but the Link output every set has, switched off as a file with no switch meant.
+    REQUIRE(out.preset.outputs.size() == 1);
+    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK_FALSE(out.preset.outputs[0].enabled);
     // The listening socket most of all: a build that did not have this field must not
     // load as one that opens a port.
     CHECK_FALSE(out.machine.oscControlEnabled);
@@ -232,9 +281,9 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
     // A target with no host, or a port outside the range, is left out rather than sent to.
     const Settings targets = takt4::settings::fromJson(
         R"({"preset": {"outputs": [" = :7000", "a:0", "b:99999", "good = 10.0.0.1:7000"]}})");
-    REQUIRE(targets.preset.outputs.size() == 1);
-    CHECK(targets.preset.outputs[0].name == "good");
-    CHECK(targets.preset.outputs[0].host == "10.0.0.1");
+    REQUIRE(targets.preset.outputs.size() == 2); // the Link output, then the one good line
+    CHECK(targets.preset.outputs[1].name == "good");
+    CHECK(targets.preset.outputs[1].host == "10.0.0.1");
 }
 
 TEST_CASE("an OSC prefix that is not an address falls back rather than stopping takt4",
@@ -262,12 +311,12 @@ TEST_CASE("a settings file written before targets had names still loads", "[sett
         R"({"preset": {"oscTargets": [{"host": "192.168.1.40", "port": 7000},
                                       {"host": "", "port": 7000},
                                       {"host": "127.0.0.1", "port": 7001}]}})");
-    REQUIRE(out.preset.outputs.size() == 2);
-    CHECK(out.preset.outputs[0].host == "192.168.1.40");
-    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Osc);
+    REQUIRE(out.preset.outputs.size() == 3); // the Link output first
+    CHECK(out.preset.outputs[1].host == "192.168.1.40");
+    CHECK(out.preset.outputs[1].kind == takt4::output::OutputTarget::Kind::Osc);
     // Named after its own address, which is what an unnamed target has always been called.
-    CHECK(out.preset.outputs[0].name == "192.168.1.40:7000");
-    CHECK(out.preset.outputs[1].port == 7001);
+    CHECK(out.preset.outputs[1].name == "192.168.1.40:7000");
+    CHECK(out.preset.outputs[2].port == 7001);
 }
 
 TEST_CASE("settings write to a file and read back from it", "[settings]") {
@@ -285,7 +334,9 @@ TEST_CASE("settings write to a file and read back from it", "[settings]") {
     const Settings out = takt4::settings::load(path);
     CHECK(out.machine.deviceName == "MOTU Pro Audio");
     CHECK(out.machine.channel == 6);
-    CHECK(out.preset.link);
+    REQUIRE_FALSE(out.preset.outputs.empty());
+    CHECK(out.preset.outputs.front().kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(out.preset.outputs.front().enabled);
 }
 
 TEST_CASE("a missing or unreadable settings file is not an error", "[settings]") {
@@ -401,7 +452,8 @@ TEST_CASE("a damaged file falls back to the copy kept at the last good start", "
     write(file, "{\"machine\": ");
     const takt4::settings::Startup recovered = takt4::settings::openAtStartup(file, file);
     CHECK(recovered.settings.machine.deviceName == "MOTU Pro Audio");
-    CHECK(recovered.settings.preset.link);
+    REQUIRE_FALSE(recovered.settings.preset.outputs.empty());
+    CHECK(recovered.settings.preset.outputs.front().enabled); // the Link output, switched on
     CHECK(recovered.notice.find("settings.json.bak") != std::string::npos);
     CHECK(filesStarting(dir.path(), "settings.json.corrupt-").size() == 1);
 }
@@ -868,23 +920,27 @@ TEST_CASE("an Art-Net output survives the round trip through its own text line",
     node.kind = takt4::output::OutputTarget::Kind::ArtNet;
     node.host = "10.0.0.20";
     node.port = takt4::dmx::kArtNetPort;
-    node.universes = {0, 1, 4};
+    node.delaySeconds = 0.04;
     in.preset.outputs.push_back(node);
 
     const std::string text = takt4::settings::toJson(in);
-    CHECK(text.find("artnet 10.0.0.20:6454 u0,1,4") != std::string::npos);
+    CHECK(text.find("truss = artnet 10.0.0.20:6454 +40ms #o-000000cc") != std::string::npos);
 
+    // After the Link output, which every loaded set has first.
     const Settings out = roundTrip(in);
-    REQUIRE(out.preset.outputs.size() == 1);
-    CHECK(out.preset.outputs[0] == node);
+    REQUIRE(out.preset.outputs.size() == 2);
+    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(out.preset.outputs[1] == node);
 
-    SECTION("a node fed everything writes no universe list at all") {
-        Settings all = in;
-        all.preset.outputs[0].universes.clear();
-        const Settings back = roundTrip(all);
-        REQUIRE(back.preset.outputs.size() == 1);
-        CHECK(back.preset.outputs[0].universes.empty());
-        CHECK(takt4::settings::toJson(all).find(" u") == std::string::npos);
+    SECTION("a universe list an older build wrote is read and left out") {
+        // Every node is fed every universe since 2026-09-25; a file with a list still loads,
+        // and the next save writes none.
+        const Settings old = takt4::settings::fromJson(
+            R"({"version":1,"preset":{"outputs":["truss = artnet 10.0.0.20:6454 u0,1,4 #o-000000cc"]}})");
+        REQUIRE(old.preset.outputs.size() == 2);
+        CHECK(old.preset.outputs[1].kind == takt4::output::OutputTarget::Kind::ArtNet);
+        CHECK(old.preset.outputs[1].host == "10.0.0.20");
+        CHECK(takt4::settings::toJson(old).find(" u0") == std::string::npos);
     }
 }
 
@@ -956,32 +1012,32 @@ TEST_CASE("a file routed by name loads routed by id, and a rename afterwards mov
           {"id":"clips","send":"osc","address":"/clip","outputs":["wall"]},
           {"id":"fade","send":"dmx","dmx":{"fixtures":["wash L","washes"]}}]}})";
     takt4::settings::Settings loaded = takt4::settings::fromJson(text);
-    REQUIRE(loaded.preset.outputs.size() == 2);
+    REQUIRE(loaded.preset.outputs.size() == 3); // the Link output, deck, wall
     REQUIRE(loaded.preset.fixtures.size() == 1);
     REQUIRE(loaded.preset.rules.size() == 2);
 
-    const std::string wall = loaded.preset.outputs[1].id;
+    const std::string wall = loaded.preset.outputs[2].id;
     const std::string washL = loaded.preset.fixtures[0].id;
     REQUIRE_FALSE(wall.empty());
     REQUIRE_FALSE(washL.empty());
-    CHECK(loaded.preset.outputs[0].id != wall);
+    CHECK(loaded.preset.outputs[1].id != wall);
     CHECK(loaded.preset.rules[0].outputs == std::vector<std::string>{wall});
     CHECK(loaded.preset.rules[1].dmx.fixtures == std::vector<std::string>{washL, "washes"});
     CHECK(takt4::output::resolveOutputs(loaded.preset.rules[0].outputs, loaded.preset.outputs) ==
-          0b10);
+          0b100);
 
     // Renamed, the same rules still reach the same things.
-    loaded.preset.outputs[1].name = "back wall";
+    loaded.preset.outputs[2].name = "back wall";
     loaded.preset.fixtures[0].name = "front wash";
     CHECK(takt4::output::resolveOutputs(loaded.preset.rules[0].outputs, loaded.preset.outputs) ==
-          0b10);
+          0b100);
     CHECK(takt4::dmx::resolveFixtures(loaded.preset.fixtures,
                                       loaded.preset.rules[1].dmx.fixtures) == 0b1);
 
     SECTION("and the ids are written down, so the next load is the same rig") {
         const takt4::settings::Settings again =
             takt4::settings::fromJson(takt4::settings::toJson(loaded));
-        CHECK(again.preset.outputs[1].id == wall);
+        CHECK(again.preset.outputs[2].id == wall);
         CHECK(again.preset.fixtures[0].id == washL);
         CHECK(again.preset.rules[0].outputs == std::vector<std::string>{wall});
     }

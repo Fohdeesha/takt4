@@ -231,8 +231,7 @@ OutputRunner::Snapshot::Trouble OutputRunner::currentTrouble() const {
     trouble.lastRoundError = lastRoundError_;
     trouble.undeliverable = sink_.undeliverable();
     trouble.heldDropped = sink_.dropped() + transports_.osc().dropped();
-    const MidiClock* const clock = transports_.midiClock();
-    trouble.clockTicksSkipped = clock != nullptr ? clock->ticksSkipped() : 0;
+    trouble.clockTicksSkipped = transports_.clockTicksSkipped();
     return trouble;
 }
 

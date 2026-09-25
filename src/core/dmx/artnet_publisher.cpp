@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <span>
 
 namespace takt4::dmx {
 namespace {
@@ -16,13 +17,94 @@ constexpr double kMinFramePeriod = 1.0 / kMaxRefreshHz;
 void ArtNetPublisher::addTarget(const TargetConfig& config) {
     Target target;
     target.sender = std::make_unique<ArtNetSender>(config.host, config.port);
-    target.universes = config.universes;
+    target.delay = config.delaySeconds;
     target.bit = config.bit;
     target.id = config.id;
-    std::sort(target.universes.begin(), target.universes.end());
-    target.universes.erase(std::unique(target.universes.begin(), target.universes.end()),
-                           target.universes.end());
     targets_.push_back(std::move(target));
+}
+
+bool ArtNetPublisher::setDelay(std::size_t bit, double seconds) noexcept {
+    for (Target& target : targets_) {
+        if (target.bit == bit) {
+            target.delay = seconds;
+            return true;
+        }
+    }
+    return false;
+}
+
+double ArtNetPublisher::leadSeconds() const noexcept {
+    double earliest = 0.0;
+    for (const Target& target : targets_) {
+        earliest = std::min(earliest, target.delay);
+    }
+    return -earliest;
+}
+
+double ArtNetPublisher::lagOf(std::size_t index) const noexcept {
+    return std::max(0.0, targets_[index].delay + leadSeconds());
+}
+
+void ArtNetPublisher::record(const DmxEngine& engine, double now) {
+    for (const PortAddress universe : engine.universes()) {
+        const std::span<const std::uint8_t> levels = engine.levels(universe);
+        if (levels.size() != kChannelsPerUniverse) {
+            continue;
+        }
+        History* history = nullptr;
+        for (History& one : history_) {
+            if (one.universe == universe) {
+                history = &one;
+                break;
+            }
+        }
+        if (history == nullptr) {
+            History made;
+            made.universe = universe;
+            made.ring.resize(static_cast<std::size_t>(kHistorySpan / kHistoryStep) + 8);
+            history_.push_back(std::move(made));
+            history = &history_.back();
+        }
+        const std::uint64_t revision = engine.revision(universe);
+        if (history->count > 0) {
+            const Frame& newest = history->ring[history->newest];
+            // Unchanged, or changed again sooner than the history needs: the next round looks
+            // again, so a change is never missed, only kept at most every `kHistoryStep`.
+            if (revision == history->lastRevision || now - newest.at < kHistoryStep) {
+                continue;
+            }
+        }
+        const std::size_t slot =
+            history->count == 0 ? 0 : (history->newest + 1) % history->ring.size();
+        Frame& frame = history->ring[slot];
+        frame.at = now;
+        frame.revision = revision;
+        std::copy(levels.begin(), levels.end(), frame.levels.begin());
+        history->newest = slot;
+        history->count = std::min(history->count + 1, history->ring.size());
+        history->lastRevision = revision;
+    }
+}
+
+const ArtNetPublisher::Frame* ArtNetPublisher::frameAt(PortAddress universe,
+                                                       double at) const noexcept {
+    for (const History& history : history_) {
+        if (history.universe != universe || history.count == 0) {
+            continue;
+        }
+        // Newest first, back towards the oldest the ring still holds.
+        const std::size_t size = history.ring.size();
+        const Frame* oldest = nullptr;
+        for (std::size_t back = 0; back < history.count; ++back) {
+            const Frame& frame = history.ring[(history.newest + size - back) % size];
+            if (frame.at <= at) {
+                return &frame;
+            }
+            oldest = &frame;
+        }
+        return oldest;
+    }
+    return nullptr;
 }
 
 std::vector<std::pair<std::size_t, std::string>>
@@ -52,10 +134,7 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
                 continue;
             }
         }
-        target.universes = config.universes;
-        std::sort(target.universes.begin(), target.universes.end());
-        target.universes.erase(std::unique(target.universes.begin(), target.universes.end()),
-                               target.universes.end());
+        target.delay = config.delaySeconds;
         target.bit = config.bit;
         target.id = config.id;
         next.push_back(std::move(target));
@@ -86,23 +165,36 @@ ArtNetPublisher::Paced& ArtNetPublisher::pacedFor(Target& target, PortAddress un
 
 std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     std::size_t datagrams = 0;
-    for (Target& target : targets_) {
-        // An empty universe list means every universe the patch uses, which is what one node
-        // on one rig means and what the field can be left alone for.
-        const std::vector<PortAddress>& carried =
-            target.universes.empty() ? engine.universes() : target.universes;
-
-        for (const PortAddress universe : carried) {
-            const std::span<const std::uint8_t> levels = engine.levels(universe);
+    // The history, only while a node is sent the lighting later than it is made; with every
+    // node on time it would be half a megabyte a universe for nothing.
+    bool lagging = false;
+    for (std::size_t i = 0; i < targets_.size(); ++i) {
+        lagging = lagging || lagOf(i) > 0.0;
+    }
+    if (lagging) {
+        record(engine, now);
+    } else {
+        history_.clear();
+    }
+    for (std::size_t index = 0; index < targets_.size(); ++index) {
+        Target& target = targets_[index];
+        const double lag = lagOf(index);
+        for (const PortAddress universe : engine.universes()) {
+            std::span<const std::uint8_t> levels = engine.levels(universe);
+            std::uint64_t revision = engine.revision(universe);
+            if (lag > 0.0) {
+                // What this universe was `lag` ago. Before the history reaches that far back —
+                // a delay just set — the oldest it has, which is the nearest thing to it.
+                if (const Frame* const past = frameAt(universe, now - lag)) {
+                    levels = std::span<const std::uint8_t>(past->levels);
+                    revision = past->revision;
+                }
+            }
             if (levels.empty()) {
-                // A target configured for a universe the patch does not use. Not an error: an
-                // operator who has unpatched a fixture for tonight should not have to edit the
-                // node's universe list as well.
                 continue;
             }
 
             Paced& paced = pacedFor(target, universe);
-            const std::uint64_t revision = engine.revision(universe);
             const double since = now - paced.lastSentAt;
 
             bool due = false;
@@ -143,10 +235,10 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
 
 std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {
     std::size_t datagrams = 0;
+    // The frame as it is now, to every node whatever its delay: this is the last thing sent,
+    // and a delayed node would otherwise never be sent it at all.
     for (Target& target : targets_) {
-        const std::vector<PortAddress>& carried =
-            target.universes.empty() ? engine.universes() : target.universes;
-        for (const PortAddress universe : carried) {
+        for (const PortAddress universe : engine.universes()) {
             const std::span<const std::uint8_t> levels = engine.levels(universe);
             if (levels.empty()) {
                 continue;
