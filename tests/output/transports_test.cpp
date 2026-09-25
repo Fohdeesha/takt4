@@ -3,16 +3,21 @@
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/trigger_engine.hpp"
 
+#include "support/artnet_nodes.hpp"
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -749,5 +754,453 @@ TEST_CASE("a press and its release keep their gap on every output however each i
         sink.flushQueued();
         CHECK(sink.queued() == 0);
         CHECK(wire->heard.size() >= 2);
+    }
+}
+
+namespace {
+
+/// A `TimedWire` per MIDI device, every one on the clock the test drives.
+struct Wires {
+    std::map<std::string, std::shared_ptr<TimedWire>> byDevice;
+
+    void setNow(double now) {
+        for (auto& entry : byDevice) {
+            entry.second->now = now;
+        }
+    }
+    std::function<std::unique_ptr<takt4::output::MidiOutput>(const std::string&)> opener() {
+        return [this](const std::string& name) {
+            std::shared_ptr<TimedWire>& wire = byDevice[name];
+            if (wire == nullptr) {
+                wire = std::make_shared<TimedWire>();
+            }
+            return std::make_unique<takt4::output::MidiOutput>(name,
+                                                               std::make_unique<TimedPort>(wire));
+        };
+    }
+    /// How many messages starting with `status` went down `device`.
+    std::size_t count(const std::string& device, unsigned char status) const {
+        const auto found = byDevice.find(device);
+        if (found == byDevice.end()) {
+            return 0;
+        }
+        std::size_t n = 0;
+        for (const TimedWire::Message& message : found->second->messages) {
+            n += !message.bytes.empty() && message.bytes[0] == status ? 1 : 0;
+        }
+        return n;
+    }
+};
+
+takt4::output::OutputTarget clockTo(std::string name, std::string device, double delay) {
+    takt4::output::OutputTarget clock;
+    clock.id = "o-c10c" + std::to_string(name.size()) + std::to_string(device.size());
+    clock.name = std::move(name);
+    clock.kind = takt4::output::OutputTarget::Kind::MidiClock;
+    clock.device = std::move(device);
+    clock.delaySeconds = delay;
+    return clock;
+}
+
+/// Music at 128 BPM, locked from its first beat, each beat reaching the transports a pipeline
+/// after it was in the audio — played a millisecond at a time, so a test can change something
+/// between two stretches of it.
+struct Music {
+    static constexpr double kBpm = 128.0;
+    static constexpr double kPipeline = 0.060;
+    std::vector<double> beats;
+    std::size_t next = 0;
+    double now = 0.0;
+
+    explicit Music(std::size_t count) {
+        for (std::size_t k = 0; k < count; ++k) {
+            beats.push_back(0.137 + static_cast<double>(k) * 60.0 / kBpm);
+        }
+    }
+    /// Plays until beat `until` has been heard, and a little past it.
+    void play(Transports& transports, Wires& wires, std::size_t until) {
+        const TempoState state;
+        const double end = beats[std::min(until, beats.size() - 1)] + kPipeline + 0.05;
+        while (now < end) {
+            now += 0.001;
+            wires.setNow(now);
+            while (next < beats.size() && beats[next] + kPipeline <= now) {
+                transports.publish(
+                    beatAt(beats[next], static_cast<std::uint32_t>(next % 4) + 1, kBpm), 0,
+                    beats[next]);
+                ++next;
+            }
+            transports.advance(now, state);
+        }
+    }
+};
+
+/// How a receiver's beats — every 24th tick from the first after Start — sit against the music
+/// played `delay` later, over the music's beats `from` to `to`.
+struct Fit {
+    double worst = 0.0;    ///< the furthest any was from the beat it is nearest
+    std::size_t beats = 0; ///< how many were in range
+    bool downbeats = true; ///< whether every 4th — the receiver's bar 1s — was on a downbeat
+};
+
+Fit fit(const TimedWire& wire, const Music& music, double delay, std::size_t from, std::size_t to) {
+    std::size_t start = wire.messages.size();
+    for (std::size_t i = 0; i < wire.messages.size(); ++i) {
+        if (wire.messages[i].bytes[0] == takt4::output::MidiClock::kStart) {
+            start = i;
+            break;
+        }
+    }
+    REQUIRE(start < wire.messages.size());
+    std::vector<double> ticks;
+    for (std::size_t i = start + 1; i < wire.messages.size(); ++i) {
+        if (wire.messages[i].bytes[0] == takt4::output::MidiClock::kTick) {
+            ticks.push_back(wire.messages[i].at);
+        }
+    }
+    Fit result;
+    for (std::size_t n = 0; n < ticks.size(); n += 24) {
+        const double t = ticks[n] - delay;
+        std::size_t nearest = 0;
+        for (std::size_t k = 1; k < music.beats.size(); ++k) {
+            if (std::abs(music.beats[k] - t) < std::abs(music.beats[nearest] - t)) {
+                nearest = k;
+            }
+        }
+        if (nearest < from || nearest > to) {
+            continue;
+        }
+        result.worst = std::max(result.worst, std::abs(music.beats[nearest] - t));
+        ++result.beats;
+        if ((n / 24) % 4 == 0 && nearest % 4 != 0) {
+            result.downbeats = false;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("every MIDI clock output ticks on the beat plus its own delay", "[output][midi]") {
+    // The operator's call of 2026-09-25: a MIDI clock is an output like any other, as many of
+    // them as there are things to clock, each with a delay that works as every output's does —
+    // a DAW that plays 80 ms late wants its clock 80 ms later, a drum machine that is quick
+    // wants it 60 ms early, and one number for the rig could not give both.
+    Wires wires;
+    Transports::Config config;
+    config.outputs = {clockTo("DAW", "daw", 0.080), clockTo("drums", "drums", -0.060)};
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    CHECK(transports.clockCount() == 2);
+    CHECK(transports.outputProblems().empty());
+    // Neither asks for a beat early: a clock is a grid that runs on from a beat already heard.
+    CHECK(transports.leadSeconds() == 0.0);
+
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    Music music(64);
+    music.play(transports, wires, 63);
+
+    for (const auto& [device, delay] : {std::pair<std::string, double>{"daw", 0.080},
+                                        std::pair<std::string, double>{"drums", -0.060}}) {
+        INFO(device);
+        REQUIRE(wires.byDevice.count(device) == 1);
+        const TimedWire& wire = *wires.byDevice.at(device);
+        // Once the grid has settled, every beat of it is the music's beat plus this delay —
+        // within the millisecond a round is — and the receiver's bars are the music's.
+        const Fit settled = fit(wire, music, delay, 16, 60);
+        CHECK(settled.beats >= 40);
+        CHECK(settled.worst < 0.004);
+        CHECK(settled.downbeats);
+        // And a whole delay away from where a clock without one would have put it.
+        CHECK(fit(wire, music, 0.0, 16, 60).worst > 0.05);
+        CHECK(wires.count(device, takt4::output::MidiClock::kStart) == 1);
+    }
+    transports.stopOutputs();
+    CHECK(wires.count("daw", takt4::output::MidiClock::kStop) == 1);
+    CHECK(wires.count("drums", takt4::output::MidiClock::kStop) == 1);
+}
+
+TEST_CASE("a second MIDI clock on a device already clocked is refused, and says so",
+          "[output][midi]") {
+    // Two clocks down one cable would tick it twice as fast, and a receiver would play at double
+    // the tempo — so the second one is not built, and the row says which output already has it.
+    Wires wires;
+    Transports::Config config;
+    config.outputs = {clockTo("DAW", "daw", 0.0), clockTo("again", "daw", 0.020)};
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    CHECK(transports.clockCount() == 1);
+    const std::vector<std::string> problems = transports.outputProblems();
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.front() == "again: \"DAW\" already sends the clock to that device");
+
+    // One clock's worth of ticks: 48 a second at the clock's opening 120 BPM, not 96.
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    const TempoState state;
+    for (int ms = 1; ms <= 1000; ++ms) {
+        wires.setNow(ms / 1000.0);
+        transports.advance(ms / 1000.0, state);
+    }
+    const std::size_t ticks = wires.count("daw", takt4::output::MidiClock::kTick);
+    CHECK(ticks >= 47);
+    CHECK(ticks <= 49);
+    transports.stopOutputs();
+}
+
+TEST_CASE("editing the outputs keeps every clock running, and one taken away is stopped",
+          "[output][midi]") {
+    // A receiver that is sent Stop and Start stops playing and starts again from bar 1. Renaming
+    // an output, moving its delay, or adding a row beside it is not a reason for that.
+    Wires wires;
+    Transports::Config config;
+    config.outputs = {clockTo("DAW", "daw", 0.0), clockTo("drums", "drums", 0.0)};
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    Music music(48);
+    music.play(transports, wires, 16);
+    REQUIRE(wires.count("daw", takt4::output::MidiClock::kStart) == 1);
+    REQUIRE(wires.count("drums", takt4::output::MidiClock::kStart) == 1);
+
+    // Renamed, moved later, and a note output on the same cable added beside it.
+    std::vector<takt4::output::OutputTarget> edited = config.outputs;
+    edited[0].name = "Ableton";
+    edited[0].delaySeconds = 0.040;
+    takt4::output::OutputTarget desk;
+    desk.id = "o-de5c";
+    desk.name = "desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "daw";
+    edited.push_back(desk);
+    transports.setOutputs(edited);
+    CHECK(transports.clockCount() == 2);
+    CHECK(transports.midiTarget(2) != nullptr); // the note output shares the clock's device
+    music.play(transports, wires, 32);
+    for (const char* device : {"daw", "drums"}) {
+        INFO(device);
+        CHECK(wires.count(device, takt4::output::MidiClock::kStop) == 0);
+        CHECK(wires.count(device, takt4::output::MidiClock::kStart) == 1);
+    }
+
+    // The drums' row taken away: its receiver is told to stop, and the DAW carries on.
+    edited.erase(edited.begin() + 1);
+    transports.setOutputs(edited);
+    CHECK(transports.clockCount() == 1);
+    CHECK(wires.count("drums", takt4::output::MidiClock::kStop) == 1);
+    const std::size_t dawTicks = wires.count("daw", takt4::output::MidiClock::kTick);
+    music.play(transports, wires, 40);
+    CHECK(wires.count("daw", takt4::output::MidiClock::kTick) > dawTicks);
+    CHECK(wires.count("daw", takt4::output::MidiClock::kStop) == 0);
+    transports.stopOutputs();
+}
+
+TEST_CASE("moving a clock's delay moves its grid there without a Stop", "[output][midi]") {
+    // What a dragged delay slider sends: `setOutputDelay`, which moves the one number and touches
+    // nothing else. The grid is steered to the new place, as it is to every beat.
+    Wires wires;
+    Transports::Config config;
+    config.outputs = {clockTo("DAW", "daw", 0.0)};
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    Music music(64);
+    music.play(transports, wires, 24);
+    CHECK(fit(*wires.byDevice.at("daw"), music, 0.0, 12, 22).worst < 0.004);
+
+    CHECK(transports.setOutputDelay(config.outputs[0].id, 0.090));
+    CHECK_FALSE(transports.setOutputDelay("o-ffffffff", 0.090));
+    CHECK_THAT(transports.outputs()[0].delaySeconds, WithinAbs(0.090, 1e-12));
+    music.play(transports, wires, 63);
+    const Fit moved = fit(*wires.byDevice.at("daw"), music, 0.090, 44, 60);
+    CHECK(moved.beats >= 12);
+    CHECK(moved.worst < 0.004);
+    CHECK(moved.downbeats);
+    CHECK(wires.count("daw", takt4::output::MidiClock::kStop) == 0);
+    CHECK(wires.count("daw", takt4::output::MidiClock::kStart) == 1);
+    transports.stopOutputs();
+}
+
+TEST_CASE("a caller with one clock and a Link switch in mind still has them", "[output][midi]") {
+    // `takt4-cli --midi-clock` and `--link`, and every older test: a port and a switch rather
+    // than a list of outputs. They become outputs like the window's.
+    Wires wires;
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.link = true;
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    REQUIRE(transports.outputs().size() == 2);
+    CHECK(transports.outputs()[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(transports.outputs()[0].enabled);
+    CHECK(transports.linkEnabled());
+    CHECK_FALSE(transports.link().enabled()); // not joined before the outputs start
+    CHECK(transports.outputs()[1].kind == takt4::output::OutputTarget::Kind::MidiClock);
+    CHECK(transports.midiClockPort() == std::optional<std::string>("Clock"));
+    CHECK(transports.clockCount() == 1);
+    CHECK(transports.midiClock() != nullptr);
+
+    // Another port in place of it — one clock still, on the new device.
+    transports.setMidiClockPort(std::string("Other"));
+    CHECK(transports.clockCount() == 1);
+    CHECK(transports.midiClockPort() == std::optional<std::string>("Other"));
+    CHECK(transports.outputs().size() == 2);
+
+    // None, and the Link output is left alone.
+    transports.setMidiClockPort(std::nullopt);
+    CHECK(transports.clockCount() == 0);
+    CHECK_FALSE(transports.midiClockPort().has_value());
+    REQUIRE(transports.outputs().size() == 1);
+    CHECK(transports.outputs()[0].kind == takt4::output::OutputTarget::Kind::Link);
+
+    // Link's own switch is the Link output's.
+    transports.setLinkEnabled(false);
+    CHECK_FALSE(transports.outputs()[0].enabled);
+    CHECK_FALSE(transports.linkEnabled());
+}
+
+TEST_CASE("outputs with no Link output among them leave Link as it was", "[output]") {
+    // A caller that never had a Link output switches Link with `setLinkEnabled`, and then
+    // replaces its OSC targets — which used to switch Link straight back off, because the new
+    // list had no Link output switched on.
+    Transports transports{Transports::Config{}};
+    transports.setLinkEnabled(true);
+    transports.setOscTargets({{"127.0.0.1", 57000}});
+    CHECK(transports.linkEnabled());
+    CHECK(transports.outputs().size() == 1);
+
+    // A list that has one is what Link follows, either way.
+    std::vector<takt4::output::OutputTarget> outputs = transports.outputs();
+    REQUIRE(takt4::output::ensureLinkOutput(outputs, false));
+    outputs.front().delaySeconds = 0.015;
+    transports.setOutputs(outputs);
+    CHECK_FALSE(transports.linkEnabled());
+    CHECK_THAT(transports.linkDelaySeconds(), WithinAbs(0.015, 1e-12));
+    outputs.front().enabled = true;
+    transports.setOutputs(outputs);
+    CHECK(transports.linkEnabled());
+    // And taken out of the list again, Link stays where the last list put it.
+    transports.setOscTargets({});
+    CHECK(transports.linkEnabled());
+    CHECK_THAT(transports.linkDelaySeconds(), WithinAbs(0.015, 1e-12));
+}
+
+TEST_CASE("the Link output's delay moves the timeline under the beat", "[output][link][network]") {
+    // Link's delay works as every output's does: the session's bar starts the delay after the
+    // beat's own moment. Driven like "a beat reaches Link as a tempo and a bar position".
+    std::vector<takt4::output::OutputTarget> outputs;
+    REQUIRE(takt4::output::ensureLinkOutput(outputs, true));
+    outputs.front().delaySeconds = 0.030;
+    Transports::Config config;
+    config.outputs = outputs;
+    Transports transports(config);
+    CHECK(transports.linkEnabled());
+    CHECK_THAT(transports.linkDelaySeconds(), WithinAbs(0.030, 1e-12));
+    transports.startOutputs(0.0);
+    const auto paced = [&transports](const BeatEvent& event, std::int64_t at, double beatTime) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        transports.publish(event, at, beatTime);
+    };
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    const std::int64_t origin = transports.link().now().count();
+    const auto micros = [origin](double beats) {
+        return origin + static_cast<std::int64_t>(beats * 60.0e6 / 128.0);
+    };
+    // How far from the start of a bar Link's session is at `at`, either way round.
+    const auto offBar = [&transports](std::int64_t at) {
+        const double phase = transports.link().phaseAtTime(std::chrono::microseconds{at}, 4.0);
+        return std::min(phase, 4.0 - phase);
+    };
+
+    paced(beatAt(1.0, 1, 128.0), micros(0.0), 1.0);
+    CHECK(offBar(micros(0.0) + 30000) < 1e-4);
+    // Not at the beat's own moment: 30 ms is 0.064 of a beat at 128 BPM.
+    CHECK(offBar(micros(0.0)) > 0.05);
+
+    // Moved earlier, and a DOWNBEAT to put the bar there: Link's bar now starts before the beat.
+    const std::string id = transports.outputs().front().id;
+    REQUIRE(transports.setOutputDelay(id, -0.020));
+    CHECK_THAT(transports.linkDelaySeconds(), WithinAbs(-0.020, 1e-12));
+    BeatEvent downbeat = beatAt(3.0, 1, 128.0);
+    downbeat.snapped = true;
+    paced(downbeat, micros(4.0), 3.0);
+    CHECK(offBar(micros(4.0) - 20000) < 1e-4);
+    transports.stopOutputs();
+}
+
+TEST_CASE("each Art-Net node has a beat's lighting on the beat plus its own delay",
+          "[output][dmx][trigger]") {
+    // The operator's call of 2026-09-25, end to end. Three nodes — one set 100 ms early, one on
+    // time, one 50 ms late — and a colour rule fired on a beat in the music at 1.0, fired at 0.8
+    // on a prediction as the output thread does while the tracker is locked. The lighting
+    // starts 100 ms early, for the early node, and each other node is sent it its own delay
+    // after that: so each node has it at the beat plus its own delay.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(3);
+    Transports::Config config;
+    takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("par", 1, 0, 1);
+    par.id = "par";
+    config.patch = {par};
+    const double delays[] = {-0.100, 0.0, 0.050};
+    for (std::size_t i = 0; i < 3; ++i) {
+        takt4::output::OutputTarget node;
+        node.id = "o-a" + std::to_string(i);
+        node.name = "node " + std::to_string(i);
+        node.kind = takt4::output::OutputTarget::Kind::ArtNet;
+        node.host = "127.0.0.1";
+        node.port = nodes.port(i);
+        node.delaySeconds = delays[i];
+        config.outputs.push_back(node);
+    }
+    Transports transports(config);
+    CHECK_THAT(transports.leadSeconds(), WithinAbs(-0.100, 1e-12));
+    CHECK_THAT(transports.lightingLeadSeconds(), WithinAbs(0.100, 1e-12));
+
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "red";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.fixtures = {"par"};
+    rule.dmx.effect = takt4::dmx::EffectKind::Color;
+    rule.dmx.color.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.color.fixed = takt4::trigger::Value::ofText("#ff0000");
+    rule.dmx.level.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.level.fixed = takt4::trigger::Value::ofInt(255);
+    rule.dmx.durationBeats = 0.0;
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+    triggers.rule(0).setFixtureMask(0b1);
+
+    const TempoState state;
+    const auto round = [&](double now) {
+        sink.releaseDue(now);
+        const std::uint64_t before = transports.artnet().sent();
+        transports.advance(now, state);
+        return static_cast<std::size_t>(transports.artnet().sent() - before);
+    };
+    nodes.run(round, 0, 800);
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    context.beatInBar = 1;
+    context.beats = 1;
+    context.bars = 1;
+    context.now = 0.8;
+    context.moment = 1.0;
+    sink.setNow(0.8);
+    triggers.onBeat(context);
+    nodes.run(round, 800, 1300);
+
+    const double expected[] = {0.900, 1.000, 1.050};
+    for (std::size_t node = 0; node < 3; ++node) {
+        INFO("node " << node);
+        CHECK(nodes.first(node, 255) >= expected[node] - 1e-9);
+        CHECK(nodes.first(node, 255) < expected[node] + kArtNetFrame);
     }
 }

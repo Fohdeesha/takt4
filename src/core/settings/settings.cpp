@@ -353,6 +353,30 @@ std::filesystem::path existingSettingsFile() {
     return beside;
 }
 
+void migrateTransportOutputs(Settings& settings) {
+    std::vector<output::OutputTarget>& outputs = settings.preset.outputs;
+    // Link was a switch of its own; it is the first output now, carrying that switch.
+    (void)output::ensureLinkOutput(outputs, settings.preset.link);
+    // And the MIDI clock was one port of its own; it is an output now, unless the file already
+    // has a clock output on that device (one this build wrote, where the port is only there
+    // for an older build).
+    const std::string port = settings.machine.midiClockPort;
+    settings.machine.midiClockPort.clear();
+    if (port.empty()) {
+        return;
+    }
+    for (const output::OutputTarget& target : outputs) {
+        if (target.kind == output::OutputTarget::Kind::MidiClock && target.device == port) {
+            return;
+        }
+    }
+    output::OutputTarget clock;
+    clock.kind = output::OutputTarget::Kind::MidiClock;
+    clock.name = "MIDI clock";
+    clock.device = port;
+    outputs.push_back(std::move(clock));
+}
+
 void assignIds(Preset& preset) {
     output::ensureOutputIds(preset.outputs);
     dmx::ensureFixtureIds(preset.fixtures);
@@ -369,8 +393,21 @@ std::string toJson(const Settings& settings) {
     // headless mode is expected to hand-write one, and a line that reads as a sentence can
     // be typed.
     json targets = json::array();
+    // Link's switch and the first clock's device, in the fields an older build reads them from
+    // — from the rows that hold them, or from those fields themselves for settings built by
+    // hand without the rows (`migrateTransportOutputs` makes the rows when the file is read).
+    bool link = settings.preset.link;
+    std::string clockPort = settings.machine.midiClockPort;
+    bool clockRow = false;
     for (const output::OutputTarget& target : settings.preset.outputs) {
         targets.push_back(output::formatOutputTarget(target));
+        if (target.kind == output::OutputTarget::Kind::Link) {
+            link = target.enabled;
+        } else if (target.kind == output::OutputTarget::Kind::MidiClock && target.enabled &&
+                   !clockRow) {
+            clockPort = target.device;
+            clockRow = true;
+        }
     }
 
     json bindings = json::array();
@@ -424,7 +461,7 @@ std::string toJson(const Settings& settings) {
              {"deviceName", settings.machine.deviceName},
              {"hostApiName", settings.machine.hostApiName},
              {"channel", settings.machine.channel},
-             {"midiClockPort", settings.machine.midiClockPort},
+             {"midiClockPort", clockPort},
              {"midiControlPort", settings.machine.midiControlPort},
              {"midiBindings", bindings},
              {"oscControlEnabled", settings.machine.oscControlEnabled},
@@ -436,7 +473,7 @@ std::string toJson(const Settings& settings) {
              {"tempo", tempoToJson(settings.preset.tempo)},
              {"decoder", decoderName(settings.preset.decoder)},
              {"meters", metersToJson(settings.preset.meters)},
-             {"link", settings.preset.link},
+             {"link", link},
              {"oscPrefix", settings.preset.oscPrefix},
              {"outputs", targets},
              {"fixtures", fixtures},
@@ -603,13 +640,14 @@ Settings fromDocument(const json& document) {
                 }
             }
         }
-        // **Everything a rule points at, by id.** A file written before outputs and fixtures
-        // had ids routes rules by their names, and a hand-written line has no id: each gets
-        // one here, and each rule is re-pointed from the name to that id — so the rig loads
-        // exactly as it was, and renaming an output or a fixture from now on moves no rule
-        // (the operator's report of 2026-09-23, and the audit's M28).
-        assignIds(settings.preset);
     }
+    migrateTransportOutputs(settings);
+    // **Everything a rule points at, by id.** A file written before outputs and fixtures had
+    // ids routes rules by their names, and a hand-written line has no id: each gets one here,
+    // and each rule is re-pointed from the name to that id — so the rig loads exactly as it
+    // was, and renaming an output or a fixture from now on moves no rule (the operator's report
+    // of 2026-09-23, and the audit's M28).
+    assignIds(settings.preset);
     return settings;
 }
 

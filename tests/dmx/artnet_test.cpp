@@ -4,11 +4,14 @@
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/fixture.hpp"
 
+#include "support/artnet_nodes.hpp"
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -20,6 +23,7 @@
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::WithinAbs;
 using takt4::dmx::ArtNetPublisher;
 using takt4::dmx::ArtNetSender;
 using takt4::dmx::DmxEngine;
@@ -42,6 +46,27 @@ std::vector<std::uint8_t> bytesOf(std::span<const std::byte> packet, std::size_t
 Fixture rgbAt(std::string name, PortAddress universe, std::uint16_t address) {
     Fixture fixture = takt4::dmx::fixtureFromMode(name, 1, universe, address); // RGB (3ch)
     return fixture;
+}
+
+/// Sets the patch's first fixture to this much red, at once.
+void paint(DmxEngine& engine, std::uint8_t red, double now) {
+    takt4::dmx::Payload payload;
+    payload.kind = takt4::dmx::EffectKind::Color;
+    payload.color = takt4::dmx::Color{red, 0, 0};
+    engine.start(0b1, payload, now);
+}
+
+/// A publisher feeding each of `nodes` on the loopback, the i-th delayed by `delays[i]`.
+void feed(ArtNetPublisher& publisher, const takt4::testing::ArtNetNodes& nodes,
+          const std::vector<double>& delays) {
+    for (std::size_t i = 0; i < delays.size(); ++i) {
+        ArtNetPublisher::TargetConfig node;
+        node.host = "127.0.0.1";
+        node.port = nodes.port(i);
+        node.delaySeconds = delays[i];
+        node.bit = i;
+        publisher.addTarget(node);
+    }
 }
 
 } // namespace
@@ -313,23 +338,19 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
         CHECK(publisher.publish(engine, 0.95) == 1);
     }
 
-    SECTION("a node is fed only the universes it carries") {
-        engine.setPatch({rgbAt("a", 0, 1), rgbAt("b", 4, 1)});
-        publisher.clearTargets();
-        ArtNetPublisher::TargetConfig one;
-        one.host = "127.0.0.1";
-        one.port = receiver.port();
-        one.universes = {4};
-        publisher.addTarget(one);
-
-        CHECK(publisher.publish(engine, 0.0) == 1);
-        const std::string datagram = receiver.receive();
-        CHECK(static_cast<std::uint8_t>(datagram[14]) == 4);
-    }
-
-    SECTION("an empty universe list means every universe the patch uses") {
+    SECTION("every node is fed every universe the patch uses") {
+        // Since 2026-09-25 a node has no universe list of its own: it sends on the universes
+        // it is set up for and ignores the rest.
         engine.setPatch({rgbAt("a", 0, 1), rgbAt("b", 4, 1)});
         CHECK(publisher.publish(engine, 0.0) == 2);
+        std::vector<int> universes;
+        for (int i = 0; i < 2; ++i) {
+            const std::string datagram = receiver.receive();
+            REQUIRE(datagram.size() == takt4::dmx::kArtDmxMaxSize);
+            universes.push_back(static_cast<std::uint8_t>(datagram[14]));
+        }
+        std::sort(universes.begin(), universes.end());
+        CHECK(universes == std::vector<int>{0, 4});
     }
 
     SECTION("a node added mid-set is fed at once rather than waiting out the other's clock") {
@@ -348,5 +369,86 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
         // the new one has never been sent to and gets its frame now.
         CHECK(publisher.publish(engine, 0.001) == 1);
         CHECK_FALSE(second.receive().empty());
+    }
+}
+
+TEST_CASE("an Art-Net node set later is sent the lighting that much later", "[dmx][artnet]") {
+    // The operator's call of 2026-09-25: every output has a delay, and a node's is honoured like
+    // the rest. A universe is a stream of frames rather than a message to hold, so what is
+    // delayed is the stream — the late node is sent the frame the patch had that long ago.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 0.100});
+    CHECK(publisher.leadSeconds() == 0.0);
+    CHECK_THAT(publisher.lagOf(0), WithinAbs(0.0, 1e-12));
+    CHECK_THAT(publisher.lagOf(1), WithinAbs(0.100, 1e-12));
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+
+    nodes.run(round, 0, 200);
+    paint(engine, 255, 0.200);
+    nodes.run(round, 200, 500);
+    // The node on time has it as it is made, within one frame of its pacing; the late one not a
+    // moment before its delay is up, and within a frame after.
+    CHECK(nodes.first(0, 255) >= 0.200);
+    CHECK(nodes.first(0, 255) < 0.200 + kArtNetFrame);
+    CHECK(nodes.first(1, 255) >= 0.300);
+    CHECK(nodes.first(1, 255) < 0.300 + kArtNetFrame);
+
+    SECTION("a delay moved while the lighting runs is the new one from then on") {
+        // What a dragged slider sends; the late node catches up with the lighting as it is.
+        REQUIRE(publisher.setDelay(1, 0.0));
+        CHECK_FALSE(publisher.setDelay(7, 0.0)); // no node on that bit
+        nodes.run(round, 500, 600);
+        paint(engine, 0, 0.600);
+        nodes.run(round, 600, 800);
+        for (std::size_t node = 0; node < 2; ++node) {
+            INFO("node " << node);
+            CHECK(nodes.first(node, 0, 0.5) >= 0.600);
+            CHECK(nodes.first(node, 0, 0.5) < 0.600 + kArtNetFrame);
+        }
+    }
+
+    SECTION("the last frame on the way out is the lighting as it is, to every node") {
+        // `flush` is the last thing sent before the output thread stops. A delayed node would
+        // otherwise be left on whatever it was a delay ago — a flash still lit after quitting.
+        nodes.run(round, 500, 600);
+        paint(engine, 0, 0.600);
+        nodes.run(round, 600, 650);
+        CHECK(nodes.first(0, 0, 0.5) >= 0.600);
+        REQUIRE(nodes.first(1, 0, 0.5) < 0.0); // not due until 0.7
+        nodes.run([&](double now) { return publisher.flush(engine, now); }, 650, 651);
+        CHECK_THAT(nodes.first(1, 0, 0.5), WithinAbs(0.650, 1e-9));
+    }
+}
+
+TEST_CASE("an Art-Net node set earlier has the lighting as it is made, and the rest wait for it",
+          "[dmx][artnet]") {
+    // A node cannot be sent a frame nobody has made yet. So the earliest node is sent the lighting
+    // as it is made, every other node that much later again — and `RuleSink` starts a beat's
+    // effects early by the same lead, which is what puts the early node ahead of the beat (see
+    // "each Art-Net node has a beat's lighting on the beat plus its own delay").
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(3);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {-0.100, 0.0, 0.050});
+    CHECK_THAT(publisher.leadSeconds(), WithinAbs(0.100, 1e-12));
+    CHECK_THAT(publisher.lagOf(0), WithinAbs(0.0, 1e-12));
+    CHECK_THAT(publisher.lagOf(1), WithinAbs(0.100, 1e-12));
+    CHECK_THAT(publisher.lagOf(2), WithinAbs(0.150, 1e-12));
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+
+    nodes.run(round, 0, 200);
+    paint(engine, 255, 0.200);
+    nodes.run(round, 200, 500);
+    const double expected[] = {0.200, 0.300, 0.350};
+    for (std::size_t node = 0; node < 3; ++node) {
+        INFO("node " << node);
+        CHECK(nodes.first(node, 255) >= expected[node]);
+        CHECK(nodes.first(node, 255) < expected[node] + kArtNetFrame);
     }
 }

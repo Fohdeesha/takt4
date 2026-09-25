@@ -6,6 +6,7 @@
 #include "core/control/midi_control.hpp"
 #include "core/control/osc_control.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/output/link_peers.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/tap_tempo.hpp"
@@ -21,11 +22,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
-#include <functional>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::ui {
@@ -159,6 +160,9 @@ public:
     void setFoldMin(double bpm);
     void setFoldMax(double bpm);
     void setLatencyMs(double milliseconds);
+    /// A number typed into the latency reading, as typed. Read, clamped and posted, and the
+    /// slider moved to it; anything that is not a number is said on the status line.
+    void setLatencyTyped(const std::string& text);
     /// Whether ÷2 and ×2 carry on into the next track; see `Options::keepOctaveShift`.
     void setKeepShift(bool keep);
 
@@ -170,9 +174,13 @@ public:
     /// Taps counted so far in the set being tapped in, for the button's own label.
     std::size_t taps() const noexcept { return taps_.taps(); }
 
-    /// §5.9's outputs row. Each posts on the output thread's queue and returns; the change
-    /// is applied before its next round, or immediately while it is stopped.
+    /// The Link output's switch — the tick box on its row, which is always the first. Kept as
+    /// a call of its own for the callers that think of Link as a switch.
     void setLinkEnabled(bool on);
+    /// SHOW PEERS / HIDE PEERS: the list of Link peers under the Link row, and the listener
+    /// behind it (`output::LinkPeerWatch`), which is open only while the list is.
+    void toggleLinkPeers();
+    bool linkPeersShown() const noexcept { return linkPeersShown_; }
 
     /// §5.6's targets, one row each — see `OutputRow`.
     ///
@@ -196,37 +204,35 @@ public:
     void setTargetName(int index, const std::string& name, bool apply);
     void setTargetHost(int index, const std::string& host, bool apply);
     void setTargetPort(int index, const std::string& port, bool apply);
-    /// OSC, MIDI or Art-Net, as an index into `output::OutputTarget::Kind`'s own order.
+    /// OSC, MIDI, Art-Net or MIDI clock, as an index into `output::OutputTarget::Kind`'s own
+    /// order. Never Link, and never the Link row: there is one, and it is always there.
     void setTargetKind(int index, int kind);
-    /// Row `index`'s MIDI device, as an index into the window's `output-devices` — 0 being
-    /// that list's "not chosen yet" label, which leaves the row sending nowhere.
+    /// Row `index`'s device — a MIDI output's or a MIDI clock's — as an index into the window's
+    /// `output-devices`, 0 being that list's "not chosen yet" label, which leaves the row
+    /// sending nowhere.
     void setTargetDevice(int index, int device);
-    /// Row `index`'s Art-Net universe list, as typed: "0, 1, 4". Empty means every universe
-    /// the fixture patch uses, which is what one node on one rig wants.
-    void setTargetUniverses(int index, const std::string& universes, bool apply);
 
     /// A row to fill in, starting from OSC on this machine at the default port. Applied, so
     /// the target exists at once and a rule can be routed to it before it has been aimed.
     void addTarget();
+    /// Any row but the Link row, which is switched off rather than removed.
     void removeTarget(int index);
     void setTargetEnabled(int index, bool on);
     /// Row `index`'s per-output delay, in milliseconds — §5.6's answer to a rig whose
     /// destinations do not all have the same lag. See `output::OutputTarget::delaySeconds`.
     void setTargetDelay(int index, float ms);
+    /// A number typed into row `index`'s delay reading, as typed — `setTargetDelay` once read;
+    /// anything that is not a number is said on the status line and changes nothing.
+    void setTargetDelayTyped(int index, const std::string& text);
 
     /// Every target from one piece of text — `name = host:port` or `name = midi Device`,
     /// separated by commas or newlines — replacing the whole list.
     ///
     /// What the outputs row was before it was a list, kept because it is still the shape a
     /// settings file's line has and the shape a rig gets pasted in. A part that will not
-    /// parse is reported on the status line and the rest are still applied.
+    /// parse is reported on the status line and the rest are still applied. The Link row
+    /// stays, first, as it was.
     void setOscTargets(const std::string& text);
-    /// The MIDI output port to send 24 PPQN to, or empty for none.
-    void setMidiPort(const std::string& name);
-    /// The same, as an index into the window's `midi-ports` — 0 being its "no MIDI clock"
-    /// entry. What the picker sends: a ComboBox cannot be moved from outside by its value
-    /// (Slint 11970), so the selection is an index in both directions.
-    void pickMidiPort(int index);
 
     /// §5.7's control input. The port is opened at once rather than at Start: an operator
     /// binding buttons is doing it *before* the set, and a learn mode that needs the
@@ -409,6 +415,9 @@ private:
     void publishLevels();
     void publishTaps();
     void publishOutputs();
+    /// The Link peers list, while it is shown: what the listener has heard since the last
+    /// round, into the rows under the Link row.
+    void publishLinkPeers();
     /// The drafts, parsed into targets and handed to the output thread. Rows that will not
     /// parse are kept as they were typed and named on the status line; a row whose address
     /// holds several targets — a pasted line — becomes several rows.
@@ -472,12 +481,9 @@ private:
     bool deviceFallback_ = false;
     /// The operator picked a device or a channel from the pickers this session.
     bool deviceChosen_ = false;
-    /// The MIDI clock port asked for — from the settings or from the picker — whether or not it
-    /// opened. Saved as it is, so a port that was not plugged in at one launch is still
-    /// wanted at the next.
-    std::string midiClockWanted_;
     /// OSC control asked for — by the settings or by its switch — whether or not its port
-    /// bound. Saved as it is, for the same reason as `midiClockWanted_` (the audit's M24).
+    /// bound. Saved as it is, so a port that was taken at one launch is still wanted at the
+    /// next (the audit's M24).
     bool oscControlWanted_ = false;
     /// True until the constructor has finished, and the errors it met meanwhile — shown
     /// together at the end of it rather than each writing the last away (the audit's M25).
@@ -559,16 +565,36 @@ private:
     /// window's copy and the one the rows are drawn from; `applyTargets` is what turns it
     /// into the transports' list.
     std::vector<OutputRow> targetDrafts_;
-    /// Set when `publishTargetRows` found a row whose *text* moved — a delete that shifted
-    /// every row below it up one, most often — and consumed by `tick`, which builds the
-    /// repeater again so each box comes back **bound**. Deferred rather than done there and
-    /// then, because the publisher runs inside the callback of the row being destroyed.
-    bool targetRowsDirty_ = false;
+    /// What each output row's boxes show **because somebody typed or picked it there**, since
+    /// that row's element was built — by element, which is by index. A box typed into has lost
+    /// its `text:` binding (a dropdown picked from, its `current-index:`), so it shows this and
+    /// not the model; a box nobody has touched follows the model on its own.
+    struct ShownRow {
+        std::optional<std::string> name;
+        std::optional<std::string> host;
+        std::optional<std::string> port;
+        std::optional<int> kind;
+        std::optional<int> device;
+    };
+    std::vector<ShownRow> shownRows_;
+    ShownRow& shownRow(int index);
+    /// Rows `publishTargetRows` found showing something other than the row they now hold — a
+    /// value the controller normalised after an edit, or a delete that moved every row below
+    /// it up one — consumed by `tick`, which builds each **one** again (`renewRows`) so its boxes
+    /// come back bound. Deferred rather than done there and then, because the publisher runs
+    /// inside the callback of the row being destroyed.
+    std::vector<std::size_t> staleTargetRows_;
     /// The last thing the output thread said went wrong, as this window has already shown it.
     /// Watched in `tick` because `post` is asynchronous while the tracker runs — see the note
     /// there, which is a bug report about MIDI ports that failed to open in silence.
     std::string outputErrorShown_;
     std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
+
+    /// SHOW PEERS: whether the list is open, the listener behind it, and its rows. The
+    /// listener joins Link's multicast group only while the list is shown.
+    bool linkPeersShown_ = false;
+    output::LinkPeerWatch linkPeers_;
+    std::shared_ptr<slint::VectorModel<LinkPeer>> peerModel_;
 
     /// `enableAutosave`'s state. Empty `autosaveFile_` is autosave off.
     std::filesystem::path autosaveFile_;

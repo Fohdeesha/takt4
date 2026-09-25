@@ -689,21 +689,18 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
 
     // The machine's real MIDI outputs, as the window offers them; the first entry is the
     // "nothing picked" label, exactly as WindowController builds it.
-    auto midiPorts = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    midiPorts->push_back(slint::SharedString("no MIDI clock"));
     auto midiDevices = std::make_shared<slint::VectorModel<slint::SharedString>>();
     midiDevices->push_back(slint::SharedString("select a MIDI device"));
     for (const std::string& port : output::listMidiOutputPorts()) {
-        midiPorts->push_back(slint::SharedString(port));
         midiDevices->push_back(slint::SharedString(port));
     }
-    window->set_midi_ports(midiPorts);
     window->set_output_devices(midiDevices);
 
     auto outputKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
     outputKinds->push_back(slint::SharedString("OSC"));
     outputKinds->push_back(slint::SharedString("MIDI"));
     outputKinds->push_back(slint::SharedString("Art-Net"));
+    outputKinds->push_back(slint::SharedString("MIDI clock"));
     window->set_output_kinds(outputKinds);
 
     // §5.7's control row, built the way WindowController builds it.
@@ -733,13 +730,43 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // rather than an empty one. There is no output thread behind a shot, so these are
         // illustrative in the way the status line below already is; the beat count is the
         // excerpt's real 21.
-        window->set_link_on(true);
         window->set_link_peers(2);
-        window->set_osc_on(true);
         // §5.6's named targets, which is what the list holds now: a media server and a
         // lighting desk, each of which a rule can be aimed at by name, and one switched off
         // — the state a single field could only spell as "off " in front of an address.
         auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+        // Link and the MIDI clock, first and in the same shape as everything else: a switch, a
+        // name, a delay. Link's destination is the peers it found; the clock's is a MIDI device.
+        OutputRow link{};
+        link.name = slint::SharedString("Link");
+        link.kind_index = 4;
+        link.enabled = true;
+        targets->push_back(link);
+        // Its peers, as SHOW PEERS lists them, open: one in takt4's session and one that is not.
+        auto peers = std::make_shared<slint::VectorModel<LinkPeer>>();
+        peers->push_back(LinkPeer{slint::SharedString("192.168.1.20"),
+                                  slint::SharedString("128.29 BPM"), true,
+                                  slint::SharedString("playing")});
+        peers->push_back(LinkPeer{slint::SharedString("192.168.1.35"),
+                                  slint::SharedString("120.00 BPM"), false,
+                                  slint::SharedString("")});
+        window->set_link_peer_list(peers);
+        window->set_link_peers_shown(true);
+        // Two MIDI clocks, each to its own device: a DAW and a drum machine.
+        OutputRow clock{};
+        clock.name = slint::SharedString("DAW clock");
+        clock.kind_index = 3;
+        clock.device_index = midiDevices->row_count() > 1 ? 1 : 0;
+        clock.enabled = true;
+        clock.delay_ms = -12.0f;
+        targets->push_back(clock);
+        OutputRow drums{};
+        drums.name = slint::SharedString("TR-8S");
+        drums.kind_index = 3;
+        drums.device_index = midiDevices->row_count() > 2 ? 2 : 0;
+        drums.enabled = true;
+        drums.delay_ms = 25.0f;
+        targets->push_back(drums);
         const auto target = [](const char* name, const char* host, const char* port, bool enabled,
                                float delayMs = 0.0f) {
             OutputRow row{};
@@ -769,9 +796,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         lights.address = slint::SharedString("midi MOTU Midi Out 1");
         lights.enabled = false;
         targets->push_back(lights);
-        // And the third shape: an Art-Net node, which asks for a host, a port and a universe
-        // list rather than a host and a port. The universe box is left empty on purpose —
-        // that is what one node on one rig looks like, and the placeholder says "all".
+        // And the Art-Net shape: a node, a host and its port, fed every universe the patch uses.
         OutputRow truss{};
         truss.name = slint::SharedString("truss");
         truss.kind_index = 2;
@@ -779,12 +804,9 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         truss.port = slint::SharedString("6454");
         truss.address = slint::SharedString("artnet 10.0.0.20:6454");
         truss.enabled = true;
+        truss.delay_ms = 40.0f;
         targets->push_back(truss);
         window->set_outputs_list(targets);
-        // Which decides whether the destination column is three fields wide and whether there
-        // is a "universes" heading over the third. The live window computes it from the rows;
-        // here it is said out loud because this list has an Art-Net node in it.
-        window->set_outputs_any_artnet(true);
         window->set_fixtures_total(5);
         window->set_beats_sent(21);
         // A control surface bound, so the row shows what a learned binding reads as

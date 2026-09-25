@@ -89,18 +89,17 @@ std::string usablePrefix(const settings::Settings& settings) {
 /// What the last run was sending, as the transports want it **at construction** — which is
 /// everything that cannot fail.
 ///
-/// **Not the outputs, and not the MIDI clock port.** Either can name something that is not
-/// here today: a USB MIDI interface left at home, a media server whose hostname does not
-/// resolve yet because the network is still coming up. `Transports` throws for those, from
-/// inside `OutputRunner`'s constructor, from inside this class's member initialisers — and
-/// nothing above that caught it, so takt4 died within seconds of every launch with no window
+/// **Not the outputs** — Link and the MIDI clocks among them since 2026-09-25. An output can
+/// name something that is not here today: a USB MIDI interface left at home, a media server whose
+/// hostname does not resolve yet because the network is still coming up. `Transports` throws for
+/// those, from inside `OutputRunner`'s constructor, from inside this class's member initialisers —
+/// and nothing above that caught it, so takt4 died within seconds of every launch with no window
 /// and no message (the audit's C1, reproduced with the Release build). The only way out was to
 /// hand-edit `settings.json`. So both are applied once the window exists, through the same
 /// `post` an operator's edit takes, and a failure lands on the status line like any other.
 output::Transports::Config transportConfig(const settings::Settings& settings,
                                            const Options& tempo) {
     output::Transports::Config config;
-    config.link = settings.preset.link;
     config.oscPrefix = usablePrefix(settings);
     config.patch = settings.preset.fixtures;
     config.latencySeconds = tempo.latencyOffsetSeconds;
@@ -227,10 +226,6 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
 /// asked for. A prefilled port is worth having at all because it is the half of an OSC
 /// destination that has a conventional answer, where the host does not.
 constexpr std::uint16_t kNewTargetPort = 9000;
-/// The most universes one range in an Art-Net target's box may name. More than any node takt4
-/// is pointed at carries, and a typo like `0-32767` must not turn into thirty thousand
-/// universes of frames every 23 ms.
-constexpr unsigned int kMaxUniverseRange = 64;
 
 /// An outage's pacing (see `WindowController::superviseInput`). The first try is soon: a
 /// driver that paused for a buffer-size change is usually back within it. After that every
@@ -271,21 +266,6 @@ int deviceIndexOf(const std::vector<std::string>& ports, const std::string& devi
 /// what an unnamed one is called (`parseOutputTarget`). Filling it in with the address would
 /// be true and useless: it is the box the operator types a name into, and it would come back
 /// holding a copy of the box beside it every time they did not.
-/// "0, 1, 4" — an Art-Net target's universe list as its box holds it, and "4:2:1" past the
-/// first Net, as a node's front panel spells it (`dmx::describePortAddress`, which the box
-/// reads back). Empty for a node fed everything, which is the default and what the box's
-/// placeholder explains.
-std::string universeList(const std::vector<std::uint16_t>& universes) {
-    std::string text;
-    for (const std::uint16_t universe : universes) {
-        if (!text.empty()) {
-            text += ", ";
-        }
-        text += dmx::describePortAddress(universe);
-    }
-    return text;
-}
-
 OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::string>& midiPorts) {
     OutputRow row{};
     row.id = shared(target.id);
@@ -294,12 +274,12 @@ OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::strin
     // the device's name is RtMidi's, in whatever encoding the driver gave it.
     row.name = shared(target.name == address ? std::string{} : target.name);
     row.address = shared(address);
-    const bool midi = target.kind == output::OutputTarget::Kind::Midi;
+    const bool device = target.kind == output::OutputTarget::Kind::Midi ||
+                        target.kind == output::OutputTarget::Kind::MidiClock;
     row.kind_index = static_cast<int>(target.kind);
     row.host = shared(target.host);
     row.port = shared(std::to_string(target.port));
-    row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
-    row.universes = shared(universeList(target.universes));
+    row.device_index = device ? deviceIndexOf(midiPorts, target.device) : 0;
     row.enabled = target.enabled;
     row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
     return row;
@@ -312,14 +292,19 @@ OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::strin
 /// Empty for a row that is not a destination yet: no host typed, or MIDI with no device
 /// picked. Empty is how `applyTargets` already spells "this row is being filled in", so an
 /// unfinished row costs no error message and sends nothing.
-std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts,
-                      std::vector<std::string>* refused = nullptr) {
-    if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi)) {
+std::string addressOf(const OutputRow& row, const std::vector<std::string>& midiPorts) {
+    if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Link)) {
+        return "link"; // there is nothing to ask: Link finds its peers itself
+    }
+    if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi) ||
+        row.kind_index == static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
         const auto device = static_cast<std::size_t>(row.device_index);
         if (row.device_index <= 0 || device > midiPorts.size()) {
             return {};
         }
-        return "midi " + midiPorts[device - 1];
+        const bool clock =
+            row.kind_index == static_cast<int>(output::OutputTarget::Kind::MidiClock);
+        return (clock ? "midiclock " : "midi ") + midiPorts[device - 1];
     }
     const std::string host(row.host);
     if (host.empty()) {
@@ -330,52 +315,9 @@ std::string addressOf(const OutputRow& row, const std::vector<std::string>& midi
     const std::string where =
         host + ":" +
         (port.empty() ? std::to_string(artnet ? dmx::kArtNetPort : kNewTargetPort) : port);
-    if (!artnet) {
-        return where;
-    }
-    // The universe box is free text, so what the operator typed has to be turned into the
-    // `u0,1,4` the line format uses — and anything that is not a universe is left out rather
-    // than making the whole row unparseable. A box being typed into holds "0, " for a moment.
-    //
-    // **Each field whole** (the audit's M21): a flat number, the `net:sub:uni` a node's front
-    // panel shows, or a range like `1-4`. This read a leading number and ignored the rest, so
-    // `1:0:0` — universe 256 as the node spells it — went to universe 1, and `1-4` to 1 alone,
-    // and nothing said so. What cannot be read goes to `refused`, for the caller to say.
-    std::string list;
-    const auto add = [&list](dmx::PortAddress universe) {
-        list += list.empty() ? "" : ",";
-        list += std::to_string(static_cast<unsigned int>(universe));
-    };
-    const std::string typed(row.universes);
-    std::size_t at = 0;
-    while (at < typed.size()) {
-        const std::size_t comma = typed.find(',', at);
-        const std::string_view field = trim(
-            std::string_view(typed).substr(at, comma == std::string::npos ? comma : comma - at));
-        if (!field.empty()) {
-            dmx::PortAddress single = 0;
-            const std::size_t dash = field.find('-');
-            dmx::PortAddress low = 0;
-            dmx::PortAddress high = 0;
-            if (dash == std::string_view::npos && dmx::parsePortAddress(field, single)) {
-                add(single);
-            } else if (dash != std::string_view::npos &&
-                       dmx::parsePortAddress(field.substr(0, dash), low) &&
-                       dmx::parsePortAddress(field.substr(dash + 1), high) && low <= high &&
-                       high - low < kMaxUniverseRange) {
-                for (unsigned int universe = low; universe <= high; ++universe) {
-                    add(static_cast<dmx::PortAddress>(universe));
-                }
-            } else if (refused != nullptr) {
-                refused->emplace_back(field);
-            }
-        }
-        if (comma == std::string::npos) {
-            break;
-        }
-        at = comma + 1;
-    }
-    return "artnet " + where + (list.empty() ? "" : " u" + list);
+    // Every node is fed every universe the patch uses since 2026-09-25: a node sends on the
+    // universes it is set up for and ignores the rest, so there is no list to ask for.
+    return artnet ? "artnet " + where : where;
 }
 
 /// A whole destination back into the fields that edit it, as far as the text allows.
@@ -387,18 +329,23 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     const std::string address(row.address);
     output::OutputTarget target;
     if (output::parseOutputTarget(address, target)) {
-        const bool midi = target.kind == output::OutputTarget::Kind::Midi;
+        const bool device = target.kind == output::OutputTarget::Kind::Midi ||
+                            target.kind == output::OutputTarget::Kind::MidiClock;
+        const bool link = target.kind == output::OutputTarget::Kind::Link;
         row.kind_index = static_cast<int>(target.kind);
-        row.host = shared(midi ? std::string{} : target.host);
-        row.port = shared(midi ? std::string{} : std::to_string(target.port));
-        row.device_index = midi ? deviceIndexOf(midiPorts, target.device) : 0;
-        row.universes = shared(universeList(target.universes));
+        row.host = shared(device || link ? std::string{} : target.host);
+        row.port = shared(device || link ? std::string{} : std::to_string(target.port));
+        row.device_index = device ? deviceIndexOf(midiPorts, target.device) : 0;
         return;
     }
     // Not a target — a row half-way through being typed, or one whose text was refused. The
     // kind is still readable from the shape of it, and for OSC so is as much of the host and
     // port as has been typed, which is what the boxes should go on showing.
     std::string_view text = trim(address);
+    if (text.rfind("midiclock", 0) == 0) {
+        row.kind_index = static_cast<int>(output::OutputTarget::Kind::MidiClock);
+        return;
+    }
     if (text.rfind("midi ", 0) == 0 || text == "midi") {
         row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
         return;
@@ -406,11 +353,6 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     if (text.rfind("artnet ", 0) == 0 || text == "artnet") {
         row.kind_index = static_cast<int>(output::OutputTarget::Kind::ArtNet);
         text = trim(text.substr(text.size() > 6 ? 7 : 6));
-        const std::size_t marker = text.rfind(" u");
-        if (marker != std::string_view::npos) {
-            row.universes = shared(std::string(trim(text.substr(marker + 2))));
-            text = trim(text.substr(0, marker));
-        }
     } else {
         row.kind_index = static_cast<int>(output::OutputTarget::Kind::Osc);
     }
@@ -477,6 +419,9 @@ WindowController::WindowController(engine::LiveTracker& tracker)
 namespace {
 
 settings::Settings withIds(settings::Settings settings) {
+    // Link and the MIDI clock as outputs, as a file this build read would have them — settings
+    // built some other way (a test, `takt4-shot`) may still hold them the old way.
+    settings::migrateTransportOutputs(settings);
     settings::assignIds(settings.preset);
     return settings;
 }
@@ -492,6 +437,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
       targetModel_(std::make_shared<slint::VectorModel<OutputRow>>()),
+      peerModel_(std::make_shared<slint::VectorModel<LinkPeer>>()),
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
       runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())),
@@ -515,13 +461,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     tickProbe_ = environmentPath("TAKT4_TICK_PROBE");
     meters_ = settings.preset.meters;
     remembered_ = settings.machine;
-    midiClockWanted_ = settings.machine.midiClockPort;
     tracker_.setHostTimeSource(&runner_.hostTimeClock());
     midiPorts_ = output::listMidiOutputPorts();
     midiInputPorts_ = output::listMidiInputPorts();
 
     window_->set_trace(traceModel_);
     window_->set_outputs_list(targetModel_);
+    window_->set_link_peer_list(peerModel_);
     // Set once and never again: the build does not change while it runs. It reaches the
     // title bar and the corner of the status bar, so "which build is this?" is answerable
     // at a glance and stays answerable — the opening status line used to be the only place
@@ -561,9 +507,11 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_fold_min_changed([this](float bpm) { setFoldMin(static_cast<double>(bpm)); });
     window_->on_fold_max_changed([this](float bpm) { setFoldMax(static_cast<double>(bpm)); });
     window_->on_latency_changed([this](float ms) { setLatencyMs(static_cast<double>(ms)); });
+    window_->on_latency_typed(
+        [this](const slint::SharedString& text) { setLatencyTyped(std::string(text)); });
     window_->on_keep_shift_changed([this](bool keep) { setKeepShift(keep); });
 
-    window_->on_link_toggled([this](bool on) { setLinkEnabled(on); });
+    window_->on_link_peers_toggled([this] { toggleLinkPeers(); });
     window_->on_output_name_edited([this](int index, const slint::SharedString& name) {
         setTargetName(index, std::string(name), false);
     });
@@ -585,12 +533,6 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_output_kind_changed([this](int index, int kind) { setTargetKind(index, kind); });
     window_->on_output_device_picked(
         [this](int index, int device) { setTargetDevice(index, device); });
-    window_->on_output_universes_edited([this](int index, const slint::SharedString& text) {
-        setTargetUniverses(index, std::string(text), false);
-    });
-    window_->on_output_universes_accepted([this](int index, const slint::SharedString& text) {
-        setTargetUniverses(index, std::string(text), true);
-    });
     window_->on_output_added([this] { addTarget(); });
     window_->on_save_now([this] { saveNow(); });
     window_->on_export_settings([this] {
@@ -602,7 +544,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_output_removed([this](int index) { removeTarget(index); });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
-    window_->on_midi_port_picked([this](int index) { pickMidiPort(index); });
+    window_->on_output_delay_typed([this](int index, const slint::SharedString& text) {
+        setTargetDelayTyped(index, std::string(text));
+    });
 
     window_->on_midi_in_picked([this](int index) { pickMidiControlPort(index); });
     window_->on_learn_action_picked([this](int index) { pickLearnAction(index); });
@@ -645,6 +589,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     kinds->push_back(shared("OSC"));
     kinds->push_back(shared("MIDI"));
     kinds->push_back(shared("Art-Net"));
+    kinds->push_back(shared("MIDI clock"));
     window_->set_output_kinds(kinds);
 
     // Everything a gesture can bind on its own. §5.7's `rule/<id>/enable` is the one that
@@ -674,15 +619,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     control_.setBindings(std::move(bindings));
 
     refreshDevices(settings.machine);
-    // After the pickers, so a port that has gone missing since the last run reports on a
-    // status line the window already has rather than during construction.
-    if (!settings.machine.midiClockPort.empty()) {
-        setMidiPort(settings.machine.midiClockPort);
-    }
-    // The outputs, for the same reason and with more riding on it. Posted whole, exactly as
-    // they were saved: `Transports::setOutputs` opens every target it can and names the ones it
-    // could not, so one missing MIDI interface or one hostname that does not resolve yet costs
-    // that one output and says so, and the rest of the rig is sending.
+    // The outputs, after the pickers, so one that has gone missing since the last run reports on
+    // a status line the window already has rather than during construction. Posted whole,
+    // exactly as they were saved: `Transports::setOutputs` opens every target it can and names
+    // the ones it could not, so one missing MIDI interface or one hostname that does not resolve
+    // yet costs that one output and says so, and the rest of the rig is sending. Link and every
+    // MIDI clock are among them.
     if (!settings.preset.outputs.empty()) {
         runner_.post(output::OutputCommand::outputs(settings.preset.outputs));
         const std::string error = runner_.lastError();
@@ -869,15 +811,8 @@ void WindowController::publishPortLists() {
     // be an empty string, and a dropdown showing nothing at all does not read as a list
     // nobody has chosen from — it reads as a box the application failed to fill in. Reported
     // from a rig about the control input, and the clock picker had the same hole.
-    auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    ports->push_back(shared("no MIDI clock"));
-    for (const std::string& port : midiPorts_) {
-        ports->push_back(shared(port));
-    }
-    window_->set_midi_ports(ports);
-
-    // The same devices again, under the label a *target* row wants: leaving the clock unset
-    // is a setting, leaving a target's device unset is an unfinished row.
+    //
+    // The MIDI outputs, as a MIDI row's and a MIDI clock row's dropdown offers them.
     auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
     devices->push_back(
         shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
@@ -926,10 +861,8 @@ void WindowController::rescanDevices() {
     midiInputPorts_ = output::listMidiInputPorts();
     publishPortLists();
 
-    // Whatever was remembered and missing may be here now.
-    if (!midiClockWanted_.empty() && !runner_.snapshot().midiClockOpen) {
-        setMidiPort(midiClockWanted_);
-    }
+    // Whatever was remembered and missing may be here now — a MIDI clock's device among the
+    // outputs `applyTargets` reapplies below.
     if (!control_.running() && !control_.config().port.empty()) {
         setMidiControlPort(control_.config().port);
     }
@@ -1216,11 +1149,52 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
 }
 
 void WindowController::setLinkEnabled(bool on) {
-    // Waited for, so the row below is drawn from what the transports now are rather than from
-    // the snapshot before this change — the runner is always running, so a plain `post` is
-    // taken a round later.
-    (void)runner_.postAndWait(output::OutputCommand::linkEnabled(on));
-    publishOutputs();
+    // The Link row's own tick box, so the row, the transports and the saved file all agree.
+    for (std::size_t i = 0; i < targetDrafts_.size(); ++i) {
+        if (targetDrafts_[i].kind_index == static_cast<int>(output::OutputTarget::Kind::Link)) {
+            setTargetEnabled(static_cast<int>(i), on);
+            return;
+        }
+    }
+}
+
+void WindowController::toggleLinkPeers() {
+    if (linkPeersShown_) {
+        linkPeersShown_ = false;
+        linkPeers_.close();
+        peerModel_->clear();
+    } else {
+        std::string problem;
+        if (!linkPeers_.open(problem)) {
+            setStatus("Link peers: " + problem, true);
+            return;
+        }
+        linkPeersShown_ = true;
+    }
+    window_->set_link_peers_shown(linkPeersShown_);
+    publishLinkPeers();
+}
+
+void WindowController::publishLinkPeers() {
+    if (!linkPeersShown_) {
+        return;
+    }
+    linkPeers_.poll(nowSeconds());
+    std::vector<LinkPeer> rows;
+    for (const output::LinkPeer& peer : linkPeers_.peers()) {
+        std::string addresses;
+        for (const std::string& address : peer.addresses) {
+            addresses += (addresses.empty() ? "" : ", ") + address;
+        }
+        rows.push_back(LinkPeer{shared(addresses),
+                                shared(peer.bpm > 0.0 ? fixed(peer.bpm, 2) + " BPM" : "—"),
+                                peer.sameSession,
+                                shared(!peer.playing   ? ""
+                                       : *peer.playing ? "playing"
+                                                       : "stopped")});
+    }
+    // In place, so a list that has not changed is not rebuilt thirty times a second.
+    writeRows(*peerModel_, rows);
 }
 
 void WindowController::editTarget(int index, const std::string& name, const std::string& address) {
@@ -1248,6 +1222,7 @@ void WindowController::setTargetName(int index, const std::string& name, bool ap
     if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
         return;
     }
+    shownRow(index).name = std::string(shared(name)); // what the box now shows
     targetDrafts_[static_cast<std::size_t>(index)].name = shared(name);
     if (apply) {
         applyTargets();
@@ -1259,6 +1234,7 @@ void WindowController::setTargetHost(int index, const std::string& host, bool ap
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    shownRow(index).host = std::string(shared(host));
     row.host = shared(host);
     row.address = shared(addressOf(row, midiPorts_));
     if (apply) {
@@ -1271,6 +1247,7 @@ void WindowController::setTargetPort(int index, const std::string& port, bool ap
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    shownRow(index).port = std::string(shared(port));
     row.port = shared(port);
     row.address = shared(addressOf(row, midiPorts_));
     if (apply) {
@@ -1283,10 +1260,26 @@ void WindowController::setTargetKind(int index, int kind) {
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    if (row.kind_index == kind) {
+    // Link is not a kind a row can be switched to or from: there is one, always first.
+    constexpr int link = static_cast<int>(output::OutputTarget::Kind::Link);
+    if (row.kind_index == kind || row.kind_index == link || kind < 0 || kind >= link) {
         return;
     }
     const bool wasArtNet = row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
+    // The dropdown shows what was picked. And a row that changes shape — a host and a port, or a
+    // device — has new boxes for the other shape, bound from the start, so what was typed into
+    // the old ones no longer shows anywhere.
+    const auto hostShaped = [](int k) {
+        return k == static_cast<int>(output::OutputTarget::Kind::Osc) ||
+               k == static_cast<int>(output::OutputTarget::Kind::ArtNet);
+    };
+    ShownRow& shown = shownRow(index);
+    if (hostShaped(row.kind_index) != hostShaped(kind)) {
+        shown.host.reset();
+        shown.port.reset();
+        shown.device.reset();
+    }
+    shown.kind = kind;
     row.kind_index = kind;
     // Art-Net has one port and everybody uses it. A row switched to it while holding 7000 —
     // an OSC port an operator typed, or the default a new row is born with — would be a node
@@ -1312,39 +1305,15 @@ void WindowController::setTargetDevice(int index, int device) {
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
+    shownRow(index).device = device;
     row.device_index = device;
-    row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
+    // A device picked on a row that asks for one — MIDI or a MIDI clock — and made MIDI when
+    // it did not, which is the only other kind with a device.
+    if (row.kind_index != static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
+        row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
+    }
     row.address = shared(addressOf(row, midiPorts_));
     applyTargets();
-}
-
-void WindowController::setTargetUniverses(int index, const std::string& universes, bool apply) {
-    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
-        return;
-    }
-    OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    // Kept exactly as typed. `addressOf` is what turns it into the line format, and it leaves
-    // out anything that is not a universe — so a box holding "0, " mid-edit is a node on
-    // universe 0 rather than a row that has stopped parsing.
-    row.universes = shared(universes);
-    std::vector<std::string> refused;
-    row.address = shared(addressOf(row, midiPorts_, &refused));
-    if (apply) {
-        applyTargets();
-        // Once the edit is finished, what was left out is said rather than dropped (the audit's
-        // M21) — mid-edit a half-typed field is not worth a word.
-        if (!refused.empty()) {
-            std::string list;
-            for (const std::string& field : refused) {
-                list += (list.empty() ? "\"" : ", \"") + field + "\"";
-            }
-            setStatus("Art-Net universes: " + list + (refused.size() == 1 ? " is" : " are") +
-                          " not a universe, so left out. Write 0 to 32767, a node's 4:2:1, or "
-                          "a range like 1-4 of up to " +
-                          std::to_string(kMaxUniverseRange) + ".",
-                      true);
-        }
-    }
 }
 
 void WindowController::addTarget() {
@@ -1375,8 +1344,10 @@ void WindowController::addTarget() {
 }
 
 void WindowController::removeTarget(int index) {
-    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
-        return;
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size() ||
+        targetDrafts_[static_cast<std::size_t>(index)].kind_index ==
+            static_cast<int>(output::OutputTarget::Kind::Link)) {
+        return; // the Link row is switched off, never removed
     }
     targetDrafts_.erase(targetDrafts_.begin() + index);
     applyTargets();
@@ -1417,14 +1388,40 @@ void WindowController::setTargetDelay(int index, float ms) {
     applyTargets();
 }
 
+void WindowController::setTargetDelayTyped(int index, const std::string& text) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    const std::optional<double> ms = readMilliseconds(text);
+    if (!ms) {
+        setStatus("\"" + text + "\" is not a number of milliseconds, so the delay was left at " +
+                      std::to_string(static_cast<int>(
+                          std::lround(targetDrafts_[static_cast<std::size_t>(index)].delay_ms))) +
+                      " ms.",
+                  true);
+        return;
+    }
+    setTargetDelay(index, static_cast<float>(*ms));
+    // The same row again even when nothing moved, so a number typed past the end of the range
+    // comes back as the end of the range rather than as what was typed.
+    publishTargetRows();
+}
+
 void WindowController::setOscTargets(const std::string& text) {
     // The whole rig as one piece of text, which is what a settings file's line looks like
     // and what somebody pastes. It arrives as a single draft and `applyTargets` splits it
-    // into rows, which is the same path a pasted row takes.
+    // into rows, which is the same path a pasted row takes — after the Link row, which a line
+    // of destinations says nothing about.
+    std::vector<OutputRow> kept;
+    for (const OutputRow& draft : targetDrafts_) {
+        if (draft.kind_index == static_cast<int>(output::OutputTarget::Kind::Link)) {
+            kept.push_back(draft);
+        }
+    }
     OutputRow row{};
     row.address = shared(text);
     row.enabled = true;
-    targetDrafts_.clear();
+    targetDrafts_ = std::move(kept);
     targetDrafts_.push_back(row);
     applyTargets();
 }
@@ -1515,6 +1512,25 @@ void WindowController::applyTargets() {
         }
     }
 
+    // **Exactly one Link output, first**, whatever the rows said — a pasted rig with none, or
+    // with a second. One that was missing comes back switched as Link is now.
+    const bool linkBefore = runner_.snapshot().link;
+    if (output::ensureLinkOutput(targets, linkBefore)) {
+        std::vector<OutputRow> ordered;
+        for (const output::OutputTarget& target : targets) {
+            ordered.push_back(rowOf(target, midiPorts_));
+        }
+        // The unfinished rows, which are not targets yet, after them as they were.
+        for (const OutputRow& row : rows) {
+            if (std::string(row.address).empty() ||
+                !output::findTarget(targets, std::string(row.id))) {
+                if (row.kind_index != static_cast<int>(output::OutputTarget::Kind::Link)) {
+                    ordered.push_back(row);
+                }
+            }
+        }
+        rows = std::move(ordered);
+    }
     targetDrafts_ = std::move(rows);
     // Waited for, so an output that will not open is said now — the runner runs for the
     // application's whole life, so a plain `post` is always answered a round later. When even
@@ -1542,6 +1558,14 @@ void WindowController::applyTargets() {
     publishOutputs();
 }
 
+WindowController::ShownRow& WindowController::shownRow(int index) {
+    const auto at = static_cast<std::size_t>(index);
+    if (at >= shownRows_.size()) {
+        shownRows_.resize(at + 1);
+    }
+    return shownRows_[at];
+}
+
 void WindowController::publishTargetRows() {
     // In place. `applyTargets` calls this, and `setTargetDelay` calls `applyTargets` on every
     // step of a drag — so replacing the model here destroyed and rebuilt the very slider the
@@ -1553,44 +1577,34 @@ void WindowController::publishTargetRows() {
     // belonged to the target above it. The same failure the rule editor's chips had, on the
     // same mechanism — Slint drops a binding the moment the property is assigned.
     //
-    // So a row whose *text* moved is rebuilt, and a row where only the slider or the tick
-    // moved is not. That keeps the drag alive, which is what this comment started as.
-    if (rowsNeedRebuild(
-            *targetModel_, targetDrafts_, [](const OutputRow& was, const OutputRow& now) {
-                return was.name != now.name || was.host != now.host || was.port != now.port ||
-                       was.kind_index != now.kind_index || was.device_index != now.device_index;
-            })) {
-        targetRowsDirty_ = true;
-    }
-    writeRows(*targetModel_, targetDrafts_);
-
-    // Which headings the column needs, and how wide the destination slot is. See
-    // `outputs-any-artnet`: an Art-Net row is one field wider than the other two.
-    const bool artnet = std::any_of(
-        targetDrafts_.begin(), targetDrafts_.end(), [](const OutputRow& row) {
-            return row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
-        });
-    window_->set_outputs_any_artnet(artnet);
-}
-
-void WindowController::setMidiPort(const std::string& name) {
-    // Wanted whether or not it opens: see `midiClockWanted_`.
-    midiClockWanted_ = name;
-    const std::optional<std::string> answer = runner_.postAndWait(output::OutputCommand::midiClockPort(
-        name.empty() ? std::optional<std::string>{} : std::optional<std::string>{name}));
-    if (answer) {
-        outputErrorShown_ = *answer;
-        if (!answer->empty()) {
-            setStatus("MIDI clock: " + *answer, true);
+    // So a row is built again when **what its boxes show** is not what it now holds — and only
+    // then, and only that row. What a box shows is what was typed there (`shownRows_`) or, if
+    // nobody typed there, the model, which it follows by itself. It used to be rebuilt whenever
+    // its text moved at all, which included the edit just made: renaming an output and pressing
+    // Enter rebuilt the row, and the box holding the keyboard went with it — so Escape, which is
+    // PANIC, reached nothing until the next click, and a click from the name box into the host
+    // box lost what was typed there (found 2026-09-25, when the tests learned to let the redraw
+    // that does it run).
+    const std::size_t common =
+        std::min<std::size_t>(targetModel_->row_count(), targetDrafts_.size());
+    for (std::size_t i = 0; i < common && i < shownRows_.size(); ++i) {
+        const ShownRow& shown = shownRows_[i];
+        const OutputRow& now = targetDrafts_[i];
+        const auto differs = [](const auto& typed, const auto& value) {
+            return typed.has_value() && *typed != value;
+        };
+        if (differs(shown.name, std::string(now.name)) ||
+            differs(shown.host, std::string(now.host)) ||
+            differs(shown.port, std::string(now.port)) || differs(shown.kind, now.kind_index) ||
+            differs(shown.device, now.device_index)) {
+            staleTargetRows_.push_back(i);
         }
     }
-    publishOutputs();
-}
-
-void WindowController::pickMidiPort(int index) {
-    // Index 0 is the list's own "no MIDI clock" entry, so the ports start at 1.
-    const auto port = static_cast<std::size_t>(index);
-    setMidiPort(index <= 0 || port > midiPorts_.size() ? std::string{} : midiPorts_[port - 1]);
+    writeRows(*targetModel_, targetDrafts_);
+    // A row taken off the end took its element, and whatever was typed in it, with it.
+    if (shownRows_.size() > targetDrafts_.size()) {
+        shownRows_.resize(targetDrafts_.size());
+    }
 }
 
 void WindowController::pickMidiControlPort(int index) {
@@ -2064,6 +2078,20 @@ void WindowController::setLatencyMs(double milliseconds) {
     postOptions(options);
 }
 
+void WindowController::setLatencyTyped(const std::string& text) {
+    const std::optional<double> ms = readMilliseconds(text);
+    if (!ms) {
+        setStatus("\"" + text + "\" is not a number of milliseconds, so the latency was left at " +
+                      std::to_string(
+                          static_cast<int>(std::lround(settings().latencyOffsetSeconds * 1000.0))) +
+                      " ms.",
+                  true);
+        return;
+    }
+    // `postOptions` writes the clamped value back into the window, which moves the slider.
+    setLatencyMs(*ms);
+}
+
 void WindowController::setKeepShift(bool keep) {
     Options options = settings();
     options.keepOctaveShift = keep;
@@ -2124,9 +2152,9 @@ settings::Settings WindowController::currentSettings() const {
     // reassigns it is a freed buffer, not a stale reading. `publishOutputs` already reads
     // this way; this was the one place left that did not.
     const output::OutputRunner::Snapshot live = runner_.snapshot();
-    // The port asked for, open or not: one that was unplugged at this launch is still the one
-    // wanted at the next, and saving what happened to open lost it (the audit's H11).
-    out.machine.midiClockPort = midiClockWanted_;
+    // The MIDI clocks are outputs now, each keeping the device it asked for whether or not it
+    // opened — what a port unplugged at this launch needs to still be wanted at the next (the
+    // audit's H11). `settings::toJson` writes the first one where an older build looks too.
 
     // §5.7's control surface, which is machine-local for the same reason and more so: what
     // was learned describes the box of buttons on this desk.
@@ -2279,6 +2307,13 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     {
         settings::Settings imported;
         imported.preset = loaded.preset;
+        // Less the Link output every loaded set is given, when it is only that — switched off,
+        // no delay — which a file says nothing about, and whose id is new at every load.
+        std::vector<output::OutputTarget>& outputs = imported.preset.outputs;
+        if (!outputs.empty() && outputs.front().kind == output::OutputTarget::Kind::Link &&
+            !outputs.front().enabled && outputs.front().delaySeconds == 0.0) {
+            outputs.erase(outputs.begin());
+        }
         if (settings::toJson(imported) == settings::toJson(settings::Settings{})) {
             setStatus(io::pathText(path.filename()) +
                           " has no preset in it, so nothing was changed.",
@@ -2287,12 +2322,12 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         }
     }
 
-    // Q7's portable half only. The device, the MIDI clock port and the learned bindings are
-    // this desk's and are deliberately untouched — see the header.
+    // Q7's portable half only. The input device and the learned bindings are this desk's and
+    // are deliberately untouched — see the header. The outputs are the preset's, and Link and
+    // the MIDI clocks are outputs since 2026-09-25, so they come with them.
     setRules(loaded.preset.rules);
     meters_ = loaded.preset.meters;
     postOptions(loaded.preset.tempo);
-    (void)runner_.postAndWait(output::OutputCommand::linkEnabled(loaded.preset.link));
     // **The lighting patch too** (M18): an import used to leave the patch alone, so every
     // imported lighting rule aimed at fixtures this rig did not have, and reached nothing.
     fixtures_ = loaded.preset.fixtures;
@@ -2351,14 +2386,17 @@ void WindowController::publishOutputs() {
         snapshotShown_ = version;
     }
     const output::OutputRunner::Snapshot& live = snapshot_;
-    window_->set_link_on(live.link);
     // Link's own, and safe to ask from any thread — as is the beat count, which is atomic.
     window_->set_link_peers(static_cast<int>(runner_.transports().link().numPeers()));
+    // The list of them closes with Link: switched off, there is no session to list.
+    if (linkPeersShown_ && !live.link) {
+        toggleLinkPeers();
+    }
+    publishLinkPeers();
 
     // The rows themselves are **not** written here. They are what is being typed into, this
     // runs on the redraw timer, and a row replaced under the cursor is a row that cannot be
     // edited while the tracker runs. `applyTargets` owns them; see `targetDrafts_`.
-    window_->set_osc_on(!live.outputs.empty());
     // The editor names these when it routes a rule, so it has to know what there is. Told
     // here rather than read from the runner, because this is the one place already holding a
     // safe copy — and only when that copy is new.
@@ -2366,16 +2404,6 @@ void WindowController::publishOutputs() {
         editor_.setTargets(live.outputs);
     }
 
-    window_->set_midi_port_index(
-        deviceIndexOf(midiPorts_, live.midiClockPort.value_or(std::string{})));
-    // Open is not the same as sending: a clock port whose device was pulled out is still open
-    // as far as the transports know, and the indicator lit for it was the window claiming a
-    // drum machine was hearing a clock it was not (the audit's H11a).
-    const bool clockLost =
-        live.midiClockPort &&
-        std::find(live.lostMidi.begin(), live.lostMidi.end(), *live.midiClockPort) !=
-            live.lostMidi.end();
-    window_->set_midi_on(live.midiClockOpen && !clockLost);
     window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
     publishLostMidi(live.lostMidi);
     publishOutputProblems(live.outputProblems);
@@ -2585,13 +2613,18 @@ void WindowController::tick() {
         nowSeconds() - runSettledAt_ >= kRunGraceSeconds) {
         window_->set_run_busy(false);
     }
-    // First, and outside every widget callback: `publishTargetRows` found a row it could not
-    // honestly update in place, so the repeater is built again here rather than from inside
-    // the × that was pressed on the row being destroyed. One redraw later is 33 ms.
-    if (targetRowsDirty_) {
-        targetRowsDirty_ = false;
-        targetModel_->clear();
-        writeRows(*targetModel_, targetDrafts_);
+    // First, and outside every widget callback: `publishTargetRows` found rows it could not
+    // honestly update in place, so each is built again here rather than from inside the × that
+    // was pressed on the row being destroyed. One redraw later is 33 ms. One row at a time, so
+    // every other row keeps its element and whatever has the keyboard keeps it (the audit's M16,
+    // for the rule editor, and the same here).
+    if (!staleTargetRows_.empty()) {
+        for (const std::size_t i : staleTargetRows_) {
+            if (i < shownRows_.size()) {
+                shownRows_[i] = ShownRow{}; // a new element, bound again
+            }
+        }
+        renewRows(*targetModel_, staleTargetRows_);
     }
     if (!tickProbe_.empty()) {
         writeTickProbe();

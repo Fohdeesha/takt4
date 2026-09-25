@@ -290,3 +290,88 @@ TEST_CASE("the generic namespace goes to every target, routed or not", "[output]
     CHECK(sawAddress(drain(deck), "/takt4/bpm"));
     CHECK(sawAddress(drain(wall), "/takt4/bpm"));
 }
+
+TEST_CASE("a MIDI clock and the Link output survive their text line too", "[output][routing]") {
+    // Both were settings of their own until 2026-09-25; now they are lines among the outputs.
+    const auto roundTrip = [](const OutputTarget& in) {
+        OutputTarget out;
+        const std::string text = takt4::output::formatOutputTarget(in);
+        INFO(text);
+        REQUIRE(takt4::output::parseOutputTarget(text, out));
+        return out;
+    };
+
+    OutputTarget drums;
+    drums.id = idFor("drums");
+    drums.name = "drums";
+    drums.kind = OutputTarget::Kind::MidiClock;
+    drums.device = "TR-8S";
+    drums.delaySeconds = -0.012;
+    CHECK(takt4::output::formatOutputTarget(drums) == "drums = midiclock TR-8S -12ms #" + drums.id);
+    CHECK(roundTrip(drums) == drums);
+    // Without a name, the device is the name, as a MIDI output's is.
+    OutputTarget unnamed;
+    REQUIRE(takt4::output::parseOutputTarget("midiclock MOTU Pro Audio Midi Out 1", unnamed));
+    CHECK(unnamed.kind == OutputTarget::Kind::MidiClock);
+    CHECK(unnamed.name == "MOTU Pro Audio Midi Out 1");
+
+    std::vector<OutputTarget> outputs;
+    REQUIRE(takt4::output::ensureLinkOutput(outputs, true));
+    OutputTarget& link = outputs.front();
+    link.delaySeconds = 0.025;
+    CHECK(takt4::output::formatOutputTarget(link) == "Link = link +25ms #" + link.id);
+    CHECK(roundTrip(link) == link);
+    link.enabled = false;
+    CHECK(roundTrip(link) == link);
+
+    OutputTarget out;
+    for (const char* text : {"midiclock", "clock = midiclock ", "clock = midiclock   #o-12"}) {
+        INFO(text);
+        CHECK_FALSE(takt4::output::parseOutputTarget(text, out));
+    }
+}
+
+TEST_CASE("only OSC and MIDI outputs can be sent a rule's message", "[output][routing]") {
+    // A rule's editor offers exactly these as places to send, because they are the only ones
+    // anything routes to by name: a DMX rule reaches Art-Net through its fixtures, a clock sends
+    // only the clock, and Link only the timeline. Anything else offered would be a tick box that
+    // looks like routing and is silence.
+    CHECK(takt4::output::routable(OutputTarget::Kind::Osc));
+    CHECK(takt4::output::routable(OutputTarget::Kind::Midi));
+    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::ArtNet));
+    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::MidiClock));
+    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::Link));
+}
+
+TEST_CASE("every set of outputs has exactly one Link output, and it is first",
+          "[output][routing]") {
+    std::vector<OutputTarget> outputs{osc("wall", 7000), osc("deck", 7001)};
+    CHECK(takt4::output::ensureLinkOutput(outputs, false));
+    REQUIRE(outputs.size() == 3);
+    CHECK(outputs[0].kind == OutputTarget::Kind::Link);
+    CHECK(outputs[0].name == "Link");
+    CHECK_FALSE(outputs[0].enabled);
+    CHECK_FALSE(outputs[0].id.empty());
+    CHECK(outputs[1].name == "wall");
+    CHECK(outputs[2].name == "deck");
+
+    // Already right, nothing changes — and the switch it has is its own, whatever is asked.
+    const std::vector<OutputTarget> settled = outputs;
+    CHECK_FALSE(takt4::output::ensureLinkOutput(outputs, true));
+    CHECK(outputs == settled);
+
+    SECTION("one that is not first is moved there, and a second one is dropped") {
+        OutputTarget link = settled[0];
+        link.enabled = true;
+        link.delaySeconds = 0.030;
+        OutputTarget second = link;
+        second.id = idFor("second");
+        second.delaySeconds = -0.5;
+        std::vector<OutputTarget> shuffled{osc("wall", 7000), link, osc("deck", 7001), second};
+        CHECK(takt4::output::ensureLinkOutput(shuffled, false));
+        REQUIRE(shuffled.size() == 3);
+        CHECK(shuffled[0] == link); // its switch, its delay and its id
+        CHECK(shuffled[1].name == "wall");
+        CHECK(shuffled[2].name == "deck");
+    }
+}

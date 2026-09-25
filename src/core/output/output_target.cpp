@@ -108,6 +108,44 @@ std::string_view takeId(std::string_view body, std::string& id) {
 
 } // namespace
 
+bool ensureLinkOutput(std::vector<OutputTarget>& targets, bool enabledIfAdded) {
+    bool changed = false;
+    std::size_t first = targets.size();
+    for (std::size_t i = 0; i < targets.size();) {
+        if (targets[i].kind != OutputTarget::Kind::Link) {
+            ++i;
+            continue;
+        }
+        if (first == targets.size()) {
+            first = i;
+            ++i;
+            continue;
+        }
+        // A second Link: there is one session to join, so a second row could only ever be a
+        // switch and a delay that fight the first.
+        targets.erase(targets.begin() + static_cast<std::ptrdiff_t>(i));
+        changed = true;
+    }
+    if (first == targets.size()) {
+        OutputTarget link;
+        link.kind = OutputTarget::Kind::Link;
+        link.name = "Link";
+        link.host.clear();
+        link.port = 0;
+        link.enabled = enabledIfAdded;
+        link.id = newOutputId(targets);
+        targets.insert(targets.begin(), std::move(link));
+        return true;
+    }
+    if (first != 0) {
+        OutputTarget link = std::move(targets[first]);
+        targets.erase(targets.begin() + static_cast<std::ptrdiff_t>(first));
+        targets.insert(targets.begin(), std::move(link));
+        changed = true;
+    }
+    return changed;
+}
+
 std::uint64_t resolveOutputs(const std::vector<std::string>& ids,
                              const std::vector<OutputTarget>& targets) noexcept {
     if (ids.empty()) {
@@ -219,23 +257,20 @@ std::string formatOutputTarget(const OutputTarget& target) {
 }
 
 std::string formatOutputAddress(const OutputTarget& target) {
-    if (target.kind == OutputTarget::Kind::Midi) {
+    switch (target.kind) {
+    case OutputTarget::Kind::Midi:
         return "midi " + target.device;
+    case OutputTarget::Kind::MidiClock:
+        return "midiclock " + target.device;
+    case OutputTarget::Kind::Link:
+        return "link";
+    case OutputTarget::Kind::ArtNet:
+        return "artnet " + target.host + ":" +
+               std::to_string(static_cast<unsigned int>(target.port));
+    case OutputTarget::Kind::Osc:
+        break;
     }
-    const std::string where =
-        target.host + ":" + std::to_string(static_cast<unsigned int>(target.port));
-    if (target.kind != OutputTarget::Kind::ArtNet) {
-        return where;
-    }
-    // "artnet 10.0.0.20:6454" for a node fed everything, and "artnet 10.0.0.20:6454 u0,1,4"
-    // for one fed a slice. The `u` prefix is what keeps the list from being mistaken for
-    // anything else on a line a person may be editing by hand.
-    std::string text = "artnet " + where;
-    for (std::size_t i = 0; i < target.universes.size(); ++i) {
-        text += i == 0 ? " u" : ",";
-        text += std::to_string(static_cast<unsigned int>(target.universes[i]));
-    }
-    return text;
+    return target.host + ":" + std::to_string(static_cast<unsigned int>(target.port));
 }
 
 bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
@@ -271,11 +306,37 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
         return false;
     }
 
+    // Link has no destination: the word is the whole address.
+    if (body == "link") {
+        target.kind = OutputTarget::Kind::Link;
+        target.host.clear();
+        target.port = 0;
+        if (target.name.empty()) {
+            target.name = "Link";
+        }
+        out = std::move(target);
+        return true;
+    }
+
+    if (body.starts_with("midiclock ") || body.starts_with("midiclock\t")) {
+        target.kind = OutputTarget::Kind::MidiClock;
+        target.device = std::string(trim(body.substr(9)));
+        if (target.device.empty()) {
+            return false;
+        }
+        if (target.name.empty()) {
+            target.name = target.device;
+        }
+        out = std::move(target);
+        return true;
+    }
+
     if (body.starts_with("artnet ") || body.starts_with("artnet\t")) {
         target.kind = OutputTarget::Kind::ArtNet;
         body = trim(body.substr(6));
-        // The universe list comes off the end before the host:port split, for the same reason
-        // the delay did: it would otherwise be read as part of the port.
+        // A universe list an older build wrote ("artnet 10.0.0.20:6454 u0,1,4") comes off the
+        // end before the host:port split, as it always did, and is dropped: every node is fed
+        // every universe now. Still checked, so a line that was not one stays refused.
         const std::size_t marker = body.rfind(" u");
         if (marker != std::string_view::npos) {
             std::string_view list = body.substr(marker + 2);
@@ -291,7 +352,6 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
                 if (read.ec != std::errc{} || read.ptr != end || universe > 32767) {
                     return false;
                 }
-                target.universes.push_back(static_cast<std::uint16_t>(universe));
                 if (comma == std::string_view::npos) {
                     break;
                 }

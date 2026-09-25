@@ -20,6 +20,7 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -115,6 +116,22 @@ public:
 #endif
         const auto got = ::recv(socket_, buffer, length, 0);
         return got > 0 ? std::string(buffer, static_cast<std::size_t>(got)) : std::string();
+    }
+
+    /// Whether a datagram is waiting, having waited up to `milliseconds` for one — so a test
+    /// holding several receivers can take each datagram from whichever one it reached.
+    bool ready(int milliseconds) {
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(socket_, &set);
+        timeval wait{};
+        wait.tv_sec = milliseconds / 1000;
+        wait.tv_usec = (milliseconds % 1000) * 1000;
+#if defined(_WIN32)
+        return ::select(0, &set, nullptr, nullptr, &wait) > 0;
+#else
+        return ::select(socket_ + 1, &set, nullptr, nullptr, &wait) > 0;
+#endif
     }
 
 private:

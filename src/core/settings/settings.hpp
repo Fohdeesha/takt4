@@ -37,8 +37,10 @@ struct MachineSettings {
     std::string deviceName;
     std::string hostApiName;
     int channel = 0;
-    /// The MIDI output port the clock goes to, by name. Empty for none. Machine-local for
-    /// the same reason the interface is: it is a port on this box.
+    /// The MIDI output port the clock went to, by name, in a file written before 2026-09-25 —
+    /// read so that file keeps its clock, which `load` turns into a MIDI clock output in
+    /// `Preset::outputs`, and empty after that. Still written, as the first clock output's
+    /// device, so an older build given the file keeps its clock too.
     std::string midiClockPort;
 
     /// §5.7's control input: the MIDI port the learn mode listens on, and what has been
@@ -105,6 +107,9 @@ struct Preset {
     /// to four bar lengths of 1 to 16, zero-filled; a file that names none keeps the
     /// default. No control in the window yet, like `decoder`.
     std::array<std::uint8_t, 4> meters{4, 0, 0, 0};
+    /// Link's switch in a file written before 2026-09-25, which `load` turns into the Link
+    /// output's. `outputs` holds it since; still written, as that output's switch, for an
+    /// older build given the file.
     bool link = false;
     std::string oscPrefix = "/takt4";
 
@@ -117,6 +122,9 @@ struct Preset {
     /// said "send the stabs to the lighting output" and could not say what that was. So the
     /// whole target travels, and a device that is not on this machine leaves that one
     /// output unreachable and the rest of the rig working. §5.9 says which.
+    ///
+    /// Link and every MIDI clock are outputs here too since 2026-09-25, with the Link output
+    /// always first (`output::ensureLinkOutput`, which `load` applies).
     std::vector<output::OutputTarget> outputs;
 
     /// §5.8's rules, which Q7 puts here rather than in `MachineSettings`: a rule is about
@@ -266,6 +274,12 @@ bool saveText(std::string_view json, const std::filesystem::path& path);
 /// The file's text. Pretty-printed: this is a file a person may well open, and Q8's
 /// headless mode is expected to hand-write one.
 std::string toJson(const Settings& settings);
+
+/// Link's switch and the MIDI clock port of a file written before 2026-09-25, as the output
+/// rows that hold them since: the Link output first (switched on as the old switch was) and a
+/// MIDI clock output to the old port. `fromJson` runs it on everything it reads, and so does
+/// `load`; a caller building settings by hand can too. Leaves `machine.midiClockPort` empty.
+void migrateTransportOutputs(Settings& settings);
 
 /// Gives every output and every fixture an id, and points every rule at them by id rather
 /// than by name. `fromJson` runs it on everything it reads, so a file written before ids

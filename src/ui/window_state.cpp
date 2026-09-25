@@ -4,10 +4,44 @@
 #include "core/output/output_target.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <system_error>
 
 namespace takt4::ui {
+
+std::optional<double> readMilliseconds(std::string_view text) {
+    const auto trim = [](std::string_view view) {
+        while (!view.empty() && (view.front() == ' ' || view.front() == '\t')) {
+            view.remove_prefix(1);
+        }
+        while (!view.empty() && (view.back() == ' ' || view.back() == '\t')) {
+            view.remove_suffix(1);
+        }
+        return view;
+    };
+    text = trim(text);
+    if (text.size() >= 2 &&
+        (text.ends_with("ms") || text.ends_with("MS") || text.ends_with("Ms"))) {
+        text = trim(text.substr(0, text.size() - 2));
+    }
+    if (!text.empty() && text.front() == '+') {
+        text.remove_prefix(1); // `from_chars` takes a '-' and not a '+'
+    }
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    double value = 0.0;
+    const char* const begin = text.data();
+    const char* const end = begin + text.size();
+    const std::from_chars_result result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return value;
+}
 
 std::string fixed(double value, int places) {
     std::ostringstream out;

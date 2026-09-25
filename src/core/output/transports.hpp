@@ -39,10 +39,16 @@ public:
     using OscTarget = std::pair<std::string, std::uint16_t>;
 
     struct Config {
+        /// A Link output switched on, for a caller that has no outputs list of its own —
+        /// `takt4-cli --link`. Added to `outputs` when they have no Link output; switches the
+        /// one they have on when they do.
         bool link = false;
         std::string oscPrefix = "/takt4";
-        /// §5.6's *"multiple simultaneous targets"*, named so a rule can pick between them.
+        /// §5.6's *"multiple simultaneous targets"*, named so a rule can pick between them —
+        /// and, since 2026-09-25, Link and the MIDI clocks with them.
         std::vector<OutputTarget> outputs;
+        /// A MIDI clock output to this device, for a caller with no outputs list — `takt4-cli
+        /// --midi-clock`. Added to `outputs` unless a clock there already names the device.
         std::optional<std::string> midiClockPort;
         /// §5.5's latency offset as the tracker has it, so the transports start out
         /// agreeing with it. `setLatencySeconds` keeps them agreeing when it is moved.
@@ -87,21 +93,22 @@ public:
     /// and building one on demand would mean replacing it under a running output thread.
     dmx::DmxEngine& dmx() const noexcept { return *dmx_; }
     dmx::ArtNetPublisher& artnet() const noexcept { return *artnet_; }
-    /// Null unless a MIDI port is open. Non-const like `link()` and `osc()` above, and for
-    /// the same reason: these belong to whichever thread owns the transports, and Phase 6's
-    /// rules send notes and CCs down this one.
-    MidiClock* midiClock() const noexcept { return midi_.get(); }
-    /// The device the *clock* is going down, or null. A rule's notes no longer come this
-    /// way — they go to whichever of `outputs()` the rule named, which may be this device
-    /// or another one entirely. `midiTarget` is the routed answer.
+    /// The first MIDI clock output's clock, or null when there is none open — what a caller
+    /// with one clock in mind reads (`takt4-cli`, the tests). `clocks` has every one.
+    MidiClock* midiClock() const noexcept;
+    /// The device the first clock is going down, or null.
     MidiOutput* midiPort() const noexcept;
+    /// How many MIDI clock outputs are open and ticking.
+    std::size_t clockCount() const noexcept { return clocks_.size(); }
+    /// MIDI clock ticks skipped after a stall, across every clock.
+    std::uint64_t clockTicksSkipped() const noexcept;
 
     /// Whether anything is actually being sent. With nothing on, `publish` and `advance`
     /// still count beats and cost nothing else, which is what makes an app that has not
     /// been configured yet behave like one that has.
     bool any() const noexcept {
-        return linkEnabled_ || osc_->targetCount() != 0 || midi_ || !midiDevices_.empty() ||
-               artnet_->targetCount() != 0;
+        return linkEnabled_ || osc_->targetCount() != 0 || !clocks_.empty() ||
+               !midiDevices_.empty() || artnet_->targetCount() != 0;
     }
 
     // --- what is switched on, and changing it -------------------------------------
@@ -111,7 +118,11 @@ public:
     // than reaching for these; it applies them between rounds.
 
     bool linkEnabled() const noexcept { return linkEnabled_; }
+    /// Switches Link on or off — the Link output's switch, when there is one, and the session
+    /// either way. What `takt4-cli --link` and §5.7's control surfaces set.
     void setLinkEnabled(bool on);
+    /// The Link output's delay: the timeline is put under each beat this much later.
+    double linkDelaySeconds() const noexcept { return linkDelay_; }
 
     /// §5.6's targets, in the order a rule's routing mask indexes them.
     const std::vector<OutputTarget>& outputs() const noexcept { return outputs_; }
@@ -122,12 +133,22 @@ public:
     /// resolve is an `outputProblems` entry rather than a stall of the output thread (the
     /// audit's H12). A device or socket that cannot be had at all leaves that target
     /// unreachable and is reported by throwing, as `setMidiClockPort` already is.
+    ///
+    /// Link follows the Link output in `targets` — its switch and its delay — and a list with no
+    /// Link output leaves Link as it was, for the callers that never had one and switch it with
+    /// `setLinkEnabled` instead.
     void setOutputs(const std::vector<OutputTarget>& targets);
 
     /// Moves one output's delay — the one with this `OutputTarget::id` — and nothing else:
     /// what a dragged delay slider sends, where a whole `setOutputs` per pixel reopened senders
-    /// and flushed what was held (the audit's H12). False when no output has that id.
+    /// and flushed what was held (the audit's H12). Every kind: an OSC sender's queue, a MIDI
+    /// target's held notes, an Art-Net node's frames, a clock's grid, Link's timeline. False
+    /// when no output has that id.
     bool setOutputDelay(std::string_view id, double seconds);
+    /// How far ahead of a beat's moment its lighting has to start for the earliest Art-Net node
+    /// to have it on time — see `dmx::ArtNetPublisher::leadSeconds`. `RuleSink` starts a beat's
+    /// effects this much early; every node is then sent the lighting its own delay after that.
+    double lightingLeadSeconds() const noexcept { return artnet_->leadSeconds(); }
 
     /// Every output that cannot be sent to and why, as "name: reason" — a host name that will
     /// not resolve, most often. Not one still being looked up: that is not a problem yet.
@@ -160,15 +181,17 @@ public:
     /// would silently stop everything downstream.
     const std::string& oscPrefix() const noexcept { return oscPrefix_; }
 
-    /// The port MIDI clock is going to, or empty for none. Opening throws if the port is
-    /// not on the machine, and nothing is changed when it does.
+    /// The device the first MIDI clock output names, or empty for none.
     ///
-    /// **The device may also be one of `outputs()`.** Each device is opened once and shared:
-    /// a rig sending both 24 PPQN and §5.8's note messages down one cable is the ordinary
-    /// case, and opening the same port twice is refused by some drivers.
-    const std::optional<std::string>& midiClockPort() const noexcept { return midiClockPort_; }
-    /// Picking the port that is already open is a no-op **unless that device is lost**, when it
-    /// is an operator saying "try it now" and the port is reopened on the spot.
+    /// **A clock's device may also be one of the MIDI outputs.** Each device is opened once and
+    /// shared: a rig sending both 24 PPQN and §5.8's note messages down one cable is the
+    /// ordinary case, and opening the same port twice is refused by some drivers.
+    std::optional<std::string> midiClockPort() const;
+    /// One MIDI clock output to `port`, in place of every clock there was, or none — what a
+    /// caller with one clock in mind sets (`takt4-cli --midi-clock`, the tests). Opening throws
+    /// if the port is not on the machine, and nothing is changed when it does. Picking the port
+    /// that is already open is a no-op **unless that device is lost**, when it is an operator
+    /// saying "try it now" and the port is reopened on the spot.
     void setMidiClockPort(const std::optional<std::string>& port);
 
     /// Every MIDI device in use that has stopped taking messages, by the name it was asked
@@ -223,8 +246,10 @@ public:
     void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double beatTime);
 
     /// How far ahead of a beat's own moment it must be fired for the earliest output to have
-    /// it on time: the rig's offset plus the most negative delay of any OSC or MIDI target,
-    /// and never later than the beat itself. Zero or negative. See `OutputRunner`.
+    /// it on time: the rig's offset plus the most negative delay of any OSC, MIDI or Art-Net
+    /// output, and never later than the beat itself. Zero or negative. See `OutputRunner`. A
+    /// MIDI clock and Link are grids that run on from a beat already heard, so they ask for
+    /// nothing here whatever their delay.
     double leadSeconds() const noexcept;
     /// How long after a beat's own moment the latest output still wants it: the rig's offset
     /// plus the largest delay, and never less than zero. What tells a beat heard late from one
@@ -268,6 +293,16 @@ private:
     void closeUnusedDevices() noexcept;
     /// Tries to bring back every lost MIDI device, at most once per `kMidiReconnectSeconds`.
     void maintainMidi(double now) noexcept;
+    /// Joins or leaves Link's session, and starts its phase afresh.
+    void applyLinkEnabled(bool on);
+
+    /// One MIDI clock output: its row, its device and the clock ticking down it.
+    struct Clock {
+        std::size_t output = 0;
+        std::string device;
+        std::unique_ptr<MidiClock> clock;
+        double delay = 0.0;
+    };
 
     std::function<std::unique_ptr<MidiOutput>(const std::string&)> openMidi_;
     /// When `maintainMidi` last looked; negative before it ever has.
@@ -284,8 +319,13 @@ private:
     /// Every MIDI device in use, by name, opened once however many things name it — the
     /// clock and any number of §5.8's rule targets. See `midiClockPort`.
     std::map<std::string, std::unique_ptr<MidiOutput>> midiDevices_;
-    std::unique_ptr<MidiClock> midi_;
+    /// Every MIDI clock output that is switched on and open, in the order of `outputs_`.
+    std::vector<Clock> clocks_;
+    /// Clock outputs that could not be had, by row: a device not on the machine, or one
+    /// another clock already ticks. Said by `outputProblems`.
+    std::map<std::size_t, std::string> clockProblems_;
     bool linkEnabled_ = false;
+    double linkDelay_ = 0.0;
     bool started_ = false;
     /// Whether the MIDI clock is meant to be ticking — see `startClock`.
     bool clockRunning_ = false;
@@ -293,13 +333,12 @@ private:
     /// has to start its clock from now: starting it from when the *outputs* started would
     /// make `advance` try to emit every tick since.
     double lastNow_ = 0.0;
-    /// §5.6's targets, and the MIDI port each one resolved to — null for an OSC target, for
-    /// one that is switched off, and for a device that would not open. Parallel to
+    /// §5.6's targets, and the MIDI port each MIDI one resolved to — null for every other
+    /// kind, for one that is switched off, and for a device that would not open. Parallel to
     /// `outputs_` so a rule's routing bit indexes both.
     std::vector<OutputTarget> outputs_;
     std::vector<MidiOutput*> outputPorts_;
     std::string oscPrefix_;
-    std::optional<std::string> midiClockPort_;
     double lastLinkBpm_ = -1.0;
     /// Whether Link's phase has been forced under the music since the tracker last locked —
     /// false again whenever it hunts, Link is switched on, the outputs start or a peer joins.

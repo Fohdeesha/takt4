@@ -70,6 +70,9 @@ export component Field inherits Rectangle {
   out property <bool> has-focus: edit.has-focus;
   callback edited(string);
   callback accepted(string);
+  /// Escape was pressed in it — told before the focus leaves, so an owner that means Escape as
+  /// "put it back" (`NumberEntry`) can say so before its `changed has-focus` commits.
+  callback escaped();
 
   min-width: edit.min-width;
   min-height: edit.min-height;
@@ -82,6 +85,12 @@ export component Field inherits Rectangle {
   /// window's shortcuts up to it.
   public function leave() {
     done.take();
+  }
+
+  /// Into the box, with everything in it selected so that typing replaces it.
+  public function edit-now() {
+    edit.focus();
+    edit.select-all();
   }
 
   edit := LineEdit {
@@ -97,6 +106,7 @@ export component Field inherits Rectangle {
     }
     key-pressed(event) => {
       if (event.text == Key.Escape) {
+        root.escaped();
         done.take();
         return accept;
       }
@@ -115,6 +125,11 @@ export global Theme {
   out property <color> line: #2b2f36;
   out property <color> text: #e9ebee;
   out property <color> dim: #878d97;
+  /// Secondary text that still has to be read at a glance — a label beside a control, a
+  /// reading, a column heading. `dim` on the panel colour was too faint to read across a
+  /// room (the operator, 2026-09-25: "not light grey on grey"); `dim` is kept for what is
+  /// switched off.
+  out property <color> soft: #c5cad2;
   out property <color> accent: #60cdff;   // fluent's own dark accent, so the pickers agree
   out property <color> locked: #4ade80;
   out property <color> holding: #fbbf24;
@@ -271,20 +286,117 @@ export component Splitter inherits Rectangle {
   }
 }
 
+/// A reading that can be typed into. The operator's call of 2026-09-25: *"make the latency
+/// display numbers next to the sliders clickable so you can then input a number directly, but
+/// dont make it always a big ugly entry box. just a underlined blue number like a URL"*.
+///
+/// At rest it is the reading, in the accent colour with a line under it and a hand for the
+/// pointer, which is what a link looks like anywhere. Clicked, a box opens in the same place
+/// holding the number alone, all of it selected, so typing replaces it. **Enter or a click away
+/// sets it**, the way every box in takt4 commits, and **Escape leaves it as it was**. What was
+/// typed goes to the C++ side as text, which reads it and clamps it: the box never decides what
+/// a number means.
+///
+/// Switched off it is plain dim text that does nothing, like the slider beside it.
+export component NumberEntry inherits Rectangle {
+  /// What it reads at rest: "+12 ms".
+  in property <string> text;
+  /// What the box holds when it opens: "12".
+  in property <string> value-text;
+  in property <bool> enabled: true;
+  in property <length> font-size: 14px;
+  /// Whether the box is open.
+  out property <bool> editing: false;
+  /// What was typed, on Enter or on a click away — never on Escape.
+  callback committed(string);
+
+  // The reading's own width, for the line under it: a text right-aligned in its column is only
+  // as wide as its characters, and the line should be too.
+  measure := Text {
+    visible: false;
+    text: root.text;
+    font-size: root.font-size;
+    font-family: "Consolas";
+  }
+
+  reading := Text {
+    x: 0;
+    y: 0;
+    width: root.width;
+    height: root.height;
+    visible: !root.editing;
+    text: root.text;
+    color: !root.enabled ? Theme.dim : touch.has-hover ? Theme.accent.brighter(0.3) : Theme.accent;
+    font-size: root.font-size;
+    font-family: "Consolas";
+    horizontal-alignment: right;
+    vertical-alignment: center;
+  }
+
+  // The line under it, which is what says it can be clicked — only while it can.
+  Rectangle {
+    visible: !root.editing && root.enabled;
+    x: root.width - self.width;
+    y: root.height / 2 + root.font-size * 0.6;
+    width: min(measure.width, root.width);
+    height: 1px;
+    background: reading.color;
+  }
+
+  touch := TouchArea {
+    enabled: root.enabled && !root.editing;
+    mouse-cursor: pointer;
+    clicked => {
+      box.text = root.value-text;
+      root.editing = true;
+      box.edit-now();
+    }
+  }
+
+  box := Field {
+    x: 0;
+    y: (root.height - self.height) / 2;
+    width: root.width;
+    visible: root.editing;
+    enabled: root.editing;
+    font-size: 12px;
+    accepted(text) => {
+      root.editing = false;
+      self.leave();
+      root.committed(text);
+    }
+    escaped => {
+      root.editing = false;
+    }
+    // A click anywhere else takes the focus, and that is finishing the edit rather than
+    // abandoning it — the same as every other box in the window.
+    changed has-focus => {
+      if (!self.has-focus && root.editing) {
+        root.editing = false;
+        root.committed(self.text);
+      }
+    }
+  }
+}
+
 /// A horizontal level bar with a label and a reading beside it.
 export component Bar inherits HorizontalLayout {
   in property <string> label;
   in property <float> value;      // 0 to 1
   in property <string> reading;
   in property <color> fill: Theme.accent;
+  /// The label's look, for a meter that is the main thing in its part of the window.
+  in property <length> label-size: 14px;
+  in property <color> label-color: Theme.soft;
 
   spacing: 10px;
 
-  Text {
+  // No label, no column: a bar whose label is written somewhere else starts at its own edge.
+  if root.label != "" : Text {
     text: root.label;
-    color: Theme.dim;
-    font-size: 12px;
-    width: 74px;
+    color: root.label-color;
+    font-size: root.label-size;
+    width: 86px;
     vertical-alignment: center;
   }
 
@@ -308,9 +420,9 @@ export component Bar inherits HorizontalLayout {
   Text {
     text: root.reading;
     color: Theme.text;
-    font-size: 12px;
+    font-size: 14px;
     font-family: "Consolas";
-    width: 76px;
+    width: 80px;
     horizontal-alignment: right;
     vertical-alignment: center;
   }
@@ -332,15 +444,21 @@ export component Setting inherits HorizontalLayout {
   /// Blank column between the label and the slider, so a row with no switch in it lines
   /// its slider up with a row that has one.
   in property <length> indent: 0px;
+  /// Whether the reading can be clicked and a number typed in — see `NumberEntry` — and what
+  /// the box holds when it opens.
+  in property <bool> typable;
+  in property <string> value-text;
   callback moved(float);
+  /// What was typed into the reading, as typed.
+  callback typed(string);
 
   spacing: 10px;
 
   Text {
     text: root.label;
-    color: Theme.dim;
-    font-size: 12px;
-    width: 74px;
+    color: Theme.soft;
+    font-size: 14px;
+    width: 86px;
     vertical-alignment: center;
   }
 
@@ -359,13 +477,22 @@ export component Setting inherits HorizontalLayout {
     }
   }
 
-  Text {
+  if !root.typable : Text {
     text: root.reading;
     color: Theme.text;
-    font-size: 12px;
+    font-size: 14px;
     font-family: "Consolas";
-    width: 76px;
+    width: 80px;
     horizontal-alignment: right;
     vertical-alignment: center;
+  }
+
+  if root.typable : NumberEntry {
+    text: root.reading;
+    value-text: root.value-text;
+    width: 80px;
+    committed(text) => {
+      root.typed(text);
+    }
   }
 }

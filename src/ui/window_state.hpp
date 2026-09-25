@@ -7,7 +7,9 @@
 #include "main_window.h" // generated from main_window.slint
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace takt4::ui {
 
@@ -101,5 +103,10 @@ std::string describeChannel(const audio::InputDevice& device, int channel);
 
 /// One decimal place or two, without disturbing any stream's flags.
 std::string fixed(double value, int places);
+
+/// A number of milliseconds as somebody typed it into a reading (`NumberEntry`): "12", "+12",
+/// "-30.5", "12 ms", "12ms", with spaces anywhere around it. Nothing for anything else — the
+/// caller says so rather than guessing. Not clamped: that is the caller's, against its own limit.
+std::optional<double> readMilliseconds(std::string_view text);
 
 } // namespace takt4::ui

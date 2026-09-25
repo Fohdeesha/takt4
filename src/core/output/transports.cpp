@@ -41,12 +41,27 @@ Transports::Transports(const Config& config)
       osc_(std::make_unique<OscPublisher>(config.oscPrefix)),
       dmx_(std::make_unique<dmx::DmxEngine>()), artnet_(std::make_unique<dmx::ArtNetPublisher>()),
       oscPrefix_(config.oscPrefix) {
-    // The patch first: `setOutputs` points every Art-Net target at the universes the patch
-    // uses, so a node configured for "everything" has to know what everything is.
+    // The patch first: every Art-Net node is fed the universes the patch uses.
     dmx_->setPatch(config.patch);
-    setOutputs(config.outputs);
-    setMidiClockPort(config.midiClockPort);
-    linkEnabled_ = config.link;
+    std::vector<OutputTarget> outputs = config.outputs;
+    if (config.link) {
+        (void)ensureLinkOutput(outputs, true);
+        outputs.front().enabled = true;
+    }
+    if (config.midiClockPort && !config.midiClockPort->empty()) {
+        const bool named = std::any_of(outputs.begin(), outputs.end(), [&](const OutputTarget& t) {
+            return t.kind == OutputTarget::Kind::MidiClock && t.device == *config.midiClockPort;
+        });
+        if (!named) {
+            OutputTarget clock;
+            clock.kind = OutputTarget::Kind::MidiClock;
+            clock.device = *config.midiClockPort;
+            clock.name = clock.device;
+            clock.id = newOutputId(outputs);
+            outputs.push_back(std::move(clock));
+        }
+    }
+    setOutputs(outputs);
 }
 
 void Transports::setPatch(std::vector<dmx::Fixture> patch) {
@@ -73,21 +88,32 @@ void Transports::stopOutputs() noexcept {
 void Transports::startClock(double now) {
     clockRunning_ = true;
     lastNow_ = now;
-    if (midi_) {
+    for (Clock& clock : clocks_) {
         // Ticks from the press, so a receiver has the tempo; Start waits for the first locked
         // downbeat (the audit's M19). See `publishClocks`.
-        midi_->startTicking(now);
+        clock.clock->startTicking(now);
     }
 }
 
 void Transports::stopClock() noexcept {
-    if (clockRunning_ && midi_) {
-        midi_->stop();
+    if (clockRunning_) {
+        for (Clock& clock : clocks_) {
+            clock.clock->stop();
+        }
     }
     clockRunning_ = false;
 }
 
 void Transports::setLinkEnabled(bool on) {
+    for (OutputTarget& target : outputs_) {
+        if (target.kind == OutputTarget::Kind::Link) {
+            target.enabled = on;
+        }
+    }
+    applyLinkEnabled(on);
+}
+
+void Transports::applyLinkEnabled(bool on) {
     linkEnabled_ = on;
     // Only actually joined while the outputs are running: switching Link on before Start
     // says what to do, not to do it now.
@@ -99,12 +125,33 @@ void Transports::setLinkEnabled(bool on) {
     linkSnapped_ = false;
 }
 
+MidiClock* Transports::midiClock() const noexcept {
+    return clocks_.empty() ? nullptr : clocks_.front().clock.get();
+}
+
 MidiOutput* Transports::midiPort() const noexcept {
-    if (!midiClockPort_) {
+    if (clocks_.empty()) {
         return nullptr;
     }
-    const auto found = midiDevices_.find(*midiClockPort_);
+    const auto found = midiDevices_.find(clocks_.front().device);
     return found == midiDevices_.end() ? nullptr : found->second.get();
+}
+
+std::uint64_t Transports::clockTicksSkipped() const noexcept {
+    std::uint64_t skipped = 0;
+    for (const Clock& clock : clocks_) {
+        skipped += clock.clock->ticksSkipped();
+    }
+    return skipped;
+}
+
+std::optional<std::string> Transports::midiClockPort() const {
+    for (const OutputTarget& target : outputs_) {
+        if (target.enabled && target.kind == OutputTarget::Kind::MidiClock) {
+            return target.device;
+        }
+    }
+    return std::nullopt;
 }
 
 MidiOutput* Transports::openDevice(const std::string& device) {
@@ -127,9 +174,11 @@ MidiOutput* Transports::openDevice(const std::string& device) {
 
 void Transports::closeUnusedDevices() noexcept {
     for (auto entry = midiDevices_.begin(); entry != midiDevices_.end();) {
-        bool wanted = midiClockPort_ && *midiClockPort_ == entry->first;
+        bool wanted = false;
         for (const OutputTarget& target : outputs_) {
-            if (target.enabled && target.kind == OutputTarget::Kind::Midi &&
+            if (target.enabled &&
+                (target.kind == OutputTarget::Kind::Midi ||
+                 target.kind == OutputTarget::Kind::MidiClock) &&
                 target.device == entry->first) {
                 wanted = true;
                 break;
@@ -142,6 +191,15 @@ void Transports::closeUnusedDevices() noexcept {
 void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
     outputs_ = targets;
     outputPorts_.assign(outputs_.size(), nullptr);
+    clockProblems_.clear();
+    std::vector<Clock> previous = std::move(clocks_);
+    clocks_.clear();
+    // Link's switch and delay come from the Link output — and a list with none leaves both as
+    // they were, since a caller that never had one (`takt4-cli`, `setOscTargets`) switches Link
+    // with `setLinkEnabled` and must not have it switched off by replacing its OSC targets.
+    bool linkListed = false;
+    bool linkOn = false;
+    double linkDelay = linkDelay_;
 
     // The bit a rule's routing mask uses is the target's index in *this* list, so an OSC
     // publisher that only holds the OSC ones still has to be told which bit each is.
@@ -158,26 +216,98 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
     std::vector<dmx::ArtNetPublisher::TargetConfig> nodes;
     for (std::size_t i = 0; i < outputs_.size(); ++i) {
         const OutputTarget& target = outputs_[i];
+        if (target.kind == OutputTarget::Kind::Link && !linkListed) {
+            linkListed = true;
+            linkDelay =
+                std::clamp(target.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        }
         if (!target.enabled) {
             continue; // switched off sends nothing, of either kind
         }
-        if (target.kind == OutputTarget::Kind::Osc) {
-            osc.push_back({target.id, target.host, target.port, i, target.delaySeconds});
-        } else if (target.kind == OutputTarget::Kind::ArtNet) {
+        const double delay =
+            std::clamp(target.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        switch (target.kind) {
+        case OutputTarget::Kind::Osc:
+            osc.push_back({target.id, target.host, target.port, i, delay});
+            break;
+        case OutputTarget::Kind::ArtNet: {
             dmx::ArtNetPublisher::TargetConfig node;
             node.host = target.host;
             node.port = target.port;
-            node.universes = target.universes;
+            node.delaySeconds = delay;
             node.bit = i;
             node.id = target.id;
             nodes.push_back(std::move(node));
-        } else {
+            break;
+        }
+        case OutputTarget::Kind::Midi:
             try {
                 outputPorts_[i] = openDevice(target.device);
             } catch (const std::exception& e) {
                 fail(target.name, e.what());
             }
+            break;
+        case OutputTarget::Kind::MidiClock: {
+            // One clock a device: two would tick it twice as fast.
+            const auto ticking = std::find_if(clocks_.begin(), clocks_.end(), [&](const Clock& c) {
+                return c.device == target.device;
+            });
+            if (ticking != clocks_.end()) {
+                clockProblems_[i] = "\"" + outputs_[ticking->output].name +
+                                    "\" already sends the clock to that device";
+                break;
+            }
+            MidiOutput* port = nullptr;
+            try {
+                port = openDevice(target.device);
+            } catch (const std::exception& e) {
+                clockProblems_[i] = e.what();
+                fail(target.name, e.what());
+                break;
+            }
+            if (port == nullptr) {
+                clockProblems_[i] = "no MIDI device chosen";
+                break;
+            }
+            Clock clock;
+            clock.output = i;
+            clock.device = target.device;
+            clock.delay = delay;
+            // The same device's clock carries on — its ticks, its tempo and whether its
+            // receiver has been told to play — so an edit to another row, or to this one's
+            // delay or name, is not a Stop and a Start at the far end.
+            const auto kept = std::find_if(previous.begin(), previous.end(), [&](const Clock& c) {
+                return c.clock != nullptr && c.device == target.device;
+            });
+            if (kept != previous.end()) {
+                clock.clock = std::move(kept->clock);
+            } else {
+                clock.clock = std::make_unique<MidiClock>(*port, 120.0);
+                if (clockRunning_) {
+                    // From now, not from when the clock started: `advance` would otherwise try
+                    // to emit every tick of the set so far. And started on the next locked
+                    // downbeat, like any other, rather than at the moment it was added.
+                    clock.clock->startTicking(lastNow_);
+                }
+            }
+            clocks_.push_back(std::move(clock));
+            break;
         }
+        case OutputTarget::Kind::Link:
+            linkOn = true;
+            break;
+        }
+    }
+    // A clock no row names any more is told to stop, so its receiver is not left playing.
+    for (Clock& gone : previous) {
+        if (gone.clock != nullptr) {
+            gone.clock->stop();
+        }
+    }
+    previous.clear(); // before `closeUnusedDevices` closes a device one of them sent down
+    linkDelay_ = linkDelay;
+    if (linkListed && linkOn != linkEnabled_) {
+        applyLinkEnabled(linkOn);
     }
     for (const auto& [bit, why] : osc_->setTargets(osc)) {
         fail(outputs_[bit].name, why);
@@ -193,12 +323,32 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
 
 bool Transports::setOutputDelay(std::string_view id, double seconds) {
     for (std::size_t i = 0; i < outputs_.size(); ++i) {
-        if (!id.empty() && outputs_[i].id == id) {
-            outputs_[i].delaySeconds =
-                std::clamp(seconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
-            osc_->setDelay(i, outputs_[i].delaySeconds);
-            return true;
+        if (id.empty() || outputs_[i].id != id) {
+            continue;
         }
+        const double delay = std::clamp(seconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        outputs_[i].delaySeconds = delay;
+        switch (outputs_[i].kind) {
+        case OutputTarget::Kind::Osc:
+            osc_->setDelay(i, delay);
+            break;
+        case OutputTarget::Kind::ArtNet:
+            (void)artnet_->setDelay(i, delay);
+            break;
+        case OutputTarget::Kind::MidiClock:
+            for (Clock& clock : clocks_) {
+                if (clock.output == i) {
+                    clock.delay = delay;
+                }
+            }
+            break;
+        case OutputTarget::Kind::Link:
+            linkDelay_ = delay;
+            break;
+        case OutputTarget::Kind::Midi:
+            break; // `RuleSink` reads it from `outputs()` as each message is held
+        }
+        return true;
     }
     return false;
 }
@@ -231,6 +381,19 @@ std::vector<std::string> Transports::outputProblems() const {
             byOutput[i] = target.name + ": no MIDI device called \"" + target.device +
                           "\" — plug it in and press RESCAN";
         }
+    }
+    // And a MIDI clock that could not be had: its device is not here, or another clock has it.
+    for (const auto& [row, why] : clockProblems_) {
+        if (row >= outputs_.size()) {
+            continue;
+        }
+        const OutputTarget& target = outputs_[row];
+        byOutput[row] =
+            target.name + ": " +
+            (target.device.empty() || why.find("already") != std::string::npos ||
+                     why == "no MIDI device chosen"
+                 ? why
+                 : "no MIDI device called \"" + target.device + "\" — plug it in and press RESCAN");
     }
     std::vector<std::string> problems;
     for (std::string& problem : byOutput) {
@@ -277,7 +440,8 @@ bool Transports::anyOutputIn(std::uint64_t outputs) const noexcept {
 }
 
 void Transports::setMidiClockPort(const std::optional<std::string>& port) {
-    if (port == midiClockPort_ && (!port || midi_)) {
+    const bool wanted = port && !port->empty();
+    if (wanted && clocks_.size() == 1 && clocks_.front().device == *port) {
         // The same port again. Nothing to change — unless that device has gone, when picking
         // it again is the operator saying "try it now", and it used to be ignored because the
         // port was "already open" (the audit's H11a).
@@ -286,32 +450,27 @@ void Transports::setMidiClockPort(const std::optional<std::string>& port) {
         }
         return;
     }
-    if (!port) {
-        if (midi_) {
-            midi_->stop();
+    if (wanted) {
+        // Opened before anything is changed, so a port that will not open leaves the clock
+        // that was working exactly where it was. `openDevice` shares it with any rule target
+        // on the same cable rather than opening it twice.
+        (void)openDevice(*port);
+    }
+    std::vector<OutputTarget> outputs;
+    for (const OutputTarget& target : outputs_) {
+        if (target.kind != OutputTarget::Kind::MidiClock) {
+            outputs.push_back(target);
         }
-        midi_.reset();
-        midiClockPort_.reset();
-        closeUnusedDevices(); // unless a rule target still names it
-        return;
     }
-    // Opened before anything is torn down, so a port that will not open leaves the one that
-    // was working exactly where it was. `openDevice` shares it with any rule target on the
-    // same cable rather than opening it twice.
-    MidiOutput* const opened = openDevice(*port);
-    auto clock = std::make_unique<MidiClock>(*opened, 120.0);
-    if (midi_) {
-        midi_->stop();
+    if (wanted) {
+        OutputTarget clock;
+        clock.kind = OutputTarget::Kind::MidiClock;
+        clock.device = *port;
+        clock.name = *port;
+        clock.id = newOutputId(outputs);
+        outputs.push_back(std::move(clock));
     }
-    midi_ = std::move(clock);
-    midiClockPort_ = port;
-    closeUnusedDevices();
-    if (clockRunning_) {
-        // From now, not from when the clock started: `advance` would otherwise try to emit
-        // every tick of the intervening set at once. And started on the next locked downbeat,
-        // like any other, rather than at the moment the port was picked.
-        midi_->startTicking(lastNow_);
-    }
+    setOutputs(outputs);
 }
 
 std::vector<std::string> Transports::lostMidiDevices() const {
@@ -353,8 +512,8 @@ void Transports::maintainMidi(double now) noexcept {
 void Transports::advance(double now, const tracking::TempoState& state) {
     lastNow_ = now;
     maintainMidi(now);
-    if (midi_) {
-        (void)midi_->advance(now);
+    for (Clock& clock : clocks_) {
+        (void)clock.clock->advance(now);
     }
     osc_->setNow(now);
     setOscOffset();
@@ -388,10 +547,12 @@ void Transports::setOscOffset() noexcept {
 double Transports::leadSeconds() const noexcept {
     double earliest = 0.0;
     for (const OutputTarget& target : outputs_) {
-        // The two kinds that hold a message to a delay of their own. An Art-Net node has none;
-        // a switched-off target sends nothing, so its delay asks for nothing either.
+        // The kinds a beat's messages are held for: OSC and MIDI, and Art-Net, whose lighting
+        // starts early by the earliest node's lead. A switched-off output sends nothing, so its
+        // delay asks for nothing either.
         if (target.enabled &&
-            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi)) {
+            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi ||
+             target.kind == OutputTarget::Kind::ArtNet)) {
             earliest = std::min(earliest, std::clamp(target.delaySeconds, kMinOutputDelaySeconds,
                                                      kMaxOutputDelaySeconds));
         }
@@ -414,27 +575,30 @@ double Transports::tailSeconds() const noexcept {
 void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t hostMicros,
                                double beatTime) {
     const std::int64_t latencyMicros = latencyMicros_.load(std::memory_order_relaxed);
-    if (midi_) {
-        midi_->setTempo(event.bpm);
+    for (Clock& clock : clocks_) {
+        MidiClock& midi = *clock.clock;
+        midi.setTempo(event.bpm);
         // The beat's own time, not the round that drained it: the audio arrived a pipeline's
         // worth of time before the beat was called, and the clock used to be synced to when it
         // was *drained* — late by that pipeline, plus the offset (§5.5). The clock steers
-        // towards the beat rather than jumping to it; see `MidiClock::syncToBeat`.
-        const double heardAt = beatTime + static_cast<double>(latencyMicros) / 1e6;
-        midi_->syncToBeat(heardAt);
+        // towards the beat rather than jumping to it; see `MidiClock::syncToBeat`. And this
+        // clock's own delay on top, like every output's.
+        const double heardAt = beatTime + static_cast<double>(latencyMicros) / 1e6 + clock.delay;
+        midi.syncToBeat(heardAt);
         // A receiver's bar 1 is the first tick after Start, so Start waits for a locked beat to
         // say where the bars are, and then for the downbeat of the grid it sits on. Given again
         // on every locked beat until it has gone, so the grid follows the tempo meanwhile.
-        if (event.locked && event.bpm > 0.0 && midi_->waitingToStart()) {
+        if (event.locked && event.bpm > 0.0 && midi.waitingToStart()) {
             const double beat = 60.0 / event.bpm;
             const std::uint32_t meter = std::max<std::uint32_t>(event.beatsPerBar, 1);
             const std::uint32_t inBar = std::clamp<std::uint32_t>(event.beatInBar, 1, meter);
-            midi_->startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
-                                   static_cast<double>(meter) * beat);
+            midi.startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
+                                 static_cast<double>(meter) * beat);
         }
     }
     if (linkEnabled_) {
-        publishToLink(event, hostMicros, latencyMicros);
+        // The Link output's delay goes where the rig's latency does: under the beat's stamp.
+        publishToLink(event, hostMicros, latencyMicros + toMicros(linkDelay_));
     }
 }
 

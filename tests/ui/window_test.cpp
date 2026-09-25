@@ -14,6 +14,7 @@
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
+#include "ui/file_dialog.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/native_window.hpp"
 #include "ui/shot.hpp"
@@ -33,6 +34,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -336,9 +338,8 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     targets->push_back(row("lights", 1, "", ""));
     targets->push_back(row("truss", 2, "10.0.0.20", "6454"));
     window->set_outputs_list(targets);
-    window->set_outputs_any_artnet(true);
 
-    constexpr int kWidth = 820; // MainWindow's min-width
+    constexpr int kWidth = 800;   // MainWindow's min-width
     constexpr int kHeight = 1100; // tall enough that nothing scrolls
     const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
     constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
@@ -371,7 +372,7 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     const auto runsAlong = [&](int y, int mergeGap) {
         std::vector<int> starts;
         int lastInk = -1000;
-        for (int px = 140; px < kWidth - 60; ++px) {
+        for (int px = 48; px < kWidth - 60; ++px) {
             if (shot.is(px, y, kPanel[0], kPanel[1], kPanel[2])) {
                 continue;
             }
@@ -382,12 +383,14 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
         }
         return starts;
     };
-    // The headings' text line: the densest line of ink in the strip above the first row.
+    // The headings' text line: the densest line of ink in the strip above the first row — and
+    // clear of the row's own boxes, whose top edges are a few pixels above the "×" found
+    // (a box is taller than that button) and are one unbroken line of ink each.
     int headingY = rows.front().first - 18;
     std::size_t densest = 0;
-    for (int y = rows.front().first - 24; y < rows.front().first - 2; ++y) {
+    for (int y = rows.front().first - 26; y < rows.front().first - 8; ++y) {
         std::size_t ink = 0;
-        for (int px = 140; px < kWidth - 60; ++px) {
+        for (int px = 48; px < kWidth - 60; ++px) {
             ink += shot.is(px, y, kPanel[0], kPanel[1], kPanel[2]) ? 0U : 1U;
         }
         if (ink > densest) {
@@ -397,7 +400,8 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     }
     // Letters and the spaces inside "host / device" are a few pixels apart; columns are ten.
     const std::vector<int> headings = runsAlong(headingY, 7);
-    // name, protocol, host / device, port, universes, this target's own delay, total
+    // name, protocol, host / device, port, this output's own delay
+    INFO("headings at y=" << headingY << ": " << Catch::Detail::stringify(headings));
     REQUIRE(headings.size() >= 5);
     const auto checkRow = [&](std::size_t index, std::size_t columns) {
         const int middle = (rows[index].first + rows[index].second) / 2;
@@ -409,8 +413,90 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
             CHECK(std::abs(boxes[c] - headings[c]) <= 3);
         }
     };
-    checkRow(0, 4); // an OSC row: name, protocol, host, port
-    checkRow(3, 5); // the Art-Net row, with its universe list
+    // Name, protocol, host and port. Not the slider: its track is drawn inside its element,
+    // a handle's width in from where the heading over it starts.
+    checkRow(0, 4); // an OSC row
+    checkRow(3, 4); // the Art-Net row: the same four, fed every universe the patch uses
+}
+
+TEST_CASE("a delay slider follows its row after it has been dragged", "[ui]") {
+    // Slint drops a slider's `value:` binding the first time it is dragged, so after one drag a
+    // delay typed into the reading beside it — or brought in by an import — moved the reading
+    // and left the thumb where the drag had put it. The row pushes its delay into the slider
+    // now (`changed delay`). Read off the picture: the thumb is where the track's fill ends.
+    auto window = MainWindow::create();
+    auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
+    OutputRow deck{};
+    deck.name = slint::SharedString("deck");
+    deck.host = slint::SharedString("127.0.0.1");
+    deck.port = slint::SharedString("7000");
+    deck.enabled = true;
+    targets->push_back(deck);
+    window->set_outputs_list(targets);
+    std::vector<float> moved;
+    window->on_output_delay_changed([&moved](int, float ms) { moved.push_back(ms); });
+
+    constexpr int kWidth = 1000;
+    constexpr int kHeight = 1100; // tall enough that nothing scrolls
+    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
+    const takt4::tests::Shot first = takt4::tests::render(*window, kWidth, kHeight);
+    // The row's middle, by its "×" button as the other row tests find it.
+    int top = -1;
+    int bottom = -1;
+    for (int y = 450; y < kHeight - 130 && bottom < 0; ++y) {
+        const bool face = first.is(kWidth - 34, y, kControl[0], kControl[1], kControl[2]);
+        if (face && top < 0) {
+            top = y;
+        } else if (!face && top >= 0) {
+            if (y - top > 20) {
+                bottom = y - 1;
+            } else {
+                top = -1;
+            }
+        }
+    }
+    REQUIRE(bottom > 0);
+    const int middle = (top + bottom) / 2;
+    // Where the track's fill ends along the row's middle: the last blue pixel over the slider.
+    const auto fillEnd = [&](const takt4::tests::Shot& shot) {
+        int last = -1;
+        for (int x = 480; x < 890; ++x) {
+            const slint::Rgb8Pixel px = shot.at(x, middle);
+            if (px.b > 200 && px.r < 170) {
+                last = x;
+            }
+        }
+        return last;
+    };
+    const int atZero = fillEnd(first);
+    INFO("fill ends at " << atZero << " at 0 ms");
+    REQUIRE(atZero > 0);
+
+    // Dragged well to the left: a press on the track, a move, a release.
+    const float y = static_cast<float>(middle);
+    auto& handle = window->window();
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({static_cast<float>(atZero), y}));
+    handle.dispatch_pointer_press_event(slint::LogicalPosition({static_cast<float>(atZero), y}),
+                                        slint::PointerEventButton::Left);
+    handle.dispatch_pointer_move_event(
+        slint::LogicalPosition({static_cast<float>(atZero) - 120.0f, y}));
+    handle.dispatch_pointer_release_event(
+        slint::LogicalPosition({static_cast<float>(atZero) - 120.0f, y}),
+        slint::PointerEventButton::Left);
+    REQUIRE_FALSE(moved.empty());
+    REQUIRE(moved.back() < -100.0f);
+    const takt4::tests::Shot dragged = takt4::tests::render(*window, kWidth, kHeight);
+    const int afterDrag = fillEnd(dragged);
+    CHECK(afterDrag < atZero - 60);
+
+    // Then the row changes from outside — what a typed number or an import does — to well to
+    // the right of zero. The thumb follows.
+    deck.delay_ms = 500.0f;
+    targets->set_row_data(0, deck);
+    const takt4::tests::Shot typed = takt4::tests::render(*window, kWidth, kHeight);
+    const int afterTyped = fillEnd(typed);
+    INFO("fill ends at " << afterDrag << " after the drag and " << afterTyped << " at +500 ms");
+    CHECK(afterTyped > atZero + 60);
 }
 
 TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
@@ -438,13 +524,16 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     window->on_panic_clicked([&panics] { ++panics; });
 
     constexpr int kWidth = 1000;
-    constexpr int kHeight = 760;
-    // Inside the "−" button at the end of each target row, ten pixels short of its right
-    // edge: the middle of that button is where the "−" is drawn, which splits the run.
+    // Tall enough that the first rows are on screen before anything scrolls, and short enough
+    // that the body still has to: since 2026-09-25 the inputs sit above the outputs.
+    constexpr int kHeight = 900;
+    // Inside the "×" button at the end of each target row, just inside its left edge: the
+    // middle of that button is where the "×" is drawn, which splits the run.
     constexpr int kRemoveX = 966;
     constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
-    // The pinned footer: a line, the 60px triggers row, a line, and the 34px status bar.
-    constexpr int kFooter = 96;
+    // The pinned footer: a line, the triggers row with its title, a line, and the 34px status
+    // bar — measured off a render, 125 px.
+    constexpr int kFooter = 125;
 
     // The runs of button face down a column, which is how a row is found without hardcoding
     // a y that a font change would move. Bounded below the trace and above the footer, so
@@ -1498,6 +1587,24 @@ TEST_CASE("the controls drive a tracker that is really running", "[ui][hardware]
 // which is the runner's to consume.
 // ---------------------------------------------------------------------------------------
 
+TEST_CASE("the test binary never opens a file dialog", "[ui]") {
+    // See `ui::fileDialogsAllowed`. These tests drive real clicks, and on 2026-09-25 a sweep of
+    // them aimed at where one control used to be landed on EXPORT instead, and opened a real
+    // Save dialog on the rig's desktop, again and again. REQUIRE, so that a broken guard stops
+    // here rather than going on to press EXPORT itself.
+    REQUIRE_FALSE(takt4::ui::fileDialogsAllowed());
+    REQUIRE(takt4::ui::askSaveFile("takt4 test", "never.json").empty());
+    REQUIRE(takt4::ui::askOpenFile("takt4 test", "").empty());
+
+    // And EXPORT and IMPORT pressed are a cancel: nothing written, nothing said.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const std::string before(controller.window().get_status());
+    controller.window().invoke_export_settings();
+    controller.window().invoke_import_settings();
+    CHECK(std::string(controller.window().get_status()) == before);
+}
+
 TEST_CASE("the window comes up sending nothing", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
@@ -1510,36 +1617,128 @@ TEST_CASE("the window comes up sending nothing", "[ui]") {
     CHECK_FALSE(live.link);
     CHECK(live.oscTargets == 0);
     CHECK_FALSE(live.midiClock);
-    CHECK_FALSE(controller.window().get_link_on());
-    CHECK_FALSE(controller.window().get_osc_on());
-    CHECK_FALSE(controller.window().get_midi_on());
+    // One output, and it is the Link row every set has, switched off.
+    REQUIRE(live.targets.size() == 1);
+    CHECK(live.targets[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK_FALSE(live.targets[0].enabled);
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 1);
+    CHECK(rows->row_data(0)->kind_index == 4);
+    CHECK_FALSE(rows->row_data(0)->enabled);
 
-    // The picker always offers "none" first, so switching MIDI off is a choice in the
-    // same list rather than a second control — and it says so in words rather than being an
-    // empty entry, which reads as a box the application failed to fill in.
-    const auto ports = controller.window().get_midi_ports();
-    REQUIRE(ports);
-    REQUIRE(ports->row_count() == controller.midiPorts().size() + 1);
-    CHECK(std::string(*ports->row_data(0)) == "no MIDI clock");
-    CHECK(controller.window().get_midi_port_index() == 0);
+    // A row's kinds: the four a row can be switched between — Link is the one row it is.
+    const auto kinds = controller.window().get_output_kinds();
+    REQUIRE(kinds->row_count() == 4);
+    CHECK(std::string(*kinds->row_data(3)) == "MIDI clock");
+    // A device dropdown offers "none" first, and says so in words rather than being an empty
+    // entry, which reads as a box the application failed to fill in.
+    const auto devices = controller.window().get_output_devices();
+    REQUIRE(devices->row_count() == controller.midiPorts().size() + 1);
+    CHECK(std::string(*devices->row_data(0)) == (controller.midiPorts().empty()
+                                                     ? "no MIDI outputs on this machine"
+                                                     : "select a MIDI device"));
 }
 
-TEST_CASE("the Link tick reaches the transports and shows its peers", "[ui]") {
+TEST_CASE("the Link row's tick reaches the transports", "[ui][network]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
-    controller.window().invoke_link_toggled(true);
+    // The tick box on the first row, as the markup sends it.
+    controller.window().invoke_output_enabled_changed(0, true);
     CHECK(seen(controller).link);
-    CHECK(controller.window().get_link_on());
+    CHECK(controller.window().get_outputs_list()->row_data(0)->enabled);
     // **Joined on its own switch, whether or not the tracker is listening** — the operator's
     // call of 2026-09-23 (Q2). Joining publishes nothing: takt4 sends Link a tempo and a phase
     // only from a locked beat, so a peer is not handed anything until there is one.
     CHECK(controller.outputs().transports().link().enabled());
     CHECK_FALSE(controller.outputs().tracking());
 
-    controller.window().invoke_link_toggled(false);
+    controller.window().invoke_output_enabled_changed(0, false);
     CHECK_FALSE(seen(controller).link);
     CHECK_FALSE(controller.outputs().transports().link().enabled());
+
+    // And it is never removed: there is no × on its row, and asking changes nothing — not its
+    // id and not its delay, which a Link row put back in its place would not keep.
+    controller.setTargetDelay(0, 25.0f);
+    const std::string id = seen(controller).targets[0].id;
+    controller.removeTarget(0);
+    REQUIRE(seen(controller).targets.size() == 1);
+    CHECK(seen(controller).targets[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(seen(controller).targets[0].id == id);
+    CHECK(seen(controller).targets[0].delaySeconds == Catch::Approx(0.025));
+    // Nor switched to another kind, nor another row switched to it.
+    controller.setTargetKind(0, 0);
+    CHECK(controller.window().get_outputs_list()->row_data(0)->kind_index == 4);
+    controller.addTarget();
+    controller.setTargetKind(1, 4);
+    CHECK(controller.window().get_outputs_list()->row_data(1)->kind_index == 0);
+}
+
+TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself", "[ui][network]") {
+    // The list under the Link row, end to end: Link switched on from its row, SHOW PEERS, and
+    // a real Link peer — two sessions in another process, the core suite's own two-session test
+    // — listed at its tempo, while takt4's own Link, announcing on the same network, is not.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.window().invoke_output_enabled_changed(0, true);
+    REQUIRE(seen(controller).link);
+    controller.window().invoke_link_peers_toggled();
+    REQUIRE(controller.linkPeersShown());
+    CHECK(controller.window().get_link_peers_shown());
+    const auto peers = controller.window().get_link_peer_list();
+    const auto rounds = [&controller](int count) {
+        for (int i = 0; i < count; ++i) {
+            controller.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    };
+
+    // Two seconds of takt4's own announcements, a few a second: none of them is a peer.
+    rounds(40);
+    CHECK(peers->row_count() == 0);
+
+#if defined(_WIN32)
+    // The peer: takt4_tests, built beside this binary, running its two Link sessions.
+    std::wstring self(32768, L'\0');
+    self.resize(GetModuleFileNameW(nullptr, self.data(), static_cast<DWORD>(self.size())));
+    const std::filesystem::path other =
+        std::filesystem::path(self).parent_path() / "takt4_tests.exe";
+    if (!std::filesystem::exists(other)) {
+        SKIP("takt4_tests.exe is not beside this binary");
+    }
+    const std::string command =
+        "\"\"" + other.string() +
+        "\" \"a Link peer sees the tempo and phase takt4 publishes\" >NUL 2>&1\"";
+    std::thread peer([command] { (void)std::system(command.c_str()); });
+    std::size_t most = 0;
+    std::string tempo;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < until && most == 0) {
+        rounds(1);
+        most = std::max<std::size_t>(most, peers->row_count());
+        if (peers->row_count() > 0) {
+            tempo = std::string(peers->row_data(0)->tempo);
+        }
+    }
+    peer.join();
+    INFO("tempo shown: " << tempo);
+    CHECK(most >= 1);
+    CHECK(tempo.find("BPM") != std::string::npos);
+#endif
+
+    // Switched off, there is no session to list, and the list closes with it.
+    controller.window().invoke_output_enabled_changed(0, false);
+    controller.tick();
+    CHECK_FALSE(controller.linkPeersShown());
+    CHECK_FALSE(controller.window().get_link_peers_shown());
+
+    // And HIDE PEERS closes it too.
+    controller.window().invoke_output_enabled_changed(0, true);
+    controller.window().invoke_link_peers_toggled();
+    REQUIRE(controller.linkPeersShown());
+    controller.window().invoke_link_peers_toggled();
+    CHECK_FALSE(controller.linkPeersShown());
+    controller.window().invoke_output_enabled_changed(0, false);
 }
 
 TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]") {
@@ -1552,59 +1751,50 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     // after its own address.
     controller.setOscTargets("127.0.0.1:57000");
     CHECK(live().oscTargets == 1);
-    REQUIRE(live().targets.size() == 1);
-    CHECK(live().targets[0].name == "127.0.0.1:57000");
-    CHECK(controller.window().get_osc_on());
+    REQUIRE(live().targets.size() == 2); // after the Link row, which a line of text leaves alone
+    CHECK(live().targets[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(live().targets[1].name == "127.0.0.1:57000");
 
     // §5.6's "multiple simultaneous targets", each with a name a rule can use. One piece of
     // text still holds several — a settings line, or a rig pasted in.
     controller.setOscTargets("deck = 127.0.0.1:57000, wall = 127.0.0.1:57001");
     CHECK(live().oscTargets == 2);
-    REQUIRE(live().targets.size() == 2);
-    CHECK(live().targets[0].name == "deck");
-    CHECK(live().targets[1].name == "wall");
+    REQUIRE(live().targets.size() == 3);
+    CHECK(live().targets[1].name == "deck");
+    CHECK(live().targets[2].name == "wall");
 
-    SECTION("an Art-Net row's universes are read whole, and what is not one is said") {
-        // The audit's M21. The box read a leading number and ignored the rest: `1:0:0` — the
-        // universe a node's panel calls 1:0:0, which is 256 — went to universe 1, `2-4` to 2
-        // alone, and a word to nothing, without a word.
-        controller.setTargetKind(0, static_cast<int>(takt4::output::OutputTarget::Kind::ArtNet));
-        controller.setTargetHost(0, "192.0.2.10", false);
-        controller.setTargetUniverses(0, "1:0:0, 2-4, lights, 0-9999", true);
-        REQUIRE(live().targets.size() == 2);
-        CHECK(live().targets[0].universes == std::vector<std::uint16_t>{256, 2, 3, 4});
-        CHECK(controller.statusIsError());
-        const std::string status(controller.window().get_status());
-        INFO(status);
-        CHECK(status.find("\"lights\"") != std::string::npos);
-        CHECK(status.find("\"0-9999\"") != std::string::npos);
-        // And a destination arriving whole — a pasted line, a settings file — fills the box the
-        // way a node spells it, which the box reads back.
-        controller.setOscTargets("node = artnet 192.0.2.10:6454 u256,3");
-        CHECK(std::string(controller.window().get_outputs_list()->row_data(0)->universes) ==
-              "1:0:0, 3");
+    SECTION("an Art-Net row asks for a host and a port, and switching to it puts 6454 in") {
+        // Every node is fed every universe the patch uses since 2026-09-25, so the row is the
+        // same shape as an OSC one — and the port is Art-Net's own, put in when it is picked.
+        controller.setTargetKind(1, static_cast<int>(takt4::output::OutputTarget::Kind::ArtNet));
+        controller.setTargetHost(1, "192.0.2.10", true);
+        REQUIRE(live().targets.size() == 3);
+        CHECK(live().targets[1].kind == takt4::output::OutputTarget::Kind::ArtNet);
+        CHECK(live().targets[1].host == "192.0.2.10");
+        CHECK(live().targets[1].port == takt4::dmx::kArtNetPort);
+        CHECK_FALSE(controller.statusIsError());
     }
 
-    SECTION("a node fed several universes is one target, not one per comma") {
-        // Found while fixing M21: a row's address is split at commas into targets, and the
-        // commas of `u0,1,4` split one Art-Net target into pieces that would not parse, so the
-        // whole row was refused and a node fed more than one universe was never sent anything.
+    SECTION("a line an older build wrote, with a universe list, is still one target") {
+        // A universe list in a pasted line or an old file is read and left out — and its commas
+        // are still the list's, not new targets, so the row is not refused (the audit's M21).
         controller.setOscTargets("node = artnet 192.0.2.10:6454 u0,1,4 +50ms, wall = 127.0.0.1:57001");
-        REQUIRE(live().targets.size() == 2);
-        CHECK(live().targets[0].name == "node");
-        CHECK(live().targets[0].universes == std::vector<std::uint16_t>{0, 1, 4});
-        CHECK(live().targets[0].delaySeconds == Catch::Approx(0.05));
-        CHECK(live().targets[1].name == "wall");
+        REQUIRE(live().targets.size() == 3);
+        CHECK(live().targets[1].name == "node");
+        CHECK(live().targets[1].kind == takt4::output::OutputTarget::Kind::ArtNet);
+        CHECK(live().targets[1].delaySeconds == Catch::Approx(0.05));
+        CHECK(live().targets[2].name == "wall");
         CHECK_FALSE(controller.statusIsError());
     }
 
     SECTION("and a line holding several becomes a row each, name and address apart") {
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 2);
-        CHECK(std::string(rows->row_data(0)->name) == "deck");
-        CHECK(std::string(rows->row_data(0)->address) == "127.0.0.1:57000");
-        CHECK(std::string(rows->row_data(1)->name) == "wall");
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
+        REQUIRE(rows->row_count() == 3);
+        CHECK(rows->row_data(0)->kind_index == 4);
+        CHECK(std::string(rows->row_data(1)->name) == "deck");
+        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57000");
+        CHECK(std::string(rows->row_data(2)->name) == "wall");
+        CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:57001");
     }
 
     SECTION("a target named after its own address leaves the name box empty") {
@@ -1612,9 +1802,9 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // box the operator types a *name* into is not where to say so.
         controller.setOscTargets("127.0.0.1:57000");
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 1);
-        CHECK(std::string(rows->row_data(0)->name).empty());
-        CHECK(live().targets[0].name == "127.0.0.1:57000");
+        REQUIRE(rows->row_count() == 2);
+        CHECK(std::string(rows->row_data(1)->name).empty());
+        CHECK(live().targets[1].name == "127.0.0.1:57000");
     }
 
     SECTION("each target carries its own delay, and only its own") {
@@ -1622,41 +1812,41 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // need to offset it half a beat or somethin"*. §5.5's single slider moves the whole
         // rig's timeline together, which is the one adjustment a rig with two different lags
         // in it cannot use.
-        controller.setTargetDelay(1, 352.0f);
-        REQUIRE(live().targets.size() == 2);
-        CHECK(live().targets[0].delaySeconds == 0.0);
-        CHECK(live().targets[1].delaySeconds == Catch::Approx(0.352));
+        controller.setTargetDelay(2, 352.0f);
+        REQUIRE(live().targets.size() == 3);
+        CHECK(live().targets[1].delaySeconds == 0.0);
+        CHECK(live().targets[2].delaySeconds == Catch::Approx(0.352));
 
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 2);
-        CHECK(rows->row_data(0)->delay_ms == Catch::Approx(0.0f));
-        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(352.0f));
+        REQUIRE(rows->row_count() == 3);
+        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(0.0f));
+        CHECK(rows->row_data(2)->delay_ms == Catch::Approx(352.0f));
 
         // The address box never shows it — the slider is where it lives, and a delay
         // appearing in the text an operator is typing into would be edited by accident.
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
+        CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:57001");
 
         // Past either limit is clamped rather than refused: a slider cannot get there, but
         // §5.7's inbound OSC and a hand-edited settings file both can.
-        controller.setTargetDelay(1, 5000.0f);
-        CHECK(live().targets[1].delaySeconds ==
+        controller.setTargetDelay(2, 5000.0f);
+        CHECK(live().targets[2].delaySeconds ==
               Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
-        controller.setTargetDelay(1, -5000.0f);
-        CHECK(live().targets[1].delaySeconds ==
+        controller.setTargetDelay(2, -5000.0f);
+        CHECK(live().targets[2].delaySeconds ==
               Catch::Approx(takt4::output::kMinOutputDelaySeconds));
 
         // Negative is a real setting now, not a clamp to zero: "this device is 300 ms slow"
         // is the sentence an operator says, and the publisher turns it into a wait.
-        controller.setTargetDelay(1, -300.0f);
-        CHECK(live().targets[1].delaySeconds == Catch::Approx(-0.300));
-        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(-300.0f));
+        controller.setTargetDelay(2, -300.0f);
+        CHECK(live().targets[2].delaySeconds == Catch::Approx(-0.300));
+        CHECK(rows->row_data(2)->delay_ms == Catch::Approx(-300.0f));
 
         // And it survives the rest of the row being edited, which is what would break if the
         // delay were carried in the address text rather than beside it.
-        controller.setTargetDelay(1, 120.0f);
-        controller.setTargetEnabled(1, false);
-        controller.setTargetEnabled(1, true);
-        CHECK(live().targets[1].delaySeconds == Catch::Approx(0.12));
+        controller.setTargetDelay(2, 120.0f);
+        controller.setTargetEnabled(2, false);
+        controller.setTargetEnabled(2, true);
+        CHECK(live().targets[2].delaySeconds == Catch::Approx(0.12));
     }
 
     SECTION("dragging a delay slider does not rebuild the slider being dragged") {
@@ -1671,39 +1861,39 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
         // One drag, sixty steps of it.
         for (int step = 0; step <= 60; ++step) {
-            controller.setTargetDelay(1, static_cast<float>(step) * 5.0f);
+            controller.setTargetDelay(2, static_cast<float>(step) * 5.0f);
         }
         CHECK(watch->resets == 0);
         CHECK(watch->added == 0);
         CHECK(watch->removed == 0);
         // One row written per step, and never the row that was not being dragged.
         CHECK(watch->changes == 60);
-        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(300.0f));
-        CHECK(rows->row_data(0)->delay_ms == Catch::Approx(0.0f));
+        CHECK(rows->row_data(2)->delay_ms == Catch::Approx(300.0f));
+        CHECK(rows->row_data(1)->delay_ms == Catch::Approx(0.0f));
 
         // A step that lands where the slider already is writes nothing at all, so a slider
         // resending its own position cannot churn the row it lives in.
         const int settled = watch->changes;
-        controller.setTargetDelay(1, 300.0f);
+        controller.setTargetDelay(2, 300.0f);
         CHECK(watch->changes == settled);
     }
 
     SECTION("a switched-off target is kept and sends nothing") {
-        controller.setTargetEnabled(1, false);
-        REQUIRE(live().targets.size() == 2);
-        CHECK_FALSE(live().targets[1].enabled);
+        controller.setTargetEnabled(2, false);
+        REQUIRE(live().targets.size() == 3);
+        CHECK_FALSE(live().targets[2].enabled);
         // Held in the list, so it can be switched back on — but no socket behind it.
         CHECK(live().oscTargets == 1);
-        CHECK_FALSE(controller.window().get_outputs_list()->row_data(1)->enabled);
+        CHECK_FALSE(controller.window().get_outputs_list()->row_data(2)->enabled);
 
-        controller.setTargetEnabled(1, true);
+        controller.setTargetEnabled(2, true);
         CHECK(live().oscTargets == 2);
     }
 
     SECTION("two targets with one name is said rather than silently resolved") {
         // `resolveOutputs` would take the first, and a rule routed to the second would go
         // somewhere its operator did not choose.
-        controller.acceptTarget(1, "deck", "127.0.0.1:57001");
+        controller.acceptTarget(2, "deck", "127.0.0.1:57001");
         CHECK(controller.statusIsError());
         // And said as what it is: both addresses are fine, and calling one of them "not a
         // target" would send somebody looking at the wrong thing.
@@ -1713,7 +1903,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     }
 
     SECTION("halfway through typing, the ones that already worked survive") {
-        controller.acceptTarget(1, "wall", "127.0.0.1:");
+        controller.acceptTarget(2, "wall", "127.0.0.1:");
         CHECK(live().oscTargets == 1);
         CHECK(controller.statusIsError());
         CHECK(std::string(controller.window().get_status()).find("not a target") !=
@@ -1721,23 +1911,23 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // And the half-typed row is still there, exactly as it was typed. Losing it would
         // be the field clearing itself under somebody mid-address.
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 2);
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:");
+        REQUIRE(rows->row_count() == 3);
+        CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:");
     }
 
     SECTION("a keystroke is remembered and not applied") {
         // Applying opens and closes a socket. Doing that per character would rebuild it
         // halfway through an address.
-        controller.editTarget(1, "wall", "127.0.0.1:57009");
-        CHECK(live().targets[1].port == 57001);
+        controller.editTarget(2, "wall", "127.0.0.1:57009");
+        CHECK(live().targets[2].port == 57001);
 
         // And the draft still has to survive the list being republished, which is what [+]
         // does — the row is drawn from the model, so a draft kept only in the widget would go.
         controller.addTarget();
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 3);
-        CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57009");
-        CHECK(live().targets[1].port == 57009);
+        REQUIRE(rows->row_count() == 4);
+        CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:57009");
+        CHECK(live().targets[2].port == 57009);
     }
 
     SECTION("an added row is a target already") {
@@ -1746,44 +1936,44 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // for somebody building a rig: a rule cannot be routed to a target that is not there.
         controller.addTarget();
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 3);
-        CHECK(rows->row_data(2)->kind_index == 0);
-        CHECK(std::string(rows->row_data(2)->host) == "127.0.0.1");
-        CHECK(std::string(rows->row_data(2)->port) == "9000");
-        REQUIRE(live().targets.size() == 3);
-        CHECK(live().targets[2].host == "127.0.0.1");
-        CHECK(live().targets[2].port == 9000);
+        REQUIRE(rows->row_count() == 4);
+        CHECK(rows->row_data(3)->kind_index == 0);
+        CHECK(std::string(rows->row_data(3)->host) == "127.0.0.1");
+        CHECK(std::string(rows->row_data(3)->port) == "9000");
+        REQUIRE(live().targets.size() == 4);
+        CHECK(live().targets[3].host == "127.0.0.1");
+        CHECK(live().targets[3].port == 9000);
     }
 
     SECTION("a row asks for a host and a port, not for one string holding both") {
         // The two boxes are edited one at a time and merged here — see `setTargetHost`.
-        controller.setTargetHost(0, "192.0.2.40", false);
-        CHECK(live().targets[0].host == "127.0.0.1"); // a keystroke, not applied
-        controller.setTargetPort(0, "7010", true);
-        REQUIRE(live().targets.size() == 2);
-        CHECK(live().targets[0].host == "192.0.2.40");
-        CHECK(live().targets[0].port == 7010);
-        CHECK(live().targets[0].name == "deck");
+        controller.setTargetHost(1, "192.0.2.40", false);
+        CHECK(live().targets[1].host == "127.0.0.1"); // a keystroke, not applied
+        controller.setTargetPort(1, "7010", true);
+        REQUIRE(live().targets.size() == 3);
+        CHECK(live().targets[1].host == "192.0.2.40");
+        CHECK(live().targets[1].port == 7010);
+        CHECK(live().targets[1].name == "deck");
     }
 
     SECTION("switching a row to MIDI leaves it unfinished rather than broken") {
         // Nothing is sent until a device is picked, and that is not an error to report: the
         // row is being filled in. Naming a device it cannot open is a different thing, and
         // is reported — see "a MIDI target is a row like any other".
-        controller.setTargetKind(0, 1);
+        controller.setTargetKind(1, 1);
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 2);
-        CHECK(rows->row_data(0)->kind_index == 1);
-        CHECK(std::string(rows->row_data(0)->address).empty());
-        CHECK(live().targets.size() == 1);
+        REQUIRE(rows->row_count() == 3);
+        CHECK(rows->row_data(1)->kind_index == 1);
+        CHECK(std::string(rows->row_data(1)->address).empty());
+        CHECK(live().targets.size() == 2);
         CHECK_FALSE(controller.statusIsError());
     }
 
     SECTION("a row removed is a target removed") {
-        controller.removeTarget(0);
-        REQUIRE(live().targets.size() == 1);
-        CHECK(live().targets[0].name == "wall");
-        CHECK(controller.window().get_outputs_list()->row_count() == 1);
+        controller.removeTarget(1);
+        REQUIRE(live().targets.size() == 2);
+        CHECK(live().targets[1].name == "wall");
+        CHECK(controller.window().get_outputs_list()->row_count() == 2);
     }
 
     SECTION("deleting a row rebuilds the ones that moved up into its place") {
@@ -1798,18 +1988,50 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         const auto watch = std::make_shared<ModelWatch>();
         rows->attach_peer(watch);
 
-        controller.removeTarget(0);
+        // The deck's name box typed into, as the box reports it — so that box shows "deck"
+        // whatever its row holds from now on.
+        controller.setTargetName(1, "deck", false);
+        controller.removeTarget(1);
         controller.tick(); // the rebuild is deferred out of the × that was pressed
-        CHECK(watch->resets == 1);
-        REQUIRE(rows->row_count() == 1);
-        CHECK(std::string(rows->row_data(0)->name) == "wall");
+        REQUIRE(rows->row_count() == 2);
+        CHECK(std::string(rows->row_data(1)->name) == "wall");
+        // That row alone, built again: erased and put back — never the whole list, which took
+        // every box with it, the one holding the keyboard included.
+        CHECK(watch->resets == 0);
+        CHECK(watch->removed == 2); // the row off the end, and the renewed one
+        CHECK(watch->added == 1);
 
-        // And a tick that changed nothing does not keep rebuilding them: that would tear a
-        // box down thirty times a second, which is the failure this started as.
-        const int settled = watch->resets;
+        // And a tick that changed nothing does not keep rebuilding it: that would tear a box
+        // down thirty times a second, which is the failure this started as.
+        const int removed = watch->removed;
         controller.tick();
         controller.tick();
-        CHECK(watch->resets == settled);
+        CHECK(watch->removed == removed);
+    }
+
+    SECTION("a name committed as it was typed does not rebuild the row it was typed in") {
+        // Renaming an output and pressing Enter rebuilt its row — the box holding the keyboard
+        // with it — so Escape, which is PANIC, reached nothing until the next click. The box
+        // already shows what it was given, so there is nothing to rebuild.
+        const auto rows = controller.window().get_outputs_list();
+        const auto watch = std::make_shared<ModelWatch>();
+        rows->attach_peer(watch);
+        controller.setTargetName(1, "desk", false);
+        controller.setTargetName(1, "desk", true);
+        controller.tick();
+        CHECK(live().targets[1].name == "desk");
+        CHECK(std::string(rows->row_data(1)->name) == "desk");
+        CHECK(watch->resets == 0);
+        CHECK(watch->removed == 0);
+        CHECK(watch->added == 0);
+
+        // But one the controller changed after it was typed comes back as what it is: a name
+        // that is only the output's own address is shown as no name at all.
+        controller.setTargetName(1, "127.0.0.1:57000", true);
+        controller.tick();
+        CHECK(std::string(rows->row_data(1)->name).empty());
+        CHECK(watch->removed == 1);
+        CHECK(watch->added == 1);
     }
 
     SECTION("a port outside the range is not a port") {
@@ -1817,11 +2039,12 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(live().oscTargets == 0);
     }
 
-    SECTION("and clearing the row clears the outputs") {
-        controller.acceptTarget(0, "", "");
+    SECTION("and clearing the rows clears the outputs, all but Link") {
         controller.acceptTarget(1, "", "");
-        CHECK(live().targets.empty());
-        CHECK_FALSE(controller.window().get_osc_on());
+        controller.acceptTarget(2, "", "");
+        REQUIRE(live().targets.size() == 1);
+        CHECK(live().targets[0].kind == takt4::output::OutputTarget::Kind::Link);
+        CHECK(live().oscTargets == 0);
     }
 
     SECTION("the editor is told what there is to route to") {
@@ -1846,13 +2069,13 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         controller.editor().setOutputs("deck");
         const std::vector<std::string> routed = controller.editor().rules().back().outputs;
         REQUIRE(routed.size() == 1);
-        const std::string before = live().targets[0].id;
+        const std::string before = live().targets[1].id;
         CHECK(routed.front() == before);
 
-        controller.setTargetName(0, "media server", true);
+        controller.setTargetName(1, "media server", true);
         controller.tick();
-        REQUIRE(live().targets[0].name == "media server");
-        CHECK(live().targets[0].id == before);
+        REQUIRE(live().targets[1].name == "media server");
+        CHECK(live().targets[1].id == before);
         CHECK(controller.editor().rules().back().outputs == routed);
         CHECK(std::string(controller.editor().window().get_outputs_available()) ==
               "reaches 1 output");
@@ -1861,15 +2084,16 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 
     SECTION("every row is an output with an id of its own") {
         const auto rows = controller.window().get_outputs_list();
-        REQUIRE(rows->row_count() == 2);
-        CHECK_FALSE(std::string(rows->row_data(0)->id).empty());
-        CHECK(std::string(rows->row_data(0)->id) == live().targets[0].id);
-        CHECK(std::string(rows->row_data(1)->id) == live().targets[1].id);
-        CHECK(live().targets[0].id != live().targets[1].id);
+        REQUIRE(rows->row_count() == 3);
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK_FALSE(std::string(rows->row_data(i)->id).empty());
+            CHECK(std::string(rows->row_data(i)->id) == live().targets[i].id);
+        }
+        CHECK(live().targets[1].id != live().targets[2].id);
         // A row added is one from the start.
         controller.addTarget();
-        CHECK_FALSE(std::string(rows->row_data(2)->id).empty());
-        CHECK(std::string(rows->row_data(2)->id) == live().targets[2].id);
+        CHECK_FALSE(std::string(rows->row_data(3)->id).empty());
+        CHECK(std::string(rows->row_data(3)->id) == live().targets[3].id);
     }
 }
 
@@ -1880,32 +2104,38 @@ TEST_CASE("a MIDI target is a row like any other", "[ui]") {
     WindowController controller(tracker);
 
     controller.addTarget();
-    controller.acceptTarget(0, "lights", "midi takt4 test - no such port");
+    controller.acceptTarget(1, "lights", "midi takt4 test - no such port");
 
     const auto rows = controller.window().get_outputs_list();
-    REQUIRE(rows->row_count() == 1);
-    CHECK(std::string(rows->row_data(0)->address) == "midi takt4 test - no such port");
+    REQUIRE(rows->row_count() == 2);
+    CHECK(std::string(rows->row_data(1)->address) == "midi takt4 test - no such port");
     // The device is not on this machine, so opening it fails — and that is *said* rather
     // than dropping the row, because the rest of the rig is still sending.
     CHECK(controller.statusIsError());
     CHECK(std::string(controller.window().get_status()).find("outputs:") != std::string::npos);
-    REQUIRE(seen(controller).targets.size() == 1);
-    CHECK(seen(controller).targets[0].kind ==
-          takt4::output::OutputTarget::Kind::Midi);
+    REQUIRE(seen(controller).targets.size() == 2);
+    CHECK(seen(controller).targets[1].kind == takt4::output::OutputTarget::Kind::Midi);
 }
 
-TEST_CASE("a MIDI port that will not open is said out loud", "[ui]") {
+TEST_CASE("a MIDI clock whose device will not open is said out loud, and kept", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
-    // Straight to the controller, not through the picker: the picker sends an *index* into
-    // the machine's own port list now (a ComboBox cannot be moved by its value — Slint
-    // 11970), and no index on this machine names a port that does not exist.
-    controller.setMidiPort("takt4 test - no such port");
+    // Through the row's address, not its dropdown: the dropdown sends an *index* into the
+    // machine's own port list (a ComboBox cannot be moved by its value — Slint 11970), and no
+    // index on this machine names a port that does not exist. A settings file can.
+    controller.addTarget();
+    controller.acceptTarget(1, "drums", "midiclock takt4 test - no such port");
     CHECK(!seen(controller).midiClock);
     CHECK(controller.statusIsError());
-    CHECK(std::string(controller.window().get_status()).find("MIDI clock") != std::string::npos);
-    CHECK_FALSE(controller.window().get_midi_on());
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("drums") != std::string::npos);
+    // Kept, asking for the same device, so it is still wanted when the device is plugged in.
+    REQUIRE(seen(controller).targets.size() == 2);
+    CHECK(seen(controller).targets[1].kind == takt4::output::OutputTarget::Kind::MidiClock);
+    CHECK(seen(controller).targets[1].device == "takt4 test - no such port");
+    CHECK(controller.window().get_outputs_list()->row_data(1)->kind_index == 3);
 }
 
 TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware]") {
@@ -2044,19 +2274,28 @@ TEST_CASE("a remembered interface that is missing at launch is still the one sav
           controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name);
 }
 
-TEST_CASE("a remembered MIDI clock port that is missing at launch is still the one saved",
+TEST_CASE("a remembered MIDI clock whose device is missing at launch is still the one saved",
           "[ui]") {
+    // The audit's H11, for the clock as an output: one whose drum machine was left at home is
+    // kept asking for it, so it is sending again at the next launch it is plugged in for.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
+    // As a file written before the clock was an output holds it.
     saved.machine.midiClockPort = "takt4 test - a drum machine left at home";
     WindowController controller(tracker, saved);
     REQUIRE(!seen(controller).midiClock);
-    CHECK(controller.currentSettings().machine.midiClockPort ==
-          "takt4 test - a drum machine left at home");
+    const takt4::settings::Settings out = controller.currentSettings();
+    REQUIRE(out.preset.outputs.size() == 2);
+    CHECK(out.preset.outputs[1].kind == takt4::output::OutputTarget::Kind::MidiClock);
+    CHECK(out.preset.outputs[1].device == "takt4 test - a drum machine left at home");
+    // And where an older build looks for it.
+    CHECK(takt4::settings::toJson(out).find(
+              R"("midiClockPort": "takt4 test - a drum machine left at home")") !=
+          std::string::npos);
 
-    // Choosing "no MIDI clock" is a choice too.
-    controller.pickMidiPort(0);
-    CHECK(controller.currentSettings().machine.midiClockPort.empty());
+    // Taking the row away is a choice too.
+    controller.removeTarget(1);
+    CHECK(controller.currentSettings().preset.outputs.size() == 1);
 }
 
 TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
@@ -2205,12 +2444,13 @@ TEST_CASE("the window switches the outputs back on", "[ui][network]") {
     CHECK(seen(controller).link);
     CHECK(seen(controller).oscTargets == 2);
     CHECK(controller.outputs().transports().oscPrefix() == "/vj");
-    CHECK(controller.window().get_link_on());
-    CHECK(controller.window().get_osc_on());
-    // And into the rows that edit them, seeded once from what the runner was built with.
+    // And into the rows that edit them, seeded once from what the runner was built with — the
+    // Link row first, ticked as the file had it.
     const auto rows = controller.window().get_outputs_list();
-    REQUIRE(rows->row_count() == 2);
-    CHECK(std::string(rows->row_data(1)->address) == "127.0.0.1:57001");
+    REQUIRE(rows->row_count() == 3);
+    CHECK(rows->row_data(0)->kind_index == 4);
+    CHECK(rows->row_data(0)->enabled);
+    CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:57001");
 }
 
 TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[ui]") {
@@ -2248,8 +2488,8 @@ TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]
     // OSC target of its own, looked up on a thread of its own (the audit's H12), and is said
     // when that look-up fails — nothing waits for a name server any more.
     CHECK(seen(*controller).oscTargets == 2);
-    CHECK(seen(*controller).targets.size() == 3);
-    CHECK(controller->window().get_outputs_list()->row_count() == 3);
+    CHECK(seen(*controller).targets.size() == 4); // the Link row, then the three
+    CHECK(controller->window().get_outputs_list()->row_count() == 4);
     CHECK(controller->statusIsError());
     const std::string first(controller->window().get_status());
     INFO("status at launch: " << first);
@@ -2339,8 +2579,10 @@ TEST_CASE("what the window hands back is what it was given", "[ui][network]") {
 
     const takt4::settings::Settings out = controller.currentSettings();
     CHECK(out.preset.link);
-    REQUIRE(out.preset.outputs.size() == 1);
-    CHECK(out.preset.outputs[0].host == "192.0.2.40");
+    REQUIRE(out.preset.outputs.size() == 2);
+    CHECK(out.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(out.preset.outputs[0].enabled);
+    CHECK(out.preset.outputs[1].host == "192.0.2.40");
     CHECK(out.preset.oscPrefix == "/vj");
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(90.0, 1e-6));
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.025, 1e-9));
@@ -2500,7 +2742,8 @@ TEST_CASE("a path or a device name in any encoding reaches the status line intac
     // And a name that arrived from a driver in its own encoding: an ASIO or MIDI device called
     // "µ-Port" read through the ANSI API is the byte 0xB5 on its own. The failure to open it
     // names it on the status line, which is where it used to abort.
-    controller.setMidiPort("takt4 test \xB5-Port");
+    controller.addTarget();
+    controller.acceptTarget(1, "", "midiclock takt4 test \xB5-Port");
     CHECK(controller.statusIsError());
     const std::string refused(controller.window().get_status());
     CHECK(refused.find("takt4 test \xEF\xBF\xBD-Port") != std::string::npos);
@@ -2576,9 +2819,10 @@ TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "
 }
 
 TEST_CASE("the keep for the next track box is ticked by a click", "[ui]") {
-    // Found on the laid-out window by clicking down the settings column until the box ticks —
-    // not assumed from the markup — and read back from the engine, which is what an operator's
-    // click has to reach.
+    // Found on the laid-out window by clicking down a column through the box's words until the
+    // box ticks — not assumed from the markup — and read back from the engine, which is what an
+    // operator's click has to reach. Its words as well as its box: since 2026-09-25 they sit to
+    // the right of DOWNBEAT, and a label that does nothing when clicked is not one.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     SyntheticRun run(tracker);
@@ -2586,24 +2830,32 @@ TEST_CASE("the keep for the next track box is ticked by a click", "[ui]") {
     auto& window = controller.window().window();
     REQUIRE_FALSE(controller.window().get_keep_shift());
 
-    // The column the fold switch is in, which is where the box lines up.
-    constexpr float kColumn = 118.0f;
+    // Through "keep half/double settings for next track", right of the box.
+    constexpr float kWords = 700.0f;
     float boxY = 0.0f;
-    for (float y = 150.0f; y < 700.0f && boxY == 0.0f; y += 3.0f) {
-        clickAt(window, kColumn, y);
+    for (float y = 150.0f; y < 620.0f && boxY == 0.0f; y += 3.0f) {
+        clickAt(window, kWords, y);
         if (controller.window().get_keep_shift()) {
             boxY = y;
         }
     }
-    INFO("no click in the settings column ticked the box");
+    INFO("no click through the words ticked the box");
     REQUIRE(boxY > 0.0f);
     run.applyPosted();
     CHECK(tracker.engine().tempoOptions().keepOctaveShift);
 
-    clickAt(window, kColumn, boxY);
+    clickAt(window, kWords, boxY);
     CHECK_FALSE(controller.window().get_keep_shift());
     run.applyPosted();
     CHECK_FALSE(tracker.engine().tempoOptions().keepOctaveShift);
+
+    // And the box itself, left of its words and right of DOWNBEAT.
+    bool ticked = false;
+    for (float x = 572.0f; x < 620.0f && !ticked; x += 3.0f) {
+        clickAt(window, x, boxY);
+        ticked = controller.window().get_keep_shift();
+    }
+    CHECK(ticked);
 }
 
 TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
@@ -2614,15 +2866,17 @@ TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
     controller.addTarget();
     controller.addTarget();
     constexpr float kWidth = 1000.0f;
-    layOut(controller, kWidth, 760.0f);
+    constexpr float kHeight = 1000.0f; // the rows on screen, below the inputs
+    layOut(controller, kWidth, kHeight);
     auto& window = controller.window().window();
 
-    // The "−" at the end of a row: found by clicking down the column until a row goes.
+    // The "×" at the end of a row: found by clicking down the column until a row goes — the
+    // Link row, first, has none, and stays.
     const float removeX = kWidth - 34.0f;
     bool removed = false;
-    for (float y = 380.0f; y < 664.0f && !removed; y += 4.0f) {
+    for (float y = 380.0f; y < kHeight - 125.0f && !removed; y += 4.0f) {
         clickAt(window, removeX, y);
-        removed = controller.window().get_outputs_list()->row_count() == 1;
+        removed = controller.window().get_outputs_list()->row_count() == 2;
     }
     REQUIRE(removed);
     press(window, kEscape);
@@ -2635,8 +2889,9 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
     // who presses Escape to get out of a text box must not halt the show.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
-    controller.addTarget(); // a row with a name box in it
-    layOut(controller, 1000.0f, 760.0f);
+    controller.addTarget();            // a row with a name box in it, after the Link row
+    constexpr float kHeight = 1000.0f; // the rows on screen, below the inputs
+    layOut(controller, 1000.0f, kHeight);
     auto& window = controller.window().window();
 
     // Nothing clicked yet: the key reaches the window's own scope, and PANIC engages.
@@ -2648,21 +2903,30 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
     // The name box of that row, found by typing into candidates until a name commits. A miss
     // leaves Escape to engage PANIC, which is let go before the next try; the hit is the only
     // round in which Escape was pressed *inside* a box, and that is the round asserted on.
+    //
+    // Up from the bottom of the body, where the rows are, so the sweep meets the row before it
+    // could reach the inputs above, whose "listen" box would open a real socket. Through the
+    // name box's middle; ADD OUTPUT is in that column too, below the row, and a row it adds is
+    // taken away again.
     bool found = false;
     bool panickedInBox = true;
-    for (float y = 380.0f; y < 690.0f && !found; y += 4.0f) {
-        for (float x = 150.0f; x < 250.0f && !found; x += 20.0f) {
-            clickAt(window, x, y);
-            press(window, "q");
-            press(window, kEscape);
-            const auto rows = controller.window().get_outputs_list();
-            if (rows->row_count() > 0 && std::string(rows->row_data(0)->name) == "q") {
-                found = true;
-                panickedInBox = panickedNow(controller);
-            }
-            if (panickedNow(controller)) {
-                controller.releasePanic();
-            }
+    for (float y = kHeight - 128.0f; y > 380.0f && !found; y -= 4.0f) {
+        clickAt(window, 110.0f, y);
+        press(window, "q");
+        press(window, kEscape);
+        // The box commits from its `changed has-focus`, which runs a loop later.
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+        const auto rows = controller.window().get_outputs_list();
+        if (rows->row_count() > 1 && std::string(rows->row_data(1)->name) == "q") {
+            found = true;
+            panickedInBox = panickedNow(controller);
+        }
+        if (panickedNow(controller)) {
+            controller.releasePanic();
+        }
+        while (rows->row_count() > 2) {
+            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
         }
     }
     INFO("no click landed in the row's name box");
@@ -2673,6 +2937,63 @@ TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the 
     // somewhere that still passes keys up, rather than nowhere.
     press(window, kEscape);
     CHECK(panickedNow(controller));
+}
+
+TEST_CASE("clicking from a row's name box into its host box keeps what is typed there", "[ui]") {
+    // Leaving the name box commits it, and committing it rebuilt the whole row a redraw later —
+    // the host box the operator had just clicked into with it, so what they typed next went
+    // nowhere. Driven as an operator does it: a click, a letter, a click on the next box along,
+    // a digit, Enter.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.addTarget();
+    constexpr float kHeight = 1000.0f; // the rows on screen, below the inputs
+    layOut(controller, 1000.0f, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    const auto live = [&controller] { return seen(controller).targets; };
+
+    // The row, found by its name box as the Escape test finds it: a letter and Enter that
+    // name the output. A click on ADD OUTPUT on the way adds a row, which is taken away again.
+    float rowY = -1.0f;
+    for (float y = kHeight - 128.0f; y > 380.0f && rowY < 0.0f; y -= 4.0f) {
+        clickAt(window, 110.0f, y);
+        press(window, "n");
+        press(window, "\n");
+        settle();
+        if (rows->row_count() > 1 && std::string(rows->row_data(1)->name) == "n") {
+            rowY = y;
+        }
+        while (rows->row_count() > 2) {
+            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
+        }
+    }
+    {
+        INFO("no click reached the row's name box");
+        REQUIRE(rowY > 0.0f);
+    }
+    REQUIRE(live()[1].host == "127.0.0.1");
+
+    clickAt(window, 110.0f, rowY);
+    press(window, "a");
+    settle();
+    clickAt(window, 300.0f, rowY); // the host box, on the same row
+    settle();                      // the name commits, and the row is redrawn
+    settle();
+    press(window, "9");
+    press(window, "\n");
+    settle();
+
+    const std::string name = live()[1].name;
+    const std::string host = live()[1].host;
+    INFO("name '" << name << "', host '" << host << "'");
+    CHECK(name == "a"); // the box selects what it holds when clicked into, so "a" replaced "n"
+    CHECK(host.size() == std::string("127.0.0.1").size() + 1);
+    CHECK(host.find('9') != std::string::npos);
 }
 
 TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key counts once",
@@ -2867,10 +3188,11 @@ TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][
     CHECK(lit);
 }
 
-TEST_CASE("an Art-Net row offers no delay of its own", "[ui]") {
-    // The audit's M9: the per-output delay slider was on every row, and on an Art-Net row it
-    // moved a number nothing reads — a universe is a stream of frames with no message to hold
-    // back. Driven by real clicks: what is under test is what the row draws.
+TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's does", "[ui]") {
+    // The operator's call of 2026-09-25, which reverses the audit's M9: every output has a delay
+    // that works the same way, and a node's is honoured — the node is sent the lighting that
+    // much later (`dmx::ArtNetPublisher`). Driven by real clicks: what is under test is what the
+    // row draws and where a click on it goes.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     for (const char* line : {"deck = 127.0.0.1:57000", "node = artnet 127.0.0.1:6454"}) {
@@ -2882,38 +3204,116 @@ TEST_CASE("an Art-Net row offers no delay of its own", "[ui]") {
     layOut(controller, 1000.0f, 1400.0f);
     auto& window = controller.window().window();
     const auto rows = controller.window().get_outputs_list();
-    REQUIRE(rows->row_count() == 2);
-    REQUIRE(rows->row_data(1)->kind_index == 2);
+    REQUIRE(rows->row_count() == 3); // the Link row, deck, node
+    REQUIRE(rows->row_data(2)->kind_index == 2);
 
-    // The OSC row's slider: the first click that moves the OSC row's delay.
-    float sliderX = -1.0f;
+    // The node's slider: the first click, down the sliders' column, that moves the node's delay.
+    // Above the footer, which holds nothing a slider could be.
     float sliderY = -1.0f;
-    for (float y = 200.0f; y < 1400.0f && sliderX < 0.0f; y += 4.0f) {
-        for (float x = 450.0f; x < 900.0f && sliderX < 0.0f; x += 25.0f) {
+    for (float y = 200.0f; y < 1270.0f && sliderY < 0.0f; y += 4.0f) {
+        for (float x = 520.0f; x < 860.0f && sliderY < 0.0f; x += 25.0f) {
             clickAt(window, x, y);
-            if (rows->row_data(0)->delay_ms != 0.0f) {
-                sliderX = x;
+            if (rows->row_data(2)->delay_ms != 0.0f) {
                 sliderY = y;
             }
         }
     }
     {
-        INFO("no click moved the OSC row's delay slider");
-        REQUIRE(sliderX >= 0.0f);
+        INFO("no click moved the Art-Net row's delay slider");
+        REQUIRE(sliderY >= 0.0f);
     }
-    REQUIRE(rows->row_data(1)->delay_ms == 0.0f);
-
-    // The same column on the row below: nothing there to move.
-    for (float y = sliderY + 8.0f; y < sliderY + 90.0f; y += 3.0f) {
-        for (float x = sliderX - 50.0f; x < sliderX + 60.0f; x += 10.0f) {
-            clickAt(window, x, y);
-        }
-    }
-    INFO("slider at " << sliderX << "," << sliderY);
-    CHECK(rows->row_data(1)->delay_ms == 0.0f);
-    CHECK(seen(controller).targets[1].delaySeconds == 0.0);
+    // And the node itself has it — which is the half the old slider never reached.
+    const float ms = rows->row_data(2)->delay_ms;
+    CHECK(seen(controller).targets[2].delaySeconds == Catch::Approx(ms / 1000.0f).margin(1e-6));
+    CHECK(seen(controller).targets[2].delaySeconds != 0.0);
 }
 
+TEST_CASE("a delay reading takes a typed number, and Escape leaves it as it was", "[ui]") {
+    // The operator's ask of 2026-09-25: *"make the latency display numbers next to the sliders
+    // clickable so you can then input a number directly, but dont make it always a big ugly
+    // entry box. just a underlined blue number like a URL"*. Driven by real clicks and keys —
+    // the reading clicked, a number typed, Enter — and read back from the output thread.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget deck;
+    REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:57000", deck));
+    saved.preset.outputs = {deck};
+    WindowController controller(tracker, saved);
+    layOut(controller, 1000.0f, 1400.0f);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 2);
+    const auto deckDelay = [&controller] { return seen(controller).targets[1].delaySeconds; };
+
+    // The deck's reading, at the right-hand end of its row: found by clicking down the reading
+    // column, typing a number and Enter, until the deck's delay is that number. Each miss is
+    // followed by a click on the background — never Escape, which with no box open is PANIC.
+    // Below the latency reading, which is in the same column and would take the number too.
+    constexpr float kReadingX = 940.0f;
+    constexpr float kBackgroundX = 985.0f;
+    float readingY = -1.0f;
+    for (float y = 1000.0f; y < 1270.0f && readingY < 0.0f; y += 3.0f) {
+        clickAt(window, kReadingX, y);
+        settle();
+        for (const char* key : {"1", "2", "5", "\n"}) {
+            press(window, key);
+        }
+        settle();
+        if (std::abs(deckDelay() - 0.125) < 1e-9) {
+            readingY = y;
+        } else {
+            clickAt(window, kBackgroundX, 1080.0f);
+            settle();
+        }
+    }
+    {
+        INFO("no click down the reading column took a typed number for the deck");
+        REQUIRE(readingY >= 0.0f);
+    }
+    // The row reads it back, and so does the slider beside it — the slider's own binding is
+    // dropped the first time it is dragged, and the row has to push it there itself.
+    CHECK(rows->row_data(1)->delay_ms == Catch::Approx(125.0f));
+    // Escape out of the box leaves the number as it was.
+    clickAt(window, kReadingX, readingY);
+    settle();
+    for (const char* key : {"9", "0", "0"}) {
+        press(window, key);
+    }
+    press(window, kEscape);
+    settle();
+    CHECK(deckDelay() == Catch::Approx(0.125));
+    CHECK_FALSE(panickedNow(controller)); // and Escape in the box is not PANIC
+
+    // A click away sets what was typed, the way every box in the window commits.
+    clickAt(window, kReadingX, readingY);
+    settle();
+    for (const char* key : {"-", "4", "0"}) {
+        press(window, key);
+    }
+    clickAt(window, kBackgroundX, 1080.0f);
+    settle();
+    settle();
+    CHECK(deckDelay() == Catch::Approx(-0.040));
+
+    // Past the end of the range is the end of the range; a word is said and changes nothing.
+    controller.setTargetDelayTyped(1, "5000 ms");
+    CHECK(deckDelay() == Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
+    controller.setTargetDelayTyped(1, "soon");
+    CHECK(deckDelay() == Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
+    CHECK(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()).find("\"soon\"") != std::string::npos);
+
+    // And the latency reading the same way: typed, it reaches the transports and the slider.
+    controller.window().invoke_latency_typed(slint::SharedString("-30"));
+    CHECK_THAT(controller.window().get_latency_ms(), WithinAbs(-30.0, 1e-4));
+    CHECK_THAT(controller.outputs().transports().latencySeconds(), WithinAbs(-0.030, 1e-9));
+    controller.window().invoke_latency_typed(slint::SharedString("+999"));
+    CHECK_THAT(controller.window().get_latency_ms(), WithinAbs(takt4::ui::kLatencyLimitMs, 1e-4));
+}
 
 TEST_CASE("an output's kind dropdown survives the redraws while it is open, and its pick lands",
           "[ui]") {
@@ -2921,10 +3321,9 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     // output rows are a repeater the window builds again whenever a row cannot be updated in
     // place, and a row rebuilt with its dropdown open takes the popup away under the pointer.
     //
-    // Swept only down one column, x = 302, where the row's kind dropdown sits (padding, the
-    // "targets" label, the tick box and the name come first), and only near the rows: SAVE is
-    // in that column too, which a test process may press safely (it saves into a folder of its
-    // own), and nothing that opens a dialog or the audio device is.
+    // Swept only down one column, x = 208, where the row's kind dropdown sits (padding, the tick
+    // box and the name come first), and only near the rows: nothing that opens a dialog or the
+    // audio device is in that stretch of it.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;
@@ -2941,9 +3340,10 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
         controller.setOscTargets("deck = 127.0.0.1:57000");
         settle();
     };
+    // The deck's row, after the Link row every set starts with.
     const auto kindOf = [&controller] {
         const auto rows = controller.window().get_outputs_list();
-        return rows->row_count() == 1 ? rows->row_data(0)->kind_index : -1;
+        return rows->row_count() == 2 ? rows->row_data(1)->kind_index : -1;
     };
     settle();
     REQUIRE(kindOf() == 0);
@@ -2952,11 +3352,11 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     // letter lands in the row's name. Not by the dropdown and an arrow key — a click on nothing
     // leaves the keyboard where an earlier probe put it, so a key proves nothing about where
     // the click went. The kind dropdown is on the same row.
-    constexpr float kNameColumn = 200.0f;
-    constexpr float kKindColumn = 302.0f;
+    constexpr float kNameColumn = 100.0f;
+    constexpr float kKindColumn = 208.0f;
     const auto nameOf = [&controller] {
         const auto rows = controller.window().get_outputs_list();
-        return rows->row_count() == 1 ? std::string(rows->row_data(0)->name) : std::string();
+        return rows->row_count() == 2 ? std::string(rows->row_data(1)->name) : std::string();
     };
     //
     // Every probe starts with a click on the window's own background, off to the right where
@@ -2972,9 +3372,12 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
         const std::string before = nameOf();
         clickAt(window, kNameColumn, y);
         press(window, "Q");
-        // The letter goes to the controller's draft; the row reads it back on a redraw. Run one
-        // here rather than hoping the window's own 30 Hz timer falls inside this probe — under
-        // load it mostly did not, and the sweep found no box at all (1 run in 32, 8 at once).
+        // Enter, which commits the name at once. Without it the probe waited for the box to
+        // lose the focus, which is the *next* probe's first click — so every probe compared the
+        // row's name with itself, found nothing, and the sweep went on into ADD OUTPUT.
+        press(window, "\n");
+        // And a redraw here rather than hoping the window's own 30 Hz timer falls inside this
+        // probe — under load it mostly did not (1 run in 32, 8 at once).
         settle();
         const bool landed = nameOf().size() > before.size();
         if (landed && top < 0.0f) {
@@ -3291,9 +3694,13 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     settle();
     REQUIRE(controller.about() == nullptr);
 
-    // ABOUT, found along the status line by what a click on it does.
+    // ABOUT, found along the status line by what a click on it does — from the right-hand end,
+    // where it is, so the sweep meets it before SAVE, EXPORT and IMPORT to its left. From the
+    // left, it pressed EXPORT and IMPORT on the way, and each opened a real file dialog on the
+    // rig's desktop (2026-09-25; see `ui::fileDialogsAllowed`, which now refuses them here).
     const float barY = kHeight - 17.0f;
-    for (float x = kWidth - 480.0f; x < kWidth - 10.0f && controller.about() == nullptr; x += 6.0f) {
+    for (float x = kWidth - 10.0f; x > kWidth - 480.0f && controller.about() == nullptr;
+         x -= 6.0f) {
         clickAt(window, x, barY);
         settle();
     }

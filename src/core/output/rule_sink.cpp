@@ -110,10 +110,13 @@ void RuleSink::sendDmx(const trigger::Message& message) {
     // turning "fade to full" into forty frames a second of slightly different levels.
     // `Transports::advance` is what puts those frames on the network.
     //
-    // What can be held is the *start*. An Art-Net node has no delay of its own — see
-    // `OutputTarget::delaySeconds` — so only the rig's offset moves it: a beat fired ahead of
-    // time on a prediction starts its fade on the beat, or on the beat less a negative offset.
-    const double due = message.moment + transports_.latencySeconds();
+    // What can be held is the *start*: a beat fired ahead of time on a prediction starts its
+    // fade on the beat plus the rig's offset — and early by the earliest Art-Net node's lead,
+    // which each node's own delay then takes back from the frames it is sent (see
+    // `OutputTarget::delaySeconds` and `dmx::ArtNetPublisher`). With no node set early that
+    // lead is nothing, and the start is where it always was.
+    const double due =
+        message.moment + transports_.latencySeconds() - transports_.lightingLeadSeconds();
     if (due <= now_) {
         startDmx(message.fixtures, message.payload);
         return;
