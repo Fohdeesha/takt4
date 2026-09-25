@@ -39,7 +39,8 @@ but Windows is the only platform currently built and tested.
 - **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
   the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, MIDI notes, CC,
   program change and pitch bend, and Art-Net DMX to lighting nodes. Any number of named
-  targets, each with its own enable and its own offset.
+  outputs — a MIDI clock to each device that wants one — each with its own enable and its
+  own offset.
 - **Runs the lights.** Patch your fixtures once — an RGB par, a moving head — and rules
   aim at them by name: fade, flash, pulse, strobe, a color or a hue sweep, a random
   pan/tilt or a circle, each over a duration you can spell in bars. The movement window is
@@ -51,7 +52,7 @@ but Windows is the only platform currently built and tested.
   lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
   stops the tracker, reseeds anything or drops the lock. A ÷2 or ×2 lasts for the record
   it was pressed on and is dropped when the next one takes over, unless you tick **keep
-  for the next track**. From the keyboard: **T** taps, **D** snaps the downbeat, **M** fires
+  half/double settings for next track**. From the keyboard: **T** taps, **D** snaps the downbeat, **M** fires
   the manual rules and **Esc** is PANIC (in a text box, Esc just leaves the box).
 - **Rides out the rig failing.** If the interface stops sending — unplugged, power-cycled,
   reset by its driver, or moved to another sample rate by another program — the readout
@@ -115,11 +116,17 @@ including everything that was tried and rejected.
 
 ## Outputs
 
-Each output has a name, a kind, a destination, an enable and an offset, and rules can be
-routed to any subset of them. Link and MIDI clock are their own rows. Rename an output — or
-a fixture — whenever you like: rules follow the output itself, not what it is called. An
-output given as a host name rather than an address is looked up in the background, and the
-status line says so if it cannot be found.
+Each output is a row with a name, a kind — OSC, MIDI, Art-Net or MIDI clock — a destination,
+an enable and an offset, and rules can be routed to any subset of the OSC and MIDI ones.
+Rename an output — or a fixture — whenever you like: rules follow the output itself, not what
+it is called. An output given as a host name rather than an address is looked up in the
+background, and the status line says so if it cannot be found.
+
+**Link** is always the first row, and there is only ever one: tick it to join the session.
+**SHOW PEERS** lists who else is in it — each peer's address, its tempo, whether it is in
+takt4's session or one of its own, and whether it is playing. A **MIDI clock** is a row like
+any other, one per device, so a DAW and a drum machine each get their own clock and their
+own offset.
 
 The outputs are live from the moment takt4 opens, not from **START**: Link is joined as
 soon as its switch is on, and a fixture can be identified or tested before any music is
@@ -304,8 +311,8 @@ discover nodes: a show rig has a fixed address written on the back of it, and br
 ArtPoll twenty times a minute onto a venue's network is worse manners than asking once. A
 broadcast address works if your rig is built that way. Frames are paced at the
 specification's ceiling of 44 Hz per universe and re-sent every 900 ms when nothing is
-moving, which is what tells a node takt4 is still alive. One Art-Net target carries every
-universe your patch uses unless you list which ones it should carry.
+moving, which is what tells a node takt4 is still alive. Every Art-Net output is sent every
+universe your patch uses; a node takes the ones it is set up for and ignores the rest.
 
 ## Offsets
 
@@ -322,10 +329,13 @@ arrives 300 ms before the beat it belongs to, carrying that beat's bar position.
 MIDI clock are steered onto the beat the same way. While takt4 is still finding the tempo
 there is nothing to predict from, and a beat's messages go the moment it is heard.
 
-**What you type is milliseconds and has nothing to do with the tempo**: measure your
-device's lag once and it stays right as the music changes. Each row also shows the offset
-as a fraction of the beat now playing, for when you would rather think in beats. The
-per-output offset applies to OSC and MIDI outputs; an Art-Net node has only the rig's.
+**It is milliseconds and has nothing to do with the tempo**: measure your device's lag once
+and it stays right as the music changes. The number beside each slider is underlined: click
+it and type a value, then Enter or click away to set it, or Esc to leave it as it was.
+
+Every output's offset works the same way. An Art-Net node is sent the lighting that much
+later — or earlier, in which case the lighting runs that far ahead and the other nodes are
+sent it later again. A MIDI clock's ticks and Link's timeline move by their own offsets too.
 
 ## Building
 
