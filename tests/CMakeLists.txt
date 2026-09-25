@@ -45,6 +45,7 @@ add_executable(takt4_tests
   output/beat_scheduler_test.cpp
   output/link_peers_test.cpp
   output/link_session_test.cpp
+  output/link_watch_test.cpp
   output/midi_clock_test.cpp
   output/midi_ports_test.cpp
   output/osc_test.cpp
