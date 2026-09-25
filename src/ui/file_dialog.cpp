@@ -17,7 +17,19 @@
 #include <cstddef>
 #endif
 
+#include <cstdlib>
+
 namespace takt4::ui {
+
+bool fileDialogsAllowed() {
+#if defined(_MSC_VER)
+    std::size_t length = 0;
+    return getenv_s(&length, nullptr, 0, "TAKT4_NO_FILE_DIALOGS") != 0 || length == 0;
+#else
+    const char* const value = std::getenv("TAKT4_NO_FILE_DIALOGS");
+    return value == nullptr || *value == '\0';
+#endif
+}
 
 #if defined(_WIN32)
 
@@ -80,6 +92,9 @@ std::wstring bufferWith(const std::string& suggested) {
 } // namespace
 
 std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested) {
+    if (!fileDialogsAllowed()) {
+        return {};
+    }
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle);
@@ -91,6 +106,9 @@ std::filesystem::path askOpenFile(const std::string& title, const std::string& s
 }
 
 std::filesystem::path askSaveFile(const std::string& title, const std::string& suggested) {
+    if (!fileDialogsAllowed()) {
+        return {};
+    }
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle);

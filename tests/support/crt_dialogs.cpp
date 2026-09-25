@@ -7,6 +7,7 @@
 //   fails the test the way it does on every other platform.
 // - No ASIO, unless the run is for the rig (below).
 // - A settings folder of its own (below).
+// - No file dialogs (below).
 
 #ifdef _MSC_VER
 
@@ -45,6 +46,11 @@ struct NoCrtDialogs {
                 _wputenv_s(L"TAKT4_SETTINGS_DIR", folder.c_str());
             }
         }
+        // **No file dialogs.** A window test drives real clicks, and one that lands on EXPORT or
+        // IMPORT would open a real modal dialog on this desktop — the rig's — and leave it for
+        // somebody to dismiss (2026-09-25, repeatedly). `ui::askSaveFile` and `askOpenFile`
+        // return a cancel instead while this is set.
+        _putenv_s("TAKT4_NO_FILE_DIALOGS", "1");
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         _set_error_mode(_OUT_TO_STDERR);
 #ifdef _DEBUG

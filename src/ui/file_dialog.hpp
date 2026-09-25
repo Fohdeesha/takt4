@@ -22,4 +22,14 @@ namespace takt4::ui {
 std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested);
 std::filesystem::path askSaveFile(const std::string& title, const std::string& suggested);
 
+/// Whether a dialog may be shown at all: false while `TAKT4_NO_FILE_DIALOGS` is set, when both
+/// of the above return empty — a cancel — without showing anything.
+///
+/// **The test binaries set it** (`tests/support/crt_dialogs.cpp`). A window test drives real
+/// clicks, and one whose clicks land on EXPORT or IMPORT opened a real modal dialog on the
+/// desktop the tests run on — which is the rig — and left it there for somebody to dismiss,
+/// again for every click. It happened on 2026-09-25, when the status bar's buttons moved under
+/// a sweep of clicks aimed at where something else used to be.
+bool fileDialogsAllowed();
+
 } // namespace takt4::ui
