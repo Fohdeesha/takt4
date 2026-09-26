@@ -279,6 +279,10 @@ void MidiControl::onMessage(std::span<const unsigned char> message) noexcept {
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
+    receive(message);
+}
+
+void MidiControl::receive(std::span<const unsigned char> message) noexcept {
     const std::optional<MidiEvent> event = readMidiEvent(message);
     if (!event) {
         return; // not a control gesture; see readMidiEvent
