@@ -220,10 +220,14 @@ tracking::TempoTracker::Options tempoFromJson(const json& object) {
     if (!(tempo.confidenceThreshold >= 0.0) || !(tempo.confidenceThreshold <= 1.0)) {
         tempo.confidenceThreshold = defaults.confidenceThreshold;
     }
-    // Beyond half a beat the offset is the next beat; see ui/window_state.hpp's slider.
+    // Beyond half a beat the offset is the next beat — `kMaxLatencyOffsetSeconds`, where the
+    // slider ends. A second or more either way is not an offset anybody set and is refused, as
+    // any setting a tracker could not honour is; short of that, past the end is the end.
     if (!(tempo.latencyOffsetSeconds > -1.0) || !(tempo.latencyOffsetSeconds < 1.0)) {
         tempo.latencyOffsetSeconds = defaults.latencyOffsetSeconds;
     }
+    tempo.latencyOffsetSeconds = std::clamp(tempo.latencyOffsetSeconds, -kMaxLatencyOffsetSeconds,
+                                            kMaxLatencyOffsetSeconds);
     return tempo;
 }
 

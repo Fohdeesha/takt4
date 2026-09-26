@@ -78,7 +78,9 @@ std::string_view labelOf(Trigger trigger) noexcept {
     case Trigger::Onset:
         return "onset";
     case Trigger::Manual:
-        return "manual hotkey";
+        // Which key, said where the trigger is picked: the M key was taught nowhere on screen
+        //, and "hotkey" alone asks which one.
+        return "manual (M key)";
     case Trigger::Euclid:
         return "euclidean pattern";
     }

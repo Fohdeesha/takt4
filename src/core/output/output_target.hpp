@@ -180,7 +180,10 @@ const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::st
 /// "main = 127.0.0.1:7000", "lights = midi MOTU Pro Audio Midi Out 1", "drums = midiclock
 /// TR-8S" and "Link = link", which is how a settings file stores one. A switched-off target
 /// leads with "off ", one with a delay ends with " +120ms", and the id, where there is one,
-/// comes last as " #o-1a2b3c4d". Round-trips through `parseOutputTarget`.
+/// comes last as " #o-1a2b3c4d". A name that would read back as something else — "off stage",
+/// "a=b", one with a comma or a quote in it, or spaces at its ends — is written in double
+/// quotes: "\"off stage\" = 127.0.0.1:7000". Round-trips through `parseOutputTarget`, whatever
+/// the name.
 std::string formatOutputTarget(const OutputTarget& target);
 
 /// Just the destination half: "127.0.0.1:7000", "midi MOTU Pro Audio Midi Out 1",

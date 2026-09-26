@@ -89,6 +89,14 @@ struct MachineSettings {
 /// somebody has switched it on, `save` writes it and it stays on.
 tracking::TempoTracker::Options freshTempoOptions() noexcept;
 
+/// the latency offset, either side of zero, as far as the window's slider goes and as far as
+/// a settings file is taken at its word. Beyond half a beat the control stops meaning anything —
+/// it is the next beat — and half a beat at 120 BPM is 250 ms. A file holding more, short of a
+/// second, is read as this much: it used to be taken as it was,
+/// and ran that late behind a slider pinned at its end, which the first touch then snapped to
+/// 250 ms. A second or more is refused, as it always was.
+inline constexpr double kMaxLatencyOffsetSeconds = 0.25;
+
 /// What travels.
 struct Preset {
     /// the tuning — the tempo window, the confidence gate, the latency offset.
