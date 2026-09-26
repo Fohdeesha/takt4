@@ -153,8 +153,14 @@ def select_tracks(cfg, manifest, alignment):
             raise SystemExit(f"set {set_name!r} is not in the manifest; run layout.py")
         flags = set(cfg["exclude_flags"]) | set(cfg.get("exclude_flags_per_set", {}).get(set_name, []))
         kept = {"train": [], "val": []}
+        # A clip that is the same recording as a validation clip (layout.py's
+        # BALLROOM_DUPLICATES) is never trained on, whatever the recipe: its twin would be
+        # scored as held out when the model had heard it (the 2026-09-25 audit's P13).
+        val_ids = {t["id"] for t in info["tracks"] if t["split"] == "val"}
         for t in info["tracks"]:
             reasons = [f for f in t["flags"] if f in flags]
+            if t["split"] == "train" and val_ids.intersection(t.get("duplicates", ())):
+                reasons.append("duplicate_of_val")
             a = alignment.get(f"{set_name}/{t['id']}") if alignment else None
             if a and a.get("flag") in flags and set_name not in cfg.get("alignment_exempt_sets", []):
                 reasons.append(a["flag"])

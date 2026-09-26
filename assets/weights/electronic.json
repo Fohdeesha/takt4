@@ -30,11 +30,18 @@
       "selection": "library beat F, window off, meters 4"
     },
     "train_tracks": {
-      "ballroom": 1025,
+      "ballroom": 628,
       "library": 967,
       "osu2beat": 218,
       "raveform": 1104
     },
+    "train_crops_per_epoch": {
+      "ballroom": 1025,
+      "library": 2901,
+      "osu2beat": 218,
+      "raveform": 1104
+    },
+    "train_tracks_note": "corrected 2026-09-26: the run's config.json recorded Ballroom's 1025 crops per epoch (628 clips, some genres repeated) as its tracks, and this file copied it",
     "val_tracks": {
       "ballroom": 70,
       "library": 80,

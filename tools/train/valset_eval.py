@@ -30,8 +30,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (ALIGNMENT, FPS, RUNS, WORK, cli_path, load_json, load_manifest,  # noqa: E402
-                    read_beats, save_json)
+from common import (ALIGNMENT, FPS, RUNS, WORK, cli_identity, cli_path, load_json,  # noqa: E402
+                    load_manifest, now, read_beats, save_json)
 import finetune  # noqa: E402
 
 
@@ -69,6 +69,13 @@ def score_one(args):
     return tid, {"F": round(float(beat_f), 4), "dF": round(float(down_f), 4), "a1": a1, "a2": a2,
                  "ratio": round(published / ref_bpm, 3) if ref_bpm else 0.0,
                  "published": round(published, 1), "ref_bpm": round(ref_bpm, 1), "beats": int(len(est_t))}
+
+
+def weights_sha256(weights):
+    """The SHA-256 of a weights file; a built-in set's name has none."""
+    import hashlib
+    path = Path(weights)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
 def run_entries(run, set_name, manifest):
@@ -137,6 +144,7 @@ def main(argv):
     entries = entries[:a.limit] if a.limit else entries
     wavs = finetune.prepare_val_wavs({a.set: entries}, cfg)
     cli = cli_path()
+    identity = cli_identity(cli)
     print(f"{cli}\n{len(entries)} validation excerpts of {a.set}, {cfg['val_seconds']} s each\n", flush=True)
 
     results = {}
@@ -156,8 +164,16 @@ def main(argv):
                     s = summary(rows)
                     tag = f"{wname}.{bpm}.{meters.replace(',', '+')}"
                     results[tag] = s
+                    # What was run, whole: the build (a path names whatever is there now),
+                    # the weights file's hash, where the tracks came from, and which they
+                    # were. The record used to be the CLI's path and the weights as typed (the
+                    # 2026-09-25 audit's P16).
                     save_json(WORK / "valset" / f"{a.set}.{tag}.json",
-                              {"weights": weights, "bpm": bpm, "meters": meters, "cli": str(cli), "summary": s, "tracks": rows})
+                              {"weights": weights, "weights_sha256": weights_sha256(weights),
+                               "bpm": bpm, "meters": meters, "cli": identity,
+                               "tracks_from": f"run {a.run}" if a.run else f"config {a.config}",
+                               "manifest_created": manifest.get("created"), "when": now(),
+                               "track_ids": [e.id for e in entries], "summary": s, "tracks": rows})
                     if s["n"] == 0:
                         # Said here and the run carried on, rather than a traceback out of the
                         # format string below. One weight set that cannot be loaded must not

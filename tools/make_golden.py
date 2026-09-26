@@ -18,6 +18,7 @@ tests/features/feature_extractor_test.cpp checks every pair it finds.
     python tools/make_golden.py references/audio/track.flac [--name NAME] [--offset SECONDS]
     python tools/make_golden.py references/audio/track.flac --auto
     python tools/make_golden.py --synthetic
+    python tools/make_golden.py --regenerate [NAME ...]    # the .npy again, from the committed .wav
 
 Any format libsndfile decodes works (WAV, FLAC, MP3, OGG, AIFF); AAC/M4A do not. The
 default window starts 30 s in, or is centred for tracks shorter than 40 s. --auto reads
@@ -230,15 +231,63 @@ def rms_dbfs(x):
     return 20 * np.log10(rms) if rms > 0 else -np.inf
 
 
+def versions():
+    """The packages the features depend on, as a sidecar records them."""
+    return {
+        "madmom": madmom_source(),
+        "numpy": np.__version__,
+        "scipy": scipy.__version__,
+        "librosa": librosa.__version__,
+        "soundfile": sf.__version__ + " / libsndfile " + sf.__libsndfile_version__,
+    }
+
+
+def regenerate(out_dir, names):
+    """Each excerpt's `.npy` again from its committed `.wav`, which is the exact input, and
+    the sidecar's package versions with it; where the excerpt came from is kept.
+
+    Doing this by passing the `.wav` to make_golden.py as a source, which the README used to
+    suggest, reproduced the data bit for bit and wrote a new sidecar describing a ten-second
+    file cut at 0 s — the track, the offset and --auto's measurements lost (the 2026-09-25
+    audit's P11)."""
+    names = names or sorted(p.stem for p in out_dir.glob("*.wav"))
+    for name in names:
+        wav_path, npy_path, json_path = (out_dir / f"{name}{ext}" for ext in (".wav", ".npy", ".json"))
+        if not wav_path.exists() or not json_path.exists():
+            raise SystemExit(f"{name}: no {wav_path.name} and {json_path.name} under {out_dir}")
+        samples, sr = sf.read(wav_path, dtype="float32", always_2d=False)
+        if sr != SAMPLE_RATE or samples.ndim != 1:
+            raise SystemExit(f"{wav_path}: {sr} Hz, {samples.ndim} channels; not an excerpt")
+        feats = FeaturePipeline().features(samples)
+        if feats.shape != (len(samples) // HOP_SIZE, FEATURE_DIM):
+            raise SystemExit(f"{name}: unexpected feature shape {feats.shape}")
+        info = json.loads(json_path.read_text(encoding="utf-8"))
+        before = np.load(npy_path) if npy_path.exists() else None
+        np.save(npy_path, feats)
+        info.update(versions())
+        json_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8", newline="\n")
+        same = before is not None and before.shape == feats.shape and np.array_equal(before, feats)
+        print(f"{name}: {info.get('source')} @ {info.get('offset_seconds')} s -> {npy_path.name} "
+              + ("(unchanged)" if same else "(CHANGED)" if before is not None else "(new)"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("source", nargs="?", type=Path, help="audio file to cut the excerpt from")
     parser.add_argument("--synthetic", action="store_true", help="generate the built-in test signal instead")
+    parser.add_argument("--regenerate", nargs="*", metavar="NAME", default=None,
+                        help="recompute the named excerpts' .npy (all of them, given no name) from "
+                             "their committed .wav, keeping each sidecar's provenance")
     parser.add_argument("--name", help="base name of the output files (default: from the source name)")
     parser.add_argument("--offset", type=float, help=f"start of the excerpt in seconds (default: {DEFAULT_OFFSET:.0f}, or centred)")
     parser.add_argument("--auto", action="store_true", help="choose the offset by analysing the whole track")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help=f"default: {DEFAULT_OUT_DIR}")
     args = parser.parse_args()
+    if args.regenerate is not None:
+        if args.source is not None or args.synthetic or args.auto or args.offset is not None or args.name:
+            parser.error("--regenerate takes excerpt names and nothing else")
+        regenerate(args.out_dir, args.regenerate)
+        return
     if args.synthetic == (args.source is not None):
         parser.error("give either a source file or --synthetic")
     if args.auto and (args.offset is not None or args.synthetic):
@@ -299,11 +348,7 @@ def main():
         "rms_dbfs": round(rms_dbfs(reread), 2),
         "clipped_samples": int(np.count_nonzero(np.abs(audio) >= 1.0)),
         "decoder": "numpy, generated" if args.synthetic else "librosa.load (soundfile), resampler " + RESAMPLER,
-        "madmom": madmom_source(),
-        "numpy": np.__version__,
-        "scipy": scipy.__version__,
-        "librosa": librosa.__version__,
-        "soundfile": sf.__version__ + " / libsndfile " + sf.__libsndfile_version__,
+        **versions(),
     }
     if selection is not None:
         # What --auto measured on the whole track when it settled on this window.

@@ -63,6 +63,33 @@ def cli_path():
                      "\n  ".join(str(p) for p in candidates))
 
 
+def cli_identity(cli):
+    """What a takt4-cli is, as a run records it: its path, the SHA-256 of the file (two builds
+    can share a path, never a hash) and what `--version` says of itself."""
+    import hashlib
+    import subprocess
+    digest = hashlib.sha256(Path(cli).read_bytes()).hexdigest()
+    r = subprocess.run([str(cli), "--version"], capture_output=True, text=True)
+    version = " / ".join(" ".join(line.split()) for line in r.stdout.splitlines()[:2]) \
+        if r.returncode == 0 else ""
+    return {"cli": str(cli), "sha256": digest, "version": version}
+
+
+def provenance_path(tag):
+    """run_takt4.py's record of which build wrote each track's files under `tag`."""
+    return TAKT4 / f"{tag}.provenance.json"
+
+
+def load_provenance(tag):
+    """{stem: cli_identity + options} for `tag`; empty if nothing recorded it."""
+    import json
+    path = provenance_path(tag)
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def system_dir(spec):
     """A system argument `DIR` or `DIR:TAG` -> (spec, directory, tag).
 

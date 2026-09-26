@@ -13,7 +13,9 @@ tempo is the median of the beat file's BPM column after five seconds, and accura
 within 4 %, accuracy 2 also admits the octave and the triple — tools/refeval/score.py's
 definitions.
 
-Writes WORK/giantsteps.<weights>.json per weight set and prints the comparison.
+Writes WORK/giantsteps.<weights>.json per weight set and prints the comparison. A preview
+the CLI fails to run on is reported and left out of the mean, and the script then exits 1:
+the numbers are not a measurement of the set.
 """
 import argparse
 import json
@@ -58,16 +60,19 @@ def annotations():
 
 
 def run_one(cli, wav, weights, scratch):
+    """(stem, published tempo, error). A run that found no tempo publishes 0 and is a miss;
+    a CLI that did not run has an error and no score at all."""
     out = Path(scratch) / (wav.stem + ".beats")
     cmd = [str(cli), "track", str(wav), "--out", str(out), "--bpm", "off", "--weights", weights]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0 or not out.exists():
-        return wav.stem, None
+        return wav.stem, None, f"exit {r.returncode}: " + ((r.stderr or r.stdout).strip()[-200:]
+                                                          or "no beat file written")
     rows = np.loadtxt(out, ndmin=2)
     if rows.size == 0 or rows.shape[1] < 3:
-        return wav.stem, 0.0
+        return wav.stem, 0.0, None
     keep = rows[:, 0] >= 5.0
-    return wav.stem, float(np.median(rows[keep, 2])) if keep.any() else 0.0
+    return wav.stem, float(np.median(rows[keep, 2])) if keep.any() else 0.0, None
 
 
 def accuracy(sys_bpm, ref_bpm, tol=0.04):
@@ -91,25 +96,34 @@ def main(argv):
         wavs = wavs[:a.limit]
     print(f"{cli}\n{len(wavs)} previews with a tempo annotation")
     results = {}
+    any_failed = False
     for weights in a.weights:
         name = Path(weights).stem if ("/" in weights or "\\" in weights or weights.endswith(".bin")) else weights
         with tempfile.TemporaryDirectory(prefix="takt4-gs-") as scratch, \
                 ThreadPoolExecutor(max_workers=a.jobs) as pool:
             rows = list(pool.map(lambda w: run_one(cli, w, weights, scratch), wavs))
-        per = {}
-        for stem, bpm in rows:
-            a1, a2 = accuracy(bpm, refs[stem]) if bpm is not None else (0, 0)
+        per, failures = {}, {}
+        for stem, bpm, error in rows:
+            if error is not None:
+                # Not a wrong tempo: the CLI did not run, which says nothing about the
+                # weights. Counted as a miss, a broken build read as a worse model (P8).
+                failures[stem] = error
+                continue
+            a1, a2 = accuracy(bpm, refs[stem])
             per[stem] = {"ref": refs[stem], "published": bpm, "acc1": a1, "acc2": a2}
-        failed = sum(1 for _, b in rows if b is None)
-        summary = {"n": len(per), "failed": failed,
-                   "acc1": float(np.mean([p["acc1"] for p in per.values()])),
-                   "acc2": float(np.mean([p["acc2"] for p in per.values()]))}
+        summary = {"n": len(per), "failed": len(failures),
+                   "acc1": float(np.mean([p["acc1"] for p in per.values()])) if per else 0.0,
+                   "acc2": float(np.mean([p["acc2"] for p in per.values()])) if per else 0.0}
         results[name] = summary
         save_json(WORK / f"giantsteps.{name}.json", {"weights": weights, "cli": str(cli),
-                                                       "summary": summary, "tracks": per})
+                                                       "summary": summary, "tracks": per,
+                                                       "failures": failures})
         print(f"{name:<24} n={summary['n']}  tempo acc1 {summary['acc1']:.4f}  acc2 {summary['acc2']:.4f}"
-              + (f"  ({failed} failed)" if failed else ""))
+              + (f"  -- {len(failures)} of {len(rows)} FAILED to run, e.g. "
+                 f"{next(iter(failures.items()))}; not a measurement of this set" if failures else ""))
+        any_failed |= bool(failures)
+    return 1 if any_failed else 0
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

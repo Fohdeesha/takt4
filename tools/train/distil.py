@@ -28,11 +28,12 @@ digits only) is closest by difflib, at 0.8 or better and alone at the top, is ta
 What cannot be resolved is listed in `unresolved.txt`, and a track listed twice is
 labelled once.
 
-**Names.** A track is written as `<artist>-<album>-<file>`: its path below the common root
-of every source, joined with `-`, each part reduced to `[A-Za-z0-9._-]` — so the 23
-harness tracks are recognisable to layout.py's held-out check by their file names, and a
-`01 Intro` from one album does not collide with another's. `sources.tsv` maps every stem
-back to the file it came from.
+**Names.** A track is written as `<artist>-<album>-<file>`: its path below the naming root
+(the common root of the first run's sources, kept in `naming_root.txt`), joined with `-`,
+each part reduced to `[A-Za-z0-9._-]` — so the 23 harness tracks are recognisable to
+layout.py's held-out check by their file names, and a `01 Intro` from one album does not
+collide with another's. `sources.tsv` maps every stem back to the file it came from, and a
+file keeps its stem on every later run, whatever else is added (`assign_stems`).
 
 For every track this writes under references/datasets/library/ (git-ignored):
 
@@ -72,17 +73,72 @@ def safe_part(text):
 
 
 def stem_for(src, root):
-    """`<artist>-<album>-<file>`: the path below `root`, without the suffix."""
+    """`<artist>-<album>-<file>`: the path below `root`, without the suffix; for a file
+    outside `root`, its last three path components."""
     try:
         rel = src.relative_to(root)
     except ValueError:
-        rel = Path(src.name)
+        rel = Path(*src.parts[-3:])
     parts = [safe_part(p) for p in rel.parts[:-1]] + [safe_part(src.stem)]
     stem = "-".join(p for p in parts if p) or "track"
     if len(stem) > MAX_STEM:
         keep = (MAX_STEM - 1) // 2
         stem = stem[:keep] + "~" + stem[-keep:]
     return stem
+
+
+def assign_stems(files, out):
+    """({source: stem}, naming root): the stem a file had on an earlier run, and a new one
+    only for a file never seen; `sources.tsv` records every stem ever given.
+
+    The root used to be the common root of whatever this run was given, so a source from
+    another folder or share moved it and renamed every track — and a track's stem is its id
+    in the manifest, its split, its flags and its teacher_cross row (the 2026-09-25 audit's
+    P14). The root is now fixed the first time and kept in `naming_root.txt`; a map written
+    before then gives it, as the common root of the files it names."""
+    tsv, root_file = out / "sources.tsv", out / "naming_root.txt"
+    known, order = {}, []
+    if tsv.exists():
+        for line in tsv.read_text(encoding="utf-8").splitlines():
+            stem, _, src = line.partition("\t")
+            if stem and src:
+                known.setdefault(os.path.normcase(src), (stem, src))
+                order.append(os.path.normcase(src))
+    if root_file.exists():
+        root = Path(root_file.read_text(encoding="utf-8").strip())
+    else:
+        basis = [src for _, src in known.values()] or [str(p) for p in files]
+        try:
+            root = Path(os.path.commonpath(basis)) if len(basis) > 1 else Path(basis[0]).parent
+        except ValueError:                                  # sources on different drives
+            root = Path(Path(basis[0]).anchor)
+        if root.is_file():
+            root = root.parent
+        out.mkdir(parents=True, exist_ok=True)
+        root_file.write_text(f"{root}\n", encoding="utf-8", newline="\n")
+
+    used = {stem: key for key, (stem, _) in known.items()}
+    stems = {}
+    for src in files:
+        key = os.path.normcase(str(src))
+        if key in known:
+            stems[src] = known[key][0]
+            continue
+        stem = stem_for(src, root)
+        if used.get(stem, key) != key:
+            k = 2
+            while used.get(f"{stem}_{k}", key) != key:
+                k += 1
+            stem = f"{stem}_{k}"
+        used[stem] = key
+        stems[src] = stem
+        known[key] = (stem, str(src))
+        order.append(key)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(tsv, "w", encoding="utf-8", newline="\n") as f:
+        for key in dict.fromkeys(order):
+            f.write(f"{known[key][0]}\t{known[key][1]}\n")
+    return stems, root
 
 
 # ---------------------------------------------------------------------------------------
@@ -325,24 +381,7 @@ def main(argv):
               f"listed in {a.out / 'unresolved.txt'}", flush=True)
     if not files:
         raise SystemExit("no audio files found")
-    root = Path(os.path.commonpath([str(p) for p in files])) if len(files) > 1 else files[0].parent
-    if root.is_file():
-        root = root.parent
-
-    # Stems, unique and deterministic for a given file list; sources.tsv records the map.
-    stems, used = {}, {}
-    for src in files:
-        stem = stem_for(src, root)
-        if used.get(stem, src) != src:
-            k = 2
-            while used.get(f"{stem}_{k}", src) != src:
-                k += 1
-            stem = f"{stem}_{k}"
-        used[stem] = src
-        stems[src] = stem
-    with open(a.out / "sources.tsv", "w", encoding="utf-8", newline="\n") as f:
-        for src in files:
-            f.write(f"{stems[src]}\t{src}\n")
+    stems, root = assign_stems(files, a.out)
 
     if a.limit:
         files = files[:a.limit]

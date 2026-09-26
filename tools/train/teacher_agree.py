@@ -15,7 +15,8 @@ teacher is wrong — use this to **exclude or downweight, never to relabel**.
     python tools/train/teacher_agree.py --set library --limit 150 --out sample.tsv
 
 Writes `<dataset>/teacher_cross.tsv`: stem, madmom BPM, teacher BPM, beat F, downbeat F,
-BPM ratio. Resumable — rows already present are kept and their tracks skipped, so a run
+BPM ratio, and what madmom read (the original file, or the 22.05 kHz WAV where none was
+found; empty on the rows written before 2026-09-26, which all read the WAV). Resumable — rows already present are kept and their tracks skipped, so a run
 that is killed mid-way (and it should be killed if the operator needs the machine) picks up
 where it stopped. `--workers` costs that many cores for the duration; madmom is 25–150 s a
 track, so the full 1,326-track library is a few hours at 4.
@@ -34,12 +35,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import DATASETS  # noqa: E402
 
 BEATS_PER_BAR = [4]     # the decoder the rig runs since 0.9.1; §7.13.3
-TRIM = 5.0              # mir_eval's convention here and in tools/refeval/score.py
-HEADER = "stem\tmadmom_bpm\tteacher_bpm\tbeatF\tdownbeatF\tbpm_ratio\n"
+TRIM = 5.0              # off both ends, as tools/refeval/score.py trims; mir_eval's
+                        # trim_beats, and so evaluate.py, take only the first five seconds
+HEADER = "stem\tmadmom_bpm\tteacher_bpm\tbeatF\tdownbeatF\tbpm_ratio\tinput\n"
 
 
 def row_text(r):
-    return f"{r[0]}\t{r[1]:.2f}\t{r[2]:.2f}\t{r[3]:.4f}\t{r[4]:.4f}\t{r[5]:.3f}\n"
+    """One row; `input` is what madmom read ("source", "wav 22050 Hz"), empty on a row
+    written before it was recorded — every one of those came from the WAV."""
+    return f"{r[0]}\t{r[1]:.2f}\t{r[2]:.2f}\t{r[3]:.4f}\t{r[4]:.4f}\t{r[5]:.3f}\t{r[6]}\n"
 
 
 def load_beats(path):
@@ -128,7 +132,8 @@ def main():
             p = line.split("\t")
             if len(p) >= 6:
                 try:                                  # a kill can truncate the last line
-                    done[p[0]] = tuple([p[0]] + [float(x) for x in p[1:6]])
+                    done[p[0]] = tuple([p[0]] + [float(x) for x in p[1:6]]
+                                       + [p[6] if len(p) > 6 else ""])
                 except ValueError:
                     pass
         print(f"resuming: {len(done)} rows already in {out.name}")
@@ -138,9 +143,24 @@ def main():
         random.seed(a.seed)
         random.shuffle(stems)
         stems = stems[:a.limit]
-    jobs = [(s, audio / f"{s}.wav", annos / f"{s}.beats") for s in stems
+    # madmom is given the original file where the set records one (distil.py's
+    # sources.tsv), not the 22.05 kHz WAV every other tool reads: its filterbank reaches
+    # 17 kHz and its networks were trained on 44.1 kHz audio, and a WAV at 22.05 kHz leaves
+    # everything above 11 kHz empty (the 2026-09-25 audit's P12; measured on 2026-09-26 in
+    # tests/data/tracking/refeval/README.md). The rows written before then were all made
+    # from the WAVs; their `input` column is empty.
+    sources = {}
+    if (root / "sources.tsv").exists():
+        for line in (root / "sources.tsv").read_text(encoding="utf-8").splitlines():
+            stem, _, src = line.partition("\t")
+            if stem and src and Path(src).exists():
+                sources[stem] = Path(src)
+    jobs = [(s, sources.get(s, audio / f"{s}.wav"), annos / f"{s}.beats") for s in stems
             if s not in done and (annos / f"{s}.beats").exists()]
-    print(f"{len(stems)} tracks in {a.set}, {len(jobs)} to do, {a.workers} workers",
+    inputs = {s: ("source" if s in sources else "wav 22050 Hz") for s, _, _ in jobs}
+    from_wav = sum(1 for v in inputs.values() if v != "source")
+    print(f"{len(stems)} tracks in {a.set}, {len(jobs)} to do, {a.workers} workers"
+          + (f"; {from_wav} of them from the 22.05 kHz WAV, no original found" if from_wav else ""),
           flush=True)
 
     rows, errors, n = list(done.values()), [], 0
@@ -162,7 +182,7 @@ def main():
                     continue
                 got = score(mt, ml, ann)
                 if got:
-                    rows.append((stem,) + got)
+                    rows.append((stem,) + got + (inputs[stem],))
                     log.write(row_text(rows[-1]))
                     log.flush()
                 if n % 25 == 0:

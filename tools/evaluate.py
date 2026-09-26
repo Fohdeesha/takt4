@@ -147,9 +147,15 @@ def tempo_accuracy(reference, estimate, tolerance=0.04):
     tempo is the same tempo to a listener. The difference between the two is exactly
     what HANDOFF §5.5's octave fold exists to close — and note that no fold can move a
     beat, so this is the only measure a fold can appear in at all.
+
+    A file with no reference tempo cannot be scored and is left out (NaN). A file the tracker
+    published no tempo for is a miss and scores 0 — it used to be left out as well, so a
+    tracker that fell silent on the hard files scored better for it (the 2026-09-25 audit's P8).
     """
-    if not (reference > 0.0) or not (estimate > 0.0):
+    if not (reference > 0.0):
         return float("nan"), float("nan")
+    if not (estimate > 0.0):
+        return 0.0, 0.0
     first = 1.0 if abs(estimate - reference) <= tolerance * reference else 0.0
     second = 0.0
     for ratio in (1.0, 2.0, 0.5, 3.0, 1.0 / 3.0):
@@ -181,6 +187,17 @@ def index_annotations(directory):
     return found
 
 
+def split_args(text):
+    """`--cli-args` as arguments. On Windows the POSIX rules eat every backslash in a path
+    (`--weights D:\\x\\y.bin` arrived as `D:xy.bin`), so there the quotes are honoured and
+    then removed, and the backslashes kept — tools/refeval/run_takt4.py's `split_extra`,
+    which had been fixed while this still did it (the 2026-09-25 audit's P10)."""
+    if os.name != "nt":
+        return shlex.split(text)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t
+            for t in shlex.split(text, posix=False)]
+
+
 def track(cli, audio, options, scratch):
     """Decode one file to what takt4-cli reads, run it, and return its beats."""
     import librosa
@@ -194,7 +211,7 @@ def track(cli, audio, options, scratch):
     command = [str(cli), "track", str(wav), "--out", str(beats),
                "--bpm", options.bpm, "--weights", options.weights,
                "--seed", str(options.seed), "--confidence", str(options.confidence)]
-    command += shlex.split(options.cli_args) if options.cli_args else []
+    command += split_args(options.cli_args) if options.cli_args else []
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{audio.name}: takt4-cli exited {result.returncode}: "

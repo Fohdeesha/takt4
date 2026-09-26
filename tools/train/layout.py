@@ -209,10 +209,34 @@ def layout_harmonix():
     return tracks, {"annotated_without_audio": missing}
 
 
+#: Ballroom clips that are one recording twice (the 2026-09-25 audit's P13), found on
+#: 2026-09-26 from the stored features: onset envelopes correlated above 0.8 at some lag,
+#: and the log spectrograms 0.82 to 1.0 alike frame by frame at that lag, where clips of one
+#: album that are not the same song score 0.49 to 0.66. Fire-08 and -09 are one file filed
+#: under two genres; the rest are one song cut at the same point or a few seconds apart.
+#: Two pairs straddled the split, so a model trained on one clip was scored on its twin:
+#: Latin_Jam2-13 and Media-105816 are among the 70 held-out clips. finetune.py no longer
+#: trains a clip whose twin is in the validation split.
+BALLROOM_DUPLICATES = (
+    ("Albums-Fire-08", "Albums-Fire-09"),
+    ("Albums-Latin_Jam2-05", "Albums-Latin_Jam2-13"),
+    ("Media-105816", "Media-105820"),
+    ("Albums-Latin_Jam-04", "Albums-Latin_Jam-13"),
+    ("Albums-Latin_Jam-08", "Albums-Latin_Jam-14"),
+    ("Albums-Latin_Jam-06", "Albums-Latin_Jam-15"),
+    ("Albums-Latin_Jam2-07", "Albums-Latin_Jam2-15"),
+    ("Albums-Fire-01", "Albums-Fire-14"),
+)
+
+
 def layout_ballroom():
     base = DATASETS / SETS["ballroom"][0]
     junction(base / "audio", BALLROOM_AUDIO)
     junction(base / "annotations", BALLROOM_ANNOTATIONS)
+    twins = {}
+    for a, b in BALLROOM_DUPLICATES:
+        twins.setdefault(a, []).append(b)
+        twins.setdefault(b, []).append(a)
     tracks, missing = [], 0
     for wav in sorted(BALLROOM_AUDIO.rglob("*.wav")):
         beats = BALLROOM_ANNOTATIONS / f"{wav.stem}.beats"
@@ -220,9 +244,11 @@ def layout_ballroom():
             missing += 1
             continue
         times, positions = read_beats(beats)
+        extra = {"duplicates": sorted(twins[wav.stem])} if wav.stem in twins else {}
         tracks.append(track_record("ballroom", wav.stem, wav, beats, times, positions,
-                                   genre=wav.parent.name))
-    return tracks, {"audio_without_annotation": missing}
+                                   genre=wav.parent.name, **extra))
+    return tracks, {"audio_without_annotation": missing,
+                    "duplicate_pairs": len(BALLROOM_DUPLICATES)}
 
 
 def _normalised(name):

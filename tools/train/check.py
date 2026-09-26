@@ -193,10 +193,18 @@ def main(argv):
     ap.add_argument("--sets", nargs="*", default=None)
     ap.add_argument("--weights", default=str(GENERIC_WEIGHTS))
     ap.add_argument("--tag", default=None, help="name for this model's activations and result "
-                                                "file; default: the weights file's stem")
+                                                "file; needed with any --weights but the default")
     ap.add_argument("--report", type=int, default=12, help="worst tracks to list per set")
     ap.add_argument("--force", action="store_true", help="redo tracks already in the result")
     a = ap.parse_args(argv)
+    # alignment.json is the pretrained model's verdict, which finetune.py excludes tracks by;
+    # another model's goes beside it under its own name. Without --tag, other weights used to
+    # be written into alignment.json itself, and their activations cached under the file's
+    # stem — `best` for every run's best.pt (the 2026-09-25 audit's P15).
+    generic = Path(a.weights).resolve() == Path(GENERIC_WEIGHTS).resolve()
+    if a.tag is None and not generic:
+        raise SystemExit(f"--weights {a.weights} needs --tag: its result would otherwise replace "
+                         f"{ALIGNMENT.name}, the pretrained model's, which finetune.py reads")
     lower_priority()
     add_tools_path()
     import torch

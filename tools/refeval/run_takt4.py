@@ -17,15 +17,22 @@ Output goes to references/refeval-work/takt4/<stem>.<tag>.{trace,beats}. Existin
 are **deleted before each run**, and any run that fails makes the script exit non-zero:
 this is the script that measures the build, so it must never hand back a stale result.
 `--only NAME` restricts it to tracks whose stem contains NAME.
+
+Beside them, `<tag>.provenance.json` records, per track, the build that wrote its files —
+the CLI's path, SHA-256 and `--version` — and the options. A run with `--only` leaves the
+other tracks' files and records as they were, so gate.py reads the record to refuse a
+scoring that mixes builds (the 2026-09-25 audit's P7).
 """
 import argparse
+import datetime
+import json
 import os
 import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import AUDIO, TAKT4, cli_path
+from common import AUDIO, TAKT4, cli_identity, cli_path, load_provenance, provenance_path
 
 CONFIGS = {
     "nofold": ["--bpm", "off"],
@@ -104,11 +111,22 @@ def main():
     extra = split_extra(a.extra) if a.extra else []
     print(f"{cli}\n{len(wavs)} tracks x {a.tags} {' '.join(extra)}\n", flush=True)
     jobs = [(cli, w, a.tag or tag, CONFIGS[tag] + extra) for w in wavs for tag in a.tags]
+    identity = cli_identity(cli)
+    when = datetime.datetime.now().isoformat(timespec="seconds")
+    records = {tag: load_provenance(tag) for tag in {j[2] for j in jobs}}
     failed = 0
     with ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        for line, ok in pool.map(lambda j: run(*j), jobs):
+        for (_, wav, tag, options), (line, ok) in zip(jobs, pool.map(lambda j: run(*j), jobs)):
             print(line, flush=True)
             failed += 0 if ok else 1
+            if ok:
+                records[tag][wav.stem] = {**identity, "options": options, "when": when}
+            else:
+                records[tag].pop(wav.stem, None)
+    for tag, record in records.items():
+        with open(provenance_path(tag), "w", encoding="utf-8", newline="\n") as f:
+            json.dump(record, f, indent=1, sort_keys=True)
+            f.write("\n")
     if failed:
         raise SystemExit(f"{failed} of {len(jobs)} runs failed; their files are gone, not stale")
 

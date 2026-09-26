@@ -61,6 +61,9 @@ the test for one file, and writes the C++ features to a `.npy` numpy can load.
 
 The `.npy` files depend on the exact versions of numpy, scipy and madmom (the goldens
 are madmom's float32 arithmetic, not a mathematical ideal). Bumping any of the pins in
-`tools/requirements*.txt` means re-running `tools/make_golden.py` for every excerpt
-(from the source tracks, or from the committed `.wav` files, which are the exact input)
-and `tools/dump_filterbank.py`, then committing the results together with the pin.
+`tools/requirements*.txt` means running `python tools/make_golden.py --regenerate`, which
+recomputes every excerpt's `.npy` from its committed `.wav` (the exact input) and updates
+the package versions in its sidecar, keeping where the excerpt came from; then
+`tools/dump_filterbank.py`, and committing the results together with the pin. Passing a
+committed `.wav` to `make_golden.py` as a source instead reproduces the `.npy` but writes a
+sidecar that describes a ten-second file cut at 0 s.

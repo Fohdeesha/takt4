@@ -26,14 +26,20 @@ noise. If they ever have to be widened, that is a finding.
 
 The baseline lives beside the reference beats it is measured against:
 `tests/data/tracking/refeval/baseline.json`. It was written from the build described in
-its `provenance` field; `--write` records the current one.
+its `provenance` field; `--write` records the build whose files it scored.
+
+**One build at a time.** run_takt4.py records which build wrote each track's files, and the
+gate refuses to score files no record accounts for or files from more than one build. It
+used to score whatever was on disk: after `run_takt4.py --only` on a new build the rest were
+the old build's, and `--write` then named the CLI of the moment rather than the one measured
+(the 2026-09-25 audit's P7).
 """
 import argparse
 import datetime
 import json
 import sys
 
-from common import HARD_EIGHT, REFS, cli_path
+from common import HARD_EIGHT, REFS, load_provenance
 from score import METRICS, score_systems, summarise
 
 BASELINE = REFS / "baseline.json"
@@ -48,6 +54,30 @@ def summaries(scored):
             exclude = tuple(s for s in scored["tracks"] if s not in HARD_EIGHT)
         out[label] = summarise(scored, min_agree, exclude)
     return out
+
+
+def one_build(stems):
+    """The identity of the one build that wrote every scored file; SystemExit otherwise."""
+    builds, unrecorded = {}, []
+    for spec in SYSTEMS:
+        tag = spec.partition(":")[2]
+        record = load_provenance(tag)
+        for stem in stems:
+            made = record.get(stem)
+            if made is None:
+                unrecorded.append(f"{stem}.{tag}")
+                continue
+            builds.setdefault(made["sha256"], (made, []))[1].append(f"{stem}.{tag}")
+    if unrecorded:
+        raise SystemExit(f"{len(unrecorded)} files have no record of the build that wrote them "
+                         f"(e.g. {unrecorded[0]}); run run_takt4.py nofold fold70 again")
+    if len(builds) > 1:
+        raise SystemExit("the files were written by more than one build; run run_takt4.py nofold "
+                         "fold70 again with one:\n  " +
+                         "\n  ".join(f"{made['version'] or made['cli']} ({digest[:12]}): {len(files)} "
+                                     f"files, e.g. {files[0]}" for digest, (made, files) in builds.items()))
+    made = next(iter(builds.values()))[0]
+    return {k: made[k] for k in ("cli", "sha256", "version")}
 
 
 def fmt(value):
@@ -117,6 +147,8 @@ def main(argv):
     if len(fresh["tracks"]) < 23 or missing:
         raise SystemExit(f"only {len(fresh['tracks'])} tracks scored, {len(missing)} without "
                          f"both systems; run decode_all.py and run_takt4.py nofold fold70 first")
+    build = one_build(sorted(fresh["tracks"]))
+    print(f"scoring {build['version'] or build['cli']} (sha256 {build['sha256'][:12]})")
     fresh["summaries"] = summaries(fresh)
 
     print("summary, fresh:")
@@ -128,7 +160,9 @@ def main(argv):
     if a.write:
         fresh["provenance"] = {
             "written": datetime.date.today().isoformat(),
-            "cli": str(cli_path()),
+            "cli": build["cli"],
+            "cli_sha256": build["sha256"],
+            "cli_version": build["version"],
             "note": "tools/refeval/gate.py --write; see tests/data/tracking/refeval/README.md",
         }
         with open(BASELINE, "w", encoding="utf-8", newline="\n") as f:

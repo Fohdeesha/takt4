@@ -4,9 +4,12 @@
     python tools/refeval/score.py --min-agree 0.8 --quiet takt4:nofold     # the agreed-15
 
 Each system argument is DIR or DIR:TAG, where files are <stem>[.TAG].beats with
-'<seconds>\\t<beat in bar>[\\t<bpm>]' rows and downbeat = 1. mir_eval's conventions: 70 ms
-tolerance, the first and last five seconds trimmed — exactly as tools/evaluate.py scores
-Ballroom, so a number here and a number there mean the same thing.
+'<seconds>\\t<beat in bar>[\\t<bpm>]' rows and downbeat = 1. mir_eval's 70 ms tolerance,
+and the first five seconds trimmed as `mir_eval.beat.trim_beats` trims them — and the last
+five seconds too, which trim_beats and tools/evaluate.py do not. Every system here is scored
+that one way, so the harness's numbers compare with each other; a number here and a Ballroom
+number from evaluate.py are close but not the same measure. (Said otherwise until 2026-09-26,
+the 2026-09-25 audit's P9.)
 
 The published tempo is the median of the beat file's third column over the beats after
 5 s when there is one (takt4's `--out` writes it), and 60 over the median beat gap when
