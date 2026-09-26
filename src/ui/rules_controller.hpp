@@ -418,8 +418,8 @@ private:
     ///
     /// **Keyed by rule id, not by position.** A vector indexed by row lost its meaning the
     /// moment a rule was deleted from the middle — every count below it would shift up one
-    /// and start describing a different rule. An id survives reordering, and a preset load
-    /// brings new ids, which is exactly when the counts should start again.
+    /// and start describing a different rule. An id survives reordering; a loaded set starts
+    /// the counts again whatever its ids (`setRules`).
     ///
     /// §5.6's release half is not counted: see `OutputRunner::Fired::followUp`.
     std::unordered_map<std::string, std::uint64_t> firesSeen_;
@@ -434,8 +434,8 @@ private:
     /// is stopped. Keyed by id so that deleting a rule from the middle does not shift every
     /// state below it onto a different rule.
     ///
-    /// Not saved. A preset load brings new ids, which is exactly when these should start
-    /// again — see `trigger::Rule::reset`, which clears the same two on the other side.
+    /// Not saved, and forgotten when a set is loaded (`setRules`): a loaded set starts with none,
+    /// on the running side too (`TriggerEngine::setRules`'s `fresh`), whatever its ids.
     std::unordered_map<std::string, bool> mutedSeen_;
     std::unordered_map<std::string, double> rateSeen_;
     /// `OutputRunner::liveRulesVersion` as `tick` last adopted it. See `adoptLive`.

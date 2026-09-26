@@ -1248,6 +1248,10 @@ void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
     // that is quietly wrong, which is worse than one that reads zero.
     firesSeen_.clear();
     slotsSeen_.clear();
+    // And the mutes and rates last seen on the running rules, which the loaded set starts without
+    // (the audit of 2026-09-25, M11): kept, they showed a rule muted that the new set had not.
+    mutedSeen_.clear();
+    rateSeen_.clear();
     rules_ = std::move(rules);
     resettle(selected_ < 0 ? 0 : selected_);
     publishAll();

@@ -85,10 +85,16 @@ public:
     /// keystroke of a rename included, and rebuilding every rule from its configuration on each
     /// one replayed every bag from its seed and undid a remote enable (the audit's H7).
     ///
+    /// **Unless the set is `fresh`**: a set loaded rather than edited — an IMPORT, a launch — is
+    /// the show as it is written, and nothing of the set it replaces carries over, whatever ids
+    /// the two share. They share them often: `add` numbers ids `rule1`, `rule2`, and the rig
+    /// presets use fixed ones, so an imported show's rule used to come in muted, or at half
+    /// rate, because the old show's rule of the same id had been (the audit of 2026-09-25, M11).
+    ///
     /// **What is owed stays owed, at its own time.** A follow-up carries everything it needs,
     /// so the ones already queued go out when they are due whatever the rules become — a
     /// release fired early by an edit cut a laser clip or a fade short.
-    void setRules(const std::vector<Rule::Config>& rules);
+    void setRules(const std::vector<Rule::Config>& rules, bool fresh = false);
 
     /// Moves every queued follow-up's routing after the outputs (`outputs`) or the patch
     /// (`fixtures`) changed — see `remapBits`. Empty leaves that half alone. A release owed to

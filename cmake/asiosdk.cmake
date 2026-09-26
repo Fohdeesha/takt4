@@ -5,9 +5,10 @@
 # `if(PA_USE_ASIO AND TARGET ASIO::host)` branch uses the vendored SDK and never reaches
 # its fallback of downloading the SDK from steinberg.net at configure time.
 #
-# host/pc/asiolist.cpp is patched in three places — see the replacements below: an array
-# allocated with new[] freed with plain delete (PortAudio patches that line too), a driver
-# name copied unbounded into a 128-byte field, and a missing-DLL check that could never fail.
+# host/pc/asiolist.cpp is patched — see the replacements below — for an array allocated with
+# new[] freed with plain delete (PortAudio patches that line too), a driver name copied unbounded
+# into a 128-byte field, and a missing-DLL check that could never fail and, once it could, asked
+# a question OpenFile cannot answer for a long or unexpanded path.
 # The patched copy is written to the build tree so the vendored SDK stays byte-identical to
 # Steinberg's package.
 
@@ -69,6 +70,16 @@ takt4_patch_asiolist("the key name copy"
 # down at load with a fault nothing can catch (PortAudio #960, #1148), so one whose DLL is not
 # even there is not tried.
 takt4_patch_asiolist("the missing-DLL check" "if (hfile) rc = 0;" "if (hfile != HFILE_ERROR) rc = 0; /* takt4 */")
+# And the question itself is asked of Windows rather than of OpenFile, which cannot answer it for
+# a path of 127 bytes or more, nor for the `%SystemRoot%\...` a REG_EXPAND_SZ holds: read the
+# right way round, OpenFile hid drivers that work (the audit of 2026-09-25, M9). See
+# src/core/audio/asio_dll_check.hpp, which tests/audio/asio_dll_check_test.cpp holds to it.
+takt4_patch_asiolist("the missing-DLL check's question"
+  "hfile = OpenFile(dllpath,&ofs,OF_EXIST);"
+  "hfile = takt4::audio::asioDriverDllPresent(dllpath, (std::size_t)dllpathsize) ? 1 : HFILE_ERROR; /* takt4 */")
+takt4_patch_asiolist("the missing-DLL check's header"
+  "#include \"asiolist.h\""
+  "#include \"asiolist.h\"\n#include \"${PROJECT_SOURCE_DIR}/src/core/audio/asio_dll_check.hpp\" /* takt4 */")
 
 # Only rewrite when the content changes, so a reconfigure doesn't force a rebuild.
 set(asiolist_existing "")

@@ -236,6 +236,12 @@ constexpr std::uint16_t kNewTargetPort = 9000;
 constexpr double kOutageFirstTrySeconds = 1.0;
 constexpr double kOutageRetrySeconds = 2.0;
 constexpr double kOutageRescanSeconds = 10.0;
+/// How soon after the last outage ended a new one goes on counting its tries rather than starting
+/// from nothing: an input that is back for moments at a time is one outage, not many (M8).
+constexpr double kOutageCarrySeconds = 30.0;
+/// How long what the window met on the way up stays on the status line, joined by what it finds
+/// out on its own, before anything may replace it (M13). Long enough to be read.
+constexpr double kStartupHoldSeconds = 15.0;
 
 /// START and STOP as the button presses them (the audit's M23; see
 /// `WindowController::requestToggleRun`). Long enough for the window to draw "OPENING…" before
@@ -710,13 +716,18 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // **Every error the window met on the way up, not only the last** (the audit's M25). Each
     // `setStatus` replaces the one before, so a launch that found the MIDI clock port missing
     // and the OSC control port taken said only the second, and the first was never seen.
+    //
+    // **And one as well as several** (the audit of 2026-09-25, M13): a single error was left
+    // where it was, and the constructor's own later news — "Control input on …", "pick an input
+    // and press Start" — wrote over it before the window was up. The ASIO scan's problem, "N
+    // rules will not fire" and a bad OSC prefix were each lost that way.
     constructing_ = false;
-    if (startupErrors_.size() > 1) {
+    if (!startupErrors_.empty()) {
         std::string all;
         for (const std::string& error : startupErrors_) {
             all += (all.empty() ? "" : "  ·  ") + error;
         }
-        setStatus(all, true);
+        holdStartupMessage(all);
     }
     startupErrors_.clear();
 
@@ -971,6 +982,8 @@ void WindowController::toggleRun() {
     if (wantRunning_ || tracker_.running()) {
         wantRunning_ = false;
         outage_.reset();
+        outageEndedAt_ = -1.0;
+        nothingPlaying_ = false;
         input_.reset();
         window_->set_input_lost(false);
         window_->set_input_trouble(shared(""));
@@ -1019,6 +1032,7 @@ void WindowController::toggleRun() {
     // After the tracker, so the MIDI clock does not tick for a run that failed to open.
     runner_.setTracking(true);
     wantRunning_ = true;
+    nothingPlaying_ = false;
     input_ = tracker_.current();
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
     inputTroubleShown_ = {};
@@ -1071,11 +1085,26 @@ void WindowController::beginOutageOn(const engine::LiveTracker::Running& input, 
     beginOutage("No audio from " + input.device.name, now, now);
 }
 
+void WindowController::assumeRunningOn(const engine::LiveTracker::Running& input, double now) {
+    wantRunning_ = true;
+    input_ = input;
+    outage_.reset();
+    nothingPlaying_ = false;
+    watchdog_.reset(input.device.defaultSampleRate, now);
+    window_->set_running(true);
+}
+
 void WindowController::beginOutage(const std::string& why, double since, double now) {
     Outage outage;
     outage.since = since;
     outage.nextTry = now + kOutageFirstTrySeconds;
     outage.why = why;
+    // An input that came back for a moment and went again goes on counting, so the rescan every
+    // third try is still reached (the audit of 2026-09-25, M8): each return used to start the
+    // count from nothing, and an input that kept flapping never had the machine looked at again.
+    if (outageEndedAt_ >= 0.0 && now - outageEndedAt_ < kOutageCarrySeconds) {
+        outage.tries = outageEndedTries_;
+    }
     outage_ = outage;
     window_->set_input_lost(true);
     // The meter goes to nothing rather than holding its last reading: it is the first thing an
@@ -1107,7 +1136,32 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     const std::string name = input_ ? input_->device.name : std::string("the input");
 
     if (outage_) {
-        if (now < outage_->nextTry) {
+        // **Back when the reopened input sends something, not when it opens** (the audit of
+        // 2026-09-25, M8). A reopen that merely opened was announced as "Audio is back" and
+        // ended the outage before a single callback, so an input that opens and then sends
+        // nothing — a loopback of an idle output is exactly that — flipped between "No audio"
+        // and "Audio is back" every few seconds, restarting the tracker each time.
+        if (outage_->reopened) {
+            const audio::InputStream* stream = tracker_.stream();
+            if (stream != nullptr && stream->counters().callbacks > 0) {
+                const double lasted = now - outage_->since;
+                outageEndedAt_ = now;
+                outageEndedTries_ = outage_->tries;
+                outage_.reset();
+                window_->set_input_lost(false);
+                setStatus("Audio is back from " + name + " after " + fixed(lasted, 0) +
+                              " s without it; reopened at " + fixed(stream->sampleRate(), 0) +
+                              " Hz.",
+                          false); // fixed, so not red — see `restartInput`
+                return;
+            }
+            if (now < outage_->nextTry) {
+                return;
+            }
+            // Open, and nothing came: that was a try. Closed again for the next.
+            tracker_.stop();
+            outage_->reopened = false;
+        } else if (now < outage_->nextTry) {
             return;
         }
         ++outage_->tries;
@@ -1130,13 +1184,11 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         }
         std::string error;
         if (reopenInput(error)) {
-            const double lasted = now - outage_->since;
-            outage_.reset();
-            window_->set_input_lost(false);
-            setStatus("Audio is back from " + name + " after " + fixed(lasted, 0) +
-                          " s without it; reopened at " +
-                          fixed(tracker_.stream()->sampleRate(), 0) + " Hz.",
-                      false); // fixed, so not red — see `restartInput`
+            outage_->reopened = true;
+            outage_->nextTry = now + kOutageRetrySeconds;
+            setStatus(outage_->why + " — reopened after " + fixed(now - outage_->since, 0) +
+                          " s, waiting for it to send audio...",
+                      true);
         } else {
             outage_->nextTry = now + kOutageRetrySeconds;
             setStatus(outage_->why + " — still no audio after " +
@@ -1196,8 +1248,33 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         window_->set_input_trouble(shared(joined(parts)));
     }
 
+    // A loopback that had gone quiet and is sending again.
+    if (nothingPlaying_ && reading.verdict == audio::InputWatchdog::Verdict::Healthy) {
+        nothingPlaying_ = false;
+        setStatus("Sound on " + name + " again.", false);
+    }
+
     switch (reading.verdict) {
     case audio::InputWatchdog::Verdict::Silent:
+        // **A loopback's silence is nothing playing, not a dead input** (the audit of 2026-09-25,
+        // M8, and the operator's call on its Q4). Windows sends a loopback nothing at all while
+        // nothing plays on the output it captures — measured: 0 hops in 3 s from an idle output's
+        // loopback — so a paused player read as an unplugged interface, and was reopened every
+        // few seconds, the tracker restarting each time. Said once, and the stream left open for
+        // whatever plays next.
+        if (input_ && input_->device.isLoopback) {
+            if (!nothingPlaying_) {
+                nothingPlaying_ = true;
+                peak_ = 0.0f;
+                window_->set_input_level(0.0f);
+                window_->set_input_peak(0.0f);
+                window_->set_input_reading(shared("nothing playing"));
+                setStatus("Nothing is playing on " + name +
+                              ". takt4 is listening, and follows it as soon as something plays.",
+                          false);
+            }
+            break;
+        }
         beginOutage("No audio from " + name, now - reading.silentForSeconds, now);
         break;
     case audio::InputWatchdog::Verdict::RateChanged: {
@@ -1816,8 +1893,10 @@ void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
     editor_.setRules(rules_);
     // The whole set, every time. A rule is small and the set is short, so there is no
     // reason for a finer command — and replacing wholesale is what a preset load does, so
-    // the editor and the loader take one road rather than two.
-    runner_.post(output::OutputCommand::rules(rules_));
+    // the editor and the loader take one road rather than two. **Fresh**, because this is a
+    // load — the launch and IMPORT — and not an edit: nothing of the set running before carries
+    // over, however its ids match (the audit of 2026-09-25, M11).
+    runner_.post(output::OutputCommand::rules(rules_, /*fresh=*/true));
 
     // §5.8's other policy: an invalid rule is *held* and refuses to fire, rather than being
     // refused on the way in. Nothing else would tell an operator, so this does — and it
@@ -2350,9 +2429,34 @@ void WindowController::enableAutosave(std::filesystem::path file, double quietSe
 }
 
 void WindowController::showNotice(const std::string& text) {
-    if (!text.empty()) {
-        setStatus(text, true);
+    if (text.empty()) {
+        return;
     }
+    // In front of what the window met on the way up rather than over it: the rig file's own
+    // state is the first thing to read, and the rest still has to be read (M13).
+    holdStartupMessage(startupMessage_.empty() ? text : text + "  ·  " + startupMessage_);
+}
+
+void WindowController::holdStartupMessage(const std::string& text) {
+    startupMessage_ = text;
+    startupHeldUntil_ = nowSeconds() + kStartupHoldSeconds;
+    showStatus(text, true);
+}
+
+void WindowController::report(const std::string& text, bool error) {
+    // **What the window finds out on its own, in its first seconds, joins what it met starting
+    // rather than replacing it** (the audit of 2026-09-25, M13). The first redraw said which
+    // outputs could not be reached — over a damaged settings file's notice, before anybody could
+    // have read that. Anything the operator does says what it did as usual (`setStatus`), and
+    // after the hold everything does.
+    if (!startupMessage_.empty() && nowSeconds() < startupHeldUntil_) {
+        if (startupMessage_.find(text) == std::string::npos) {
+            startupMessage_ += "  ·  " + text;
+        }
+        showStatus(startupMessage_, true);
+        return;
+    }
+    setStatus(text, error);
 }
 
 void WindowController::autosave(double now) {
@@ -2571,9 +2675,9 @@ void WindowController::publishOutputProblems(const std::vector<std::string>& pro
             text += text.empty() ? "" : "; ";
             text += problem;
         }
-        setStatus("outputs: " + text + ".", true);
+        report("outputs: " + text + ".", true);
     } else if (problems.empty() && !outputProblemsShown_.empty()) {
-        setStatus("outputs: every output can be reached again.", false);
+        report("outputs: every output can be reached again.", false);
     }
     outputProblemsShown_ = problems;
 }
@@ -2588,9 +2692,9 @@ void WindowController::publishLostMidi(const std::vector<std::string>& lost,
     // it back once a second.
     for (const std::string& name : lost) {
         if (std::find(lostMidiShown_.begin(), lostMidiShown_.end(), name) == lostMidiShown_.end()) {
-            setStatus("MIDI device \"" + name +
-                          "\" has stopped responding — unplugged? takt4 keeps trying to reopen it.",
-                      true);
+            report("MIDI device \"" + name +
+                       "\" has stopped responding — unplugged? takt4 keeps trying to reopen it.",
+                   true);
         }
     }
     for (const std::string& name : lostMidiShown_) {
@@ -2603,7 +2707,7 @@ void WindowController::publishLostMidi(const std::vector<std::string>& lost,
                    target.device == name;
         });
         if (used && std::find(lost.begin(), lost.end(), name) == lost.end()) {
-            setStatus("MIDI device \"" + name + "\" is back.", false);
+            report("MIDI device \"" + name + "\" is back.", false);
         }
     }
     lostMidiShown_ = lost;
@@ -2694,6 +2798,12 @@ void WindowController::setStatus(const std::string& text, bool error) {
     if (constructing_ && error) {
         startupErrors_.push_back(text); // shown together once the window is up; see there
     }
+    // Whatever the window says now is news the startup message gives way to (M13; see `report`).
+    startupMessage_.clear();
+    showStatus(text, error);
+}
+
+void WindowController::showStatus(const std::string& text, bool error) {
     statusIsError_ = error;
     // Through `shared`, and so through `io::validUtf8`: this is where exception messages land,
     // and those carry driver and device names in whatever encoding their library used.

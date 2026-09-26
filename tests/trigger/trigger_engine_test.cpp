@@ -646,6 +646,25 @@ TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
         CHECK(sink.sent.size() == 2);
     }
 
+    SECTION("but a set that was loaded, not edited, starts afresh whatever its ids") {
+        // The audit of 2026-09-25, M11: an IMPORT whose rule shares an id with the show before
+        // took that rule's mute, rate, switch and place in its bag.
+        config.value = fixedAt(1);
+        engine.setRules({config});
+        engine.onBeat(beatAt(1, 1, 1, 0.0));
+        engine.find("clips")->setMuted(true);
+        engine.find("clips")->setRate(2.0);
+        engine.find("clips")->setEnabled(false);
+        REQUIRE(engine.find("clips")->fires() == 1);
+        engine.setRules({config}, /*fresh=*/true);
+        const Rule* loaded = engine.find("clips");
+        REQUIRE(loaded != nullptr);
+        CHECK_FALSE(loaded->muted());
+        CHECK(loaded->rate() == 1.0);
+        CHECK(loaded->enabled());
+        CHECK(loaded->fires() == 0);
+    }
+
     SECTION("a rule switched off from outside stays off through an edit") {
         engine.setRules({config});
         engine.find("clips")->setEnabled(false); // /ctl/rule/clips/enable 0

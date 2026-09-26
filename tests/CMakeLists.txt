@@ -7,6 +7,7 @@
 add_executable(takt4_tests
   build_info_test.cpp
   sandbox_test.cpp
+  audio/asio_dll_check_test.cpp
   audio/asio_scan_test.cpp
   audio/channel_picker_test.cpp
   cli/console_test.cpp

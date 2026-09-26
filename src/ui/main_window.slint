@@ -1967,11 +1967,18 @@ export component MainWindow inherits Window {
           // Stops short of the version and the buttons, which never change and so must never
           // be the thing that gets elided.
           width: build.x - 16px - 12px;
-          height: 100%;
+          // **As tall as what it says, up to the bar's height, centred in the bar, and aligned
+          // to its own top** (the audit of 2026-09-25, M12). Centred text a bar tall is laid out
+          // from the middle and clipped at both ends, so a message longer than two lines lost its
+          // first line — which is always what failed — and showed its middle. Aligned to the top,
+          // it is the end that goes, into the ellipsis; and a box only as tall as the text keeps
+          // one line in the middle of the bar, where the version beside it is.
+          height: min(self.preferred-height, parent.height);
+          y: (parent.height - self.height) / 2;
           text: root.status;
           color: root.status-is-error ? Theme.holding : Theme.dim;
           font-size: 12px;
-          vertical-alignment: center;
+          vertical-alignment: top;
           // Two lines before it elides — the bar is tall enough for them. One line cut every
           // longer message off, and the longest are the ones that say what to do: an ASIO
           // interface held by another program, a port taken, every output that cannot be

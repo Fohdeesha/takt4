@@ -656,6 +656,65 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     CHECK(removed.front() == shown);
 }
 
+TEST_CASE("a status longer than the bar keeps its first line and loses its end", "[ui]") {
+    // The audit of 2026-09-25, M12. The status text was centred in a bar two lines tall, so a
+    // message of more lines was laid out from the middle and clipped at both ends: what failed —
+    // the first line — was never drawn. The message here says which line is which in ink: a first
+    // line that starts with W's, dense — ten words of them, less than a line at this width — and
+    // many lines of full stops, nearly no ink at all. The top line of the bar has to be the dense
+    // one.
+    auto window = MainWindow::create();
+    std::string message;
+    for (int i = 0; i < 10; ++i) {
+        message += "WWWWW ";
+    }
+    for (int i = 0; i < 1500; ++i) {
+        message += ". ";
+    }
+    constexpr int kWidth = 1000;
+    constexpr int kHeight = 760;
+    constexpr int kBar = 34;
+    // Ink: pixels unlike the bar's own colour, in the text's stretch of it, by row.
+    const auto inkByRow = [&](const takt4::tests::Shot& shot) {
+        const slint::Rgb8Pixel bar = shot.at(4, kHeight - 2);
+        std::vector<int> rows(kBar, 0);
+        for (int y = kHeight - kBar; y < kHeight; ++y) {
+            for (int x = 16; x < 500; ++x) {
+                const slint::Rgb8Pixel p = shot.at(x, y);
+                const int d = std::abs(p.r - bar.r) + std::abs(p.g - bar.g) + std::abs(p.b - bar.b);
+                rows[static_cast<std::size_t>(y - (kHeight - kBar))] += d > 60 ? 1 : 0;
+            }
+        }
+        return rows;
+    };
+
+    window->set_status(slint::SharedString(message));
+    const std::vector<int> rows = inkByRow(takt4::tests::render(*window, kWidth, kHeight));
+    int top = 0;
+    int bottom = 0;
+    for (int y = 0; y < kBar; ++y) {
+        (y < kBar / 2 ? top : bottom) += rows[static_cast<std::size_t>(y)];
+    }
+    INFO("ink in the bar's top half " << top << ", bottom half " << bottom);
+    CHECK(top > 3 * bottom); // the W's, above the full stops
+    CHECK(bottom > 0);       // and a second line under them
+
+    SECTION("and a message of one line sits in the middle of the bar, beside the version") {
+        window->set_status(slint::SharedString("Ready."));
+        const std::vector<int> one = inkByRow(takt4::tests::render(*window, kWidth, kHeight));
+        double weighted = 0.0;
+        int total = 0;
+        for (int y = 0; y < kBar; ++y) {
+            weighted += y * one[static_cast<std::size_t>(y)];
+            total += one[static_cast<std::size_t>(y)];
+        }
+        REQUIRE(total > 0);
+        const double centre = weighted / total;
+        INFO("the line's ink centres " << centre << " px into a " << kBar << " px bar");
+        CHECK(std::abs(centre - kBar / 2.0) < 3.0);
+    }
+}
+
 TEST_CASE("the fold window reaches the window unchanged", "[ui]") {
     // HANDOFF §7 deviation 4: the operator has to be able to see the octave-fold window,
     // because outside it the fold turns a right answer into a wrong one.
@@ -2554,10 +2613,20 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     // Still running as far as the operator is concerned: STOP is what the button offers.
     CHECK(controller.window().get_running());
 
-    // Not before its time, and then reopened: the stream is open again and the readout clear.
+    // Not before its time, and then reopened — and not back until it has sent something, which
+    // an interface does within milliseconds of opening (the audit of 2026-09-25, M8).
     controller.superviseInput(Reading{}, nothing, 100.5);
     CHECK(controller.window().get_input_lost());
     controller.superviseInput(Reading{}, nothing, 101.1);
+    CHECK(tracker.running());
+    CHECK(controller.window().get_input_lost());
+    CHECK(std::string(controller.window().get_status()).find("waiting for it to send audio") !=
+          std::string::npos);
+    const auto sent = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (tracker.stream()->counters().callbacks == 0 && std::chrono::steady_clock::now() < sent) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    controller.superviseInput(Reading{}, nothing, 101.2);
     CHECK_FALSE(controller.window().get_input_lost());
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("Audio is back") != std::string::npos);
@@ -2583,14 +2652,189 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
           std::string::npos);
     CHECK_FALSE(controller.statusIsError());
 
-    // And STOP during an outage stops, rather than reading "not running" and starting.
+    // Silent again three seconds after it came back: the same trouble, so the count goes on from
+    // the one try the last outage took rather than from nothing (M8) — an input that keeps coming
+    // back for a moment would otherwise never reach the look at the device list every third try.
     controller.superviseInput(silent, nothing, 104.0);
     REQUIRE(controller.window().get_input_lost());
+    CHECK(controller.outageTries() == std::optional<int>(1));
+
+    // And STOP during an outage stops, rather than reading "not running" and starting.
     controller.toggleRun();
     CHECK_FALSE(controller.wantsRunning());
     CHECK_FALSE(tracker.running());
     CHECK_FALSE(controller.window().get_input_lost());
     CHECK_FALSE(controller.window().get_running());
+    CHECK_FALSE(controller.outageTries().has_value());
+}
+
+TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes quiet is reopened",
+          "[ui]") {
+    // The audit of 2026-09-25, M8, and the operator's call on its Q4. Windows sends a loopback
+    // nothing at all while nothing plays on the output it captures, so a paused player read as
+    // an unplugged interface: "No audio", a reopen, "Audio is back", and again, every few
+    // seconds, the tracker restarting each time. A loopback's silence is said as what it is and
+    // waited out; an interface's is still an outage.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    using Reading = takt4::audio::InputWatchdog::Reading;
+    using Verdict = takt4::audio::InputWatchdog::Verdict;
+    const auto device = [](const char* name, bool loopback) {
+        InputDevice made;
+        made.name = name;
+        made.hostApi = takt4::audio::HostApiKind::Wasapi;
+        made.hostApiName = "Windows WASAPI";
+        made.maxInputChannels = 2;
+        made.defaultSampleRate = 44100.0;
+        made.isLoopback = loopback;
+        return made;
+    };
+    Reading silent;
+    silent.verdict = Verdict::Silent;
+    silent.silentForSeconds = 0.6;
+    Reading healthy;
+    healthy.verdict = Verdict::Healthy;
+    const auto status = [&controller] { return std::string(controller.window().get_status()); };
+
+    SECTION("a loopback") {
+        controller.assumeRunningOn({device("Speakers [Loopback]", true),
+                                    takt4::audio::ChannelSelection::single(0)},
+                                   100.0);
+        controller.superviseInput(silent, {}, 100.6);
+        const std::string said = status();
+        INFO(said);
+        CHECK(said.find("Nothing is playing on Speakers [Loopback]") != std::string::npos);
+        CHECK_FALSE(controller.statusIsError());
+        CHECK_FALSE(controller.window().get_input_lost());
+        CHECK(std::string(controller.window().get_input_reading()) == "nothing playing");
+        CHECK(controller.wantsRunning());
+        // And it waits, however long: nothing reopened, nothing said again.
+        for (double now = 101.0; now < 160.0; now += 0.5) {
+            controller.superviseInput(silent, {}, now);
+        }
+        CHECK(status() == said);
+        CHECK_FALSE(controller.window().get_input_lost());
+        // Something plays.
+        controller.superviseInput(healthy, {}, 160.0);
+        CHECK(status().find("Sound on Speakers [Loopback] again") != std::string::npos);
+        CHECK_FALSE(controller.statusIsError());
+    }
+
+    SECTION("an interface") {
+        controller.assumeRunningOn({device("In 1-2 (MOTU Pro Audio)", false),
+                                    takt4::audio::ChannelSelection::single(0)},
+                                   100.0);
+        controller.superviseInput(silent, {}, 100.6);
+        CHECK(controller.window().get_input_lost());
+        CHECK(status().find("No audio from In 1-2 (MOTU Pro Audio)") != std::string::npos);
+        CHECK(controller.statusIsError());
+    }
+}
+
+namespace {
+
+/// A loopback on this machine that nothing is playing on, found by opening each for a second
+/// and a half and seeing whether anything arrives. Nothing if every one has something playing.
+std::optional<InputDevice> idleLoopback(LiveTracker& tracker) {
+    for (const InputDevice& device : tracker.devices()) {
+        if (!device.isLoopback) {
+            continue;
+        }
+        try {
+            tracker.start(device, takt4::audio::ChannelSelection::single(0));
+        } catch (const std::exception&) {
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+        const bool quiet = tracker.stream()->counters().callbacks == 0;
+        tracker.stop();
+        if (quiet) {
+            return device;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("a loopback with nothing playing on it is waited for with the stream left open",
+          "[ui][hardware]") {
+    // M8 end to end: the window's own redraws, the real watchdog, a real loopback of an output
+    // nothing plays on. Measured on this rig on 2026-09-26: such a loopback opens and sends
+    // nothing at all, 0 hops in 3 s.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> quiet = idleLoopback(tracker);
+    if (!quiet) {
+        SKIP("something is playing on every loopback on this machine");
+    }
+    INFO(quiet->name);
+    WindowController controller(tracker);
+    int at = -1;
+    for (std::size_t i = 0; i < controller.devices().size(); ++i) {
+        if (controller.devices()[i].name == quiet->name && controller.devices()[i].isLoopback) {
+            at = static_cast<int>(i);
+        }
+    }
+    REQUIRE(at >= 0);
+    controller.pickDevice(at);
+    controller.pickChannel(0);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+
+    // Six seconds of redraws, as the window's timer makes them: past the watchdog's grace and its
+    // half second of silence, and well past when a reopen used to come.
+    std::set<std::string> said;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{6};
+    while (std::chrono::steady_clock::now() < until) {
+        controller.tick();
+        said.insert(std::string(controller.window().get_status()));
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    }
+    bool nothingPlaying = false;
+    for (const std::string& line : said) {
+        INFO("said: " << line);
+        CHECK(line.find("No audio") == std::string::npos);
+        CHECK(line.find("Audio is back") == std::string::npos);
+        nothingPlaying = nothingPlaying || line.find("Nothing is playing on") != std::string::npos;
+    }
+    CHECK(nothingPlaying);
+    CHECK(tracker.running());
+    CHECK_FALSE(controller.window().get_input_lost());
+    controller.toggleRun();
+}
+
+TEST_CASE("an input that opens again and sends nothing is not back", "[ui][hardware]") {
+    // M8's other half. An outage ended the moment a reopen *opened*, and said "Audio is back";
+    // an input that opens and then sends nothing began a new outage a moment later, counting its
+    // tries from nothing, so the look at the device list every third try never came. The input
+    // here is an idle loopback handed to the outage as though it were an interface — the one
+    // thing on a machine that really does open and send nothing.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> quiet = idleLoopback(tracker);
+    if (!quiet) {
+        SKIP("something is playing on every loopback on this machine");
+    }
+    WindowController controller(tracker);
+    InputDevice asInterface = *quiet;
+    asInterface.isLoopback = false;
+    double now = 100.0;
+    controller.beginOutageOn({asInterface, takt4::audio::ChannelSelection::single(0)}, now);
+    std::vector<std::string> said;
+    for (int step = 0; step < 8; ++step) {
+        now += 1.1;
+        controller.superviseInput({}, {}, now);
+        said.emplace_back(controller.window().get_status());
+        CHECK(controller.window().get_input_lost());
+    }
+    std::size_t reopened = 0;
+    for (const std::string& line : said) {
+        INFO("said: " << line);
+        CHECK(line.find("Audio is back") == std::string::npos);
+        reopened += line.find("waiting for it to send audio") != std::string::npos ? 1U : 0U;
+    }
+    CHECK(reopened >= 3); // tried, and tried again, and not taken for back
+    controller.toggleRun();
+    CHECK_FALSE(tracker.running());
 }
 
 TEST_CASE("the window switches the outputs back on", "[ui][network]") {
@@ -2857,6 +3101,57 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     CHECK(found->kind == takt4::output::OutputTarget::Kind::Osc);
     CHECK(found->host == "127.0.0.1");
     CHECK(found->port == deck.port());
+}
+
+TEST_CASE("an import starts its rules afresh, whatever ids they share with the show before",
+          "[ui][settings][trigger]") {
+    // The audit of 2026-09-25, M11. A rule that keeps its id across an edit carries on — its
+    // mute, its ÷2 — and so did one across an IMPORT, since ids repeat from show to show (`add`
+    // numbers them rule1, rule2). A show imported mid-set came in with its first rule muted and at
+    // half rate because the old show's first rule had been. What happens is what a control
+    // surface does, then an IMPORT, and the running rule and the editor are both asked.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config clip;
+    clip.id = "rule1";
+    clip.address = "/composition/layers/1/clips/1/connect";
+    controller.setRules({clip});
+    REQUIRE(controller.oscControl().dispatch("/takt4/ctl/rule/rule1/mute", 1.0));
+    REQUIRE(controller.oscControl().dispatch("/takt4/ctl/rule/rule1/rate", 2.0));
+    REQUIRE(controller.settleOutputs());
+    const auto live = [&controller] {
+        for (const auto& rule : controller.outputs().liveRules()) {
+            if (rule.id == "rule1") {
+                return rule;
+            }
+        }
+        return takt4::output::OutputRunner::LiveRule{};
+    };
+    REQUIRE(live().id == "rule1");
+    REQUIRE(live().muted);
+    REQUIRE(live().rate == 2.0);
+    controller.tick();
+    REQUIRE(controller.editor().window().get_rule_muted());
+
+    // Another show, whose first rule is called what this one's was.
+    takt4::settings::Settings other;
+    takt4::trigger::Rule::Config lights;
+    lights.id = "rule1";
+    lights.address = "/other/show/go";
+    other.preset.rules = {lights};
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "other.json";
+    REQUIRE(takt4::settings::save(other, file));
+    REQUIRE(controller.importFrom(file));
+    // The editor, straight away: not the mute it last saw on a rule of that name.
+    CHECK_FALSE(controller.editor().window().get_rule_muted());
+    REQUIRE(controller.settleOutputs());
+    CHECK(live().id == "rule1");
+    CHECK_FALSE(live().muted);
+    CHECK(live().rate == 1.0);
+    controller.tick();
+    CHECK_FALSE(controller.editor().window().get_rule_muted());
+    CHECK(std::string(controller.editor().window().get_rule_rate()).empty());
 }
 
 TEST_CASE("an import brings the lighting patch with it", "[ui][settings][dmx]") {
@@ -3996,6 +4291,77 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     CHECK(status.find("deck: sends are failing") != std::string::npos);
     CHECK(status.find(takt4::testing::kUnsendableReason) != std::string::npos);
     CHECK(controller.statusIsError());
+}
+
+TEST_CASE("a single problem met starting is still on the status line when the window is up",
+          "[ui]") {
+    // The audit of 2026-09-25, M13. Several were joined and said together; one was left where it
+    // was and the constructor's own later news wrote over it. A set with a rule that cannot fire
+    // is one such problem, and the OSC listener starting after it — on any free port — is the
+    // later news.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::trigger::Rule::Config broken;
+    broken.id = "broken";
+    broken.address = "not an OSC address";
+    REQUIRE_FALSE(takt4::trigger::Rule(broken).valid());
+    saved.preset.rules = {broken};
+    saved.machine.oscControlEnabled = true;
+    saved.machine.oscControlPort = 0;
+    WindowController controller(tracker, saved);
+    REQUIRE(controller.oscControl().running());
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("1 rule will not fire") != std::string::npos);
+    CHECK(controller.statusIsError());
+}
+
+TEST_CASE("the settings notice and what the first redraws find are said together", "[ui]") {
+    // M13's other half. A damaged settings file's notice is put up once the window exists — and
+    // the first redraw that found an output it could not reach wrote over it, before anybody
+    // could have read it. For its first seconds, what the window finds out on its own joins what
+    // it met starting; what the operator does still says what it did.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget deck;
+    REQUIRE(takt4::output::parseOutputTarget(
+        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000", deck));
+    saved.preset.outputs = {deck};
+    WindowController controller(tracker, saved);
+    const std::string notice = "settings.json could not be read, so the copy from the last good "
+                               "start is being used.";
+    controller.showNotice(notice);
+
+    std::string status;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (status.find("deck") == std::string::npos && std::chrono::steady_clock::now() < until) {
+        controller.tick();
+        status = std::string(controller.window().get_status());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    INFO(status);
+    CHECK(status.find(notice) == 0); // first, and still there
+    CHECK(status.find("deck: sends are failing") != std::string::npos);
+    CHECK(controller.statusIsError());
+
+    // The operator doing something is news the notice gives way to, and it does not come back —
+    // not even when the window next finds something out on its own, still inside the hold.
+    controller.saveNow(); // into this test process's own folder; says where
+    const std::string after(controller.window().get_status());
+    INFO(after);
+    CHECK(after.find(notice) == std::string::npos);
+    controller.setOscTargets(std::string("deck = ") + takt4::testing::kUnsendableHost +
+                             ":57000, desk = " + takt4::testing::kUnsendableHost + ":57001");
+    std::string later;
+    const auto until2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (later.find("desk") == std::string::npos && std::chrono::steady_clock::now() < until2) {
+        controller.tick();
+        later = std::string(controller.window().get_status());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    INFO(later);
+    CHECK(later.find("desk: sends are failing") != std::string::npos);
+    CHECK(later.find(notice) == std::string::npos);
 }
 
 TEST_CASE("a click made while START is still opening the input does not stop it again",

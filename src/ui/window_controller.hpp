@@ -128,11 +128,26 @@ public:
     ///
     /// Silence begins an outage: the readout says NO AUDIO, the status line says which device,
     /// and the input is reopened after a second, then every two, with the device list looked at
-    /// again now and then in case it went away and came back under another number. A moved
-    /// clock or a driver asking to be reset reopens at once. The outputs are not stopped for
-    /// any of it: Link and the MIDI clock carry the last tempo on while the input comes back.
+    /// again now and then in case it went away and came back under another number. It is back
+    /// when the reopened input sends something, not when it opens. A moved clock or a driver
+    /// asking to be reset reopens at once. The outputs are not stopped for any of it: Link and
+    /// the MIDI clock carry the last tempo on while the input comes back.
+    ///
+    /// **A loopback input's silence is not an outage**: Windows sends a loopback nothing at all
+    /// while nothing plays on the output it captures (measured 2026-09-26). The window says so
+    /// and waits, with the stream open, for something to play.
     void superviseInput(const audio::InputWatchdog::Reading& reading,
                         const audio::AsioDriverEvents& events, double now);
+
+    /// For the tests: running on `input` as far as the window knows, with nothing opened — the
+    /// tests' sandbox opens no device — so `superviseInput` can be handed what such an input
+    /// would do.
+    void assumeRunningOn(const engine::LiveTracker::Running& input, double now);
+    /// How many times the outage in progress has tried to reopen the input, or nothing when
+    /// there is none. Every third try looks at the device list again.
+    std::optional<int> outageTries() const noexcept {
+        return outage_ ? std::optional<int>(outage_->tries) : std::nullopt;
+    }
 
     /// For the tests: the state `input` opening and then going silent at `now` leaves — running
     /// as far as the operator is concerned, the tracker stopped, an outage begun. Nothing on a
@@ -468,7 +483,18 @@ private:
     /// One look at whether the settings need writing — see `enableAutosave`. `now` is
     /// `nowSeconds()`.
     void autosave(double now);
+    /// What the status line says now, replacing what it said — and ending the hold on what the
+    /// window met starting (see `report`).
     void setStatus(const std::string& text, bool error);
+    /// The status line itself, and nothing else.
+    void showStatus(const std::string& text, bool error);
+    /// Puts `text` on the status line as what the window met starting, and holds it there for
+    /// `kStartupHoldSeconds` against what the window finds out on its own (the audit of
+    /// 2026-09-25, M13).
+    void holdStartupMessage(const std::string& text);
+    /// What the window finds out on its own — an output that cannot be reached, a MIDI device
+    /// gone. Joins the startup message while that is held, rather than replacing it.
+    void report(const std::string& text, bool error);
     /// Seconds since this controller was built, on a steady clock. Only differences are
     /// used, which is all `tracking::TapTempo` asks of it.
     double nowSeconds() const;
@@ -531,8 +557,22 @@ private:
         double nextTry = 0.0;
         int tries = 0;
         std::string why;
+        /// The input is open again and has not yet sent anything. It is not back until it has
+        /// (the audit of 2026-09-25, M8).
+        bool reopened = false;
     };
     std::optional<Outage> outage_;
+    /// When the last outage ended and how many tries it had taken, so an input that comes back
+    /// for a moment and goes again carries on counting (M8). Negative before any.
+    double outageEndedAt_ = -1.0;
+    int outageEndedTries_ = 0;
+    /// What the window met starting, and until when it is held on the status line (M13).
+    std::string startupMessage_;
+    double startupHeldUntil_ = -1.0;
+    /// A loopback input that has gone quiet: nothing is playing on the output it captures, which
+    /// is not a fault to reopen (the operator's call on the audit of 2026-09-25, Q4). Said once,
+    /// and cleared when sound comes back.
+    bool nothingPlaying_ = false;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
     /// See `requestToggleRun`. A member, so a press still waiting to be carried out goes with

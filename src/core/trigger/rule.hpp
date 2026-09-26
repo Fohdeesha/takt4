@@ -655,7 +655,8 @@ public:
     /// A multiplier on `Config::every` — §5.7's `double`, `halve` and `rate`.
     ///
     /// Live, and *not* part of the configuration: it is a performance gesture, like the tempo
-    /// ÷2 button, so it is not saved and `reset()` puts it back to one. A rule on every four
+    /// ÷2 button, so it is not saved, and a set loaded rather than edited starts it at one
+    /// (`TriggerEngine::setRules`'s `fresh`). A rule on every four
     /// bars at rate 2 fires every eight; at 0.5, every two. The result is rounded and floored
     /// at one, so halving a rule that is already on every beat leaves it on every beat rather
     /// than turning it off.

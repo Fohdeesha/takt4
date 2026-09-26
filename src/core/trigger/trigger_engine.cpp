@@ -9,7 +9,7 @@ namespace takt4::trigger {
 
 TriggerEngine::TriggerEngine(Sink& sink) noexcept : sink_(sink) {}
 
-void TriggerEngine::setRules(const std::vector<Rule::Config>& rules) {
+void TriggerEngine::setRules(const std::vector<Rule::Config>& rules, bool fresh) {
     // **A rule that keeps its id carries on**, by id.
     //
     // Every edit in §5.9's editor replaces the whole set — that is the command's stated
@@ -20,12 +20,17 @@ void TriggerEngine::setRules(const std::vector<Rule::Config>& rules) {
     //
     // By id rather than by position, for the reason `RulesController::firesSeen_` gives: a
     // rule deleted from the middle would otherwise shift every state below it onto a
-    // different rule. And a *preset load* brings new ids, so nothing carries over — which is
-    // exactly right, because a preset is the show and not somebody's half-played set.
+    // different rule. And not at all for a set that was loaded (`fresh`): a preset is the show
+    // and not somebody's half-played set, and it cannot be told apart by its ids — this said a
+    // preset load brought new ids, and an import of a show whose rules were called what the
+    // last show's were took their mutes and rates with it (the audit of 2026-09-25, M11).
     std::vector<Rule> next;
     next.reserve(rules.size());
     for (const Rule::Config& config : rules) {
         next.emplace_back(config);
+        if (fresh) {
+            continue;
+        }
         for (const Rule& previous : rules_) {
             if (previous.id() == config.id) {
                 next.back().carryFrom(previous);
