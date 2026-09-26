@@ -15,6 +15,7 @@
 
 #include <array>
 #include <span>
+#include <string>
 
 namespace takt4::audio::detail {
 
@@ -47,5 +48,9 @@ double resolveSampleRate(const InputDevice& device, double requested) noexcept;
 /// Throws PortAudioError for `err`, with the host's own message appended when
 /// PortAudio has one.
 [[noreturn]] void throwPortAudioError(const char* what, PaError err);
+
+/// Throws, naming `device`, when the test binaries' sandbox is on: an audio device on this
+/// machine is the rig's (see `core/sandbox.hpp`). Called before every stream is opened.
+void refuseInSandbox(const std::string& device);
 
 } // namespace takt4::audio::detail

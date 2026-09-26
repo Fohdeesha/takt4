@@ -1,5 +1,7 @@
 #include "core/output/link_session.hpp"
 
+#include "core/sandbox.hpp"
+
 #include <ableton/Link.hpp>
 #include <ableton/link/HostTimeFilter.hpp>
 
@@ -22,6 +24,12 @@ LinkSession::LinkSession(double initialTempoBpm) : impl_(std::make_unique<Impl>(
 LinkSession::~LinkSession() = default;
 
 void LinkSession::enable(bool on) {
+    if (on && sandbox::active()) {
+        // The test binaries' sandbox: joining would put a peer in the rig's own session, and
+        // Resolume and Live follow its tempo. See `sandbox.hpp`.
+        sandbox::refuse(sandbox::Refused::Link);
+        return;
+    }
     impl_->link.enable(on);
 }
 

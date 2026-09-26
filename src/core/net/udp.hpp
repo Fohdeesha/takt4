@@ -31,6 +31,10 @@
 #include <cerrno>
 #endif
 
+#include "core/sandbox.hpp"
+
+#include <cstdint>
+#include <cstring>
 #include <stdexcept>
 
 namespace takt4::net {
@@ -187,6 +191,41 @@ inline std::string sendFailure(int error) {
     }
 #endif
     return why + " (" + std::to_string(error) + ")";
+}
+
+/// Whether the test binaries' sandbox lets a datagram go to `address` — always, outside them.
+/// A refusal is counted here. See `sandbox.hpp`: in short, a loopback port a test's own receiver
+/// was given, or 0.0.0.0/8, and nothing else. IPv6's loopback is held to the same port rule;
+/// every other IPv6 address is off the machine.
+inline bool sandboxLets(const sockaddr_storage& address) noexcept {
+    if (!sandbox::active()) {
+        return true;
+    }
+    bool allowed = false;
+    std::uint16_t port = 0;
+    if (address.ss_family == AF_INET) {
+        sockaddr_in v4{};
+        std::memcpy(&v4, &address, sizeof v4);
+        port = ntohs(v4.sin_port);
+        allowed = sandbox::allowsSend(ntohl(v4.sin_addr.s_addr), port);
+    } else if (address.ss_family == AF_INET6) {
+        sockaddr_in6 v6{};
+        std::memcpy(&v6, &address, sizeof v6);
+        port = ntohs(v6.sin6_port);
+        // ::1 is fifteen zero bytes and a one; spelled out, since IN6ADDR_LOOPBACK_INIT is
+        // braced differently on every platform.
+        unsigned char bytes[16] = {};
+        std::memcpy(bytes, &v6.sin6_addr, sizeof bytes);
+        bool loopback = bytes[15] == 1;
+        for (int i = 0; i < 15 && loopback; ++i) {
+            loopback = bytes[i] == 0;
+        }
+        allowed = loopback && sandbox::allowsSend(0x7F000001u, port);
+    }
+    if (!allowed) {
+        sandbox::refuse(sandbox::Refused::Send, port);
+    }
+    return allowed;
 }
 
 /// "host:port" for an address, numeric, or "?" when it cannot be named. For logs and for

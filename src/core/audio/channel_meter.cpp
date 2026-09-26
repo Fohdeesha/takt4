@@ -105,6 +105,7 @@ struct ChannelMeter::Impl {
 
 ChannelMeter::ChannelMeter(const PortAudioSession& /*session*/, const InputDevice& device,
                            double sampleRate) {
+    detail::refuseInSandbox(device.name);
     const double rate = detail::resolveSampleRate(device, sampleRate);
     impl_ = std::make_unique<Impl>(device, rate);
 

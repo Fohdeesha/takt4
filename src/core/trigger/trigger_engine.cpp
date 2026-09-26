@@ -179,7 +179,7 @@ void TriggerEngine::flushPending() {
 }
 
 void TriggerEngine::onBeat(const Context& context) {
-    if (panicked_) {
+    if (panicked_ || !listening_) {
         return;
     }
     for (Rule& rule : rules_) {
@@ -213,7 +213,7 @@ void TriggerEngine::advance(const Context& context) {
         // tells a change from a value it has already seen, and one that stopped watching
         // would fire the moment it was switched back on. See Rule::seesChange.
         const bool changed = rule.seesChange(context);
-        if (!changed || panicked_ || !rule.enabled() || !rule.valid()) {
+        if (!changed || panicked_ || !listening_ || !rule.enabled() || !rule.valid()) {
             continue;
         }
         if (!rule.conditionsHold(context)) {
@@ -224,7 +224,7 @@ void TriggerEngine::advance(const Context& context) {
 }
 
 void TriggerEngine::onOnset(const Context& context) {
-    if (panicked_) {
+    if (panicked_ || !listening_) {
         return;
     }
     for (Rule& rule : rules_) {
@@ -239,7 +239,7 @@ void TriggerEngine::onOnset(const Context& context) {
 }
 
 void TriggerEngine::onBarDeclared(const Context& context) {
-    if (panicked_) {
+    if (panicked_ || !listening_) {
         return;
     }
     for (Rule& rule : rules_) {

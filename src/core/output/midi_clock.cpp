@@ -1,15 +1,16 @@
 #include "core/output/midi_clock.hpp"
 
 #include "core/output/midi_ports.hpp"
+#include "core/sandbox.hpp"
 
 #include <RtMidi.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -20,7 +21,7 @@ namespace takt4::output {
 
 namespace {
 
-/// A port specification is either an index or part of a name. Returns the port number,
+/// A port specification is an index or a name — see `findMidiPort`. Returns the port number,
 /// or throws with the list of what was actually there — the useful message when a
 /// device is unplugged or named differently than the operator expected.
 unsigned int findPort(RtMidiOut& out, std::string_view spec) {
@@ -30,21 +31,8 @@ unsigned int findPort(RtMidiOut& out, std::string_view spec) {
     for (unsigned int i = 0; i < count; ++i) {
         names.push_back(out.getPortName(i));
     }
-
-    const bool numeric = !spec.empty() && std::all_of(spec.begin(), spec.end(), [](char c) {
-        return std::isdigit(static_cast<unsigned char>(c)) != 0;
-    });
-    if (numeric) {
-        const unsigned long index = std::stoul(std::string(spec));
-        if (index < count) {
-            return static_cast<unsigned int>(index);
-        }
-    } else {
-        for (unsigned int i = 0; i < count; ++i) {
-            if (names[i].find(spec) != std::string::npos) {
-                return i;
-            }
-        }
+    if (const std::optional<std::size_t> found = findMidiPort(names, spec)) {
+        return static_cast<unsigned int>(*found);
     }
 
     std::string message = "MIDI output: no port matching \"" + std::string(spec) + "\"; ";
@@ -91,6 +79,12 @@ public:
             // back at another index, and RtMidi enumerates again on every count.
             const unsigned int index = findPort(*out_, spec);
             std::string name = out_->getPortName(index);
+            if (sandbox::active()) {
+                // The test binaries' sandbox: this port is one of the rig's. See `sandbox.hpp`.
+                sandbox::refuse(sandbox::Refused::Midi);
+                throw std::runtime_error("MIDI output: \"" + name +
+                                         "\" is not opened in the test sandbox");
+            }
             out_->openPort(index, "takt4");
             return name;
         } catch (const RtMidiError& error) {
@@ -113,6 +107,11 @@ public:
         if (!out_) {
             throw std::runtime_error("MIDI output: no usable MIDI API on this machine");
         }
+        // RtMidi's Windows port returns without a word when it is not open (C1), so the question
+        // is asked here: a message that goes nowhere has failed.
+        if (!out_->isPortOpen()) {
+            throw std::runtime_error("MIDI output: the port is not open");
+        }
         out_->sendMessage(message.data(), message.size());
     }
 
@@ -130,6 +129,7 @@ MidiOutput::MidiOutput(std::string_view portName)
 MidiOutput::MidiOutput(std::string_view portName, std::unique_ptr<MidiPort> port)
     : port_(std::move(port)), requested_(portName) {
     portName_ = port_->open(portName); // throws: no such port
+    open_ = true;
 }
 
 MidiOutput::~MidiOutput() {
@@ -139,6 +139,13 @@ MidiOutput::~MidiOutput() {
 }
 
 void MidiOutput::send(std::span<const unsigned char> message) noexcept {
+    if (!open_) {
+        // Closed by a reconnect that could not open it again. Nothing reaches the device, and
+        // counting that as a send is what kept an unplugged interface "back" for good (C1).
+        ++failed_;
+        failedInARow_ = kLostAfterFailures;
+        return;
+    }
     try {
         port_->send(message);
         ++sent_;
@@ -157,7 +164,9 @@ void MidiOutput::send(std::span<const unsigned char> message) noexcept {
 bool MidiOutput::reconnect() noexcept {
     try {
         port_->close();
+        open_ = false;
         portName_ = port_->open(requested_);
+        open_ = true;
         failedInARow_ = 0;
         return true;
     } catch (...) {

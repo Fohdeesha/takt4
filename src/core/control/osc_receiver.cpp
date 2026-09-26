@@ -32,6 +32,13 @@ struct OscReceiver::Impl {
 };
 
 OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
+    if (!sandbox::allowsBind(port)) {
+        // The test binaries' sandbox: a port a program on the rig may hold — this one is
+        // likely takt4's own, running the show. See `sandbox.hpp`.
+        sandbox::refuse(sandbox::Refused::Bind, port);
+        throw std::runtime_error("OSC control: cannot listen on port " + std::to_string(port) +
+                                 " (the test sandbox binds only ports its receivers were given)");
+    }
     auto impl = std::make_unique<Impl>();
 
     // IPv4 only, deliberately. A dual-stack socket would need per-platform handling of
@@ -64,6 +71,8 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
         if (::getsockname(impl->socket, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
             port_ = ntohs(bound.sin_port);
         }
+        // This process's own, so a test may send to it (see `sandbox.hpp`).
+        sandbox::allowPort(port_);
     }
 
     impl_ = std::move(impl);

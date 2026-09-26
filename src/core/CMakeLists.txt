@@ -18,6 +18,8 @@ add_custom_target(takt4_git_describe
 add_library(takt4_core STATIC
   build_info.cpp
   build_info.hpp
+  sandbox.cpp
+  sandbox.hpp
   audio/asio_driver.cpp
   audio/asio_driver.hpp
   audio/asio_probe.h

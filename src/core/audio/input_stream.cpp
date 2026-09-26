@@ -56,6 +56,7 @@ std::string hertz(double rate) {
 InputStream::InputStream(const PortAudioSession& /*session*/, const InputDevice& device,
                          const ChannelSelection& selection, HopProcessor& processor,
                          const InputStreamOptions& options) {
+    detail::refuseInSandbox(device.name);
     const ChannelPicker picker(device, selection, !options.forceSoftwareSlice);
     double rate = detail::resolveSampleRate(device, options.sampleRate);
 
