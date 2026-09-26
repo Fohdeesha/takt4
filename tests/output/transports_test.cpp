@@ -1300,3 +1300,126 @@ TEST_CASE("each Art-Net node has a beat's lighting on the beat plus its own dela
         CHECK(nodes.first(node, 255) < expected[node] + kArtNetFrame);
     }
 }
+
+TEST_CASE("MIDI Start waits for a beat whose place in the bar is known", "[output][midi]") {
+    // The audit of 2026-09-25, M6. The tracker publishes `beatInBar` 0 until it has found a bar,
+    // and the clock read that as beat 1: a locked beat with no bar started a receiver's bar there,
+    // on whatever beat of the music it was, and the receiver kept that bar for the run.
+    auto wire = std::make_shared<TimedWire>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<TimedPort>(wire));
+    };
+    Transports transports(config);
+    // Outputs set later than the audio: a beat is heard before the moment the clock puts it at,
+    // which is when a claim about where the bar is can take effect at once. Without it, every
+    // beat's claim is already history by the time it is heard and the next beat replaces it.
+    constexpr double kLatency = 0.200;
+    transports.setLatencySeconds(kLatency);
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+
+    constexpr double kBpm = 128.0;
+    const double beat = 60.0 / kBpm;
+    constexpr std::size_t kNoBarBeats = 8; // no bar known for the first eight beats
+    const TempoState state;
+    std::size_t next = 0;
+    double firstBarKnown = -1.0;
+    for (double now = 0.0; now < 24 * beat; now += 0.001) {
+        while (static_cast<double>(next) * beat + 0.1 <= now) {
+            const std::uint32_t inBar =
+                next < kNoBarBeats ? 0 : static_cast<std::uint32_t>(next % 4) + 1;
+            BeatEvent event = beatAt(static_cast<double>(next) * beat, inBar, kBpm);
+            event.locked = true; // locked throughout: the bar, not the lock, is what is missing
+            if (inBar != 0 && firstBarKnown < 0.0) {
+                firstBarKnown = now;
+            }
+            transports.publish(event, 0, static_cast<double>(next) * beat);
+            ++next;
+        }
+        wire->now = now;
+        transports.advance(now, state);
+    }
+    double started = -1.0;
+    double barOne = -1.0; // the first tick after Start: the receiver's bar 1
+    for (const TimedWire::Message& message : wire->messages) {
+        if (started < 0.0 && message.bytes[0] == takt4::output::MidiClock::kStart) {
+            started = message.at;
+        } else if (started >= 0.0 && message.bytes[0] == takt4::output::MidiClock::kTick) {
+            barOne = message.at;
+            break;
+        }
+    }
+    INFO("Start at " << started << ", bar 1 at " << barOne << ", the first bar known at "
+                     << firstBarKnown);
+    REQUIRE(barOne >= 0.0);
+    CHECK(started >= firstBarKnown);
+    // And on a downbeat of the bar the tracker then named: beat 8 is beat 1 of its bar.
+    const double sinceBarOne = std::fmod(barOne - kLatency - 8.0 * beat + 4.0 * beat, 4.0 * beat);
+    CHECK((sinceBarOne < 0.015 || sinceBarOne > 4.0 * beat - 0.015));
+    transports.stopOutputs();
+}
+
+TEST_CASE("a Link delay moved by more than the deadband is put under the beat at once",
+          "[output][link]") {
+    // The audit of 2026-09-25, M7. Moving the Link output's delay, or the rig's latency, was read
+    // on the next beat as a phase error and nudged out an eighth a beat: 100 ms took nine seconds
+    // to settle, with every peer's tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for
+    // an operator dragging the slider to line Resolume up. It is a place to put the beat, and it
+    // is put there on the next beat.
+    //
+    // Switched on and never joined, so nothing leaves this machine: Link keeps its timeline
+    // locally, which is all that is asked of it here.
+    Transports::Config config;
+    config.link = true;
+    Transports transports(config);
+    REQUIRE(transports.linkEnabled());
+    REQUIRE_FALSE(transports.link().enabled());
+    std::string linkId;
+    for (const takt4::output::OutputTarget& target : transports.outputs()) {
+        if (target.kind == takt4::output::OutputTarget::Kind::Link) {
+            linkId = target.id;
+        }
+    }
+    REQUIRE_FALSE(linkId.empty());
+
+    // Paced, as the network test is, so Link's own thread has finished with each commit.
+    const std::int64_t origin = transports.link().now().count() + 1'000'000;
+    constexpr double kBpm = 128.0;
+    std::uint32_t k = 0;
+    const auto nextBeat = [&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        const std::int64_t at = origin + static_cast<std::int64_t>(k * 60.0e6 / kBpm);
+        transports.publish(beatAt(0.0, k % 4 + 1, kBpm), at, 0.0);
+        ++k;
+    };
+    nextBeat();
+    REQUIRE(transports.link().beatRequests() == 1); // the first locked beat snaps
+    nextBeat();
+    nextBeat();
+    CHECK(transports.link().beatRequests() == 1); // and the beats on its grid do not
+
+    SECTION("a delay moved by a hundred milliseconds snaps on the next beat") {
+        REQUIRE(transports.setOutputDelay(linkId, 0.100));
+        nextBeat();
+        CHECK(transports.link().beatRequests() == 2);
+        // The beat is where the delay puts it.
+        const std::int64_t at = origin + static_cast<std::int64_t>((k - 1) * 60.0e6 / kBpm);
+        const double phase =
+            transports.link().phaseAtTime(std::chrono::microseconds{at + 100'000}, 4.0);
+        CHECK_THAT(phase, WithinAbs(static_cast<double>((k - 1) % 4), 1e-6));
+    }
+
+    SECTION("a move inside the deadband is left to the nudge") {
+        REQUIRE(transports.setOutputDelay(linkId, 0.005)); // under a hundredth of a beat
+        nextBeat();
+        CHECK(transports.link().beatRequests() == 1);
+    }
+
+    SECTION("so is the rig's latency") {
+        transports.setLatencySeconds(-0.050);
+        nextBeat();
+        CHECK(transports.link().beatRequests() == 2);
+    }
+}

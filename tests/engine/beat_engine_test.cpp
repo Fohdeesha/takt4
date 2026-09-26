@@ -487,14 +487,17 @@ TEST_CASE("halving and doubling reach a tracking engine without dropping the loc
     REQUIRE(engine->state().locked);
     REQUIRE(h < hops);
     const std::uint64_t beatsBefore = engine->state().beats;
-    const double raw = engine->state().rawBpm;
-    CHECK(engine->state().bpm == Approx(128.0).margin(4.0));
+    const double shown = engine->state().bpm;
+    CHECK(shown == Approx(128.0).margin(4.0));
 
     // Nothing is pending, so this step tracks no frame at all — it only applies the
     // command, which is how a button pressed during a silence still does something.
+    //
+    // **Half of what was showing**, not half of the filter's continuous estimate, which is
+    // what this asserted until the audit of 2026-09-25 (H5): 61.2 on this excerpt against 64.15.
     REQUIRE(engine->post(Command::halve()));
     CHECK(engine->step() == 0);
-    CHECK(engine->state().bpm == Approx(raw / 2.0).margin(0.01));
+    CHECK(engine->state().bpm == Approx(shown / 2.0).epsilon(1e-12));
     CHECK(engine->state().locked);
     CHECK(engine->state().beats == beatsBefore);
 
@@ -951,6 +954,48 @@ TEST_CASE("a pin pressed before the lock holds nothing until the lock arrives",
     CHECK(forward->heldBpm() == Approx(128.0).margin(4.0));
     CHECK(engine->state().bpm == Approx(128.0).margin(2.0));
     CHECK(engine->state().locked);
+}
+
+TEST_CASE("a window moved out from under a pinned lock lets the decoder's hold go",
+          "[engine][forward]") {
+    // The audit of 2026-09-25, M4. A fold window moved until it excludes the pinned tempo drops
+    // the lock, as it should — and left the decoder held to the old tempo, so the tracker
+    // re-locked onto it within half a second and the window move did nothing at all. The pin
+    // stays the operator's; the hold goes, and is taken again when a lock is earned.
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+    REQUIRE(forward != nullptr);
+    std::size_t h = 0;
+    const auto run = [&](std::size_t until, bool stopAtLock) {
+        for (; h < until && !(stopAtLock && engine->state().locked); ++h) {
+            engine->processHop(signal.data() + h * kHopSize, h);
+            (void)engine->step();
+        }
+    };
+    run(hops, true);
+    REQUIRE(engine->state().locked);
+    REQUIRE(engine->post(Command::setLockPinned(true)));
+    (void)engine->step();
+    REQUIRE(forward->heldBpm() == Approx(128.0).margin(4.0));
+
+    // A window an octave up: 128 is outside it.
+    takt4::tracking::TempoTracker::Options moved = engine->tempoOptions();
+    moved.octaveFold = true;
+    moved.minBpm = 150.0;
+    moved.maxBpm = 300.0;
+    REQUIRE(engine->post(Command::setTempoOptions(moved)));
+    (void)engine->step();
+    CHECK_FALSE(engine->state().locked);
+    CHECK(engine->state().pinned); // the operator's pin is not the window's to take
+    CHECK(forward->heldBpm() == 0.0);
+
+    // And taken again, in the decoder's own terms, on the lock that comes back.
+    run(hops, false);
+    if (engine->state().locked) {
+        CHECK(forward->heldBpm() > 0.0);
+    }
 }
 
 TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {

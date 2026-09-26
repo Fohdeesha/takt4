@@ -93,14 +93,15 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
 
-    const double raw = engine->state().rawBpm;
+    // Half of what is showing, and back (the audit of 2026-09-25, H5).
+    const double shown = engine->state().bpm;
     CHECK(control.dispatch("/takt4/ctl/tempo/halve", std::nullopt));
     (void)engine->step();
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
 
     CHECK(control.dispatch("/takt4/ctl/tempo/double", std::nullopt));
     (void)engine->step();
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
 
     // A downbeat snap lands on the beat nearest the message; what that then means to the
     // bar is tests/engine/beat_engine_test.cpp's business.
@@ -318,14 +319,14 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         // or only before a tracker command — would show up.
         trackUntilLocked(*engine);
         REQUIRE(engine->state().locked);
-        const double raw = engine->state().rawBpm;
+        const double shown = engine->state().bpm;
 
         CHECK(control.dispatch("/takt4/ctl/panic", std::nullopt));
         CHECK(control.dispatch("/takt4/ctl/tempo/halve", std::nullopt));
         CHECK(control.dispatch("/takt4/ctl/rule/intro/enable", 0.0));
         (void)engine->step();
 
-        CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+        CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
         CHECK(rules.panics() == std::vector<bool>{true});
         const std::vector<std::pair<std::string, bool>> expected{{"intro", false}};
         CHECK(rules.enables() == expected);

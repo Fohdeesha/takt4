@@ -883,20 +883,22 @@ TEST_CASE("halving and doubling move the published tempo by an octave", "[ui]") 
     SyntheticRun run(tracker);
     REQUIRE(run.untilLocked());
 
-    // The excerpt tracks at about 128, inside the default 70-140 window, so folding leaves
-    // it alone and an octave shift is exactly a halving of what the cloud reports.
-    const double raw = tracker.engine().state().rawBpm;
+    // The excerpt tracks at about 128, inside the default 70-140 window, so folding leaves it
+    // alone — and an octave shift is exactly a halving of *what is showing*, refinement and all,
+    // not of the filter's own estimate (the audit of 2026-09-25, H5).
+    const double shown = tracker.engine().state().bpm;
     const Options fold = tracker.engine().tempoOptions();
-    REQUIRE(raw >= fold.minBpm);
-    REQUIRE(raw < fold.maxBpm);
+    REQUIRE(shown >= fold.minBpm);
+    REQUIRE(shown < fold.maxBpm);
 
     controller.window().invoke_halve();
     run.applyPosted();
-    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw / 2.0, 1e-6));
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(shown / 2.0, 1e-9));
+    CHECK(tracker.engine().state().locked);
 
     controller.window().invoke_redouble();
     run.applyPosted();
-    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw, 1e-6));
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(shown, 1e-9));
 }
 
 TEST_CASE("the LOCK button pins the tracker's lock and lets go of it", "[ui]") {
@@ -1016,18 +1018,17 @@ TEST_CASE("a learned control reaches the tracker through the window", "[ui]") {
     // The binding gesture must not also fire it: an operator binding `tempo/halve` would
     // otherwise halve the tempo in the act of binding it. Held as "did not halve" rather
     // than to an exact number, because what is published here is the *refined* tempo from
-    // the beat spacing (129.03) and not the cloud's own rawBpm (130.40) — the two differ
-    // by more than any equality worth writing.
-    const double raw = tracker.engine().state().rawBpm;
+    // the beat spacing, which the frames applied alongside may have refined a little further.
     const double before = tracker.engine().state().bpm;
     run.applyPosted();
     CHECK(tracker.engine().state().bpm > before * 0.9);
 
-    // The same pad again is the control doing its job. A halve republishes from rawBpm and
-    // drops the refinement, so this one *is* exact — as tests/ui's own ÷2 test relies on.
+    // The same pad again is the control doing its job: exactly half of what is showing, the
+    // refinement kept (the audit of 2026-09-25, H5).
+    const double shown = tracker.engine().state().bpm;
     CHECK(controller.control().dispatch(pad));
     run.applyPosted();
-    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(raw / 2.0, 1e-6));
+    CHECK_THAT(tracker.engine().state().bpm, WithinAbs(shown / 2.0, 1e-9));
 }
 
 TEST_CASE("a learned control reaches the rules through the window", "[ui][trigger]") {

@@ -151,20 +151,21 @@ TEST_CASE("a bound control reaches the tracker", "[control][midi]") {
     REQUIRE(control.bind(halve));
     REQUIRE(control.bind(redouble));
 
-    const double raw = engine->state().rawBpm;
+    // Half of what is showing, and back (the audit of 2026-09-25, H5).
+    const double shown = engine->state().bpm;
     CHECK(control.dispatch(note(40)));
     (void)engine->step();
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
 
     CHECK(control.dispatch(note(41)));
     (void)engine->step();
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
 
     // The channel is part of which control it is: the same note on another channel is
     // another button, which is what stops two controllers from fighting.
     CHECK_FALSE(control.dispatch(note(40, /*channel=*/2)));
     (void)engine->step();
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
     CHECK(engine->commandsDropped() == 0);
 }
 
@@ -522,12 +523,12 @@ TEST_CASE("a CC pad's release is not a second press", "[control][midi]") {
     halve.target = ControlAction::TempoHalve;
     REQUIRE(control.bind(halve));
 
-    const double raw = engine->state().rawBpm;
+    const double shown = engine->state().bpm;
     CHECK(control.dispatch(cc(20, 127)));
     CHECK(control.dispatch(cc(20, 0)));
     (void)engine->step();
     // Halved once, not quartered.
-    CHECK_THAT(engine->state().bpm, WithinAbs(raw / 2.0, 1e-6));
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
 }
 
 TEST_CASE("learning a CC fires it neither on the press nor on the release", "[control][midi]") {

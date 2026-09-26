@@ -5,6 +5,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -604,17 +605,36 @@ TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
         CHECK_FALSE(tracker.state().locked);
     }
 
-    SECTION("pinning locks to whatever is showing") {
+    SECTION("pinning while hunting holds up nothing until a lock is earned") {
+        // The audit of 2026-09-25, M4. This used to lock at once to whatever was showing — which
+        // before the first lock is the hunt's guess of the moment — and the engine then held the
+        // decoder to that guess and Link was fed it as locked: pinning noise.
         TempoTracker mid(kFramePeriod, options);
         std::uint64_t at = 0;
         settle(mid, at, 31, 0.8, 5); // nowhere near lockAfter
         REQUIRE_FALSE(mid.state().locked);
-        const double showing = mid.state().bpm;
-        REQUIRE(showing == Approx(bpmOf(31)));
+        REQUIRE(mid.state().bpm == Approx(bpmOf(31)));
 
         mid.setLockPinned(true);
+        CHECK(mid.state().pinned);
+        CHECK_FALSE(mid.state().locked);
+        // The lock comes when it is earned, and is then held.
+        settle(mid, at, 31, 0.8, options.lockAfter);
         CHECK(mid.state().locked);
-        CHECK(mid.state().bpm == Approx(showing));
+        settle(mid, at, 23, 0.8, options.unlockAfter * 2);
+        CHECK(mid.state().locked);
+        CHECK(mid.state().bpm == Approx(bpmOf(31)));
+    }
+
+    SECTION("pinning after a lock was lost holds up the tempo that was earned") {
+        // What is showing through a lost lock is the tempo the last lock was on, held: earned,
+        // so a pin may hold it up again.
+        settle(tracker, index, 31, 0.8, options.unlockAfter);
+        REQUIRE_FALSE(tracker.state().locked);
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(23)));
+        tracker.setLockPinned(true);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)));
     }
 
     SECTION("a pin set before anything is tracked does not invent a lock") {
@@ -1125,6 +1145,189 @@ TEST_CASE("the manual octave shift moves the published tempo and keeps the lock"
     CHECK(tracker.state().bpm == Approx(bpmOf(23) * 2.0));
 }
 
+namespace {
+
+/// Locks `tracker` on beats laid at 128 BPM while the cloud reports 23 frames, 130.43 — so what
+/// is published is the refinement, 2.4 BPM from the filter's own estimate. On real music the two
+/// differ by more than the lock's tolerance on most locked frames (the audit of 2026-09-25, H5:
+/// 81 %, 85 %, 37 % and 72 % on four excerpts).
+void lockRefinedAt128(TempoTracker& tracker, std::uint64_t& next) {
+    const double period = 60.0 / (128.0 * kFramePeriod);
+    const std::uint64_t first = next;
+    for (int beat = 0; beat < 40; ++beat) {
+        const auto at = first + static_cast<std::uint64_t>(static_cast<double>(beat) * period + 0.5);
+        while (next < at) {
+            (void)tracker.process(frameAt(next++, 23, 0.9));
+        }
+        TrackedFrame frame = frameAt(next++, 23, 0.9);
+        frame.emitted = beat % 4 == 0 ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
+        (void)tracker.process(frame);
+    }
+}
+
+} // namespace
+
+TEST_CASE("a tap that agrees, halve and double move what is showing, not the filter's estimate",
+          "[tracking][tempo]") {
+    // The audit of 2026-09-25, H5. A tap, ÷2 and ×2 all rebuilt the published tempo from the
+    // filter's continuous estimate. ÷2 published half of *that*; and a tap whose rebuilt number
+    // was more than the lock's half-BPM tolerance from the refined one — most taps, on real
+    // music — dropped the lock: LOCKED out for the whole of the tapping, Link sent nothing, then
+    // a forced snap at the rough tempo, and the MIDI clock on the rough tempo for nine beats.
+    const bool fold = GENERATE(false, true);
+    INFO((fold ? "fold on" : "fold off"));
+    TempoTracker::Options options;
+    options.octaveFold = fold;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t next = 0;
+    lockRefinedAt128(tracker, next);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().refined);
+    const double shown = tracker.state().bpm;
+    REQUIRE(shown == Approx(128.0).margin(1.0));
+    REQUIRE(std::abs(tracker.state().calledBpm - shown) > options.lockToleranceBpm);
+
+    SECTION("a tap on the tempo that is showing changes nothing") {
+        tracker.seedTempo(shown * 1.01); // a human tap, a per cent out
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().refined);
+        CHECK(tracker.state().bpm == Approx(shown).epsilon(1e-12));
+    }
+
+    SECTION("÷2 is half of what was showing, and ×2 puts it back") {
+        tracker.halve();
+        CHECK(tracker.state().bpm == Approx(shown / 2.0).epsilon(1e-12));
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().refined);
+        tracker.redouble();
+        CHECK(tracker.state().bpm == Approx(shown).epsilon(1e-12));
+        CHECK(tracker.state().locked);
+    }
+
+    SECTION("a tap at half time is ÷2") {
+        tracker.seedTempo(shown / 2.0 * 0.99);
+        CHECK(tracker.state().bpm == Approx(shown / 2.0).epsilon(1e-12));
+        CHECK(tracker.state().locked);
+    }
+}
+
+TEST_CASE("a halving is dropped at the next track even when a pin was let go in between",
+          "[tracking][tempo]") {
+    // The audit of 2026-09-25, M3: H2's fix, through the pin. Releasing a pin drops the lock and
+    // everything learned under it, so the next lock was never "replacing" anything — and only a
+    // replacing lock dropped the ÷2. So: ÷2 on a drum-and-bass record, pinned through the mix,
+    // released on the house record, and the house record came out at half its tempo with its
+    // beats divided.
+    TempoTracker::Options options;
+    options.octaveFold = false; // as a fresh install ships
+    options.lockAfter = 5;
+    options.unlockAfter = 10;
+    options.relockAfter = 10;
+    options.confidenceSmoothing = 2.0;
+
+    const auto throughAPin = [&](bool keep, std::uint32_t nextRecord) {
+        TempoTracker::Options chosen = options;
+        chosen.keepOctaveShift = keep;
+        TempoTracker tracker(kFramePeriod, chosen);
+        std::uint64_t index = 0;
+        settle(tracker, index, 23, 0.9, 30);
+        tracker.halve();
+        settle(tracker, index, 23, 0.9, 10);
+        REQUIRE(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
+        tracker.setLockPinned(true);
+        settle(tracker, index, nextRecord, 0.9, 60); // the mix, under the pin
+        REQUIRE(tracker.state().locked);
+        tracker.setLockPinned(false);
+        settle(tracker, index, nextRecord, 0.9, 60);
+        REQUIRE(tracker.state().locked);
+        return tracker.state();
+    };
+
+    SECTION("released on another record, the halving goes") {
+        const auto state = throughAPin(false, 31);
+        CHECK(state.bpm == Approx(bpmOf(31)));
+        CHECK(state.beatDivisor == 1);
+    }
+    SECTION("released on the same record, it is still that record's") {
+        const auto state = throughAPin(false, 23);
+        CHECK(state.bpm == Approx(bpmOf(23) / 2.0));
+        CHECK(state.beatDivisor == 2);
+    }
+    SECTION("kept, it is kept") {
+        const auto state = throughAPin(true, 31);
+        CHECK(state.bpm == Approx(bpmOf(31) / 2.0));
+        CHECK(state.beatDivisor == 2);
+    }
+}
+
+TEST_CASE("a manual halving publishes the bar's downbeat, not whichever beat came next",
+          "[tracking][tempo]") {
+    // The audit of 2026-09-25, M2. After a divide, the first beat the filter called took the
+    // published grid, whichever beat of the bar it was — and the evidence never moved it, because
+    // the two halves of a bar score within a few per cent of each other. About half the time the
+    // published beats were 2 and 4: the lights on the backbeat, bar rules on beat 2. Pressed here
+    // with the second beat of a bar the next one due, which is the unlucky half.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t next = 0;
+    // One filter beat every 23 frames, a downbeat on every fourth, the network's activation the
+    // same on each as `feed` gives it.
+    const auto play = [&](int from, int to, std::vector<int>& published) {
+        for (int beat = from; beat < to; ++beat) {
+            for (int i = 0; i < 22; ++i) {
+                (void)tracker.process(frameAt(next++, 23, 0.9));
+            }
+            TrackedFrame frame = frameAt(next++, 23, 0.9);
+            const bool downbeat = beat % 4 == 0;
+            frame.emitted = downbeat ? TrackedFrame::Emitted::Downbeat : TrackedFrame::Emitted::Beat;
+            frame.beatActivation = downbeat ? 0.2f : 0.7f;
+            frame.downbeatActivation = downbeat ? 0.5f : 0.0f;
+            if (tracker.process(frame)) {
+                published.push_back(beat);
+            }
+        }
+    };
+    std::vector<int> before;
+    play(0, 13, before); // the last of these is a downbeat, so the next is the bar's second
+    REQUIRE(tracker.state().locked);
+
+    tracker.halve();
+    std::vector<int> after;
+    play(13, 61, after);
+    REQUIRE(tracker.state().beatDivisor == 2);
+    // From the first downbeat after the press, the published beats are the bar's 1 and 3.
+    int downbeatsPublished = 0;
+    for (const int beat : after) {
+        if (beat >= 16) {
+            INFO("filter beat " << beat << " published");
+            CHECK(beat % 2 == 0);
+            downbeatsPublished += beat % 4 == 0 ? 1 : 0;
+        }
+    }
+    CHECK(downbeatsPublished == (60 - 16) / 4 + 1);
+
+    // And from a divided grid, where the place of the next beat is not known, the first downbeat
+    // the filter calls chooses: a second ÷2 publishes the bar's beat 1 and nothing else.
+    tracker.halve();
+    std::vector<int> quartered;
+    play(61, 101, quartered);
+    REQUIRE(tracker.state().beatDivisor == 4);
+    int downbeatsQuartered = 0;
+    for (const int beat : quartered) {
+        if (beat >= 64) {
+            INFO("filter beat " << beat << " published");
+            CHECK(beat % 4 == 0);
+            ++downbeatsQuartered;
+        }
+    }
+    CHECK(downbeatsQuartered == (100 - 64) / 4 + 1);
+}
+
 TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking][tempo]") {
     // The audit's H1: ÷2 and ×2 were unbounded, and so was the shift a tap turned into with the
     // fold off, so a few presses sent Link and the MIDI clock a tempo of eight BPM or a
@@ -1257,8 +1460,10 @@ TEST_CASE("a tapped tempo moves the fold window onto the octave the operator mea
     CHECK(tracker.options().minBpm == Approx(bpmOf(14) / std::sqrt(2.0)));
     CHECK(tracker.options().maxBpm == Approx(bpmOf(14) * std::sqrt(2.0)));
     CHECK(tracker.options().octaveFold);
-    // The published tempo really moved, so the lock is given up and hunted again.
-    CHECK_FALSE(tracker.state().locked);
+    // The tap named another octave, and the published tempo moved onto it — **keeping the
+    // lock**, as ÷2 and ×2 do (the audit of 2026-09-25, H5). It used to be given up and hunted
+    // again, which cost Link every beat of the hunt and then a forced snap.
+    CHECK(tracker.state().locked);
     settle(tracker, index, 14, 0.9, 10);
     CHECK(tracker.state().locked);
     CHECK(tracker.state().bpm == Approx(bpmOf(14)));

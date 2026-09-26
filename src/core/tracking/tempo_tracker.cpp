@@ -135,6 +135,8 @@ void TempoTracker::reset() noexcept {
     lockPinned_ = false;
     octaveShift_ = 0;
     shiftFromTap_ = false;
+    tempoLetGo_ = 0.0;
+    operatorDivided_ = false;
     beatOctave_ = 0;
     beatOctaveCandidate_ = 0;
     beatOctaveRun_ = 0;
@@ -180,6 +182,7 @@ std::uint32_t TempoTracker::foldDivisor() const noexcept {
 }
 
 void TempoTracker::resetFoldPhase(std::uint32_t divisor) noexcept {
+    const std::uint32_t was = foldDivisor_;
     foldDivisor_ = divisor;
     foldSlot_ = 0;
     foldPhase_ = 0;
@@ -187,6 +190,28 @@ void TempoTracker::resetFoldPhase(std::uint32_t divisor) noexcept {
     for (double& score : foldScore_) {
         score = 0.0;
     }
+    for (bool& scored : foldScored_) {
+        scored = false;
+    }
+    // **A grid the operator divided keeps the bar's beat 1** (the audit of 2026-09-25, M2). The
+    // first beat called after a divide took the grid, whichever beat of the bar it was, and the
+    // evidence below never moved it — the halves of a bar score within a few per cent of each
+    // other — so after a ÷2, about half the time, the published beats were 2 and 4: the lights on
+    // the backbeat, bar rules on beat 2. Divided from an undivided grid with the bar known, the
+    // beat about to be called has a known place in it, and its slot is aimed so that beat 1's is
+    // the one published. Otherwise the first downbeat the filter calls chooses.
+    //
+    // The operator's divides only. The fold divides when the filter has gone to double time,
+    // and then the filter's bar has moved with it: the first beat is as good a guess as any, and
+    // what has always been done there is still done.
+    foldFirstSlot_ = -1;
+    foldAnchorOnDownbeat_ = operatorDivided_ && divisor > 1;
+    const std::uint32_t meter = state_.beatsPerBar;
+    if (foldAnchorOnDownbeat_ && was == 1 && state_.beatInBar != 0 && meter > 0) {
+        const std::uint32_t nextInBar = state_.beatInBar % meter + 1;
+        foldFirstSlot_ = static_cast<int>((nextInBar - 1) % divisor);
+    }
+    operatorDivided_ = false;
 }
 
 bool TempoTracker::onPublishedGrid(const TrackedFrame& frame) noexcept {
@@ -195,6 +220,9 @@ bool TempoTracker::onPublishedGrid(const TrackedFrame& frame) noexcept {
     // would take the published grid with it every time it did. Counted in periods instead,
     // the grid is anchored to the music's own time and a missed beat costs nothing.
     std::uint32_t slot = foldPhase_;
+    if (!foldAnchored_ && foldFirstSlot_ >= 0) {
+        slot = static_cast<std::uint32_t>(foldFirstSlot_); // see `resetFoldPhase`
+    }
     if (foldAnchored_) {
         std::uint32_t steps = 1;
         if (filterIntervalFrames_ != 0) {
@@ -210,6 +238,15 @@ bool TempoTracker::onPublishedGrid(const TrackedFrame& frame) noexcept {
     foldSlot_ = slot;
     foldAnchored_ = true;
 
+    // After the operator divided the grid, the sub-grid the filter's first downbeat is on is the
+    // one published — the aim `resetFoldPhase` took, confirmed, or corrected when the filter had
+    // skipped a beat or the bar was not known then (the audit of 2026-09-25, M2). The evidence
+    // decides afterwards, by its margin, as it always did.
+    if (foldAnchorOnDownbeat_ && frame.emitted == TrackedFrame::Emitted::Downbeat) {
+        foldPhase_ = slot;
+        foldAnchorOnDownbeat_ = false;
+    }
+
     // P(this frame is a beat of any kind). The classes are a softmax over beat / downbeat /
     // non-beat, so a bar start reads high on the second and low on the first; either alone
     // would score the downbeat sub-grid as the weak one. See TrackedFrame.
@@ -217,9 +254,12 @@ bool TempoTracker::onPublishedGrid(const TrackedFrame& frame) noexcept {
         static_cast<double>(frame.beatActivation) + static_cast<double>(frame.downbeatActivation);
     // One average per sub-grid, each stepped only on its own beats, so that two of them are
     // compared at the same point in their cycle. See Options::foldPhaseMemory for what
-    // decaying all of them on every beat does instead.
-    foldScore_[slot] =
-        options_.foldPhaseMemory * foldScore_[slot] + (1.0 - options_.foldPhaseMemory) * evidence;
+    // decaying all of them on every beat does instead. Started at a sub-grid's first beat, not
+    // at zero — see `foldScored_`.
+    foldScore_[slot] = foldScored_[slot] ? options_.foldPhaseMemory * foldScore_[slot] +
+                                               (1.0 - options_.foldPhaseMemory) * evidence
+                                         : evidence;
+    foldScored_[slot] = true;
 
     // The leader takes the grid only by a margin, as the meter is taken in
     // `ParticleFilter::meterOf` and for the same reason: two sub-grids trading places is two
@@ -371,6 +411,9 @@ void TempoTracker::setOptions(const Options& options) noexcept {
         agreeing_ = 0;
         disagreeing_ = 0;
         beatFrames_.clear();
+        // The tempo the moved window leaves: a lock taken at it again is this record still,
+        // one taken somewhere else is the next (see `tempoLetGo_`).
+        tempoLetGo_ = lockedBpm_;
     }
 }
 
@@ -449,26 +492,39 @@ std::int64_t TempoTracker::windowOctave(double bpm) const noexcept {
     return std::llround(std::log2(folded / bpm));
 }
 
+void TempoTracker::movePublishedOctave(std::int64_t moved) noexcept {
+    // **Everything published moves by exactly the octaves asked for** — the tempo on screen,
+    // the lock, the argument for the next lock, and the refinement the beats have earned — so
+    // ÷2 publishes half of what was showing and a lock that was there stays (the audit of
+    // 2026-09-25, H5). This used to rebuild the published tempo from the filter's continuous
+    // estimate: ÷2 published half of *that*, 61.2 rather than 64.15 on the synthetic excerpt,
+    // and a tap whose rebuilt number differed from the refined one by more than the lock's
+    // tolerance — most of them, measured — dropped the lock, so Link was sent nothing while the
+    // operator tapped and then a forced snap at the rough tempo.
+    //
+    // The beat spacing is kept: it is measured on the filter's own grid, which no octave
+    // instruction moves, and turned into a tempo in the chosen octave every time it is read.
+    lockedBpm_ = applyShift(lockedBpm_, moved);
+    candidate_ = applyShift(candidate_, moved);
+    refinedBpm_ = applyShift(refinedBpm_, moved);
+    state_.bpm = applyShift(state_.bpm, moved);
+    // And the grid with it, on the press rather than on the next frame: a reader of the
+    // state between the two would otherwise see the number halved and the divisor not.
+    state_.beatDivisor = foldDivisor();
+    // A grid this divides is divided by the operator — see `resetFoldPhase`.
+    operatorDivided_ = true;
+}
+
 void TempoTracker::halve() noexcept {
     if (octaveShift_ <= -kMaxOctaveShift) {
         return; // two octaves down already; see kMaxOctaveShift
     }
     --octaveShift_;
     shiftFromTap_ = false;
-    // The operator's shift moves the tempo now, whether or not the tracker is locked: this
-    // is the one case where a hunting tracker's published tempo is allowed to move without
-    // a lock behind it, because it moved because they asked.
-    refinedBpm_ = 0.0;
-    lockHeld_ = 0;
-    chooseOctave(state_.calledBpm);
-    lockedBpm_ = inChosenOctave(state_.calledBpm);
-    state_.bpm = lockedBpm_;
-    state_.refined = false;
-    // And the grid with it, on the press rather than on the next frame: a reader of the
-    // state between the two would otherwise see the number halved and the divisor not.
-    state_.beatDivisor = foldDivisor();
-    candidate_ = lockedBpm_;
-    beatFrames_.clear();
+    // Now, whether or not the tracker is locked: this is the one case where a hunting
+    // tracker's published tempo is allowed to move without a lock behind it, because it
+    // moved because they asked.
+    movePublishedOctave(-1);
 }
 
 void TempoTracker::redouble() noexcept {
@@ -477,22 +533,15 @@ void TempoTracker::redouble() noexcept {
     }
     ++octaveShift_;
     shiftFromTap_ = false;
-    refinedBpm_ = 0.0;
-    lockHeld_ = 0;
-    chooseOctave(state_.calledBpm);
-    lockedBpm_ = inChosenOctave(state_.calledBpm);
-    state_.bpm = lockedBpm_;
-    state_.refined = false;
-    state_.beatDivisor = foldDivisor();
-    candidate_ = lockedBpm_;
-    beatFrames_.clear();
+    movePublishedOctave(1);
 }
 
 void TempoTracker::seedTempo(double bpm) noexcept {
     if (!(bpm > 0.0)) {
         return;
     }
-    const double before = state_.bpm;
+    // The octave being published, relative to the beats: what a tap is an instruction about.
+    const std::int64_t before = foldOctave_ + octaveShift_;
     if (options_.octaveFold) {
         // An octave centred on the tap, so a tap 5 % out — which every human tap is — still
         // lands the tempo it meant squarely inside, and its neighbours squarely outside.
@@ -530,23 +579,16 @@ void TempoTracker::seedTempo(double bpm) noexcept {
         shiftFromTap_ = octaveShift_ != 0;
     }
 
-    refinedBpm_ = 0.0;
-    lockHeld_ = 0;
+    // **Decided by the octave, not by the number** (the audit of 2026-09-25, H5). A tap names
+    // an octave; the tempo within it is the filter's to measure, and a human tap is a few per
+    // cent out anyway. So a tap that agrees with the octave being published moves nothing at
+    // all — not the lock, not the refinement — and one that names another octave moves
+    // everything published by exactly that, the way ÷2 and ×2 do, and the lock stays with it.
+    // It used to rebuild the tempo from the filter's continuous estimate and drop the lock
+    // whenever that differed from what was showing by more than the lock's tolerance, which on
+    // the operator's material it did on most locked frames.
     chooseOctave(state_.calledBpm);
-    lockedBpm_ = inChosenOctave(state_.calledBpm);
-    state_.bpm = lockedBpm_;
-    state_.refined = false;
-    candidate_ = lockedBpm_;
-    if (std::abs(state_.bpm - before) > options_.lockToleranceBpm) {
-        // The tap really did move the tempo, so what was locked is no longer what is
-        // published and the hunt starts again. A tap that agrees keeps the lock, as
-        // nudging the window by hand does.
-        state_.locked = false;
-        everLocked_ = false; // and the tempo it would have held is the one just replaced
-        agreeing_ = 0;
-        disagreeing_ = 0;
-        beatFrames_.clear();
-    }
+    movePublishedOctave((foldOctave_ + octaveShift_) - before);
 }
 
 bool TempoTracker::lastBeatIsNearer() const noexcept {
@@ -612,11 +654,12 @@ void TempoTracker::setLockPinned(bool pinned) noexcept {
     lockPinned_ = pinned;
     state_.pinned = pinned;
     if (pinned) {
-        // Pin what is showing. `lockedBpm_` is the tempo being published whether or not
-        // the lock has been earned, so this locks to what the operator is looking at.
-        // With nothing tracked there is nothing to pin, and acquisition — which the pin
-        // does not touch — raises the flag in its own time.
-        if (lockedBpm_ > 0.0) {
+        // Pin what is showing — **once a lock has been earned**, the tempo that lock was on or
+        // is holding (the audit of 2026-09-25, M4). Before that, `lockedBpm_` is the hunt's
+        // candidate of the moment, and raising the flag on it held the decoder to it and fed it
+        // to Link as locked: pinning noise. A pin pressed while hunting is kept, and acquisition
+        // — which the pin does not touch — raises the flag in its own time.
+        if (everLocked_ && lockedBpm_ > 0.0) {
             state_.locked = true;
             disagreeing_ = 0;
         }
@@ -627,6 +670,12 @@ void TempoTracker::setLockPinned(bool pinned) noexcept {
     // new lock. That includes not *holding* the released tempo while hunting, which an
     // ordinary unlock does: the operator letting go is saying "that was wrong, look
     // again", and holding it would be the one thing they were trying to shed.
+    //
+    // What it was, though, is remembered: a lock taken afterwards at another tempo is the next
+    // record, and has its ÷2 or ×2 dropped as any other would (see `tempoLetGo_`).
+    if (everLocked_) {
+        tempoLetGo_ = lockedBpm_;
+    }
     state_.locked = false;
     everLocked_ = false;
     refinedBpm_ = 0.0;
@@ -753,6 +802,12 @@ void TempoTracker::updateLock(double folded) noexcept {
     // published is not a replacement, so it re-locks at the ordinary price and the operator
     // never sees the number move.
     const bool replacing = everLocked_ && !sameTempo(candidate_, lockedBpm_);
+    // **And a lock the operator let go of — a pin released, a window moved — was a tempo too**
+    // (the audit of 2026-09-25, M3). Both leave `everLocked_` false, so the next lock never
+    // counted as replacing anything, and a ÷2 pinned on a drum-and-bass record, released after
+    // the mix into house, halved the house record with its beats divided.
+    const bool nextRecord =
+        replacing || (!everLocked_ && tempoLetGo_ > 0.0 && !sameTempo(candidate_, tempoLetGo_));
     std::size_t needed = lockAfter_;
     if (replacing) {
         // A share of how long the incumbent has held, between the two bounds. Charging the
@@ -760,6 +815,18 @@ void TempoTracker::updateLock(double folded) noexcept {
         needed = std::clamp(lockHeld_ / kDefenceShare, lockAfter_, relockAfter_);
     }
     if (agreeing_ >= needed) {
+        // The operator's octave shift goes with the record it was for, unless they asked for
+        // it to stay — the audit's H2, and the operator's call on 2026-09-23. A different tempo
+        // taking the lock is the next record of the set, and a ÷2 that fitted the last one
+        // halved this one with its beats divided until somebody pressed ×2. A tap's shift
+        // always goes: it named the last record's tempo, not an octave for the rest of the
+        // night. The candidate was agreed with under the shift, so the shift comes back out.
+        if (nextRecord && octaveShift_ != 0 && (shiftFromTap_ || !options_.keepOctaveShift)) {
+            candidate_ = applyShift(candidate_, -octaveShift_);
+            octaveShift_ = 0;
+            shiftFromTap_ = false;
+        }
+        tempoLetGo_ = 0.0;
         if (replacing) {
             refinedBpm_ = 0.0; // the beat spacing under the old tempo says nothing about this one
             lockHeld_ = 0;     // and this tempo has earned nothing yet either
@@ -777,18 +844,6 @@ void TempoTracker::updateLock(double folded) noexcept {
             // holds. (Measured on Moonlake, clearing it and not clearing it give the same
             // trace to the frame, so the argument above is the reason rather than the
             // measurement: that track's cloud sits on interval 15 throughout.)
-            //
-            // **And the operator's octave shift, unless they asked for it to stay** — the audit's
-            // H2, and the operator's call on 2026-09-23. A different tempo taking the lock is
-            // the next record of the set, and a ÷2 that fitted the last one halved this one
-            // with its beats divided until somebody pressed ×2. A tap's shift always goes: it
-            // named the last record's tempo, not an octave for the rest of the night. The
-            // candidate was agreed with under the shift, so the shift comes back out of it.
-            if (octaveShift_ != 0 && (shiftFromTap_ || !options_.keepOctaveShift)) {
-                candidate_ = applyShift(candidate_, -octaveShift_);
-                octaveShift_ = 0;
-                shiftFromTap_ = false;
-            }
         }
         state_.locked = true;
         everLocked_ = true;
@@ -886,6 +941,8 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         // Evidence gathered over two sub-grids says nothing about four, and the fold moving
         // octave means the beats being weighed against each other are different beats.
         resetFoldPhase(divisor);
+    } else {
+        operatorDivided_ = false; // an instruction that did not divide anything
     }
     bool emitted = called;
     bool downbeat = frame.emitted == TrackedFrame::Emitted::Downbeat;

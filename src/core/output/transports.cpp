@@ -21,8 +21,9 @@ constexpr double kLinkTempoEpsilon = 0.005;
 /// beat's stamp jitters by a few milliseconds, and nudging on that would put the jitter into
 /// every peer's tempo display; 0.02 of a beat is 9 ms at 128 BPM.
 constexpr double kLinkPhaseDeadband = 0.02;
-/// How many beats a nudge spreads a phase error over. Eight: a quarter-beat error is gone to
-/// within a hundredth in about three bars, and no peer's tempo moves by more than the clamp.
+/// How many beats a nudge spreads a phase error over. Eight: an eighth of what is left goes on
+/// each beat, so a quarter-beat error is inside the deadband after about nineteen beats —
+/// five bars — where the nudging stops, and no peer's tempo moves by more than the clamp.
 constexpr double kLinkNudgeBeats = 8.0;
 /// The most a nudge moves the tempo Link is sent, either way — 2.6 BPM at 128. Gentle enough
 /// that a peer's own tempo display barely wavers, and a peer following Link's tempo — Resolume
@@ -594,9 +595,15 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         // A receiver's bar 1 is the first tick after Start, so Start waits for a locked beat to
         // say where the bars are, and then for the downbeat of the grid it sits on. Given again
         // on every locked beat until it has gone, so the grid follows the tempo meanwhile.
-        if (event.locked && event.bpm > 0.0 && midi.waitingToStart()) {
+        //
+        // **Only a beat whose place in the bar is known says where the bars are** (the audit of
+        // 2026-09-25, M6). The tracker publishes `beatInBar` 0 before it has found a bar, and
+        // that was read as beat 1 — so a receiver's bar 1 could land on beat 2, 3 or 4 and stay
+        // there for the run. Link's path already waited for this (`phased`, below).
+        if (event.locked && event.bpm > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0 &&
+            midi.waitingToStart()) {
             const double beat = 60.0 / event.bpm;
-            const std::uint32_t meter = std::max<std::uint32_t>(event.beatsPerBar, 1);
+            const std::uint32_t meter = event.beatsPerBar;
             const std::uint32_t inBar = std::clamp<std::uint32_t>(event.beatInBar, 1, meter);
             midi.startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
                                  static_cast<double>(meter) * beat);
@@ -657,6 +664,16 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         linkSnapped_ = false;
     }
     linkPeers_ = peers;
+    // **And so is a move of the Link output's delay, or of the rig's latency, of more than the
+    // deadband** (the audit of 2026-09-25, M7). It used to be read on the next beat as a phase
+    // error and nudged out at an eighth a beat: 100 ms took nine seconds to settle, with every
+    // peer's tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for an operator
+    // dragging the delay to line Resolume up. The delay is a place to put the beat, not drift.
+    if (linkSnapped_ && std::abs(static_cast<double>(latencyMicros - linkSnappedOffset_)) / 1e6 *
+                                event.bpm / 60.0 >
+                            kLinkPhaseDeadband) {
+        linkSnapped_ = false;
+    }
 
     const std::chrono::microseconds at{hostMicros + latencyMicros};
     // Bar phase needs a bar: before the first downbeat only the tempo goes.
@@ -683,6 +700,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         link_->snap(event.bpm, beat, at, quantum);
         lastLinkBpm_ = event.bpm;
         linkSnapped_ = true;
+        linkSnappedOffset_ = latencyMicros;
         barsApart_ = 0;
         return;
     }
@@ -706,6 +724,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         if (++barsApart_ >= event.beatsPerBar) {
             link_->snap(event.bpm, beat, at, quantum);
             lastLinkBpm_ = event.bpm;
+            linkSnappedOffset_ = latencyMicros;
             barsApart_ = 0;
             return;
         }
@@ -717,8 +736,10 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         return;
     }
     // A session ahead is slowed and one behind is hurried, by the share of the error a beat
-    // should take out. `setTempo` pins the beat at `at` and changes the tempo from there, so
-    // the nudge moves nobody's playhead: it changes how fast the next beat arrives.
+    // should take out. `setTempo` pins the beat at `at` and changes the tempo from there. So it
+    // changes how fast the next beat arrives, and moves each peer's playhead only by the nudge's
+    // share of however long ago `at` was — (now − at) × Δbpm / 60 beats, thousandths of a beat
+    // when `at` is a beat's stamp plus a latency that has already gone by.
     const double nudge = std::clamp(error / kLinkNudgeBeats, -kLinkMaxNudge, kLinkMaxNudge);
     sendTempo(event.bpm * (1.0 - nudge));
 }

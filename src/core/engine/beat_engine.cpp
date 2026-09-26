@@ -180,6 +180,7 @@ void BeatEngine::applyCommands() noexcept {
     if (commands_.empty()) {
         return;
     }
+    const bool wasLocked = tempo_.state().locked;
     for (const Command& command : commands_) {
         switch (command.kind) {
         case Command::Kind::SetTempoOptions:
@@ -225,6 +226,15 @@ void BeatEngine::applyCommands() noexcept {
             decoder_->holdTempo(command.bpm);
             break;
         }
+    }
+    // **A pinned lock a command took away takes the decoder's hold with it** (the audit of
+    // 2026-09-25, M4). A fold window moved out from under the pinned tempo drops the lock, as it
+    // should, and left the decoder held to the old tempo — so the tracker re-locked onto it
+    // within half a second, and the window move did nothing. The pin stays the operator's; the
+    // hold is taken again, at the new tempo, on the frame a lock is earned (see `trackOne`).
+    if (decoder_->canHoldTempo() && tempo_.lockPinned() && wasLocked && !tempo_.state().locked) {
+        decoder_->holdTempo(0.0);
+        pinHoldPending_ = true;
     }
     // A tap moves the window, so the decoder is told again after every batch rather than
     // after the one command that is known to move it.

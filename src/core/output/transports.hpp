@@ -341,8 +341,12 @@ private:
     std::string oscPrefix_;
     double lastLinkBpm_ = -1.0;
     /// Whether Link's phase has been forced under the music since the tracker last locked —
-    /// false again whenever it hunts, Link is switched on, the outputs start or a peer joins.
+    /// false again whenever it hunts, Link is switched on, the outputs start, a peer joins, or
+    /// the Link output's delay or the rig's latency moves by more than the deadband.
     bool linkSnapped_ = false;
+    /// The rig's latency plus the Link output's delay, in microseconds, at the last snap — what
+    /// a move of either is measured against (the audit of 2026-09-25, M7).
+    std::int64_t linkSnappedOffset_ = 0;
     /// Link's peer count at the last beat, so a new peer is noticed.
     std::size_t linkPeers_ = 0;
     /// Locked beats in a row on which Link's session sat on a different beat of the bar from

@@ -491,10 +491,10 @@ public:
     /// ÷2, ×2 or the hysteresis has put outside of (the audit's M3).
     void setOptions(const Options& options) noexcept;
 
-    /// Halves or doubles the published tempo, keeping the lock. A manual octave shift,
-    /// applied after the fold, so it takes effect whatever the window says — the window
-    /// itself does not move. Bounded at `kMaxOctaveShift` either way. §5.5's manual octave
-    /// shift.
+    /// Halves or doubles the published tempo — exactly what was showing, refinement and all —
+    /// keeping the lock. A manual octave shift, applied after the fold, so it takes effect
+    /// whatever the window says — the window itself does not move. Bounded at
+    /// `kMaxOctaveShift` either way. §5.5's manual octave shift.
     void halve() noexcept;
     void redouble() noexcept;
 
@@ -526,8 +526,10 @@ public:
     /// own beat generator, its own answer for downbeats and confidence, and a UI that
     /// says the tracker is not tracking. Nothing else can be built on top of a half of it.
     ///
-    /// The lock is kept if the published tempo did not really move, as when changing the
-    /// window by hand — a tap confirming what is already tracked must not cost sync.
+    /// **What moves is decided by the octave, not by the number** (the audit of 2026-09-25,
+    /// H5): a tap that agrees with the octave being published moves nothing — a tap confirming
+    /// what is already tracked must not cost sync — and one that names another octave moves the
+    /// published tempo by exactly that, keeping the lock, as ÷2 and ×2 do.
     void seedTempo(double bpm) noexcept;
 
     /// §5.5's manual downbeat: the beat the operator is pointing at starts the bar, and
@@ -593,13 +595,16 @@ public:
     /// operator saying they know better.
     ///
     /// Pinning locks to whatever is showing, because that is what the operator is looking
-    /// at when they press it. With nothing tracked yet there is nothing to pin: the pin is
+    /// at when they press it — once a lock has been earned. Before that there is nothing to
+    /// pin but the hunt's guess of the moment (the audit of 2026-09-25, M4): the pin is
     /// remembered and takes hold on the frame acquisition first locks — a pin cannot hold
     /// up a flag that was never raised.
     ///
     /// Releasing drops the lock with it and starts the hunt again from what is playing
     /// now. An operator letting go is saying "that tempo was wrong, look again", and a
-    /// lock left standing afterwards would be the very thing they were trying to shed.
+    /// lock left standing afterwards would be the very thing they were trying to shed. A lock
+    /// found afterwards at another tempo is the next record, and a ÷2 or ×2 goes with the one
+    /// it was pressed for unless the operator asked to keep it (the audit of 2026-09-25, M3).
     ///
     /// It holds against the *hysteresis*, not against the operator's other controls. A
     /// fold window dragged until it no longer contains the pinned tempo still drops the
@@ -651,6 +656,10 @@ private:
     /// beats are the music's. Called whenever the divisor changes under it, because a score
     /// collected over two sub-grids says nothing about four.
     void resetFoldPhase(std::uint32_t divisor) noexcept;
+    /// Moves everything published — the tempo, the lock, the candidate and the refinement — by
+    /// `moved` octaves. What ÷2, ×2 and a tap that names another octave do (the audit of
+    /// 2026-09-25, H5).
+    void movePublishedOctave(std::int64_t moved) noexcept;
     /// Whether this filter beat falls on the sub-grid being published, having first counted
     /// the network's opinion of it towards that sub-grid's score. Advances the slot, so it
     /// is called exactly once per filter beat and only when the divisor is above one.
@@ -726,6 +735,10 @@ private:
     /// Whether the shift above came from a tap rather than from ÷2 or ×2 — the one that is
     /// dropped at the next track whatever `Options::keepOctaveShift` says.
     bool shiftFromTap_ = false;
+    /// The published tempo when the operator dropped the lock — a pin released, a window moved
+    /// out from under it — or zero. The next lock taken at another tempo is the next record,
+    /// whose octave shift goes as a replacing lock's does (the audit of 2026-09-25, M3).
+    double tempoLetGo_ = 0.0;
     /// The furthest the manual shift goes either way: two octaves, a quarter or four times the
     /// tracked tempo. Past that it is not an octave preference but a tempo nothing can be
     /// playing, and unbounded ÷2 presses — or a tap of a wildly wrong tempo with the fold off —
@@ -752,6 +765,12 @@ private:
     std::uint32_t foldSlot_ = 0;
     std::uint32_t foldPhase_ = 0;
     double foldScore_[kMaxFoldDivisor] = {};
+    /// Whether each sub-grid has been scored since the divisor last changed. Its first beat
+    /// *sets* its score rather than decaying towards it from zero — from zero, whichever sub-grid
+    /// was scored first led the others by the margin for several beats on nothing but its head
+    /// start, and took the grid from the one the bar's downbeat had chosen (the audit of
+    /// 2026-09-25, M2).
+    bool foldScored_[kMaxFoldDivisor] = {};
     /// The filter's own beats — how long since the last one and how many there have been.
     /// The slot above is advanced by how many beat *periods* have gone by rather than by
     /// one per call, so that a beat the filter drops through a quiet bar does not rotate the
@@ -768,6 +787,15 @@ private:
     /// divisor changes is published whatever the scores say, because until one has been
     /// there is no grid — only a slot number nothing has voted on.
     bool foldAnchored_ = false;
+    /// A ÷2, ×2 or tap since the last frame: whether the next change of divisor is the
+    /// operator's. See `resetFoldPhase` (the audit of 2026-09-25, M2).
+    bool operatorDivided_ = false;
+    /// After the operator divided the grid: the next downbeat the filter calls chooses the
+    /// published sub-grid. See `onPublishedGrid`.
+    bool foldAnchorOnDownbeat_ = false;
+    /// The slot of the first beat after the operator divided an undivided grid with the bar
+    /// known, aimed so that beat 1's is the published one; -1 otherwise. See `resetFoldPhase`.
+    int foldFirstSlot_ = -1;
     /// Published beats since the last published downbeat, which is what divides the **bar**
     /// along with the beats. A filter bar is as many of its own beats as the meter says, so
     /// under a divisor of two the filter calls a downbeat twice as often as one is due; the

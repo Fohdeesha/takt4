@@ -86,15 +86,22 @@ bool IntensityClassifier::push(std::span<const float, kFeatureDim> frame) noexce
     flux_ = sum;
     ++frames_;
 
+    // **Warmed up on the music, not on the first frame** (the audit of 2026-09-25, M1). Both
+    // followers are the plain mean of every frame so far until there are as many frames as
+    // their own time constant, and a one-pole follower from there: a follower that starts from
+    // one value climbs for its whole time constant, and everything measured against the long
+    // one while it climbs reads as intense. They used to start *at* the first frame — whose
+    // difference half is all zero by construction, since there is no frame before it to
+    // differ from — so every Start read INTENSE from three seconds to forty-three, whatever was
+    // playing, and fired every intensity-change rule twice on the way. The first frame is not
+    // counted at all, for the same reason.
     if (frames_ == 1) {
-        // Start both followers at the first frame rather than at zero. Starting at zero
-        // makes the long one climb for twenty seconds, and everything measured against it
-        // during the climb reads as intense.
-        fast_ = flux_;
-        slow_ = flux_;
+        fast_ = 0.0;
+        slow_ = 0.0;
     } else {
-        fast_ = onePole(fast_, flux_, options_.fastFrames);
-        slow_ = onePole(slow_, flux_, options_.slowFrames);
+        const auto seen = static_cast<double>(frames_ - 1);
+        fast_ = onePole(fast_, flux_, std::min(options_.fastFrames, seen));
+        slow_ = onePole(slow_, flux_, std::min(options_.slowFrames, seen));
     }
 
     // --- the state, with §5.8's hysteresis and a floor on how long one lasts -------------

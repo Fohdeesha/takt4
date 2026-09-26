@@ -81,6 +81,37 @@ TEST_CASE("nothing but normal is published until there is something to compare a
     }
 }
 
+TEST_CASE("a steady track reads normal from its first seconds, not intense for forty",
+          "[features][intensity]") {
+    // The audit of 2026-09-25, M1. The first frame after Start has an all-zero difference half —
+    // there is no frame before it to differ from — and both followers started *at* it, so the
+    // long one spent its twenty-second time constant climbing from zero and a steady loop read
+    // INTENSE from about three seconds to about forty-three, firing every intensity-change rule
+    // twice. The state is checked on every frame here, not only at the end, which is what let it
+    // through before.
+    IntensityClassifier classifier;
+    std::array<float, kFeatureDim> first = frameWithFlux(0.0);
+    (void)classifier.push(first); // what FeatureExtractor's first frame always is
+    // Fifty seconds of a steady track: a little movement from frame to frame, the same on average.
+    int intense = 0;
+    int calm = 0;
+    int onsetsInFirstSecond = 0;
+    for (int frame = 1; frame < 2500; ++frame) {
+        const bool onset = classifier.push(frameWithFlux(frame % 2 == 0 ? 9.0 : 11.0));
+        onsetsInFirstSecond += frame < 50 && onset ? 1 : 0;
+        intense += classifier.intensity() == Intensity::Intense ? 1 : 0;
+        calm += classifier.intensity() == Intensity::Calm ? 1 : 0;
+        if (frame == 250) {
+            INFO("at five seconds the ratio is " << classifier.ratio());
+            CHECK(classifier.intensity() == Intensity::Normal);
+        }
+    }
+    CHECK(intense == 0);
+    CHECK(calm == 0);
+    // Nothing in a steady track is a hit, from the first second on.
+    CHECK(onsetsInFirstSecond == 0);
+}
+
 TEST_CASE("intensity is relative to the track, not to the gain", "[features][intensity]") {
     // Absolute flux is a fact about whoever mastered the track. Calm and intense are meant
     // to separate a breakdown from a drop *within* what is playing.
