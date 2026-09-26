@@ -208,7 +208,14 @@ private:
         static std::atomic<bool> raised{false};
         return raised;
     }
-    static void raise(int) { flag().store(true); }
+    /// **Installed again first.** Windows' runtime puts a signal back to its default before
+    /// it calls the handler, so the second Ctrl+C of an impatient operator ended the process —
+    /// before annotate's taps were written, or `track --device` sent the MIDI clock its Stop
+    ///.
+    static void raise(int signal) {
+        (void)std::signal(signal, &Interrupts::raise);
+        flag().store(true);
+    }
 
     Handler previousInt_ = SIG_DFL;
     Handler previousTerm_ = SIG_DFL;

@@ -73,8 +73,9 @@ public:
     static constexpr std::uint32_t kInvalidParameterCode = 0xE0747403;
     static constexpr std::uint32_t kPureCallCode = 0xE0747404;
 
-    /// Crashes the process on purpose, the way `how` names: "access-violation", "terminate",
-    /// "abort", "invalid-parameter" or "pure-call". Anything else does nothing.
+    /// Crashes the process on purpose, the way `how` names: "access-violation",
+    /// "stack-overflow", "terminate", "abort", "invalid-parameter" or "pure-call". Anything else
+    /// does nothing.
     ///
     /// Also covers "abort from another thread": "terminate" and "abort" are called on whichever
     /// thread calls this, and a test calls it from a worker to prove the global handlers reach
