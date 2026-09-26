@@ -1,9 +1,9 @@
 name: core
 
 # The engine, the console tool and the tests on every push, without Slint — so without a
-# Rust toolchain and without the 7–25 minute cargo build. full.yml builds the UI. A change
-# to takt4_core that breaks src/ui/ is therefore only caught by full.yml's weekly run or a
-# manual dispatch; run one before a milestone.
+# Rust toolchain and without the 7–25 minute cargo build, and the first answer on a push.
+# full.yml builds the UI, and since 2026-09-14 it runs on every push that touches the code
+# too, so a change to takt4_core that breaks src/ui/ is caught there, a while later.
 #
 # WINDOWS ONLY, by the user, 2026-09-06. macOS and Linux are wanted later and are not
 # wanted now, so their matrix entries are commented out below rather than deleted — every
@@ -11,11 +11,10 @@ name: core
 # here, and re-enabling is uncommenting. macOS is billed at 10x and was most of what this
 # workflow cost.
 #
-# What that gives up: nothing here compiles with clang or gcc any more, and this workflow
-# was the only thing that did. `tools/lint_clang.ps1` runs clang-tidy locally in about a
-# minute and is now the *only* guard against the code quietly rotting for the port that is
-# coming — it has already caught one MSVC-accepts-clang-rejects bug that CI would otherwise
-# have found. Run it before every commit.
+# What that gives up here: nothing in this workflow compiles with clang or GCC. full.yml's
+# `linux-tsan` job does, with GCC, over the whole tree, on every push since 2026-09-23 — and
+# `tools/lint_clang.ps1` runs clang-tidy locally in about a minute, which is still the only
+# thing that puts clang itself over the code before a push.
 
 on:
   push:

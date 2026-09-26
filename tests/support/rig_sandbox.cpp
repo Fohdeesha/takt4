@@ -70,10 +70,10 @@ public:
     }
 
 private:
-    static constexpr std::array<takt4::sandbox::Refused, 5> kKinds = {
-        takt4::sandbox::Refused::Send, takt4::sandbox::Refused::Bind,
-        takt4::sandbox::Refused::Midi, takt4::sandbox::Refused::Link,
-        takt4::sandbox::Refused::Audio};
+    static constexpr std::array<takt4::sandbox::Refused, 6> kKinds = {
+        takt4::sandbox::Refused::Send,  takt4::sandbox::Refused::Bind,
+        takt4::sandbox::Refused::Midi,  takt4::sandbox::Refused::Link,
+        takt4::sandbox::Refused::Audio, takt4::sandbox::Refused::Lookup};
 
     static const char* nameOf(takt4::sandbox::Refused what) {
         switch (what) {
@@ -87,6 +87,8 @@ private:
             return "Link joins";
         case takt4::sandbox::Refused::Audio:
             return "audio opens";
+        case takt4::sandbox::Refused::Lookup:
+            return "name lookups";
         case takt4::sandbox::Refused::Nothing:
             break;
         }

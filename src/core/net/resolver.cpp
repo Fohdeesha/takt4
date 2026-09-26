@@ -1,9 +1,13 @@
 #include "core/net/resolver.hpp"
 
 #include "core/net/udp.hpp"
+#include "core/sandbox.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
+#include <string_view>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -40,10 +44,26 @@ std::optional<AsyncAddress::Address> pick(const addrinfo* results) {
     return out;
 }
 
+/// Whether this is the one name the test sandbox lets through: `localhost`, which the system
+/// answers itself and asks nobody about.
+bool isLocalhost(const std::string& host) noexcept {
+    constexpr std::string_view name = "localhost";
+    return host.size() == name.size() &&
+           std::equal(host.begin(), host.end(), name.begin(), [](char a, char b) {
+               return std::tolower(static_cast<unsigned char>(a)) == b;
+           });
+}
+
 /// One look-up. `numericOnly` asks nobody — `AI_NUMERICHOST` fails at once on a name — which is
 /// what makes the constructor safe to call from the output thread. Zero, or the error.
 int resolve(const std::string& host, std::uint16_t port, bool numericOnly,
             std::optional<AsyncAddress::Address>& out) {
+    // In the test binaries, a name goes nowhere: see `sandbox.hpp`. -2 is not one of
+    // `getaddrinfo`'s codes, so a status line that shows it is recognisably this.
+    if (!numericOnly && sandbox::active() && !isLocalhost(host)) {
+        sandbox::refuse(sandbox::Refused::Lookup);
+        return -2;
+    }
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;

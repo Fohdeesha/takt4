@@ -1772,7 +1772,8 @@ void WindowController::openAbout() {
 std::filesystem::path WindowController::openEmbeddedText(const std::string& name,
                                                          std::string_view text) {
     std::error_code code;
-    const std::filesystem::path folder = std::filesystem::temp_directory_path(code) / "takt4";
+    // `%TEMP%\takt4`, or a test process's own folder — see `settings::scratchDirectory`.
+    const std::filesystem::path folder = settings::scratchDirectory();
     std::filesystem::create_directories(folder, code);
     const std::filesystem::path path = folder / name;
     {

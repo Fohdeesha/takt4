@@ -332,6 +332,16 @@ std::filesystem::path settingsFile() {
     return directory.empty() ? std::filesystem::path{} : directory / "settings.json";
 }
 
+std::filesystem::path scratchDirectory() {
+    const std::filesystem::path named = namedSettingsDirectory();
+    if (!named.empty()) {
+        return named / "texts";
+    }
+    std::error_code code;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(code);
+    return code ? std::filesystem::path{} : temp / "takt4";
+}
+
 std::filesystem::path existingSettingsFile() {
     const std::filesystem::path beside = settingsFile();
     std::error_code code;

@@ -331,18 +331,6 @@ TEST_CASE("a MIDI clock and the Link output survive their text line too", "[outp
     }
 }
 
-TEST_CASE("only OSC and MIDI outputs can be sent a rule's message", "[output][routing]") {
-    // A rule's editor offers exactly these as places to send, because they are the only ones
-    // anything routes to by name: a DMX rule reaches Art-Net through its fixtures, a clock sends
-    // only the clock, and Link only the timeline. Anything else offered would be a tick box that
-    // looks like routing and is silence.
-    CHECK(takt4::output::routable(OutputTarget::Kind::Osc));
-    CHECK(takt4::output::routable(OutputTarget::Kind::Midi));
-    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::ArtNet));
-    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::MidiClock));
-    CHECK_FALSE(takt4::output::routable(OutputTarget::Kind::Link));
-}
-
 TEST_CASE("every set of outputs has exactly one Link output, and it is first",
           "[output][routing]") {
     std::vector<OutputTarget> outputs{osc("wall", 7000), osc("deck", 7001)};

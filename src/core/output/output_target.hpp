@@ -135,13 +135,6 @@ inline constexpr std::size_t kMaxRoutableTargets = 64;
 /// Every bit set: what a rule that names no target means, and the default.
 inline constexpr std::uint64_t kAllOutputs = ~std::uint64_t{0};
 
-/// Whether a rule can be routed to an output of this kind by name — OSC and MIDI. An Art-Net
-/// node is reached through the fixtures a rule aims at, a MIDI clock sends only the clock, and
-/// Link only the timeline, so none of those is offered as a destination.
-constexpr bool routable(OutputTarget::Kind kind) noexcept {
-    return kind == OutputTarget::Kind::Osc || kind == OutputTarget::Kind::Midi;
-}
-
 /// Makes `targets` hold exactly one `Link` output, first: one is added (switched on as
 /// `enabledIfAdded` says, named "Link") when there is none, a second is dropped, and one that
 /// is not first is moved there. Every set of outputs goes through this — a settings file
