@@ -180,7 +180,7 @@ bool joinGroup(net::Socket socket, in_addr where) noexcept {
 
 LinkPeerWatch::LinkPeerWatch(OwnPort ownPort) : ownPort_(std::move(ownPort)) {
     if (!ownPort_) {
-        ownPort_ = portOwnedHere;
+        ownPort_ = sentFromHere;
     }
 }
 
@@ -298,7 +298,7 @@ void LinkPeerWatch::take(std::span<const std::uint8_t> datagram, const std::stri
     } else {
         Node made;
         made.id = announcement.node;
-        made.own = ownPort_ && ownPort_(port);
+        made.own = ownPort_ && ownPort_(address, port);
         nodes_.push_back(std::move(made));
         node = &nodes_.back();
     }
@@ -344,6 +344,23 @@ std::vector<LinkPeer> LinkPeerWatch::peers() const {
 }
 
 // --- whose port --------------------------------------------------------------------------------
+
+bool addressIsHere(const std::string& address) {
+    in_addr parsed{};
+    if (::inet_pton(AF_INET, address.c_str(), &parsed) != 1) {
+        return false;
+    }
+    if ((ntohl(parsed.s_addr) >> 24) == 127) {
+        return true; // loopback, which no interface list need carry
+    }
+    const std::vector<in_addr> here = interfaceAddresses();
+    return std::any_of(here.begin(), here.end(),
+                       [parsed](const in_addr& one) { return one.s_addr == parsed.s_addr; });
+}
+
+bool sentFromHere(const std::string& address, std::uint16_t port) {
+    return addressIsHere(address) && portOwnedHere(port);
+}
 
 bool portOwnedHere(std::uint16_t port) {
 #if defined(_WIN32)

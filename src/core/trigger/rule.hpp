@@ -318,8 +318,10 @@ double musicalSeconds(const Context& context, DelayUnit unit, double millisecond
 /// express the first at all.
 enum class ColorMode : std::uint8_t {
     /// `DmxSend::color` decides it: a `Fixed` text value is one color from the picker, and
-    /// a `Shuffle`/`Random`/`Cycle` over a `List` of them is a palette. Every generator kind
-    /// works — a `Cycle` walks the palette in order, a `Shuffle` never repeats within a bag.
+    /// a `Shuffle`/`Random`/`Cycle`/`Weighted` over a `List` of them is a palette — a `Cycle`
+    /// walks it in order, a `Shuffle` never repeats within a bag. **Not `Live` or `Ramp`**,
+    /// which compute numbers, and a number is not a color (`trigger::handsBackValues`; the
+    /// editor does not offer them here). A ramped or live color is a `Mix`.
     Palette,
     /// `DmxSend::red`, `green` and `blue` decide it, one generator each, 0 to 255.
     ///

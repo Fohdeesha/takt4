@@ -208,7 +208,8 @@ it to the network. Every address hangs off the same prefix as the outputs:
 /takt4/ctl/tempo/halve              ÷2
 /takt4/ctl/tempo/double             ×2
 /takt4/ctl/lock            <0|1>    pin the lock, or release it
-/takt4/ctl/panic           [0|1]    halt every rule; bare engages
+/takt4/ctl/panic                    halt every rule, whatever it is sent
+/takt4/ctl/panic/release            let go of the halt
 /takt4/ctl/manual                   fire the rules whose trigger is a manual press
 /takt4/ctl/rule/<id>/enable <0|1>   arm a rule, or take it out of the show
 /takt4/ctl/rule/<id>/mute   <0|1>   keep it running, stop it sending
@@ -225,8 +226,9 @@ be inverted for the rest of the set. The rest are buttons and are sent bare.
 
 Every one of these is also bindable to a MIDI note or CC through **LEARN** — except the
 ones that name a rule, because pressing a pad says which button and never which rule. A
-button acts on the press, never again on the release, and PANIC from a pad only engages:
-let go of it with **RELEASE** or `/takt4/ctl/panic 0`.
+button acts on the press, never again on the release; a pad bound to `lock` pins while it is
+held. PANIC only ever engages, from a pad or a message — a push button's release cannot undo
+it: let go of it with **RELEASE** or `/takt4/ctl/panic/release`.
 
 ## Lights
 

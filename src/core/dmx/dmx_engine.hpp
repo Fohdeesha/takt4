@@ -181,6 +181,9 @@ private:
         /// channel TEST hold.
         std::uint16_t fixture = kNoFixture;
         Role source = Role::Unused;
+        /// Which of the fixture's channels carrying `source` this is (`channelOf`'s `nth`): a
+        /// bar of cells has a track per cell.
+        std::uint8_t nth = 0;
         /// Whether this drives a virtual fixture's state (`Virtual`) rather than a channel, and
         /// which part of it: `kIntensity`, or 1 + a `kEmitters` index.
         bool isVirtual = false;
@@ -277,6 +280,12 @@ private:
     Virtual virtualFromLevels(const Fixture& fixture) const;
     /// Drops the channels `running` is about to drive from every effect already driving them.
     void preempt(const Running& running);
+    /// Lets go of every channel TEST hold (`holdChannel`), each channel put back where its
+    /// hold found it. A patch change, PANIC and Stop all do this first.
+    void releaseTestHolds() noexcept;
+    /// `start`, on the fixtures `fixtures` names — or, with `everyFixture`, on every enabled
+    /// fixture of the patch, past the 64 a mask can name. `blackout`'s.
+    void launch(const Payload& payload, double now, std::uint64_t fixtures, bool everyFixture);
     /// Re-aims every running effect at the new patch, by fixture — see `setPatch`.
     /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.
     void retarget(const std::vector<std::uint16_t>& mapped);

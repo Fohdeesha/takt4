@@ -33,6 +33,8 @@ add_library(takt4_ui STATIC
   app.hpp
   crash_report.cpp
   crash_report.hpp
+  delete_guard.cpp
+  delete_guard.hpp
   file_dialog.cpp
   file_dialog.hpp
   fixtures_controller.cpp
