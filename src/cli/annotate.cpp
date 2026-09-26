@@ -86,7 +86,10 @@ double parseDouble(std::string_view text, std::string_view what) {
     } catch (const std::exception&) {
         throw std::invalid_argument(std::string(what) + ": expected a number, got '" + s + "'");
     }
-    if (consumed != s.size()) {
+    // `stod` reads "nan" and "inf" as numbers, which no option here can mean: `--snap nan`
+    // turned snapping off. The console's own parser refused them and annotate's did not (the
+    // audit of 2026-09-25, L46).
+    if (consumed != s.size() || !std::isfinite(value)) {
         throw std::invalid_argument(std::string(what) + ": expected a number, got '" + s + "'");
     }
     return value;
@@ -125,11 +128,13 @@ AnnotateArgs parseArgs(const std::vector<std::string_view>& args) {
                 throw std::invalid_argument("--octave expects half, double or same");
             }
         } else if (arg == "--meter") {
-            const int meter = static_cast<int>(parseDouble(value(), arg));
-            if (meter < 1 || meter > 16) {
-                throw std::invalid_argument("--meter expects 1 to 16");
+            // Checked as a number before it is made an int: 1e10 cast to one is undefined, and
+            // 4.5 was quietly a bar of four (L46).
+            const double meter = parseDouble(value(), arg);
+            if (!(meter >= 1.0 && meter <= 16.0) || meter != std::floor(meter)) {
+                throw std::invalid_argument("--meter expects a whole number from 1 to 16");
             }
-            out.options.defaultMeter = meter;
+            out.options.defaultMeter = static_cast<int>(meter);
         } else if (arg == "--output") {
             out.output = std::string(value());
         } else if (arg == "--start") {
@@ -281,9 +286,8 @@ std::vector<tracking::Tap> tapAlong(const io::WavData& audio, AnnotateArgs& a) {
     std::cout << std::flush;
 
     [[maybe_unused]] const TimerResolution resolution;
-    // Before the first tap, so a Ctrl+C at any point from here finishes the session as q does
-    // — the taps written — rather than ending the process with them. See `Interrupts`.
-    const Interrupts interrupts;
+    // A Ctrl+C from here finishes the session as q does — the taps written — rather than
+    // ending the process with them: the caller's `Interrupts` is catching it.
     std::vector<tracking::Tap> taps;
     tracking::TapTempo counting;
     player.start();
@@ -418,10 +422,15 @@ int runAnnotate(const std::vector<std::string_view>& args) {
     std::cout << activation.size() << " frames\n";
 
     std::vector<tracking::Tap> taps;
+    // Made here rather than in `tapAlong`, so Ctrl+C is still caught while the taps are written
+    // below: made there, it was gone by then, and a second press lost them (the audit of
+    // 2026-09-25, L47).
+    std::optional<Interrupts> interrupts;
     if (a.tapsIn) {
         taps = tracking::readTaps(*a.tapsIn);
         std::cout << taps.size() << " taps from " << a.tapsIn->string() << '\n';
     } else {
+        interrupts.emplace();
         taps = tapAlong(audio, a);
     }
     if (taps.empty()) {

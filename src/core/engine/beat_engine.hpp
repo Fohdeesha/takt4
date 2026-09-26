@@ -52,6 +52,9 @@ struct EngineBeat {
     tracking::BeatEvent event;
     tracking::TempoState state;
     std::int64_t hostMicros = 0;
+    /// The run of the engine that called it (`BeatEngine::runNumber`). A beat an earlier run left in
+    /// the ring is its consumer's to drop: nothing else may drain the ring (`start`).
+    std::uint64_t run = 0;
 };
 
 /// HANDOFF §5.8's intensity, as the *output* thread can read it.
@@ -141,10 +144,16 @@ public:
 
     /// Clears everything, reseeds the filter, and starts both worker threads. Call
     /// before the stream is started, never while it is running.
+    ///
+    /// Everything but the beat ring: that is the output thread's to drain, and only its (see
+    /// `EngineBeat::run`).
     void start();
     /// Stops both and waits for them. Safe to call twice.
     void stop() noexcept;
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
+    /// Which run this is: one more at every `start`, and what each beat it calls is stamped
+    /// with. Any thread.
+    std::uint64_t runNumber() const noexcept { return run_.load(std::memory_order_acquire); }
 
     /// Audio thread. Hands the hop to the model worker and returns.
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
@@ -270,6 +279,8 @@ private:
 
     std::thread worker_;
     std::atomic<bool> running_{false};
+    /// See `runNumber`. Written by `start` before the worker exists; read by it and by consumers.
+    std::atomic<std::uint64_t> run_{0};
     std::atomic<std::uint64_t> framesTracked_{0};
     std::atomic<std::uint64_t> framesDropped_{0};
     std::atomic<std::uint64_t> beatsCalled_{0};

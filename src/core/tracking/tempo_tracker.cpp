@@ -379,6 +379,15 @@ void TempoTracker::setOptions(const Options& options) noexcept {
     const bool windowMoved = options.octaveFold != options_.octaveFold ||
                              options.foldInDecoder != options_.foldInDecoder ||
                              options.minBpm != options_.minBpm || options.maxBpm != options_.maxBpm;
+    // The octave the old window had the tempo in. With the fold here that is the one it chose;
+    // with the fold in the decoder nothing is chosen here (`chooseOctave`), and it has to be
+    // asked of the old window — or a tempo the beats had put outside it read as octave 0, and
+    // any edit of the window at all dropped the lock (the audit of 2026-09-25, L40).
+    const bool decoderFolded = options_.octaveFold && options_.foldInDecoder;
+    const std::int64_t octaveBefore =
+        foldChosen_                                    ? foldOctave_
+        : decoderFolded && state_.calledBpm > 0.0 ? windowOctave(state_.calledBpm)
+                                                       : 0;
     options_ = options;
     scaleFrameCounts();
     // **Only the window decides the octave, so only the window can cost the lock.** Every
@@ -388,14 +397,21 @@ void TempoTracker::setOptions(const Options& options) noexcept {
     if (!windowMoved) {
         return;
     }
-    const std::int64_t octaveBefore = foldChosen_ ? foldOctave_ : 0;
     forgetFold();
     // And a moved window only when it puts the tempo in another octave. Compared as octaves
     // rather than as tempi: the locked tempo is the refined one, which can sit a few BPM from
     // the coarse tempo the octave is chosen from, and a window that leaves the octave alone has
     // not excluded anything that was being published.
-    if (state_.locked && options_.octaveFold && state_.calledBpm > 0.0 &&
-        windowOctave(state_.calledBpm) != octaveBefore) {
+    //
+    // With the fold in the decoder this folds nothing, so the tempo published stays what it
+    // was whatever the window says; the window has excluded it only when it was inside the old
+    // window and is outside the new. One the beats or a hold kept outside the window stays
+    // locked through any edit (L40).
+    const std::int64_t octaveAfter =
+        state_.calledBpm > 0.0 ? windowOctave(state_.calledBpm) : std::int64_t{0};
+    const bool excluded = options_.foldInDecoder ? octaveBefore == 0 && octaveAfter != 0
+                                                 : octaveAfter != octaveBefore;
+    if (state_.locked && options_.octaveFold && state_.calledBpm > 0.0 && excluded) {
         state_.locked = false;
         // The operator has excluded what was being published, so there is nothing left
         // worth holding on to: hunt from what is playing now, following the cloud as

@@ -52,6 +52,8 @@ namespace takt4::tracking {
 ///     tempo carry through the silence exactly and re-anchor on the first beat back; the
 ///     beats keep coming at the tempo the music left, and
 ///     `TempoTracker`'s confidence gate flags them `holding` (`Options::coastAfterFrames`).
+///     The window weighs nothing while it coasts — it is argued against the music, and there
+///     is none — and a hold still does.
 ///     The one exception is before the first beat of a run: nothing is emitted until the
 ///     network has once read a beat at `Options::armThreshold` or above, so a silent start
 ///     does not fire a rig.
@@ -301,6 +303,8 @@ private:
     std::vector<double> holdWeight_;
     std::vector<double> intervalWeight_;
     bool anyWeight_ = false;
+    /// Whether the hold weighs anything: all that is weighed while coasting (`weigh`).
+    bool anyHold_ = false;
     double heldBpm_ = 0.0;
 
     // Working storage, sized once.

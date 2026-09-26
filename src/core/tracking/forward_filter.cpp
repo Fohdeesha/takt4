@@ -232,9 +232,11 @@ void ForwardFilter::reset() noexcept {
 
 void ForwardFilter::combineWeights() noexcept {
     anyWeight_ = false;
+    anyHold_ = false;
     for (std::size_t i = 0; i < intervalWeight_.size(); ++i) {
         intervalWeight_[i] = windowWeight_[i] * holdWeight_[i];
         anyWeight_ = anyWeight_ || intervalWeight_[i] != 1.0;
+        anyHold_ = anyHold_ || holdWeight_[i] != 1.0;
     }
 }
 
@@ -344,12 +346,19 @@ void ForwardFilter::weigh(const double* density) noexcept {
     double total = 0.0;
     std::fill(intervalMass_.begin(), intervalMass_.end(), 0.0);
     std::fill(patternMass_.begin(), patternMass_.end(), 0.0);
+    // Coasting there is no `density`: the audio says nothing, so it weighs nothing — **and nor
+    // does the window**. The window is a preference argued against the music, and with no music
+    // to argue with it wins by default: a tempo the music had held outside it slid to the
+    // window's nearest edge, 0.97 a frame — measured, 128 under a 50-100 window was 99.8 after
+    // twenty seconds of silence, a tempo nobody was playing (the audit of 2026-09-25, L41). The
+    // hold is an instruction, and still holds.
+    const bool coasting = density == nullptr;
+    const std::vector<double>& weights = coasting ? holdWeight_ : intervalWeight_;
+    const bool weighed = coasting ? anyHold_ : anyWeight_;
     for (std::size_t s = 0; s < numStates_; ++s) {
-        // Coasting there is no `density`: the audio says nothing, so it weighs nothing. The
-        // operator's window and hold still do, being the operator's evidence, not the audio's.
-        double mass = density == nullptr ? next_[s] : next_[s] * density[statePointer_[s]];
-        if (anyWeight_) {
-            mass *= intervalWeight_[stateInterval_[s]];
+        double mass = coasting ? next_[s] : next_[s] * density[statePointer_[s]];
+        if (weighed) {
+            mass *= weights[stateInterval_[s]];
         }
         next_[s] = mass;
         total += mass;

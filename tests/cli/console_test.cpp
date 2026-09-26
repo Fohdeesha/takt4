@@ -37,3 +37,27 @@ TEST_CASE("a Ctrl+C while the console is tapping along is a flag, not the end", 
     }
     (void)std::signal(SIGINT, before);
 }
+
+TEST_CASE("a second Ctrl+C is caught as the first was", "[cli]") {
+    // The audit of 2026-09-25, L47. Windows' runtime puts a signal back to its default before
+    // it calls the handler, so the second Ctrl+C of an impatient operator ended the process —
+    // before annotate wrote its taps, or `track --device` sent the MIDI clock its Stop. What is
+    // in force after the first is looked at before a second is raised: with the default there,
+    // the second would end this test binary.
+    using takt4::cli::Interrupts;
+    const auto before = std::signal(SIGINT, previousHandler);
+    {
+        const Interrupts interrupts;
+        REQUIRE(std::raise(SIGINT) == 0);
+        REQUIRE(Interrupts::requested());
+        const auto inForce = std::signal(SIGINT, SIG_IGN);
+        (void)std::signal(SIGINT, inForce);
+        CHECK(inForce != SIG_DFL);
+        CHECK(inForce != &previousHandler);
+        if (inForce != SIG_DFL) {
+            REQUIRE(std::raise(SIGINT) == 0);
+            CHECK(Interrupts::requested());
+        }
+    }
+    (void)std::signal(SIGINT, before);
+}

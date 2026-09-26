@@ -142,6 +142,45 @@ void waitForRounds(const OutputRunner& runner, std::uint64_t count) {
 
 } // namespace
 
+TEST_CASE("starting the engine leaves the beat ring to its one consumer", "[output]") {
+    // The audit of 2026-09-25, L42. `BeatEngine::start` drained the beat ring from the UI thread
+    // while the output thread — the ring's one consumer, draining it all the time — could be
+    // doing the same, and two threads taking from a single-consumer ring race on its read
+    // position. Now what a run leaves there stays for the consumer, stamped with its run.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    feedExcerpt(*engine);
+    const std::uint64_t before = engine->runNumber();
+    engine->start();
+    engine->stop();
+    CHECK(engine->runNumber() == before + 1);
+    std::uint64_t left = 0;
+    std::uint64_t fromBefore = 0;
+    takt4::engine::EngineBeat beat;
+    while (engine->popBeat(beat)) {
+        ++left;
+        fromBefore += beat.run == before ? 1U : 0U;
+    }
+    CHECK(left == kExpectedBeats);
+    CHECK(fromBefore == kExpectedBeats);
+}
+
+TEST_CASE("a beat the last run left in the ring is not sent in the next", "[output]") {
+    // The other half of L42: the consumer drops what a run that is over left behind — a
+    // flash or a clip for a beat of the track before the STOP.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    feedExcerpt(*engine);
+    engine->start(); // a new run, with the last one's beats still on the ring
+    engine->stop();
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.start();
+    waitForRounds(runner, 3);
+    CHECK(runner.transports().beats() == 0);
+    runner.stop();
+    CHECK(runner.transports().beats() == 0); // nor did the final sweep send them
+    takt4::engine::EngineBeat beat;
+    CHECK_FALSE(engine->popBeat(beat)); // taken, and dropped
+}
+
 TEST_CASE("the output thread drains every beat the tracker called", "[output]") {
     // The whole point of §4.2's output thread: beats reach the transports without the
     // caller's loop deciding when. Nothing is configured to send, so what is under test

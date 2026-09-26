@@ -381,6 +381,19 @@ TEST_CASE("crash report child", "[.child]") {
             std::abort();
         });
         worker.join();
+    } else if (how == "abort-while-reporting") {
+        // A second abort while the first is being reported, on another thread: it waits until
+        // the dump has been begun, so it lands in the middle of the report (the audit of
+        // 2026-09-25, L44).
+        const std::filesystem::path where(dir);
+        std::thread second([where] {
+            while (filesIn(where, L".dmp").empty()) {
+                std::this_thread::yield(); // not a sleep: a timer tick can outlast the dump
+            }
+            std::abort();
+        });
+        second.detach();
+        std::abort();
     } else if (how == "slint-panic") {
         // The crash class of 2026-09-16 and of `trigger::Value`'s note: a string Slint cannot
         // decode is a Rust panic across the C ABI, which ends the process with `__fastfail`
@@ -415,6 +428,9 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
     };
     const Case cases[] = {
         {"access-violation", 0xC0000005},
+        // The header has claimed this one since the handlers were written, and no test ever
+        // made one (the audit of 2026-09-25, L45).
+        {"stack-overflow", 0xC00000FD},
         {"terminate", CrashReport::kTerminateCode},
         {"abort", CrashReport::kAbortCode},
         {"invalid-parameter", CrashReport::kInvalidParameterCode},
@@ -422,6 +438,9 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
         // Another thread's terminate reaches `abort`, and SIGABRT's handler is global.
         {"terminate-thread", CrashReport::kAbortCode},
         {"abort-thread", CrashReport::kAbortCode},
+        // And a second abort in the middle of reporting the first: the runtime had put the
+        // handler back to the default, so the process ended then, with the dump half written.
+        {"abort-while-reporting", CrashReport::kAbortCode},
     };
     for (const Case& c : cases) {
         INFO("failure: " << c.how);
@@ -437,7 +456,8 @@ TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
         // came back empty (2026-09-23), which is the fault reaching takt4's own filter instead;
         // then it is the minidump below that has to be there. Either way the crash is recorded,
         // and a run with neither fails. The shipped build has no sanitizer.
-        if (std::string_view(c.how) == "access-violation") {
+        if (std::string_view(c.how) == "access-violation" ||
+            std::string_view(c.how) == "stack-overflow") {
             const std::vector<unsigned char> bytes = readAll(dir.path() / "takt4.log");
             std::string reports(bytes.begin(), bytes.end());
             // And the sanitizer's own file, `asan.<pid>`, which runChild points it at.

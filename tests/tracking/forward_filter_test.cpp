@@ -488,6 +488,42 @@ TEST_CASE("the forward filter coasts through silence at the tempo the music left
     CHECK_FALSE(tracker.state().holding);
 }
 
+TEST_CASE("a break leaves a tempo the music held outside the window where it was",
+          "[tracking][forward]") {
+    // The audit of 2026-09-25, L41. The drum machine's 128 out-argues the gentle default window
+    // weight under a 50-100 window (see "the operator's window is evidence inside the filter"),
+    // so the filter sits at 128, outside it. Coasting through a break, the window went on
+    // weighing, 0.97 a frame with nothing to argue back, and the tempo slid to the window's
+    // nearest edge: 99.8 at the end of this break, measured with the fix taken out.
+    const std::vector<std::pair<float, float>> music = upsampled("synthetic", 2);
+    std::vector<std::pair<float, float>> activations = music;
+    const std::size_t silenceBegins = activations.size();
+    activations.insert(activations.end(), 2000, {0.0f, 0.0f}); // twenty seconds at 100 fps
+
+    ForwardFilter filter;
+    filter.setTempoWindow(50.0, 100.0, true);
+    TrackedFrame frame;
+    double before = 0.0;
+    for (std::size_t f = 0; f < activations.size(); ++f) {
+        frame = filter.process(activations[f].first, activations[f].second);
+        if (f + 1 == silenceBegins) {
+            before = frame.bpm;
+            REQUIRE(before == Approx(128.0).margin(3.0));
+        }
+    }
+    INFO("the filter's tempo went from " << before << " to " << frame.bpm << " in the break");
+    CHECK(frame.tempoAgreement == 0.0); // coasting
+    CHECK(frame.bpm == Approx(before).margin(0.05));
+
+    SECTION("a hold is an instruction, and still moves it") {
+        filter.holdTempo(64.0);
+        for (int f = 0; f < 200; ++f) {
+            frame = filter.process(0.0f, 0.0f);
+        }
+        CHECK(frame.bpm == Approx(64.0).margin(1.5));
+    }
+}
+
 TEST_CASE("a plateau at the threshold is not a beat", "[tracking][forward]") {
     // What the network actually does when the music stops: its memory carries on, and over
     // silence after a 122 BPM kick pattern it sat on a smooth plateau with the downbeat at

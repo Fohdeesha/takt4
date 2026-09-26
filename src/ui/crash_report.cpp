@@ -169,6 +169,11 @@ DWORD WINAPI writeAndTell(void* parameter) {
 /// A failure that is not an SEH exception, reported as if it were one, with a context captured
 /// here — so the dump's stack is the stack of whatever called `terminate` or `abort`.
 [[noreturn]] void reportHere(DWORD code) {
+    // A second failure while the first is being reported goes straight to waiting for it to
+    // end the process: the statics below are what the first one's dump is being written from.
+    if (g_crashing.load()) {
+        report(nullptr, 3);
+    }
     static CONTEXT context;
     static EXCEPTION_RECORD record;
     RtlCaptureContext(&context);
@@ -194,6 +199,11 @@ void onTerminate() {
 }
 
 void onAbort(int) {
+    // **First, before anything that could take time.** The runtime puts SIGABRT back to its
+    // default before it calls this, so a second `abort()` on another thread while this one is
+    // being reported ended the process there and then — exit code 3, no dump and no message
+    // (the audit of 2026-09-25, L44).
+    (void)std::signal(SIGABRT, onAbort);
     reportHere(CrashReport::kAbortCode);
 }
 
@@ -348,10 +358,24 @@ std::filesystem::path CrashReport::takeLeftoverLog(const std::filesystem::path& 
     return kept;
 }
 
+namespace {
+
+/// Deeper until the stack runs out. Each frame writes an array of its own and adds to what the
+/// next returns, so the optimiser can neither drop the frames nor turn the calls into a loop.
+int deeper(volatile int depth) {
+    volatile char frame[1024];
+    frame[0] = static_cast<char>(depth);
+    return depth < 0 ? frame[0] : deeper(depth + 1) + frame[0];
+}
+
+} // namespace
+
 void CrashReport::crashOnPurpose(const std::string& how) {
     if (how == "access-violation") {
         volatile int* nowhere = nullptr;
         *nowhere = 1;
+    } else if (how == "stack-overflow") {
+        (void)deeper(0);
     } else if (how == "terminate") {
         std::terminate();
     } else if (how == "abort") {

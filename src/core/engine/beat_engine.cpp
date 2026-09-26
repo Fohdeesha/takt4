@@ -82,9 +82,11 @@ void BeatEngine::start() {
     EngineFrame frame;
     while (frames_.tryPop(frame)) {
     }
-    EngineBeat beat;
-    while (beats_.tryPop(beat)) {
-    }
+    // **Not the beat ring.** Its one consumer is the output thread, which drains it all the
+    // time; this is the UI thread, and two threads taking from a single-consumer ring race on
+    // its read position (the audit of 2026-09-25, L42). What the last run left there is
+    // stamped with that run, and the consumer drops it.
+    run_.fetch_add(1, std::memory_order_acq_rel);
     decoder_->reset();
     tempo_.reset();
     // The tempo hold goes with the pin. `reset()` keeps a decoder's hold by design — it is a
@@ -326,7 +328,8 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
             hostMicros += static_cast<std::int64_t>(std::llround(
                 frame.tracked.beatOffsetFrames * decoder_->secondsPerFrame() * 1e6));
         }
-        if (!beats_.tryPush(EngineBeat{*event, frame.state, hostMicros})) {
+        if (!beats_.tryPush(EngineBeat{*event, frame.state, hostMicros,
+                                       run_.load(std::memory_order_relaxed)})) {
             beatsDropped_.fetch_add(1, std::memory_order_relaxed);
         }
     }

@@ -164,12 +164,28 @@ set_tests_properties("the console refuses nan as a number"
                      PROPERTIES PASS_REGULAR_EXPRESSION "--latency: not a number: \"nan\"")
 set_tests_properties("the console names an option it does not know"
                      PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --no-such-option")
+# And annotate's, which had a parser of its own that the fix above never reached (the audit of
+# 2026-09-25, L46): `--snap nan` turned snapping off, and a meter was made an int before it was
+# checked — 4.5 a bar of four, and 1e10 undefined.
+# Each names a taps file that is not there, so a regression stops at reading it — before the
+# playback that tapping along would start on this machine's speakers.
+set(no_taps "${CMAKE_CURRENT_BINARY_DIR}/no-such.taps")
+add_test(NAME "annotate refuses nan as a number"
+         COMMAND takt4-cli annotate "${synthetic_wav}" --taps "${no_taps}" --snap nan)
+add_test(NAME "annotate refuses a meter that is not a whole number of beats"
+         COMMAND takt4-cli annotate "${synthetic_wav}" --taps "${no_taps}" --meter 4.5)
+set_tests_properties("annotate refuses nan as a number"
+                     PROPERTIES PASS_REGULAR_EXPRESSION "--snap: expected a number, got 'nan'")
+set_tests_properties("annotate refuses a meter that is not a whole number of beats"
+                     PROPERTIES PASS_REGULAR_EXPRESSION "--meter expects a whole number from 1 to 16")
 # No ASIO and the sandbox, as every test binary has (tests/support/crt_dialogs.cpp): a parsing
 # regression in the first would otherwise open device 0 — with every ASIO driver loaded — for
 # as long as the timeout (the audit of 2026-09-25, T4).
 set_tests_properties("the console refuses an empty number rather than reading it as zero"
                      "the console refuses nan as a number"
                      "the console names an option it does not know"
+                     "annotate refuses nan as a number"
+                     "annotate refuses a meter that is not a whole number of beats"
                      PROPERTIES LABELS "cli" TIMEOUT 60
                                 ENVIRONMENT "TAKT4_NO_ASIO=1;TAKT4_TEST_SANDBOX=1")
 

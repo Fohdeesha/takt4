@@ -1674,6 +1674,47 @@ TEST_CASE("a tempo the hysteresis holds past the window's edge survives a settin
     CHECK(tracker.state().bpm < 100.0);
 }
 
+TEST_CASE("with the fold in the decoder a tempo outside the window keeps its lock through an edit",
+          "[tracking][tempo]") {
+    // The audit of 2026-09-25, L40: M3 on the default decoder. With the fold in the decoder
+    // nothing chooses an octave here, so the octave "before" an edit read as 0, and a tempo the
+    // beats or a hold kept outside the window was unlocked by any edit of the window at all —
+    // while the tempo published, which the tracker does not fold, did not change.
+    TempoTracker::Options options;
+    options.minBpm = 70.0;
+    options.maxBpm = 140.0;
+    options.foldInDecoder = true;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 19, 0.9, 20); // 157.9: past the window and its hysteresis
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(19))); // not folded here: the decoder's job
+
+    SECTION("an edit that still leaves it outside") {
+        options.minBpm = 72.0;
+        tracker.setOptions(options);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(19)));
+    }
+    SECTION("an edit that takes it in") {
+        options.minBpm = 120.0;
+        options.maxBpm = 240.0;
+        tracker.setOptions(options);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(19)));
+    }
+    SECTION("an edit that shuts out a tempo it had inside still drops the lock") {
+        settle(tracker, index, 23, 0.9, 30); // 130.4, inside 70-140
+        REQUIRE(tracker.state().locked);
+        options.minBpm = 40.0;
+        options.maxBpm = 80.0;
+        tracker.setOptions(options);
+        CHECK_FALSE(tracker.state().locked);
+    }
+}
+
 TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate",
           "[tracking][tempo]") {
     // A decoder running at 100 fps hands the tracker twice the frames for the same half

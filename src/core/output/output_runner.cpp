@@ -849,6 +849,11 @@ void OutputRunner::drainOnce(double now) {
         if (quiet_) {
             continue; // stopped: see `Tracking` in `apply`
         }
+        // A beat the last run left in the ring, which `BeatEngine::start` no longer drains
+        // from the UI thread (the audit of 2026-09-25, L42): from a run that is over.
+        if (beat.run != engine_.runNumber()) {
+            continue;
+        }
         // Offline, and in the tests that feed audio faster than it plays, there is no host
         // clock and no timeline: such a beat fires as it arrives. See `BeatScheduler::heard`.
         std::optional<double> moment;
