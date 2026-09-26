@@ -9,10 +9,12 @@ namespace takt4::ui {
 int run();
 
 struct ShotOptions {
-    /// The window's own preferred size, so the picture is the layout as designed rather
-    /// than the layout squeezed. Keep these in step with `main_window.slint`.
-    int width = 900;
-    int height = 836;
+    /// The size the window opens at (`kMainWindowWidth` and `kMainWindowHeight` in
+    /// window_state.hpp, which shot.cpp holds these to), so the picture is the window an
+    /// operator first sees. They were 900 by 836, which no window opened at (the audit of
+    /// 2026-09-25, L34).
+    int width = 1000;
+    int height = 934;
     /// Draw the window as it looks with a tracker running. False renders the idle
     /// window — blank readouts, every manual control disabled — which is what the app
     /// looks like the moment it opens, and is therefore worth being able to look at.
@@ -33,14 +35,14 @@ struct ShotOptions {
     bool dmx = false;
 };
 
-/// The rule editor's own preferred size, kept beside the main window's for the same reason:
-/// `takt4-shot` renders at it, so a picture at any other size is the layout squeezed.
-inline constexpr int kRulesShotWidth = 1180;
-inline constexpr int kRulesShotHeight = 790;
+/// The size the rule editor opens at, kept beside the main window's for the same reason, and
+/// held to `kRulesWindowWidth` and `kRulesWindowHeight` the same way.
+inline constexpr int kRulesShotWidth = 1164;
+inline constexpr int kRulesShotHeight = 872;
 
-/// And the patch editor's.
-inline constexpr int kFixturesShotWidth = 1000;
-inline constexpr int kFixturesShotHeight = 760;
+/// And the patch editor's (`kFixturesWindowWidth`, `kFixturesWindowHeight`).
+inline constexpr int kFixturesShotWidth = 1080;
+inline constexpr int kFixturesShotHeight = 800;
 
 /// Renders the main window to a 24-bit BMP at `out`, with no window system involved.
 ///

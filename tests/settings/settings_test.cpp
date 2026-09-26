@@ -275,6 +275,17 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
     const Settings latency =
         takt4::settings::fromJson(R"({"preset": {"tempo": {"latencyOffsetSeconds": 90}}})");
     CHECK_THAT(latency.preset.tempo.latencyOffsetSeconds, WithinAbs(0.0, 1e-9));
+    // And short of that, no further than the slider goes (the audit of 2026-09-25, L31): 0.6 s
+    // ran 600 ms late behind a slider showing 250, which a touch then snapped to 250.
+    const auto latencyOf = [](const char* seconds) {
+        return takt4::settings::fromJson(std::string(R"({"preset": {"tempo": {"latencyOffsetSeconds": )") +
+                                         seconds + "}}}")
+            .preset.tempo.latencyOffsetSeconds;
+    };
+    CHECK_THAT(latencyOf("0.6"), WithinAbs(takt4::settings::kMaxLatencyOffsetSeconds, 1e-12));
+    CHECK_THAT(latencyOf("-0.4"), WithinAbs(-takt4::settings::kMaxLatencyOffsetSeconds, 1e-12));
+    CHECK_THAT(latencyOf("0.1"), WithinAbs(0.1, 1e-12));
+    CHECK_THAT(latencyOf("-0.25"), WithinAbs(-0.25, 1e-12));
 
     const Settings channel = takt4::settings::fromJson(R"({"machine": {"channel": -4}})");
     CHECK(channel.machine.channel == 0);

@@ -26,6 +26,8 @@
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/midi_ports.hpp"
+#include "core/output/output_target.hpp"
+#include "core/settings/settings.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/generator.hpp"
@@ -54,6 +56,15 @@
 #include <vector>
 
 namespace takt4::ui {
+
+// A picture at the size each window opens at (app.hpp), which is the size C++ gives it
+// (window_state.hpp). Held here so the two cannot drift apart again (the audit of 2026-09-25, L34).
+static_assert(ShotOptions{}.width == static_cast<int>(kMainWindowWidth) &&
+              ShotOptions{}.height == static_cast<int>(kMainWindowHeight));
+static_assert(kRulesShotWidth == static_cast<int>(kRulesWindowWidth) &&
+              kRulesShotHeight == static_cast<int>(kRulesWindowHeight));
+static_assert(kFixturesShotWidth == static_cast<int>(kFixturesWindowWidth) &&
+              kFixturesShotHeight == static_cast<int>(kFixturesWindowHeight));
 namespace {
 
 /// 24-bit BMP, bottom-up, rows padded to four bytes. A BMP because it needs no library
@@ -840,8 +851,29 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // What the app looks like the moment it opens: no tempo, an empty trace, and
         // every one of §5.5's manual controls disabled because there is nothing yet for
         // them to correct.
+        //
+        // **As a fresh install opens, not as the tracker's own defaults** (the audit of
+        // 2026-09-25, L34): the tempo options a settings file with nothing in it gives —
+        // "keep BPM in" off — and the one output such an app has, Link, switched off. This drew
+        // the fold on and no outputs at all: a table with no headings under a "nothing is being
+        // sent" line the app never shows.
         publishIdleReadouts(*window);
-        publishTempoOptions(*window, tracking::TempoTracker::Options{});
+        publishTempoOptions(*window, settings::freshTempoOptions());
+        {
+            std::vector<output::OutputTarget> outputs = settings::Settings{}.preset.outputs;
+            (void)output::ensureLinkOutput(outputs, settings::Settings{}.preset.link);
+            auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+            for (const output::OutputTarget& target : outputs) {
+                OutputRow row{};
+                row.id = slint::SharedString(target.id);
+                row.name = slint::SharedString(target.name);
+                row.kind_index = static_cast<int>(target.kind);
+                row.address = slint::SharedString(output::formatOutputAddress(target));
+                row.enabled = target.enabled;
+                rows->push_back(row);
+            }
+            window->set_outputs_list(rows);
+        }
         window->set_running(false);
         // What a freshly opened app shows: the port it *would* bind, and no socket. The
         // defaults, spelled out, because this picture is the one that shows an operator

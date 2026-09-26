@@ -2,6 +2,7 @@
 
 #include "core/audio/devices.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -58,10 +59,9 @@ inline constexpr double kFoldFloorBpm = 40.0;
 inline constexpr double kFoldCeilingBpm = 220.0;
 inline constexpr double kFoldLeastSpanBpm = 5.0;
 
-/// §5.5's latency offset, in milliseconds either side of zero. Beyond half a beat the
-/// control stops meaning anything — it is the next beat — and half a beat at 120 BPM is
-/// 250 ms, so that is the end of the slider.
-inline constexpr double kLatencyLimitMs = 250.0;
+/// §5.5's latency offset, in milliseconds either side of zero: `settings::
+/// kMaxLatencyOffsetSeconds`, which is also as far as a settings file is taken at its word.
+inline constexpr double kLatencyLimitMs = settings::kMaxLatencyOffsetSeconds * 1000.0;
 
 /// Turning engine values into window properties, in one place.
 ///

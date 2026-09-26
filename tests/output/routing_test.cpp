@@ -146,10 +146,40 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
     SECTION("a line that is not a target is refused rather than half-read") {
         OutputTarget out;
         for (const char* text : {"", "   ", "nonsense", "host:", ":7000", "a:0", "a:99999",
-                                 "a:seven", "name =", "name = midi", "midi"}) {
+                                 "a:seven", "name =", "name = midi", "midi", "\"unclosed = a:1",
+                                 "\"closed\" a:1"}) {
             INFO(text);
             CHECK_FALSE(takt4::output::parseOutputTarget(text, out));
         }
+    }
+
+    SECTION("any name at all, however it would read unquoted") {
+        // The audit of 2026-09-25, L28, and the operator's answer to its Q5: "off stage" came
+        // back switched off and called "stage", and "a=b" came back mangled. A name like that
+        // is written in quotes; every other name is written as it always was.
+        for (const bool enabled : {true, false}) {
+            for (const char* name : {"off stage", "off", "a=b", " spaced ", "say \"hi\"",
+                                     "back\\slash", "comma, here", "\"quoted\"", "line\nbreak"}) {
+                OutputTarget odd = osc(name, 7000);
+                odd.enabled = enabled;
+                INFO("name [" << name << "], " << (enabled ? "on" : "off"));
+                CHECK(roundTrip(odd) == odd);
+            }
+        }
+        OutputTarget plain = osc("wall", 7000);
+        CHECK(takt4::output::formatOutputTarget(plain).starts_with("wall = "));
+        OutputTarget stage = osc("off stage", 7000);
+        CHECK(takt4::output::formatOutputTarget(stage).starts_with("\"off stage\" = "));
+    }
+
+    SECTION("a file written before quoting reads as it always did") {
+        OutputTarget out;
+        REQUIRE(takt4::output::parseOutputTarget("off deck = 127.0.0.1:7000", out));
+        CHECK_FALSE(out.enabled);
+        CHECK(out.name == "deck");
+        REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:7000 +40ms #o-1a2b", out));
+        CHECK(out.name == "deck");
+        CHECK(out.id == "o-1a2b");
     }
 }
 

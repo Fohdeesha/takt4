@@ -1173,6 +1173,17 @@ export component MainWindow inherits Window {
                 vertical-alignment: center;
               }
 
+              // Each control on this line has its word beside it, as the OSC line's port box does
+              // (the audit of 2026-09-25, L33): once a port is picked, the first dropdown shows a
+              // device's name and the second an action's, and nothing said which was which.
+              Text {
+                text: "port";
+                color: Theme.soft;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+              }
+
               // Index 0 of the model reads "select input" rather than being blank — see
               // `midi-in-ports`. A ComboBox has no placeholder, so an empty first entry left this
               // looking like an empty box somebody had failed to fill in rather than like a list
@@ -1184,6 +1195,14 @@ export component MainWindow inherits Window {
                 selected => {
                   root.midi-in-picked(self.current-index);
                 }
+              }
+
+              Text {
+                text: "action";
+                color: root.control-on ? Theme.soft : Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
               }
 
               learn-picker := ComboBox {
@@ -1253,6 +1272,16 @@ export component MainWindow inherits Window {
                 toggled => {
                   root.osc-control-toggled(self.checked);
                 }
+              }
+
+              // Its word beside it, not only as a placeholder: a box holding "7001" says nothing
+              // about what 7001 is (L33).
+              Text {
+                text: "port";
+                color: root.osc-control-on ? Theme.soft : Theme.dim;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
               }
 
               osc-control-port-field := Field {

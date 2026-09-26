@@ -232,12 +232,45 @@ const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::st
     return nullptr;
 }
 
+namespace {
+
+/// Whether `parseOutputTarget` would read `name` back as something else: a leading "off" is the
+/// switch, the first '=' ends the name, the line's ends are trimmed, a quote starts a quoted name
+/// and a comma separates the targets of a pasted line. "off stage" came back switched off and
+/// called "stage", and "a=b" came back mangled (the audit of 2026-09-25, L28).
+bool misreadUnquoted(std::string_view name) noexcept {
+    if (name.empty()) {
+        return false;
+    }
+    const bool off = name == "off" || name.starts_with("off ") || name.starts_with("off\t");
+    const bool spaced = name.front() == ' ' || name.front() == '\t' || name.back() == ' ' ||
+                        name.back() == '\t';
+    return off || spaced || name.find_first_of("=\",\n\\") != std::string_view::npos;
+}
+
+/// `name` in double quotes, a quote or a backslash in it written with a backslash before it.
+std::string quoted(std::string_view name) {
+    std::string text = "\"";
+    for (const char c : name) {
+        if (c == '"' || c == '\\') {
+            text += '\\';
+        }
+        text += c;
+    }
+    text += '"';
+    return text;
+}
+
+} // namespace
+
 std::string formatOutputTarget(const OutputTarget& target) {
     std::string text;
     if (!target.enabled) {
         text += "off ";
     }
-    text += target.name;
+    // **Quoted only when it has to be**, so every name a file held before reads as it did, and
+    // most still read as they were typed (the operator's call on the audit's Q5).
+    text += misreadUnquoted(target.name) ? quoted(target.name) : target.name;
     text += " = ";
     text += formatOutputAddress(target);
     // Whole milliseconds: the slider moves in them, the output thread's round is one, and a
@@ -288,9 +321,33 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
     // The name is optional. Splitting on the *first* '=' rather than the last: a MIDI device
     // called "Foo = Bar" is not a thing, and an operator who typed no name gets the address
     // as one, which is what the field used to mean before names existed.
+    //
+    // **Or a name in double quotes**, which is how `formatOutputTarget` writes one that would
+    // otherwise be read as something else — "off stage", "a=b" (the audit of 2026-09-25, L28).
+    // Everything to the closing quote, a backslash taking the character after it as it is.
     std::string_view body = line;
-    const std::size_t equals = line.find('=');
-    if (equals != std::string_view::npos) {
+    if (line.starts_with('"')) {
+        std::string name;
+        std::size_t at = 1;
+        bool closed = false;
+        for (; at < line.size(); ++at) {
+            if (line[at] == '\\' && at + 1 < line.size()) {
+                name += line[++at];
+            } else if (line[at] == '"') {
+                closed = true;
+                ++at;
+                break;
+            } else {
+                name += line[at];
+            }
+        }
+        const std::string_view rest = trim(line.substr(at));
+        if (!closed || !rest.starts_with('=')) {
+            return false;
+        }
+        target.name = std::move(name);
+        body = trim(rest.substr(1));
+    } else if (const std::size_t equals = line.find('='); equals != std::string_view::npos) {
         target.name = std::string(trim(line.substr(0, equals)));
         body = trim(line.substr(equals + 1));
     }

@@ -422,8 +422,12 @@ private:
     /// by name — or, when it is not there, nothing selected in its place and it remembered as
     /// the one wanted (the audit of 2026-09-25, H1).
     void relistDuringOutage();
-    /// The MIDI pickers' models, from `midiPorts_` and `midiInputPorts_`.
+    /// The MIDI pickers' models, from `deviceNames_` and `midiInputPorts_` — and every MIDI row
+    /// built again with them, since a dropdown given a new list stops following its row.
     void publishPortLists();
+    /// `deviceNames_` for `targets`: this machine's MIDI outputs and the devices those targets
+    /// name that it has not. True when that changed the list.
+    bool listDevicesFor(const std::vector<output::OutputTarget>& targets);
     /// Closes the input and opens the same device and channel again, found by name — a
     /// rescan renumbers devices. False, with `error` saying why, when it would not open.
     bool reopenInput(std::string& error);
@@ -506,7 +510,12 @@ private:
     WindowController(engine::LiveTracker& tracker, const settings::Settings& settings, IdsAssigned);
 
     engine::LiveTracker& tracker_;
+    /// The MIDI outputs this machine has.
     std::vector<std::string> midiPorts_;
+    /// What a row's device dropdown lists after its "select" entry: `midiPorts_`, then every
+    /// device a row names that this machine has not, shown as not plugged in (the audit of
+    /// 2026-09-25, L32). What a row's `device_index` indexes, less one.
+    std::vector<std::string> deviceNames_;
     std::vector<std::string> midiInputPorts_;
     slint::ComponentHandle<MainWindow> window_;
     slint::Timer timer_;

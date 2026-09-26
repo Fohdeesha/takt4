@@ -187,11 +187,29 @@ bool startsWithUniverse(std::string_view part) noexcept {
     return !first.empty() && first.find_first_not_of("0123456789") == std::string_view::npos;
 }
 
+/// The next comma or line break at or after `at` that is not inside a quoted name — the way a
+/// name is written when it has one of those in it (`output::formatOutputTarget`, the audit of
+/// 2026-09-25's L28). `npos` when there is none.
+std::size_t nextSeparator(std::string_view text, std::size_t at) {
+    bool quoted = false;
+    for (std::size_t i = at; i < text.size(); ++i) {
+        const char c = text[i];
+        if (quoted && c == '\\') {
+            ++i; // the character after it is the name's, whatever it is
+        } else if (c == '"') {
+            quoted = !quoted;
+        } else if (!quoted && (c == ',' || c == '\n')) {
+            return i;
+        }
+    }
+    return std::string_view::npos;
+}
+
 std::vector<std::string_view> splitTargets(std::string_view text) {
     std::vector<std::string_view> parts;
     std::size_t at = 0;
     while (at <= text.size()) {
-        const std::size_t next = text.find_first_of(",\n", at);
+        const std::size_t next = nextSeparator(text, at);
         const std::string_view part = trim(
             text.substr(at, next == std::string_view::npos ? std::string_view::npos : next - at));
         if (!part.empty()) {
@@ -250,13 +268,14 @@ constexpr double kStartupHoldSeconds = 15.0;
 constexpr std::chrono::milliseconds kRunDrawFirst{40};
 constexpr double kRunGraceSeconds = 0.3;
 
-/// Where a row's MIDI dropdown sits for this device — an index into the window's
-/// `output-devices`, whose entry 0 is its own "not chosen yet" label.
+/// Where a row's MIDI dropdown sits for this device — an index into `ports`, the names behind the
+/// window's `output-devices` after its entry 0, its own "not chosen yet" label.
 ///
-/// Zero for a device this machine has not got, which is a preset from another rig: the row's
-/// `address` still names it and still tries to open it, so the name is not lost, and the
-/// failure is reported by `applyTargets` rather than hidden behind a dropdown that would
-/// otherwise claim the row had no device at all.
+/// `ports` is `WindowController::deviceNames_`: the MIDI outputs this machine has, and after them
+/// every device a row names that it has not — a preset from another rig, an interface left at
+/// home — marked in the list as not plugged in. So the row shows the device it is trying to open
+/// rather than "select a MIDI device", which read as a row with no device at all (the audit of
+/// 2026-09-25, L32). Zero only for a name in neither, which is a row still being filled in.
 int deviceIndexOf(const std::vector<std::string>& ports, const std::string& device) {
     for (std::size_t i = 0; i < ports.size(); ++i) {
         if (ports[i] == device) {
@@ -485,8 +504,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // times a second while the tracker does and would otherwise replace a row mid-word.
     // From the settings rather than the runner, which has none yet — see `transportConfig`;
     // they reach it below, once there is a status line to report a failure on.
+    (void)listDevicesFor(settings.preset.outputs);
     for (const output::OutputTarget& target : settings.preset.outputs) {
-        targetDrafts_.push_back(rowOf(target, midiPorts_));
+        targetDrafts_.push_back(rowOf(target, deviceNames_));
     }
     publishTargetRows();
 
@@ -867,14 +887,28 @@ void WindowController::publishPortLists() {
     // nobody has chosen from — it reads as a box the application failed to fill in. Reported
     // from a rig about the control input, and the clock picker had the same hole.
     //
-    // The MIDI outputs, as a MIDI row's and a MIDI clock row's dropdown offers them.
+    // The MIDI outputs, as a MIDI row's and a MIDI clock row's dropdown offers them — the ones
+    // this machine has, and after them any a row names that it has not, said to be missing
+    // (`deviceNames_`, the audit of 2026-09-25's L32).
     auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
     devices->push_back(
         shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
-    for (const std::string& port : midiPorts_) {
-        devices->push_back(shared(port));
+    for (std::size_t i = 0; i < deviceNames_.size(); ++i) {
+        devices->push_back(shared(i < midiPorts_.size() ? deviceNames_[i]
+                                                        : deviceNames_[i] + " \xE2\x80\x94 not plugged in"));
     }
     window_->set_output_devices(devices);
+    // **Every MIDI row built again with the list** (the audit of 2026-09-25, L27). A dropdown
+    // answers a new model by setting its own `current-index` (Slint's `ComboBoxBase`, `changed
+    // model => reset-current()`), which cuts it loose from its row: after a RESCAN every MIDI
+    // row's dropdown went on showing whatever it showed then, whatever device the row moved to.
+    for (std::size_t i = 0; i < targetDrafts_.size(); ++i) {
+        const int kind = targetDrafts_[i].kind_index;
+        if (kind == static_cast<int>(output::OutputTarget::Kind::Midi) ||
+            kind == static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
+            staleTargetRows_.push_back(i);
+        }
+    }
 
     auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
     inputs->push_back(
@@ -883,6 +917,23 @@ void WindowController::publishPortLists() {
         inputs->push_back(shared(port));
     }
     window_->set_midi_in_ports(inputs);
+}
+
+bool WindowController::listDevicesFor(const std::vector<output::OutputTarget>& targets) {
+    std::vector<std::string> names = midiPorts_;
+    for (const output::OutputTarget& target : targets) {
+        const bool device = target.kind == output::OutputTarget::Kind::Midi ||
+                            target.kind == output::OutputTarget::Kind::MidiClock;
+        if (device && !target.device.empty() &&
+            std::find(names.begin(), names.end(), target.device) == names.end()) {
+            names.push_back(target.device);
+        }
+    }
+    if (names == deviceNames_) {
+        return false;
+    }
+    deviceNames_ = std::move(names);
+    return true;
 }
 
 void WindowController::rescanDevices() {
@@ -914,6 +965,7 @@ void WindowController::rescanDevices() {
     // its device when the list reorders.
     midiPorts_ = output::listMidiOutputPorts();
     midiInputPorts_ = output::listMidiInputPorts();
+    (void)listDevicesFor(runner_.snapshot().outputs);
     publishPortLists();
 
     // Whatever was remembered and missing may be here now — a MIDI clock's device among the
@@ -1350,7 +1402,7 @@ void WindowController::editTarget(int index, const std::string& name, const std:
     row.address = shared(address);
     // The boxes that edit the two halves of that address, so a whole destination arriving
     // this way — a pasted line, a settings file — is shown in the fields it is made of.
-    splitAddress(row, midiPorts_);
+    splitAddress(row, deviceNames_);
     // Deliberately no `applyTargets` and no `publishTargetRows`: this is one keystroke.
     // Applying would rebuild a socket per character, and publishing would re-evaluate the
     // `text:` binding of the box the operator is inside.
@@ -1382,7 +1434,7 @@ void WindowController::setTargetHost(int index, const std::string& host, bool ap
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
     shownRow(index).host = std::string(shared(host));
     row.host = shared(host);
-    row.address = shared(addressOf(row, midiPorts_));
+    row.address = shared(addressOf(row, deviceNames_));
     if (apply) {
         applyTargets();
     } else {
@@ -1397,7 +1449,7 @@ void WindowController::setTargetPort(int index, const std::string& port, bool ap
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
     shownRow(index).port = std::string(shared(port));
     row.port = shared(port);
-    row.address = shared(addressOf(row, midiPorts_));
+    row.address = shared(addressOf(row, deviceNames_));
     if (apply) {
         applyTargets();
     } else {
@@ -1412,7 +1464,16 @@ void WindowController::setTargetKind(int index, int kind) {
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
     // Link is not a kind a row can be switched to or from: there is one, always first.
     constexpr int link = static_cast<int>(output::OutputTarget::Kind::Link);
-    if (row.kind_index == kind || row.kind_index == link || kind < 0 || kind >= link) {
+    if (row.kind_index == link || kind < 0 || kind >= link) {
+        return;
+    }
+    if (row.kind_index == kind) {
+        // The kind the row already is, picked again: nothing changes — except that the dropdown
+        // has set its own index doing it, and follows its row no more. Recorded like any pick,
+        // so the row is built again when something else moves its kind (the audit of
+        // 2026-09-25, L27): it returned before this, and the dropdown went on showing the old
+        // kind over a row a paste or an IMPORT had changed.
+        shownRow(index).kind = kind;
         return;
     }
     const bool wasArtNet = row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
@@ -1444,7 +1505,7 @@ void WindowController::setTargetKind(int index, int kind) {
     // whatever host and port it had — so `addressOf` gives an empty destination for the
     // first and the old one back for the second. Empty is how `applyTargets` spells "still
     // being filled in", so switching kind never raises an error about an unfinished row.
-    row.address = shared(addressOf(row, midiPorts_));
+    row.address = shared(addressOf(row, deviceNames_));
     // Applied at once, unlike a keystroke: picking from a list is a finished decision, and
     // the row has to redraw as the other kind either way.
     applyTargets();
@@ -1462,7 +1523,7 @@ void WindowController::setTargetDevice(int index, int device) {
     if (row.kind_index != static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
         row.kind_index = static_cast<int>(output::OutputTarget::Kind::Midi);
     }
-    row.address = shared(addressOf(row, midiPorts_));
+    row.address = shared(addressOf(row, deviceNames_));
     applyTargets();
 }
 
@@ -1477,7 +1538,7 @@ void WindowController::addTarget() {
     row.kind_index = 0;
     row.host = shared("127.0.0.1");
     row.port = shared(std::to_string(newTargetPort_));
-    row.address = shared(addressOf(row, midiPorts_));
+    row.address = shared(addressOf(row, deviceNames_));
     // Its id from the moment it exists, so a rule can be routed to it before it is renamed and
     // stays routed after. Checked against the outputs running now as well as the rows, since a
     // row being filled in has not reached the runner yet.
@@ -1666,7 +1727,7 @@ void WindowController::applyTargets() {
             if (target.id.empty() || output::findTarget(targets, target.id) != nullptr) {
                 target.id = output::newOutputId(targets);
             }
-            rows.push_back(rowOf(target, midiPorts_));
+            rows.push_back(rowOf(target, deviceNames_));
             targets.push_back(std::move(target));
         }
     }
@@ -1689,7 +1750,7 @@ void WindowController::applyTargets() {
     if (output::ensureLinkOutput(targets, linkBefore)) {
         std::vector<OutputRow> ordered;
         for (const output::OutputTarget& target : targets) {
-            ordered.push_back(rowOf(target, midiPorts_));
+            ordered.push_back(rowOf(target, deviceNames_));
         }
         // The unfinished rows, which are not targets yet, after them as they were.
         for (const OutputRow& row : rows) {
@@ -1702,7 +1763,21 @@ void WindowController::applyTargets() {
         }
         rows = std::move(ordered);
     }
+    // A device a row names that the list does not have yet — typed, pasted — goes on it as not
+    // plugged in, and the rows find their places in the new list (L32).
+    const bool listed = listDevicesFor(targets);
+    if (listed) {
+        for (OutputRow& row : rows) {
+            if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi) ||
+                row.kind_index == static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
+                splitAddress(row, deviceNames_);
+            }
+        }
+    }
     targetDrafts_ = std::move(rows);
+    if (listed) {
+        publishPortLists();
+    }
     // Waited for, so an output that will not open is said now — the runner runs for the
     // application's whole life, so a plain `post` is always answered a round later. When even
     // the wait runs out, `tick` is what notices the answer; see `outputErrorShown_`.
@@ -2513,8 +2588,22 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     }
     // `settings::load` is documented never to fail: anything it cannot read gives defaults.
     // That is right for startup and wrong here — importing a JPEG would silently wipe the
-    // rules — so the file is checked for being *settings* before any of it is applied.
-    const settings::Settings loaded = settings::load(path);
+    // rules — so the file is checked for being *settings* before any of it is applied. And
+    // **said why, when it is not** (the audit of 2026-09-25, L29): through `load`, a file
+    // damaged by a hand edit or held by another program was "no preset in it", which sends the
+    // operator looking for the wrong thing.
+    const settings::Loaded checked = settings::loadChecked(path);
+    if (checked.status == settings::LoadStatus::Corrupt ||
+        checked.status == settings::LoadStatus::Unreadable) {
+        setStatus("Cannot import " + io::pathText(path.filename()) + ": " +
+                      (checked.status == settings::LoadStatus::Corrupt ? "it is not a settings "
+                                                                         "file takt4 can read ("
+                                                                       : "it could not be opened (") +
+                      checked.problem + "). Nothing was changed.",
+                  true);
+        return false;
+    }
+    const settings::Settings& loaded = checked.settings;
     // **The whole preset half against a fresh install's**, not four fields of it: this used to
     // look at the rules, the outputs, the prefix and the meters, so a file holding nothing but
     // a lighting patch — or a tempo window, or a decoder — was "no preset" (the audit's M18).
@@ -2551,7 +2640,13 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // The decoder and the OSC prefix are fixed for as long as the application runs — the
     // engine is built with one, and a receiver is configured for the other — so a preset that
     // carries different ones is kept for the next launch rather than dropped, and says so.
+    //
+    // **This import's, not the one before's** (the audit of 2026-09-25, L30): a second import
+    // with the running decoder and prefix left the first import's still pending, so the next
+    // launch came up with a decoder and a prefix from a file the operator had since replaced.
     std::string restart;
+    pendingDecoder_.reset();
+    pendingPrefix_.reset();
     if (loaded.preset.decoder != tracker_.engine().decoderKind()) {
         pendingDecoder_ = loaded.preset.decoder;
         restart += "the decoder";
@@ -2567,10 +2662,14 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // construction onwards (see the constructor), so an import that changed only the
     // transports would leave the boxes showing the old rig.
     targetDrafts_.clear();
+    const bool listed = listDevicesFor(loaded.preset.outputs);
     for (const output::OutputTarget& target : loaded.preset.outputs) {
-        targetDrafts_.push_back(rowOf(target, midiPorts_));
+        targetDrafts_.push_back(rowOf(target, deviceNames_));
     }
     publishTargetRows();
+    if (listed) {
+        publishPortLists();
+    }
     applyTargets();
 
     setStatus("Imported " + io::pathText(path.filename()) + ": " +

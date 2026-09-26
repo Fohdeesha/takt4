@@ -3809,6 +3809,16 @@ TEST_CASE("M fires the manual rules from the keyboard", "[ui]") {
     };
     REQUIRE(fires() == 0);
 
+    // And the key is taught where the trigger is picked: the rule editor's list of triggers names
+    // it (the audit of 2026-09-25, L33 — it was "manual hotkey", which said there was a key and
+    // not which).
+    const auto triggers = controller.editor().window().get_trigger_names();
+    bool taught = false;
+    for (std::size_t i = 0; i < triggers->row_count(); ++i) {
+        taught = taught || std::string(*triggers->row_data(i)) == "manual (M key)";
+    }
+    CHECK(taught);
+
     // Stopped or not: the outputs run, and a manual cue is the operator's own.
     press(window, "m");
     CHECK(fires() == 1);
@@ -4265,6 +4275,315 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     nothingReal.check();
 }
 
+
+namespace {
+
+const std::string kUp = "\xEF\x9C\x80";   // Key.UpArrow
+const std::string kDown = "\xEF\x9C\x81"; // Key.DownArrow
+
+/// The row an output called `name` is on, or -1.
+int rowNamed(WindowController& controller, const std::string& name) {
+    const auto rows = controller.window().get_outputs_list();
+    for (std::size_t i = 0; i < rows->row_count(); ++i) {
+        if (std::string(rows->row_data(i)->name) == name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+/// The running output called `name`.
+takt4::output::OutputTarget outputNamed(WindowController& controller, const std::string& name) {
+    for (const takt4::output::OutputTarget& target : seen(controller).targets) {
+        if (target.name == name) {
+            return target;
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("a kind picked again on an output row still follows the row when it changes", "[ui]") {
+    // The audit of 2026-09-25, L27. A dropdown sets its own index when it is picked from, and so
+    // stops following its row; a pick is recorded so the row is built again when something else
+    // moves it. A pick of the kind the row already was returned before recording it — and the
+    // dropdown went on showing that kind over a row a paste or an IMPORT had changed. What it
+    // shows is read the way an operator meets it: an arrow in the open list moves on from it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const takt4::testing::LoopbackReceiver deckEnd;
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget deck;
+    REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:" + std::to_string(deckEnd.port()),
+                                             deck));
+    saved.preset.outputs = {deck};
+    WindowController controller(tracker, saved);
+    constexpr float kHeight = 1100.0f;
+    layOut(controller, 1000.0f, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    settle();
+    const takt4::tests::NothingReal nothingReal;
+    const std::vector<float> at = outputRowsAt(controller, kHeight);
+    REQUIRE(at.size() == 2);
+    REQUIRE(at[1] > 0.0f);
+    constexpr float kKindColumn = 208.0f;
+    const auto kindOf = [&controller] {
+        const int row = rowNamed(controller, "deck");
+        return row < 0 ? -1 : controller.window().get_outputs_list()->row_data(row)->kind_index;
+    };
+    REQUIRE(kindOf() == 0); // OSC
+
+    // OSC picked again: the list opened and closed, and the arrow that picks the entry it is on.
+    clickAt(window, kKindColumn, at[1]);
+    slint::platform::update_timers_and_animations();
+    press(window, kEscape); // closes the list, and is not PANIC while it is open
+    press(window, kUp);     // on OSC already, the first entry: picks OSC
+    settle();
+    REQUIRE(kindOf() == 0);
+    REQUIRE_FALSE(panickedNow(controller));
+
+    // Then the row becomes an Art-Net node from outside the dropdown — at a receiver of the
+    // test's own, and nothing that changes the device list, which builds MIDI rows again for a
+    // reason of its own.
+    const takt4::testing::LoopbackReceiver node;
+    controller.setOscTargets("deck = artnet 127.0.0.1:" + std::to_string(node.port()));
+    settle();
+    settle();
+    REQUIRE(kindOf() == 2);
+
+    // Down one from what the dropdown shows. Showing Art-Net, that is the MIDI clock; still
+    // showing OSC, it is MIDI.
+    clickAt(window, kKindColumn, at[1]);
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, "\n");
+    settle();
+    CHECK(kindOf() == 3);
+    nothingReal.check();
+}
+
+TEST_CASE("a MIDI row's device dropdown follows its row after the device list changes", "[ui]") {
+    // L27's other half. A dropdown given a new list sets its own index (Slint's ComboBoxBase:
+    // `changed model => reset-current()`), which cuts it loose from its row — so after a RESCAN,
+    // which hands every MIDI row a new list, a row whose device moved in the list went on showing
+    // the device that used to be there. Every MIDI row is built again with a new list. The list
+    // here is the rows' own devices, none of them on this machine (L32): taking out the row that
+    // names the first moves every device after it up one.
+    const auto build = [] {
+        takt4::settings::Settings saved;
+        for (const char* line : {"a = midi takt4 test A", "b = midi takt4 test B",
+                                 "deck = midi takt4 test C", "d = midi takt4 test D"}) {
+            takt4::output::OutputTarget target;
+            REQUIRE(takt4::output::parseOutputTarget(line, target));
+            saved.preset.outputs.push_back(target);
+        }
+        return saved;
+    };
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 1300.0f;
+    const auto settleFor = [](WindowController& controller) {
+        return [&controller] {
+            controller.tick();
+            slint::platform::update_timers_and_animations();
+        };
+    };
+    const auto deviceOf = [](WindowController& controller) {
+        return outputNamed(controller, "deck").device;
+    };
+
+    // Where the deck row's device dropdown is, found on a window of its own so the probing
+    // leaves nothing behind on the one the gesture is made on: the first click along the row
+    // after which an arrow and Enter change the device.
+    float deviceX = -1.0f;
+    float deckY = -1.0f;
+    {
+        LiveTracker tracker(kWeights, kStateSpace);
+        WindowController probe(tracker, build());
+        layOut(probe, kWidth, kHeight);
+        const auto settle = settleFor(probe);
+        settle();
+        const std::vector<float> at = outputRowsAt(probe, kHeight);
+        const int deck = rowNamed(probe, "deck");
+        REQUIRE(deck > 0);
+        deckY = at[static_cast<std::size_t>(deck)];
+        REQUIRE(deckY > 0.0f);
+        // A probe that lands on the row's kind dropdown instead makes it OSC, with no device; the
+        // rows are put back after anything that moved them.
+        const std::string lines = "a = midi takt4 test A, b = midi takt4 test B, "
+                                  "deck = midi takt4 test C, d = midi takt4 test D";
+        for (float x = 240.0f; x < 700.0f && deviceX < 0.0f; x += 12.0f) {
+            clickAt(probe.window().window(), x, deckY);
+            slint::platform::update_timers_and_animations();
+            press(probe.window().window(), kUp);
+            press(probe.window().window(), "\n");
+            settle();
+            const takt4::output::OutputTarget now = outputNamed(probe, "deck");
+            if (now.kind == takt4::output::OutputTarget::Kind::Midi &&
+                now.device == "takt4 test B") {
+                deviceX = x;
+            } else if (now.kind != takt4::output::OutputTarget::Kind::Midi ||
+                       now.device != "takt4 test C") {
+                probe.setOscTargets(lines);
+                settle();
+                settle();
+            }
+        }
+    }
+    INFO("device dropdown at " << deviceX << ", " << deckY);
+    REQUIRE(deviceX > 0.0f);
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, build());
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = settleFor(controller);
+    settle();
+    const takt4::tests::NothingReal nothingReal;
+    REQUIRE(deviceOf(controller) == "takt4 test C");
+
+    // RESCAN, and then the row naming the first device taken away: the list is B, C, D now.
+    controller.rescanDevices();
+    settle();
+    controller.removeTarget(rowNamed(controller, "a"));
+    settle();
+    settle();
+    REQUIRE(deviceOf(controller) == "takt4 test C");
+    // The rows below "a" moved up one; the deck's is where "b" was.
+    const std::vector<float> at = outputRowsAt(controller, kHeight);
+    const float y = at[static_cast<std::size_t>(rowNamed(controller, "deck"))];
+
+    // Up one from what the dropdown shows. Showing C, that is B; still showing the entry C used
+    // to be at — D's now — it is C, and nothing moves.
+    clickAt(window, deviceX, y);
+    slint::platform::update_timers_and_animations();
+    press(window, kUp);
+    press(window, "\n");
+    settle();
+    CHECK(deviceOf(controller) == "takt4 test B");
+    nothingReal.check();
+}
+
+TEST_CASE("an output whose MIDI device is not plugged in shows that device, and says so",
+          "[ui]") {
+    // The audit of 2026-09-25, L32. The row's dropdown read "select a MIDI device" — a row with
+    // no device at all — while the row went on trying to open the one it named. It shows the
+    // device now, marked as not plugged in, and it is on the list for any row to pick.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget desk;
+    REQUIRE(takt4::output::parseOutputTarget("desk = midi takt4 test desk at home", desk));
+    saved.preset.outputs = {desk};
+    WindowController controller(tracker, saved);
+    const int row = rowNamed(controller, "desk");
+    REQUIRE(row > 0);
+    const int index = controller.window().get_outputs_list()->row_data(row)->device_index;
+    REQUIRE(index > 0);
+    const auto devices = controller.window().get_output_devices();
+    REQUIRE(static_cast<std::size_t>(index) < devices->row_count());
+    CHECK(std::string(*devices->row_data(index)) ==
+          "takt4 test desk at home \xE2\x80\x94 not plugged in");
+    // Still that device, as the output the runner has.
+    CHECK(outputNamed(controller, "desk").device == "takt4 test desk at home");
+}
+
+TEST_CASE("a pasted line keeps a quoted name with a comma in it whole", "[ui]") {
+    // L28's paste half: a line of outputs is split at its commas, and a name written in quotes —
+    // how a name with a comma in it is written — keeps its own.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver one;
+    const takt4::testing::LoopbackReceiver two;
+    controller.setOscTargets("\"stage, left\" = 127.0.0.1:" + std::to_string(one.port()) +
+                             ", \"off stage\" = 127.0.0.1:" + std::to_string(two.port()));
+    CHECK(outputNamed(controller, "stage, left").port == one.port());
+    const takt4::output::OutputTarget off = outputNamed(controller, "off stage");
+    CHECK(off.port == two.port());
+    CHECK(off.enabled);
+}
+
+TEST_CASE("an import of a file that cannot be read says why, and changes nothing",
+          "[ui][settings]") {
+    // The audit of 2026-09-25, L29. A file damaged by a hand edit, or held by another program,
+    // was "has no preset in it", which sends an operator looking for the wrong thing.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config keep;
+    keep.id = "keep";
+    keep.address = "/keep";
+    controller.setRules({keep});
+    const takt4::test::TempDir dir;
+
+    SECTION("damaged") {
+        const std::filesystem::path file = dir.path() / "damaged.json";
+        std::ofstream(file) << R"({"preset": {"rules": [ })";
+        CHECK_FALSE(controller.importFrom(file));
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("Cannot import damaged.json") != std::string::npos);
+        CHECK(status.find("not a settings file takt4 can read") != std::string::npos);
+        CHECK(controller.statusIsError());
+    }
+
+#if defined(_WIN32)
+    SECTION("held by another program") {
+        const std::filesystem::path file = dir.path() / "held.json";
+        REQUIRE(takt4::settings::save(takt4::settings::Settings{}, file));
+        const HANDLE held = ::CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(held != INVALID_HANDLE_VALUE);
+        const bool imported = controller.importFrom(file);
+        ::CloseHandle(held);
+        CHECK_FALSE(imported);
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("Cannot import held.json") != std::string::npos);
+        CHECK(status.find("could not be opened") != std::string::npos);
+    }
+#endif
+
+    REQUIRE(controller.rules().size() == 1);
+    CHECK(controller.rules()[0].id == "keep");
+}
+
+TEST_CASE("each import decides what the next launch uses, not the one before", "[ui][settings]") {
+    // The audit of 2026-09-25, L30. A decoder and an OSC prefix cannot change while takt4 runs,
+    // so an import that brings others keeps them for the next launch — and a second import that
+    // brought the running ones left the first import's pending, so the next launch came up with
+    // a decoder and a prefix from a file the operator had since replaced.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::tracking::Decoder running = tracker.engine().decoderKind();
+    const takt4::tracking::Decoder other = running == takt4::tracking::Decoder::Forward
+                                               ? takt4::tracking::Decoder::ParticleFilter
+                                               : takt4::tracking::Decoder::Forward;
+    const std::string prefix = controller.currentSettings().preset.oscPrefix;
+    const takt4::test::TempDir dir;
+    const auto importing = [&](takt4::tracking::Decoder decoder, const std::string& osc,
+                               const char* name) {
+        takt4::settings::Settings show;
+        show.preset.decoder = decoder;
+        show.preset.oscPrefix = osc;
+        takt4::trigger::Rule::Config rule; // something in it, so it is a preset
+        rule.id = name;
+        rule.address = "/go";
+        show.preset.rules = {rule};
+        const std::filesystem::path file = dir.path() / (std::string(name) + ".json");
+        REQUIRE(takt4::settings::save(show, file));
+        REQUIRE(controller.importFrom(file));
+    };
+
+    importing(other, "/elsewhere", "first");
+    CHECK(controller.currentSettings().preset.decoder == other);
+    CHECK(controller.currentSettings().preset.oscPrefix == "/elsewhere");
+
+    importing(running, prefix, "second");
+    CHECK(controller.currentSettings().preset.decoder == running);
+    CHECK(controller.currentSettings().preset.oscPrefix == prefix);
+}
 
 TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     // Where the operator meets the audit's T3: a network that is down, or a cable that is
