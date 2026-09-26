@@ -131,8 +131,9 @@ public:
     /// and the input is reopened after a second, then every two, with the device list looked at
     /// again now and then in case it went away and came back under another number. It is back
     /// when the reopened input sends something, not when it opens. A moved clock or a driver
-    /// asking to be reset reopens at once. The outputs are not stopped for any of it: Link and
-    /// the MIDI clock carry the last tempo on while the input comes back.
+    /// asking to be reset reopens at once — a driver's "new rate" naming the rate already in
+    /// use does not. The outputs are not stopped for any of it: Link and the MIDI clock carry
+    /// the last tempo on while the input comes back.
     ///
     /// **A loopback input's silence is not an outage**: Windows sends a loopback nothing at all
     /// while nothing plays on the output it captures (measured 2026-09-26). The window says so
@@ -432,6 +433,9 @@ private:
     /// Closes the input and opens the same device and channel again, found by name — a
     /// rescan renumbers devices. False, with `error` saying why, when it would not open.
     bool reopenInput(std::string& error);
+    /// Starts watching the stream just opened: the watchdog, the trouble counts, and what the
+    /// driver said while it opened, which is dropped.
+    void watchOpenedInput();
     /// A reopen for `why`, now; an outage when it fails.
     void restartInput(const std::string& why, double now);
     void beginOutage(const std::string& why, double since, double now);
@@ -594,9 +598,11 @@ private:
     /// When the last press finished being carried out; negative before any.
     double runSettledAt_ = -1.0;
     /// What went missing between the input and the beats, as the window last showed it: the
-    /// interface's overflows and the engine's drops, all of which start again with every run.
+    /// interface's overflows and resyncs and the engine's drops, all of which start again with
+    /// every run.
     struct InputTrouble {
         std::uint64_t overflows = 0;
+        std::uint64_t resyncs = 0;
         std::uint64_t hopsDropped = 0;
         std::uint64_t framesDropped = 0;
         std::uint64_t beatsDropped = 0;
@@ -604,6 +610,8 @@ private:
         bool operator==(const InputTrouble&) const = default;
     };
     InputTrouble inputTroubleShown_;
+    /// The driver's resync messages since the input was opened (`AsioDriverEvents::resync`).
+    std::uint64_t driverResyncs_ = 0;
 
     tracking::TapTempo taps_;
     /// When the last tap landed, so a set that has gone quiet stops claiming to be

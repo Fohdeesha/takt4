@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <type_traits>
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -88,12 +89,25 @@ public:
         sequence_.store(before + 2, std::memory_order_release); // even again: settled
     }
 
-    /// Any thread. Spins only while a write is actually in flight.
+    /// Any thread. Spins only while a write is actually in flight — and after
+    /// `kSpinsBeforeYield` spins gives its core away. A reader that preempted the writer part
+    /// way through a write (the output thread, MMCSS "Pro Audio" at High, over the tracker at
+    /// Medium on one core) spun on it until Windows' starvation boost let the writer finish,
+    /// seconds later (the audit of 2026-09-25, L25).
     T load() const noexcept {
+        int spins = 0;
+        const auto wait = [&spins] {
+            if (++spins < kSpinsBeforeYield) {
+                relax();
+                return;
+            }
+            spins = 0;
+            std::this_thread::yield();
+        };
         for (;;) {
             const std::uint64_t before = sequence_.load(std::memory_order_acquire);
             if ((before & 1U) != 0U) {
-                relax(); // a write is in progress; the value is not whole
+                wait(); // a write is in progress; the value is not whole
                 continue;
             }
             Words words;
@@ -105,9 +119,13 @@ public:
                 std::memcpy(bytes.data(), words.data(), sizeof(T));
                 return std::bit_cast<T>(bytes);
             }
-            relax();
+            wait();
         }
     }
+
+    /// How many spins a reader makes on a write in flight before it yields its core. A write
+    /// is a few dozen stores, so a writer that is running finishes well within these.
+    static constexpr int kSpinsBeforeYield = 64;
 
     /// How many times anything has been published. Even means settled.
     std::uint64_t revision() const noexcept {

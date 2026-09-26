@@ -2,11 +2,23 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 using takt4::rt::Published;
 
@@ -121,3 +133,61 @@ TEST_CASE("a reader never sees half of two values", "[rt]") {
     CHECK(published.load().seed == writes);
     CHECK(published.revision() == writes);
 }
+
+#if defined(_WIN32)
+
+TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt]") {
+    // The audit of 2026-09-25, L25. The output thread (MMCSS "Pro Audio", High) reads what the
+    // tracker (Audio, Medium) publishes, and on one core the reader can preempt the writer half
+    // way through a write — and then spin on it, with the writer that would finish it unable to
+    // run, until Windows' starvation boost comes round seconds later. Made to happen here: both
+    // threads on one core, the reader above the writer and waking on a timer, so it lands
+    // wherever the writer happens to be.
+    DWORD_PTR processCores = 0;
+    DWORD_PTR systemCores = 0;
+    REQUIRE(GetProcessAffinityMask(GetCurrentProcess(), &processCores, &systemCores) != 0);
+    REQUIRE(processCores != 0);
+    DWORD_PTR core = 1;
+    while ((processCores & core) == 0) {
+        core <<= 1;
+    }
+
+    Published<Wide> published(Wide::of(0));
+    const Wide values[2] = {Wide::of(1), Wide::of(2)};
+    std::atomic<bool> stop{false};
+    std::thread writer([&] {
+        SetThreadAffinityMask(GetCurrentThread(), core);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        // Nothing but writes, so a reader waking up finds one in flight as often as it can.
+        for (std::size_t i = 0; !stop.load(std::memory_order_relaxed); ++i) {
+            published.publish(values[i & 1U]);
+        }
+    });
+    double worst = 0.0;
+    std::size_t loads = 0;
+    std::thread reader([&] {
+        SetThreadAffinityMask(GetCurrentThread(), core);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            const auto from = std::chrono::steady_clock::now();
+            const Wide got = published.load();
+            const double took =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+            worst = std::max(worst, took);
+            ++loads;
+            if (!got.consistent()) {
+                worst = 1e9; // torn: worse than any wait
+            }
+        }
+    });
+    reader.join();
+    stop.store(true, std::memory_order_relaxed);
+    writer.join();
+    INFO(loads << " loads; the slowest took " << worst * 1000.0 << " ms");
+    CHECK(loads >= 50);
+    CHECK(worst < 0.1);
+}
+
+#endif

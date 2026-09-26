@@ -136,11 +136,13 @@ void InputStream::stop() {
     if (!running()) {
         return;
     }
-    // **Abort, not stop.** `Pa_StopStream` waits for the driver to hand back every buffer in
-    // flight, on the UI thread, with no timeout — so a driver that had hung (the unplugged or
-    // wedged interface the watchdog exists for) froze the window on Stop. An input stream has
-    // nothing queued to play out, so aborting it costs at most the last buffer's few
-    // milliseconds of audio (the audit's ASIO section).
+    // Abort rather than stop: an input stream has nothing queued to play out, so nothing is lost
+    // by not waiting for the buffers in flight. **It is no guard against a hung driver**, which
+    // this comment used to claim (the audit of 2026-09-25, L23): in PortAudio's ASIO and WASAPI
+    // hosts both calls end in the same blocking code — `ASIOStop`, and a wait with no timeout —
+    // so a driver wedged in there holds this thread, which is the UI's, and an outage now
+    // reopens the input on its own a second after the audio stops. Stopping on another thread
+    // would not be safe either: the stream's callback writes into the engine until it returns.
     if (const PaError err = Pa_AbortStream(impl_->stream); err != paNoError) {
         detail::throwPortAudioError("Pa_AbortStream failed", err);
     }

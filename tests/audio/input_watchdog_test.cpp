@@ -15,10 +15,12 @@ namespace {
 
 /// A device delivering `rate` frames a second in buffers of `buffer` frames, watched on a
 /// redraw timer that fires every 33 ms give or take a scheduler's worth of jitter — the shape
-/// the window really has. Advances in 1 ms steps and reports what each look saw.
+/// the window really has — or, given `lookFrom` and `lookTo`, as far apart as a busy one.
+/// Advances in 1 ms steps and reports what each look saw.
 class Rig {
 public:
-    Rig(double rate, std::uint64_t buffer) : rate_(rate), buffer_(buffer) {}
+    Rig(double rate, std::uint64_t buffer, double lookFrom = 0.020, double lookTo = 0.050)
+        : rate_(rate), buffer_(buffer), jitter_(lookFrom, lookTo) {}
 
     void setRate(double rate) { rate_ = rate; }
     void stopCallbacks() { stopped_ = true; }
@@ -70,8 +72,44 @@ private:
     double nextLook_ = 100.0;
     InputStreamCounters counters_;
     std::mt19937 random_{20260923};
-    std::uniform_real_distribution<double> jitter_{0.020, 0.050};
+    std::uniform_real_distribution<double> jitter_;
 };
+
+/// Seconds until the watchdog says the clock moved, after the device underneath it goes from
+/// `from` to `to` — or a negative number if it never says so in half a minute.
+double secondsToNotice(double from, double to, std::uint64_t buffer, double lookFrom = 0.020,
+                       double lookTo = 0.050) {
+    Rig rig(from, buffer, lookFrom, lookTo);
+    InputWatchdog watchdog;
+    watchdog.reset(from, rig.now());
+    rig.run(watchdog, 5.0);
+    rig.setRate(to);
+    const double changed = rig.now();
+    while (rig.now() - changed < 30.0) {
+        if (rig.run(watchdog, 0.05).verdict == Verdict::RateChanged) {
+            return rig.now() - changed;
+        }
+    }
+    return -1.0;
+}
+
+/// Whether the dropout story of "dropouts the driver recovers from are not a new clock" raised
+/// any alarm at this buffer and redraw spacing.
+bool dropoutsAlarm(double rate, std::uint64_t buffer, double lookFrom = 0.020,
+                   double lookTo = 0.050) {
+    Rig rig(rate, buffer, lookFrom, lookTo);
+    InputWatchdog watchdog;
+    watchdog.reset(rate, rig.now());
+    rig.run(watchdog, 5.0);
+    bool alarm = false;
+    for (int i = 0; i < 20; ++i) {
+        rig.stopCallbacks();
+        rig.run(watchdog, i % 2 == 0 ? 0.08 : 0.35, &alarm);
+        rig.resumeCallbacks();
+        rig.run(watchdog, 2.7, &alarm);
+    }
+    return alarm;
+}
 
 } // namespace
 
@@ -169,4 +207,62 @@ TEST_CASE("an interface moved to another rate underneath the stream is noticed",
     bool alarm = false;
     CHECK(rig.run(watchdog, 10.0, &alarm).verdict == Verdict::Healthy);
     CHECK_FALSE(alarm);
+}
+
+TEST_CASE("a moved clock is noticed whatever the buffer size, 64 to 8192 frames",
+          "[audio][watchdog]") {
+    // The audit of 2026-09-25, L21: limits set for 256-frame buffers left out nearly every pair
+    // of looks at 2048, where a callback comes every 46 ms, and a clock moved underneath the
+    // stream was never noticed — 0 detections in 30 s, and every tempo 8.8 % off. Every buffer
+    // an ASIO panel offers, at the rates a set runs at, moving each way and by an octave. At
+    // 8192 a callback is 186 ms apart, past the fixed stall limit itself.
+    struct Move {
+        double from;
+        double to;
+    };
+    for (const Move move : {Move{44100.0, 48000.0}, Move{48000.0, 44100.0},
+                            Move{96000.0, 48000.0}, Move{44100.0, 88200.0},
+                            Move{96000.0, 88200.0}}) {
+        for (const std::uint64_t buffer : {64U, 256U, 1024U, 2048U, 4096U, 8192U}) {
+            INFO(move.from << " Hz to " << move.to << " Hz in " << buffer << "-frame buffers");
+            const double took = secondsToNotice(move.from, move.to, buffer);
+            CHECK(took > 0.0);
+            CHECK(took < 3.0);
+        }
+    }
+}
+
+TEST_CASE("a healthy input with large buffers reads healthy, and its dropouts are not a new clock",
+          "[audio][watchdog]") {
+    // What the limits that follow the buffer must not do instead: take the buffer steps of a
+    // healthy 4096-frame stream, or its hiccups, for a clock.
+    for (const std::uint64_t buffer : {1024U, 2048U, 4096U}) {
+        for (const double rate : {44100.0, 48000.0, 96000.0}) {
+            INFO(rate << " Hz in " << buffer << "-frame buffers");
+            Rig rig(rate, buffer);
+            InputWatchdog watchdog;
+            watchdog.reset(rate, rig.now());
+            bool alarm = false;
+            const InputWatchdog::Reading reading = rig.run(watchdog, 120.0, &alarm);
+            CHECK_FALSE(alarm);
+            CHECK(reading.measuredRate == Approx(rate).epsilon(0.02));
+            CHECK_FALSE(dropoutsAlarm(rate, buffer));
+        }
+    }
+}
+
+TEST_CASE("a busy redraw neither hides a moved clock nor makes one of a dropout",
+          "[audio][watchdog]") {
+    // The window looks on its redraw timer, and a busy machine spaces the looks out. With looks
+    // up to 80 ms apart the fixed limits never measured at all, and limits that only let the
+    // pairs of looks be further apart took the audio a dropout lost inside a pair for a slower
+    // clock — which the window answers by reopening the stream (L21, found by simulation).
+    for (const std::uint64_t buffer : {256U, 2048U}) {
+        INFO(buffer << "-frame buffers, looks 20 to 80 ms apart");
+        const double took = secondsToNotice(44100.0, 48000.0, buffer, 0.020, 0.080);
+        CHECK(took > 0.0);
+        CHECK(took < 3.0);
+        CHECK_FALSE(dropoutsAlarm(44100.0, buffer, 0.020, 0.080));
+        CHECK_FALSE(dropoutsAlarm(48000.0, buffer, 0.020, 0.080));
+    }
 }

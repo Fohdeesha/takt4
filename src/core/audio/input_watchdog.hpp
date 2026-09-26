@@ -38,16 +38,18 @@ public:
         /// which is 8.8 %.
         double rateWindowSeconds = 3.0;
         /// How far the measured rate may stray from the one the stream was opened at before
-        /// it counts as a different clock. The smallest real change, 44.1 to 48 kHz or back,
-        /// is 8 %; a crystal drifts by parts per million. What sets the floor is a dropout the
-        /// driver recovers from on its own: one just under `stallSeconds` loses that much audio
-        /// from the window — 3.3 % of three seconds — and must not read as a new clock.
+        /// it counts as a different clock — and it must then also be another clock's rate
+        /// (`observe`). The smallest real change, 44.1 to 48 kHz or back, is 8 %; a crystal
+        /// drifts by parts per million. What sets the floor is a dropout the driver recovers
+        /// from on its own: one just under the stall limit loses that much audio from the
+        /// window — 3.3 % of three seconds — and must not read as a new clock.
         double rateTolerance = 0.04;
         /// A pause in the callbacks longer than this, even one that recovers before it counts
         /// as silence, starts the rate measurement again. Frames missing from the window read
         /// as a slower clock, and a 0.3 s hiccup would otherwise have reopened a healthy stream
-        /// (measured, by the test that found it). Longer than any driver's buffer period — 2048
-        /// frames at 44.1 kHz is 46 ms.
+        /// (measured, by the test that found it). The floor: the pause allowed is two callback
+        /// periods when that is longer, since a 4096-frame buffer at 44.1 kHz calls back only
+        /// every 93 ms (the audit of 2026-09-25, L21).
         double stallSeconds = 0.1;
     };
 
@@ -83,15 +85,21 @@ public:
     /// One look. `now` on the same clock `reset` was given.
     Reading observe(const InputStreamCounters& counters, double now);
 
+    /// The rate the stream being watched was opened at, as `reset` was told.
+    double openedRate() const noexcept { return openedRate_; }
+
 private:
     struct Sample {
         double at = 0.0;
         std::uint64_t frames = 0;
+        /// How long before this look the one before it was.
+        double sinceLastLook = 0.0;
     };
 
     Options options_;
     double openedRate_ = 0.0;
     double openedAt_ = 0.0;
+    double lastLookAt_ = 0.0;
     std::uint64_t lastCallbacks_ = 0;
     double lastCallbackAt_ = 0.0;
     bool anyCallback_ = false;

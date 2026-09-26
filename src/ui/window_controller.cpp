@@ -21,6 +21,7 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -1092,11 +1093,20 @@ void WindowController::toggleRun() {
     wantRunning_ = true;
     nothingPlaying_ = false;
     input_ = tracker_.current();
-    watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
-    inputTroubleShown_ = {};
-    window_->set_input_trouble(shared(""));
+    watchOpenedInput();
     window_->set_running(true);
     publishOpenStream();
+}
+
+void WindowController::watchOpenedInput() {
+    watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
+    // What the driver said while it was being opened belongs to that open, not to the stream it
+    // made. Left for the next redraw, a driver that says anything as it starts was answered with
+    // another reopen, and so on every tick (the audit of 2026-09-25, L22).
+    (void)audio::takeAsioDriverEvents();
+    driverResyncs_ = 0;
+    inputTroubleShown_ = {};
+    window_->set_input_trouble(shared(""));
 }
 
 bool WindowController::reopenInput(std::string& error) {
@@ -1129,9 +1139,7 @@ bool WindowController::reopenInput(std::string& error) {
         return false;
     }
     input_ = tracker_.current();
-    watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
-    inputTroubleShown_ = {};
-    window_->set_input_trouble(shared(""));
+    watchOpenedInput();
     return true;
 }
 
@@ -1149,6 +1157,7 @@ void WindowController::assumeRunningOn(const engine::LiveTracker::Running& input
     outage_.reset();
     nothingPlaying_ = false;
     watchdog_.reset(input.device.defaultSampleRate, now);
+    driverResyncs_ = 0;
     window_->set_running(true);
 }
 
@@ -1230,7 +1239,7 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         // by name in `reopenInput`.
         if (outage_->tries % 3 == 0 &&
             (rescannedAt_ < 0.0 || now - rescannedAt_ >= kOutageRescanSeconds)) {
-            rescannedAt_ = now;
+            const double scanFrom = nowSeconds();
             tracker_.stop();
             try {
                 if (tracker_.rescan()) {
@@ -1239,6 +1248,10 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
             } catch (const std::exception&) {
                 // PortAudio would not come back up; the next try will ask again.
             }
+            // When the look ended, on the clock `now` is on. An ASIO driver can take the scan's
+            // whole limit to answer, and timed from when it began the next look was due that
+            // much sooner (the audit of 2026-09-25, L24).
+            rescannedAt_ = now + (nowSeconds() - scanFrom);
         }
         std::string error;
         if (reopenInput(error)) {
@@ -1257,8 +1270,15 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     }
 
     // What the ASIO driver said. Each of these means the stream as opened no longer describes
-    // the hardware, and PortAudio's host used to acknowledge them and carry on regardless.
-    if (events.needsReopen()) {
+    // the hardware, and PortAudio's host used to acknowledge them and carry on regardless —
+    // except a "new rate" that is the rate the stream already runs at. Drivers send that for
+    // other news (the SDK's comment names S/PDIF status), and it was answered with a reopen
+    // every time (the audit of 2026-09-25, L22).
+    const double runningAt = watchdog_.openedRate();
+    const bool sameRate = events.sampleRateChange && !events.resetRequest &&
+                          !events.bufferSizeChange && runningAt > 0.0 &&
+                          std::abs(events.reportedRate / runningAt - 1.0) < 0.001;
+    if (events.needsReopen() && !sameRate) {
         const char* what = events.resetRequest       ? "asked to be reset"
                            : events.sampleRateChange ? "changed its sample rate"
                                                      : "changed its buffer size";
@@ -1272,6 +1292,12 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     const engine::BeatEngine& engine = tracker_.engine();
     InputTrouble trouble;
     trouble.overflows = reading.inputOverflows;
+    // The driver's own word that it lost its place for a moment, kept "so it can be shown" and
+    // shown nowhere until the audit of 2026-09-25 (L26).
+    if (events.resync) {
+        ++driverResyncs_;
+    }
+    trouble.resyncs = driverResyncs_;
     trouble.hopsDropped = engine.activations().hopsDropped();
     trouble.framesDropped = engine.activations().framesDropped();
     trouble.beatsDropped = engine.beatsDropped();
@@ -1298,6 +1324,10 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         if (trouble.beatsDropped != 0) {
             parts.push_back(counted(trouble.beatsDropped, "beat dropped", "beats dropped",
                                     "the outputs fell behind the tracker"));
+        }
+        if (trouble.resyncs != 0) {
+            parts.push_back(counted(trouble.resyncs, "driver resync", "driver resyncs",
+                                    "the interface lost its place for a moment"));
         }
         if (trouble.samplesRepaired != 0) {
             parts.push_back(counted(trouble.samplesRepaired, "sample", "samples",

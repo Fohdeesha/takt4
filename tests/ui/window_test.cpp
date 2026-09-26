@@ -2647,14 +2647,19 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK(std::string(controller.window().get_status()).find("moved from") != std::string::npos);
     CHECK_FALSE(controller.statusIsError());
 
-    // A driver asking to be reset: the same.
+    // A driver asking to be reset: the same. And whatever a driver says while the stream is
+    // being opened again belongs to that open — posted here as though said during it — and is
+    // not left for the next redraw to answer with another reopen, which for a driver that says
+    // something as it starts was a reopen on every tick (the audit of 2026-09-25, L22).
     takt4::audio::AsioDriverEvents reset;
     reset.resetRequest = true;
+    takt4::audio::postAsioDriverEvents(reset);
     controller.superviseInput(Reading{}, reset, 103.0);
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("asked to be reset") !=
           std::string::npos);
     CHECK_FALSE(controller.statusIsError());
+    CHECK_FALSE(takt4::audio::takeAsioDriverEvents().any());
 
     // Silent again three seconds after it came back: the same trouble, so the count goes on from
     // the one try the last outage took rather than from nothing (M8) — an input that keeps coming
@@ -2733,6 +2738,132 @@ TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes 
         CHECK(status().find("No audio from In 1-2 (MOTU Pro Audio)") != std::string::npos);
         CHECK(controller.statusIsError());
     }
+}
+
+namespace {
+
+/// An ASIO interface running at 44.1 kHz as far as the window knows — nothing is opened.
+InputDevice asioInterface() {
+    InputDevice made;
+    made.name = "MOTU Pro Audio";
+    made.hostApi = takt4::audio::HostApiKind::Asio;
+    made.hostApiName = "ASIO";
+    made.maxInputChannels = 8;
+    made.defaultSampleRate = 44100.0;
+    return made;
+}
+
+} // namespace
+
+TEST_CASE("a driver saying its rate changed to the rate it runs at reopens nothing", "[ui]") {
+    // The audit of 2026-09-25, L22. The patched host kept every sample-rate message as "the
+    // rate changed", and drivers send it for other news too — the SDK's comment names S/PDIF
+    // status — so a stream running happily was reopened, and the tracker restarted, for it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.assumeRunningOn({asioInterface(), takt4::audio::ChannelSelection::single(0)},
+                               100.0);
+    const auto status = [&controller] { return std::string(controller.window().get_status()); };
+    const std::string before = status();
+    takt4::audio::InputWatchdog::Reading healthy;
+    healthy.verdict = takt4::audio::InputWatchdog::Verdict::Healthy;
+
+    takt4::audio::AsioDriverEvents same;
+    same.sampleRateChange = true;
+    same.reportedRate = 44100.0;
+    controller.superviseInput(healthy, same, 100.5);
+    CHECK(status() == before);
+    CHECK_FALSE(controller.window().get_input_lost());
+
+    // A rate that really is another is still a reopen — which fails here, the interface being
+    // imaginary, and so is an outage that says why.
+    takt4::audio::AsioDriverEvents moved;
+    moved.sampleRateChange = true;
+    moved.reportedRate = 48000.0;
+    controller.superviseInput(healthy, moved, 101.0);
+    INFO(status());
+    CHECK(status().find("changed its sample rate") != std::string::npos);
+    CHECK(controller.window().get_input_lost());
+}
+
+TEST_CASE("a driver that asks to be reset with the same rate is still reset", "[ui]") {
+    // The same-rate exception is for a rate message alone: a reset or a new buffer size that
+    // arrives beside one still needs the stream built again.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.assumeRunningOn({asioInterface(), takt4::audio::ChannelSelection::single(0)},
+                               100.0);
+    takt4::audio::AsioDriverEvents both;
+    both.sampleRateChange = true;
+    both.reportedRate = 44100.0;
+    both.resetRequest = true;
+    controller.superviseInput({}, both, 100.5);
+    const std::string said(controller.window().get_status());
+    INFO(said);
+    CHECK(said.find("asked to be reset") != std::string::npos);
+}
+
+TEST_CASE("a driver's resyncs are counted with the input's other trouble", "[ui]") {
+    // The audit of 2026-09-25, L26: the patch kept a driver's resync messages "so they can be
+    // shown", and nothing read them. They are the interface's own word that it lost its place.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.assumeRunningOn({asioInterface(), takt4::audio::ChannelSelection::single(0)},
+                               100.0);
+    const auto trouble = [&controller] {
+        return std::string(controller.window().get_input_trouble());
+    };
+    takt4::audio::InputWatchdog::Reading healthy;
+    healthy.verdict = takt4::audio::InputWatchdog::Verdict::Healthy;
+    takt4::audio::AsioDriverEvents resync;
+    resync.resync = true;
+    controller.superviseInput(healthy, resync, 100.5);
+    CHECK(trouble().find("1 driver resync — the interface lost its place") != std::string::npos);
+    controller.superviseInput(healthy, {}, 101.0);
+    controller.superviseInput(healthy, resync, 101.5);
+    CHECK(trouble().find("2 driver resyncs") != std::string::npos);
+    // Not a reason to reopen on its own.
+    CHECK_FALSE(controller.window().get_input_lost());
+}
+
+TEST_CASE("an outage's next look at the machine is timed from when the last one ended", "[ui]") {
+    // The audit of 2026-09-25, L24. Every third try during an outage the machine's devices are
+    // read again, and not more than every ten seconds — timed from when the look *began*, while
+    // an ASIO driver can take the scan's whole limit to answer. A look that took eight seconds
+    // made the next one due two seconds after it. Here a look takes two and a half.
+    LiveTracker tracker(kWeights, kStateSpace);
+    int looks = 0;
+    bool slow = false;
+    tracker.setDeviceListHook([&looks, &slow](std::vector<InputDevice>& list) {
+        list.clear(); // the interface is not there, so every reopen fails as a dead one does
+        if (slow) {
+            ++looks;
+            std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        }
+    });
+    WindowController controller(tracker);
+    double now = 100.0;
+    controller.beginOutageOn({asioInterface(), takt4::audio::ChannelSelection::single(0)}, now);
+    slow = true;
+    const auto tryAgain = [&controller, &now](double after) {
+        now += after;
+        controller.superviseInput({}, {}, now);
+    };
+    tryAgain(1.0); // the first try, a second in
+    tryAgain(2.0);
+    tryAgain(2.0); // the third: a look
+    REQUIRE(looks == 1);
+    for (int i = 0; i < 6; ++i) {
+        tryAgain(2.0);
+    }
+    // The ninth try, twelve seconds after the third: ten after the look began, but only nine
+    // and a half after it ended.
+    CHECK(looks == 1);
+    for (int i = 0; i < 3; ++i) {
+        tryAgain(2.0);
+    }
+    CHECK(looks == 2);
+    CHECK(controller.outageTries() == std::optional<int>(12));
 }
 
 namespace {

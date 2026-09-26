@@ -225,10 +225,20 @@ std::vector<AsioScannedDevice> asioDevicesHere() {
     return devices;
 }
 
+/// The scanning process's answer, written to the pipe the asking process reads.
+void answer(const AsioScan& scan) {
+    const std::string text = writeAsioScan(scan);
+    DWORD written = 0;
+    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), text.data(), static_cast<DWORD>(text.size()),
+              &written, nullptr);
+}
+
 /// A bench switch that ships, like TAKT4_TEST_CRASH: TAKT4_TEST_ASIO_SCAN makes the scanning
 /// process do what a driver might — "fall-over" is the MOTU's fast fail, before any driver is
 /// loaded; "fall-over-once:<file>" falls over only if the file is not there yet, and makes it;
-/// "hang" never answers.
+/// "hang" never answers; "answer-then-hang" answers, finding nothing, and never exits;
+/// "helper" answers and exits at once, leaving a process of its own holding the answer's
+/// pipe for five seconds, as a driver that starts one would.
 void benchSwitch() {
     const std::string how = environment("TAKT4_TEST_ASIO_SCAN");
     if (how.empty()) {
@@ -251,6 +261,27 @@ void benchSwitch() {
     if (how == "hang") {
         Sleep(INFINITE);
     }
+    if (how == "answer-then-hang") {
+        answer(AsioScan{});
+        Sleep(INFINITE);
+    }
+    if (how == "helper") {
+        // Everything inheritable goes to the helper, the pipe's write end included, and cmd.exe
+        // holds it while the ping it waits on runs — its own output thrown away.
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        PROCESS_INFORMATION helper{};
+        std::wstring line = L"cmd.exe /d /c ping -n 6 127.0.0.1 > nul";
+        if (CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                           nullptr, &startup, &helper) != 0) {
+            CloseHandle(helper.hThread);
+            CloseHandle(helper.hProcess);
+        }
+        answer(AsioScan{});
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
 }
 
 [[noreturn]] void scanHereAndExit() {
@@ -265,10 +296,7 @@ void benchSwitch() {
     } else {
         scan.problem = std::string("PortAudio would not start: ") + Pa_GetErrorText(error);
     }
-    const std::string text = writeAsioScan(scan);
-    DWORD written = 0;
-    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), text.data(), static_cast<DWORD>(text.size()),
-              &written, nullptr);
+    answer(scan);
     // Ended here, with nothing let go: what was asked for is written, and releasing PortAudio
     // and the drivers is only another chance for one of them to fall over.
     TerminateProcess(GetCurrentProcess(), 0);
@@ -366,6 +394,7 @@ Attempt scanOnce(std::chrono::milliseconds limit) {
     std::string text;
     const auto until = std::chrono::steady_clock::now() + limit;
     char buffer[4096];
+    bool gone = false;
     while (true) {
         if (std::chrono::steady_clock::now() > until) {
             TerminateProcess(child.hProcess, 1);
@@ -384,22 +413,31 @@ Attempt scanOnce(std::chrono::milliseconds limit) {
             text.append(buffer, got);
             continue;
         }
-        // Sleeps while there is nothing to read, and returns at once if the child has gone
-        // with something still in the pipe — the peek above then finds it.
-        (void)WaitForSingleObject(child.hProcess, 10);
+        // **Gone, and everything it wrote read: done** — not waiting for the pipe to break. A
+        // driver that starts a process of its own hands it the scan's output with everything
+        // else it inherits, and while that process runs the pipe stays whole: the peek went on
+        // finding nothing to read, and the UI thread waited out the whole limit (the audit of
+        // 2026-09-25, L24).
+        if (gone) {
+            break;
+        }
+        // Sleeps while there is nothing to read; wakes at once when the child goes, and the
+        // peek then takes whatever it left in the pipe.
+        gone = WaitForSingleObject(child.hProcess, 10) == WAIT_OBJECT_0;
     }
     CloseHandle(readEnd);
     WaitForSingleObject(child.hProcess, 5000);
     GetExitCodeProcess(child.hProcess, &attempt.exitCode);
     CloseHandle(child.hProcess);
-    if (attempt.outcome == Outcome::TimedOut) {
-        return attempt;
-    }
     attempt.scan = readAsioScan(text);
     // What was written decides, not how the process ended: a driver that falls over after the
-    // scan is written has not cost the scan.
-    attempt.outcome =
-        attempt.scan.problem == kUnfinished ? Outcome::FellOver : Outcome::Finished;
+    // scan is written has not cost the scan — and nor has one that hung after it, whose whole
+    // answer a timeout used to throw away (the audit of 2026-09-25, L24).
+    if (attempt.scan.problem != kUnfinished) {
+        attempt.outcome = Outcome::Finished;
+    } else if (attempt.outcome != Outcome::TimedOut) {
+        attempt.outcome = Outcome::FellOver;
+    }
     return attempt;
 }
 
