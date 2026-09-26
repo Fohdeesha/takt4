@@ -194,15 +194,25 @@ def lower_priority():
     kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
 
 
-def cli_path():
-    """The takt4-cli to measure with: tools/refeval/common.py's rule (TAKT4_CLI, else the
-    local Release build), loaded under its own module name since both directories have a
-    `common`."""
+def _refeval_common():
+    """tools/refeval/common.py, loaded under its own module name since both directories have
+    a `common`."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("refeval_common", ROOT / "tools" / "refeval" / "common.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.cli_path()
+    return module
+
+
+def cli_path():
+    """The takt4-cli to measure with: tools/refeval/common.py's rule (TAKT4_CLI, else the
+    local Release build)."""
+    return _refeval_common().cli_path()
+
+
+def cli_identity(cli):
+    """tools/refeval/common.py's: the CLI's path, SHA-256 and `--version`."""
+    return _refeval_common().cli_identity(cli)
 
 
 def tempo_of(times):
