@@ -178,9 +178,33 @@ TEST_CASE("a Link announcement is read as Link writes it", "[output][link]") {
     }
 }
 
+TEST_CASE("a peer is this process only when it sends from this machine as well as this port",
+          "[output][link]") {
+    // The audit's L19: this process's own Link was told apart by the port its announcements
+    // left from alone, so a peer on another machine that happened to send from a port number
+    // one of takt4's sockets has here was hidden from the list. Asked of the operating system,
+    // with a port this process really holds.
+    takt4::testing::LoopbackReceiver socket;
+    const std::uint16_t ours = socket.port();
+    REQUIRE(takt4::output::portOwnedHere(ours));
+    CHECK(takt4::output::addressIsHere("127.0.0.1"));
+    CHECK_FALSE(takt4::output::addressIsHere("203.0.113.9")); // TEST-NET-3: never a machine's
+    CHECK(takt4::output::sentFromHere("127.0.0.1", ours));
+    CHECK_FALSE(takt4::output::sentFromHere("203.0.113.9", ours));
+
+    LinkPeerWatch watch; // the operating system's answer
+    watch.take(announcement(1, id(7), 128.0, id(7)), "203.0.113.9", ours, 0.0);
+    watch.take(announcement(1, id(8), 128.0, id(8)), "127.0.0.1", ours, 0.0);
+    const std::vector<LinkPeer> peers = watch.peers();
+    REQUIRE(peers.size() == 1); // the one elsewhere; the one from here is this process
+    CHECK(peers[0].addresses == std::vector<std::string>{"203.0.113.9"});
+}
+
 TEST_CASE("the peers list is every Link peer but this process's own", "[output][link]") {
-    // This process's Link announces from port 50000; everything else is a peer.
-    LinkPeerWatch watch([](std::uint16_t port) { return port == 50000; });
+    // This process's Link announces from port 50000 of this machine; everything else is a peer.
+    LinkPeerWatch watch([](const std::string& address, std::uint16_t port) {
+        return address == "192.168.1.10" && port == 50000;
+    });
     watch.take(announcement(1, id(1), 128.0, id(1)), "192.168.1.10", 50000, 0.0); // takt4 itself
     watch.take(announcement(1, id(2), 128.0, id(1), true), "192.168.1.20", 61000, 0.0);
     watch.take(announcement(1, id(3), 120.0, id(3)), "192.168.1.35", 62000, 0.1);
@@ -260,7 +284,7 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
     // list is empty: takt4's own Link is never shown as a peer of itself.
     takt4::output::LinkSession first(123.0);
     takt4::output::LinkSession second(97.0);
-    LinkPeerWatch everyone([](std::uint16_t) { return false; });
+    LinkPeerWatch everyone([](const std::string&, std::uint16_t) { return false; });
     LinkPeerWatch asTakt4;
     std::string problem;
     REQUIRE(everyone.open(problem));

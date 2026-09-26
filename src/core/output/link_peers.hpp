@@ -65,15 +65,18 @@ struct LinkPeer {
 /// share the port (both ask for address reuse), and a multicast datagram is delivered to every
 /// socket joined to the group.
 ///
-/// **This process's own Link is told apart by the port it sends from.** Link's node id is
-/// random, made afresh each time it is switched on, and not in its API; but each announcement
-/// leaves from a socket Link opened, and that socket belongs to this process — which the
-/// operating system will say (`portOwnedHere`). Asked once per node, the first time it is heard.
+/// **This process's own Link is told apart by where it sends from.** Link's node id is random,
+/// made afresh each time it is switched on, and not in its API; but each announcement leaves
+/// from a socket Link opened on this machine, and that socket belongs to this process — which
+/// the operating system will say (`sentFromHere`). Asked once per node, the first time it is
+/// heard. The address as well as the port: a peer on another machine whose announcements
+/// happened to leave from a port number one of takt4's sockets has here was hidden from the
+/// list (the 2026-09-25 audit's L19).
 class LinkPeerWatch {
 public:
-    /// Whether a UDP port on this machine belongs to this process. Empty is the operating
-    /// system's answer, `portOwnedHere`; a test hands in its own.
-    using OwnPort = std::function<bool(std::uint16_t)>;
+    /// Whether an announcement from `address`:`port` left from a socket of this process. Empty
+    /// is the operating system's answer, `sentFromHere`; a test hands in its own.
+    using OwnPort = std::function<bool(const std::string& address, std::uint16_t port)>;
 
     explicit LinkPeerWatch(OwnPort ownPort = {});
     ~LinkPeerWatch();
@@ -121,5 +124,12 @@ private:
 /// process, or Linux's /proc. False anywhere else, where takt4's own Link is then listed as a
 /// peer of itself.
 bool portOwnedHere(std::uint16_t port);
+
+/// Whether `address` (dotted IPv4) is this machine's: loopback, or an interface that is up.
+bool addressIsHere(const std::string& address);
+
+/// Whether a datagram from `address`:`port` left from a socket of this process: the address is
+/// this machine's (`addressIsHere`) and the port this process's (`portOwnedHere`).
+bool sentFromHere(const std::string& address, std::uint16_t port);
 
 } // namespace takt4::output

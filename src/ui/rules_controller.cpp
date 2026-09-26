@@ -11,6 +11,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -77,15 +78,25 @@ std::vector<std::string_view> split(std::string_view text, std::string_view sepa
     return parts;
 }
 
+/// A number typed into a box, or nothing. **Only a finite one**: `from_chars` reads "nan" and
+/// "inf" as numbers, and a duration of inf made an effect that never ended, a hue of nan was
+/// undefined behaviour in `fromHsv`, and a BPM range of nan never fired (the 2026-09-25
+/// audit's L5).
 std::optional<double> readNumber(std::string_view text) noexcept {
     double value = 0.0;
     const char* const begin = text.data();
     const char* const end = begin + text.size();
     const std::from_chars_result result = std::from_chars(begin, end, value);
-    if (result.ec != std::errc{} || result.ptr != end) {
+    if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(value)) {
         return std::nullopt;
     }
     return value;
+}
+
+/// A finite number as an `int32_t`, clamped to its range: converting one past it is
+/// undefined behaviour, and "1e12" is a finite number (L5).
+std::int32_t clampedInt(double value) noexcept {
+    return static_cast<std::int32_t>(std::clamp(value, -2147483648.0, 2147483647.0));
 }
 
 /// What a number box's keystrokes say it holds. The markup has already clamped it and spelled
@@ -123,7 +134,9 @@ trigger::Value parseValue(std::string_view text) {
             *number <= 2147483647.0) {
             return trigger::Value::ofInt(static_cast<std::int32_t>(*number));
         }
-        return trigger::Value::ofFloat(static_cast<float>(*number));
+        // Clamped to what a float holds, which converting past is undefined behaviour (L5).
+        const double most = std::numeric_limits<float>::max();
+        return trigger::Value::ofFloat(static_cast<float>(std::clamp(*number, -most, most)));
     }
     return trigger::Value::ofText(trimmed);
 }
@@ -212,14 +225,6 @@ std::string join(const std::vector<std::string>& names) {
     return text;
 }
 
-/// What a rule's routing currently reaches, beside the field the names were typed into.
-///
-/// Three different things worth saying, and they are not interchangeable. A rule that names
-/// nothing goes everywhere and should say which "everywhere" is, or an operator who has just
-/// added a second output has no way to know the rule now hits it too. A name that matches
-/// nothing is the one real mistake here — and is *kept* rather than corrected, because a
-/// preset from another rig should still say what it meant (`Rule::Config::outputs`), so
-/// saying so is the only way it gets noticed.
 /// Whether a rule that sends `kind` can reach a target of `target`'s kind **at all**.
 ///
 /// **A UI question with a wire answer.** `RuleSink::sendMidi` walks the targets and asks each
@@ -240,6 +245,17 @@ bool targetTakes(trigger::Message::Kind kind, const output::OutputTarget& target
                                  : target.kind == output::OutputTarget::Kind::Osc;
 }
 
+/// What a rule's routing currently reaches, beside the field the names were typed into.
+///
+/// Three different things worth saying, and they are not interchangeable. A rule that names
+/// nothing goes everywhere and should say which "everywhere" is, or an operator who has just
+/// added a second output has no way to know the rule now hits it too. A name that matches
+/// nothing is the one real mistake here — and is *kept* rather than corrected, because a
+/// preset from another rig should still say what it meant (`Rule::Config::outputs`), so
+/// saying so is the only way it gets noticed.
+///
+/// **A switched-off output is not reached**, and is said: it sends nothing, and counting it
+/// said "reaches 2 outputs" over a rule that reached one (the 2026-09-25 audit's L12).
 std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::string>& ids,
                             const std::vector<output::OutputTarget>& targets) {
     // Only what this kind can reach — the same filter the tick list uses, because a line
@@ -255,13 +271,28 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
                    ? "no outputs yet"
                    : std::string("no ") + (trigger::isMidi(kind) ? "MIDI" : "OSC") + " output yet";
     }
+    std::string off;
+    const auto noteOff = [&off](const output::OutputTarget& target) {
+        off += off.empty() ? "" : ", ";
+        off += target.name;
+    };
+    const auto switchedOff = [&off] {
+        return off + (off.find(',') == std::string::npos ? " is" : " are") + " switched off";
+    };
     if (ids.empty()) {
-        std::string all = "every output: ";
-        for (std::size_t i = 0; i < reachable.size(); ++i) {
-            all += i == 0 ? "" : ", ";
-            all += reachable[i]->name;
+        std::string all;
+        for (const output::OutputTarget* target : reachable) {
+            if (!target->enabled) {
+                noteOff(*target);
+                continue;
+            }
+            all += all.empty() ? "" : ", ";
+            all += target->name;
         }
-        return all;
+        if (all.empty()) {
+            return "every output: " + switchedOff();
+        }
+        return "every output: " + all + (off.empty() ? "" : "; " + switchedOff());
     }
     // Two ways a routed output can reach nothing, and they are different mistakes. One that
     // has been deleted is gone and can only be un-ticked. One this rig *has* on the wrong kind
@@ -273,7 +304,9 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
     std::size_t reached = 0;
     for (const std::string& id : ids) {
         const output::OutputTarget* const target = output::findTarget(targets, id);
-        if (target != nullptr && targetTakes(kind, *target)) {
+        if (target != nullptr && targetTakes(kind, *target) && !target->enabled) {
+            noteOff(*target);
+        } else if (target != nullptr && targetTakes(kind, *target)) {
             ++reached;
         } else if (target != nullptr) {
             wrongKind += wrongKind.empty() ? "" : ", ";
@@ -292,6 +325,10 @@ std::string describeRouting(trigger::Message::Kind kind, const std::vector<std::
         trouble += wrongKind +
                    (wrongKind.find(',') == std::string::npos ? " is not " : " are not ") +
                    (trigger::isMidi(kind) ? "MIDI" : "OSC");
+    }
+    if (!off.empty()) {
+        trouble += trouble.empty() ? "" : "; ";
+        trouble += switchedOff();
     }
     if (trouble.empty()) {
         return "reaches " + std::to_string(reached) + (reached == 1 ? " output" : " outputs");
@@ -698,6 +735,12 @@ RulesController::RulesController(output::OutputRunner& runner,
         kinds->push_back(shared(std::string(trigger::labelOf(kind))));
     }
     window_->set_generator_kinds(kinds);
+    // A color's chip offers only what can make a color (`trigger::handsBackValues`).
+    auto colorKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const GeneratorKind kind : trigger::kColorGeneratorKinds) {
+        colorKinds->push_back(shared(std::string(trigger::labelOf(kind))));
+    }
+    window_->set_color_generator_kinds(colorKinds);
 
     auto sources = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::LiveSource source : trigger::kLiveSources) {
@@ -784,7 +827,13 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_added(finishing([this] { add(); }));
     window_->on_rule_removed(finishing([this] { remove(); }));
     window_->on_rule_duplicated(finishing([this] { duplicate(); }));
-    window_->on_rule_removed_at(finishing([this](int index) { removeAt(index); }));
+    // Through `DeleteGuard`, which drops the second click of a double-click on ×: the row
+    // below moves up under the pointer and would take it (the audit of 2026-09-25, L10).
+    window_->on_rule_removed_at(finishing([this](int index) {
+        if (ruleMarks_.press(index)) {
+            removeAt(index);
+        }
+    }));
     window_->on_rule_duplicated_at(finishing([this](int index) { duplicateAt(index); }));
     window_->on_rig_added(finishing([this](int index) { addRig(index); }));
     window_->on_rule_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
@@ -900,7 +949,11 @@ RulesController::RulesController(output::OutputRunner& runner,
     });
 
     window_->on_follow_up_added(finishing([this] { addFollowUp(); }));
-    window_->on_follow_up_removed(finishing([this](int index) { removeFollowUp(index); }));
+    window_->on_follow_up_removed(finishing([this](int index) {
+        if (followMarks_.press(index)) { // a double-click on × is one deletion (L10)
+            removeFollowUp(index);
+        }
+    }));
     window_->on_follow_kind_picked(
         finishing([this](int index, int choice) { pickFollowKind(index, choice); }));
     // A × on a row above moves the box that had the keyboard onto the next follow-up before its
@@ -1034,6 +1087,19 @@ const trigger::Rule::Config* RulesController::findRule(std::string_view id) cons
     return nullptr;
 }
 
+std::uint64_t RulesController::freshSeed(const std::vector<Rule::Config>& pending) const {
+    // 977 apart, as seeds always were: a rule's generators take the seeds just above its own
+    // (`matchSegmentsToAddress`), so neighbours need room between them.
+    constexpr std::uint64_t kStride = 977;
+    std::uint64_t seed = 1;
+    for (const auto* set : {&rules_, &pending}) {
+        for (const Rule::Config& rule : *set) {
+            seed = std::max(seed, rule.seed + kStride);
+        }
+    }
+    return seed;
+}
+
 trigger::Rule::Config* RulesController::current() noexcept {
     if (selected_ < 0 || static_cast<std::size_t>(selected_) >= rules_.size()) {
         return nullptr;
@@ -1052,6 +1118,22 @@ void RulesController::noteTyping(TypedIn where, int index, int field, std::strin
     }
     typing_ = Typing{rule->id, where, index, field, std::move(text)};
     echo_.reset();
+}
+
+void RulesController::rowRemoved(TypedIn where, int index) noexcept {
+    // What was being typed into a row follows the row: gone with the one removed, or up one
+    // with a row below it. Left at its old index, the next `commitTyping` wrote it into the row
+    // that took that place, or into nothing (the 2026-09-25 audit's L13). The window commits
+    // before a × runs; any other caller does not.
+    const Rule::Config* rule = current();
+    if (!typing_ || typing_->where != where || rule == nullptr || typing_->ruleId != rule->id) {
+        return;
+    }
+    if (typing_->index == index) {
+        typing_.reset();
+    } else if (typing_->index > index) {
+        --typing_->index;
+    }
 }
 
 void RulesController::typed(TypedIn where, int index, int field) noexcept {
@@ -1390,8 +1472,8 @@ void RulesController::add() {
         }
     }
     // Distinct seeds, so two rules in a preset do not fire the same clip as each other —
-    // `Generator::Config::seed`'s whole reason.
-    rule.seed = static_cast<std::uint64_t>(rules_.size()) * 977 + 1;
+    // `Generator::Config::seed`'s whole reason. See `freshSeed`.
+    rule.seed = freshSeed();
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = trigger::Value::ofInt(1);
     // **Switched on.** This was off, on the reasoning that a half-built rule must not fire
@@ -1468,8 +1550,9 @@ void RulesController::duplicate() {
             copy.name += " copy";
         }
         // A different stream, or the copy would fire exactly what the original fires — which
-        // is never what duplicating a rule is for.
-        copy.seed = source.seed + 977;
+        // is never what duplicating a rule is for. From `freshSeed`, past every copy made so
+        // far too; `source.seed + 977` was the next rule's seed as often as not (L9).
+        copy.seed = freshSeed(copies);
         copies.push_back(std::move(copy));
     }
     const int after = sources.back() + 1;
@@ -1527,11 +1610,13 @@ void RulesController::addRig(int index) {
             id = rule.id + "-" + std::to_string(copies + 1);
         }
         if (copies > 0) {
-            // A different stream too, or the copy fires exactly what the first does — and
-            // stepped by *which* copy this is rather than by a flat amount, or the third rig
-            // added would share the second's seed and the two would draw the same clips.
-            rule.seed += 977 * copies;
             rule.id = std::move(id);
+        }
+        // A different stream too, or a second copy of the rig fires exactly what the first
+        // does — or a rule of the operator's own that happened to have this seed does.
+        if (std::any_of(rules_.begin(), rules_.end(),
+                        [&rule](const Rule::Config& held) { return held.seed == rule.seed; })) {
+            rule.seed = freshSeed();
         }
         rules_.push_back(std::move(rule));
     }
@@ -2192,6 +2277,7 @@ void RulesController::removeFollowUp(int index) {
         return;
     }
     rule->followUps.erase(rule->followUps.begin() + index);
+    rowRemoved(TypedIn::FollowUp, index);
     commit();
     publishSelected();
 }
@@ -2267,7 +2353,11 @@ void RulesController::pickSlotKind(int slot, int kind) {
         static_cast<std::size_t>(kind) >= trigger::kGeneratorKinds.size()) {
         return;
     }
-    config->kind = trigger::kGeneratorKinds[static_cast<std::size_t>(kind)];
+    const GeneratorKind picked = trigger::kGeneratorKinds[static_cast<std::size_t>(kind)];
+    if (config == paletteConfig() && !trigger::handsBackValues(picked)) {
+        return; // not offered there (`color-generator-kinds`); nothing else may set it either
+    }
+    config->kind = picked;
 
     // **A color switched to shuffle gets a palette, not a range.**
     //
@@ -2306,7 +2396,13 @@ void RulesController::pickSlotKind(int slot, int kind) {
         }
         pickedPalette_.clear();
     }
-    choseSlot(slot);
+    // **A kind is not a number.** Picking "shuffle" on a MIDI number nobody had chosen marked it
+    // chosen and armed the rule over the generator's default range, so it fired CC 1 to 8 at
+    // 100 before a range was typed — C7 through another door (the 2026-09-25 audit's L11). The
+    // number is chosen when its numbers are entered; a live value's are its source's.
+    if (picked == GeneratorKind::Live) {
+        choseSlot(slot);
+    }
     commit();
     publishSelected();
 }
@@ -2328,7 +2424,8 @@ void RulesController::setSlotPool(int slot, bool list) {
             }
         }
     }
-    choseSlot(slot);
+    // Nor is the tick a number: a list seeded from the default range is not one anybody chose
+    // (L11). Entering it is.
     commit();
 }
 
@@ -2349,8 +2446,8 @@ void RulesController::setSlotRange(int slot, const std::string& text) {
         setStatus("A range is two numbers, like 1 - 12.", true);
         return;
     }
-    config->low = static_cast<std::int32_t>(*low);
-    config->high = static_cast<std::int32_t>(*high);
+    config->low = clampedInt(*low);
+    config->high = clampedInt(*high);
     choseSlot(slot);
     commit();
 }
@@ -2413,7 +2510,8 @@ void RulesController::setSlotWeights(int slot, const std::string& text) {
                 return;
             }
             choice.value = parseValue(trim(entry.substr(0, colon)));
-            choice.weight = *weight;
+            // Bounded, so a sum of them stays a number the draw can divide by (L5).
+            choice.weight = std::min(*weight, 1.0e9);
         } else {
             choice.value = parseValue(entry);
         }
@@ -2474,6 +2572,11 @@ void RulesController::setSlotFixed(int slot, const std::string& text) {
         return;
     }
     config->fixed = value;
+    // Typed, so a color's sliders follow what was typed, as the palette's do (`setPaletteHex`):
+    // held, they kept the saturation and brightness the picker was last left at, and a hex
+    // typed under them came back on the next drag as something else (the audit of 2026-09-25,
+    // L14).
+    pickedColors_.erase(slot);
     choseSlot(slot);
     commit();
 }
@@ -2645,6 +2748,7 @@ void RulesController::removePaletteColor(int index) {
         return;
     }
     config->values.erase(config->values.begin() + index);
+    rowRemoved(TypedIn::Palette, index);
     pickedPalette_.clear(); // every entry after this one has moved
     // **No picker is open now**, whichever swatch this was. REMOVE is inside the picker and
     // closes it first, and any other click would have closed an open one on its way in. The

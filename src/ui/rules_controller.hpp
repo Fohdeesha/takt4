@@ -3,6 +3,7 @@
 #include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/trigger/rule.hpp"
+#include "ui/delete_guard.hpp"
 
 #include "main_window.h" // generated; holds RulesWindow too — see src/ui/CMakeLists.txt
 
@@ -283,6 +284,12 @@ private:
     /// The rule with this id, or null. Rule ids have to be unique: §5.7 addresses one by
     /// id and `TriggerEngine::find` takes the first of a duplicate pair.
     const trigger::Rule::Config* findRule(std::string_view id) const noexcept;
+    /// A seed no rule of the set has, nor any of `pending` (rules about to be added): past the
+    /// largest in use, by the stride seeds have always been spaced by. `add` counted the rules
+    /// and `duplicate` stepped from its source, and both handed out a seed another rule already
+    /// had once one had been deleted or copied — two rules then drew the same "random" values
+    /// (the 2026-09-25 audit's L9).
+    std::uint64_t freshSeed(const std::vector<trigger::Rule::Config>& pending = {}) const;
     /// The selected rule, or null when there is none.
     trigger::Rule::Config* current() noexcept;
     const trigger::Rule::Config* current() const noexcept;
@@ -314,6 +321,8 @@ private:
     void noteTyping(TypedIn where, int index, int field, std::string text);
     /// That box committed on its own, so there is nothing left to carry over.
     void typed(TypedIn where, int index, int field) noexcept;
+    /// Row `index` of `where` was removed, so what was being typed into a row follows it.
+    void rowRemoved(TypedIn where, int index) noexcept;
     /// Whether this rule box has keystrokes nobody has committed yet, on the rule showing — so a
     /// republish from outside (`setTargets`, `setPatch`) does not write over them.
     bool typingInto(RuleBox box) const noexcept;
@@ -403,6 +412,9 @@ private:
     std::shared_ptr<slint::VectorModel<OutputChoice>> choiceModel_;
     std::shared_ptr<slint::VectorModel<OutputChoice>> fixtureModel_;
     std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
+    /// A rule row's ×, and a follow-up row's: a double-click on either is one deletion.
+    DeleteGuard ruleMarks_;
+    DeleteGuard followMarks_;
     /// The palette swatches. A model of its own rather than a field of `SlotRow`, because a
     /// rule has at most one color generator and a repeater nested inside a repeater's own
     /// struct is not a thing Slint models do.

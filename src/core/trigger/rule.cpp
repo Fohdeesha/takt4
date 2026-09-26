@@ -59,6 +59,23 @@ Generator::Config seeded(Generator::Config config, std::uint64_t seed, std::uint
     return config;
 }
 
+/// The longest effect a `dmx::Payload` is given: a day. Converting a double past a float's
+/// range is undefined behaviour, and a rule's numbers can be anything a settings file edited
+/// by hand holds (the 2026-09-25 audit's L5).
+constexpr double kMaxEffectSeconds = 86400.0;
+
+/// A duration as a payload holds it: not negative, at most `kMaxEffectSeconds`, 0 for NaN.
+float effectSeconds(double seconds) noexcept {
+    return std::isnan(seconds) ? 0.0f
+                               : static_cast<float>(std::clamp(seconds, 0.0, kMaxEffectSeconds));
+}
+
+/// A hue sweep's end as a payload holds it: the editor's ±3600 degrees, 0 for NaN, which
+/// `dmx::fromHsv` would otherwise be handed.
+float hueOf(double degrees) noexcept {
+    return std::isnan(degrees) ? 0.0f : static_cast<float>(std::clamp(degrees, -3600.0, 3600.0));
+}
+
 } // namespace
 
 std::string_view labelOf(Trigger trigger) noexcept {
@@ -693,11 +710,11 @@ dmx::Payload Rule::buildPayload(const Context& context) {
     payload.base = static_cast<std::uint8_t>(std::clamp(send.base, 0, kDmxMax));
     payload.cycles = static_cast<float>(std::clamp(send.cycles, 0.0, 1024.0));
     payload.duty = static_cast<float>(std::clamp(send.duty, 0.0, 1.0));
-    payload.hueFrom = static_cast<float>(send.hueFrom);
-    payload.hueTo = static_cast<float>(send.hueTo);
+    payload.hueFrom = hueOf(send.hueFrom);
+    payload.hueTo = hueOf(send.hueTo);
     payload.size = static_cast<float>(std::clamp(send.size, 0.0, 1.0));
-    payload.durationSeconds = static_cast<float>(
-        musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
+    payload.durationSeconds =
+        effectSeconds(musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
 
     // **Only the generators this effect actually uses are drawn**, and in the order
     // `lastSlots` documents — `slotLayout`, which §5.9's editor draws its chips from and a
@@ -784,7 +801,7 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
                 follow.payload.kind = next.effect;
                 follow.payload.curve = next.curve;
                 follow.payload.color = next.color;
-                follow.payload.durationSeconds = static_cast<float>(
+                follow.payload.durationSeconds = effectSeconds(
                     musicalSeconds(context, next.unit, next.durationSeconds, next.durationBeats));
                 follow.payload.level =
                     static_cast<std::uint8_t>(std::clamp(owed.value.asInt(), 0, kDmxMax));

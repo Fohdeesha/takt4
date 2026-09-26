@@ -52,6 +52,8 @@ std::string_view plainVerbOf(ControlAction action) noexcept {
         return "lock";
     case ControlAction::Panic:
         return "panic";
+    case ControlAction::PanicRelease:
+        return "panic/release";
     case ControlAction::Manual:
         return "manual";
     case ControlAction::RuleEnable:
@@ -149,6 +151,8 @@ std::string_view labelOf(ControlAction action) noexcept {
         return "rule back to its written rate";
     case ControlAction::Manual:
         return "fire the manual rules";
+    case ControlAction::PanicRelease:
+        return "release panic";
     }
     return {};
 }
@@ -185,7 +189,9 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     // used to act on both, so a tap button tapped twice 120 ms apart, a ÷2 halved twice, and a
     // DOWNBEAT snapped late on the release (the audit's H1). An explicit zero to a button is
     // its release, and it is accepted — the message was understood — and does nothing. The
-    // four actions that hold a state read zero as "off" below, as they always did.
+    // four actions that hold a state read zero as "off" below, as they always did. PANIC is the
+    // exception: every message to it engages, a 0 included (L15, Q1) — a 0 read as a release
+    // is what let a push button's own release undo the halt.
     if (!takesArgument(target.action) && target.action != ControlAction::Panic && argument &&
         *argument == 0.0) {
         return true;
@@ -213,7 +219,9 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         return true;
     case ControlAction::Lock:
         // Anything a surface spells "true" with: OSC booleans arrive as 1 and 0, a fader
-        // sends 1.0, and a MIDI note-on sends its velocity.
+        // sends 1.0, and a MIDI pad sends 1 while held and 0 on its release (`argumentOf`),
+        // so a pad pins while it is down — it used to send 1 and nothing, and pinned for good
+        // (the audit of 2026-09-25, L6).
         (void)engine_.post(Command::setLockPinned(*argument != 0.0));
         return true;
 
@@ -225,9 +233,16 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         if (rules_ == nullptr) {
             return false;
         }
-        // Bare means engage — see `takesArgument`. Anything sent is read the way `lock`
-        // reads its argument, so a CC bound to panic is a switch and a pad is a button.
-        rules_->panic(!argument || *argument != 0.0);
+        // Whatever it is sent — see `takesArgument`. It used to read a 0 as "let go", so a
+        // TouchOSC push button, which sends 1 and then 0, held the halt only while it was
+        // pressed (the 2026-09-25 audit's L15). Letting go is `PanicRelease`.
+        rules_->panic(true);
+        return true;
+    case ControlAction::PanicRelease:
+        if (rules_ == nullptr) {
+            return false;
+        }
+        rules_->panic(false);
         return true;
     case ControlAction::RuleEnable:
         if (rules_ == nullptr || target.rule.empty()) {
@@ -248,7 +263,7 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         }
         // Relative, so a button can be pressed twice and mean four times the interval. Bare —
         // these are buttons, not switches. A zero is a release and never reaches here (see the
-        // top of this function); a note-off never did, because `readMidiEvent` drops them.
+        // top of this function), and a MIDI note's release is a zero (`argumentOf`).
         rules_->setRuleRate(target.rule, target.action == ControlAction::RuleDouble ? 2.0 : 0.5,
                             true);
         return true;

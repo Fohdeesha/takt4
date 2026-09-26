@@ -55,6 +55,13 @@ void ArtNetPublisher::forgetHistory() noexcept {
 }
 
 void ArtNetPublisher::record(const DmxEngine& engine, double now) {
+    // A universe the patch no longer has is not kept: its history was only ever freed when no
+    // node lagged, so re-patching while one did grew it by half a megabyte a universe (the
+    // 2026-09-25 audit's L17).
+    const std::span<const PortAddress> patched = engine.universes();
+    std::erase_if(history_, [patched](const History& history) {
+        return std::find(patched.begin(), patched.end(), history.universe) == patched.end();
+    });
     for (const PortAddress universe : engine.universes()) {
         const std::span<const std::uint8_t> levels = engine.levels(universe);
         if (levels.size() != kChannelsPerUniverse) {
@@ -97,21 +104,32 @@ void ArtNetPublisher::record(const DmxEngine& engine, double now) {
 
 const ArtNetPublisher::Frame* ArtNetPublisher::frameAt(PortAddress universe,
                                                        double at) const noexcept {
+    ++lookups_;
     for (const History& history : history_) {
         if (history.universe != universe || history.count == 0) {
             continue;
         }
-        // Newest first, back towards the oldest the ring still holds.
+        // The frames are in the order they were recorded, so the newest at or before `at` is
+        // found by halving — `back` frames behind the newest, the times falling as it grows.
+        // It was a walk back from the newest: five hundred frames at a second's delay, for
+        // every node and universe, every round (the 2026-09-25 audit's L16).
         const std::size_t size = history.ring.size();
-        const Frame* oldest = nullptr;
-        for (std::size_t back = 0; back < history.count; ++back) {
-            const Frame& frame = history.ring[(history.newest + size - back) % size];
-            if (frame.at <= at) {
-                return &frame;
+        const auto behind = [&history, size](std::size_t back) -> const Frame& {
+            return history.ring[(history.newest + size - back) % size];
+        };
+        std::size_t low = 0;
+        std::size_t high = history.count; // the answer is in [low, high]; count means none
+        while (low < high) {
+            ++steps_;
+            const std::size_t mid = low + (high - low) / 2;
+            if (behind(mid).at <= at) {
+                high = mid;
+            } else {
+                low = mid + 1;
             }
-            oldest = &frame;
         }
-        return oldest;
+        // Before the history reaches that far back, the oldest it has.
+        return &behind(std::min(low, history.count - 1));
     }
     return nullptr;
 }
@@ -162,6 +180,16 @@ void ArtNetPublisher::clearTargets() noexcept {
     targets_.clear();
 }
 
+const ArtNetPublisher::Paced* ArtNetPublisher::findPaced(const Target& target,
+                                                         PortAddress universe) noexcept {
+    for (const Paced& paced : target.paced) {
+        if (paced.universe == universe) {
+            return &paced;
+        }
+    }
+    return nullptr;
+}
+
 ArtNetPublisher::Paced& ArtNetPublisher::pacedFor(Target& target, PortAddress universe) {
     for (Paced& paced : target.paced) {
         if (paced.universe == universe) {
@@ -196,6 +224,13 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             const bool released = u >= patched;
             const PortAddress universe =
                 released ? engine.released()[u - patched] : engine.universes()[u];
+            // Nothing is due within the 44 Hz period after the last frame sent, whatever has
+            // moved, so such a round does not look the past frame up at all — the other half
+            // of the audit of 2026-09-25's L16, beside the halving in `frameAt`.
+            if (const Paced* const known = findPaced(target, universe);
+                known != nullptr && known->everSent && now - known->lastSentAt < kMinFramePeriod) {
+                continue;
+            }
             std::span<const std::uint8_t> levels = engine.levels(universe);
             std::uint64_t revision = engine.revision(universe);
             // Not a released one: its history still holds the lit frames from before it was
@@ -249,6 +284,18 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
         }
     }
     return datagrams;
+}
+
+double ArtNetPublisher::secondsUntilPaced(double now) const noexcept {
+    double wait = 0.0;
+    for (const Target& target : targets_) {
+        for (const Paced& paced : target.paced) {
+            if (paced.everSent) {
+                wait = std::max(wait, paced.lastSentAt + kMinFramePeriod - now);
+            }
+        }
+    }
+    return std::clamp(wait, 0.0, kMinFramePeriod);
 }
 
 std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {

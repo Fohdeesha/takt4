@@ -201,12 +201,21 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         CHECK(rules.panics() == std::vector<bool>{true});
     }
 
-    SECTION("an argument is still read, so the same surface can let go of it") {
-        // §5.8 makes panic a latch, and §5.7 exists so the laptop need not be touched. A
-        // Stream Deck that could only engage would strand the operator at the machine.
+    SECTION("every panic engages, and panic/release lets go of it") {
+        // The audit of 2026-09-25, L15, and the operator's answer to its Q1. `panic 0` used to
+        // let go, so a TouchOSC push button — 1 on the press, 0 on the release — held the halt
+        // only while the finger was down. Every panic message engages now, and the same
+        // surface lets go with an address of its own: §5.8 makes panic a latch, and §5.7
+        // exists so the laptop need not be touched.
         CHECK(control.dispatch("/takt4/ctl/panic", 1.0));
         CHECK(control.dispatch("/takt4/ctl/panic", 0.0));
-        CHECK(rules.panics() == std::vector<bool>{true, false});
+        CHECK(rules.panics() == std::vector<bool>{true, true});
+        CHECK(control.dispatch("/takt4/ctl/panic/release", std::nullopt));
+        CHECK(rules.panics() == std::vector<bool>{true, true, false});
+        // A push button bound to release sends 1 and then 0, and the 0 is its release.
+        CHECK(control.dispatch("/takt4/ctl/panic/release", 1.0));
+        CHECK(control.dispatch("/takt4/ctl/panic/release", 0.0));
+        CHECK(rules.panics() == std::vector<bool>{true, true, false, false});
     }
 
     SECTION("a rule is named in the middle of its own address") {

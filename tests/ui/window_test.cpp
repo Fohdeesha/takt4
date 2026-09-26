@@ -1173,7 +1173,11 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
         // Driven through `dispatch` rather than a real datagram: the socket has its own
         // tests in tests/control, and nothing here needs one to exist.
         REQUIRE(panickedNow(controller));
+        // Not with `panic 0`, which engages like every panic message (the audit of 2026-09-25,
+        // L15 and Q1), but with `panic/release`.
         CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", 0.0));
+        CHECK(panickedNow(controller));
+        CHECK(controller.oscControl().dispatch("/takt4/ctl/panic/release", std::nullopt));
         CHECK_FALSE(panickedNow(controller));
 
         // And a bare `/ctl/panic` engages, because a panic button panics.

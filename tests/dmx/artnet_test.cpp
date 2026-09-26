@@ -373,6 +373,46 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
     }
 }
 
+TEST_CASE("a delayed node's frame is looked up only when one can go, and only patched universes "
+          "are kept",
+          "[dmx][artnet]") {
+    // The audit's L16: a delayed node's frame was looked up in the history — a walk back through
+    // five hundred frames at a second's delay — every round, for every node and universe,
+    // before the 44 Hz pacing said whether anything could be sent at all. And L17: the history
+    // of a universe the patch had dropped was kept for as long as any node lagged.
+    takt4::testing::ArtNetNodes nodes(1);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {1.0});
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+    // A second of lighting that changes every 10 ms, so the history holds a hundred frames and
+    // more, and then the node catches up with it.
+    for (int ms = 0; ms < 1000; ms += 10) {
+        paint(engine, static_cast<std::uint8_t>(ms / 10), ms / 1000.0);
+        nodes.run(round, ms, ms + 10);
+    }
+    nodes.run(round, 1000, 1100);
+    INFO(publisher.historyLookups() << " look-ups examined " << publisher.historySteps()
+                                    << " frames");
+    CHECK(publisher.historyLookups() > 0);
+    CHECK(publisher.historyLookups() < 1100); // not in the 44 Hz period after a frame went
+    // Halving: a dozen frames examined per look-up at most, where the walk back examined
+    // hundreds.
+    CHECK(publisher.historySteps() <= 12 * publisher.historyLookups());
+    // And what went is still the lighting a second late.
+    CHECK(nodes.first(0, 1) >= 1.0);
+    CHECK(nodes.first(0, 1) < 1.05);
+    CHECK(publisher.histories() == 1);
+
+    // The fixture moved to another universe, twice: one history, the one still patched.
+    engine.setPatch({rgbAt("par", 1, 1)});
+    nodes.run(round, 1100, 1200);
+    engine.setPatch({rgbAt("par", 2, 1)});
+    nodes.run(round, 1200, 1300);
+    CHECK(publisher.histories() == 1);
+}
+
 TEST_CASE("an Art-Net node set later is sent the lighting that much later", "[dmx][artnet]") {
     // The operator's call of 2026-09-25: every output has a delay, and a node's is honoured like
     // the rest. A universe is a stream of frames rather than a message to hold, so what is

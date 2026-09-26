@@ -3,12 +3,14 @@
 #include "core/rt/thread_priority.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <iterator>
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -438,9 +440,15 @@ void OutputRunner::stop() noexcept {
             // frame actually sent. Art-Net only goes out in `advance`, paced at 44 Hz, and there
             // is no round after this one: a node left holding the last frame before it would
             // hold the rig lit after takt4 had gone.
-            const double now = elapsed();
-            transports_.dmx().blackout(now);
-            (void)transports_.artnet().flush(transports_.dmx(), now);
+            //
+            // One frame period after the last one sent, at most 23 ms of waiting: sent straight
+            // after the round's own frame, a node that drops frames arriving faster than 44 Hz
+            // dropped this one and kept the look (the audit of 2026-09-25, L7).
+            transports_.dmx().blackout(elapsed());
+            if (const double wait = transports_.artnet().secondsUntilPaced(elapsed()); wait > 0.0) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+            }
+            (void)transports_.artnet().flush(transports_.dmx(), elapsed());
         } catch (const std::exception& e) {
             // Nothing useful to do while shutting down, and letting it out of a noexcept
             // function would call std::terminate.

@@ -11,6 +11,7 @@
 #include "core/settings/settings.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+#include "ui/delete_guard.hpp"
 #include "ui/fixtures_controller.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
@@ -516,6 +517,8 @@ private:
     /// device a row names that this machine has not, shown as not plugged in (the audit of
     /// 2026-09-25, L32). What a row's `device_index` indexes, less one.
     std::vector<std::string> deviceNames_;
+    /// An output row's ×: a double-click on it is one deletion (`DeleteGuard`).
+    DeleteGuard outputMarks_;
     std::vector<std::string> midiInputPorts_;
     slint::ComponentHandle<MainWindow> window_;
     slint::Timer timer_;

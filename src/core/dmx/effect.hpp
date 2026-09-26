@@ -182,6 +182,12 @@ struct Payload {
     std::uint8_t level = 255;
     /// The low end, for the kinds `takesBase` names.
     std::uint8_t base = 0;
+    /// The low end is wherever the channel is when the effect starts, and `base` is not read:
+    /// a flash that comes back to where it found the fixture. IDENTIFY's. A flash down to 0
+    /// left a lit fixture dark, and an LED par with no colour left, so the next dimmer flash
+    /// came up white (the 2026-09-25 audit's L1). Resolved by the engine, the one place that
+    /// knows the level.
+    bool baseIsCurrent = false;
     /// The color, for the kinds `takesColor` names. `HueSweep` takes its saturation and
     /// brightness from this color and replaces its hue.
     Color color = kWhite;

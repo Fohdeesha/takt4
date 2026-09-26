@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <string>
@@ -200,27 +201,34 @@ TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them o
     (void)engine->step();
     CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
 
-    // The release of that press, both ways a keyboard spells it, and what a controller sends that
-    // is no gesture at all: none of it acts, and none of it is counted as a control ignored.
+    // The release of that press, both ways a keyboard spells it: it reaches the binding, as a
+    // CC pad's release does (the audit's L6), and a button does nothing with it — the tempo is
+    // halved once, not again.
     receive({0x80, 40, 0});
     receive({0x90, 40, 0});
+    CHECK(control.handled() == 3);
+    (void)engine->step();
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
+
+    // And what a controller sends that is no gesture at all: none of it acts, and none of it
+    // is counted as a control ignored.
     receive({0xF8});         // a clock tick
     receive({0xFE});         // active sensing
     receive({0xF0, 1, 0xF7}); // system exclusive
     receive({0x90, 40});     // cut short
     receive({});
-    CHECK(control.handled() == 1);
+    CHECK(control.handled() == 3);
     CHECK(control.ignored() == 0);
 
     // A CC on channel 3, bound, doubles it back.
     receive({0xB2, 21, 127});
-    CHECK(control.handled() == 2);
+    CHECK(control.handled() == 4);
     (void)engine->step();
     CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
 
     // The same note on channel 3 is another button, and not one of ours.
     receive({0x92, 40, 100});
-    CHECK(control.handled() == 2);
+    CHECK(control.handled() == 4);
     CHECK(control.ignored() == 1);
     REQUIRE(control.lastEvent().has_value());
     CHECK(control.lastEvent()->channel == 3);
@@ -249,11 +257,12 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
     CHECK_FALSE(engine->state().pinned);
     CHECK_FALSE(engine->state().locked); // released, so the tracker has it back
 
-    SECTION("a note bound to it is a press, so it pins and stays pinned") {
-        // §5.7 spells lock `<0|1>` and a note has no 0 to send. That is not a gap: an
-        // operator who wants one button for each end binds two notes, and one who wants a
-        // toggle binds a CC. Inventing a toggle here would depend on a state the
-        // controller cannot see.
+    SECTION("a pad bound to it pins while it is held, and lets go when it is released") {
+        // The audit of 2026-09-25, L6. A note used to carry its press and no release, so a pad
+        // bound to the lock pinned it and nothing on the controller could let go — "bind two
+        // notes, one for each end" pinned it twice. Its release is the note at 0 now, as a CC
+        // pad's release is a CC at 0, and the lock follows the pad exactly as it follows the
+        // CC above. Still no toggle: that would depend on a state the controller cannot see.
         MidiBinding pad;
         pad.number = 50;
         pad.target = ControlAction::Lock;
@@ -261,9 +270,39 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
         CHECK(control.dispatch(note(50)));
         (void)engine->step();
         CHECK(engine->state().pinned);
-        CHECK(control.dispatch(note(50)));
+        CHECK(control.dispatch(note(50, 1, 0))); // the release
+        (void)engine->step();
+        CHECK_FALSE(engine->state().pinned);
+
+        // And from the wire, where a release is spelled either way hardware spells it.
+        const auto receive = [&control](std::vector<unsigned char> bytes) {
+            control.receive(std::span<const unsigned char>(bytes.data(), bytes.size()));
+        };
+        for (const unsigned char off : std::initializer_list<unsigned char>{0x80, 0x90}) {
+            receive({0x90, 50, 100});
+            (void)engine->step();
+            CHECK(engine->state().pinned);
+            receive({off, 50, 0});
+            (void)engine->step();
+            CHECK_FALSE(engine->state().pinned);
+        }
+    }
+
+    SECTION("learning a pad for it does not let go of a lock pinned from elsewhere") {
+        // The release of the press being learned reaches the bindings now (L6), and is swallowed
+        // as a CC pad's is (H1): otherwise learning a pad for the lock unpinned it on the way.
+        CHECK(control.dispatch(cc(64, 127)));
+        (void)engine->step();
+        REQUIRE(engine->state().pinned);
+        control.learn(ControlAction::Lock);
+        CHECK(control.dispatch(note(51)));
+        CHECK(control.dispatch(note(51, 1, 0)));
         (void)engine->step();
         CHECK(engine->state().pinned);
+        // And the pad is the lock's from then on.
+        CHECK(control.dispatch(note(51, 1, 0)));
+        (void)engine->step();
+        CHECK_FALSE(engine->state().pinned);
     }
 }
 
@@ -276,16 +315,18 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
     MidiControl control(*engine, offline(), &rules);
 
     SECTION("a pad bound to panic is a panic button, and stays one") {
-        // A note carries a press and no release (`argumentOf`), so it engages every time.
-        // For panic that is exactly right: a second press during a bad moment must not be
-        // the thing that lets the rig go again.
+        // Every press engages, and neither a second press nor lifting the finger lets go: a
+        // note's release reaches the binding since the audit's L6, and PANIC from MIDI skips
+        // it, as it skips a CC pad's (H1). Releasing is the window's RELEASE.
         MidiBinding pad;
         pad.number = 36;
         pad.target = ControlAction::Panic;
         REQUIRE(control.bind(pad));
 
         CHECK(control.dispatch(note(36)));
+        CHECK(control.dispatch(note(36, 1, 0)));
         CHECK(control.dispatch(note(36)));
+        CHECK(control.dispatch(note(36, 1, 0)));
         CHECK(rules.panics() == std::vector<bool>{true, true});
     }
 
@@ -293,8 +334,8 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
         // The audit's H1. A CC reads below 64 as "off", which made a momentary CC pad —
         // 127 on the press, 0 on the release, the commonest pad there is — hold-to-panic: the
         // halt let go the moment the finger came up. PANIC from a control surface engages and
-        // nothing else, as the window's has since H18; RELEASE is the window's, or OSC's
-        // explicit `panic 0`.
+        // nothing else, as the window's has since H18; RELEASE is the window's, or
+        // `panic/release`.
         MidiBinding knob;
         knob.kind = MidiEvent::Kind::ControlChange;
         knob.number = 64;
@@ -648,12 +689,16 @@ TEST_CASE("a push button that sends 1 then 0 taps once a press", "[control]") {
         CHECK(rules.enables() == expected);
     }
 
-    SECTION("and an explicit panic 0 still lets go, from a surface that means it") {
-        // OSC's `panic 0` is how a Stream Deck releases a PANIC; only a CC's release — a pad
-        // coming up — is kept from doing it. See `MidiControl::dispatch`.
+    SECTION("and panic/release lets go, where a panic 0 no longer does") {
+        // The audit of 2026-09-25, L15 (Q1): a 0 to panic was a release, so a push button's
+        // own release undid the halt. A panic engages whatever it carries; letting go is an
+        // action of its own.
         const takt4::control::ControlTarget panic(ControlAction::Panic);
+        const takt4::control::ControlTarget release(ControlAction::PanicRelease);
         CHECK(surface.apply(panic, 1.0, 30.0));
         CHECK(surface.apply(panic, 0.0, 30.5));
-        CHECK(rules.panics() == std::vector<bool>{true, false});
+        CHECK(rules.panics() == std::vector<bool>{true, true});
+        CHECK(surface.apply(release, std::nullopt, 31.0));
+        CHECK(rules.panics() == std::vector<bool>{true, true, false});
     }
 }

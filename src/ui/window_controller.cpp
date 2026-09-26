@@ -567,7 +567,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         exportTo(askSaveFile("Export takt4 settings", "takt4-settings.json"));
     });
     window_->on_import_settings([this] { importFrom(askOpenFile("Import takt4 settings", "")); });
-    window_->on_output_removed([this](int index) { removeTarget(index); });
+    // A double-click on × is one deletion: the row below moves up under the pointer and
+    // would take the second click (`DeleteGuard`, the audit of 2026-09-25, L10).
+    window_->on_output_removed([this](int index) {
+        if (outputMarks_.press(index)) {
+            removeTarget(index);
+        }
+    });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
     window_->on_output_delay_typed([this](int index, const slint::SharedString& text) {

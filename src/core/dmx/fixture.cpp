@@ -121,12 +121,12 @@ std::optional<Role> roleOf(std::string_view name) noexcept {
     return std::nullopt;
 }
 
-std::uint16_t channelOf(const Fixture& fixture, Role role) noexcept {
+std::uint16_t channelOf(const Fixture& fixture, Role role, std::size_t nth) noexcept {
     if (role == Role::Unused) {
         return 0;
     }
     for (std::size_t i = 0; i < fixture.channels.size(); ++i) {
-        if (fixture.channels[i] == role) {
+        if (fixture.channels[i] == role && nth-- == 0) {
             const std::size_t channel = std::size_t{fixture.address} + i;
             // A fixture patched so that one of its channels falls off the end of the universe
             // has that channel and no way to send it. Reported by `problemWith`; answered

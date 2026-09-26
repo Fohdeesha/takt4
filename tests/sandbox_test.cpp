@@ -230,3 +230,35 @@ TEST_CASE("the sandbox looks up no name but localhost", "[sandbox][net]") {
     takt4::net::AsyncAddress literal("127.0.0.1", 9000);
     CHECK(literal.address().has_value());
 }
+
+TEST_CASE("a name is looked up again while its address goes on being used, and a number never is",
+          "[net]") {
+    // The audit of 2026-09-25, L20: a name was looked up once, so a media server that came back
+    // from a restart on a new DHCP address was sent to the old one until the output was edited.
+    // Here the refresh is a twentieth of a second rather than half a minute; localhost is the
+    // one name the sandbox lets through.
+    takt4::net::AsyncAddress local("localhost", 9000, 0.05);
+    const auto by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!local.address() && std::chrono::steady_clock::now() < by) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(local.address().has_value());
+    REQUIRE(local.lookUps() == 1);
+
+    // Asked again, and again, in the background — with the address it has answered every time
+    // meanwhile, so nothing goes unsent while the name is being asked.
+    bool gap = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (local.lookUps() < 3 && std::chrono::steady_clock::now() < until) {
+        gap = gap || !local.address().has_value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(local.lookUps() >= 3);
+    CHECK_FALSE(gap);
+
+    takt4::net::AsyncAddress literal("127.0.0.1", 9000, 0.0);
+    for (int i = 0; i < 5; ++i) {
+        CHECK(literal.address().has_value());
+    }
+    CHECK(literal.lookUps() == 0);
+}

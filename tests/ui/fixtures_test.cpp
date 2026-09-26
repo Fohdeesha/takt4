@@ -434,6 +434,82 @@ TEST_CASE("TEST and IDENTIFY say PANIC is engaged instead of lighting anything",
     CHECK(std::string(patch.window().get_status()).find("PANIC") != std::string::npos);
 }
 
+TEST_CASE("IDENTIFY puts a lit fixture back as it found it", "[ui][dmx]") {
+    // The audit's L1: IDENTIFY flashed every emitter from full down to 0, which is where it
+    // found a dark fixture only. A lit one went out; an RGB par, whose colour is kept apart from
+    // its brightness, lost its colour, so the next dimmer flash came up white.
+    using takt4::dmx::EffectKind;
+    using takt4::dmx::Payload;
+    Rig rig;
+    FixturesController patch(rig.runner, {});
+    patch.add();
+    patch.setUniverse("5");
+    patch.setAddress(70); // red, green, blue on DMX 70-72
+    takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
+    const auto at = [&engine](int channel) { return int{engine.levels(5)[channel - 1]}; };
+    const auto settle = [&](double seconds) {
+        const double start = rig.runner.elapsed();
+        engine.tick(start + seconds);
+        return start;
+    };
+
+    SECTION("an RGB par lit red") {
+        patch.pickMode(modeIndexOf("RGB (3ch)"));
+        Payload red;
+        red.kind = EffectKind::Color;
+        red.color = {255, 0, 0};
+        rig.runner.post(takt4::output::OutputCommand::effect(1, red));
+        settle(0.0);
+        REQUIRE(at(70) == 255);
+        REQUIRE(at(71) == 0);
+
+        patch.identify();
+        const double start = settle(0.05);
+        CHECK(at(71) > 200); // it does flash: green and blue come up
+        CHECK(at(72) > 200);
+        engine.tick(start + FixturesController::kIdentifySeconds + 1.0);
+        CHECK(at(70) == 255); // and it is red again, not dark
+        CHECK(at(71) == 0);
+        CHECK(at(72) == 0);
+
+        // Its colour survived too: a flash on the dimmer it has not got is a red flash.
+        Payload flash;
+        flash.kind = EffectKind::Flash;
+        flash.role = takt4::dmx::Role::Dimmer;
+        flash.durationSeconds = 1.0f;
+        rig.runner.post(takt4::output::OutputCommand::effect(1, flash));
+        settle(0.0);
+        CHECK(at(70) == 255);
+        CHECK(at(71) == 0);
+        CHECK(at(72) == 0);
+    }
+
+    SECTION("a fixture with a dimmer, at half") {
+        patch.pickMode(modeIndexOf("dimmer + RGB (4ch)")); // dimmer on 70, colour on 71-73
+        Payload half;
+        half.kind = EffectKind::Level;
+        half.role = takt4::dmx::Role::Dimmer;
+        half.level = 128;
+        rig.runner.post(takt4::output::OutputCommand::effect(1, half));
+        Payload blue;
+        blue.kind = EffectKind::Color;
+        blue.color = {0, 0, 255};
+        rig.runner.post(takt4::output::OutputCommand::effect(1, blue));
+        settle(0.0);
+        REQUIRE(at(70) == 128);
+        REQUIRE(at(73) == 255);
+
+        patch.identify();
+        const double start = settle(0.05);
+        CHECK(at(70) > 200);
+        engine.tick(start + FixturesController::kIdentifySeconds + 1.0);
+        CHECK(at(70) == 128);
+        CHECK(at(71) == 0);
+        CHECK(at(72) == 0);
+        CHECK(at(73) == 255);
+    }
+}
+
 namespace {
 
 void clickAt(slint::Window& window, float x, float y) {

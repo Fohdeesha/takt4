@@ -2,6 +2,7 @@
 
 #include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
+#include "ui/delete_guard.hpp"
 
 #include "main_window.h" // generated; holds FixturesWindow too — see src/ui/CMakeLists.txt
 
@@ -96,8 +97,9 @@ public:
     void setChannelParked(int index, int level);
     void setPanRange(float low, float high);
     void setTiltRange(float low, float high);
-    /// Drives every channel of the selected fixture to full for `kIdentifySeconds`, so an
-    /// operator in the truss can see which lamp they are patching.
+    /// Flashes every light-emitting channel of the selected fixture to full and back to where
+    /// it was over `kIdentifySeconds`, so an operator in the truss can see which lamp they are
+    /// patching and the lamp is left as it was.
     void identify();
 
     /// Holds one channel of the selected fixture at `testLevel()` for `kTestSeconds`, then
@@ -165,6 +167,9 @@ private:
 
     slint::ComponentHandle<FixturesWindow> window_;
     std::shared_ptr<slint::VectorModel<FixtureRow>> listModel_;
+    /// A fixture row's ×, and a channel row's: a double-click on either is one deletion.
+    DeleteGuard fixtureMarks_;
+    DeleteGuard channelMarks_;
     std::shared_ptr<slint::VectorModel<ChannelRow>> channelModel_;
     bool visible_ = false;
     /// Which fixture the channel rows currently on screen were built for, and how many. When

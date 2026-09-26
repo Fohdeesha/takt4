@@ -177,6 +177,45 @@ TEST_CASE("a fade's duration is measured in the tempo that was playing", "[dmx][
     }
 }
 
+TEST_CASE("a rule's numbers past what an effect holds are clamped, not converted blind",
+          "[dmx][trigger]") {
+    // The audit's L5. The editor refuses nan and inf now, but a settings file edited by hand can
+    // hold anything, and converting a double past a float's range is undefined behaviour: a
+    // fade of 1e300 beats became an infinite one that never moved, and a hue of nan went into
+    // `fromHsv`.
+    Transports::Config config;
+    config.patch = {rgb("par", 1)};
+    Transports transports(config);
+    RuleSink sink(transports);
+    TriggerEngine engine(sink);
+    sink.setNow(0.0);
+
+    SECTION("a duration past a day is a day") {
+        Rule::Config rule = fadeRule("slow", {"par"}, 255, 1e300);
+        rule.dmx.role = Role::Red;
+        engine.setRules({rule});
+        engine.rule(0).setFixtureMask(0b1);
+        engine.onBeat(beatAt(1, 1, 1, 0.0, 120.0));
+        transports.dmx().tick(43200.0);
+        CHECK(at(transports, 1) == 128); // half way through a day
+    }
+
+    SECTION("a hue that is not a number is 0, which is red") {
+        Rule::Config rule = fadeRule("sweep", {"par"}, 255, 0.0);
+        rule.dmx.effect = EffectKind::HueSweep;
+        rule.dmx.color = fixedText("#ff0000");
+        rule.dmx.hueFrom = std::numeric_limits<double>::quiet_NaN();
+        rule.dmx.hueTo = std::numeric_limits<double>::quiet_NaN();
+        engine.setRules({rule});
+        engine.rule(0).setFixtureMask(0b1);
+        engine.onBeat(beatAt(1, 1, 1, 0.0, 120.0));
+        transports.dmx().tick(0.0);
+        CHECK(at(transports, 1) == 255);
+        CHECK(at(transports, 2) == 0);
+        CHECK(at(transports, 3) == 0);
+    }
+}
+
 // ASCII in the name, like every other test in the suite: ctest passes a name back to the
 // binary as a filter through the command line, and a character the console codepage cannot
 // carry comes back mangled — so the test "fails" by matching nothing at all. It passes when

@@ -9,6 +9,7 @@ namespace {
 
 constexpr unsigned char kStatusMask = 0xF0;
 constexpr unsigned char kChannelMask = 0x0F;
+constexpr unsigned char kNoteOff = 0x80;
 constexpr unsigned char kNoteOn = 0x90;
 constexpr unsigned char kControlChange = 0xB0;
 
@@ -48,12 +49,15 @@ std::optional<MidiEvent> readMidiEvent(std::span<const unsigned char> message) n
     event.number = static_cast<std::uint8_t>(message[1] & 0x7F);
     event.value = static_cast<std::uint8_t>(message[2] & 0x7F);
 
-    if (status == kNoteOn) {
-        // Velocity 0 is the note-off most hardware sends rather than 0x80. Binding the
-        // release instead of the press would put a tap on the wrong edge, and for a tap
-        // tempo the edge is the entire measurement.
-        if (event.value == 0) {
-            return std::nullopt;
+    if (status == kNoteOn || status == kNoteOff) {
+        // A release is a note at 0, however it is spelled — a note-off, or the note-on at
+        // velocity 0 most hardware sends instead — just as a CC pad's release is a CC at 0.
+        // A button ignores it, so a tap stays on the press, which for a tap tempo is the
+        // whole measurement; a state held by a pad follows it, so a pad bound to the lock
+        // pins while held and lets go when released. Dropping releases left such a pad able
+        // to pin and never to release (the 2026-09-25 audit's L6).
+        if (status == kNoteOff) {
+            event.value = 0; // a note-off's velocity is how fast the key came up, not a press
         }
         event.kind = MidiEvent::Kind::Note;
         return event;
@@ -121,7 +125,7 @@ std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept try 
 
 double argumentOf(const MidiEvent& event) noexcept {
     if (event.kind == MidiEvent::Kind::Note) {
-        return 1.0; // a press
+        return event.value > 0 ? 1.0 : 0.0; // a press, or its release
     }
     // The convention every hardware switch already uses, so a sustain pedal or a toggle
     // button works with no configuration at all.

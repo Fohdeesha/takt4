@@ -26,9 +26,9 @@ public:
     RuleControl(const RuleControl&) = delete;
     RuleControl& operator=(const RuleControl&) = delete;
 
-    /// §5.7's `/ctl/panic`, and letting go of it. §5.8 calls panic *"a global halt that
-    /// stops every rule instantly ... non-negotiable for live use"*, and it is a latch:
-    /// `false` is what releases it.
+    /// §5.7's `/ctl/panic` (`true`), and letting go of it — `/ctl/panic/release`, or the
+    /// window's RELEASE (`false`). §5.8 calls panic *"a global halt that stops every rule
+    /// instantly ... non-negotiable for live use"*, and it is a latch.
     virtual void panic(bool engaged) = 0;
 
     /// §5.7's `/ctl/rule/<id>/enable <0|1>`.

@@ -9,6 +9,7 @@
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
+#include "ui/delete_guard.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
@@ -25,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -366,6 +368,21 @@ TEST_CASE("a rule is routed by naming outputs", "[ui][trigger]") {
         CHECK(editor.rules()[0].outputs == std::vector<std::string>{"o-0000000d", "o-0000000e"});
         CHECK(std::string(editor.window().get_outputs_available()) == "reaches 2 outputs");
         CHECK(rig.runner.triggers().rule(0).outputMask() == 0b11);
+    }
+
+    SECTION("a switched-off output is not counted as reached, and is said") {
+        // The audit's L12: "reaches 2 outputs" over a rule one of whose two outputs was off.
+        targets[1].enabled = false;
+        editor.setTargets(targets);
+        CHECK(std::string(editor.window().get_outputs_available()) ==
+              "reaches 1 output; wall is switched off");
+        editor.setOutputs("");
+        CHECK(std::string(editor.window().get_outputs_available()) ==
+              "every output: deck; wall is switched off");
+        targets[0].enabled = false;
+        editor.setTargets(targets);
+        CHECK(std::string(editor.window().get_outputs_available()) ==
+              "every output: deck, wall are switched off");
     }
 
     SECTION("a name this rig does not have is kept, and said") {
@@ -3225,6 +3242,369 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     CHECK(kind() == picked);
 }
 
+TEST_CASE("every rule has a seed of its own, whatever was added, copied or deleted",
+          "[ui][trigger]") {
+    // The audit's L9: `add` counted the rules for a seed and `duplicate` stepped from its
+    // source's, so after a delete a new rule took a surviving rule's seed, and a copy of the
+    // first rule took the second's — and two rules with one seed draw the same "random" clips.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto distinct = [&editor] {
+        std::set<std::uint64_t> seeds;
+        for (const Rule::Config& rule : editor.rules()) {
+            seeds.insert(rule.seed);
+        }
+        return seeds.size() == editor.rules().size();
+    };
+    editor.add();
+    editor.add();
+    editor.add();
+    REQUIRE(distinct());
+
+    editor.pick(0);
+    editor.remove(); // two left, and a count of two was the first survivor's seed
+    editor.add();
+    CHECK(distinct());
+
+    editor.pick(0);
+    editor.duplicate(); // the source's seed + 977 was the next rule's
+    CHECK(distinct());
+
+    editor.pickWith(0, false, false);
+    editor.pickWith(2, false, true); // three chosen, three copies at once
+    editor.duplicate();
+    CHECK(distinct());
+
+    editor.addRig(1);
+    editor.addRig(1); // the same rig twice
+    CHECK(distinct());
+    CHECK(editor.rules().size() > 8);
+}
+
+TEST_CASE("a color typed as hex puts the picker's sliders on that color", "[ui][trigger][dmx]") {
+    // The audit's L14: the sliders are held as they were last dragged (black has no hue to read
+    // back), and typing a hex kept them — so the picker opened on the old saturation and
+    // brightness over the new color, and the next drag turned it into something else.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.pickSend(static_cast<int>(
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::Dmx) -
+        takt4::trigger::kMessageKinds.begin()));
+    editor.pickEffect(static_cast<int>(
+        std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
+                  takt4::dmx::EffectKind::Color) -
+        takt4::dmx::kEffectKinds.begin()));
+    const auto chip = [&editor] { return *editor.window().get_slots()->row_data(0); };
+    REQUIRE(chip().is_color);
+
+    editor.setSlotColor(0, 120.0f, 50.0f, 40.0f);
+    REQUIRE(chip().sat == 50.0f);
+    REQUIRE(chip().val == 40.0f);
+
+    editor.setSlotFixed(0, "#ff0000");
+    CHECK(chip().hue == 0.0f);
+    CHECK(chip().sat == 100.0f);
+    CHECK(chip().val == 100.0f);
+}
+
+TEST_CASE("what is typed into a follow-up stays with it when a row above it goes",
+          "[ui][trigger]") {
+    // The audit's L13: the record of a box being typed into held its row by index, and removing
+    // an earlier follow-up left it pointing one row down — so the next commit wrote the text
+    // into the follow-up that had taken that place. The window's × commits first; this is every
+    // other way a row goes.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/fire");
+    for (int i = 0; i < 3; ++i) {
+        editor.addFollowUp();
+    }
+    const auto follows = [&editor]() -> const std::vector<takt4::trigger::FollowUp>& {
+        return editor.rules().front().followUps;
+    };
+    REQUIRE(follows().size() == 3);
+    const auto unit = follows()[2].unit;
+    const auto delay = [&follows, unit](std::size_t i) {
+        return unit == takt4::trigger::DelayUnit::Milliseconds ? follows()[i].delaySeconds * 1000.0
+                                                              : follows()[i].delayBeats;
+    };
+    editor.setFollowDelay(0, "1");
+    editor.setFollowDelay(1, "2");
+    editor.setFollowDelay(2, "3");
+
+    editor.window().invoke_follow_typed(2, 1, "9"); // typed into the third one's delay
+    editor.removeFollowUp(0);
+    editor.window().invoke_rule_picked(0); // an action, which commits what is typed first
+    REQUIRE(follows().size() == 2);
+    CHECK(delay(0) == 2.0); // the second one, untouched
+    CHECK(delay(1) == 9.0); // the third one, which was typed into
+
+    SECTION("and goes with its row when that row is the one removed") {
+        editor.window().invoke_follow_typed(1, 1, "7");
+        editor.removeFollowUp(1);
+        editor.window().invoke_rule_picked(0);
+        REQUIRE(follows().size() == 1);
+        CHECK(delay(0) == 2.0);
+    }
+}
+
+TEST_CASE("a kind picked for a MIDI number nobody chose does not arm the rule", "[ui][trigger]") {
+    // The audit's L11: picking "shuffle" on the number a new MIDI rule is asking for marked it
+    // chosen, and the rule fired over the generator's default range — CC 1 to 8 at 100 — before
+    // any range was typed: the audit's C7 through another door. Ticking "list" did the same.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/x");
+    editor.pickSend(static_cast<int>(
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::MidiCc) -
+        takt4::trigger::kMessageKinds.begin()));
+    const auto rule = [&editor]() -> const Rule::Config& { return editor.rules().front(); };
+    const std::vector<takt4::trigger::Slot> layout = takt4::trigger::slotLayout(rule());
+    const auto found = std::find_if(layout.begin(), layout.end(), [](const auto& slot) {
+        return slot.role == takt4::trigger::SlotRole::Number;
+    });
+    REQUIRE(found != layout.end());
+    const int number = static_cast<int>(found - layout.begin());
+    REQUIRE_FALSE(rule().numberChosen);
+    const auto asking = [&editor, number] {
+        return editor.window().get_slots()->row_data(static_cast<std::size_t>(number))->wanting;
+    };
+
+    editor.pickSlotKind(number, static_cast<int>(GeneratorKind::Shuffle));
+    CHECK_FALSE(rule().numberChosen);
+    CHECK(Rule(rule()).problem() == "choose a controller number");
+    CHECK(asking());
+    editor.setSlotPool(number, true);
+    CHECK_FALSE(rule().numberChosen);
+    CHECK(asking());
+    editor.setSlotPool(number, false);
+
+    // Entering the numbers is what chooses them.
+    editor.setSlotRange(number, "20 - 30");
+    CHECK(rule().numberChosen);
+    CHECK(Rule(rule()).problem().empty());
+    CHECK_FALSE(asking());
+}
+
+TEST_CASE("a double-click on a rule's x deletes one rule, not two", "[ui][trigger]") {
+    // The audit's L10: the row below moves up under the pointer when a row is deleted, so the
+    // second click of a double-click on × deleted it too — two rules for one gesture, and no
+    // undo. A second press on the same row's mark within the double-click time is ignored.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto five = [&editor] {
+        editor.setRules({});
+        for (int i = 0; i < 5; ++i) {
+            editor.add();
+        }
+        editor.pick(4);
+        editor.tick();
+        Shown::settle();
+    };
+    five();
+    const Shown shown(editor);
+    editor.tick();
+    auto& window = shown.window.window();
+    const auto hover = [&window](float x, float y) {
+        window.dispatch_pointer_move_event(slint::LogicalPosition({x, y}));
+        Shown::settle();
+    };
+    const auto press = [&window](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+    };
+    const auto count = [&editor] { return editor.rules().size(); };
+
+    // The first row's ×, found by what a press on it does with the pointer resting there.
+    const Spot mark = sweep(
+        8.0f, 440.0f, 8.0f, 24.0f, 220.0f, 6.0f,
+        [&](float x, float y) {
+            hover(x, y);
+            press(x, y);
+            Shown::settle();
+            editor.tick();
+            return count() == 4;
+        },
+        [&] {
+            if (count() != 5) {
+                five();
+            }
+        });
+    INFO("the mark at " << mark.x << ", " << mark.y);
+    REQUIRE(mark.found());
+    REQUIRE(count() == 5);
+
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds{50});
+    hover(mark.x, mark.y);
+    press(mark.x, mark.y);
+    Shown::settle();
+    editor.tick();
+    press(mark.x, mark.y); // the second click of a double-click, on the row that moved up
+    Shown::settle();
+    editor.tick();
+    CHECK(count() == 4);
+
+    // A deliberate press after the double-click time deletes the next one.
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds{50});
+    press(mark.x, mark.y);
+    Shown::settle();
+    editor.tick();
+    CHECK(count() == 3);
+}
+
+TEST_CASE("the rule editor refuses nan and inf, and clamps a number too big to hold",
+          "[ui][trigger][dmx]") {
+    // The audit's L5: `from_chars` reads "nan" and "inf" as numbers, so a duration of inf made
+    // an effect that never ended, a hue of nan went into `fromHsv`, and a BPM range of nan never
+    // fired; and a finite number past an int's or a float's range was converted blind, which is
+    // undefined behaviour.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    const auto rule = [&editor]() -> const Rule::Config& { return editor.rules().front(); };
+    editor.pickSend(static_cast<int>(
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::Dmx) -
+        takt4::trigger::kMessageKinds.begin()));
+    editor.setDuration("2");
+    REQUIRE(rule().dmx.durationBeats == 2.0);
+    editor.setBpmRange("120 - 140");
+    REQUIRE(rule().conditions.minBpm == 120.0);
+    for (const std::string bad : {"inf", "nan", "-inf", "infinity", "1e999"}) {
+        INFO(bad);
+        editor.setDuration(bad);
+        CHECK(rule().dmx.durationBeats == 2.0);
+        CHECK(editor.window().get_status_is_error());
+        editor.setBpmRange(bad + " - 140");
+        CHECK(rule().conditions.minBpm == 120.0);
+        CHECK(rule().conditions.maxBpm == 140.0);
+    }
+    editor.pickEffect(static_cast<int>(
+        std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
+                  takt4::dmx::EffectKind::HueSweep) -
+        takt4::dmx::kEffectKinds.begin()));
+    editor.setHueRange("0 - 360");
+    editor.setHueRange("nan - 360");
+    CHECK(rule().dmx.hueFrom == 0.0);
+
+    SECTION("a number past what holds it is clamped to what it can hold") {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/x/{n}");
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+        editor.setSlotRange(0, "1e12 - 5");
+        const auto& shuffled = rule().segments.front();
+        CHECK(std::max(shuffled.low, shuffled.high) == 2147483647);
+        editor.setSlotValues(0, "1e300");
+        REQUIRE(!rule().segments.front().values.empty());
+        CHECK(rule().segments.front().values.front().asFloat() ==
+              std::numeric_limits<float>::max());
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Weighted));
+        editor.setSlotWeights(0, "7:1e300, 8:1");
+        REQUIRE(rule().segments.front().choices.size() == 2);
+        CHECK(rule().segments.front().choices.front().weight == 1.0e9);
+    }
+}
+
+TEST_CASE("a color's generator offers only the kinds that can make a color", "[ui][trigger][dmx]") {
+    // The audit's L4: the color chip offered all seven kinds, and "ramp" and "live value"
+    // compute numbers — which the color reader takes as hex ("100" is #110000) or refuses, so
+    // the lamp went white. Its list is now the five that hand back a value they were given.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+    window.window().dispatch_window_active_changed_event(true);
+    const auto settle = [] { slint::platform::update_timers_and_animations(); };
+    const auto click = [&window, &settle](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+        settle();
+    };
+    const auto key = [&window, &settle](const slint::SharedString& text) {
+        window.window().dispatch_key_press_event(text);
+        window.window().dispatch_key_release_event(text);
+        settle();
+    };
+    const slint::SharedString up(u8"");   // Key.UpArrow
+    const slint::SharedString down(u8""); // Key.DownArrow
+    const slint::SharedString enter("\n");      // Key.Return
+    // A lighting rule sending one color: its one chip is the color, on "fixed".
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickSend(static_cast<int>(
+            std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                      takt4::trigger::Message::Kind::Dmx) -
+            takt4::trigger::kMessageKinds.begin()));
+        editor.pickEffect(static_cast<int>(
+            std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
+                      takt4::dmx::EffectKind::Color) -
+            takt4::dmx::kEffectKinds.begin()));
+        editor.tick();
+        settle();
+    };
+    const auto kind = [&editor] { return editor.rules().front().dmx.color.kind; };
+    build();
+    REQUIRE(kind() == GeneratorKind::Fixed);
+    REQUIRE(window.get_slots()->row_data(0)->is_color);
+
+    // The dropdown, found by what one step of it does: from "fixed", one Up is "weighted".
+    float comboX = -1.0f;
+    float comboY = -1.0f;
+    for (float y = 400.0f; y < 720.0f && comboX < 0.0f; y += 8.0f) {
+        for (float x = 300.0f; x < 620.0f && comboX < 0.0f; x += 16.0f) {
+            click(x, y);
+            key(up);
+            key(enter);
+            if (kind() == GeneratorKind::Weighted) {
+                comboX = x;
+                comboY = y;
+            }
+            build();
+        }
+    }
+    {
+        INFO("no click reached the color chip's dropdown");
+        REQUIRE(comboX >= 0.0f);
+    }
+
+    // Past the end of its list and back one. "Fixed" is the last of the five, so that is
+    // "weighted" again; on the list of seven it would be "live value", which the rule refuses,
+    // and the color would stay "fixed" under a dropdown saying otherwise.
+    click(comboX, comboY);
+    for (int step = 0; step < 8; ++step) {
+        key(down);
+    }
+    key(up);
+    key(enter);
+    INFO("dropdown at " << comboX << ", " << comboY);
+    CHECK(kind() == GeneratorKind::Weighted);
+
+    SECTION("and the rule refuses them from anywhere else") {
+        build();
+        for (const GeneratorKind computed : {GeneratorKind::Live, GeneratorKind::Ramp}) {
+            editor.pickSlotKind(0, static_cast<int>(computed));
+            CHECK(kind() == GeneratorKind::Fixed);
+        }
+        // A number still takes them: a mix's red can ramp.
+        editor.pickColorMode(1);
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Ramp));
+        CHECK(editor.rules().front().dmx.red.kind == GeneratorKind::Ramp);
+    }
+}
+
 namespace {
 
 /// TEST, found by what it does: the first click near the top right after which the rule has
@@ -3585,6 +3965,9 @@ TEST_CASE("a follow-up's value typed and then the row above removed stays with i
     INFO("first row's x at " << cross.x << ", " << cross.y);
     REQUIRE(cross.found());
 
+    // Past the double-click time of the probe's own press on that ×, which the next press
+    // would otherwise be taken as the second click of (`DeleteGuard`, the audit's L10).
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds{50});
     shown.click(box.x, box.y);
     shown.clearBox();
     shown.type("77"); // no Enter

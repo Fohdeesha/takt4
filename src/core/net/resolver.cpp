@@ -90,10 +90,15 @@ struct AsyncAddress::State {
     bool looking = false;
     int error = 0;
     Clock::time_point failedAt{};
+    /// When the name was last asked about, whatever the answer: a refresh is due
+    /// `refreshSeconds_` after it.
+    Clock::time_point askedAt{};
+    std::uint64_t lookUps = 0;
 };
 
-AsyncAddress::AsyncAddress(std::string host, std::uint16_t port)
-    : host_(std::move(host)), port_(port), state_(std::make_shared<State>()) {
+AsyncAddress::AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds)
+    : host_(std::move(host)), port_(port), refreshSeconds_(refreshSeconds),
+      state_(std::make_shared<State>()) {
     std::optional<Address> numeric;
     if (resolve(host_, port_, /*numericOnly=*/true, numeric) == 0) {
         state_->address = numeric;
@@ -109,6 +114,7 @@ void AsyncAddress::lookUp() {
         const std::lock_guard<std::mutex> lock(state_->mutex);
         state_->looking = true;
         state_->error = 0;
+        ++state_->lookUps;
     }
     try {
         std::thread([state = state_, host = host_, port = port_] {
@@ -116,11 +122,14 @@ void AsyncAddress::lookUp() {
             const int error = resolve(host, port, /*numericOnly=*/false, found);
             const std::lock_guard<std::mutex> lock(state->mutex);
             state->looking = false;
+            state->askedAt = Clock::now();
             if (error == 0) {
                 state->address = found;
-            } else {
+            } else if (!state->address) {
+                // A refresh that fails keeps the address it had: the name is still the best
+                // guess there is, and a gap in the sending would be worse than an old address.
                 state->error = error;
-                state->failedAt = Clock::now();
+                state->failedAt = state->askedAt;
             }
         }).detach();
     } catch (const std::exception&) {
@@ -135,19 +144,32 @@ void AsyncAddress::lookUp() {
 
 std::optional<AsyncAddress::Address> AsyncAddress::address() {
     bool retry = false;
+    std::optional<Address> known;
     {
         const std::lock_guard<std::mutex> lock(state_->mutex);
+        const Clock::time_point now = Clock::now();
         if (state_->address) {
-            return state_->address;
+            known = state_->address;
+            // A name, asked again once its answer is `refreshSeconds_` old; a number never was
+            // asked (`lookUps` is 0) and is never asked.
+            retry = state_->lookUps > 0 && !state_->looking &&
+                    std::chrono::duration<double>(now - state_->askedAt).count() >=
+                        refreshSeconds_;
+        } else {
+            retry = !state_->looking && state_->error != 0 &&
+                    std::chrono::duration<double>(now - state_->failedAt).count() >=
+                        kRetrySeconds;
         }
-        retry = !state_->looking && state_->error != 0 &&
-                std::chrono::duration<double>(Clock::now() - state_->failedAt).count() >=
-                    kRetrySeconds;
     }
     if (retry) {
         lookUp();
     }
-    return std::nullopt;
+    return known;
+}
+
+std::uint64_t AsyncAddress::lookUps() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->lookUps;
 }
 
 std::string AsyncAddress::problem() const {

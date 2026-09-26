@@ -22,10 +22,17 @@ namespace takt4::net {
 ///
 /// Where a name has both, an IPv4 address is preferred: a receiver on "localhost" is nearly
 /// always listening on 127.0.0.1, and `::1` reaches nothing there (the audit's M20).
+///
+/// **A name is looked up again** every `kRefreshSeconds`, in the background, with the address it
+/// had still used until the new one is in. It used to be looked up once: a media server that
+/// came back from a restart on a new DHCP address was sent to the old one, with no error, until
+/// somebody edited the output (the 2026-09-25 audit's L20). A numeric address is never asked.
 class AsyncAddress {
 public:
     /// How long after a failed look-up the next one starts, at the earliest.
     static constexpr double kRetrySeconds = 5.0;
+    /// How long a name's address is used before it is looked up again.
+    static constexpr double kRefreshSeconds = 30.0;
 
     /// One resolved UDP address, in the form `sendto` takes.
     struct Address {
@@ -37,7 +44,8 @@ public:
         int family = 0;
     };
 
-    AsyncAddress(std::string host, std::uint16_t port);
+    /// `refreshSeconds` is `kRefreshSeconds` but for a test.
+    AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds = kRefreshSeconds);
     ~AsyncAddress();
 
     AsyncAddress(const AsyncAddress&) = delete;
@@ -53,6 +61,8 @@ public:
 
     const std::string& host() const noexcept { return host_; }
     std::uint16_t port() const noexcept { return port_; }
+    /// How many look-ups of the name have been started; 0 for a numeric address.
+    std::uint64_t lookUps() const;
 
 private:
     struct State;
@@ -60,6 +70,7 @@ private:
 
     std::string host_;
     std::uint16_t port_ = 0;
+    double refreshSeconds_ = kRefreshSeconds;
     /// Shared with the look-up thread, which may outlive this object: a target removed while
     /// its name is still being resolved leaves the thread to finish into a state nobody reads.
     std::shared_ptr<State> state_;

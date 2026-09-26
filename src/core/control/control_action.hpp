@@ -36,7 +36,9 @@ enum class ControlAction : std::uint8_t {
     TempoHalve,
     TempoDouble,
     Lock,
-    /// §5.7's `/ctl/panic` — §5.8's *"global halt that stops every rule instantly"*.
+    /// §5.7's `/ctl/panic` — §5.8's *"global halt that stops every rule instantly"*. It only
+    /// ever engages, whatever it is sent: letting go is `PanicRelease`, or the window's RELEASE
+    /// (the operator's answer to the 2026-09-25 audit's Q1).
     Panic,
     /// §5.7's `/ctl/rule/<id>/enable <0|1>`. The first action that **names** something as
     /// well as doing it; see `ControlTarget`.
@@ -59,15 +61,20 @@ enum class ControlAction : std::uint8_t {
     /// offered by the editor and the README with nothing anywhere that could fire it, so a rule
     /// set to it was a rule that never did anything (the audit's M7). A button, bare.
     Manual,
+    /// `/ctl/panic/release` — lets go of a PANIC. Its own address, because a push button sends
+    /// 1 on the press and 0 on the release, so a `panic 0` that released lasted only while the
+    /// finger was down (the 2026-09-25 audit's L15, and the operator's answer to its Q1). A
+    /// button, bare, like the window's RELEASE.
+    PanicRelease,
 };
 
 /// Every action, in the order a UI should offer them for binding.
-inline constexpr std::array<ControlAction, 13> kControlActions{
+inline constexpr std::array<ControlAction, 14> kControlActions{
     ControlAction::Tap,         ControlAction::Downbeat, ControlAction::TempoHalve,
     ControlAction::TempoDouble, ControlAction::Lock,     ControlAction::Panic,
     ControlAction::RuleEnable,  ControlAction::RuleMute, ControlAction::RuleDouble,
     ControlAction::RuleHalve,   ControlAction::RuleRate, ControlAction::RuleReset,
-    ControlAction::Manual};
+    ControlAction::Manual,      ControlAction::PanicRelease};
 
 /// True where the action needs a rule named as well — the six `rule/<id>/…` verbs.
 ///
@@ -116,12 +123,12 @@ std::optional<ControlTarget> targetOf(std::string_view verb);
 /// message as a toggle: a toggle depends on a state the sender cannot see, so a control
 /// surface that missed a single message would be inverted from then on.
 ///
-/// **`Panic` is deliberately not one of them**, though it accepts an argument. §5.7 writes
-/// the other two with `<0|1>` and writes panic bare, and the two spellings mean what they
-/// say: a panic button panics, so a bare message engages. An argument is still read where
-/// one is sent, because §5.8 makes panic a latch and an operator who hit it from a Stream
-/// Deck has to be able to let go of it from the same Stream Deck — which is the entire
-/// point of §5.7 existing.
+/// **`Panic` is deliberately not one of them.** §5.7 writes the other two with `<0|1>` and
+/// writes panic bare, and a panic button panics: it engages whatever it is sent, a 0
+/// included. It used to read a 0 as "let go", so a push button — 1 on the press, 0 on the
+/// release — held PANIC only while the finger was down (the 2026-09-25 audit's L15). §5.8
+/// makes panic a latch, and an operator who hit it from a Stream Deck lets go of it from the
+/// same Stream Deck with `panic/release` (`PanicRelease`), a button of its own.
 bool takesArgument(ControlAction action) noexcept;
 
 /// A short label for a UI list or a console listing.

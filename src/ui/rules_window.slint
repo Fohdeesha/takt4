@@ -314,6 +314,9 @@ export component RulesWindow inherits Window {
   in-out property <bool> can-add-follow-up: true;
 
   in-out property <[string]> generator-kinds;
+  /// The kinds a color's chip offers: `generator-kinds` without the two that compute numbers,
+  /// at the same indices. A ramp or a live value on a color sent white (the audit's L4).
+  in-out property <[string]> color-generator-kinds;
   in-out property <[string]> live-sources;
   in-out property <[string]> ramp-shapes;
   in-out property <[SlotRow]> slots;
@@ -2130,7 +2133,10 @@ export component RulesWindow inherits Window {
                 }
 
                 ComboBox {
-                  model: root.generator-kinds;
+                  // A row that stops or starts being a color's is built again (`markStale`
+                  // compares `is-color`), so a dropdown whose list changed under it does not
+                  // go on showing an index into the other one.
+                  model: slot.is-color ? root.color-generator-kinds : root.generator-kinds;
                   current-index: slot.kind-index;
                   width: 104px;
                   selected => {
@@ -2175,8 +2181,11 @@ export component RulesWindow inherits Window {
                 // changes what one holds, and a box on the same row that has just been tabbed
                 // into is not destroyed under the operator (the audit of 2026-09-25, M17).
                 if slot.takes-pool && !slot.is-color && !slot.is-list : LiveField {
-                  value: slot.low + " - " + slot.high;
-                  placeholder-text: "1 - 8";
+                  // Empty while the number is still to be chosen (a MIDI rule's, until it is
+                  // entered): a default range showing here read as one chosen, and the rule is
+                  // not firing because it is not (the audit of 2026-09-25, L11).
+                  value: slot.wanting ? "" : slot.low + " - " + slot.high;
+                  placeholder-text: slot.wanting ? "choose a range" : "1 - 8";
                   font-size: 12px;
                   horizontal-stretch: 1;
                   typed(text) => {
@@ -2188,8 +2197,8 @@ export component RulesWindow inherits Window {
                 }
 
                 if slot.takes-pool && !slot.is-color && slot.is-list : LiveField {
-                  value: slot.values;
-                  placeholder-text: "3, 7, 1, 12 — in this order";
+                  value: slot.wanting ? "" : slot.values;
+                  placeholder-text: slot.wanting ? "choose the numbers" : "3, 7, 1, 12 — in this order";
                   font-size: 12px;
                   horizontal-stretch: 1;
                   typed(text) => {
@@ -2382,8 +2391,8 @@ export component RulesWindow inherits Window {
 
                 // A weighted generator's values, each with how often it comes up.
                 if slot.is-weighted : LiveField {
-                  value: slot.weights;
-                  placeholder-text: "7:3, 12:1 — value:weight";
+                  value: slot.wanting ? "" : slot.weights;
+                  placeholder-text: slot.wanting ? "choose them, 7:3, 12:1" : "7:3, 12:1 — value:weight";
                   font-size: 12px;
                   horizontal-stretch: 1;
                   typed(text) => {
@@ -2407,8 +2416,8 @@ export component RulesWindow inherits Window {
                 }
 
                 if slot.is-ramp : LiveField {
-                  value: slot.low + " - " + slot.high;
-                  placeholder-text: "0 - 1";
+                  value: slot.wanting ? "" : slot.low + " - " + slot.high;
+                  placeholder-text: slot.wanting ? "choose a range" : "0 - 1";
                   font-size: 12px;
                   horizontal-stretch: 1;
                   typed(text) => {

@@ -55,6 +55,26 @@ inline constexpr std::array<GeneratorKind, 7> kGeneratorKinds{
     GeneratorKind::Shuffle, GeneratorKind::Random, GeneratorKind::Cycle, GeneratorKind::Weighted,
     GeneratorKind::Fixed,   GeneratorKind::Live,   GeneratorKind::Ramp};
 
+/// Whether the kind hands back one of the values it was given — typed, listed or weighted —
+/// rather than a number it computes. Only these can make a color: a `Live` reading or a
+/// `Ramp` step is a number, and a color read from "100" is #110000, so a palette on either
+/// sent white or a color nobody chose (the 2026-09-25 audit's L4).
+constexpr bool handsBackValues(GeneratorKind kind) noexcept {
+    return kind != GeneratorKind::Live && kind != GeneratorKind::Ramp;
+}
+
+/// The kinds a color's chip offers: `kGeneratorKinds` without the two that compute, in the
+/// same order and so at the same indices.
+inline constexpr std::array<GeneratorKind, 5> kColorGeneratorKinds{
+    GeneratorKind::Shuffle, GeneratorKind::Random, GeneratorKind::Cycle, GeneratorKind::Weighted,
+    GeneratorKind::Fixed};
+static_assert(kColorGeneratorKinds[0] == kGeneratorKinds[0] &&
+                  kColorGeneratorKinds[1] == kGeneratorKinds[1] &&
+                  kColorGeneratorKinds[2] == kGeneratorKinds[2] &&
+                  kColorGeneratorKinds[3] == kGeneratorKinds[3] &&
+                  kColorGeneratorKinds[4] == kGeneratorKinds[4],
+              "a color chip's index is read against kGeneratorKinds");
+
 /// The shape a `Ramp` traces over its period.
 enum class RampShape : std::uint8_t {
     /// Low to high, then straight back. A build that resets on the downbeat.

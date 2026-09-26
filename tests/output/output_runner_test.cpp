@@ -1411,6 +1411,48 @@ TEST_CASE("quitting sends the blackout frame itself", "[output][dmx]") {
     CHECK(last[2] == 0);
 }
 
+TEST_CASE("the frame sent on quitting keeps the 44 Hz spacing", "[output][dmx]") {
+    // The audit's L7: the blackout on the way out went straight after the round's own frame, a
+    // millisecond apart, and a node that drops frames arriving faster than 44 Hz dropped it and
+    // kept the look. So a change is posted and the runner stopped at once — the change's frame
+    // and the blackout are then as close as they can be — and every frame's arrival is stamped.
+    LoopbackReceiver node;
+    const auto origin = std::chrono::steady_clock::now();
+    std::vector<std::pair<double, std::vector<std::uint8_t>>> frames;
+    std::atomic<bool> listening{true};
+    std::thread reader([&] {
+        while (listening.load()) {
+            const std::string datagram = node.receive();
+            if (std::vector<std::uint8_t> levels = artDmxLevels(datagram); !levels.empty()) {
+                frames.emplace_back(
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - origin)
+                        .count(),
+                    std::move(levels));
+            }
+        }
+    });
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, parOnNode(node.port()));
+    runner.start();
+    runner.post(paint(255, 255, 255));
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    runner.post(paint(0, 255, 0));
+    runner.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    listening = false;
+    reader.join();
+
+    REQUIRE(frames.size() >= 2);
+    const auto& last = frames.back().second;
+    REQUIRE(last.size() >= 3);
+    CHECK(last[0] == 0); // the blackout, and the last word
+    CHECK(last[1] == 0);
+    CHECK(last[2] == 0);
+    const double gap = frames.back().first - frames[frames.size() - 2].first;
+    INFO(frames.size() << " frames; the last came " << gap * 1000.0 << " ms after the one before");
+    CHECK(gap >= 0.020); // 1/44 s is 22.7 ms; a little is left for the stamps' own jitter
+}
+
 TEST_CASE("quitting sends a release held for a delayed output", "[output][trigger]") {
     // The audit's H6: a release parked for an OSC target's delay went out at the *next* Start,
     // so a Resolume clip stayed latched until then.

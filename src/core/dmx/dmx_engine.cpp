@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace takt4::dmx {
@@ -18,6 +19,11 @@ constexpr std::array<Role, 7> kBlackoutRoles{Role::Dimmer, Role::Red,   Role::Gr
 double unitOfByte(std::uint8_t value) noexcept {
     return value / 255.0;
 }
+
+/// An end of a track given as "wherever this channel is when the effect starts" — a fade's
+/// start, and a flash's base under `Payload::baseIsCurrent`. Out of a unit value's range, so
+/// no level can be mistaken for it. See `DmxEngine::buildFor`.
+constexpr double kHere = -1.0;
 
 /// Where in a repeating effect's cycle we are, 0 to 1. Kept as its own function because
 /// `Pulse` and `Strobe` differ only in what they do with it.
@@ -66,21 +72,9 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         }
     }
 
-    // A channel TEST hold is let go, and its channel put back where the hold found it — before
-    // the patch is laid over the levels, so a channel the new patch re-parks is re-parked from
-    // what it really was rather than from the test's level.
-    for (Running& running : running_) {
-        for (const Track& track : running.tracks) {
-            if (track.fixture == kNoFixture && !track.isVirtual && track.buffer < buffers_.size() &&
-                track.channel < kChannelsPerUniverse) {
-                buffers_[track.buffer].levels[track.channel] = static_cast<std::uint8_t>(
-                    std::lround(std::clamp(track.from, 0.0, 1.0) * 255.0));
-                ++buffers_[track.buffer].revision;
-            }
-        }
-        std::erase_if(running.tracks,
-                      [](const Track& track) { return track.fixture == kNoFixture; });
-    }
+    // Before the patch is laid over the levels, so a channel the new patch re-parks is
+    // re-parked from what it really was rather than from the test's level.
+    releaseTestHolds();
 
     const std::vector<PortAddress> universes = universesOf(patch);
     std::vector<Buffer> rebuilt;
@@ -223,7 +217,7 @@ void DmxEngine::retarget(const std::vector<std::uint16_t>& mapped) {
                 track.fixture = moved;
                 return false;
             }
-            const std::uint16_t channel = channelOf(*fixture, track.source);
+            const std::uint16_t channel = channelOf(*fixture, track.source, track.nth);
             const std::size_t buffer = bufferOf(fixture->universe);
             if (channel == 0 || buffer == static_cast<std::size_t>(-1) ||
                 (nowVirtual && isEmitter(track.source))) {
@@ -238,7 +232,7 @@ void DmxEngine::retarget(const std::vector<std::uint16_t>& mapped) {
                                  : track.source == Role::Tilt ? Role::TiltFine
                                                               : Role::Unused;
             if (partner != Role::Unused) {
-                const std::uint16_t fine = channelOf(*fixture, partner);
+                const std::uint16_t fine = channelOf(*fixture, partner, track.nth);
                 track.fine = fine == 0 ? kNoChannel : static_cast<std::uint16_t>(fine - 1);
             }
             return false;
@@ -307,8 +301,12 @@ void DmxEngine::composeVirtuals() noexcept {
             continue;
         }
         for (std::size_t e = 0; e < kEmitters.size(); ++e) {
-            const std::uint16_t channel = channelOf(fixture, kEmitters[e]);
-            if (channel != 0) {
+            // Every cell of a bar that has several (`channelOf`'s `nth`, the audit's L3).
+            for (std::size_t nth = 0;; ++nth) {
+                const std::uint16_t channel = channelOf(fixture, kEmitters[e], nth);
+                if (channel == 0) {
+                    break;
+                }
                 writeChannel(static_cast<std::uint32_t>(buffer),
                              static_cast<std::uint16_t>(channel - 1), kNoChannel,
                              state.color[e] * state.intensity);
@@ -335,16 +333,40 @@ void DmxEngine::writeTrack(const Track& track, double unit) noexcept {
     }
 }
 
+void DmxEngine::releaseTestHolds() noexcept {
+    for (Running& running : running_) {
+        for (const Track& track : running.tracks) {
+            if (track.fixture == kNoFixture && !track.isVirtual && track.buffer < buffers_.size() &&
+                track.channel < kChannelsPerUniverse) {
+                buffers_[track.buffer].levels[track.channel] = static_cast<std::uint8_t>(
+                    std::lround(std::clamp(track.from, 0.0, 1.0) * 255.0));
+                ++buffers_[track.buffer].revision;
+            }
+        }
+        std::erase_if(running.tracks,
+                      [](const Track& track) { return track.fixture == kNoFixture; });
+    }
+}
+
 void DmxEngine::cancelAll() noexcept {
+    // A TEST is not part of the look being frozen: it is the patch editor asking which lamp a
+    // channel is, for a few seconds. Frozen, it held the channel at the test level for good
+    // (the 2026-09-25 audit's L2).
+    releaseTestHolds();
     running_.clear();
 }
 
 void DmxEngine::blackout(double now) {
+    // As `cancelAll`: a channel under TEST goes back first, so a channel the blackout does not
+    // reach — a shutter, a head's pan — is not left at the test level (L2).
+    releaseTestHolds();
     running_.clear();
     Payload dark;
     dark.kind = EffectKind::Blackout;
-    // Every fixture a mask can reach, which is all of them: the patch is capped at that.
-    start(~std::uint64_t{0}, dark, now);
+    // Every fixture of the patch — not through a mask, which names the first 64 only. The
+    // patch is not capped there, only warned about, and a blackout that stopped at 64 left
+    // the rest lit through Stop and quit (the 2026-09-25 audit's L8).
+    launch(dark, now, 0, true);
     // A snap: nothing to animate, so nothing left running to be advanced on the next tick.
     running_.clear();
     // And every virtual fixture back to neutral — dark, and at full intensity — so the rig
@@ -481,57 +503,58 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         return true;
     };
 
-    /// One channel of this fixture as a track, or nothing when it has not got it. `fine`
-    /// picks up the 16-bit partner where there is one, so a `Level` aimed at pan is smooth on
-    /// a head that can be and stepped on one that cannot, without the rule saying which.
+    /// Every channel of this fixture carrying `role` as a track — one per cell of a bar that
+    /// has several (`channelOf`'s `nth`) — or nothing when it has not got it. `fine` picks up
+    /// the 16-bit partner where there is one, so a `Level` aimed at pan is smooth on a head
+    /// that can be and stepped on one that cannot, without the rule saying which.
+    ///
+    /// An end given as `kHere` is wherever that channel is when the effect starts: a fade's
+    /// start, and a flash's base under `Payload::baseIsCurrent`. Each cell starts from its own.
     ///
     /// On a virtual fixture an emitter is its color, not its channel: see `Virtual`.
-    const auto addTrack = [&](Role role, double to, Role tag) {
+    const auto addChannels = [&](Role role, double from, double to, Role tag) {
         if (isVirtualFixture && emitterOf(role) != kEmitters.size()) {
-            const double from = virtuals_[index].color[emitterOf(role)];
-            return addVirtualColor(role, from, to, tag);
+            const double here = virtuals_[index].color[emitterOf(role)];
+            return addVirtualColor(role, from == kHere ? here : from, to == kHere ? here : to,
+                                   tag);
         }
-        const std::uint16_t channel = channelOf(fixture, role);
-        if (channel == 0) {
-            return false;
-        }
-        Track track;
-        track.buffer = buffer;
-        track.channel = static_cast<std::uint16_t>(channel - 1);
-        track.role = tag;
-        track.fixture = fixtureIndex;
-        track.source = role;
         const Role partner = role == Role::Pan    ? Role::PanFine
                              : role == Role::Tilt ? Role::TiltFine
                                                   : Role::Unused;
-        if (partner != Role::Unused) {
-            const std::uint16_t fine = channelOf(fixture, partner);
-            track.fine = fine == 0 ? kNoChannel : static_cast<std::uint16_t>(fine - 1);
+        bool any = false;
+        for (std::size_t nth = 0; nth <= std::numeric_limits<std::uint8_t>::max(); ++nth) {
+            const std::uint16_t channel = channelOf(fixture, role, nth);
+            if (channel == 0) {
+                break;
+            }
+            Track track;
+            track.buffer = buffer;
+            track.channel = static_cast<std::uint16_t>(channel - 1);
+            track.role = tag;
+            track.fixture = fixtureIndex;
+            track.source = role;
+            track.nth = static_cast<std::uint8_t>(nth);
+            if (partner != Role::Unused) {
+                const std::uint16_t fine = channelOf(fixture, partner, nth);
+                track.fine = fine == 0 ? kNoChannel : static_cast<std::uint16_t>(fine - 1);
+            }
+            const double here = readChannel(track.buffer, track.channel, track.fine);
+            track.from = from == kHere ? here : std::clamp(from, 0.0, 1.0);
+            track.to = to == kHere ? here : std::clamp(to, 0.0, 1.0);
+            running.tracks.push_back(track);
+            any = true;
         }
-        track.from = readChannel(track.buffer, track.channel, track.fine);
-        track.to = std::clamp(to, 0.0, 1.0);
-        running.tracks.push_back(track);
-        return true;
+        return any;
+    };
+
+    /// A move to `to` from wherever each channel is.
+    const auto addTrack = [&](Role role, double to, Role tag) {
+        return addChannels(role, kHere, to, tag);
     };
 
     /// The same with both ends given — a flash, a pulse, a strobe.
     const auto addSweep = [&](Role role, double from, double to) {
-        if (isVirtualFixture && emitterOf(role) != kEmitters.size()) {
-            return addVirtualColor(role, from, to, Role::Unused);
-        }
-        const std::uint16_t channel = channelOf(fixture, role);
-        if (channel == 0) {
-            return false;
-        }
-        Track track;
-        track.buffer = buffer;
-        track.channel = static_cast<std::uint16_t>(channel - 1);
-        track.fixture = fixtureIndex;
-        track.source = role;
-        track.from = std::clamp(from, 0.0, 1.0);
-        track.to = std::clamp(to, 0.0, 1.0);
-        running.tracks.push_back(track);
-        return true;
+        return addChannels(role, from, to, Role::Unused);
     };
 
     /// **A dimmer aimed at a fixture that has not got one** drives its virtual intensity.
@@ -577,6 +600,15 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
     /// Whether this payload's role is the virtual dimmer. A "level on pan" aimed at a wash still
     /// reaches nothing, which is `missed()`'s job to count.
     const bool virtualDimmer = payload.role == Role::Dimmer && isVirtualFixture;
+
+    /// A sweep's low end: `base`, or with `baseIsCurrent` wherever it is right now — each
+    /// channel its own (`kHere`), and a virtual dimmer its intensity.
+    const auto baseOf = [&]() {
+        if (!payload.baseIsCurrent) {
+            return unitOfByte(payload.base);
+        }
+        return virtualDimmer ? virtuals_[index].intensity : kHere;
+    };
 
     /// The pan/tilt pair, with the fixture's own window. Nothing when the fixture cannot move.
     const auto addMove = [&](double toPanUnit, double toTiltUnit, bool windowRelative) {
@@ -631,15 +663,15 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         // Starts *at* the peak: `from` is the peak and `to` is the base, so evaluating at
         // progress zero writes full immediately and the duration is the decay.
         if (virtualDimmer) {
-            return addIntensity(unitOfByte(payload.level), unitOfByte(payload.base));
+            return addIntensity(unitOfByte(payload.level), baseOf());
         }
-        return addSweep(payload.role, unitOfByte(payload.level), unitOfByte(payload.base));
+        return addSweep(payload.role, unitOfByte(payload.level), baseOf());
     case EffectKind::Pulse:
     case EffectKind::Strobe:
         if (virtualDimmer) {
-            return addIntensity(unitOfByte(payload.base), unitOfByte(payload.level));
+            return addIntensity(baseOf(), unitOfByte(payload.level));
         }
-        return addSweep(payload.role, unitOfByte(payload.base), unitOfByte(payload.level));
+        return addSweep(payload.role, baseOf(), unitOfByte(payload.level));
     case EffectKind::Color: {
         bool any = false;
         // An RGBW fixture makes a far better white from its white LED than from three
@@ -749,15 +781,21 @@ void DmxEngine::preempt(const Running& running) {
 }
 
 void DmxEngine::start(std::uint64_t fixtures, const Payload& payload, double now) {
+    launch(payload, now, fixtures, false);
+}
+
+void DmxEngine::launch(const Payload& payload, double now, std::uint64_t fixtures,
+                       bool everyFixture) {
     staging_.tracks.clear();
     staging_.moves.clear();
     staging_.payload = payload;
     staging_.start = now;
     staging_.duration = payload.durationSeconds > 0.0f ? static_cast<double>(payload.durationSeconds) : 0.0;
 
-    const std::size_t count = std::min(patch_.size(), kMaxRoutableFixtures);
+    const std::size_t count =
+        everyFixture ? patch_.size() : std::min(patch_.size(), kMaxRoutableFixtures);
     for (std::size_t i = 0; i < count; ++i) {
-        if ((fixtures & (std::uint64_t{1} << i)) == 0) {
+        if (!everyFixture && (fixtures & (std::uint64_t{1} << i)) == 0) {
             continue;
         }
         if (!patch_[i].enabled) {

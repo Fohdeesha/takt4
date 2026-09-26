@@ -19,7 +19,7 @@ namespace takt4::control {
 /// accepted them would be inviting an operator to bind a clock tick.
 struct MidiEvent {
     enum class Kind : std::uint8_t {
-        Note,          ///< note-on with a non-zero velocity
+        Note,          ///< a note: `value` is its velocity, and 0 is its release
         ControlChange, ///< CC, whatever its value
     };
 
@@ -31,10 +31,11 @@ struct MidiEvent {
     friend bool operator==(const MidiEvent&, const MidiEvent&) = default;
 };
 
-/// Reads one raw MIDI message. Nothing for anything that is not a note-on or a CC —
-/// including a note-*off*, and including a note-on of velocity 0, which is the note-off
-/// most hardware actually sends. Binding a release rather than a press would put a tap on
-/// the wrong edge, which for a tap tempo is the whole of the measurement.
+/// Reads one raw MIDI message. Nothing for anything that is not a note or a CC. A note's
+/// release — a note-off, or the note-on of velocity 0 most hardware sends instead — is a
+/// `Note` with `value` 0, as a CC pad's release is a CC at 0: a button ignores it, which
+/// keeps a tap on the press, and a state bound to a pad follows it (the audit of 2026-09-25,
+/// L6: dropped, a pad bound to the lock could pin it and never let it go).
 std::optional<MidiEvent> readMidiEvent(std::span<const unsigned char> message) noexcept;
 
 /// A control surface's control bound to one action.
@@ -73,9 +74,10 @@ std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept;
 
 /// What a control that is not a switch should hand an action that wants `<0|1>`.
 ///
-/// A note-on is a press, so it means 1 and a binding to `lock` pins. A CC is a position,
-/// so 0-63 is off and 64-127 is on — the convention every hardware switch already uses,
-/// and the one that makes a sustain pedal or a toggle button work without configuration.
+/// A note is 1 while held and 0 on its release, so a pad bound to `lock` pins while it is
+/// down. A CC is a position, so 0-63 is off and 64-127 is on — the convention every hardware
+/// switch already uses, and the one that makes a sustain pedal or a toggle button work
+/// without configuration. A CC pad sending 127 and then 0 and a note pad are the same.
 double argumentOf(const MidiEvent& event) noexcept;
 
 } // namespace takt4::control

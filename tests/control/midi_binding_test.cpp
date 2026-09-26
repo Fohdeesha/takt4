@@ -22,7 +22,7 @@ std::optional<MidiEvent> read(std::vector<unsigned char> bytes) {
 
 } // namespace
 
-TEST_CASE("a press is a control gesture and a release is not", "[control][midi]") {
+TEST_CASE("a press is a note, and its release the same note at 0", "[control][midi]") {
     // Note-on, channel 10 as the hardware prints it, note 36, velocity 100.
     const auto press = read({0x99, 36, 100});
     REQUIRE(press.has_value());
@@ -30,12 +30,20 @@ TEST_CASE("a press is a control gesture and a release is not", "[control][midi]"
     CHECK(press->channel == 10);
     CHECK(press->number == 36);
     CHECK(press->value == 100);
+    CHECK(argumentOf(*press) == 1.0);
 
-    // Velocity 0 is the note-off most hardware sends rather than 0x80, and binding the
-    // release rather than the press would put a tap on the wrong edge — which for a tap
-    // tempo is the entire measurement.
-    CHECK_FALSE(read({0x99, 36, 0}).has_value());
-    CHECK_FALSE(read({0x89, 36, 100}).has_value()); // an actual note-off
+    // Its release, both ways hardware spells it: velocity 0, which most send, and an actual
+    // note-off, whose velocity is how fast the key came up and not a press. Both are the note
+    // at 0, as a CC pad's release is a CC at 0 — a button ignores it and a state follows it
+    // (the audit of 2026-09-25, L6: dropped, a pad bound to the lock could never let go).
+    for (const auto& release : {read({0x99, 36, 0}), read({0x89, 36, 100})}) {
+        REQUIRE(release.has_value());
+        CHECK(release->kind == MidiEvent::Kind::Note);
+        CHECK(release->channel == 10);
+        CHECK(release->number == 36);
+        CHECK(release->value == 0);
+        CHECK(argumentOf(*release) == 0.0);
+    }
 
     const auto cc = read({0xB0, 64, 127});
     REQUIRE(cc.has_value());

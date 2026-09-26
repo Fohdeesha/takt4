@@ -828,3 +828,108 @@ TEST_CASE("a channel test holds one channel and puts it back", "[dmx][engine]") 
         CHECK(engine.running() == 0);
     }
 }
+
+TEST_CASE("a fixture with a role on several channels drives every one of them", "[dmx][engine]") {
+    // The audit's L3: `channelOf` answered with the first channel carrying a role, so a bar of
+    // RGB cells lit its first cell only, and a Blackout left the others lit.
+    DmxEngine engine;
+
+    SECTION("a bar of two RGB cells, with no dimmer") {
+        Fixture bar = rgb("bar", 1);
+        bar.channels = {Role::Red, Role::Green, Role::Blue, Role::Red, Role::Green, Role::Blue};
+        bar.parked.assign(bar.channels.size(), 0);
+        engine.setPatch({bar});
+        Payload red;
+        red.kind = EffectKind::Color;
+        red.color = Color{255, 0, 0};
+        engine.start(0b1, red, 0.0);
+        engine.tick(0.0);
+        CHECK(at(engine, 0, 1) == 255);
+        CHECK(at(engine, 0, 4) == 255); // the second cell too
+        CHECK(at(engine, 0, 5) == 0);
+
+        engine.start(0b1, level(Role::Dimmer, 128), 1.0); // its brightness, on both cells
+        engine.tick(1.0);
+        CHECK(at(engine, 0, 1) == 128);
+        CHECK(at(engine, 0, 4) == 128);
+
+        engine.blackout(2.0);
+        engine.tick(2.0);
+        for (int channel = 1; channel <= 6; ++channel) {
+            INFO("channel " << channel);
+            CHECK(at(engine, 0, channel) == 0);
+        }
+    }
+
+    SECTION("with a dimmer per cell, and a fade that follows the bar when it is re-patched") {
+        Fixture bar = rgb("bar", 1);
+        bar.channels = {Role::Dimmer, Role::Red, Role::Green, Role::Blue,
+                        Role::Dimmer, Role::Red, Role::Green, Role::Blue};
+        bar.parked.assign(bar.channels.size(), 0);
+        engine.setPatch({bar});
+        engine.start(0b1, level(Role::Dimmer, 200, 2.0), 0.0);
+        engine.tick(1.0);
+        CHECK(at(engine, 0, 1) == 100);
+        CHECK(at(engine, 0, 5) == 100);
+
+        bar.address = 11; // moved while the fade runs: both cells follow it
+        engine.setPatch({bar});
+        engine.tick(2.0);
+        CHECK(at(engine, 0, 11) == 200);
+        CHECK(at(engine, 0, 15) == 200);
+        CHECK(engine.running() == 0);
+    }
+}
+
+TEST_CASE("a blackout reaches every fixture, past the 64 a rule can name", "[dmx][engine]") {
+    // The audit's L8: `blackout` went through the mask a rule uses, which names 64 fixtures,
+    // on the word of a comment saying the patch was capped there. It is not — the editor only
+    // warns — so a 65th fixture stayed lit through Stop and quit.
+    std::vector<Fixture> patch;
+    for (int i = 0; i < 66; ++i) {
+        Fixture fixture = takt4::dmx::fixtureFromMode("f" + std::to_string(i), 3, 0,
+                                                      static_cast<std::uint16_t>(1 + i * 4));
+        fixture.parked = {255, 255, 0, 0}; // dimmer + RGB, patched lit red
+        patch.push_back(fixture);
+    }
+    DmxEngine engine;
+    engine.setPatch(patch);
+    const int last = 1 + 65 * 4; // the 66th fixture's dimmer
+    REQUIRE(at(engine, 0, 1) == 255);
+    REQUIRE(at(engine, 0, last) == 255);
+    REQUIRE(at(engine, 0, last + 1) == 255);
+
+    engine.blackout(1.0);
+    CHECK(at(engine, 0, 1) == 0);
+    CHECK(at(engine, 0, last) == 0);
+    CHECK(at(engine, 0, last + 1) == 0);
+}
+
+TEST_CASE("PANIC and Stop let a channel test go, back to the level it found", "[dmx][engine]") {
+    // The audit's L2: PANIC (`cancelAll`) and Stop (`blackout`) dropped every running effect,
+    // and a TEST hold is one, so the channel stayed at the test level for good — where a patch
+    // change had always put it back.
+    DmxEngine engine;
+    engine.setPatch({rgb("par", 1)});
+    engine.start(0b1, level(Role::Red, 90), 0.0);
+    REQUIRE(at(engine, 0, 1) == 90);
+
+    SECTION("PANIC freezes the look, and lets the test go") {
+        engine.holdChannel(0, 1, 255, 3.0, 1.0);
+        REQUIRE(at(engine, 0, 1) == 255);
+        engine.cancelAll();
+        CHECK(at(engine, 0, 1) == 90);
+        engine.tick(10.0);
+        CHECK(at(engine, 0, 1) == 90);
+    }
+
+    SECTION("Stop puts back a channel the blackout does not reach") {
+        engine.holdChannel(0, 7, 180, 3.0, 1.0); // on no fixture, so no blackout reaches it
+        REQUIRE(at(engine, 0, 7) == 180);
+        engine.blackout(2.0);
+        CHECK(at(engine, 0, 7) == 0); // where it was before the test
+        CHECK(at(engine, 0, 1) == 0); // and the fixture went dark
+        engine.tick(10.0);
+        CHECK(at(engine, 0, 7) == 0);
+    }
+}

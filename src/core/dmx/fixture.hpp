@@ -174,7 +174,11 @@ inline constexpr std::size_t kMaxRoutableFixtures = 64;
 ///
 /// Zero is a usable "no" because DMX channels count from one: there is no channel 0 to
 /// confuse it with, which is why the addresses here are 1-based in the first place.
-std::uint16_t channelOf(const Fixture& fixture, Role role) noexcept;
+///
+/// `nth` counts the channels that carry the role, from 0: a bar of four RGB cells has four
+/// reds, and every one of them is driven (`DmxEngine`). It used to be the first only, so such
+/// a bar lit one cell and Blackout left the others lit (the 2026-09-25 audit's L3).
+std::uint16_t channelOf(const Fixture& fixture, Role role, std::size_t nth = 0) noexcept;
 
 /// Whether the fixture has that channel at all.
 inline bool has(const Fixture& fixture, Role role) noexcept {

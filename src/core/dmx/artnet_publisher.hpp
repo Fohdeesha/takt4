@@ -126,9 +126,22 @@ public:
     /// and a node left holding the frame before the blackout holds the rig lit (the audit's H6).
     std::size_t flush(const DmxEngine& engine, double now);
 
+    /// How long from `now` until every node may be sent another frame of every universe at the
+    /// 44 Hz the protocol allows: 0 when nothing was sent in the last period. What quitting
+    /// waits before `flush`, whose frame would otherwise follow the last round's by a
+    /// millisecond, and a node that drops frames arriving that fast would keep the look it
+    /// had (the audit of 2026-09-25, L7). Never more than one period.
+    double secondsUntilPaced(double now) const noexcept;
+
     /// Datagrams that left, and datagrams a socket refused.
     std::uint64_t sent() const noexcept { return sent_; }
     std::uint64_t failed() const noexcept { return failed_; }
+    /// How many times a delayed node's frame has been looked up in the history, how many frames
+    /// those look-ups examined, and how many universes' histories are held — what a round
+    /// costs, and what the history weighs.
+    std::uint64_t historyLookups() const noexcept { return lookups_; }
+    std::uint64_t historySteps() const noexcept { return steps_; }
+    std::size_t histories() const noexcept { return history_.size(); }
 
 private:
     /// One universe as it was at `at`.
@@ -171,11 +184,15 @@ private:
 
     /// This target's clock for `universe`, made if it is the first frame.
     Paced& pacedFor(Target& target, PortAddress universe);
+    /// The same, or null when nothing has been sent it yet; makes nothing.
+    static const Paced* findPaced(const Target& target, PortAddress universe) noexcept;
 
     std::vector<Target> targets_;
     std::vector<History> history_;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
+    mutable std::uint64_t lookups_ = 0;
+    mutable std::uint64_t steps_ = 0;
 };
 
 } // namespace takt4::dmx

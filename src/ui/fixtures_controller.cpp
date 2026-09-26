@@ -92,7 +92,13 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     window_->on_added(finishing([this] { add(); }));
     window_->on_duplicated(finishing([this] { duplicate(); }));
     window_->on_removed(finishing([this] { remove(); }));
-    window_->on_removed_at(finishing([this](int index) { removeAt(index); }));
+    // Through `DeleteGuard`, which drops the second click of a double-click on ×: the row
+    // below moves up under the pointer and would take it (the audit of 2026-09-25, L10).
+    window_->on_removed_at(finishing([this](int index) {
+        if (fixtureMarks_.press(index)) {
+            removeAt(index);
+        }
+    }));
     window_->on_enabled_changed(
         finishing([this](int index, bool on) { setEnabledAt(index, on); }));
     window_->on_name_edited([this](const slint::SharedString& text) { rename(std::string(text)); });
@@ -110,7 +116,11 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     window_->on_fixture_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
     window_->on_mode_picked(finishing([this](int mode) { pickMode(mode); }));
     window_->on_channel_added(finishing([this] { addChannel(); }));
-    window_->on_channel_removed(finishing([this](int index) { removeChannel(index); }));
+    window_->on_channel_removed(finishing([this](int index) {
+        if (channelMarks_.press(index)) { // a double-click on × is one deletion (L10)
+            removeChannel(index);
+        }
+    }));
     window_->on_channel_role_picked(
         finishing([this](int index, int role) { pickChannelRole(index, role); }));
     window_->on_channel_parked_changed([this](int index, int level) {
@@ -754,10 +764,12 @@ void FixturesController::identify() {
     // **A flash on every light-emitting channel the fixture actually has.**
     //
     // Flash is the shape that makes this safe to press during a set: it jumps to full and
-    // decays back to zero over the duration, so it puts the fixture back where it found it
-    // without anything having to remember where that was. Driving a color to white and
-    // leaving it there would identify the lamp and then leave it white — which is how a lamp
-    // gets left on after an operator has walked back from the truss.
+    // decays back over the duration to wherever each channel was when it started
+    // (`Payload::baseIsCurrent`, which the engine resolves), so it puts the fixture back where
+    // it found it. Driving a color to white and leaving it there would identify the lamp and
+    // then leave it white — which is how a lamp gets left on after an operator has walked back
+    // from the truss. It used to decay to 0, which is where it found a *dark* fixture only: a
+    // lit one went out, and an LED par lost its colour (the 2026-09-25 audit's L1).
     //
     // Every emitter rather than the dimmer alone, because plenty of pars have no dimmer at
     // all: on those, a flash aimed at `Dimmer` reaches nothing and the lamp never lights.
@@ -770,7 +782,7 @@ void FixturesController::identify() {
         payload.kind = dmx::EffectKind::Flash;
         payload.role = role;
         payload.level = 255;
-        payload.base = 0;
+        payload.baseIsCurrent = true;
         // Ease-in holds it near full for most of the time and drops away at the end, which is
         // what "look at me" wants — an ease-out would be gone before anybody looked up.
         payload.curve = dmx::Curve::EaseIn;
