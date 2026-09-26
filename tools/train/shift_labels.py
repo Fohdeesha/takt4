@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (FPS, HOP, MANIFEST, SAMPLE_RATE, add_tools_path, feature_paths, load_manifest,  # noqa: E402
+from common import (FPS, MANIFEST, feature_paths, labels_from_beats, load_manifest,  # noqa: E402
                     read_beats, save_json, write_beats)
 
 
@@ -30,8 +30,6 @@ def main(argv):
     if len(argv) != 2:
         raise SystemExit(__doc__)
     set_name, frames = argv[0], int(argv[1])
-    add_tools_path()
-    from BeatNetPlus.prepare_data import build_ground_truth
     manifest = load_manifest()
     info = manifest["sets"][set_name]
     done = 0
@@ -46,19 +44,17 @@ def main(argv):
             t["beats"] = t["beats_original"] = str(annotated)
             t.pop("beats_annotated", None)
             t.pop("label_shift_frames", None)
-            new_t, new_p = times, positions
         else:
             shifted = annotated.with_name(annotated.stem.replace(".shifted", "") + ".shifted.beats")
-            new_t = times + frames / FPS
-            new_p = positions
-            write_beats(shifted, new_t, new_p)
+            write_beats(shifted, times + frames / FPS, positions)
             t["beats_annotated"] = str(annotated)
             t["beats"] = t["beats_original"] = str(shifted)
             t["label_shift_frames"] = frames
         # Any earlier halving is undone here; octave.py redoes it from the shifted file.
         t.pop("octave", None)
-        gt = build_ground_truth(new_t[new_p != 1], new_t[new_p == 1], n_frames, SAMPLE_RATE, HOP)
-        np.save(gt_path, np.argmax(gt, axis=0).astype(np.int8))
+        # From the file, not from `times + frames / FPS`: a beat that lands exactly on a
+        # frame boundary can fall on either side of it (common.labels_from_beats).
+        np.save(gt_path, labels_from_beats(t["beats"], n_frames))
         done += 1
     save_json(MANIFEST, manifest)
     print(f"{set_name}: {done} tracks shifted by {frames} frame(s); wrote {MANIFEST}")

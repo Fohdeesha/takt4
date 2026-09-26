@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (FPS, HOP, MANIFEST, NUM_BANDS, SAMPLE_RATE, add_tools_path, feature_paths,  # noqa: E402
+from common import (FPS, MANIFEST, NUM_BANDS, feature_paths, labels_from_beats,  # noqa: E402
                     load_manifest, read_beats, save_json, tempo_of, write_beats)
 from check import KICK_BANDS, REACH, SKIP, local_max  # noqa: E402
 
@@ -88,8 +88,6 @@ def main(argv):
     ap.add_argument("--sets", nargs="*", default=list(ELECTRONIC))
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
-    add_tools_path()
-    from BeatNetPlus.prepare_data import build_ground_truth
 
     manifest = load_manifest()
     for set_name in a.sets:
@@ -101,8 +99,7 @@ def main(argv):
             2026-09-09 — the class-per-frame file, which a halving had rewritten."""
             t["beats"], t["octave"] = str(original), "as annotated"
             if not a.dry_run:
-                gt = build_ground_truth(times[positions != 1], times[positions == 1], frames, SAMPLE_RATE, HOP)
-                np.save(feature_paths(set_name, t["id"])[1], np.argmax(gt, axis=0).astype(np.int8))
+                np.save(feature_paths(set_name, t["id"])[1], labels_from_beats(original, frames))
 
         for t in info["tracks"]:
             # Always start from the original annotation, so the script is idempotent.
@@ -151,8 +148,7 @@ def main(argv):
                 continue
             write_beats(half_path, new_t, new_pos)
             t["beats"] = str(half_path)
-            gt = build_ground_truth(new_t[new_pos != 1], new_t[new_pos == 1], feats.shape[0], SAMPLE_RATE, HOP)
-            np.save(gt_path, np.argmax(gt, axis=0).astype(np.int8))
+            np.save(gt_path, labels_from_beats(half_path, feats.shape[0]))
         hist = np.histogram(ratios, bins=[0, 1.25, 1.5, 2, 3, 5, 10, 1000])[0] if ratios else []
         print(f"{set_name}: {counts}; parity ratio histogram (<1.25, <1.5, <2, <3, <5, <10, more): {list(hist)}")
     if not a.dry_run:

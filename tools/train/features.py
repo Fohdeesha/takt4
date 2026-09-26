@@ -28,20 +28,17 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (FEATURES, HOP, SAMPLE_RATE, add_tools_path, feature_paths,  # noqa: E402
-                    load_manifest, lower_priority, read_beats, save_json)
+from common import (FEATURES, SAMPLE_RATE, add_tools_path, feature_paths,  # noqa: E402
+                    labels_from_beats, load_manifest, lower_priority, save_json)
 
 PIPE = None
-BUILD_GT = None
 
 
 def _init():
-    global PIPE, BUILD_GT
+    global PIPE
     add_tools_path()
     from beatnet_features import FeaturePipeline
-    from BeatNetPlus.prepare_data import build_ground_truth
     PIPE = FeaturePipeline()
-    BUILD_GT = build_ground_truth
 
 
 def _one(job):
@@ -61,10 +58,7 @@ def _one(job):
             err = float(np.abs(half.astype(np.float32) - feats).max())
             feat_path.parent.mkdir(parents=True, exist_ok=True)
             np.save(feat_path, half)
-        times, positions = read_beats(beats)
-        gt = BUILD_GT(times[positions != 1], times[positions == 1], frames,
-                      SAMPLE_RATE, HOP)                     # (3, frames) one-hot
-        classes = np.argmax(gt, axis=0).astype(np.int8)
+        classes = labels_from_beats(beats, frames)
         np.save(gt_path, classes)
         return set_name, track_id, frames, int((classes == 0).sum()), \
             int((classes == 1).sum()), err, None
