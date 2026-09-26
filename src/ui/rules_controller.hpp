@@ -293,13 +293,36 @@ private:
     /// number is one the operator chose and the rule may fire (the audit's C7). Called by each
     /// slot setter just before it commits, so an edit that was refused does not count.
     void choseSlot(int slot) noexcept;
-    /// A keystroke in a chip's box (`followUp` false) or a follow-up's (true); `field` says
-    /// which box of the row. See `typing_`.
-    void noteTyping(bool followUp, int index, int field, std::string text);
+    /// Where a box being typed into sits. See `typing_`.
+    enum class TypedIn : std::uint8_t { Slot, FollowUp, Palette, Rule };
+    /// The rule's own boxes, numbered as `rule-typed` numbers them — the row index of a
+    /// `TypedIn::Rule` is always 0 and this is its field.
+    enum RuleBox : int {
+        kAddressBox = 0,
+        kBpmRangeBox,
+        kCooldownBox,
+        kDurationBox,
+        kCyclesBox,
+        kHueBox,
+        kEveryBox,
+        kPulsesBox,
+        kChannelBox,
+        kBaseBox,
+    };
+    /// A keystroke in a box; `index` is the row and `field` which box of it — the numbering is
+    /// the markup's (`slot-typed`, `follow-typed`, `palette-typed`, `rule-typed`). See `typing_`.
+    void noteTyping(TypedIn where, int index, int field, std::string text);
     /// That box committed on its own, so there is nothing left to carry over.
-    void typed(bool followUp, int index) noexcept;
+    void typed(TypedIn where, int index, int field) noexcept;
+    /// Whether this rule box has keystrokes nobody has committed yet, on the rule showing — so a
+    /// republish from outside (`setTargets`, `setPatch`) does not write over them.
+    bool typingInto(RuleBox box) const noexcept;
+    /// Whether a row box's own commit only repeats what `commitTyping` already committed for
+    /// it. See `echo_`.
+    bool echoes(TypedIn where, int field, const slint::SharedString& text) noexcept;
     /// Commits what `typing_` holds to the rule it was typed for, if that is still the rule
-    /// showing. Called before anything that changes which rule that is.
+    /// showing. Called before **every** action — see the constructor, where each callback is
+    /// wired — so that what an action acts on is what is on the screen.
     void commitTyping();
     /// Takes in what a control surface changed on the live rules — enabled, mute, rate — so
     /// the card shows what is really running (the audit's H7). Enabled is configuration and is
@@ -427,25 +450,36 @@ private:
     /// A palette swatch added or taken away: every swatch after it has moved, so the whole
     /// palette — and the chips, whose color rows read from it — are built again.
     bool rebuildAll_ = false;
-    /// What is in a chip's or a follow-up's box that has not been committed yet — kept from its
-    /// keystrokes, so that switching rules commits it to the rule it was typed for (the audit's
-    /// M16). Switching used to rebuild the rows at once, which destroyed the box and what was
-    /// in it; and a box that survived committed, when it lost the focus, into whichever rule
-    /// was showing by then.
+    /// What is in a box that has not been committed yet — kept from its keystrokes, so that
+    /// switching rules commits it to the rule it was typed for (the audit's M16). Switching used
+    /// to rebuild the rows at once, which destroyed the box and what was in it; and a box that
+    /// survived committed, when it lost the focus, into whichever rule was showing by then.
+    ///
+    /// **Every box, and before every action** (the audit of 2026-09-25, M18). A box commits when
+    /// it loses the keyboard, a turn of the event loop *after* the click that took it — so TEST
+    /// fired the rule as it was before the edit, and + ADD, MUTE, ÷2 or a follow-up's × wrote the
+    /// stored value back over what was typed. Only one box has the keyboard, so one is enough.
     struct Typing {
         std::string ruleId;
-        bool followUp = false;
+        TypedIn where = TypedIn::Slot;
         int index = 0;
         int field = 0;
         std::string text;
     };
     std::optional<Typing> typing_;
+    /// The last thing `commitTyping` committed for a box, until that box's own late commit
+    /// arrives. By then the rows may have moved — a follow-up's × above the box shifts it onto
+    /// the next row — and the box would commit what was typed for one row into another. Cleared
+    /// by the next keystroke anywhere, since only typing can put different text in a box.
+    std::optional<Typing> echo_;
 
     /// Which rule, and which send kind, the generator rows currently on screen were built
     /// for. When either changes the rows are rebuilt rather than updated in place, so the
     /// text boxes come back *bound* — see `publishSlots`, which explains why a box that has
     /// been typed into stops following the model and what that looked like to the operator.
     std::string slotsBuiltFor_;
+    /// And which rule the follow-up rows were built for — see `publishFollowUps`.
+    std::string followsBuiltFor_;
     trigger::Message::Kind slotsKind_ = trigger::Message::Kind::Osc;
     /// And which DMX effect, which decides *which* generators a rule has — see
     /// `publishSlots`, where changing it counts as changing the kind.
@@ -484,15 +518,16 @@ private:
     /// **This is the 2026-09-16 crash.** *"I moved the hue slider and it completely
     /// crashed."* The picker is a `PopupWindow` belonging to a repeated item, so rebuilding
     /// the repeater destroys the popup — and the row the drag changes is, of course, a row
-    /// that changed, so `rowsNeedRebuild` said yes on every pixel of the drag and the next
+    /// that changed, so the staleness check said yes on every pixel of the drag and the next
     /// redraw tore down the popup and the slider inside it while the pointer still had it.
     /// Measured: ninety resets for a ninety-pixel drag, on both pickers.
     ///
-    /// A rebuild exists to re-bind a box somebody typed into (see `model_rows.hpp`). A slider
-    /// the operator is holding is the opposite case: the value in the row came *from* that
-    /// element, so the element is already showing it and there is nothing to restore. Hence a
-    /// flag rather than a comparator that ignores the color fields — `SlotRow::fixed` is a
-    /// text box on every slot that is not a color, and that box does need the rebuild.
+    /// A rebuild exists to re-bind a widget that set its own value (see `model_rows.hpp`). A
+    /// slider the operator is holding is the opposite case: the value in the row came *from*
+    /// that element, so the element is already showing it and there is nothing to restore.
+    /// Hence a flag rather than a comparator that ignores the color fields — the picker's
+    /// sliders do need the rebuild when something *else* moves the color, a hex typed into the
+    /// chip's box, say.
     bool pickingColor_ = false;
     /// Whether a color picker's popup is on the screen, from `PopupWindow::is-open`.
     ///

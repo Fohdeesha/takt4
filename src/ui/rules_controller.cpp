@@ -88,6 +88,16 @@ std::optional<double> readNumber(std::string_view text) noexcept {
     return value;
 }
 
+/// What a number box's keystrokes say it holds. The markup has already clamped it and spelled
+/// it as a whole number (`NumberBox::typed`), so anything else is a box nobody meant.
+std::optional<int> typedNumber(std::string_view text) noexcept {
+    const std::optional<double> number = readNumber(trim(text));
+    if (!number || !std::isfinite(*number)) {
+        return std::nullopt;
+    }
+    return static_cast<int>(std::clamp(std::round(*number), -1.0e9, 1.0e9));
+}
+
 /// One entry of a list an operator typed.
 ///
 /// **Type is inferred from how it is written**, which is the same rule the preset file uses
@@ -751,56 +761,103 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_color_modes(colorModes);
 
-    window_->on_rule_picked([this](int index) { pick(index); });
-    window_->on_rule_picked_with(
-        [this](int index, bool control, bool shift) { pickWith(index, control, shift); });
-    window_->on_rule_added([this] { add(); });
-    window_->on_rule_removed([this] { remove(); });
-    window_->on_rule_duplicated([this] { duplicate(); });
-    window_->on_rule_removed_at([this](int index) { removeAt(index); });
-    window_->on_rule_duplicated_at([this](int index) { duplicateAt(index); });
-    window_->on_rig_added([this](int index) { addRig(index); });
-    window_->on_rule_enabled_changed([this](bool on) { setEnabled(on); });
-    window_->on_rule_muted_changed([this](bool on) { setMuted(on); });
-    window_->on_rule_rate_changed([this](float factor) { nudgeRate(factor); });
-    window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
-    window_->on_rule_tested([this] { test(); });
-    window_->on_panic_clicked([this] { panic(); });
-    window_->on_panic_released([this] { releasePanic(); });
+    // **Every action commits what was being typed before it runs** (the audit of 2026-09-25,
+    // M18) — see `typing_`. A box's own commit is not wrapped: its setter clears its own record
+    // (`typed`), and while it has the keyboard no other box can have one. What the box keystrokes
+    // are is said once, here, rather than at the top of forty setters, where the forty-first
+    // would have been the one that forgot.
+    const auto finishing = [this](auto action) {
+        return [this, action](auto... args) {
+            commitTyping();
+            action(args...);
+        };
+    };
+    // And a box's own commit is dropped when it only repeats what an action already committed
+    // for it — see `echo_`. By then the action may have put another rule, or another row, under
+    // the box: + ADD shows the new rule's "every" in the box that was typed 7 into, and the late
+    // commit of that 7 went to the new rule.
+    const auto number = [](int n) { return slint::SharedString(std::to_string(n)); };
 
-    window_->on_trigger_picked([this](int index) { pickTrigger(index); });
-    window_->on_every_changed([this](int every) { setEvery(every); });
-    window_->on_pulses_changed([this](int pulses) { setPulses(pulses); });
-    window_->on_output_chosen([this](const slint::SharedString& name, bool chosen) {
-        setOutputChosen(std::string(name), chosen);
+    window_->on_rule_picked(finishing([this](int index) { pick(index); }));
+    window_->on_rule_picked_with(finishing(
+        [this](int index, bool control, bool shift) { pickWith(index, control, shift); }));
+    window_->on_rule_added(finishing([this] { add(); }));
+    window_->on_rule_removed(finishing([this] { remove(); }));
+    window_->on_rule_duplicated(finishing([this] { duplicate(); }));
+    window_->on_rule_removed_at(finishing([this](int index) { removeAt(index); }));
+    window_->on_rule_duplicated_at(finishing([this](int index) { duplicateAt(index); }));
+    window_->on_rig_added(finishing([this](int index) { addRig(index); }));
+    window_->on_rule_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
+    window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
+    window_->on_rule_rate_changed(finishing([this](float factor) { nudgeRate(factor); }));
+    // The name commits on every keystroke, so there is never anything of its own to carry.
+    window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
+    window_->on_rule_tested(finishing([this] { test(); }));
+    window_->on_panic_clicked(finishing([this] { panic(); }));
+    window_->on_panic_released(finishing([this] { releasePanic(); }));
+
+    window_->on_trigger_picked(finishing([this](int index) { pickTrigger(index); }));
+    window_->on_every_changed([this, number](int every) {
+        if (!echoes(TypedIn::Rule, kEveryBox, number(every))) {
+            setEvery(every);
+        }
     });
-    window_->on_all_outputs_chosen([this] { chooseAllOutputs(); });
-    window_->on_fixture_chosen([this](const slint::SharedString& name, bool chosen) {
-        setFixtureChosen(std::string(name), chosen);
+    window_->on_pulses_changed([this, number](int pulses) {
+        if (!echoes(TypedIn::Rule, kPulsesBox, number(pulses))) {
+            setPulses(pulses);
+        }
     });
-    window_->on_no_fixtures_chosen([this] { chooseNoFixtures(); });
-    window_->on_effect_picked([this](int index) { pickEffect(index); });
-    window_->on_effect_role_picked([this](int index) { pickRole(index); });
-    window_->on_effect_curve_picked([this](int index) { pickCurve(index); });
-    window_->on_effect_shape_picked([this](int index) { pickPathShape(index); });
-    window_->on_effect_duration_edited(
-        [this](const slint::SharedString& text) { setDuration(std::string(text)); });
-    window_->on_effect_unit_picked([this](int unit) { pickDurationUnit(unit); });
-    window_->on_effect_base_changed([this](int level) { setBase(level); });
-    window_->on_effect_cycles_edited(
-        [this](const slint::SharedString& text) { setCycles(std::string(text)); });
-    window_->on_effect_duty_changed([this](float percent) { setDuty(percent); });
-    window_->on_effect_hue_edited(
-        [this](const slint::SharedString& text) { setHueRange(std::string(text)); });
-    window_->on_effect_size_changed([this](float percent) { setSize(percent); });
-    window_->on_color_mode_picked([this](int index) { pickColorMode(index); });
-    window_->on_palette_added([this] { addPaletteColor(); });
-    window_->on_palette_removed([this](int index) { removePaletteColor(index); });
-    window_->on_palette_color_changed([this](int index, float hue, float sat, float val) {
-        setPaletteColor(index, hue, sat, val);
+    window_->on_output_chosen(
+        finishing([this](const slint::SharedString& name, bool chosen) {
+            setOutputChosen(std::string(name), chosen);
+        }));
+    window_->on_all_outputs_chosen(finishing([this] { chooseAllOutputs(); }));
+    window_->on_fixture_chosen(
+        finishing([this](const slint::SharedString& name, bool chosen) {
+            setFixtureChosen(std::string(name), chosen);
+        }));
+    window_->on_no_fixtures_chosen(finishing([this] { chooseNoFixtures(); }));
+    window_->on_effect_picked(finishing([this](int index) { pickEffect(index); }));
+    window_->on_effect_role_picked(finishing([this](int index) { pickRole(index); }));
+    window_->on_effect_curve_picked(finishing([this](int index) { pickCurve(index); }));
+    window_->on_effect_shape_picked(finishing([this](int index) { pickPathShape(index); }));
+    window_->on_effect_duration_edited([this](const slint::SharedString& text) {
+        if (!echoes(TypedIn::Rule, kDurationBox, text)) {
+            setDuration(std::string(text));
+        }
     });
+    window_->on_effect_unit_picked(finishing([this](int unit) { pickDurationUnit(unit); }));
+    window_->on_effect_base_changed([this, number](int level) {
+        if (!echoes(TypedIn::Rule, kBaseBox, number(level))) {
+            setBase(level);
+        }
+    });
+    window_->on_effect_cycles_edited([this](const slint::SharedString& text) {
+        if (!echoes(TypedIn::Rule, kCyclesBox, text)) {
+            setCycles(std::string(text));
+        }
+    });
+    window_->on_effect_duty_changed(finishing([this](float percent) { setDuty(percent); }));
+    window_->on_effect_hue_edited([this](const slint::SharedString& text) {
+        if (!echoes(TypedIn::Rule, kHueBox, text)) {
+            setHueRange(std::string(text));
+        }
+    });
+    window_->on_effect_size_changed(finishing([this](float percent) { setSize(percent); }));
+    window_->on_color_mode_picked(finishing([this](int index) { pickColorMode(index); }));
+    window_->on_palette_added(finishing([this] { addPaletteColor(); }));
+    window_->on_palette_removed(finishing([this](int index) { removePaletteColor(index); }));
+    window_->on_palette_color_changed(
+        finishing([this](int index, float hue, float sat, float val) {
+            setPaletteColor(index, hue, sat, val);
+        }));
     window_->on_palette_hex_edited([this](int index, const slint::SharedString& text) {
-        setPaletteHex(index, std::string(text));
+        if (!echoes(TypedIn::Palette, 0, text)) {
+            setPaletteHex(index, std::string(text));
+        }
+    });
+    window_->on_palette_typed([this](int index, const slint::SharedString& t) {
+        noteTyping(TypedIn::Palette, index, 0, std::string(t));
     });
     window_->on_picker_open_changed([this](bool open) { setPickerOpen(open); });
 
@@ -809,61 +866,118 @@ RulesController::RulesController(output::OutputRunner& runner,
     // promotion under -Wdouble-promotion -Werror, and MSVC accepts it silently — which is
     // why these two were still here after the same fix went in for the engine.
     window_->on_min_confidence_changed(
-        [this](float v) { setMinConfidence(static_cast<double>(v)); });
-    window_->on_intensity_changed([this](int which, bool on) { setIntensity(which, on); });
-    window_->on_bpm_range_edited(
-        [this](const slint::SharedString& t) { setBpmRange(std::string(t)); });
-    window_->on_probability_changed([this](float v) { setProbability(static_cast<double>(v)); });
-    window_->on_cooldown_changed(
-        [this](const slint::SharedString& t) { setCooldown(std::string(t)); });
+        finishing([this](float v) { setMinConfidence(static_cast<double>(v)); }));
+    window_->on_intensity_changed(
+        finishing([this](int which, bool on) { setIntensity(which, on); }));
+    window_->on_bpm_range_edited([this](const slint::SharedString& t) {
+        if (!echoes(TypedIn::Rule, kBpmRangeBox, t)) {
+            setBpmRange(std::string(t));
+        }
+    });
+    window_->on_probability_changed(
+        finishing([this](float v) { setProbability(static_cast<double>(v)); }));
+    window_->on_cooldown_changed([this](const slint::SharedString& t) {
+        if (!echoes(TypedIn::Rule, kCooldownBox, t)) {
+            setCooldown(std::string(t));
+        }
+    });
 
-    window_->on_send_picked([this](int index) { pickSend(index); });
-    window_->on_address_edited(
-        [this](const slint::SharedString& a) { setAddress(std::string(a)); });
-    window_->on_channel_changed([this](int channel) { setChannel(channel); });
-    window_->on_host_preset_picked([this](int index) { pickHostPreset(index); });
-    window_->on_send_value_changed([this](bool on) { setSendValue(on); });
+    window_->on_send_picked(finishing([this](int index) { pickSend(index); }));
+    window_->on_address_edited([this](const slint::SharedString& a) {
+        if (!echoes(TypedIn::Rule, kAddressBox, a)) {
+            setAddress(std::string(a));
+        }
+    });
+    window_->on_channel_changed([this, number](int channel) {
+        if (!echoes(TypedIn::Rule, kChannelBox, number(channel))) {
+            setChannel(channel);
+        }
+    });
+    window_->on_host_preset_picked(finishing([this](int index) { pickHostPreset(index); }));
+    window_->on_send_value_changed(finishing([this](bool on) { setSendValue(on); }));
+    window_->on_rule_typed([this](int field, const slint::SharedString& t) {
+        noteTyping(TypedIn::Rule, 0, field, std::string(t));
+    });
 
-    window_->on_follow_up_added([this] { addFollowUp(); });
-    window_->on_follow_up_removed([this](int index) { removeFollowUp(index); });
+    window_->on_follow_up_added(finishing([this] { addFollowUp(); }));
+    window_->on_follow_up_removed(finishing([this](int index) { removeFollowUp(index); }));
     window_->on_follow_kind_picked(
-        [this](int index, int choice) { pickFollowKind(index, choice); });
-    window_->on_follow_number_changed([this](int index, int n) { setFollowNumber(index, n); });
-    window_->on_follow_value_edited(
-        [this](int index, const slint::SharedString& t) { setFollowValue(index, std::string(t)); });
-    window_->on_follow_delay_edited(
-        [this](int index, const slint::SharedString& t) { setFollowDelay(index, std::string(t)); });
-    window_->on_follow_unit_picked([this](int index, int unit) { pickFollowUnit(index, unit); });
+        finishing([this](int index, int choice) { pickFollowKind(index, choice); }));
+    // A × on a row above moves the box that had the keyboard onto the next follow-up before its
+    // late commit arrives, which is the other thing the echo is for.
+    window_->on_follow_number_changed([this, number](int index, int n) {
+        if (!echoes(TypedIn::FollowUp, 2, number(n))) {
+            setFollowNumber(index, n);
+        }
+    });
+    window_->on_follow_value_edited([this](int index, const slint::SharedString& t) {
+        if (!echoes(TypedIn::FollowUp, 0, t)) {
+            setFollowValue(index, std::string(t));
+        }
+    });
+    window_->on_follow_delay_edited([this](int index, const slint::SharedString& t) {
+        if (!echoes(TypedIn::FollowUp, 1, t)) {
+            setFollowDelay(index, std::string(t));
+        }
+    });
+    window_->on_follow_unit_picked(
+        finishing([this](int index, int unit) { pickFollowUnit(index, unit); }));
 
-    window_->on_slot_kind_picked([this](int slot, int kind) { pickSlotKind(slot, kind); });
-    window_->on_slot_pool_changed([this](int slot, bool list) { setSlotPool(slot, list); });
-    window_->on_slot_range_edited(
-        [this](int slot, const slint::SharedString& t) { setSlotRange(slot, std::string(t)); });
-    window_->on_slot_values_edited(
-        [this](int slot, const slint::SharedString& t) { setSlotValues(slot, std::string(t)); });
+    window_->on_slot_kind_picked(finishing([this](int slot, int kind) { pickSlotKind(slot, kind); }));
+    window_->on_slot_pool_changed(finishing([this](int slot, bool list) { setSlotPool(slot, list); }));
+    window_->on_slot_range_edited([this](int slot, const slint::SharedString& t) {
+        if (!echoes(TypedIn::Slot, 1, t)) {
+            setSlotRange(slot, std::string(t));
+        }
+    });
+    window_->on_slot_values_edited([this](int slot, const slint::SharedString& t) {
+        if (!echoes(TypedIn::Slot, 2, t)) {
+            setSlotValues(slot, std::string(t));
+        }
+    });
     window_->on_slot_typed([this](int slot, int field, const slint::SharedString& t) {
-        noteTyping(false, slot, field, std::string(t));
+        noteTyping(TypedIn::Slot, slot, field, std::string(t));
     });
     window_->on_follow_typed([this](int index, int field, const slint::SharedString& t) {
-        noteTyping(true, index, field, std::string(t));
+        noteTyping(TypedIn::FollowUp, index, field, std::string(t));
     });
-    window_->on_slot_normalise_edited(
-        [this](int slot, const slint::SharedString& t) { setSlotNormalise(slot, std::string(t)); });
-    window_->on_slot_weights_edited(
-        [this](int slot, const slint::SharedString& t) { setSlotWeights(slot, std::string(t)); });
-    window_->on_slot_no_repeat_changed([this](int slot, int n) { setSlotNoRepeat(slot, n); });
-    window_->on_slot_color_changed([this](int slot, float hue, float saturation, float bright) {
-        setSlotColor(slot, hue, saturation, bright);
+    window_->on_slot_normalise_edited([this](int slot, const slint::SharedString& t) {
+        if (!echoes(TypedIn::Slot, 4, t)) {
+            setSlotNormalise(slot, std::string(t));
+        }
     });
-    window_->on_slot_fixed_edited(
-        [this](int slot, const slint::SharedString& t) { setSlotFixed(slot, std::string(t)); });
-    window_->on_slot_live_picked([this](int slot, int source) { pickSlotLive(slot, source); });
-    window_->on_slot_shape_picked([this](int slot, int shape) { pickSlotShape(slot, shape); });
-    window_->on_slot_ramp_bars_changed([this](int slot, int bars) { setSlotRampBars(slot, bars); });
+    window_->on_slot_weights_edited([this](int slot, const slint::SharedString& t) {
+        if (!echoes(TypedIn::Slot, 3, t)) {
+            setSlotWeights(slot, std::string(t));
+        }
+    });
+    window_->on_slot_no_repeat_changed([this, number](int slot, int n) {
+        if (!echoes(TypedIn::Slot, 5, number(n))) {
+            setSlotNoRepeat(slot, n);
+        }
+    });
+    window_->on_slot_color_changed(
+        finishing([this](int slot, float hue, float saturation, float bright) {
+            setSlotColor(slot, hue, saturation, bright);
+        }));
+    window_->on_slot_fixed_edited([this](int slot, const slint::SharedString& t) {
+        if (!echoes(TypedIn::Slot, 0, t)) {
+            setSlotFixed(slot, std::string(t));
+        }
+    });
+    window_->on_slot_live_picked(
+        finishing([this](int slot, int source) { pickSlotLive(slot, source); }));
+    window_->on_slot_shape_picked(
+        finishing([this](int slot, int shape) { pickSlotShape(slot, shape); }));
+    window_->on_slot_ramp_bars_changed([this, number](int slot, int bars) {
+        if (!echoes(TypedIn::Slot, 6, number(bars))) {
+            setSlotRampBars(slot, bars);
+        }
+    });
     window_->on_slot_ramp_float_changed(
-        [this](int slot, bool asFloat) { setSlotRampFloat(slot, asFloat); });
+        finishing([this](int slot, bool asFloat) { setSlotRampFloat(slot, asFloat); }));
 
-    window_->on_log_cleared([this] { clearLog(); });
+    window_->on_log_cleared(finishing([this] { clearLog(); }));
 
     // The size this opens at, set here rather than in the markup: Slint takes a window's
     // initial size from what its content asks for, not from the Window's own
@@ -931,18 +1045,36 @@ const trigger::Rule::Config* RulesController::current() const noexcept {
     return const_cast<RulesController*>(this)->current();
 }
 
-void RulesController::noteTyping(bool followUp, int index, int field, std::string text) {
+void RulesController::noteTyping(TypedIn where, int index, int field, std::string text) {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
     }
-    typing_ = Typing{rule->id, followUp, index, field, std::move(text)};
+    typing_ = Typing{rule->id, where, index, field, std::move(text)};
+    echo_.reset();
 }
 
-void RulesController::typed(bool followUp, int index) noexcept {
-    if (typing_ && typing_->followUp == followUp && typing_->index == index) {
+void RulesController::typed(TypedIn where, int index, int field) noexcept {
+    if (typing_ && typing_->where == where && typing_->index == index && typing_->field == field) {
         typing_.reset();
     }
+}
+
+bool RulesController::typingInto(RuleBox box) const noexcept {
+    const Rule::Config* rule = current();
+    return typing_ && rule != nullptr && typing_->ruleId == rule->id &&
+           typing_->where == TypedIn::Rule && typing_->field == box;
+}
+
+bool RulesController::echoes(TypedIn where, int field, const slint::SharedString& text) noexcept {
+    // Not by row: the row is exactly what may have moved. By the kind of box and what it holds,
+    // which only a keystroke can change — and a keystroke clears the echo.
+    if (!echo_ || echo_->where != where || echo_->field != field ||
+        std::string_view(text) != echo_->text) {
+        return false;
+    }
+    echo_.reset();
+    return true;
 }
 
 void RulesController::commitTyping() {
@@ -955,13 +1087,67 @@ void RulesController::commitTyping() {
     if (rule == nullptr || rule->id != pending.ruleId) {
         return; // the rule it was typed for is not the one showing; nothing to put it in
     }
-    if (pending.followUp) {
+    echo_ = pending;
+    const std::optional<int> number = typedNumber(pending.text);
+    switch (pending.where) {
+    case TypedIn::FollowUp:
         if (pending.field == 0) {
             setFollowValue(pending.index, pending.text);
-        } else {
+        } else if (pending.field == 1) {
             setFollowDelay(pending.index, pending.text);
+        } else if (number) {
+            setFollowNumber(pending.index, *number);
         }
         return;
+    case TypedIn::Palette:
+        setPaletteHex(pending.index, pending.text);
+        return;
+    case TypedIn::Rule:
+        switch (pending.field) {
+        case kAddressBox:
+            setAddress(pending.text);
+            break;
+        case kBpmRangeBox:
+            setBpmRange(pending.text);
+            break;
+        case kCooldownBox:
+            setCooldown(pending.text);
+            break;
+        case kDurationBox:
+            setDuration(pending.text);
+            break;
+        case kCyclesBox:
+            setCycles(pending.text);
+            break;
+        case kHueBox:
+            setHueRange(pending.text);
+            break;
+        case kEveryBox:
+            if (number) {
+                setEvery(*number);
+            }
+            break;
+        case kPulsesBox:
+            if (number) {
+                setPulses(*number);
+            }
+            break;
+        case kChannelBox:
+            if (number) {
+                setChannel(*number);
+            }
+            break;
+        case kBaseBox:
+            if (number) {
+                setBase(*number);
+            }
+            break;
+        default:
+            break;
+        }
+        return;
+    case TypedIn::Slot:
+        break;
     }
     switch (pending.field) {
     case 0:
@@ -978,6 +1164,16 @@ void RulesController::commitTyping() {
         break;
     case 4:
         setSlotNormalise(pending.index, pending.text);
+        break;
+    case 5:
+        if (number) {
+            setSlotNoRepeat(pending.index, *number);
+        }
+        break;
+    case 6:
+        if (number) {
+            setSlotRampBars(pending.index, *number);
+        }
         break;
     default:
         break;
@@ -1361,6 +1557,12 @@ void RulesController::setEnabled(bool on) {
     if (Rule::Config* rule = current()) {
         rule->enabled = on;
         commit();
+        // **And to the running rule itself**, as MUTE is (the audit of 2026-09-25, M10). A set
+        // posted with the switch unchanged keeps the live switch (`Rule::carryFrom`), and after a
+        // control surface had switched this rule the editor's copy said what the surface did — so
+        // unticking it posted the value the running rule was already configured with, the rule
+        // went on firing, and the box said it was off.
+        runner_.post(output::OutputCommand::ruleEnabled(rule->id, on));
     }
 }
 
@@ -1427,9 +1629,13 @@ void RulesController::pickTrigger(int index) {
 }
 
 void RulesController::setEvery(int every) {
+    typed(TypedIn::Rule, 0, kEveryBox);
     if (Rule::Config* rule = current()) {
         rule->every = static_cast<std::uint32_t>(std::max(1, every));
         commit();
+        // Back into the box: a `NumberBox` never writes its own value, so it shows what this
+        // says it is — the std `SpinBox` it replaced set itself and so needed nothing here.
+        window_->set_every(static_cast<int>(rule->every));
     }
 }
 
@@ -1448,6 +1654,7 @@ void RulesController::setTargets(std::vector<output::OutputTarget> targets) {
 }
 
 void RulesController::setPulses(int pulses) {
+    typed(TypedIn::Rule, 0, kPulsesBox);
     if (Rule::Config* rule = current()) {
         rule->pulses = static_cast<std::uint32_t>(std::max(0, pulses));
         commit();
@@ -1553,6 +1760,7 @@ void RulesController::pickSlotShape(int slot, int shape) {
 }
 
 void RulesController::setSlotRampBars(int slot, int bars) {
+    typed(TypedIn::Slot, slot, 6);
     if (Generator::Config* config = slotConfig(slot)) {
         config->rampBars = static_cast<std::uint32_t>(std::max(1, bars));
         commit();
@@ -1583,6 +1791,7 @@ void RulesController::setIntensity(int which, bool allowed) {
 }
 
 void RulesController::setBpmRange(const std::string& text) {
+    typed(TypedIn::Rule, 0, kBpmRangeBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1624,6 +1833,7 @@ void RulesController::setProbability(double value) {
 }
 
 void RulesController::setCooldown(const std::string& text) {
+    typed(TypedIn::Rule, 0, kCooldownBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1705,6 +1915,7 @@ void RulesController::pickSend(int index) {
 }
 
 void RulesController::setAddress(const std::string& address) {
+    typed(TypedIn::Rule, 0, kAddressBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1716,9 +1927,11 @@ void RulesController::setAddress(const std::string& address) {
 }
 
 void RulesController::setChannel(int channel) {
+    typed(TypedIn::Rule, 0, kChannelBox);
     if (Rule::Config* rule = current()) {
         rule->channel = std::clamp(channel, 1, 16);
         commit();
+        window_->set_channel(rule->channel); // see `setEvery`
     }
 }
 
@@ -1778,6 +1991,7 @@ void RulesController::pickPathShape(int index) {
 }
 
 void RulesController::setDuration(const std::string& text) {
+    typed(TypedIn::Rule, 0, kDurationBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1812,13 +2026,16 @@ void RulesController::pickDurationUnit(int unit) {
 }
 
 void RulesController::setBase(int level) {
+    typed(TypedIn::Rule, 0, kBaseBox);
     if (Rule::Config* rule = current()) {
         rule->dmx.base = std::clamp(level, 0, 255);
         commit();
+        window_->set_effect_base(rule->dmx.base); // see `setEvery`
     }
 }
 
 void RulesController::setCycles(const std::string& text) {
+    typed(TypedIn::Rule, 0, kCyclesBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1842,6 +2059,7 @@ void RulesController::setDuty(float percent) {
 }
 
 void RulesController::setHueRange(const std::string& text) {
+    typed(TypedIn::Rule, 0, kHueBox);
     Rule::Config* rule = current();
     if (rule == nullptr) {
         return;
@@ -1881,6 +2099,13 @@ void RulesController::pickHostPreset(int index) {
         return;
     }
     if (index == 0) {
+        // **Nothing, when it already is custom.** A dropdown reports a pick of the entry it is
+        // already showing — the mouse wheel over a focused one does it a notch at a time — and
+        // this box reads "custom" for every address of the operator's own, so a scroll past it
+        // wiped the address and every follow-up (the audit of 2026-09-25, M19).
+        if (presetOf(rule->address) == 0) {
+            return;
+        }
         // §5.6's *"blank custom option"*, blanked. The address goes, its chips go with it —
         // `matchSegmentsToAddress` drops a generator when the placeholder it filled does —
         // and so does the press-then-release, which is a thing about Resolume's `connect`
@@ -1981,6 +2206,7 @@ void RulesController::pickFollowKind(int index, int choice) {
 }
 
 void RulesController::setFollowNumber(int index, int number) {
+    typed(TypedIn::FollowUp, index, 2);
     if (trigger::FollowUp* entry = followConfig(index)) {
         entry->number = std::clamp(number, 0, 127);
         commit();
@@ -1989,7 +2215,7 @@ void RulesController::setFollowNumber(int index, int number) {
 }
 
 void RulesController::setFollowValue(int index, const std::string& text) {
-    typed(true, index);
+    typed(TypedIn::FollowUp, index, 0);
     if (trigger::FollowUp* entry = followConfig(index)) {
         entry->value = parseValue(text);
         commit();
@@ -1998,7 +2224,7 @@ void RulesController::setFollowValue(int index, const std::string& text) {
 }
 
 void RulesController::setFollowDelay(int index, const std::string& text) {
-    typed(true, index);
+    typed(TypedIn::FollowUp, index, 1);
     trigger::FollowUp* entry = followConfig(index);
     if (entry == nullptr) {
         return;
@@ -2103,7 +2329,7 @@ void RulesController::setSlotPool(int slot, bool list) {
 }
 
 void RulesController::setSlotRange(int slot, const std::string& text) {
-    typed(false, slot);
+    typed(TypedIn::Slot, slot, 1);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2126,7 +2352,7 @@ void RulesController::setSlotRange(int slot, const std::string& text) {
 }
 
 void RulesController::setSlotValues(int slot, const std::string& text) {
-    typed(false, slot);
+    typed(TypedIn::Slot, slot, 2);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2143,7 +2369,7 @@ void RulesController::setSlotValues(int slot, const std::string& text) {
 }
 
 void RulesController::setSlotNormalise(int slot, const std::string& text) {
-    typed(false, slot);
+    typed(TypedIn::Slot, slot, 4);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2162,7 +2388,7 @@ void RulesController::setSlotNormalise(int slot, const std::string& text) {
 }
 
 void RulesController::setSlotWeights(int slot, const std::string& text) {
-    typed(false, slot);
+    typed(TypedIn::Slot, slot, 3);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2200,6 +2426,7 @@ void RulesController::setSlotWeights(int slot, const std::string& text) {
 }
 
 void RulesController::setSlotNoRepeat(int slot, int within) {
+    typed(TypedIn::Slot, slot, 5);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2227,7 +2454,7 @@ void RulesController::setSlotNoRepeat(int slot, int within) {
 }
 
 void RulesController::setSlotFixed(int slot, const std::string& text) {
-    typed(false, slot);
+    typed(TypedIn::Slot, slot, 0);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
         return;
@@ -2273,6 +2500,11 @@ void RulesController::setSlotColor(int slot, float hue, float saturation, float 
 
 void RulesController::setPickerOpen(bool open) {
     pickerOpen_ = open;
+    // A swatch's hex box lives in its picker, and a click outside drops the picker with the box
+    // in it — before the box can say it lost the focus. What was typed there is committed now.
+    if (!open) {
+        commitTyping();
+    }
 }
 
 void RulesController::previewColor(dmx::Color color) {
@@ -2410,6 +2642,12 @@ void RulesController::removePaletteColor(int index) {
     }
     config->values.erase(config->values.begin() + index);
     pickedPalette_.clear(); // every entry after this one has moved
+    // **No picker is open now**, whichever swatch this was. REMOVE is inside the picker and
+    // closes it first, and any other click would have closed an open one on its way in. The
+    // swatch's own watcher says so for every swatch but the last: the last one's element goes
+    // at once, the watcher with it, and the editor held every rebuild for good (the audit of
+    // 2026-09-25, M20).
+    pickerOpen_ = false;
     commit();
     rebuildAll_ = true;
     rowsDirty_ = true;
@@ -2439,6 +2677,7 @@ void RulesController::setPaletteColor(int index, float hue, float saturation, fl
 }
 
 void RulesController::setPaletteHex(int index, const std::string& text) {
+    typed(TypedIn::Palette, index, 0);
     Generator::Config* config = paletteConfig();
     if (config == nullptr || index < 0 ||
         static_cast<std::size_t>(index) >= config->values.size()) {
@@ -2692,9 +2931,19 @@ void RulesController::publishSelected() {
     // Spelled here rather than by the markup, because both boxes are two-way bound and so the
     // property holds *text* — see `bpm-field`, where the one-way version's failure is written
     // down. `spellNumber` so a range reads "70 - 140" and not "70.000000 - 140.000000".
-    window_->set_bpm_range(shared(spellNumber(rule->conditions.minBpm) + " - " +
-                                  spellNumber(rule->conditions.maxBpm)));
-    window_->set_cooldown_ms(shared(spellNumber(rule->conditions.cooldownSeconds * 1000.0)));
+    //
+    // And so writing one writes over what is being typed in it. Every action commits that first
+    // (`commitTyping`), so this skips only a republish from outside — the main window's outputs
+    // or patch changing — which would otherwise take the keystrokes out from under the operator
+    // (the audit of 2026-09-25, M18).
+    if (!typingInto(kBpmRangeBox)) {
+        window_->set_bpm_range(shared(spellNumber(rule->conditions.minBpm) + " - " +
+                                      spellNumber(rule->conditions.maxBpm)));
+    }
+    if (!typingInto(kCooldownBox)) {
+        window_->set_cooldown_ms(
+            shared(spellNumber(rule->conditions.cooldownSeconds * 1000.0)));
+    }
 
     const auto sendIndex =
         std::find(trigger::kMessageKinds.begin(), trigger::kMessageKinds.end(), rule->sendKind) -
@@ -2705,7 +2954,9 @@ void RulesController::publishSelected() {
     // spinner has to stay off a lighting rule, which has no channel at all.
     window_->set_sends_midi(trigger::isMidi(rule->sendKind));
     publishDmx();
-    window_->set_address(shared(rule->address));
+    if (!typingInto(kAddressBox)) {
+        window_->set_address(shared(rule->address));
+    }
     // Which preset this address is, so the picker describes the rule in front of it rather
     // than the last thing anybody clicked in it.
     window_->set_host_preset_index(presetOf(rule->address));
@@ -2727,10 +2978,20 @@ void RulesController::publishFollowUps() {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
         followModel_->clear();
+        followsBuiltFor_.clear();
         followKinds_.clear();
         followRelease_.clear();
         window_->set_can_add_follow_up(false);
         return;
+    }
+    // Another rule's rows are built from nothing, as the chips are (`slotsBuiltFor_`). The boxes
+    // on them no longer go deaf, so nothing else rebuilds them — and a box that had the keyboard
+    // would go on holding what was typed for the rule before, over this one's value, and commit
+    // it into this one when it let go.
+    if (rule->id != followsBuiltFor_) {
+        followModel_->clear();
+        staleFollows_.clear();
+        followsBuiltFor_ = rule->id;
     }
 
     // What a follow-up on *this* rule may be, and the two things left out of it.
@@ -2816,11 +3077,19 @@ void RulesController::publishFollowUps() {
         rows.push_back(std::move(row));
     }
 
-    // Nothing on these rows moves on its own — no live readout — so any change at all is one
-    // the controller made and has to get back into a box that may have gone deaf. See
-    // `rowsNeedRebuild` and `rowsDirty_`.
+    // Nothing on these rows moves on its own — no live readout — so a change is one the
+    // controller made and has to get back into a widget that may have gone deaf. See
+    // `rowsDirty_`. **Except the three boxes**: a `NumberBox` and a `LiveField` never go deaf,
+    // and a row rebuilt for one of them was the row, and the box the operator had just tabbed
+    // into, destroyed under the next keystroke (the audit of 2026-09-25, M17).
     if (markStale(*followModel_, rows, staleFollows_,
-                        [](const FollowRow& was, const FollowRow& now) { return was != now; })) {
+                  [](const FollowRow& was, const FollowRow& now) {
+                      FollowRow ignoring = was;
+                      ignoring.number = now.number;
+                      ignoring.value = now.value;
+                      ignoring.delay = now.delay;
+                      return ignoring != now;
+                  })) {
         rowsDirty_ = true;
     }
     writeRows(*followModel_, rows);
@@ -3100,15 +3369,24 @@ void RulesController::publishDmx() {
     window_->set_effect_base(send.base);
     window_->set_effect_duty(static_cast<float>(send.duty * 100.0));
     window_->set_effect_size(static_cast<float>(send.size * 100.0));
-    window_->set_effect_hue(shared(spellNumber(send.hueFrom) + " - " + spellNumber(send.hueTo)));
-    window_->set_effect_cycles(shared(spellNumber(send.cycles)));
+    // The three text boxes are bound both ways, so writing one writes over whatever is in it —
+    // left alone while it holds keystrokes nobody has committed (see `typingInto`).
+    if (!typingInto(kHueBox)) {
+        window_->set_effect_hue(
+            shared(spellNumber(send.hueFrom) + " - " + spellNumber(send.hueTo)));
+    }
+    if (!typingInto(kCyclesBox)) {
+        window_->set_effect_cycles(shared(spellNumber(send.cycles)));
+    }
     const auto unitIndex =
         std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), send.unit) -
         trigger::kDelayUnits.begin();
     window_->set_effect_unit(static_cast<int>(unitIndex));
-    window_->set_effect_duration(shared(send.unit == trigger::DelayUnit::Milliseconds
-                                            ? spellNumber(send.durationSeconds * 1000.0)
-                                            : spellNumber(send.durationBeats)));
+    if (!typingInto(kDurationBox)) {
+        window_->set_effect_duration(shared(send.unit == trigger::DelayUnit::Milliseconds
+                                                ? spellNumber(send.durationSeconds * 1000.0)
+                                                : spellNumber(send.durationBeats)));
+    }
     publishFixtureChoices();
 }
 
@@ -3124,9 +3402,10 @@ void RulesController::publishSlots() {
     //
     // `writeRows` updates rows in place so that a box being typed into is not destroyed under
     // the cursor — see its header, which is right about that and did not go far enough. The
-    // consequence it records is that a `LineEdit` (or a `ComboBox`) loses its `text:` binding
-    // the moment somebody types into it, because Slint drops a binding when the property is
-    // assigned. Within one rule that is harmless: what was typed is what is meant.
+    // consequence it records is that a widget that assigns its own value — a `ComboBox` picked
+    // from, and the `LineEdit`s these boxes were until the audit of 2026-09-25 — loses its
+    // binding the moment it is used, because Slint drops a binding when the property is
+    // assigned. Within one rule that is harmless: what was picked is what is meant.
     //
     // Across rules it is not. Selecting a different rule updates the model rows, the dead
     // widget ignores them, and the operator sees the *previous* rule's range, list and mode
@@ -3337,6 +3616,19 @@ void RulesController::publishSlots() {
         markStale(*slotModel_, rows, staleSlots_, [](const SlotRow& was, const SlotRow& now) {
             SlotRow ignoring = was;
             ignoring.last = now.last;
+            // And whatever a `LiveField` or a `NumberBox` shows, since neither goes deaf: a row
+            // rebuilt for one of them took the box beside it — the one the operator had just
+            // tabbed into — down with it (the audit of 2026-09-25, M17). What is left is what the
+            // std widgets hold, which do assign their own values: the dropdowns, the tick boxes
+            // and the picker's sliders.
+            ignoring.low = now.low;
+            ignoring.high = now.high;
+            ignoring.values = now.values;
+            ignoring.fixed = now.fixed;
+            ignoring.normalise = now.normalise;
+            ignoring.weights = now.weights;
+            ignoring.ramp_bars = now.ramp_bars;
+            ignoring.no_repeat = now.no_repeat;
             return ignoring != now;
         })) {
         rowsDirty_ = true;
@@ -3357,7 +3649,7 @@ void RulesController::rebuildRows() {
     rowsDirty_ = false;
     if (!rebuildAll_) {
         // **Only the rows that moved** — see `renewRows`. A new element is the only way a
-        // `LineEdit` that has been typed into, or a `CheckBox` that has been clicked, starts
+        // `ComboBox` that has been picked from, or a `CheckBox` that has been clicked, starts
         // following its model again, and the rows around it — the box just clicked into among
         // them — have no reason to be thrown away with it.
         renewRows(*slotModel_, staleSlots_);

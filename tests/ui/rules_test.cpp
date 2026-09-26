@@ -17,6 +17,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <slint-platform.h>
 
 #include <algorithm>
@@ -618,6 +619,22 @@ TEST_CASE("the host preset picker says what the rule is, and custom empties it",
         CHECK(editor.window().get_host_preset_index() == 0);
         editor.pick(0);
         CHECK(editor.window().get_host_preset_index() == 1);
+    }
+
+    SECTION("custom picked again over an address of the operator's own changes nothing") {
+        // The audit of 2026-09-25, M19. A dropdown reports a pick of the entry it already shows
+        // — the mouse wheel over a focused one does it a notch at a time — and this one reads
+        // "custom" for any address that is not a preset's, so scrolling past it wiped the
+        // address and every follow-up.
+        editor.setAddress("/my/own/{n}");
+        editor.addFollowUp();
+        REQUIRE(editor.window().get_host_preset_index() == 0);
+        const std::size_t follows = editor.rules().front().followUps.size();
+        editor.pickHostPreset(0);
+        CHECK(editor.rules().front().address == "/my/own/{n}");
+        CHECK(editor.rules().front().segments.size() == 1);
+        CHECK(editor.rules().front().followUps.size() == follows);
+        CHECK_FALSE(editor.window().get_status_is_error());
     }
 
     SECTION("the next edit that works takes the status line back down") {
@@ -1225,12 +1242,17 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
     // next `tick`: a publisher runs inside the callback of the very widget it would destroy.
     // **That row and no other** (the audit's M16): throwing the whole list away took the box
     // the operator had just clicked into along with it.
+    //
+    // **And only for a widget that sets itself** (the audit of 2026-09-25, M17). The boxes are
+    // `LiveField`s and `NumberBox`es now, which never go deaf, so what they hold is told to them
+    // in place; a row rebuilt for one of them took the box beside it down too. What is left is
+    // the std dropdowns and tick boxes, which assign their own values when they are used.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
     editor.setAddress("/deck/{clip}");
     editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
-    editor.setSlotRange(0, "1 - 8");
+    editor.setSlotRange(0, "1 - 4");
     editor.tick();
 
     const auto slots = editor.window().get_slots();
@@ -1238,19 +1260,35 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
     const auto watch = std::make_shared<ModelWatch>();
     slots->attach_peer(watch);
 
-    // A guard wider than the pool can satisfy. §5.8 clamps rather than refuses, so what the
-    // rule holds is not what was typed — and the box has to be told, or it goes on offering
-    // a number the generator is not using.
-    editor.setSlotNoRepeat(0, 40);
-    CHECK(slots->row_data(0)->no_repeat == 7); // one less than the eight distinct values
-    CHECK(watch->resets == 0);                 // not from inside the callback that caused it
+    // The dropdown: a pick the controller then answers with a different kind of row entirely.
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Random));
+    CHECK(watch->resets == 0); // not from inside the callback that caused it
     CHECK(watch->removed == 0);
     editor.tick();
     // That one row as a new element, and the list itself never reset.
     CHECK(watch->removed == 1);
     CHECK(watch->added == 1);
     CHECK(watch->resets == 0);
-    CHECK(slots->row_data(0)->no_repeat == 7);
+
+    SECTION("a text box is told without being rebuilt") {
+        // A range typed the wrong way round, which the rule holds the right way round.
+        editor.setSlotRange(0, "8 - 1");
+        CHECK(slots->row_data(0)->low == 1);
+        CHECK(slots->row_data(0)->high == 8);
+        editor.tick();
+        CHECK(watch->removed == 1); // the dropdown's rebuild above, and no other
+        CHECK(watch->resets == 0);
+    }
+
+    SECTION("a number box is told without being rebuilt") {
+        // A guard wider than the pool can satisfy is clamped (§5.8).
+        editor.setSlotRange(0, "1 - 8");
+        editor.setSlotNoRepeat(0, 40);
+        CHECK(slots->row_data(0)->no_repeat == 7); // one less than the eight distinct values
+        editor.tick();
+        CHECK(watch->removed == 1);
+        CHECK(watch->resets == 0);
+    }
 
     SECTION("and so does picking another rule, whose chips are different boxes entirely") {
         editor.add();
@@ -2475,6 +2513,36 @@ TEST_CASE("a switch flipped from a control surface shows in the editor and survi
     CHECK(rig.runner.triggers().rule(0).enabled());
 }
 
+TEST_CASE("the editor's switch still works on a rule a control surface switched",
+          "[ui][trigger]") {
+    // The audit of 2026-09-25, M10. The test above passes because it renames the rule before
+    // ticking the box. Without that: a surface switches the rule, the editor takes the new state
+    // in without posting it, and the operator's click posts the set with the switch at what the
+    // *running* rule is already configured to — so `carryFrom` keeps the surface's live switch,
+    // and the rule goes on firing behind an unticked box (or stays silent behind a ticked one).
+    const bool surfaceTurnsOn = GENERATE(true, false);
+    INFO((surfaceTurnsOn ? "the surface switched it on" : "the surface switched it off"));
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/strobe");
+    const std::string id = editor.rules().front().id;
+    editor.setEnabled(!surfaceTurnsOn);
+    editor.tick();
+    REQUIRE(rig.runner.triggers().rule(0).enabled() == !surfaceTurnsOn);
+
+    rig.runner.post(takt4::output::OutputCommand::ruleEnabled(id, surfaceTurnsOn));
+    editor.tick();
+    REQUIRE(editor.window().get_rule_enabled() == surfaceTurnsOn);
+
+    // The operator puts it back from the editor.
+    editor.window().invoke_rule_enabled_changed(!surfaceTurnsOn);
+    editor.tick();
+    CHECK(rig.runner.triggers().rule(0).enabled() == !surfaceTurnsOn);
+    CHECK(editor.rules().front().enabled == !surfaceTurnsOn);
+    CHECK(editor.window().get_rule_enabled() == !surfaceTurnsOn);
+}
+
 TEST_CASE("a weighted generator is given its values and weights", "[ui][trigger]") {
     // The audit's M10: "weighted" was offered in the kind list with no way to say what to
     // weight, so the generator had nothing to draw from and sent zero on every fire.
@@ -2686,11 +2754,14 @@ namespace {
 /// The rule editor, shown at its own size on the headless platform, with the two gestures the
 /// M16 tests are made of.
 struct Shown {
-    explicit Shown(RulesController& editor) : window(editor.window()) {
+    /// At the window's own size, or taller — the THEN SEND rows are below the fold at 872, and a
+    /// scrolled pane would put a click somewhere a person would not.
+    explicit Shown(RulesController& editor, float height = takt4::ui::kRulesWindowHeight)
+        : window(editor.window()) {
         window.show();
         window.window().dispatch_scale_factor_change_event(1.0f);
         window.window().dispatch_resize_event(
-            slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+            slint::LogicalSize({takt4::ui::kRulesWindowWidth, height}));
         window.window().dispatch_window_active_changed_event(true);
     }
     /// Whatever Slint runs a loop late — a `changed has-focus`, a `changed` on a popup's
@@ -2715,8 +2786,50 @@ struct Shown {
     /// box on the headless platform a Tab moves nothing and commits nothing, and a probe that
     /// relied on it was credited to the next click instead — one step off every time.
     void enter() const { type("\n"); }
+    void escape() const { type("\x1b"); }
+    /// Everything in the box that has the keyboard gone — End, then Backspace until it is empty
+    /// — so what is typed next is all it holds, wherever the click left the caret.
+    void clearBox() const {
+        key(u8""); // Key.End
+        type(std::string(40, '\b'));
+    }
+    /// A key by its Slint name — `Key.UpArrow` is U+F700, `Key.DownArrow` U+F701.
+    void key(const slint::SharedString& text) const {
+        window.window().dispatch_key_press_event(text);
+        window.window().dispatch_key_release_event(text);
+        settle();
+    }
+    /// A notch of the mouse wheel over a point, the way a pane scrolled past a box delivers it.
+    void wheel(float x, float y, float dy) const {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_scroll_event(at, 0.0f, dy);
+        settle();
+    }
     RulesWindow& window;
 };
+
+/// Where a click lands in a box: the first point of a sweep at which `probe` (a click there,
+/// then whatever the box is asked to do) says it hit. `reset` puts back whatever a miss did.
+struct Spot {
+    float x = -1.0f;
+    float y = -1.0f;
+    [[nodiscard]] bool found() const { return x >= 0.0f; }
+};
+
+template <typename Probe, typename Reset>
+Spot sweep(float x0, float x1, float dx, float y0, float y1, float dy, Probe probe, Reset reset) {
+    for (float y = y0; y < y1; y += dy) {
+        for (float x = x0; x < x1; x += dx) {
+            const bool hit = probe(x, y);
+            reset();
+            if (hit) {
+                return {x, y};
+            }
+        }
+    }
+    return {};
+}
 
 } // namespace
 
@@ -2863,6 +2976,13 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
     // away — and the swatch's own "the picker is open" watcher goes with the swatch before it
     // can say the picker closed. Left believing a picker was open, the editor held every chip
     // rebuild for the rest of the session: the "editing one changes them all" bug again.
+    //
+    // **The first swatch and the last** (the audit of 2026-09-25, M20). The fix above held for
+    // every swatch but the last: removing the first leaves the element that showed it standing
+    // (it shows the next color now) and its watcher reports the close; removing the last takes
+    // the last element away at once, watcher and all.
+    const bool last = GENERATE(false, true);
+    INFO((last ? "the last swatch" : "the first swatch"));
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -2902,6 +3022,29 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
         INFO("no click opened a swatch's picker");
         REQUIRE(swatchX >= 0.0f);
     }
+    // That is whichever swatch the sweep met first — the second of three, as it happens, which is
+    // the one this test removed until 2026-09-26. Where the row starts is found by walking left to
+    // the last point that still opens a picker; swatches are 40 px wide with 8 between, so the
+    // one wanted is aimed at from there.
+    float rowLeft = swatchX;
+    for (float x = swatchX; x > std::max(240.0f, swatchX - 200.0f); x -= 3.0f) {
+        shown.click(x, swatchY);
+        if (editor.pickerOpen()) {
+            rowLeft = x;
+        }
+        shown.click(1050.0f, 740.0f); // close it
+    }
+    swatchX = rowLeft + 20.0f + (last ? 48.0f * static_cast<float>(before - 1) : 0.0f);
+    shown.click(swatchX, swatchY);
+    {
+        INFO("the row starts at " << rowLeft << "; aimed at " << swatchX << ", " << swatchY);
+        REQUIRE(editor.pickerOpen());
+    }
+    shown.click(1050.0f, 740.0f);
+    REQUIRE(swatches->row_count() == before);
+    std::vector<takt4::trigger::Value> kept = editor.rules().front().dmx.color.values;
+    REQUIRE(kept.size() == before);
+    kept.erase(last ? kept.end() - 1 : kept.begin());
 
     // Its REMOVE: hunted inside the popup, which is wherever it fitted — so the picker is
     // opened again before every probe, since a probe that misses it closes it.
@@ -2922,6 +3065,8 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
         INFO("no click inside the picker removed the swatch");
         REQUIRE(removed);
     }
+    // The one that was meant — or the test is about some other swatch.
+    CHECK(editor.rules().front().dmx.color.values == kept);
     editor.tick();
     editor.tick();
     CHECK_FALSE(editor.pickerOpen());
@@ -3024,4 +3169,651 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     click(comboX, entryY);
     INFO("dropdown at " << comboX << ", " << comboY << "; entry at " << entryY);
     CHECK(kind() == picked);
+}
+
+namespace {
+
+/// TEST, found by what it does: the first click near the top right after which the rule has
+/// fired. The rule has to be one that can.
+Spot findTest(RulesController& editor, const Shown& shown) {
+    return sweep(
+        860.0f, 1010.0f, 10.0f, 8.0f, 58.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            editor.tick();
+            return !std::string(editor.window().get_last_fired()).empty();
+        },
+        [] {});
+}
+
+} // namespace
+
+TEST_CASE("a number box answers Escape by putting itself back, and panics nothing",
+          "[ui][trigger]") {
+    // The audit of 2026-09-25, H2. The number boxes were std `SpinBox`es, whose text input takes
+    // no control key — so Escape, pressed to back out of "every", went on up to the window, where
+    // it is PANIC, and every rule halted with the lights frozen. Now Escape leaves the box
+    // holding what it held, and PANIC is one more Escape away, as it is from a text box.
+    //
+    // And the rest of what the `SpinBox` got wrong, on the same box: Enter sets what was typed
+    // and the box then says so (a `NumberBox` never writes its own value, so the controller has
+    // to), TEST commits a number still being typed (M18), and the mouse wheel over it does
+    // nothing (M19).
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/fire");
+    editor.pickTrigger(indexOf(Trigger::Bar));
+    editor.setEvery(4);
+    editor.tick();
+    const Shown shown(editor);
+    editor.tick();
+    const auto every = [&editor] { return editor.rules().front().every; };
+
+    // The box: the first spot where a cleared box, a digit and Enter set the count.
+    const Spot box = sweep(
+        470.0f, 700.0f, 10.0f, 96.0f, 160.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("7");
+            shown.enter();
+            return every() == 7;
+        },
+        [&] {
+            editor.pickTrigger(indexOf(Trigger::Bar));
+            editor.setEvery(4);
+            if (rig.runner.panicked()) {
+                editor.releasePanic();
+            }
+        });
+    INFO("every at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    REQUIRE(every() == 4);
+    REQUIRE(editor.window().get_every() == 4);
+
+    SECTION("Enter sets it, and the box says so") {
+        shown.click(box.x, box.y);
+        shown.clearBox();
+        shown.type("12");
+        shown.enter();
+        CHECK(every() == 12);
+        CHECK(editor.window().get_every() == 12);
+    }
+
+    SECTION("Escape puts it back and halts nothing, and the next Escape is PANIC") {
+        shown.click(box.x, box.y);
+        shown.clearBox();
+        shown.type("9");
+        shown.escape();
+        CHECK_FALSE(rig.runner.panicked());
+        CHECK(every() == 4);
+        // What the box holds now, committed by a click in it and Enter: the 4, not the 9.
+        shown.click(box.x, box.y);
+        shown.enter();
+        CHECK(every() == 4);
+        // And the keyboard is back with the window, where Escape is still PANIC.
+        shown.escape();
+        CHECK(rig.runner.panicked());
+    }
+
+    SECTION("the mouse wheel over it changes nothing, with the keyboard in it or not") {
+        shown.wheel(box.x, box.y, 40.0f);
+        shown.wheel(box.x, box.y, 40.0f);
+        CHECK(every() == 4);
+        shown.click(box.x, box.y);
+        shown.wheel(box.x, box.y, -40.0f);
+        shown.wheel(box.x, box.y, -40.0f);
+        shown.enter();
+        CHECK(every() == 4);
+    }
+}
+
+TEST_CASE("TEST sends on the MIDI channel still being typed", "[ui][trigger]") {
+    // The audit of 2026-09-25, M18, for a number box: a channel typed and not entered, then
+    // TEST. The box commits when it lets go of the keyboard — a turn of the event loop after the
+    // click on TEST, which had fired the rule on the old channel by then. The channel is in
+    // what goes out, so the log says which one TEST used.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickSend(1); // MIDI note
+        editor.setChannel(3);
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Fixed));
+        editor.setSlotFixed(0, "60");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto channel = [&editor] { return editor.rules().front().channel; };
+    const Spot box = sweep(
+        380.0f, 900.0f, 12.0f, 360.0f, 520.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("9");
+            shown.enter();
+            return channel() == 9;
+        },
+        [&] {
+            if (channel() != 3 || editor.rules().front().sendKind !=
+                                      takt4::trigger::Message::Kind::MidiNote) {
+                build();
+            }
+        });
+    INFO("channel box at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    const Spot test = findTest(editor, shown);
+    REQUIRE(test.found());
+    REQUIRE(std::string(editor.window().get_last_fired()).find(" ch 3") != std::string::npos);
+
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("5"); // no Enter
+    shown.click(test.x, test.y);
+    editor.tick();
+    const std::string fired(editor.window().get_last_fired());
+    INFO("fired: " << fired);
+    CHECK(fired.find(" ch 5") != std::string::npos);
+    CHECK(channel() == 5);
+    CHECK(editor.window().get_channel() == 5);
+}
+
+namespace {
+
+/// A MIDI note rule with one follow-up that has a number of its own — an explicit note off —
+/// built afresh, so a probe that missed leaves nothing behind.
+void buildNoteOff(RulesController& editor) {
+    editor.setRules({});
+    editor.add();
+    editor.pickSend(1); // MIDI note
+    editor.setChannel(3);
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Fixed));
+    editor.setSlotFixed(0, "60");
+    editor.addFollowUp();
+    editor.pickFollowKind(0, 2); // "MIDI note off", past "release"
+    editor.tick();
+    Shown::settle();
+}
+
+/// The three boxes of that follow-up's row, found by typing a 9 into each and pressing Enter.
+struct FollowBoxes {
+    Spot number;
+    Spot value;
+    Spot delay;
+};
+
+FollowBoxes findFollowBoxes(RulesController& editor, const Shown& shown) {
+    const auto owed = [&editor] { return editor.rules().front().followUps.front(); };
+    const auto nine = [&](float x, float y) {
+        shown.click(x, y);
+        shown.clearBox();
+        shown.type("9");
+        shown.enter();
+        editor.tick();
+    };
+    const auto rebuild = [&] { buildNoteOff(editor); };
+    FollowBoxes boxes;
+    // The number first, down the column it sits in: past the kind dropdown and its label.
+    boxes.number = sweep(
+        460.0f, 540.0f, 20.0f, 560.0f, 1460.0f, 6.0f,
+        [&](float x, float y) {
+            nine(x, y);
+            return owed().number == 9;
+        },
+        rebuild);
+    if (!boxes.number.found()) {
+        return boxes;
+    }
+    // The other two along the same row.
+    const float row = boxes.number.y;
+    boxes.value = sweep(
+        boxes.number.x + 60.0f, 900.0f, 8.0f, row, row + 1.0f, 1.0f,
+        [&](float x, float y) {
+            nine(x, y);
+            return owed().value.asInt() == 9;
+        },
+        rebuild);
+    boxes.delay = sweep(
+        boxes.value.found() ? boxes.value.x + 40.0f : boxes.number.x + 60.0f, 1000.0f, 8.0f, row,
+        row + 1.0f, 1.0f,
+        [&](float x, float y) {
+            nine(x, y);
+            return owed().delayBeats == Approx(9.0);
+        },
+        rebuild);
+    return boxes;
+}
+
+} // namespace
+
+TEST_CASE("a follow-up's number takes every digit typed into it", "[ui][trigger]") {
+    // The audit of 2026-09-25, M17. The number was a `SpinBox`, which sent every keystroke:
+    // typing 60 sent the 6, the 6 changed the row, the next redraw built the row again — and the
+    // 0 went into a box that no longer existed. The rule sent note off 6. So the gesture is the
+    // operator's, with a redraw between each key the way a running show puts one there.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    buildNoteOff(editor);
+    const Shown shown(editor, 1500.0f);
+    buildNoteOff(editor);
+    REQUIRE(editor.rules().front().followUps.front().kind.has_value());
+    const FollowBoxes boxes = findFollowBoxes(editor, shown);
+    INFO("number at " << boxes.number.x << ", " << boxes.number.y);
+    REQUIRE(boxes.number.found());
+    const auto owed = [&editor] { return editor.rules().front().followUps.front(); };
+
+    SECTION("typed, with redraws between the keys") {
+        const auto watch = std::make_shared<ModelWatch>();
+        editor.window().get_follow_ups()->attach_peer(watch);
+        shown.click(boxes.number.x, boxes.number.y);
+        shown.clearBox();
+        shown.type("6");
+        editor.tick();
+        editor.tick();
+        shown.type("0");
+        editor.tick();
+        shown.enter();
+        editor.tick();
+        CHECK(owed().number == 60);
+        CHECK(watch->removed == 0); // the row was never built again under the keys
+    }
+
+    SECTION("stepped with the arrow keys, with a redraw between the steps") {
+        shown.click(boxes.number.x, boxes.number.y);
+        shown.clearBox();
+        shown.type("10");
+        shown.enter();
+        REQUIRE(owed().number == 10);
+        shown.click(boxes.number.x, boxes.number.y);
+        shown.key(u8""); // Key.UpArrow
+        editor.tick();
+        editor.tick();
+        shown.key(u8"");
+        editor.tick();
+        shown.enter();
+        CHECK(owed().number == 12);
+    }
+}
+
+TEST_CASE("a follow-up's value committed by clicking into its delay keeps the delay box",
+          "[ui][trigger]") {
+    // The audit of 2026-09-25, M17's last case. Leaving the value box commits it; the commit
+    // changed the row; and the row was built again at the next redraw — with the delay box the
+    // operator had just moved into, so what they typed there went nowhere. The boxes are
+    // `LiveField`s now, told in place, and the row is left standing.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    buildNoteOff(editor);
+    const Shown shown(editor, 1500.0f);
+    buildNoteOff(editor);
+    const FollowBoxes boxes = findFollowBoxes(editor, shown);
+    INFO("value at " << boxes.value.x << ", " << boxes.value.y << "; delay at " << boxes.delay.x
+                     << ", " << boxes.delay.y);
+    REQUIRE(boxes.value.found());
+    REQUIRE(boxes.delay.found());
+    const auto owed = [&editor] { return editor.rules().front().followUps.front(); };
+
+    shown.click(boxes.value.x, boxes.value.y);
+    shown.clearBox();
+    shown.type("100");
+    shown.click(boxes.delay.x, boxes.delay.y);
+    editor.tick();
+    editor.tick();
+    shown.clearBox();
+    shown.type("3");
+    shown.enter();
+    editor.tick();
+    CHECK(owed().value.asInt() == 100);
+    CHECK(owed().delayBeats == Approx(3.0));
+}
+
+TEST_CASE("a follow-up's value typed and then the row above removed stays with its own row",
+          "[ui][trigger]") {
+    // The audit of 2026-09-25, M15's shape in the rule editor. The rows are written in place, so
+    // × on a row above hands the element below it the next follow-up — and the box typed into
+    // commits by its index when it lets go of the keyboard, a turn of the event loop after the
+    // click. The × commits what was typed first; the box's own late commit is then only an
+    // echo of it (`RulesController::echo_`), and is dropped rather than sent to the next row.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    // **The second and third hold the same value**, and that is the case that needs the echo.
+    // Where the row that moves up holds something else, the box is told its new value before
+    // its own late commit runs, and commits that. Where it holds the same, the box is told
+    // nothing and still holds what was typed (measured: with distinct values this test passed
+    // with the echo taken out).
+    const auto build = [&] {
+        buildNoteOff(editor);
+        editor.addFollowUp();
+        editor.addFollowUp();
+        editor.setFollowValue(0, "10");
+        editor.setFollowValue(1, "11");
+        editor.setFollowValue(2, "11");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor, 1500.0f);
+    build();
+    const auto value = [&editor](std::size_t i) {
+        return editor.rules().front().followUps[i].value.asInt();
+    };
+
+    // The second row's value box and the first row's ×, found by what they do. The second row
+    // is a release, with no number box, so its value sits further left than the first row's.
+    // Steps a quarter of the box's width and height: every probe builds the rule again, and at
+    // eight by four this sweep alone took over two minutes under ASan.
+    const Spot box = sweep(
+        440.0f, 900.0f, 16.0f, 560.0f, 1460.0f, 8.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("9");
+            shown.enter();
+            editor.tick();
+            return editor.rules().front().followUps.size() == 3 && value(1) == 9;
+        },
+        build);
+    INFO("second row's value at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    const Spot cross = sweep(
+        800.0f, 1000.0f, 6.0f, box.y - 90.0f, box.y - 10.0f, 3.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            editor.tick();
+            return editor.rules().front().followUps.size() == 2 && value(0) == 11;
+        },
+        build);
+    INFO("first row's x at " << cross.x << ", " << cross.y);
+    REQUIRE(cross.found());
+
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("77"); // no Enter
+    const slint::LogicalPosition at({cross.x, cross.y});
+    editor.window().window().dispatch_pointer_move_event(at);
+    editor.window().window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+    editor.window().window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+    // What the event loop does next, in the order it does it: the box's late commit, then a
+    // redraw.
+    Shown::settle();
+    editor.tick();
+    Shown::settle();
+    REQUIRE(editor.rules().front().followUps.size() == 2);
+    CHECK(value(0) == 77); // the row it was typed on
+    CHECK(value(1) == 11); // and not the one that moved up under the box
+
+    // And the × took the keyboard, as a button does: it used to take nothing, so the box
+    // stayed lit over the row that moved up, still holding the 77, and what was typed next went
+    // into that row.
+    shown.type("5");
+    shown.enter();
+    editor.tick();
+    CHECK(value(0) == 77);
+    CHECK(value(1) == 11);
+}
+
+TEST_CASE("a chip's box typed into still shows what the controller sets afterwards",
+          "[ui][trigger]") {
+    // Why the chip rows stopped being rebuilt for their text (the audit of 2026-09-25, M17): the
+    // boxes are `LiveField`s, which take what the row says whenever they are not being typed in
+    // — where a `Field` bound one way went deaf at the first keystroke and showed that forever.
+    // Seen the way the operator would meet it: a click in the box and Enter commit whatever it
+    // is showing.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/deck/{clip}");
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+        editor.setSlotRange(0, "1 - 8");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto range = [&editor] {
+        const auto& chip = editor.rules().front().segments.front();
+        return std::make_pair(chip.low, chip.high);
+    };
+
+    const Spot box = sweep(
+        430.0f, 820.0f, 30.0f, 440.0f, 760.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("2 - 5");
+            shown.enter();
+            editor.tick();
+            return range() == std::make_pair(2, 5);
+        },
+        [&] {
+            if (range() != std::make_pair(1, 8) || editor.rules().front().address != "/deck/{clip}") {
+                build();
+            }
+        });
+    INFO("range box at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+
+    // Typed into, the way the operator does, and entered.
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("2 - 6");
+    shown.enter();
+    editor.tick();
+    REQUIRE(range() == std::make_pair(2, 6));
+    // Then changed by the controller rather than by the box — as another rule's values, a kind
+    // switched and back, or a preset would.
+    editor.setSlotRange(0, "3 - 4");
+    editor.tick();
+    Shown::settle();
+    // What the box shows, committed.
+    shown.click(box.x, box.y);
+    shown.enter();
+    editor.tick();
+    CHECK(range() == std::make_pair(3, 4));
+}
+
+TEST_CASE("+ ADD after typing into every leaves the new rule's count alone", "[ui][trigger]") {
+    // The echo the other way: a number typed into "every" and not entered, then + ADD. The action
+    // commits the 7 to the rule it was typed for, and the new rule is put in the box — whose late
+    // commit, of the 7 still in it, went to the new rule.
+    //
+    // **The first rule starts at the count a new one gets.** Then the box's value comes back to
+    // where it was by the end of the click, the box is told of no change, and it still holds the
+    // 7 when it lets go — the case the echo is for. From any other count the box is told the new
+    // rule's, and this passed with the echo taken out (measured).
+    const std::uint32_t fresh = Rule::Config{}.every; // what + ADD gives a new rule
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickTrigger(indexOf(Trigger::Bar));
+        editor.setEvery(static_cast<int>(fresh));
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const Spot box = sweep(
+        470.0f, 700.0f, 10.0f, 96.0f, 160.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("7");
+            shown.enter();
+            return editor.rules().front().every == 7;
+        },
+        [&] {
+            if (editor.rules().size() != 1 || editor.rules().front().every != fresh ||
+                editor.rules().front().trigger != Trigger::Bar) {
+                build();
+            }
+        });
+    const Spot plus = sweep(
+        150.0f, 210.0f, 6.0f, 8.0f, 44.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return editor.rules().size() == 2;
+        },
+        [&] {
+            if (editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("every at " << box.x << ", " << box.y << "; + at " << plus.x << ", " << plus.y);
+    REQUIRE(box.found());
+    REQUIRE(plus.found());
+    build();
+    REQUIRE(fresh != 7);
+
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("7"); // no Enter
+    const slint::LogicalPosition at({plus.x, plus.y});
+    editor.window().window().dispatch_pointer_move_event(at);
+    editor.window().window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+    editor.window().window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+    Shown::settle();
+    editor.tick();
+    Shown::settle();
+    REQUIRE(editor.rules().size() == 2);
+    CHECK(editor.rules()[0].every == 7);
+    CHECK(editor.rules()[1].every == fresh);
+}
+
+TEST_CASE("TEST fires the address being typed, not the one before it", "[ui][trigger]") {
+    // The audit of 2026-09-25, M18. A box commits when it loses the keyboard, a turn of the event
+    // loop after the click that took it — so TEST posted the rule as it was, and a new rule sent
+    // nothing at all. Every action now commits what is being typed before it runs.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/before");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const Spot test = findTest(editor, shown);
+    REQUIRE(test.found());
+
+    const Spot address = sweep(
+        300.0f, 900.0f, 100.0f, 360.0f, 640.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("/probe");
+            shown.enter();
+            return editor.rules().front().address == "/probe";
+        },
+        [&] {
+            if (editor.rules().front().address != "/before") {
+                build();
+            }
+        });
+    INFO("address at " << address.x << ", " << address.y);
+    REQUIRE(address.found());
+    build();
+
+    shown.click(address.x, address.y);
+    shown.clearBox();
+    shown.type("/after");
+    shown.click(test.x, test.y); // no Enter: the click is what finishes the edit
+    editor.tick();
+    const std::string fired(editor.window().get_last_fired());
+    INFO("fired: " << fired);
+    CHECK(fired.find("/after") != std::string::npos);
+    CHECK(editor.rules().front().address == "/after");
+
+    SECTION("and a republish from outside leaves what is being typed alone") {
+        // The main window's outputs changing republishes the rule — and the address box is bound
+        // both ways, so that wrote the stored address over the keystrokes.
+        shown.click(address.x, address.y);
+        shown.clearBox();
+        shown.type("/typing");
+        takt4::output::OutputTarget wall;
+        wall.id = "o-000000aa";
+        wall.name = "wall";
+        wall.host = "127.0.0.1";
+        wall.port = 7000;
+        editor.setTargets({wall});
+        editor.tick();
+        shown.enter();
+        CHECK(editor.rules().front().address == "/typing");
+    }
+}
+
+TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][trigger]") {
+    // The audit of 2026-09-25, M18: + ADD, MUTE, a follow-up's ×, a click on another rule — each
+    // republished the rule, and the BPM box, bound both ways, took the stored range back over the
+    // keystrokes. The box's late commit then sent that stored range, and the edit was gone.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setBpmRange("any");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto bpm = [&editor] {
+        const auto& conditions = editor.rules().front().conditions;
+        return std::make_pair(conditions.minBpm, conditions.maxBpm);
+    };
+    const auto anyBpm = bpm();
+
+    const Spot box = sweep(
+        330.0f, 520.0f, 20.0f, 250.0f, 400.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("90 - 95");
+            shown.enter();
+            return bpm() == std::make_pair(90.0, 95.0);
+        },
+        [&] {
+            if (bpm() != anyBpm || editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("BPM box at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    const Spot plus = sweep(
+        150.0f, 210.0f, 6.0f, 8.0f, 44.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return editor.rules().size() == 2;
+        },
+        [&] {
+            if (editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("+ at " << plus.x << ", " << plus.y);
+    REQUIRE(plus.found());
+
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("100 - 110");
+    shown.click(plus.x, plus.y);
+    editor.tick();
+    REQUIRE(editor.rules().size() == 2);
+    CHECK(bpm() == std::make_pair(100.0, 110.0)); // the first rule: the one it was typed into
+    const auto& added = editor.rules().back().conditions;
+    CHECK(std::make_pair(added.minBpm, added.maxBpm) == anyBpm); // and not the new one
 }

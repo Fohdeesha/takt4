@@ -20,8 +20,8 @@
 // own copy and posts the set whole — see its header for why the runner's copy cannot be the
 // one being edited.
 
-import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { Field, Press, Splitter, Theme } from "theme.slint";
+import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider } from "std-widgets.slint";
+import { Field, LiveField, NumberBox, Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -419,6 +419,8 @@ export component RulesWindow inherits Window {
   /// percentages — the same three `slot-color-changed` carries.
   callback palette-color-changed(int, float, float, float);
   callback palette-hex-edited(int, string);
+  /// A keystroke in a swatch's hex box, before it is committed. See `slot-typed`.
+  callback palette-typed(int, string);
   /// Whether a color picker's popup is on the screen.
   ///
   /// **A picker is a `PopupWindow` inside a repeated item**, so anything that rebuilds that
@@ -448,10 +450,16 @@ export component RulesWindow inherits Window {
   callback slot-range-edited(int, string);
   callback slot-values-edited(int, string);
   /// A keystroke in a chip's box, before it is committed: field 0 is the fixed value, 1 a
-  /// range, 2 a list, 3 weights, 4 a normalised range. See `RulesController::typing_`.
+  /// range, 2 a list, 3 weights, 4 a normalised range, 5 "no repeat", 6 a ramp's bars. See
+  /// `RulesController::typing_`, which commits it before any action — TEST included — so that
+  /// what an action acts on is what is on the screen (the audit of 2026-09-25, M18).
   callback slot-typed(int, int, string);
-  /// The same for a follow-up's boxes: field 0 the value, 1 the delay.
+  /// The same for a follow-up's boxes: field 0 the value, 1 the delay, 2 the number.
   callback follow-typed(int, int, string);
+  /// And for the rule's own boxes: field 0 the address, 1 the BPM range, 2 the cooldown, 3 the
+  /// effect's duration, 4 its cycles, 5 its hue sweep, 6 "every", 7 the pulses, 8 the MIDI
+  /// channel, 9 the effect's "from". `RulesController::RuleBox` is this list.
+  callback rule-typed(int, string);
   /// A "BPM normalised" source's range, as typed: "20 - 500".
   callback slot-normalise-edited(int, string);
   /// A weighted generator's values and weights, as typed: "7:3, 12:1".
@@ -490,7 +498,8 @@ export component RulesWindow inherits Window {
   // operator is looking when a rule they have just built runs away, and a halt that only
   // works from the other window is one they have to find first. Escape only: TAP and DOWNBEAT
   // belong to the main window, where the tracker they correct is on screen. Escape in a text
-  // box leaves the box and panics nothing — `Field` takes it before it gets here — and an
+  // or number box leaves the box and panics nothing — `Field` and `NumberBox` take it before it
+  // gets here; the std `SpinBox` these used to be did not (the audit of 2026-09-25, H2) — and an
   // open dropdown keeps it too, to close itself. See the main window's `keys` for the rest.
   keys := FocusScope {
     focus-on-click: false;
@@ -592,6 +601,11 @@ export component RulesWindow inherits Window {
                 pointer-event(event) => {
                   if (event.kind == PointerEventKind.down
                       && event.button == PointerEventButton.left) {
+                    // **The keyboard back to the window first**, as a button takes it (see
+                    // `FocusSink`). A row took nothing, so a box being typed in stayed lit, over
+                    // another rule, holding what was typed for this one (the audit of
+                    // 2026-09-25, M18).
+                    keys.focus();
                     root.rule-picked-with(index, event.modifiers.control, event.modifiers.shift);
                   }
                 }
@@ -697,6 +711,7 @@ export component RulesWindow inherits Window {
 
                   copy-touch := TouchArea {
                     clicked => {
+                      keys.focus(); // see `pick`
                       root.rule-duplicated-at(index);
                     }
                   }
@@ -724,6 +739,7 @@ export component RulesWindow inherits Window {
 
                   kill-touch := TouchArea {
                     clicked => {
+                      keys.focus(); // see `pick`
                       root.rule-removed-at(index);
                     }
                   }
@@ -1035,12 +1051,15 @@ export component RulesWindow inherits Window {
                 vertical-alignment: center;
               }
 
-              if root.trigger-takes-every : SpinBox {
+              if root.trigger-takes-every : NumberBox {
                 value <=> root.every;
                 minimum: 1;
                 maximum: 64;
                 enabled: root.selected >= 0;
                 width: 96px;
+                typed(v) => {
+                  root.rule-typed(6, v);
+                }
                 edited(v) => {
                   root.every-changed(v);
                 }
@@ -1053,12 +1072,15 @@ export component RulesWindow inherits Window {
                 vertical-alignment: center;
               }
 
-              if root.trigger-takes-pulses : SpinBox {
+              if root.trigger-takes-pulses : NumberBox {
                 value <=> root.pulses;
                 minimum: 0;
                 maximum: 64;
                 enabled: root.selected >= 0;
                 width: 88px;
+                typed(v) => {
+                  root.rule-typed(7, v);
+                }
                 edited(v) => {
                   root.pulses-changed(v);
                 }
@@ -1279,6 +1301,11 @@ export component RulesWindow inherits Window {
                 enabled: root.selected >= 0;
                 font-size: 12px;
                 width: 116px;
+                // Kept as it is typed, so an action taken before this box lets go commits it
+                // first — see `rule-typed`.
+                edited(text) => {
+                  root.rule-typed(1, text);
+                }
                 accepted(text) => {
                   self.leave();
                   root.bpm-range-edited(text);
@@ -1310,6 +1337,9 @@ export component RulesWindow inherits Window {
                 enabled: root.selected >= 0;
                 font-size: 12px;
                 width: 76px;
+                edited(text) => {
+                  root.rule-typed(2, text);
+                }
                 accepted(text) => {
                   self.leave();
                   root.cooldown-changed(text);
@@ -1384,12 +1414,15 @@ export component RulesWindow inherits Window {
                 vertical-alignment: center;
               }
 
-              if root.sends-midi : SpinBox {
+              if root.sends-midi : NumberBox {
                 value <=> root.channel;
                 minimum: 1;
                 maximum: 16;
                 enabled: root.selected >= 0;
                 width: 96px;
+                typed(v) => {
+                  root.rule-typed(8, v);
+                }
                 edited(v) => {
                   root.channel-changed(v);
                 }
@@ -1562,6 +1595,9 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 width: 76px;
                 enabled: root.selected >= 0;
+                edited(t) => {
+                  root.rule-typed(3, t);
+                }
                 accepted(t) => {
                   // Focus first, callback second: the callback republishes this box — that is
                   // how it comes back holding a number the controller normalised — and a
@@ -1604,12 +1640,15 @@ export component RulesWindow inherits Window {
                 vertical-alignment: center;
               }
 
-              if root.effect-takes-base : SpinBox {
+              if root.effect-takes-base : NumberBox {
                 value <=> root.effect-base;
                 minimum: 0;
                 maximum: 255;
                 enabled: root.selected >= 0;
                 width: 92px;
+                typed(v) => {
+                  root.rule-typed(9, v);
+                }
                 edited(v) => {
                   root.effect-base-changed(v);
                 }
@@ -1628,6 +1667,9 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 width: 60px;
                 enabled: root.selected >= 0;
+                edited(t) => {
+                  root.rule-typed(4, t);
+                }
                 accepted(t) => {
                   self.leave();
                   root.effect-cycles-edited(t);
@@ -1645,6 +1687,9 @@ export component RulesWindow inherits Window {
                 font-size: 12px;
                 width: 96px;
                 enabled: root.selected >= 0;
+                edited(t) => {
+                  root.rule-typed(5, t);
+                }
                 accepted(t) => {
                   self.leave();
                   root.effect-hue-edited(t);
@@ -2043,6 +2088,9 @@ export component RulesWindow inherits Window {
               placeholder-text: "/composition/layers/3/clips/{clip}/connect";
               enabled: root.selected >= 0;
               font-size: 13px;
+              edited(text) => {
+                root.rule-typed(0, text);
+              }
               accepted(text) => {
                 self.leave();
                 root.address-edited(text);
@@ -2122,49 +2170,33 @@ export component RulesWindow inherits Window {
                   vertical-alignment: center;
                 }
 
-                if slot.takes-pool && !slot.is-color && !slot.is-list : Field {
-                  text: slot.low + " - " + slot.high;
+                // Every box on these rows is a `LiveField`, which commits on Enter or a click
+                // away and never goes deaf — so the row is not built again when the controller
+                // changes what one holds, and a box on the same row that has just been tabbed
+                // into is not destroyed under the operator (the audit of 2026-09-25, M17).
+                if slot.takes-pool && !slot.is-color && !slot.is-list : LiveField {
+                  value: slot.low + " - " + slot.high;
                   placeholder-text: "1 - 8";
                   font-size: 12px;
                   horizontal-stretch: 1;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 1, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-range-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-range-edited(index, self.text);
-                    }
                   }
                 }
 
-                if slot.takes-pool && !slot.is-color && slot.is-list : Field {
-                  text: slot.values;
+                if slot.takes-pool && !slot.is-color && slot.is-list : LiveField {
+                  value: slot.values;
                   placeholder-text: "3, 7, 1, 12 — in this order";
                   font-size: 12px;
                   horizontal-stretch: 1;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 2, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-values-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-values-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2306,26 +2338,16 @@ export component RulesWindow inherits Window {
                   }
                 }
 
-                if slot.is-fixed : Field {
-                  text: slot.fixed;
+                if slot.is-fixed : LiveField {
+                  value: slot.fixed;
                   placeholder-text: slot.is-color ? "#ff2040" : slot.wanting ? "choose one" : "value";
                   font-size: 12px;
                   horizontal-stretch: 1;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 0, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-fixed-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-fixed-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2345,42 +2367,30 @@ export component RulesWindow inherits Window {
                   font-size: 11px;
                   vertical-alignment: center;
                 }
-                if slot.is-live && slot.is-normalised : Field {
-                  text: slot.normalise;
+                if slot.is-live && slot.is-normalised : LiveField {
+                  value: slot.normalise;
                   placeholder-text: "20 - 500";
                   font-size: 12px;
                   width: 96px;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 4, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-normalise-edited(index, text);
-                  }
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-normalise-edited(index, self.text);
-                    }
                   }
                 }
 
                 // A weighted generator's values, each with how often it comes up.
-                if slot.is-weighted : Field {
-                  text: slot.weights;
+                if slot.is-weighted : LiveField {
+                  value: slot.weights;
                   placeholder-text: "7:3, 12:1 — value:weight";
                   font-size: 12px;
                   horizontal-stretch: 1;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 3, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-weights-edited(index, text);
-                  }
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-weights-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2396,26 +2406,16 @@ export component RulesWindow inherits Window {
                   }
                 }
 
-                if slot.is-ramp : Field {
-                  text: slot.low + " - " + slot.high;
+                if slot.is-ramp : LiveField {
+                  value: slot.low + " - " + slot.high;
                   placeholder-text: "0 - 1";
                   font-size: 12px;
                   horizontal-stretch: 1;
-                  edited(text) => {
+                  typed(text) => {
                     root.slot-typed(index, 1, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.slot-range-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.slot-range-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2426,11 +2426,14 @@ export component RulesWindow inherits Window {
                   vertical-alignment: center;
                 }
 
-                if slot.is-ramp : SpinBox {
+                if slot.is-ramp : NumberBox {
                   value: slot.ramp-bars;
                   minimum: 1;
                   maximum: 64;
                   width: 76px;
+                  typed(v) => {
+                    root.slot-typed(index, 6, v);
+                  }
                   edited(v) => {
                     root.slot-ramp-bars-changed(index, v);
                   }
@@ -2466,7 +2469,7 @@ export component RulesWindow inherits Window {
                 }
 
                 if slot.takes-pool : Text {
-                  // Short because the row is tight and the SpinBox beside it says the rest:
+                  // Short because the row is tight and the number box beside it says the rest:
                   // "no repeat 2" reads as what it is. `Generator::Config::noRepeatWithin`.
                   text: "no repeat";
                   color: Theme.dim;
@@ -2474,11 +2477,14 @@ export component RulesWindow inherits Window {
                   vertical-alignment: center;
                 }
 
-                if slot.takes-pool : SpinBox {
+                if slot.takes-pool : NumberBox {
                   value: slot.no-repeat;
                   minimum: 0;
                   maximum: 64;
                   width: 76px;
+                  typed(v) => {
+                    root.slot-typed(index, 5, v);
+                  }
                   edited(v) => {
                     root.slot-no-repeat-changed(index, v);
                   }
@@ -2656,21 +2662,23 @@ export component RulesWindow inherits Window {
 
                       HorizontalLayout {
                         spacing: 8px;
-                        Field {
+                        LiveField {
                           // How a color gets in from anywhere else — a brand guide, a
                           // screenshot, the desk it has to match.
-                          text: entry.hex;
+                          //
+                          // Its keystrokes are kept (`palette-typed`) because this box lives in
+                          // a popup: a click outside drops the popup and the box with it, and a
+                          // box that no longer exists does not say that it lost the focus. The
+                          // controller commits what was typed when the picker reports it closed.
+                          value: entry.hex;
                           placeholder-text: "#ff2040";
                           font-size: 12px;
                           horizontal-stretch: 1;
-                          accepted(t) => {
-                            self.leave();
-                            root.palette-hex-edited(index, t);
+                          typed(t) => {
+                            root.palette-typed(index, t);
                           }
-                          changed has-focus => {
-                            if (!self.has-focus) {
-                              root.palette-hex-edited(index, self.text);
-                            }
+                          committed(t) => {
+                            root.palette-hex-edited(index, t);
                           }
                         }
                         Press {
@@ -2834,11 +2842,14 @@ export component RulesWindow inherits Window {
                   vertical-alignment: center;
                 }
 
-                if owed.takes-number : SpinBox {
+                if owed.takes-number : NumberBox {
                   value: owed.number;
                   minimum: 0;
                   maximum: 127;
                   width: 84px;
+                  typed(v) => {
+                    root.follow-typed(index, 2, v);
+                  }
                   edited(v) => {
                     root.follow-number-changed(index, v);
                   }
@@ -2856,30 +2867,19 @@ export component RulesWindow inherits Window {
                   vertical-alignment: center;
                 }
 
-                if owed.takes-value : Field {
-                  text: owed.value;
+                // A `LiveField`, like every box on these rows: it never goes deaf, so the row is
+                // not built again when what it holds changes — which destroyed the delay box
+                // beside it as Tab arrived there (the audit of 2026-09-25, M17).
+                if owed.takes-value : LiveField {
+                  value: owed.value;
                   placeholder-text: "0";
                   font-size: 12px;
                   width: 72px;
-                  edited(text) => {
+                  typed(text) => {
                     root.follow-typed(index, 0, text);
                   }
-                  accepted(text) => {
-                    // Focus first, callback second. The callback rebuilds these rows — that is
-                    // how a box comes back showing a value the controller normalised — and a
-                    // handler that touched `self` afterwards would be touching an element on
-                    // its way out.
-                    self.leave();
+                  committed(text) => {
                     root.follow-value-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.follow-value-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2895,25 +2895,15 @@ export component RulesWindow inherits Window {
                 // at 92 BPM as at 140 — but a *release* is usually a length of music: "let go
                 // two beats later" is the same gesture at either tempo, and spelling it in
                 // milliseconds means retyping it whenever the record changes.
-                Field {
-                  text: owed.delay;
+                LiveField {
+                  value: owed.delay;
                   font-size: 12px;
                   width: 68px;
-                  edited(text) => {
+                  typed(text) => {
                     root.follow-typed(index, 1, text);
                   }
-                  accepted(text) => {
-                    self.leave();
+                  committed(text) => {
                     root.follow-delay-edited(index, text);
-                  }
-                  // And when the operator clicks away instead of pressing
-                  // Enter, which is finishing rather than cancelling. Without
-                  // this, what they typed sat in the box until the next
-                  // publish wrote over it, and the edit was silently lost.
-                  changed has-focus => {
-                    if (!self.has-focus) {
-                      root.follow-delay-edited(index, self.text);
-                    }
                   }
                 }
 
@@ -2958,6 +2948,11 @@ export component RulesWindow inherits Window {
 
                   owed-touch := TouchArea {
                     clicked => {
+                      // The keyboard back to the window first, as a button takes it. This took
+                      // nothing, so a box typed into on a row below stayed lit, now over the row
+                      // that moved up into its place, and committed into that row whenever it
+                      // did let go (the audit of 2026-09-25, M18).
+                      keys.focus();
                       root.follow-up-removed(index);
                     }
                   }

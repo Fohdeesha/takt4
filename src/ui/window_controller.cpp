@@ -1293,6 +1293,8 @@ void WindowController::setTargetName(int index, const std::string& name, bool ap
     targetDrafts_[static_cast<std::size_t>(index)].name = shared(name);
     if (apply) {
         applyTargets();
+    } else {
+        draftsPending_ = true;
     }
 }
 
@@ -1306,6 +1308,8 @@ void WindowController::setTargetHost(int index, const std::string& host, bool ap
     row.address = shared(addressOf(row, midiPorts_));
     if (apply) {
         applyTargets();
+    } else {
+        draftsPending_ = true;
     }
 }
 
@@ -1319,6 +1323,8 @@ void WindowController::setTargetPort(int index, const std::string& port, bool ap
     row.address = shared(addressOf(row, midiPorts_));
     if (apply) {
         applyTargets();
+    } else {
+        draftsPending_ = true;
     }
 }
 
@@ -1416,7 +1422,20 @@ void WindowController::removeTarget(int index) {
             static_cast<int>(output::OutputTarget::Kind::Link)) {
         return; // the Link row is switched off, never removed
     }
+    const auto at = static_cast<std::size_t>(index);
     targetDrafts_.erase(targetDrafts_.begin() + index);
+    // **That row's element, and no other** (the audit of 2026-09-25, M15). Left to `writeRows`,
+    // the list was rewritten in place and the *last* element went — so every element below this
+    // one was handed the output below it. A box being typed into on one of them commits when it
+    // loses the keyboard, a turn of the event loop after this click, by its index: into the next
+    // output down. Erased here, each element goes on holding its own output, its index moves up
+    // with it, and what it was typed for is what it commits to.
+    if (at < targetModel_->row_count()) {
+        targetModel_->erase(at);
+    }
+    if (at < shownRows_.size()) {
+        shownRows_.erase(shownRows_.begin() + index);
+    }
     applyTargets();
 }
 
@@ -1424,8 +1443,15 @@ void WindowController::setTargetEnabled(int index, bool on) {
     if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
         return;
     }
+    shownRow(index).enabled = on; // the tick shows its own click now; see `ShownRow`
     targetDrafts_[static_cast<std::size_t>(index)].enabled = on;
     applyTargets();
+}
+
+void WindowController::applyDrafts() {
+    if (draftsPending_) {
+        applyTargets();
+    }
 }
 
 void WindowController::setTargetDelay(int index, float ms) {
@@ -1501,6 +1527,7 @@ void WindowController::applyTargets() {
     // A row that will not parse is named on the status line and kept exactly as it was
     // typed; the rest are still applied. An operator halfway through an address must not
     // lose the outputs that already worked.
+    draftsPending_ = false;
     std::vector<OutputRow> rows;
     std::vector<output::OutputTarget> targets;
     std::string bad;
@@ -1663,7 +1690,7 @@ void WindowController::publishTargetRows() {
         if (differs(shown.name, std::string(now.name)) ||
             differs(shown.host, std::string(now.host)) ||
             differs(shown.port, std::string(now.port)) || differs(shown.kind, now.kind_index) ||
-            differs(shown.device, now.device_index)) {
+            differs(shown.device, now.device_index) || differs(shown.enabled, now.enabled)) {
             staleTargetRows_.push_back(i);
         }
     }
@@ -2271,6 +2298,10 @@ settings::Settings WindowController::currentSettings() const {
 }
 
 bool WindowController::saveNow() {
+    // An output row still being typed in is what the operator means to save: SAVE reads the
+    // runner's list, and the row's own commit comes a turn of the event loop after this click
+    // (the audit of 2026-09-25, M15).
+    applyDrafts();
     const std::filesystem::path path = settings::settingsFile();
     if (path.empty()) {
         setStatus("There is nowhere to save settings on this machine.", true);
@@ -2295,6 +2326,7 @@ bool WindowController::saveNow() {
 }
 
 bool WindowController::exportTo(const std::filesystem::path& path) {
+    applyDrafts(); // see `saveNow`
     if (path.empty()) {
         return false; // cancelled
     }
@@ -2363,6 +2395,9 @@ void WindowController::autosave(double now) {
 }
 
 bool WindowController::importFrom(const std::filesystem::path& path) {
+    // Finished before anything is read or replaced, as a click anywhere else would finish it —
+    // see `saveNow`.
+    applyDrafts();
     if (path.empty()) {
         return false; // cancelled
     }

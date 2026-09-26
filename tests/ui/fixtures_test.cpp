@@ -23,6 +23,7 @@
 #include "ui/rules_controller.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <slint-platform.h>
 
 #include <algorithm>
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using takt4::dmx::Fixture;
@@ -764,4 +766,264 @@ TEST_CASE("the list's ADD, COPY and DELETE buttons do what they say when clicked
     CHECK(added);
     CHECK(copied);
     CHECK(deleted);
+}
+
+namespace {
+
+/// The patch editor on the headless platform at a size that shows a twelve-channel map, with
+/// the gestures the tests below are made of. Every gesture lets what Slint runs a loop late run.
+struct Patching {
+    explicit Patching(FixturesController& patch) : patch(patch), window(patch.window().window()) {
+        patch.show();
+        window.dispatch_scale_factor_change_event(1.0f);
+        window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+        window.dispatch_window_active_changed_event(true);
+        settle();
+    }
+    void settle() const {
+        patch.tick();
+        slint::platform::update_timers_and_animations();
+    }
+    void click(float x, float y) const {
+        clickAt(window, x, y);
+        settle();
+    }
+    void type(const std::string& text) const {
+        typeText(window, text);
+        settle();
+    }
+    void enter() const { type("\n"); }
+    /// Everything in the box with the keyboard gone, wherever the click left the caret.
+    void clearBox() const {
+        pressKey(window, slint::SharedString(u8"")); // Key.End
+        type(std::string(40, '\b'));
+    }
+    FixturesController& patch;
+    slint::Window& window;
+};
+
+/// A spot in a sweep where `probe` hit, or none. `reset` runs after every probe.
+template <typename Probe, typename Reset>
+std::pair<float, float> sweepFor(float x0, float x1, float dx, float y0, float y1, float dy,
+                                 Probe probe, Reset reset) {
+    for (float y = y0; y < y1; y += dy) {
+        for (float x = x0; x < x1; x += dx) {
+            const bool hit = probe(x, y);
+            reset();
+            if (hit) {
+                return {x, y};
+            }
+        }
+    }
+    return {-1.0f, -1.0f};
+}
+
+} // namespace
+
+TEST_CASE("a fixture's address is patched once, when it is entered", "[ui][dmx]") {
+    // The audit of 2026-09-25, M22. The address was a `SpinBox`, which sent every keystroke:
+    // typing 101 patched the fixture at 1, then 10, then 101 — and a re-patch parks every channel
+    // the fixture lands on and drops every one it leaves, so a strobe parked at full, passing
+    // over a par's channel on the way, flashed it.
+    Rig rig;
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("par", 1, 0, 1)});
+    const Patching shown(patch);
+    const auto address = [&patch] { return static_cast<int>(patch.fixtures()[0].address); };
+
+    const auto box = sweepFor(
+        340.0f, 800.0f, 20.0f, 40.0f, 140.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("9");
+            shown.enter();
+            return address() == 9;
+        },
+        [&] {
+            patch.setAddress(1);
+            patch.rename("par");
+            patch.setGroup("");
+            patch.setUniverse("0");
+        });
+    INFO("address box at " << box.first << ", " << box.second);
+    REQUIRE(box.first >= 0.0f);
+    REQUIRE(address() == 1);
+
+    shown.click(box.first, box.second);
+    shown.clearBox();
+    shown.type("1");
+    CHECK(address() == 1);
+    shown.type("0");
+    CHECK(address() == 1); // not 10
+    shown.type("1");
+    CHECK(address() == 1);
+    shown.enter();
+    CHECK(address() == 101);
+    CHECK(patch.window().get_address() == 101);
+}
+
+TEST_CASE("what is typed in the patch editor is kept by whatever is clicked next",
+          "[ui][dmx]") {
+    // The audit of 2026-09-25, M18. The boxes commit when they lose the keyboard, a turn of the
+    // event loop after the click that took it, and `commitDrafts` ran only when the selection
+    // moved. So a name typed and not entered reverted on another fixture's tick — the tick
+    // republished this fixture into the box, which is bound both ways — and an address typed
+    // and not entered went, on a click to another fixture, to *that* fixture.
+    //
+    // **Both at address 1**, overlapping as a half-built patch does. With the second somewhere
+    // else, the box is told the second's address when it is clicked and lets go holding that;
+    // at the same address it is told of no change and still holds what was typed, which is
+    // what `echo_` is for (measured: at 1 and 10 this passed with the echo taken out).
+    Rig rig;
+    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("left", 1, 0, 1),
+                                          takt4::dmx::fixtureFromMode("right", 1, 0, 1)});
+    const Patching shown(patch);
+    const auto restore = [&] {
+        patch.pick(0);
+        patch.rename("left");
+        patch.setGroup("");
+        patch.setAddress(1);
+        patch.setEnabledAt(0, true);
+        patch.setEnabledAt(1, true);
+        patch.pick(1);
+        patch.rename("right");
+        patch.setGroup("");
+        patch.setAddress(1);
+        patch.pick(0);
+        shown.settle();
+    };
+
+    const auto name = sweepFor(
+        340.0f, 700.0f, 40.0f, 20.0f, 200.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("Q");
+            shown.enter();
+            return patch.fixtures()[0].name == "Q";
+        },
+        restore);
+    const auto address = sweepFor(
+        340.0f, 800.0f, 20.0f, 40.0f, 140.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("9");
+            shown.enter();
+            return patch.fixtures()[0].address == 9;
+        },
+        restore);
+    // The second fixture's "in the show" tick, down the list's left edge.
+    const auto tick = sweepFor(
+        14.0f, 60.0f, 6.0f, 30.0f, 300.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return !patch.fixtures()[1].enabled;
+        },
+        restore);
+    // And the second fixture's row itself, clicked to the right of its tick.
+    const auto second = sweepFor(
+        100.0f, 200.0f, 20.0f, 30.0f, 300.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return patch.selected() == 1 && patch.fixtures()[1].enabled;
+        },
+        restore);
+    INFO("name " << name.first << "," << name.second << "; address " << address.first << ","
+                 << address.second << "; tick " << tick.first << "," << tick.second
+                 << "; second " << second.first << "," << second.second);
+    REQUIRE(name.first >= 0.0f);
+    REQUIRE(address.first >= 0.0f);
+    REQUIRE(tick.first >= 0.0f);
+    REQUIRE(second.first >= 0.0f);
+
+    SECTION("a name, and another fixture's tick") {
+        shown.click(name.first, name.second);
+        shown.clearBox();
+        shown.type("wash L");
+        shown.click(tick.first, tick.second); // no Enter
+        CHECK_FALSE(patch.fixtures()[1].enabled);
+        CHECK(patch.fixtures()[0].name == "wash L");
+        CHECK(std::string(patch.window().get_name()) == "wash L");
+    }
+
+    SECTION("an address, and another fixture") {
+        shown.click(address.first, address.second);
+        shown.clearBox();
+        shown.type("200");
+        shown.click(second.first, second.second); // no Enter
+        REQUIRE(patch.selected() == 1);
+        CHECK(patch.fixtures()[0].address == 200); // the fixture it was typed for
+        CHECK(patch.fixtures()[1].address == 1);  // and not the one clicked
+        CHECK(patch.window().get_address() == 1); // which the box now shows
+
+        // And the row took the keyboard, as a button does. It took nothing, so the box stayed
+        // lit over the second fixture still holding the 200, and the next keys went into it.
+        shown.type("7");
+        shown.enter();
+        CHECK(patch.fixtures()[1].address == 1);
+        CHECK(patch.fixtures()[0].address == 200);
+    }
+}
+
+TEST_CASE("the channel rows are built afresh for another fixture with the same shape",
+          "[ui][dmx]") {
+    // The audit of 2026-09-25, M21. The rows were updated in place while the *index* and the
+    // channel count stayed the same — and deleting the selected fixture puts the next one at the
+    // same index, and in a rig of identical pars at the same count too. A row's dropdown whose
+    // role was picked by hand is bound to nothing any more, so it went on showing the deleted
+    // fixture's pick over the next one's map. The same for an IMPORT that brings in a patch of
+    // the same shape. Judged the way the operator would meet it: one arrow step from what the
+    // dropdown shows.
+    const bool importing = GENERATE(false, true);
+    INFO((importing ? "after an import" : "after deleting the selected fixture"));
+    Rig rig;
+    const std::vector<Fixture> pars = {takt4::dmx::fixtureFromMode("par 1", 2, 0, 1),
+                                       takt4::dmx::fixtureFromMode("par 2", 2, 0, 5),
+                                       takt4::dmx::fixtureFromMode("par 3", 2, 0, 9)};
+    FixturesController patch(rig.runner, pars);
+    // The show as saved, ids and all: an import of the same file brings the same ids back, and
+    // that is the case the id alone cannot tell from "the fixture showing" (measured: an import
+    // of fixtures given new ids passed with the rebuild on import taken out).
+    const std::vector<Fixture> saved = patch.fixtures();
+    REQUIRE_FALSE(saved[1].id.empty());
+    const Patching shown(patch);
+    patch.pick(1);
+    shown.settle();
+    REQUIRE(patch.fixtures()[1].channels[0] == Role::Red);
+
+    // The first channel's dropdown, found as the tests above find it.
+    constexpr float kDoesColumn = 440.0f;
+    float found = -1.0f;
+    for (float y = 250.0f; y < 500.0f && found < 0.0f; y += 6.0f) {
+        stepDropdown(shown.window, kDoesColumn, y);
+        shown.settle();
+        if (patch.fixtures()[1].channels[0] != Role::Red) {
+            found = y;
+        }
+    }
+    {
+        INFO("no click landed on the first channel's dropdown");
+        REQUIRE(found >= 0.0f);
+    }
+    const Role stepped = takt4::dmx::kRoles[static_cast<std::size_t>(roleIndexOf(Role::Red)) + 1];
+    REQUIRE(patch.fixtures()[1].channels[0] == stepped);
+
+    if (importing) {
+        patch.setFixtures(saved); // the same show again, its par 2 still red
+        REQUIRE(patch.fixtures()[1].id == saved[1].id);
+        patch.pick(1);
+    } else {
+        patch.window().invoke_removed(); // par 2 goes; par 3 takes its place in the list
+        REQUIRE(patch.fixtures().size() == 2);
+        REQUIRE(patch.selected() == 1);
+        REQUIRE(patch.fixtures()[1].name == "par 3");
+    }
+    shown.settle();
+    shown.settle();
+    REQUIRE(patch.fixtures()[1].channels[0] == Role::Red);
+
+    stepDropdown(shown.window, kDoesColumn, found);
+    shown.settle();
+    CHECK(patch.fixtures()[1].channels[0] == stepped); // one step from red, not from the pick
 }

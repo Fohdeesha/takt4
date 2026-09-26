@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,11 @@ namespace takt4::ui {
 /// during a set. Every edit changes `fixtures_` and hands the whole patch over through
 /// `OutputCommand::Patch`.
 ///
-/// Replacing the patch a few times a second is cheap and, more to the point, *safe*: levels
-/// survive a re-patch where they can (`DmxEngine::setPatch`), so an operator typing an address
-/// while the rig is lit does not make it blink on every keystroke.
+/// Replacing the patch is cheap and, more to the point, *safe*: levels survive a re-patch where
+/// they can (`DmxEngine::setPatch`). And an address is not re-patched per keystroke at all —
+/// typing 101 used to patch the fixture at 1, then 10, then 101, parking each channel it passed
+/// over at the fixture's levels (the audit of 2026-09-25, M22). The number boxes commit on Enter,
+/// on a click away, or before any other action (`commitDrafts`).
 ///
 /// Nothing here touches a Slint property outside `tick()` and the callbacks, both of which run
 /// on the UI thread — §7.5's rule.
@@ -120,9 +123,20 @@ private:
 
     /// Hands the patch to the output thread and tells the owner. Every edit ends here.
     void commit();
-    /// Applies what the name, group and universe boxes hold to the fixture they belong to.
-    /// Called before anything moves the selection — see the definition.
+    /// Applies what the name, group and universe boxes hold to the fixture they belong to, and
+    /// a number still being typed (`typed_`). Called before **every** action — see the
+    /// constructor, where each callback is wired.
     void commitDrafts();
+
+    /// The three number boxes, whose keystrokes are kept until they are entered — see `typed_`.
+    enum class Numbered : std::uint8_t { Address, TestLevel, Parked };
+    /// A keystroke in one of them: what Enter would set there now.
+    void noteTyped(Numbered box, int index, int value);
+    /// That box entered its number itself, so there is nothing left to carry.
+    void entered(Numbered box, int index) noexcept;
+    /// Whether a box's own late commit only repeats what `commitDrafts` already committed for
+    /// it. See `echo_`.
+    bool echoes(Numbered box, int value) noexcept;
     /// True, having said why in the status line, when PANIC is engaged — IDENTIFY and TEST
     /// send nothing then (the audit's M17).
     bool refusedForPanic();
@@ -157,8 +171,31 @@ private:
     /// either changes the rows are rebuilt rather than updated in place, so every box comes
     /// back *bound* — the same trap `RulesController::publishSlots` documents, where a box
     /// that has been typed into stops following the model.
-    int channelsBuiltFor_ = -1;
+    ///
+    /// **By id, not by position** (the audit of 2026-09-25, M21). Deleting the selected fixture
+    /// puts the next one at the same index, and in a rig of identical pars it has the same
+    /// number of channels too — so its map was written into the rows in place, and the rows'
+    /// dropdowns, dead from a hand-picked role, went on showing the deleted fixture's.
+    std::string channelsBuiltFor_;
     std::size_t channelsShown_ = 0;
+    /// A number typed into the address, the TEST level or a channel's "parked at", not yet
+    /// entered — for the fixture it was typed for (`fixtureId`, empty for the TEST level, which
+    /// is the window's). A number box commits on Enter or on losing the keyboard, and the second
+    /// runs a turn of the event loop after the click that took it: ADD CHANNEL, a channel's ×,
+    /// or another fixture's tick had already run, and the box's commit then went to whatever
+    /// that action had put under it (the audit of 2026-09-25, M18). So every action commits it
+    /// first. One is enough: only one box has the keyboard.
+    struct Typed {
+        std::string fixtureId;
+        Numbered box = Numbered::Address;
+        int index = 0;
+        int value = 0;
+    };
+    std::optional<Typed> typed_;
+    /// What `commitDrafts` last committed for a box, until that box's own late commit arrives —
+    /// by when a channel's × may have moved the box onto the next channel. Cleared by the next
+    /// keystroke, since only typing can put a different number in a box.
+    std::optional<Typed> echo_;
     /// Set by `publishChannels` when it found a shape it could not update in place, and
     /// consumed by `tick`. **Deferred rather than done there and then**, because a publisher
     /// runs inside the callback of the very widget being replaced.

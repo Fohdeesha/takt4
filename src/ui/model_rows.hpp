@@ -32,12 +32,15 @@ namespace takt4::ui {
 /// Adding and removing rows goes through `push_back`/`erase` for the same reason: those
 /// notify incrementally, and only the rows after the change are disturbed.
 ///
-/// One consequence worth stating, because it is the whole of `rowsNeedRebuild` below. A
-/// `LineEdit` whose `text:` is bound to a model field loses that binding the moment somebody
-/// types into it — Slint drops a binding when the property is assigned — so a value the
-/// controller normalises after an edit no longer reappears in the box on its own, and neither
-/// does the *next* rule's. That second half is what a rig met as "when I edit the value range
-/// on trigger 1, it changes all the triggers".
+/// One consequence worth stating, because it is the whole of `staleRows` below. A std widget
+/// that assigns its own value — a `ComboBox` picked from, a `CheckBox` clicked, a `Slider`
+/// dragged — loses its binding to the model field the moment it is used: Slint drops a binding
+/// when the property is assigned. So a value the controller changes afterwards no longer
+/// reappears in it on its own, and neither does the *next* rule's. That is what a rig met, when
+/// the text boxes were `LineEdit`s bound this way, as "when I edit the value range on trigger
+/// 1, it changes all the triggers". The rows' text and number boxes are `LiveField` and
+/// `NumberBox` now, which never assign their own value and so never need this (the audit of
+/// 2026-09-25, M17).
 template <typename Row>
 void writeRows(slint::VectorModel<Row>& model, const std::vector<Row>& rows) {
     while (model.row_count() > rows.size()) {
@@ -52,37 +55,20 @@ void writeRows(slint::VectorModel<Row>& model, const std::vector<Row>& rows) {
     }
 }
 
-/// Whether `rows` can honestly be written over what `model` holds, or whether the repeater
-/// has to be built again from nothing.
+/// The surviving rows of `model` that `rows` would move in a way that matters, by index.
 ///
 /// Updating in place keeps the element, which is what stops a box being destroyed under the
-/// cursor thirty times a second — and it keeps the *dead binding* with it, so a box that has
-/// been typed into goes on showing what was typed however often the row beneath it changes.
-/// Within one edit that is right. Across an edit the controller made itself — a range it
-/// swapped back the right way round, a delay that changed units, another rule's values — it
-/// is the difference between a field that reports the rule and one that reports the last
-/// thing anybody typed anywhere.
+/// cursor thirty times a second — and it keeps a *dead binding* with it, so a dropdown that
+/// has been picked from goes on showing its pick however often the row beneath it changes.
+/// Within one edit that is right. Across a change the controller made itself — a row that
+/// moved to another kind, another rule's values — it is the difference between a widget that
+/// reports the rule and one that reports the last thing anybody picked anywhere.
 ///
 /// So: a row **added** past the end is a fresh element and always fine; a row **removed** off
 /// the end disturbs nothing before it; a *surviving* row whose content moved is the case that
-/// needs a rebuild. `changed(was, now)` says whether it moved in a way that matters —
-/// callers exclude the fields that update themselves, which is how a readout that ticks over
-/// on every beat does not tear down the box beside it.
-template <typename Row, typename Changed>
-bool rowsNeedRebuild(const slint::VectorModel<Row>& model, const std::vector<Row>& rows,
-                     Changed changed) {
-    const std::size_t common = std::min<std::size_t>(model.row_count(), rows.size());
-    for (std::size_t i = 0; i < common; ++i) {
-        const std::optional<Row> was = model.row_data(i);
-        if (was && changed(*was, rows[i])) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// The surviving rows of `model` that `rows` would move in a way that matters — the rows
-/// `rowsNeedRebuild` is asking about, by index rather than as one answer for the whole list.
+/// needs a rebuild. `changed(was, now)` says whether it moved in a way that matters — callers
+/// exclude the fields that update themselves (a readout that ticks over on every beat, whatever
+/// a `LiveField` or a `NumberBox` shows), so none of those tears down the row it is on.
 template <typename Row, typename Changed>
 std::vector<std::size_t> staleRows(const slint::VectorModel<Row>& model,
                                    const std::vector<Row>& rows, Changed changed) {

@@ -15,8 +15,8 @@
 // its own copy and posts it whole — see its header, and `RulesController`'s, for why the
 // output thread's copy cannot be the one being edited.
 
-import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
-import { Field, FocusSink, Press, Splitter, Theme } from "theme.slint";
+import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider } from "std-widgets.slint";
+import { Field, FocusSink, NumberBox, Press, Splitter, Theme } from "theme.slint";
 
 /// One row of the fixture list — everything it shows without the editor being open.
 export struct FixtureRow {
@@ -83,8 +83,7 @@ export component FixturesWindow inherits Window {
   in-out property <[ChannelRow]> channels;
 
   /// What a channel's TEST holds it at, and for how long. Two-way on the level, because the
-  /// SpinBox is the thing that sets it — see `bpm-field` in the main window for what a
-  /// one-way binding does to a box somebody types in.
+  /// number box is the thing that sets it.
   in-out property <int> test-level: 255;
   in-out property <int> test-seconds: 3;
 
@@ -118,16 +117,22 @@ export component FixturesWindow inherits Window {
   callback group-edited(string);
   callback universe-edited(string);
   callback address-changed(int);
+  /// A keystroke in the address box: what Enter would set. Kept by the controller and
+  /// committed before any other action — see `FixturesController::typed_`. The same for the
+  /// TEST level and a channel's "parked at".
+  callback address-typed(int);
   callback fixture-enabled-changed(bool);
   callback mode-picked(int);
   callback channel-added();
   callback channel-removed(int);
   callback channel-role-picked(int, int);
   callback channel-parked-changed(int, int);
+  callback channel-parked-typed(int, int);
   /// Holds one channel of the selected fixture at `test-level` for `test-seconds` — which
   /// channel, by index into `channels`. See `DmxEngine::holdChannel`.
   callback channel-tested(int);
   callback test-level-changed(int);
+  callback test-level-typed(int);
   callback pan-range-changed(float, float);
   callback tilt-range-changed(float, float);
   /// Drives every channel of the selected fixture to full for a moment, so an operator in
@@ -178,6 +183,10 @@ export component FixturesWindow inherits Window {
 
           TouchArea {
             clicked => {
+              // The keyboard back to the window first, as a button takes it (see `FocusSink`).
+              // A row took nothing, so a box being typed in stayed lit over the next fixture,
+              // holding what was typed for this one (the audit of 2026-09-25, M18).
+              defocus.take();
               root.picked(index);
             }
           }
@@ -409,7 +418,7 @@ export component FixturesWindow inherits Window {
               horizontal-alignment: right;
               vertical-alignment: center;
             }
-            SpinBox {
+            NumberBox {
               // 1-based, because that is the number printed on the back of the fixture and
               // set on its display. Everything inside a universe buffer counts from zero and
               // exactly one function knows it.
@@ -417,6 +426,9 @@ export component FixturesWindow inherits Window {
               minimum: 1;
               maximum: 512;
               width: 104px;
+              // Entered, never per keystroke: typing 101 re-patched the fixture at 1, then 10,
+              // then 101, parking every channel it passed over (the audit of 2026-09-25, M22).
+              typed(v) => { root.address-typed(v); }
               edited(v) => { root.address-changed(v); }
             }
 
@@ -506,11 +518,12 @@ export component FixturesWindow inherits Window {
               width: 72px;
               vertical-alignment: center;
             }
-            SpinBox {
+            NumberBox {
               value <=> root.test-level;
               minimum: 0;
               maximum: 255;
               width: 104px;
+              typed(v) => { root.test-level-typed(v); }
               edited(v) => { root.test-level-changed(v); }
             }
             Text {
@@ -563,13 +576,14 @@ export component FixturesWindow inherits Window {
               selected => { root.channel-role-picked(index, self.current-index); }
             }
 
-            SpinBox {
+            NumberBox {
               value: channel.parked;
               minimum: 0;
               maximum: 255;
               width: 104px;
               height: 32px;
               y: 2px;
+              typed(v) => { root.channel-parked-typed(index, v); }
               edited(v) => { root.channel-parked-changed(index, v); }
             }
 

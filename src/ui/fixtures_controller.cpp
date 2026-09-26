@@ -76,30 +76,63 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     }
     window_->set_modes(modes);
 
-    window_->on_picked([this](int index) { pick(index); });
-    window_->on_added([this] { add(); });
-    window_->on_duplicated([this] { duplicate(); });
-    window_->on_removed([this] { remove(); });
-    window_->on_removed_at([this](int index) { removeAt(index); });
-    window_->on_enabled_changed([this](int index, bool on) { setEnabledAt(index, on); });
+    // **Every action commits what the boxes hold before it runs** (the audit of 2026-09-25, M18).
+    // `commitDrafts` used to run only when the selection moved, so a name, a group or a universe
+    // typed and not entered reverted on ADD CHANNEL, a channel's ×, a number box's arrow or
+    // another fixture's tick — each republishes the fixture, and the three boxes are bound both
+    // ways. A box's own commit is not wrapped; it is the one box with the keyboard.
+    const auto finishing = [this](auto action) {
+        return [this, action](auto... args) {
+            commitDrafts();
+            action(args...);
+        };
+    };
+
+    window_->on_picked([this](int index) { pick(index); }); // `pick` commits them itself
+    window_->on_added(finishing([this] { add(); }));
+    window_->on_duplicated(finishing([this] { duplicate(); }));
+    window_->on_removed(finishing([this] { remove(); }));
+    window_->on_removed_at(finishing([this](int index) { removeAt(index); }));
+    window_->on_enabled_changed(
+        finishing([this](int index, bool on) { setEnabledAt(index, on); }));
     window_->on_name_edited([this](const slint::SharedString& text) { rename(std::string(text)); });
     window_->on_group_edited(
         [this](const slint::SharedString& text) { setGroup(std::string(text)); });
     window_->on_universe_edited(
         [this](const slint::SharedString& text) { setUniverse(std::string(text)); });
-    window_->on_address_changed([this](int address) { setAddress(address); });
-    window_->on_fixture_enabled_changed([this](bool on) { setEnabled(on); });
-    window_->on_mode_picked([this](int mode) { pickMode(mode); });
-    window_->on_channel_added([this] { addChannel(); });
-    window_->on_channel_removed([this](int index) { removeChannel(index); });
-    window_->on_channel_role_picked([this](int index, int role) { pickChannelRole(index, role); });
-    window_->on_channel_parked_changed(
-        [this](int index, int level) { setChannelParked(index, level); });
-    window_->on_pan_range_changed([this](float low, float high) { setPanRange(low, high); });
-    window_->on_tilt_range_changed([this](float low, float high) { setTiltRange(low, high); });
-    window_->on_identify([this] { identify(); });
-    window_->on_channel_tested([this](int index) { testChannel(index); });
-    window_->on_test_level_changed([this](int level) { setTestLevel(level); });
+    window_->on_address_changed([this](int address) {
+        if (!echoes(Numbered::Address, address)) {
+            setAddress(address);
+        }
+    });
+    window_->on_address_typed(
+        [this](int address) { noteTyped(Numbered::Address, 0, address); });
+    window_->on_fixture_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
+    window_->on_mode_picked(finishing([this](int mode) { pickMode(mode); }));
+    window_->on_channel_added(finishing([this] { addChannel(); }));
+    window_->on_channel_removed(finishing([this](int index) { removeChannel(index); }));
+    window_->on_channel_role_picked(
+        finishing([this](int index, int role) { pickChannelRole(index, role); }));
+    window_->on_channel_parked_changed([this](int index, int level) {
+        if (!echoes(Numbered::Parked, level)) {
+            setChannelParked(index, level);
+        }
+    });
+    window_->on_channel_parked_typed(
+        [this](int index, int level) { noteTyped(Numbered::Parked, index, level); });
+    window_->on_pan_range_changed(
+        finishing([this](float low, float high) { setPanRange(low, high); }));
+    window_->on_tilt_range_changed(
+        finishing([this](float low, float high) { setTiltRange(low, high); }));
+    window_->on_identify(finishing([this] { identify(); }));
+    window_->on_channel_tested(finishing([this](int index) { testChannel(index); }));
+    window_->on_test_level_changed([this](int level) {
+        if (!echoes(Numbered::TestLevel, level)) {
+            setTestLevel(level);
+        }
+    });
+    window_->on_test_level_typed(
+        [this](int level) { noteTyped(Numbered::TestLevel, 0, level); });
 
     window_->set_test_level(testLevel_);
     window_->set_test_seconds(static_cast<int>(kTestSeconds));
@@ -176,6 +209,13 @@ void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures) {
     fixtures_ = std::move(fixtures);
     dmx::ensureFixtureIds(fixtures_);
     resettle(selected_);
+    // A new patch, so nothing half-typed is carried into it, and the channel rows are built
+    // afresh even if a fixture in it happens to carry the id of the one showing — ids are only
+    // unique within a patch, and an imported show is another patch (the audit of 2026-09-25,
+    // M21).
+    typed_.reset();
+    echo_.reset();
+    channelsBuiltFor_.clear();
     publishAll();
 }
 
@@ -263,7 +303,7 @@ void FixturesController::publishChannels() {
         if (channelModel_->row_count() != 0) {
             channelModel_->set_vector({});
         }
-        channelsBuiltFor_ = -1;
+        channelsBuiltFor_.clear();
         channelsShown_ = 0;
         return;
     }
@@ -275,7 +315,8 @@ void FixturesController::publishChannels() {
     // would destroy an element from within its own handler and leave what was typed in a box
     // that no longer exists. `RulesController::publishSlots` documents the same trap and the
     // same answer; the deferral is what keeps it out of the handler.
-    if (channelsBuiltFor_ == selected_ && channelsShown_ == fixture->channels.size()) {
+    if (!channelsBuiltFor_.empty() && channelsBuiltFor_ == fixture->id &&
+        channelsShown_ == fixture->channels.size()) {
         for (std::size_t i = 0; i < fixture->channels.size(); ++i) {
             ChannelRow row = rowFor(*fixture, i);
             const ChannelRow current = *channelModel_->row_data(i);
@@ -296,7 +337,7 @@ void FixturesController::rebuildChannels() {
     channelsDirty_ = false;
     if (fixture == nullptr) {
         channelModel_->set_vector({});
-        channelsBuiltFor_ = -1;
+        channelsBuiltFor_.clear();
         channelsShown_ = 0;
         return;
     }
@@ -306,7 +347,7 @@ void FixturesController::rebuildChannels() {
         rows.push_back(rowFor(*fixture, i));
     }
     channelModel_->set_vector(std::move(rows));
-    channelsBuiltFor_ = selected_;
+    channelsBuiltFor_ = fixture->id;
     channelsShown_ = fixture->channels.size();
     publishLevels();
 }
@@ -393,6 +434,23 @@ void FixturesController::setStatus(const std::string& text, bool error) {
 }
 
 void FixturesController::commitDrafts() {
+    // A number still being typed, first: it is for the fixture it was typed on, and the text
+    // boxes' commits below republish that fixture into its box.
+    if (typed_) {
+        const Typed pending = *typed_;
+        typed_.reset();
+        echo_ = pending;
+        const dmx::Fixture* const fixture = current();
+        if (pending.box == Numbered::TestLevel) {
+            setTestLevel(pending.value);
+        } else if (fixture != nullptr && fixture->id == pending.fixtureId) {
+            if (pending.box == Numbered::Address) {
+                setAddress(pending.value);
+            } else {
+                setChannelParked(pending.index, pending.value);
+            }
+        }
+    }
     // What the three text boxes hold, for the fixture they belong to — before anything moves the
     // selection. The boxes commit on Enter and on losing the keyboard, and Slint runs the second
     // a loop late: after a click on another fixture has already switched them to it. Committed
@@ -407,6 +465,30 @@ void FixturesController::commitDrafts() {
     if (universe != dmx::describePortAddress(current()->universe)) {
         setUniverse(universe);
     }
+}
+
+void FixturesController::noteTyped(Numbered box, int index, int value) {
+    const dmx::Fixture* const fixture = current();
+    if (box != Numbered::TestLevel && fixture == nullptr) {
+        return;
+    }
+    typed_ = Typed{box == Numbered::TestLevel ? std::string() : fixture->id, box, index, value};
+    echo_.reset();
+}
+
+void FixturesController::entered(Numbered box, int index) noexcept {
+    if (typed_ && typed_->box == box && typed_->index == index) {
+        typed_.reset();
+    }
+}
+
+bool FixturesController::echoes(Numbered box, int value) noexcept {
+    // Not by row: the row is what a channel's × may have moved. See `RulesController::echoes`.
+    if (!echo_ || echo_->box != box || echo_->value != value) {
+        return false;
+    }
+    echo_.reset();
+    return true;
 }
 
 void FixturesController::pick(int index) {
@@ -537,6 +619,7 @@ void FixturesController::setUniverse(const std::string& text) {
 }
 
 void FixturesController::setAddress(int address) {
+    entered(Numbered::Address, 0);
     dmx::Fixture* const fixture = current();
     if (fixture == nullptr) {
         return;
@@ -578,7 +661,7 @@ void FixturesController::pickMode(int mode) {
     // same. A row's dropdown is bound to its role one way, and a role picked from it by hand has
     // broken that binding: updated in place, it went on showing the pick, over a map that now
     // said something else. Safe to rebuild — the mode dropdown is not one of the rows.
-    channelsBuiltFor_ = -1;
+    channelsBuiltFor_.clear();
     commit();
 }
 
@@ -619,6 +702,7 @@ void FixturesController::pickChannelRole(int index, int role) {
 }
 
 void FixturesController::setChannelParked(int index, int level) {
+    entered(Numbered::Parked, index);
     dmx::Fixture* const fixture = current();
     if (fixture == nullptr || index < 0 ||
         static_cast<std::size_t>(index) >= fixture->channels.size()) {
@@ -709,6 +793,7 @@ bool FixturesController::refusedForPanic() {
 }
 
 void FixturesController::setTestLevel(int level) {
+    entered(Numbered::TestLevel, 0);
     testLevel_ = std::clamp(level, 0, 255);
     window_->set_test_level(testLevel_);
 }

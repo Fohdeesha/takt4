@@ -1981,14 +1981,17 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(controller.window().get_outputs_list()->row_count() == 2);
     }
 
-    SECTION("deleting a row rebuilds the ones that moved up into its place") {
+    SECTION("deleting a row takes its own element away and leaves the rest standing") {
         // The other half of the drag test above, and the case it could not cover. Updating a
         // row in place keeps its elements — which is what saves the drag — and keeps any
         // *dead* `text:` binding with them: Slint drops a binding the moment somebody types
-        // into the box. Delete the first of two outputs and the second's name moves up a row,
-        // so a box that had been typed into would go on showing the name of the target that
-        // used to be above it. Reported in the trigger editor as "editing one changes them
-        // all"; this is the same mechanism in the main window.
+        // into the box. Delete the first of two outputs and, rewritten in place, the second's
+        // name moved up a row, so a box that had been typed into went on showing the name of
+        // the target that used to be above it — and committed into it (the audit of
+        // 2026-09-25, M15). Reported in the trigger editor as "editing one changes them all";
+        // this is the same mechanism in the main window.
+        //
+        // So the deleted row's own element goes, and every other element keeps its own output.
         const auto rows = controller.window().get_outputs_list();
         const auto watch = std::make_shared<ModelWatch>();
         rows->attach_peer(watch);
@@ -1997,14 +2000,14 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // whatever its row holds from now on.
         controller.setTargetName(1, "deck", false);
         controller.removeTarget(1);
-        controller.tick(); // the rebuild is deferred out of the × that was pressed
+        controller.tick();
         REQUIRE(rows->row_count() == 2);
         CHECK(std::string(rows->row_data(1)->name) == "wall");
-        // That row alone, built again: erased and put back — never the whole list, which took
-        // every box with it, the one holding the keyboard included.
+        // That row alone — never the whole list, which took every box with it, the one holding
+        // the keyboard included — and nothing rebuilt: the wall's element was always the wall's.
         CHECK(watch->resets == 0);
-        CHECK(watch->removed == 2); // the row off the end, and the renewed one
-        CHECK(watch->added == 1);
+        CHECK(watch->removed == 1);
+        CHECK(watch->added == 0);
 
         // And a tick that changed nothing does not keep rebuilding it: that would tear a box
         // down thirty times a second, which is the failure this started as.
@@ -3126,6 +3129,211 @@ TEST_CASE("clicking from a row's name box into its host box keeps what is typed 
     CHECK(host.size() == std::string("127.0.0.1").size() + 1);
     CHECK(host.find('9') != std::string::npos);
     nothingReal.check();
+}
+
+namespace {
+
+/// The middle of each output row: found from the bottom of the body up by typing a letter and
+/// Enter into whatever is at x = 110 and seeing which row it named — put back straight away —
+/// and taking the middle of the span of clicks that named each. The row's ×, and its other
+/// boxes, sit on that line; the edge of a name box is outside the smaller × beside it. A click
+/// on ADD OUTPUT on the way adds a row, which is taken away again. Row 0 is Link, which has no
+/// name box, and is left at -1.
+std::vector<float> outputRowsAt(WindowController& controller, float height) {
+    auto& window = controller.window().window();
+    const auto rows = controller.window().get_outputs_list();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const std::size_t count = rows->row_count();
+    std::vector<float> bottom(count, -1.0f);
+    std::vector<float> top(count, -1.0f);
+    for (float y = height - 128.0f; y > 380.0f; y -= 2.0f) {
+        std::vector<std::string> names;
+        for (std::size_t i = 0; i < count; ++i) {
+            names.emplace_back(rows->row_data(i)->name);
+        }
+        clickAt(window, 110.0f, y);
+        press(window, "n");
+        press(window, "\n");
+        settle();
+        while (rows->row_count() > count) {
+            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
+            settle();
+        }
+        bool hit = false;
+        for (std::size_t i = 1; i < count; ++i) {
+            if (std::string(rows->row_data(i)->name) != names[i]) {
+                hit = true;
+                if (bottom[i] < 0.0f) {
+                    bottom[i] = y;
+                }
+                top[i] = y;
+                controller.setTargetName(static_cast<int>(i), names[i], true);
+                settle();
+            }
+        }
+        // Past the top of the first row, which is the last to be met: the inputs are above.
+        if (!hit && count > 1 && top[1] > 0.0f) {
+            break;
+        }
+    }
+    std::vector<float> middle(count, -1.0f);
+    for (std::size_t i = 1; i < count; ++i) {
+        if (bottom[i] > 0.0f) {
+            middle[i] = (bottom[i] + top[i]) / 2.0f;
+        }
+    }
+    return middle;
+}
+
+} // namespace
+
+TEST_CASE("typing a host and then removing the row above it keeps the host on its own output",
+          "[ui]") {
+    // The audit of 2026-09-25, M15. A box commits when it loses the keyboard, a turn of the event
+    // loop after the click that took it — and it commits by its row's index. × on a row above
+    // rewrote the list in place, so the element holding the typed host was handed the *next*
+    // output, and the late commit sent that output's messages to the host typed for this one.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget(); // A
+    controller.addTarget(); // B
+    controller.addTarget(); // C
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 1100.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    const takt4::tests::NothingReal nothingReal;
+    REQUIRE(rows->row_count() == 4);
+    controller.setTargetName(1, "A", true);
+    controller.setTargetName(2, "B", true);
+    controller.setTargetName(3, "C", true);
+    settle();
+
+    const std::vector<float> at = outputRowsAt(controller, kHeight);
+    INFO("A at " << at[1] << ", B at " << at[2] << ", C at " << at[3]);
+    REQUIRE(at[1] > 0.0f);
+    REQUIRE(at[2] > 0.0f);
+    REQUIRE(at[3] > 0.0f);
+    const std::string cHost(rows->row_data(3)->host);
+
+    // B's host box, typed into and not entered; then A's ×.
+    clickAt(window, 300.0f, at[2]);
+    settle();
+    press(window, "\xEF\x9C\xAB"); // Key.End, U+F72B
+    for (int i = 0; i < 20; ++i) {
+        press(window, "\b");
+    }
+    for (const char c : std::string("127.0.0.9")) {
+        press(window, std::string(1, c));
+    }
+    clickAt(window, kWidth - 34.0f, at[1]);
+    // What the event loop does next, in the order it does it: the box's late commit, then a
+    // redraw — which would otherwise build the moved row again before the commit could land.
+    slint::platform::update_timers_and_animations();
+    settle();
+    settle();
+
+    const auto live = seen(controller).targets;
+    REQUIRE(rows->row_count() == 3);
+    const auto find = [&live](const std::string& name) {
+        for (const takt4::output::OutputTarget& target : live) {
+            if (target.name == name) {
+                return target;
+            }
+        }
+        return takt4::output::OutputTarget{};
+    };
+    CHECK(find("A").name.empty());         // gone
+    CHECK(find("B").host == "127.0.0.9");  // the output it was typed for
+    CHECK(find("C").host == cHost);        // and not the one that moved up under the box
+    nothingReal.check();
+}
+
+TEST_CASE("an output's on tick follows its row when the rows change under it", "[ui]") {
+    // The audit of 2026-09-25, M14. A tick box sets its own `checked` when clicked, which drops
+    // its binding to the row; the row was rebuilt for what its text boxes showed and not for
+    // this. So after a tick had been clicked, the rows changing under it — a line of outputs
+    // pasted in, an IMPORT — left that tick showing the old output's state over the new one.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    controller.addTarget();
+    constexpr float kHeight = 1000.0f;
+    layOut(controller, 1000.0f, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    const takt4::tests::NothingReal nothingReal;
+    REQUIRE(rows->row_count() == 3);
+
+    // The last row's tick, from the bottom up: the first click after which it is off. Never
+    // the Link row's, which is first and would be met last.
+    float tickY = -1.0f;
+    for (float y = kHeight - 128.0f; y > 380.0f && tickY < 0.0f; y -= 4.0f) {
+        clickAt(window, 30.0f, y);
+        settle();
+        while (rows->row_count() > 3) {
+            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
+            settle();
+        }
+        if (!rows->row_data(2)->enabled) {
+            tickY = y;
+        }
+    }
+    INFO("tick at " << tickY);
+    REQUIRE(tickY > 0.0f);
+
+    // Two new outputs in place of the old ones, both on.
+    const std::string port = std::to_string(added.port());
+    controller.setOscTargets("x = 127.0.0.1:" + port + ", y = 127.0.0.1:" + port);
+    settle();
+    settle();
+    REQUIRE(rows->row_count() == 3);
+    REQUIRE(std::string(rows->row_data(2)->name) == "y");
+    REQUIRE(rows->row_data(2)->enabled);
+
+    // The tick under the pointer is y's now, and shows it on — so clicking it switches y off.
+    clickAt(window, 30.0f, tickY);
+    settle();
+    CHECK_FALSE(rows->row_data(2)->enabled);
+    nothingReal.check();
+}
+
+TEST_CASE("EXPORT carries a host still being typed", "[ui][settings]") {
+    // The audit of 2026-09-25, M15's other half. EXPORT and SAVE write what the output thread
+    // has, and a host typed and not entered was only a draft until the box let go of the
+    // keyboard — a turn of the event loop after the click on EXPORT.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    controller.setTargetHost(1, "127.0.0.7", false); // a keystroke's worth, not Enter
+
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "show.json";
+    REQUIRE(controller.exportTo(file));
+    const takt4::settings::Settings written = takt4::settings::load(file);
+    bool carried = false;
+    for (const takt4::output::OutputTarget& target : written.preset.outputs) {
+        carried = carried || target.host == "127.0.0.7";
+    }
+    CHECK(carried);
 }
 
 TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key counts once",

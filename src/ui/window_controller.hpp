@@ -590,15 +590,28 @@ private:
     /// that row's element was built — by element, which is by index. A box typed into has lost
     /// its `text:` binding (a dropdown picked from, its `current-index:`), so it shows this and
     /// not the model; a box nobody has touched follows the model on its own.
+    ///
+    /// **And the "on" tick** (the audit of 2026-09-25, M14): a `CheckBox` sets its own `checked`
+    /// when clicked, which drops the binding, and a row not rebuilt for it went on showing the
+    /// tick of whichever output had been on that row — untick A, remove A, and B below it read
+    /// off while it was still sending.
     struct ShownRow {
         std::optional<std::string> name;
         std::optional<std::string> host;
         std::optional<std::string> port;
         std::optional<int> kind;
         std::optional<int> device;
+        std::optional<bool> enabled;
     };
     std::vector<ShownRow> shownRows_;
     ShownRow& shownRow(int index);
+    /// A row's boxes have keystrokes in them that `applyTargets` has not applied yet — kept in
+    /// `targetDrafts_` as they are typed, and applied on Enter, on a click away, or at the start
+    /// of anything that reads or reshapes the list (`applyDrafts`).
+    bool draftsPending_ = false;
+    /// Applies them, when there are any: before SAVE, EXPORT and IMPORT, which read the
+    /// runner's list, and before a row is removed (the audit of 2026-09-25, M15).
+    void applyDrafts();
     /// Rows `publishTargetRows` found showing something other than the row they now hold — a
     /// value the controller normalised after an edit, or a delete that moved every row below
     /// it up one — consumed by `tick`, which builds each **one** again (`renewRows`) so its boxes

@@ -66,6 +66,8 @@ export component Field inherits Rectangle {
   in property <string> placeholder-text <=> edit.placeholder-text;
   in property <length> font-size <=> edit.font-size;
   in property <bool> enabled <=> edit.enabled;
+  /// Whether Up and Down step the box (`NumberBox`) rather than going to whoever is above it.
+  in property <bool> takes-arrows: false;
   /// The box's own focus, so a `changed has-focus` on an instance commits exactly as it did.
   out property <bool> has-focus: edit.has-focus;
   callback edited(string);
@@ -73,6 +75,8 @@ export component Field inherits Rectangle {
   /// Escape was pressed in it — told before the focus leaves, so an owner that means Escape as
   /// "put it back" (`NumberEntry`) can say so before its `changed has-focus` commits.
   callback escaped();
+  /// Up (+1) or Down (-1) was pressed in it, when `takes-arrows` is set.
+  callback arrowed(int);
 
   min-width: edit.min-width;
   min-height: edit.min-height;
@@ -110,11 +114,90 @@ export component Field inherits Rectangle {
         done.take();
         return accept;
       }
+      if (root.takes-arrows && event.text == Key.UpArrow) {
+        root.arrowed(1);
+        return accept;
+      }
+      if (root.takes-arrows && event.text == Key.DownArrow) {
+        root.arrowed(-1);
+        return accept;
+      }
       return reject;
     }
   }
 
   done := FocusSink { }
+}
+
+/// A text box that shows what its owner says it holds — **and never stops showing it**.
+///
+/// A `Field` bound one way (`text: slot.values`) goes deaf the moment it is typed into: Slint
+/// drops a binding when the property is assigned, and typing assigns it. The rule editor made up
+/// for that by building a row again whenever the controller changed it, and that destroyed
+/// whatever on the row had the keyboard — Tab from a follow-up's value into its delay landed in a
+/// box that was already on its way out (the audit of 2026-09-25, M17). This one needs no
+/// rebuilding. It shows `value` whenever it is not being typed in, and puts `value` back the
+/// moment an edit is finished, so a range the controller turned round ("8 - 1" held as 1 to 8)
+/// is what the box then says.
+///
+/// `typed` is every keystroke, for an owner that keeps what is half-typed
+/// (`RulesController::typing_`). `committed` is the edit finished — Enter, Escape or a click
+/// away — **once**: a `Field` with an `accepted` and a `changed has-focus` handler said Enter
+/// twice.
+export component LiveField inherits Rectangle {
+  in property <string> value;
+  in property <string> placeholder-text <=> box.placeholder-text;
+  in property <length> font-size <=> box.font-size;
+  in property <bool> enabled <=> box.enabled;
+  out property <bool> has-focus: box.has-focus;
+  callback typed(string);
+  callback committed(string);
+
+  // Enter has committed; the focus leaving because of it is not a second edit.
+  private property <bool> entered: false;
+
+  min-width: box.min-width;
+  min-height: box.min-height;
+  preferred-width: box.preferred-width;
+  preferred-height: box.preferred-height;
+  max-height: box.max-height;
+  vertical-stretch: 0;
+
+  // What the owner changed it to, into the box — never over what is being typed.
+  changed value => {
+    if (!box.has-focus) {
+      box.text = root.value;
+    }
+  }
+
+  box := Field {
+    x: 0;
+    y: 0;
+    width: root.width;
+    height: root.height;
+    text: root.value;
+    edited(t) => {
+      root.typed(t);
+    }
+    accepted(t) => {
+      root.entered = true;
+      // Focus first, callback second, as every box here does: the callback may publish, and the
+      // focus has to be somewhere that passes the window's shortcuts up before it does.
+      self.leave();
+      root.committed(t);
+      self.text = root.value;
+    }
+    changed has-focus => {
+      if (!self.has-focus) {
+        if (root.entered) {
+          root.entered = false;
+        } else {
+          root.committed(self.text);
+        }
+        self.text = root.value;
+      }
+    }
+  }
 }
 
 // A dark window, whatever the desktop is set to. This is read across a booth, and the
@@ -375,6 +458,154 @@ export component NumberEntry inherits Rectangle {
         root.editing = false;
         root.committed(self.text);
       }
+    }
+  }
+}
+
+/// A whole number, typed or stepped — every number box in takt4, in place of std-widgets'
+/// `SpinBox` (the audit of 2026-09-25: H2, M17, M19, M22). That one did four things wrong for a
+/// booth:
+///
+/// - **Escape went through it to the window**, where Escape is PANIC. Its text input takes no
+///   control key, so an operator backing out of "every" or a note number halted every rule and
+///   froze the lights. Here Escape leaves the box as it was, and nothing else.
+/// - **It sent every keystroke.** Typing 60 sent 6 first — a note, a CC, a re-patch of a
+///   fixture to address 1 and then 10 on the way to 101 — and the row it was on was rebuilt under
+///   the next keystroke. Here what is typed is sent on Enter, on a click away, or on a step, and
+///   only if it is a number; anything else goes back to what it was.
+/// - **The mouse wheel changed it**, whichever box the pointer happened to be over as the pane
+///   was scrolled — parked levels on the rig, one notch at a time. This one does not handle the
+///   wheel at all, so the pane scrolls.
+/// - **It wrote its own value**, which is what makes a binding from a row go deaf. This one never
+///   assigns `value`: it says what was entered through `edited`, and shows whatever `value` then
+///   is — so a row bound to it needs nothing rebuilt when the number changes.
+///
+/// ▲ and ▼ beside it, and Up and Down in it, step by one from what is in the box.
+export component NumberBox inherits Rectangle {
+  in-out property <int> value;
+  in property <int> minimum: 0;
+  in property <int> maximum: 100;
+  in property <bool> enabled: true;
+  in property <length> font-size: 13px;
+  out property <bool> has-focus: box.has-focus;
+  /// A number entered — clamped to the range — that differs from `value`.
+  callback edited(int);
+  /// What Enter would set, on every keystroke: `value` while the box holds no number. For an
+  /// owner that keeps what is half-typed and commits it before an action (`RulesController::
+  /// typing_`) — the keystrokes themselves are never sent anywhere.
+  callback typed(int);
+
+  private property <bool> reverting: false;
+
+  min-height: box.min-height;
+  preferred-height: box.preferred-height;
+  max-height: box.max-height;
+  min-width: 56px;
+  vertical-stretch: 0;
+
+  pure function entered() -> int {
+    return box.text.is-float() ? max(root.minimum, min(root.maximum, round(box.text.to-float())))
+      : root.value;
+  }
+
+  function enter() {
+    let number = root.entered();
+    if (number != root.value) {
+      root.edited(number);
+    }
+    // Whatever the owner made of it, or what it was when it was not a number.
+    box.text = root.value;
+  }
+
+  function step(by: int) {
+    let from = box.text.is-float() ? round(box.text.to-float()) : root.value;
+    let stepped = max(root.minimum, min(root.maximum, from + by));
+    if (stepped != root.value) {
+      // Said as typed first, then entered: a step is a keystroke that commits itself, and an
+      // owner keeping keystrokes should hear it as one.
+      root.typed(stepped);
+      root.edited(stepped);
+    }
+    box.text = root.value;
+  }
+
+  // What the owner changed it to, into the box — never over what is being typed.
+  changed value => {
+    if (!box.has-focus) {
+      box.text = root.value;
+    }
+  }
+
+  box := Field {
+    x: 0;
+    y: 0;
+    width: root.width - 18px;
+    height: root.height;
+    text: root.value;
+    font-size: root.font-size;
+    enabled: root.enabled;
+    takes-arrows: true;
+    edited(t) => {
+      root.typed(root.entered());
+    }
+    arrowed(by) => {
+      root.step(by);
+    }
+    accepted(t) => {
+      self.leave();
+      root.enter();
+    }
+    escaped => {
+      root.reverting = true;
+      // And whoever was keeping what was typed is told it is gone, or their next action would
+      // commit the number Escape just threw away.
+      root.typed(root.value);
+    }
+    changed has-focus => {
+      if (!self.has-focus) {
+        if (root.reverting) {
+          root.reverting = false;
+          self.text = root.value;
+        } else {
+          root.enter();
+        }
+      }
+    }
+  }
+
+  // The steppers: a column of two, the height of the box.
+  up := TouchArea {
+    x: root.width - 16px;
+    y: 0;
+    width: 16px;
+    height: root.height / 2;
+    enabled: root.enabled;
+    clicked => {
+      root.step(1);
+    }
+    Text {
+      text: "▲";
+      font-size: 8px;
+      color: !root.enabled ? Theme.dim : parent.has-hover ? Theme.accent : Theme.soft;
+      horizontal-alignment: center;
+      vertical-alignment: center;
+    }
+  }
+  down := TouchArea {
+    x: root.width - 16px;
+    y: root.height / 2;
+    width: 16px;
+    height: root.height / 2;
+    enabled: root.enabled;
+    clicked => {
+      root.step(-1);
+    }
+    Text {
+      text: "▼";
+      font-size: 8px;
+      color: !root.enabled ? Theme.dim : parent.has-hover ? Theme.accent : Theme.soft;
+      horizontal-alignment: center;
+      vertical-alignment: center;
     }
   }
 }
