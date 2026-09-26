@@ -424,6 +424,47 @@ TEST_CASE("an Art-Net node set later is sent the lighting that much later", "[dm
     }
 }
 
+TEST_CASE("PANIC freezes a delayed Art-Net node when it freezes the rest", "[dmx][artnet]") {
+    // The audit of 2026-09-25, M5. PANIC stopped the animation and froze the levels — and a node
+    // set half a second late went on being sent the half-second before the freeze from the
+    // history: a strobe that went on strobing, out of the operator's reach, beside a node that had
+    // stopped.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 0.5});
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+
+    // A flash and another: full at 0.2, out at 0.4, full again at 0.6.
+    nodes.run(round, 0, 200);
+    paint(engine, 255, 0.200);
+    nodes.run(round, 200, 400);
+    paint(engine, 0, 0.400);
+    nodes.run(round, 400, 600);
+    paint(engine, 255, 0.600);
+    nodes.run(round, 600, 650);
+    // PANIC at 0.65, as the output runner does it: the effects cancelled, the levels held.
+    engine.cancelAll();
+    publisher.forgetHistory();
+    nodes.run(round, 650, 1000);
+    // The late node is sent the frozen frame now, and never the dark it was half a second before.
+    CHECK(nodes.first(1, 255, 0.650) >= 0.650);
+    CHECK(nodes.first(1, 255, 0.650) < 0.650 + kArtNetFrame);
+    CHECK(nodes.first(1, 0, 0.650) < 0.0);
+
+    // RELEASE: the late node is late again, from the frozen frame on — not from the animation
+    // before it, which a history kept across the freeze would replay now.
+    nodes.run(round, 1000, 1100);
+    paint(engine, 0, 1.100);
+    nodes.run(round, 1100, 1800);
+    CHECK(nodes.first(0, 0, 1.0) >= 1.100);
+    CHECK(nodes.first(0, 0, 1.0) < 1.100 + kArtNetFrame);
+    CHECK(nodes.first(1, 0, 1.0) >= 1.600);
+    CHECK(nodes.first(1, 0, 1.0) < 1.600 + kArtNetFrame);
+}
+
 TEST_CASE("an Art-Net node set earlier has the lighting as it is made, and the rest wait for it",
           "[dmx][artnet]") {
     // A node cannot be sent a frame nobody has made yet. So the earliest node is sent the lighting

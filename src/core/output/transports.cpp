@@ -162,6 +162,12 @@ MidiOutput* Transports::openDevice(const std::string& device) {
     // targets down one cable is the ordinary rig, and some drivers refuse a second open.
     const auto found = midiDevices_.find(device);
     if (found != midiDevices_.end()) {
+        // One that has gone quiet is looked for again now rather than at the next second's
+        // try: the outputs are posted again by RESCAN, which is an operator saying "it is
+        // plugged back in" (the audit of 2026-09-25, C1).
+        if (found->second->lost()) {
+            (void)found->second->reconnect();
+        }
         return found->second.get();
     }
     // Throws if it is not on the machine.

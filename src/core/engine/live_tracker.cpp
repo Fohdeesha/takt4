@@ -33,7 +33,11 @@ LiveTracker::~LiveTracker() {
 }
 
 std::vector<audio::InputDevice> LiveTracker::devices() const {
-    return audio::listInputDevices(session_);
+    std::vector<audio::InputDevice> list = audio::listInputDevices(session_);
+    if (deviceListHook_) {
+        deviceListHook_(list);
+    }
+    return list;
 }
 
 bool LiveTracker::rescan() {

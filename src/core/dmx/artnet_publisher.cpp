@@ -45,6 +45,15 @@ double ArtNetPublisher::lagOf(std::size_t index) const noexcept {
     return std::max(0.0, targets_[index].delay + leadSeconds());
 }
 
+void ArtNetPublisher::forgetHistory() noexcept {
+    // Emptied rather than freed: the ring is allocated once, and this runs on the output thread.
+    // The next round records the frame as it now is, which is then the oldest there is.
+    for (History& history : history_) {
+        history.count = 0;
+        history.lastRevision = 0;
+    }
+}
+
 void ArtNetPublisher::record(const DmxEngine& engine, double now) {
     for (const PortAddress universe : engine.universes()) {
         const std::span<const std::uint8_t> levels = engine.levels(universe);
@@ -179,10 +188,19 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     for (std::size_t index = 0; index < targets_.size(); ++index) {
         Target& target = targets_[index];
         const double lag = lagOf(index);
-        for (const PortAddress universe : engine.universes()) {
+        // The patch's universes, and then those it has just dropped, which are sent their zeros
+        // like any other frame (the audit of 2026-09-25, H4 — see `DmxEngine::released`).
+        const std::size_t patched = engine.universes().size();
+        const std::size_t total = patched + engine.released().size();
+        for (std::size_t u = 0; u < total; ++u) {
+            const bool released = u >= patched;
+            const PortAddress universe =
+                released ? engine.released()[u - patched] : engine.universes()[u];
             std::span<const std::uint8_t> levels = engine.levels(universe);
             std::uint64_t revision = engine.revision(universe);
-            if (lag > 0.0) {
+            // Not a released one: its history still holds the lit frames from before it was
+            // dropped, and "dark, now" is the whole point of releasing it.
+            if (lag > 0.0 && !released) {
                 // What this universe was `lag` ago. Before the history reaches that far back —
                 // a delay just set — the oldest it has, which is the nearest thing to it.
                 if (const Frame* const past = frameAt(universe, now - lag)) {
@@ -236,9 +254,14 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
 std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {
     std::size_t datagrams = 0;
     // The frame as it is now, to every node whatever its delay: this is the last thing sent,
-    // and a delayed node would otherwise never be sent it at all.
+    // and a delayed node would otherwise never be sent it at all. A universe just released
+    // included: its zeros are the last word too.
+    const std::size_t patched = engine.universes().size();
+    const std::size_t total = patched + engine.released().size();
     for (Target& target : targets_) {
-        for (const PortAddress universe : engine.universes()) {
+        for (std::size_t u = 0; u < total; ++u) {
+            const PortAddress universe =
+                u >= patched ? engine.released()[u - patched] : engine.universes()[u];
             const std::span<const std::uint8_t> levels = engine.levels(universe);
             if (levels.empty()) {
                 continue;

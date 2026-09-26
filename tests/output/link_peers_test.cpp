@@ -21,12 +21,12 @@ using takt4::output::LinkSession;
 // itself, that a peer sees the tempo it publishes, and that the phase it requests is the
 // phase the peer reads. What is not checked is any third-party implementation.
 //
-// **Hidden by default.** The leading dot in the tag keeps Catch2 from running this unless
-// it is asked for by name, because it opens multicast sockets and announces on the local
-// network — which a CI runner may block, and which a test suite has no business doing to
-// whatever else is on the network. Run it deliberately:
-//
-//     takt4_tests "[link-network]"
+// **[network]**, so the default presets leave them out and the `-all` presets — and CI — run
+// them. They open multicast sockets and announce on the local network. They used to be hidden
+// (`[.link-network]`) instead, which kept them off the network but also out of every run there
+// was: no preset registered them, so the audit's C3 fix — force the phase once, never request
+// it — could have been reverted with every test still passing (the audit of 2026-09-25, T6). A
+// network that blocks multicast is a skip that says so, not a failure: it is not takt4's fault.
 //
 // Every other test in tests/output/link_session_test.cpp leaves the session disabled.
 
@@ -48,7 +48,7 @@ bool eventually(Predicate predicate, std::chrono::milliseconds limit = std::chro
 
 } // namespace
 
-TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[.link-network]") {
+TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link][network]") {
     LinkSession tracker(120.0); // takt4, driving
     LinkSession peer(60.0);     // whatever is listening
 
@@ -56,7 +56,9 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[.link-networ
     peer.enable(true);
 
     // Discovery. If this fails the network is blocking multicast, not takt4.
-    REQUIRE(eventually([&] { return tracker.numPeers() >= 1 && peer.numPeers() >= 1; }));
+    if (!eventually([&] { return tracker.numPeers() >= 1 && peer.numPeers() >= 1; })) {
+        SKIP("two Link sessions in one process never found each other: multicast is blocked");
+    }
     INFO("tracker sees " << tracker.numPeers() << " peers, peer sees " << peer.numPeers());
 
     SECTION("the tempo crosses over") {
@@ -123,7 +125,7 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[.link-networ
     CHECK(eventually([&] { return peer.numPeers() == 0; }));
 }
 
-TEST_CASE("a peer that was there first is put on the music's phase", "[.link-network]") {
+TEST_CASE("a peer that was there first is put on the music's phase", "[output][link][network]") {
     // The audit's C3, as its experiment ran it: Resolume on Link first, takt4 enabling Link
     // after, so takt4's session adopts Resolume's timeline on join — and the music's beats fall
     // 180 ms off it. With a peer present `requestBeatAtTime` does not move the session's phase
@@ -142,7 +144,9 @@ TEST_CASE("a peer that was there first is put on the music's phase", "[.link-net
     takt4::output::Transports app(config);
     app.startOutputs(0.0);
     LinkSession& ours = app.link();
-    REQUIRE(eventually([&] { return ours.numPeers() >= 1 && peer.numPeers() >= 1; }));
+    if (!eventually([&] { return ours.numPeers() >= 1 && peer.numPeers() >= 1; })) {
+        SKIP("two Link sessions in one process never found each other: multicast is blocked");
+    }
     // Joined, and on one timeline — whichever side won it, the music is not on it, which is
     // the case a request cannot fix. Brought to the music's tempo first, so the only thing
     // wrong is the phase.

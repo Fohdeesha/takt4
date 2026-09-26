@@ -1,6 +1,7 @@
 #include "core/audio/stream_setup.hpp"
 
 #include "core/audio/portaudio_session.hpp"
+#include "core/sandbox.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -74,6 +75,14 @@ void throwPortAudioError(const char* what, PaError err) {
         }
     }
     throw PortAudioError(err, message);
+}
+
+void refuseInSandbox(const std::string& device) {
+    if (sandbox::active()) {
+        sandbox::refuse(sandbox::Refused::Audio);
+        throw PortAudioError(paDeviceUnavailable,
+                             "\"" + device + "\" is not opened in the test sandbox");
+    }
 }
 
 } // namespace takt4::audio::detail

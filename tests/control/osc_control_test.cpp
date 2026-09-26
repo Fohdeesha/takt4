@@ -361,9 +361,11 @@ TEST_CASE("the lock address pins and releases, and insists on being told which",
     CHECK(engine->commandsDropped() == 0);
 }
 
-TEST_CASE("a listening socket receives what a sender sends it", "[control][network]") {
+TEST_CASE("a listening socket receives what a sender sends it", "[control]") {
     // The socket half, over real UDP on the loopback. `OscSender` is the other end, so
-    // this also says the two agree about the wire.
+    // this also says the two agree about the wire. Not [network]: a port the system picks, on
+    // the loopback, reaches nothing on the rig — and tagged, the receive thread never ran in
+    // the default or the ASan preset (the audit of 2026-09-25, T5).
     OscReceiver receiver(kAnyPort, /*localOnly=*/true);
     const std::uint16_t port = receiver.port();
     CHECK(port != 0);
@@ -392,7 +394,7 @@ TEST_CASE("a listening socket receives what a sender sends it", "[control][netwo
     CHECK(view->address() == "/takt4/ctl/tap");
 }
 
-TEST_CASE("a port already in use is reported rather than silently dead", "[control][network]") {
+TEST_CASE("a port already in use is reported rather than silently dead", "[control]") {
     // A control surface that quietly does nothing is worse than one that will not start.
     const OscReceiver first(kAnyPort, /*localOnly=*/true);
     const std::uint16_t port = first.port();
@@ -405,8 +407,7 @@ TEST_CASE("a port already in use is reported rather than silently dead", "[contr
     CHECK_FALSE(control.running());
 }
 
-TEST_CASE("the control thread acts on what arrives and counts what it cannot",
-          "[control][network]") {
+TEST_CASE("the control thread acts on what arrives and counts what it cannot", "[control]") {
     auto engine = makeEngine();
     OscControl control(*engine, localConfig(kAnyPort));
     control.start();

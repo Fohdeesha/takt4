@@ -6,6 +6,7 @@
 
 add_executable(takt4_tests
   build_info_test.cpp
+  sandbox_test.cpp
   audio/asio_scan_test.cpp
   audio/channel_picker_test.cpp
   cli/console_test.cpp
@@ -73,6 +74,7 @@ add_executable(takt4_tests
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
   support/loopback_receiver.hpp
+  support/rig_sandbox.cpp
   support/scoped_env.hpp
   support/temp_dir.hpp
 )
@@ -137,7 +139,7 @@ if(TARGET takt4_assets)
     "the console that ships reads the weights built into it"
     "the console that ships tracks with what is built into it"
     PROPERTIES PASS_REGULAR_EXPRESSION "weights electronic \\(built in\\)" LABELS "cli"
-               TIMEOUT 300)
+               TIMEOUT 300 ENVIRONMENT "TAKT4_NO_ASIO=1;TAKT4_TEST_SANDBOX=1")
 endif()
 
 # The console's own parsing (the audit's Low list): an empty value was read as 0, so
@@ -156,10 +158,14 @@ set_tests_properties("the console refuses nan as a number"
                      PROPERTIES PASS_REGULAR_EXPRESSION "--latency: not a number: \"nan\"")
 set_tests_properties("the console names an option it does not know"
                      PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --no-such-option")
+# No ASIO and the sandbox, as every test binary has (tests/support/crt_dialogs.cpp): a parsing
+# regression in the first would otherwise open device 0 — with every ASIO driver loaded — for
+# as long as the timeout (the audit of 2026-09-25, T4).
 set_tests_properties("the console refuses an empty number rather than reading it as zero"
                      "the console refuses nan as a number"
                      "the console names an option it does not know"
-                     PROPERTIES LABELS "cli" TIMEOUT 60)
+                     PROPERTIES LABELS "cli" TIMEOUT 60
+                                ENVIRONMENT "TAKT4_NO_ASIO=1;TAKT4_TEST_SANDBOX=1")
 
 # The console's live path, on the default input — see the script. ASIO kept out of it, as the
 # default presets keep it out of every test: the MOTU's driver belongs to the rig.
@@ -195,10 +201,12 @@ if(TAKT4_BUILD_UI)
     ui/fixtures_test.cpp
     ui/main.cpp
     ui/model_watch.hpp
+    ui/nothing_real.hpp
     ui/rules_test.cpp
     ui/shot.hpp
     ui/window_test.cpp
     support/crt_dialogs.cpp
+    support/rig_sandbox.cpp
   )
 
   target_include_directories(takt4_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

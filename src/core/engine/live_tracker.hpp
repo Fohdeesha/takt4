@@ -10,6 +10,7 @@
 #include "core/tracking/state_space.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -89,6 +90,14 @@ public:
     /// in it are only meaningful until the next `rescan()`.
     std::vector<audio::InputDevice> devices() const;
 
+    /// For the tests: every listing passes through `hook` before anybody sees it — a machine
+    /// whose devices reorder, vanish or appear across a rescan, which no test can arrange with
+    /// real hardware (the audit of 2026-09-25, H1). Empty for the machine's own list, which is
+    /// all the application ever uses.
+    void setDeviceListHook(std::function<void(std::vector<audio::InputDevice>&)> hook) {
+        deviceListHook_ = std::move(hook);
+    }
+
     /// Makes PortAudio enumerate the machine's devices again — an interface switched on
     /// late, or one that went away and came back. Only while stopped, because every device
     /// index changes: false, and nothing done, while a stream is open. Throws
@@ -145,6 +154,8 @@ private:
     /// Declared after everything it points at, so it is destroyed before them.
     std::unique_ptr<audio::InputStream> stream_;
     std::optional<Running> current_;
+    /// See `setDeviceListHook`.
+    std::function<void(std::vector<audio::InputDevice>&)> deviceListHook_;
 };
 
 } // namespace takt4::engine

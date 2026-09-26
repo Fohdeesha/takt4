@@ -2,6 +2,8 @@
 
 #include <RtMidi.h>
 
+#include <algorithm>
+
 namespace takt4::output {
 
 std::vector<MidiApiInfo> compiledMidiApis() {
@@ -45,6 +47,55 @@ std::vector<std::string> listMidiOutputPorts() {
 
 std::vector<std::string> listMidiInputPorts() {
     return listPorts<RtMidiIn>();
+}
+
+std::string_view midiPortBaseName(std::string_view name) noexcept {
+    std::size_t end = name.size();
+    while (end > 0 && name[end - 1] >= '0' && name[end - 1] <= '9') {
+        --end;
+    }
+    // Only a number set off by a space, after something: "Port 2" is "Port", and "808" is "808".
+    if (end == name.size() || end < 2 || name[end - 1] != ' ') {
+        return name;
+    }
+    return name.substr(0, end - 1);
+}
+
+std::optional<std::size_t> findMidiPort(const std::vector<std::string>& names,
+                                        std::string_view spec) {
+    if (spec.empty()) {
+        return std::nullopt;
+    }
+    const bool numeric = std::all_of(spec.begin(), spec.end(),
+                                     [](char c) { return c >= '0' && c <= '9'; });
+    if (numeric) {
+        // A number too long for an index is no index at all.
+        if (spec.size() > 9) {
+            return std::nullopt;
+        }
+        std::size_t index = 0;
+        for (const char c : spec) {
+            index = index * 10 + static_cast<std::size_t>(c - '0');
+        }
+        return index < names.size() ? std::optional<std::size_t>(index) : std::nullopt;
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i] == spec) {
+            return i;
+        }
+    }
+    const std::string_view base = midiPortBaseName(spec);
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (midiPortBaseName(names[i]) == base) {
+            return i;
+        }
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i].find(spec) != std::string::npos) {
+            return i;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace takt4::output

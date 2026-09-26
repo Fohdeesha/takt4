@@ -134,6 +134,13 @@ public:
     void superviseInput(const audio::InputWatchdog::Reading& reading,
                         const audio::AsioDriverEvents& events, double now);
 
+    /// For the tests: the state `input` opening and then going silent at `now` leaves — running
+    /// as far as the operator is concerned, the tracker stopped, an outage begun. Nothing on a
+    /// test machine can be unplugged, and the tests' sandbox opens no device to go silent, so
+    /// this is the only way the outage's own path can be driven there (the audit of 2026-09-25,
+    /// H1). Every reopen it then tries fails the way a dead interface's does.
+    void beginOutageOn(const engine::LiveTracker::Running& input, double now);
+
     /// §5.5's manual controls. Each one posts on the engine's control queue and returns;
     /// the inference thread applies it before the next frame it tracks, so none of them
     /// blocks a redraw and none of them touches the tracker from this thread.
@@ -215,6 +222,10 @@ public:
     /// A row to fill in, starting from OSC on this machine at the default port. Applied, so
     /// the target exists at once and a rule can be routed to it before it has been aimed.
     void addTarget();
+    /// The port a new row starts at: 9000 unless told otherwise, which only a test does — so
+    /// that its [+ ADD OUTPUT] sends to a receiver it holds rather than to whatever listens on
+    /// this machine's 9000, which on the rig is the operator's own (the audit of 2026-09-25, T1).
+    void setNewOutputPort(std::uint16_t port) noexcept { newTargetPort_ = port; }
     /// Any row but the Link row, which is switched off rather than removed.
     void removeTarget(int index);
     void setTargetEnabled(int index, bool on);
@@ -389,6 +400,13 @@ private:
     /// Fills the device picker and selects one: the remembered device if it is still
     /// there, otherwise the most useful one on the machine.
     void refreshDevices(const settings::MachineSettings& remembered);
+    /// Reads the tracker's device list into `devices_` and the picker's model, selecting
+    /// nothing.
+    void listDevices();
+    /// After an outage's rescan: the list again, and the input the outage is about found in it
+    /// by name — or, when it is not there, nothing selected in its place and it remembered as
+    /// the one wanted (the audit of 2026-09-25, H1).
+    void relistDuringOutage();
     /// The MIDI pickers' models, from `midiPorts_` and `midiInputPorts_`.
     void publishPortLists();
     /// Closes the input and opens the same device and channel again, found by name — a
@@ -398,8 +416,9 @@ private:
     void restartInput(const std::string& why, double now);
     void beginOutage(const std::string& why, double since, double now);
     /// Which MIDI devices have gone quiet, from the runner's snapshot, said on the status line
-    /// when the set changes.
-    void publishLostMidi(const std::vector<std::string>& lost);
+    /// when the set changes. "Back" only of a device one of `outputs` still sends to.
+    void publishLostMidi(const std::vector<std::string>& lost,
+                         const std::vector<output::OutputTarget>& outputs);
     /// The same for outputs that cannot be sent to — a host name that will not resolve, found
     /// out on a thread of its own long after the edit that typed it was applied.
     void publishOutputProblems(const std::vector<std::string>& problems);
@@ -491,6 +510,8 @@ private:
     std::vector<std::string> startupErrors_;
     /// The lost MIDI devices the status line last reported.
     std::vector<std::string> lostMidiShown_;
+    /// See `setNewOutputPort`.
+    std::uint16_t newTargetPort_ = 9000;
     /// The output problems the status line last reported. See `publishOutputProblems`.
     std::vector<std::string> outputProblemsShown_;
     /// The output thread's counters as the window last showed them. See `publishOutputTrouble`.

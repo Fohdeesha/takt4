@@ -249,9 +249,10 @@ TEST_CASE("a runner is safe to stop twice, and to never start", "[output]") {
     CHECK(running.running());
 }
 
-TEST_CASE("a change posted while stopped applies at once", "[output][network]") {
+TEST_CASE("a change posted while stopped applies at once", "[output]") {
     // An app is configured before it is started, and an operator ticking Link with nothing
-    // running should not have to press Start to find out whether it took.
+    // running should not have to press Start to find out whether it took. Not [network]: the
+    // runner is never started, so nothing is joined or sent (the audit of 2026-09-25, T5).
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     REQUIRE_FALSE(runner.running());
@@ -307,7 +308,7 @@ TEST_CASE("a change posted while running reaches the transports", "[output][netw
     runner.stop();
 }
 
-TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output][network]") {
+TEST_CASE("what a UI reads while the thread sends is a snapshot", "[output][hardware]") {
     // `transports()` hands back references the output thread replaces whole — a vector of
     // targets, an optional port — so a reader at redraw rate races with a freed buffer
     // rather than merely with a stale number. `snapshot()` is taken under a lock, and is
@@ -1322,6 +1323,52 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
     runner.stop();
 }
 
+TEST_CASE("a node whose only fixture is switched off is sent dark frames, then left alone",
+          "[output][dmx][slow]") {
+    // The audit of 2026-09-25, H4, on the wire. One par on a node: switching it off took its
+    // universe out of the patch, nothing was ever sent there again, and the node held the lamp
+    // lit. The operator's answer to the audit's Q2: zeros for a few seconds, then leave it.
+    LoopbackReceiver node;
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    Transports::Config config = parOnNode(node.port());
+    OutputRunner runner(*engine, config);
+    runner.start();
+    runner.post(paint(255, 0, 0));
+    REQUIRE(sawRgb(node, 255, 0, 0));
+
+    takt4::dmx::Fixture off = config.patch.front();
+    off.enabled = false;
+    runner.post(OutputCommand::patch({off}));
+    const auto posted = std::chrono::steady_clock::now();
+
+    // Everything that arrives for the next four seconds, and when.
+    int dark = 0;
+    int lit = 0;
+    double lastDark = 0.0;
+    const auto until = posted + std::chrono::seconds{4};
+    while (std::chrono::steady_clock::now() < until) {
+        const std::vector<std::uint8_t> levels = artDmxLevels(node.receive());
+        if (levels.size() < 3) {
+            continue;
+        }
+        const double at = std::chrono::duration<double>(std::chrono::steady_clock::now() - posted).count();
+        if (levels[0] == 0 && levels[1] == 0 && levels[2] == 0) {
+            ++dark;
+            lastDark = at;
+        } else if (dark > 0) {
+            ++lit; // lit after it went dark: the release did not hold
+        }
+    }
+    runner.stop();
+    INFO(dark << " dark frames, the last " << lastDark << " s after the switch");
+    // Many, so a dropped datagram or two costs nothing: the node is fed at its 44 Hz ceiling.
+    CHECK(dark >= 30);
+    CHECK(lit == 0);
+    // For about three seconds, and not for ever — something else may take the universe over.
+    CHECK(lastDark > 2.5);
+    CHECK(lastDark < 3.6);
+}
+
 TEST_CASE("quitting sends the blackout frame itself", "[output][dmx]") {
     // The way out of the application: the lights out (Q3), and that frame actually sent. Art-Net
     // only went out in `advance`, paced at 44 Hz, so a change made a moment before quitting was
@@ -1382,6 +1429,159 @@ TEST_CASE("quitting sends a release held for a delayed output", "[output][trigge
         }
     }
     CHECK(clips == 2); // the press and its release, not the press alone
+}
+
+TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of what is held",
+          "[output][dmx][slow]") {
+    // The audit of 2026-09-25, H3, and the operator's answer to its Q3. STOP blacked the lights
+    // out once — and then up to two predicted beats still fired their rules, because nothing
+    // reset the scheduler and the engine's last locked state stays published after it stops; and
+    // a lighting release owed went on to relight a lamp at its release level. The lights have to
+    // go out and stay out. What is owed to a media server or a laser — a clip's release — goes out
+    // at once, as it does on quit, so nothing is left latched.
+    //
+    // Fed in real time, on the runner's own clock, so there is a lock to predict from: offline,
+    // with no timeline, nothing is ever predicted and the bug cannot happen.
+    LoopbackReceiver node;
+    LoopbackReceiver media;
+    Transports::Config config = parOnNode(node.port());
+    config.patch.front().group = "washes";
+    takt4::output::OutputTarget server;
+    server.name = "media";
+    server.host = "127.0.0.1";
+    server.port = media.port();
+    config.outputs.push_back(server);
+
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, config);
+    engine->setHostTimeSource(&runner.hostTimeClock());
+
+    // Every beat the washes go white, and 1.5 s later down to a quarter of that: a release that
+    // lights the lamp, and always one owed.
+    Rule::Config flash;
+    flash.id = "flash";
+    flash.trigger = takt4::trigger::Trigger::Beat;
+    flash.sendKind = takt4::trigger::Message::Kind::Dmx;
+    flash.dmx.fixtures = {"washes"};
+    flash.dmx.effect = takt4::dmx::EffectKind::Color;
+    flash.dmx.color.kind = takt4::trigger::GeneratorKind::Fixed;
+    flash.dmx.color.fixed = takt4::trigger::Value::ofText("#ffffff");
+    flash.dmx.unit = takt4::trigger::DelayUnit::Milliseconds;
+    flash.dmx.durationSeconds = 0.0;
+    takt4::trigger::FollowUp dim;
+    dim.value = takt4::trigger::Value::ofInt(64);
+    dim.unit = takt4::trigger::DelayUnit::Milliseconds;
+    dim.delaySeconds = 1.5;
+    flash.followUps = {dim};
+    // And a clip on every bar, released three seconds on — longer than a bar, so one is owed.
+    Rule::Config clip;
+    clip.id = "clip";
+    clip.trigger = takt4::trigger::Trigger::Bar;
+    clip.address = "/clip";
+    clip.value = takt4::trigger::Generator::Config{};
+    clip.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    clip.value.fixed = takt4::trigger::Value::ofInt(1);
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 3.0;
+    clip.followUps = {release};
+    runner.post(OutputCommand::rules({flash, clip}));
+
+    // Every clip message as it arrives, on the runner's clock — and every beat the transports
+    // publish, which a predicted beat also sends: the rules are not the only thing it fires.
+    struct Cue {
+        double at = 0.0;
+        int value = 0;
+    };
+    std::mutex mutex;
+    std::vector<Cue> cues;
+    std::vector<double> beatsHeard;
+    std::atomic<bool> listening{true};
+    std::thread listener([&] {
+        while (listening.load(std::memory_order_acquire)) {
+            const std::string datagram = media.receive();
+            const double at = runner.elapsed();
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (datagram.rfind("/clip", 0) == 0) {
+                cues.push_back({at, lastInt(datagram)});
+            } else if (datagram.rfind(std::string("/takt4/beat") + '\0', 0) == 0) {
+                beatsHeard.push_back(at);
+            }
+        }
+    });
+
+    runner.start();
+    runner.setTracking(true);
+    engine->start();
+    const std::vector<float>& samples = excerpt();
+    const std::size_t hops = samples.size() / kHopSize;
+    const double hopSeconds = static_cast<double>(kHopSize) / takt4::audio::kInternalSampleRate;
+    const auto began = std::chrono::steady_clock::now();
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        std::this_thread::sleep_until(
+            began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+    }
+
+    // What the node was sent during the run is of no interest, and it starts dark — the par is
+    // parked at zero until the first beat — so it is read away first.
+    while (node.ready(0)) {
+        (void)node.receive();
+    }
+    // STOP as the window does it: the tracker, then the runner told.
+    engine->stop();
+    REQUIRE(engine->state().locked); // what the scheduler would go on predicting from
+    const double stoppedAt = runner.elapsed();
+    runner.setTracking(false);
+    REQUIRE(runner.sync());
+
+    // Two seconds of what the node is sent. A frame or two sent just before the STOP may still
+    // be queued on the socket; from the first dark one on, every one must be dark.
+    bool dark = false;
+    int litAfter = 0;
+    int frames = 0;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < until) {
+        const std::vector<std::uint8_t> levels = artDmxLevels(node.receive());
+        if (levels.size() < 3) {
+            continue;
+        }
+        const bool black = levels[0] == 0 && levels[1] == 0 && levels[2] == 0;
+        dark = dark || black;
+        if (dark) {
+            ++frames;
+            litAfter += black ? 0 : 1;
+        }
+    }
+    runner.stop();
+    listening.store(false, std::memory_order_release);
+    listener.join();
+
+    CHECK(dark);
+    CHECK(frames >= 2); // the keep-alive: still sent, still dark
+    CHECK(litAfter == 0);
+    const std::lock_guard<std::mutex> lock(mutex);
+    int pressesAfter = 0;
+    bool releasedAtStop = false;
+    for (const Cue& cue : cues) {
+        if (cue.at >= stoppedAt && cue.value != 0) {
+            ++pressesAfter;
+        }
+        if (cue.value == 0 && cue.at >= stoppedAt && cue.at < stoppedAt + 0.25) {
+            releasedAtStop = true;
+        }
+    }
+    INFO(cues.size() << " clip messages");
+    CHECK(pressesAfter == 0);
+    CHECK(releasedAtStop);
+    // And no beat published after it, beyond one already on its way as the STOP was posted.
+    int beatsAfter = 0;
+    for (const double at : beatsHeard) {
+        beatsAfter += at > stoppedAt + 0.05 ? 1 : 0;
+    }
+    CHECK(beatsHeard.size() > 4); // the run's own, so the address is right
+    CHECK(beatsAfter == 0);
 }
 
 TEST_CASE("the MIDI clock starts and stops with the tracker, not with the outputs",

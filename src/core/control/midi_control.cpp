@@ -1,9 +1,12 @@
 #include "core/control/midi_control.hpp"
 
+#include "core/output/midi_ports.hpp"
+#include "core/sandbox.hpp"
+
 #include <RtMidi.h>
 
 #include <algorithm>
-#include <cctype>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -11,9 +14,9 @@
 namespace takt4::control {
 namespace {
 
-/// A port specification is either an index or part of a name, as `output::MidiOutput`
-/// takes. Throws with the list of what was actually there, which is the useful message
-/// when a controller is unplugged or named differently than the operator expected.
+/// A port specification is an index or a name, as `output::MidiOutput` takes — see
+/// `output::findMidiPort`. Throws with the list of what was actually there, which is the useful
+/// message when a controller is unplugged or named differently than the operator expected.
 unsigned int findPort(RtMidiIn& in, std::string_view spec) {
     const unsigned int count = in.getPortCount();
     std::vector<std::string> names;
@@ -21,21 +24,8 @@ unsigned int findPort(RtMidiIn& in, std::string_view spec) {
     for (unsigned int i = 0; i < count; ++i) {
         names.push_back(in.getPortName(i));
     }
-
-    const bool numeric = !spec.empty() && std::all_of(spec.begin(), spec.end(), [](char c) {
-        return std::isdigit(static_cast<unsigned char>(c)) != 0;
-    });
-    if (numeric) {
-        const unsigned long index = std::stoul(std::string(spec));
-        if (index < count) {
-            return static_cast<unsigned int>(index);
-        }
-    } else {
-        for (unsigned int i = 0; i < count; ++i) {
-            if (names[i].find(spec) != std::string::npos) {
-                return i;
-            }
-        }
+    if (const std::optional<std::size_t> found = output::findMidiPort(names, spec)) {
+        return static_cast<unsigned int>(*found);
     }
 
     std::string message = "MIDI control: no input port matching \"" + std::string(spec) + "\"; ";
@@ -83,6 +73,12 @@ void MidiControl::start() {
     try {
         const unsigned int index = findPort(impl->in, config_.port);
         const std::string name = impl->in.getPortName(index);
+        if (sandbox::active()) {
+            // The test binaries' sandbox: this controller is the rig's. See `sandbox.hpp`.
+            sandbox::refuse(sandbox::Refused::Midi);
+            throw std::runtime_error("MIDI control: \"" + name +
+                                     "\" is not opened in the test sandbox");
+        }
         impl->in.openPort(index, "takt4 control");
         // A controller's clock and active-sensing streams are not control gestures, and
         // letting them through would spend a callback per tick doing nothing.

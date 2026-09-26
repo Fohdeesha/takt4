@@ -1,3 +1,4 @@
+#include "core/output/midi_ports.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -29,6 +30,7 @@
 
 using Catch::Matchers::WithinAbs;
 using takt4::output::Transports;
+using takt4::testing::LoopbackReceiver;
 using takt4::tracking::BeatEvent;
 using takt4::tracking::TempoState;
 
@@ -93,8 +95,9 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
     // changing end up on beat but it didn't seem to work how I expected."* It did not,
     // because it moved Link and the MIDI clock and never touched the publisher — and
     // Resolume listens to OSC. This is the wiring that closed that.
+    const LoopbackReceiver server; // the test's own, not a port nobody holds
     Transports::Config config;
-    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", 57000}});
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", server.port()}});
     config.latencySeconds = -0.200;
     Transports transports(config);
     transports.startOutputs(0.0);
@@ -202,8 +205,12 @@ TEST_CASE("switching Link on before the outputs start does not join yet", "[outp
 TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[output]") {
     Transports transports{Transports::Config{}};
     CHECK(transports.osc().targetCount() == 0);
+    // Receivers of the test's own, not ports nobody holds.
+    const LoopbackReceiver first;
+    const LoopbackReceiver second;
+    const LoopbackReceiver third;
 
-    transports.setOscTargets({{"127.0.0.1", 57000}, {"127.0.0.1", 57001}});
+    transports.setOscTargets({{"127.0.0.1", first.port()}, {"127.0.0.1", second.port()}});
     CHECK(transports.osc().targetCount() == 2);
     CHECK(transports.oscTargets().size() == 2);
     CHECK(transports.any());
@@ -224,7 +231,7 @@ TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[outp
 
     // A target added mid-set has never been told the tempo. It must not have to wait for
     // the tempo to change before it learns what it is.
-    transports.setOscTargets({{"127.0.0.1", 57002}});
+    transports.setOscTargets({{"127.0.0.1", third.port()}});
     CHECK(transports.osc().targetCount() == 1);
     transports.advance(0.3, state);
     CHECK(transports.osc().messagesSent() > afterFirst);
@@ -312,6 +319,11 @@ struct Cable {
     std::uint64_t delivered = 0;
 };
 
+/// **Behaves as RtMidi's port does, closed as well as open** (the audit of 2026-09-25, C1).
+/// The first version of this threw on every send while the cable was out, closed or not — and
+/// RtMidi's WinMM port does not: `MidiOutWinMM::sendMessage` begins `if (!connected_) return;`.
+/// So after one failed reopen every send "worked", the device read as back, and it was never
+/// looked for again, while this test passed against a port that could not do that.
 class UnpluggablePort final : public takt4::output::MidiPort {
 public:
     explicit UnpluggablePort(std::shared_ptr<Cable> cable) : cable_(std::move(cable)) {}
@@ -320,18 +332,23 @@ public:
         if (!cable_->plugged) {
             throw std::runtime_error("MIDI output: no port matching \"" + std::string(spec) + "\"");
         }
+        open_ = true;
         return "Desk " + std::string(spec);
     }
-    void close() noexcept override {}
+    void close() noexcept override { open_ = false; }
     void send(std::span<const unsigned char>) override {
+        if (!open_) {
+            return; // RtMidi's WinMM port, closed: nothing sent, nothing said
+        }
         if (!cable_->plugged) {
-            throw std::runtime_error("the device has gone");
+            throw std::runtime_error("the device has gone"); // a dead handle's driver error
         }
         ++cable_->delivered;
     }
 
 private:
     std::shared_ptr<Cable> cable_;
+    bool open_ = false;
 };
 
 } // namespace
@@ -414,6 +431,85 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
     cable->plugged = true;
     transports.setMidiClockPort(std::string("Clock"));
     CHECK(transports.lostMidiCount() == 0);
+    transports.stopOutputs();
+}
+
+namespace {
+
+/// The machine's list of ports, as RtMidi's Windows backend names them — each with its place in
+/// the list on the end — which a device leaves when it is unplugged and rejoins at the end.
+struct PortList {
+    std::vector<std::string> names;
+    std::string opened;
+    std::uint64_t delivered = 0;
+};
+
+class ListedPort final : public takt4::output::MidiPort {
+public:
+    explicit ListedPort(std::shared_ptr<PortList> list) : list_(std::move(list)) {}
+    std::string open(std::string_view spec) override {
+        const std::optional<std::size_t> found = takt4::output::findMidiPort(list_->names, spec);
+        if (!found) {
+            throw std::runtime_error("MIDI output: no port matching \"" + std::string(spec) + "\"");
+        }
+        name_ = list_->names[*found];
+        list_->opened = name_;
+        return name_;
+    }
+    void close() noexcept override { name_.clear(); }
+    void send(std::span<const unsigned char>) override {
+        if (name_.empty()) {
+            return; // closed: RtMidi's WinMM port says nothing
+        }
+        if (std::find(list_->names.begin(), list_->names.end(), name_) == list_->names.end()) {
+            throw std::runtime_error("the device has gone");
+        }
+        ++list_->delivered;
+    }
+
+private:
+    std::shared_ptr<PortList> list_;
+    std::string name_;
+};
+
+} // namespace
+
+TEST_CASE("a MIDI device that comes back at another number is found again", "[output][midi]") {
+    // C1's other half. The port was saved as "USB MIDI 2"; unplugged and plugged back in beside
+    // another device, it is "USB MIDI 3" — and a reconnect that looked for "USB MIDI 2" by what
+    // it contained looked for ever.
+    auto list = std::make_shared<PortList>();
+    list->names = {"Microsoft GS Wavetable Synth 0", "loopMIDI Port 1", "USB MIDI 2"};
+    Transports::Config config;
+    config.midiClockPort = "USB MIDI 2";
+    config.openMidi = [list](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<ListedPort>(list));
+    };
+    Transports transports(config);
+    const TempoState state;
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    double now = 0.0;
+    const auto runFor = [&](double seconds) {
+        const double until = now + seconds;
+        while (now < until) {
+            now += 0.001;
+            transports.advance(now, state);
+        }
+    };
+    runFor(0.5);
+    REQUIRE(list->delivered > 0);
+
+    list->names = {"Microsoft GS Wavetable Synth 0", "loopMIDI Port 1"};
+    runFor(2.5);
+    REQUIRE(transports.lostMidiCount() == 1);
+
+    list->names = {"Microsoft GS Wavetable Synth 0", "loopMIDI Port 1", "Launchpad 2", "USB MIDI 3"};
+    const std::uint64_t before = list->delivered;
+    runFor(1.5);
+    CHECK(transports.lostMidiCount() == 0);
+    CHECK(list->opened == "USB MIDI 3");
+    CHECK(list->delivered > before);
     transports.stopOutputs();
 }
 

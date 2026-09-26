@@ -113,6 +113,15 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     const LogicalExtent opening = fitToScreen({kFixturesWindowWidth, kFixturesWindowHeight});
     window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
 
+    // The window's own close box goes through `hide` like CLOSE does. It used to hide the window
+    // behind this object's back: `visible_` stayed set, and the levels went on being redrawn thirty
+    // times a second for a window nobody could see, and a name being typed was not committed (the
+    // audit of 2026-09-25, M16).
+    window_->window().on_close_requested([this] {
+        hide();
+        return slint::CloseRequestResponse::HideWindow;
+    });
+
     resettle(fixtures_.empty() ? -1 : 0);
     publishAll();
     rebuildChannels();

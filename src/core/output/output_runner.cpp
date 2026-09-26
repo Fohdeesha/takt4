@@ -534,6 +534,9 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // on a rig, and a panic that blacked out the stage would take down lights that
                 // were not takt4's to take. See `dmx::DmxEngine::cancelAll`.
                 transports_.dmx().cancelAll();
+                // On every node at once: a delayed one was sent its last second of animation
+                // after the freeze (the audit of 2026-09-25, M5).
+                transports_.artnet().forgetHistory();
             } else {
                 triggers_.release();
             }
@@ -593,13 +596,34 @@ void OutputRunner::apply(const OutputCommand& command) {
             if (command.enabled) {
                 // A new run: nothing predicted from the last one's beats, and the clock ticking
                 // from the press that starts listening — its Start waits for a locked downbeat.
+                quiet_ = false;
+                triggers_.setListening(true);
                 scheduler_.reset();
                 transports_.startClock(now);
             } else {
-                transports_.stopClock();
-                // Held lighting for a beat that will now never come goes with it, and the lights
-                // go out and stay out — sent, because the outputs keep running (Q3).
+                // **STOP: nothing fires after it** (the audit of 2026-09-25, H3, and the
+                // operator's answer to its Q3). Up to two predicted beats went on firing their
+                // rules after the blackout, because nothing reset the scheduler and nothing
+                // gated it — so a flash, a colour or a clip came back on with takt4 stopped. Now:
+                // the predictions go, and so do the beats the tracker called on its way down;
+                quiet_ = true;
+                triggers_.setListening(false);
+                scheduler_.reset();
+                engine::EngineBeat late;
+                while (engine_.popBeat(late)) {
+                }
+                // every MIDI and OSC release owed goes out now, as it does on quit, so no clip
+                // or laser is left latched — and every lighting one is dropped, which would
+                // otherwise light a lamp again at its release level (see `holdLighting`);
+                sink_.holdLighting(true);
+                triggers_.flushFollowUps();
+                sink_.holdLighting(false);
                 sink_.dropQueuedLighting();
+                sink_.flushQueued();
+                transports_.osc().flushAll();
+                // and the lights go out and stay out — sent, because the outputs keep running
+                // (Q3 of 2026-09-23).
+                transports_.stopClock();
                 transports_.dmx().blackout(now);
             }
             tracking_.store(command.enabled, std::memory_order_relaxed);
@@ -814,6 +838,9 @@ void OutputRunner::drainOnce(double now) {
     // counted and named now — `Snapshot::Trouble` — and the round carries on past it.
     engine::EngineBeat beat;
     while (engine_.popBeat(beat)) {
+        if (quiet_) {
+            continue; // stopped: see `Tracking` in `apply`
+        }
         // Offline, and in the tests that feed audio faster than it plays, there is no host
         // clock and no timeline: such a beat fires as it arrives. See `BeatScheduler::heard`.
         std::optional<double> moment;
@@ -836,7 +863,12 @@ void OutputRunner::drainOnce(double now) {
         }
     }
     // And the beats that are due before they are heard — the audit's H4. See `BeatScheduler`.
+    // None while stopped: the engine's last locked state stays published, and the scheduler
+    // would go on predicting from it (the audit of 2026-09-25, H3).
     guarded("a predicted beat's rules", [&] {
+        if (quiet_) {
+            return;
+        }
         scheduler_.restate(engine_.state());
         while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
             fireBeat(*next, now);
@@ -851,7 +883,7 @@ void OutputRunner::drainOnce(double now) {
     // Coalesced to one call however far it moved: two onsets inside one millisecond would
     // be one hit as far as anything downstream is concerned, and the classifier's own
     // minimum gap is sixty.
-    if (countMoved(engine_.intensity().onsets, onsetsSeen_)) {
+    if (countMoved(engine_.intensity().onsets, onsetsSeen_) && !quiet_) {
         guarded("the onset rules", [&] { triggers_.onOnset(context); });
     }
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another

@@ -59,9 +59,9 @@ public:
         /// How far behind the lighting this node is sent it, in seconds; negative is ahead of
         /// the other nodes. See the class comment.
         double delaySeconds = 0.0;
-        /// Which bit of a rule's routing mask selects this target. Unused today — a DMX rule
-        /// is routed by *fixture*, and a fixture already names its universe — and carried so
-        /// that switching a target off is the same gesture here as everywhere else.
+        /// The target's place in the list of outputs — its routing bit — which is what
+        /// `outputOf` reports a node's problem under and what `setDelay` finds a node by. A DMX
+        /// rule is not routed by it: it is routed by *fixture*, and a fixture names its universe.
         std::size_t bit = 0;
         /// `output::OutputTarget::id`, which is what `setTargets` recognises a node by.
         std::string id;
@@ -101,6 +101,15 @@ public:
     /// How far behind the lighting as it is made node `index` is sent it: its own delay plus
     /// `leadSeconds`. Never negative.
     double lagOf(std::size_t index) const noexcept;
+
+    /// PANIC: the history is forgotten, so every node — delayed or not — is sent the lighting as
+    /// it is now, frozen (the audit of 2026-09-25, M5). A node sent the lighting a second late
+    /// went on replaying the second of strobe and movement before the freeze, out of the
+    /// operator's reach, while the node beside it had stopped. From here the history holds the
+    /// frozen frame and nothing older, which the oldest-frame rule of `publish` sends a delayed
+    /// node until its delay has run on past the freeze — after RELEASE too, so what it is sent
+    /// then is the stillness and not what came before it.
+    void forgetHistory() noexcept;
 
     /// How finely the history is kept: a frame at most this often while a universe changes. A
     /// node takes 44 frames a second, so a frame every 2 ms is far finer than it can show.

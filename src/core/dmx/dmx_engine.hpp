@@ -54,6 +54,15 @@ public:
     /// more goes to **zero**: a fixture switched off or deleted used to go on transmitting its
     /// last levels, out of reach of every rule, Blackout included.
     ///
+    /// **So does a whole universe the patch no longer uses** (the audit of 2026-09-25, H4). A
+    /// rig with one par on a node — an ordinary small rig — lost that universe from the patch
+    /// when the par was switched off or deleted, and nothing ever sent it again: the node held
+    /// its last frame, and the lamp stayed lit through Stop, quit and Blackout. Such a universe
+    /// is `released()`: sent all zeros for `kReleasedSeconds`, a fresh frame at the 44 Hz
+    /// ceiling so one dropped datagram costs nothing, and then left alone — the operator's
+    /// answer to the audit's Q2, so that anything else that takes the universe over is not
+    /// fought for it.
+    ///
     /// Running effects **carry on**, re-aimed at the same fixture — by `Fixture::id`, so a
     /// rename is not a different fixture — in the new patch; they were all cancelled, so every
     /// fade, strobe and path froze where it was whenever a name was typed. An effect on a fixture that has gone, or cannot take it any more, stops
@@ -116,16 +125,25 @@ public:
     /// load, not for panic.
     void reset();
 
-    /// The universes the patch uses, ascending. Stable between `setPatch` calls, which is what
-    /// lets `ArtNetSender` keep a per-universe sequence counter by index.
+    /// The universes the patch uses, ascending. Stable between `setPatch` calls.
     const std::vector<PortAddress>& universes() const noexcept { return universes_; }
 
-    /// One universe's 512 levels, or an empty span when the patch does not use it.
+    /// How long a universe that has left the patch goes on being sent zeros. Three seconds is
+    /// about 130 frames: any node that is listening hears one. See `setPatch`.
+    static constexpr double kReleasedSeconds = 3.0;
+    /// The universes that have left the patch and are still being sent zeros — see `setPatch`.
+    /// `levels` and `revision` answer for them as for any other; `tick` lets each go
+    /// `kReleasedSeconds` after the first tick that saw it released.
+    const std::vector<PortAddress>& released() const noexcept { return releasedUniverses_; }
+
+    /// One universe's 512 levels — all zero for a released one — or an empty span when the patch
+    /// does not use it.
     std::span<const std::uint8_t> levels(PortAddress universe) const noexcept;
 
     /// How many times this universe's levels have changed. What tells a sender "this frame is
     /// new, send it now" from "nothing has moved, send it again when the keep-alive is due" —
-    /// see `kKeepAliveSeconds`.
+    /// see `kKeepAliveSeconds`. A released universe's moves on every tick, so it is sent at
+    /// the 44 Hz ceiling while it is being released.
     std::uint64_t revision(PortAddress universe) const noexcept;
 
     /// Effects currently animating.
@@ -268,6 +286,17 @@ private:
     std::vector<Virtual> virtuals_;
     std::vector<Buffer> buffers_;
     std::vector<PortAddress> universes_;
+    /// A universe that has left the patch, being sent zeros — see `released`.
+    struct Released {
+        PortAddress universe = 0;
+        /// When it stops being sent; negative until the first `tick` after it was released,
+        /// which is the first moment this object knows the time.
+        double until = -1.0;
+        std::uint64_t revision = 0;
+    };
+    std::vector<Released> released_;
+    /// `released_`'s universes, in the same order, for `released()` to hand out whole.
+    std::vector<PortAddress> releasedUniverses_;
     std::vector<Running> running_;
     /// Where `start` builds an effect's tracks before deciding whether it reached anything.
     /// Kept as a member so that the *building* reuses one buffer; the effect that survives is

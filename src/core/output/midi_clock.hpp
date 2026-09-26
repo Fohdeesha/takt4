@@ -90,6 +90,12 @@ private:
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
     std::uint32_t failedInARow_ = 0;
+    /// Whether the port is open, as far as this object has opened and closed it. **A send on a
+    /// port that is not open is a failure, whatever the port says** (the audit of 2026-09-25,
+    /// C1): RtMidi's WinMM port swallows a send once it is closed, so after one reopen that
+    /// failed every send "worked", `lost()` went false, the window said the device was back, and
+    /// nothing looked for it again.
+    bool open_ = false;
 };
 
 /// MIDI beat clock: 24 pulses per quarter note, plus Start, Stop and Continue.

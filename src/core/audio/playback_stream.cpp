@@ -162,6 +162,7 @@ PlaybackStream::PlaybackStream(const PortAudioSession& /*session*/, const Output
     if (!(sampleRate > 0.0)) {
         throw std::invalid_argument("PlaybackStream: the sample rate must be positive");
     }
+    detail::refuseInSandbox(device.name);
     impl_->device = device;
     impl_->rate = device.defaultSampleRate > 0.0 ? device.defaultSampleRate : sampleRate;
     impl_->channels = std::clamp(device.maxOutputChannels, 1, 2);

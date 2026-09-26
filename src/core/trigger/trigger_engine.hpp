@@ -146,6 +146,17 @@ public:
     void release() noexcept { panicked_ = false; }
     bool panicked() const noexcept { return panicked_; }
 
+    /// Whether the tracker is listening — `output::OutputRunner`'s Start and Stop. While it is
+    /// not, **nothing the music would fire fires**: no beat, onset or declared bar, and no change
+    /// of tempo, lock or intensity. What an operator fires by hand — `manual`, `test` — still
+    /// does, with its follow-ups: building a rig with the tracker stopped is ordinary.
+    ///
+    /// STOP's half of the audit of 2026-09-25, H3. The engine's last state stays published after
+    /// it stops, so a rule watching it could still fire on the way down. Listening until told
+    /// otherwise, which is every engine the console and the tests drive.
+    void setListening(bool on) noexcept { listening_ = on; }
+    bool listening() const noexcept { return listening_; }
+
     /// Sends every follow-up still owed, now rather than when it comes due, and latches
     /// nothing. `panic` without the halt.
     ///
@@ -200,6 +211,7 @@ private:
     /// rule owing several messages allocates nothing after its first fire.
     std::vector<std::pair<std::size_t, Message>> owed_;
     bool panicked_ = false;
+    bool listening_ = true;
     std::uint64_t sent_ = 0;
     std::uint64_t dropped_ = 0;
     std::uint64_t muted_ = 0;

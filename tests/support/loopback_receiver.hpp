@@ -7,6 +7,8 @@
 //
 // REQUIRE is used inside, so this must be included from a Catch2 translation unit.
 
+#include "core/sandbox.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
@@ -48,11 +50,13 @@ inline constexpr const char* kUnsendableReason = "";
 #endif
 
 /// A UDP socket bound to a free port on the loopback interface, so the sender can be
-/// tested against something that really receives. Only the tests need one: takt4 does
-/// not listen until Phase 5's control input (HANDOFF §5.7).
+/// tested against something that really receives — and the only kind of destination the test
+/// binaries' sandbox lets anything be sent to (`src/core/sandbox.hpp`).
 class LoopbackReceiver {
 public:
-    LoopbackReceiver() {
+    /// `allowed` false only for the sandbox's own test: a real socket the sandbox has not been
+    /// told about, which nothing in takt4 may send to.
+    explicit LoopbackReceiver(bool allowed = true) {
 #if defined(_WIN32)
         WSADATA data{};
         REQUIRE(::WSAStartup(MAKEWORD(2, 2), &data) == 0);
@@ -71,6 +75,11 @@ public:
         REQUIRE(::bind(socket_, reinterpret_cast<const sockaddr*>(&address), length) == 0);
         REQUIRE(::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
         port_ = ntohs(address.sin_port);
+        // A port the system gave this process, so the sandbox lets takt4 send here — and bind
+        // here, for the tests that free one and ask takt4 to listen on it. See `sandbox.hpp`.
+        if (allowed) {
+            takt4::sandbox::allowPort(port_);
+        }
 
         // A test must not hang if a datagram is lost; half a second is far longer than a
         // loopback packet can take.

@@ -194,6 +194,12 @@ bool LinkPeerWatch::open(std::string& problem) {
     if (socket_ != nullptr) {
         return true;
     }
+    if (!sandbox::allowsBind(kLinkPort)) {
+        // The test binaries' sandbox: Link's own port on the rig's network. See `sandbox.hpp`.
+        sandbox::refuse(sandbox::Refused::Link, kLinkPort);
+        problem = "not listening on Link's port in the test sandbox";
+        return false;
+    }
     auto socket = std::make_unique<Socket>();
     socket->handle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket->handle == net::kInvalidSocket) {

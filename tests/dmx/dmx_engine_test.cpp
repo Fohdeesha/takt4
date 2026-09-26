@@ -6,6 +6,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -543,6 +544,70 @@ TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][e
 
         engine.setPatch({rgb("other", 10)});
         CHECK(at(engine, 0, 1) == 0);
+    }
+
+    SECTION("the only fixture on a universe switched off or deleted leaves that universe dark") {
+        // The audit of 2026-09-25, H4. The section above keeps a second fixture on the universe,
+        // which is why it passed: with the par alone on universe 3 — one par per node is an
+        // ordinary small rig — switching it off took universe 3 out of the patch, and nothing was
+        // ever sent there again. The node held the lit frame, through Stop, quit and Blackout.
+        for (const bool deleted : {false, true}) {
+            INFO((deleted ? "deleted" : "switched off"));
+            DmxEngine rig;
+            Fixture par = rgb("par", 1);
+            par.universe = 3;
+            const Fixture other = rgb("other", 10);
+            rig.setPatch({par, other});
+            rig.start(0b1, level(Role::Red, 200), 0.0);
+            rig.tick(0.0);
+            REQUIRE(rig.levels(3).size() == 512);
+            REQUIRE(rig.levels(3)[0] == 200);
+
+            if (deleted) {
+                rig.setPatch({other});
+            } else {
+                par.enabled = false;
+                rig.setPatch({par, other});
+            }
+            CHECK(rig.universes() == std::vector<takt4::dmx::PortAddress>{0});
+            // Released: still there to be sent, and dark.
+            REQUIRE(rig.released() == std::vector<takt4::dmx::PortAddress>{3});
+            const std::span<const std::uint8_t> dark = rig.levels(3);
+            REQUIRE(dark.size() == 512);
+            CHECK(std::all_of(dark.begin(), dark.end(), [](std::uint8_t v) { return v == 0; }));
+            // A fresh frame every round, so a sender paces it at its ceiling, not its keep-alive.
+            const std::uint64_t first = rig.revision(3);
+            rig.tick(10.0);
+            const std::uint64_t second = rig.revision(3);
+            CHECK(second > first);
+            rig.tick(10.001);
+            CHECK(rig.revision(3) > second);
+            // For three seconds from the first round that saw it, and then left alone.
+            rig.tick(10.0 + DmxEngine::kReleasedSeconds - 0.01);
+            CHECK(rig.released().size() == 1);
+            rig.tick(10.0 + DmxEngine::kReleasedSeconds);
+            CHECK(rig.released().empty());
+            CHECK(rig.levels(3).empty());
+
+            // And put back in the patch, it is the patch's again.
+            par.enabled = true;
+            rig.setPatch({par, other});
+            CHECK(rig.released().empty());
+            CHECK(rig.levels(3).size() == 512);
+        }
+    }
+
+    SECTION("a universe put back while it is being released is not released twice") {
+        Fixture par = rgb("par", 1);
+        par.universe = 3;
+        engine.setPatch({par});
+        engine.setPatch({});
+        REQUIRE(engine.released().size() == 1);
+        engine.setPatch({});
+        CHECK(engine.released().size() == 1);
+        engine.setPatch({par});
+        CHECK(engine.released().empty());
+        CHECK(engine.universes() == std::vector<takt4::dmx::PortAddress>{3});
     }
 
     SECTION("deleted and added again, it starts from its parked levels") {

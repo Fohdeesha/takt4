@@ -158,6 +158,26 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         }
     }
 
+    // A universe the new patch no longer uses is released rather than forgotten, and one it uses
+    // again is the patch's once more — see the header (the audit of 2026-09-25, H4).
+    for (const PortAddress was : universes_) {
+        const bool kept = std::find(universes.begin(), universes.end(), was) != universes.end();
+        const bool already = std::any_of(released_.begin(), released_.end(),
+                                         [was](const Released& one) { return one.universe == was; });
+        if (!kept && !already) {
+            // Its revision moves on from the one the sender last saw, so the first zero frame
+            // goes at once rather than at the next keep-alive.
+            released_.push_back(Released{was, -1.0, revision(was) + 1});
+        }
+    }
+    std::erase_if(released_, [&universes](const Released& one) {
+        return std::find(universes.begin(), universes.end(), one.universe) != universes.end();
+    });
+    releasedUniverses_.clear();
+    for (const Released& one : released_) {
+        releasedUniverses_.push_back(one.universe);
+    }
+
     patch_ = std::move(patch);
     universes_ = universes;
     buffers_ = std::move(rebuilt);
@@ -360,6 +380,13 @@ void DmxEngine::reset() {
 std::span<const std::uint8_t> DmxEngine::levels(PortAddress universe) const noexcept {
     const std::size_t index = bufferOf(universe);
     if (index == static_cast<std::size_t>(-1)) {
+        // A released universe is dark: every channel zero, until it is let go.
+        static constexpr std::array<std::uint8_t, kChannelsPerUniverse> kDark{};
+        for (const Released& one : released_) {
+            if (one.universe == universe) {
+                return std::span<const std::uint8_t>(kDark.data(), kChannelsPerUniverse);
+            }
+        }
         return {};
     }
     return std::span<const std::uint8_t>(buffers_[index].levels.data(), kChannelsPerUniverse);
@@ -367,7 +394,15 @@ std::span<const std::uint8_t> DmxEngine::levels(PortAddress universe) const noex
 
 std::uint64_t DmxEngine::revision(PortAddress universe) const noexcept {
     const std::size_t index = bufferOf(universe);
-    return index == static_cast<std::size_t>(-1) ? 0 : buffers_[index].revision;
+    if (index == static_cast<std::size_t>(-1)) {
+        for (const Released& one : released_) {
+            if (one.universe == universe) {
+                return one.revision;
+            }
+        }
+        return 0;
+    }
+    return buffers_[index].revision;
 }
 
 void DmxEngine::writeChannel(std::uint32_t buffer, std::uint16_t channel, std::uint16_t fine,
@@ -923,6 +958,24 @@ void DmxEngine::tick(double now) {
     std::erase_if(running_, [now](const Running& running) {
         return running.duration <= 0.0 || now >= running.start + running.duration;
     });
+    // Every released universe: a fresh zero frame this round, and let go once its time is up.
+    // See `setPatch`.
+    if (!released_.empty()) {
+        for (Released& one : released_) {
+            if (one.until < 0.0) {
+                one.until = now + kReleasedSeconds;
+            }
+            ++one.revision;
+        }
+        const std::size_t before = released_.size();
+        std::erase_if(released_, [now](const Released& one) { return now >= one.until; });
+        if (released_.size() != before) {
+            releasedUniverses_.clear();
+            for (const Released& one : released_) {
+                releasedUniverses_.push_back(one.universe);
+            }
+        }
+    }
 }
 
 } // namespace takt4::dmx

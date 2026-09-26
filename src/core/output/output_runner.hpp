@@ -655,6 +655,10 @@ private:
     /// When each beat is fired: as it is heard, or ahead of it on a prediction. See
     /// `BeatScheduler`.
     BeatScheduler scheduler_;
+    /// Stopped by `setTracking(false)` and not started since: no beat heard or predicted is fired,
+    /// and no onset (the audit of 2026-09-25, H3). False until told, so a runner nobody tells —
+    /// the console's, the tests' — fires what it hears. The output thread's own.
+    bool quiet_ = false;
     /// The onset count last seen from the engine. The output thread has no frames of its
     /// own, so a count that moved is how it learns one happened.
     std::uint64_t onsetsSeen_ = 0;

@@ -874,6 +874,13 @@ RulesController::RulesController(output::OutputRunner& runner,
     const LogicalExtent opening = fitToScreen({kRulesWindowWidth, kRulesWindowHeight});
     window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
 
+    // The window's own close box goes through `hide` like CLOSE does, so what was being typed is
+    // committed and `visible_` is told (the audit of 2026-09-25, M16).
+    window_->window().on_close_requested([this] {
+        hide();
+        return slint::CloseRequestResponse::HideWindow;
+    });
+
     resettle(0);
     publishAll();
 }

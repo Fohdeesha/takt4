@@ -461,6 +461,51 @@ TEST_CASE("a rule disabled while a change happens does not fire when it comes ba
     CHECK(sink.sent.size() == 1);
 }
 
+TEST_CASE("a stopped tracker fires nothing the music would, and what the operator fires still goes",
+          "[trigger][engine]") {
+    // The audit of 2026-09-25, H3: after STOP the engine's last state stays published, and a rule
+    // watching it — or a beat that reaches the rules on its way down — fired after the blackout.
+    // Stopped, the rules the music drives are silent; manual and [test] are the operator's, and a
+    // rig is built with the tracker stopped.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config manual = simple("manual", Trigger::Manual);
+    manual.followUps.push_back(releaseAfterMs(0, 100.0));
+    engine.setRules({simple("beat", Trigger::Beat), simple("onset", Trigger::Onset),
+                     simple("bar", Trigger::Bar), simple("tempo", Trigger::TempoChange), manual});
+    Context first = beatAt(1, 1, 1, 0.0);
+    engine.advance(first); // the tempo rule's first look, which it only remembers
+    REQUIRE(sink.sent.empty());
+
+    engine.setListening(false);
+    CHECK_FALSE(engine.listening());
+    engine.onBeat(beatAt(2, 2, 1, 0.5));
+    engine.onOnset(beatAt(2, 2, 1, 0.5));
+    engine.onBarDeclared(beatAt(2, 1, 2, 0.5));
+    Context moved = beatAt(2, 2, 1, 0.6);
+    moved.bpm = 90.0;
+    engine.advance(moved);
+    CHECK(sink.sent.empty());
+
+    // What the operator fires goes, and its release after it.
+    engine.manual(beatAt(2, 2, 1, 1.0));
+    CHECK(engine.test("beat", beatAt(2, 2, 1, 1.0)));
+    Context later = moved; // the tempo where it moved to, so the tempo rule sees no new change
+    later.now = 1.2;
+    engine.advance(later);
+    CHECK(sink.addresses() ==
+          std::vector<std::string>{"/fire/manual", "/fire/beat", "/fire/manual"});
+
+    // Listening again, the music drives them — and the tempo rule did not bank the change it saw
+    // while stopped to fire the moment it could.
+    sink.sent.clear();
+    engine.setListening(true);
+    engine.advance(moved);
+    CHECK(sink.sent.empty());
+    engine.onBeat(beatAt(3, 3, 1, 1.5));
+    CHECK(sink.addresses() == std::vector<std::string>{"/fire/beat"});
+}
+
 TEST_CASE("panic halts every rule and hands back what it owes", "[trigger][engine]") {
     // §5.8: "A global halt that stops every rule instantly, reachable from the UI, a
     // keyboard shortcut, OSC and MIDI. Non-negotiable for live use."
