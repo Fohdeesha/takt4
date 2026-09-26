@@ -4,6 +4,12 @@
     python tools/train/finetune.py --config ... learning_rate=0.0001 name=electronic-lr1e-4
     python tools/train/finetune.py --config ... --resume          # from the run's last.pt
     python tools/train/finetune.py --config ... --validate-only   # the pretrained weights' numbers
+    python tools/train/finetune.py --config ... --resume --validate-only   # the run's latest epoch's
+
+A --validate-only run writes validate_only.json and nothing else of the run's.
+
+Before anything is trained or validated, every track's `.gt.npy` is checked against the
+labels its manifest beats make, and a mismatch stops the run (tools/train/labels.py).
 
 What is BeatNet+'s, imported from references/beatnet-plus and not restated: the network
 (`BeatNetPlusBranch`), the weighted cross-entropy with class weights [60, 200, 1], the
@@ -49,8 +55,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (ALIGNMENT, FEATURE_DIM, FPS, GENERIC_WEIGHTS, HOP, NUM_BANDS, ROOT, RUNS,  # noqa: E402
-                    SAMPLE_RATE, add_tools_path, feature_paths, load_json, load_manifest,
-                    lower_priority, now, read_beats, save_json)
+                    SAMPLE_RATE, add_tools_path, feature_paths, label_mismatches, load_json,
+                    load_manifest, lower_priority, now, read_beats, save_json)
 
 DEFAULTS = {
     "name": "electronic",
@@ -194,6 +200,31 @@ def select_tracks(cfg, manifest, alignment):
                   **({"downweighted": downweighted[s]} if s in downweighted else {})}
               for s in cfg["sets"]}
     return train, val, report
+
+
+def check_labels(train, val_sets):
+    """Refuse to run unless every track's `.gt.npy` is exactly what its manifest beats make.
+
+    Training reads the `.gt.npy`; validation, and so selection, reads the beats. v4 and v5
+    were run with 254 library tracks halved in one and not the other, and their selection
+    read the difference as the model improving (TRACKING-PROPOSAL.md §7.16)."""
+    tracks = sorted({(e.set, e.id, e.beats) for e in train} |
+                    {(e.set, e.id, e.beats) for entries in val_sets.values() for e in entries})
+    t = time.time()
+    bad = label_mismatches(tracks)
+    if bad:
+        by_set = {}
+        for s, _, _ in bad:
+            by_set[s] = by_set.get(s, 0) + 1
+        raise SystemExit(
+            f"{len(bad)} of {len(tracks)} tracks train on labels their manifest beats do not make "
+            f"({', '.join(f'{s}: {n}' for s, n in sorted(by_set.items()))}), so this run would learn "
+            "one labelling and be selected on another:\n  "
+            + "\n  ".join(f"{s}/{tid}: {why}" for s, tid, why in bad[:10])
+            + ("\n  ..." if len(bad) > 10 else "")
+            + "\nMake them one labelling first; tools/train/labels.py says how.")
+    print(f"  labels: all {len(tracks)} tracks are what their beats make ({time.time() - t:.0f} s)",
+          flush=True)
 
 
 def stretch_crop(src, src_cls, L, s):
@@ -442,9 +473,9 @@ def _cli_track(args):
     return set_name, tid, float(beat_f), float(down_f), acc1, int(len(est_t)), None
 
 
-def validate_cli(model, val_sets, cfg, cli, wavs, run_dir, pool):
+def validate_cli(model, val_sets, cfg, cli, wavs, run_dir, pool, weights_name="val_weights.bin"):
     """validate()'s numbers, measured by the shipped decoder instead of the offline DBN."""
-    weights = run_dir / "val_weights.bin"
+    weights = run_dir / weights_name
     write_cli_weights(model, weights)
     jobs = []
     for set_name, entries in val_sets.items():
@@ -530,6 +561,7 @@ def main(argv):
               f"{r['val_tracks']} val tracks; excluded {r['excluded']}")
     if not train_entries:
         raise SystemExit("nothing to train on")
+    check_labels(train_entries, val_sets)
 
     model = BeatNetPlusBranch(FEATURE_DIM, 150, 4, device)
     state = torch.load(cfg["pretrained"], map_location="cpu", weights_only=True)
@@ -544,6 +576,7 @@ def main(argv):
     history = {"config": cfg, "data": report, "started": now(), "validations": [],
                "best": None, "baseline": None}
     start_epoch = 0
+    weights_read = f"the pretrained weights, {cfg['pretrained']}"
     resume_path = run_dir / "resume.pt"
     if a.resume and resume_path.exists():
         ck = torch.load(resume_path, map_location="cpu", weights_only=False)
@@ -551,8 +584,9 @@ def main(argv):
         optimizer.load_state_dict(ck["optimizer"])
         history = ck["history"]
         start_epoch = ck["epoch"] + 1
+        weights_read = f"{resume_path}, epoch {ck['epoch']}"
         print(f"resumed from epoch {ck['epoch']}")
-    else:
+    elif not a.validate_only:
         save_json(run_dir / "config.json", {"config": cfg, "data": report, "argv": argv,
                                             "torch": torch.__version__, "device": str(device)})
 
@@ -574,7 +608,7 @@ def main(argv):
         print(f"  validating through {cli}", flush=True)
 
     log_path = run_dir / "log.csv"
-    if not log_path.exists() or not a.resume:
+    if not a.validate_only and (not log_path.exists() or not a.resume):
         with open(log_path, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(["epoch", "train_loss", "grad_norm", "lr", "seconds", "val_selection",
                                     *[f"{s}_beat_f" for s in val_sets], *[f"{s}_down_f" for s in val_sets]])
@@ -583,26 +617,31 @@ def main(argv):
         save_json(run_dir / "status.json", {"updated": now(), "run": cfg["name"], "best": history["best"],
                                             "baseline": history["baseline"], **extra})
 
-    def run_validation(epoch):
+    def measure(weights_name="val_weights.bin"):
+        """(val, selection, gate value, seconds) for the model as it stands."""
         t = time.time()
         dbn = validate(model, val_sets, cfg, pool, device)
         if cli is not None:
-            val = validate_cli(model, val_sets, cfg, cli, wavs, run_dir, cli_pool)
+            val = validate_cli(model, val_sets, cfg, cli, wavs, run_dir, cli_pool, weights_name)
             for s in val:
                 val[s]["dbn_beat_f"], val[s]["dbn_down_f"], val[s]["loss"] = \
                     dbn[s]["beat_f"], dbn[s]["down_f"], dbn[s]["loss"]
         else:
             val = dbn
-        score = selection_score(val, cfg)
         gate_set = cfg["gate_set"]
-        gate_value = val[gate_set]["beat_f"] if gate_set in val else None
+        return (val, selection_score(val, cfg), val[gate_set]["beat_f"] if gate_set in val else None,
+                round(time.time() - t, 1))
+
+    def run_validation(epoch):
+        val, score, gate_value, seconds = measure()
+        gate_set = cfg["gate_set"]
         if history["baseline"] is None:
             history["baseline"] = {"epoch": epoch, "selection": score, "gate": gate_value, "val": {
                 s: {k: v for k, v in r.items() if k != "tracks"} for s, r in val.items()}}
         gate_ok = gate_value is None or history["baseline"]["gate"] is None or \
             gate_value >= history["baseline"]["gate"] - cfg["gate_margin"]
         record = {"epoch": epoch, "selection": score, "gate": gate_value, "gate_ok": bool(gate_ok),
-                  "seconds": round(time.time() - t, 1), "when": now(),
+                  "seconds": seconds, "when": now(),
                   "val": {s: {k: v for k, v in r.items() if k != "tracks"} for s, r in val.items()}}
         history["validations"].append(record)
         save_json(run_dir / "val.json", history)
@@ -617,7 +656,18 @@ def main(argv):
         return record, improved
 
     if a.validate_only:
-        run_validation(start_epoch)
+        # A measurement, not a step of the run: nothing the run keeps is written. Until
+        # 2026-09-26 this was run_validation() like any other, so without --resume it saved the
+        # *pretrained* weights over the run's best.pt, wrote its config.json and val.json anew
+        # and emptied log.csv — and best.pt is what gets converted and shipped (the audit's P4).
+        val, score, gate_value, seconds = measure("validate_only_weights.bin")
+        save_json(run_dir / "validate_only.json",
+                  {"when": now(), "weights": weights_read, "selection": score,
+                   "gate_set": cfg["gate_set"], "gate": gate_value, "seconds": seconds,
+                   "val": val})
+        print(f"  {weights_read}: selection {score:.4f} gate {cfg['gate_set']} "
+              f"{gate_value if gate_value is None else round(gate_value, 4)} in {seconds:.0f} s\n"
+              f"    {fmt_val(val)}\n  written to {run_dir / 'validate_only.json'}", flush=True)
         pool.shutdown()
         if cli_pool is not None:
             cli_pool.shutdown()

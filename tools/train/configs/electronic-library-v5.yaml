@@ -1,6 +1,15 @@
 # The library fine-tune, fifth recipe: v2 with the labels a second teacher will not confirm
 # at the octave *downweighted* rather than dropped.
 #
+# CORRECTED 2026-09-26 (TRACKING-PROPOSAL.md §7.16's correction). This run and v4 trained the
+# library's 254 half-time tracks from their halved .gt.npy, while the manifest, which
+# validation reads, had lost octave.py's halving on 2026-09-11 — so selection scored that kind
+# of track at full time. They did not differ from v2 in one thing each, and the validation
+# rise quoted below, 0.8133 -> 0.9084, is the references changing octave: 0.9128 -> 0.9155 on
+# the 43 tracks whose references stayed, 0.588 -> 0.892 on the 19 whose changed. The reasoning
+# below is kept as it was written and does not follow. finetune.py now refuses to start with
+# labels and beats apart; run again, this recipe tests what it was written to test.
+#
 # Why, and this is the whole of it. v4 excluded those 160 tracks outright and **lost**: on the
 # 23-track harness, beat F 0.8409 -> 0.8106 and tempo accuracy 1 0.913 -> 0.783 against the
 # shipped set, with three octaves broken (808 State 125 -> 62, Alias 90 -> 179, Moonlake

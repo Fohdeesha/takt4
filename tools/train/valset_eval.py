@@ -4,6 +4,7 @@ off, bars of four or of three and four — through takt4-cli.
     python tools/train/valset_eval.py --set library --weights generic build/training/weights/electronic-library-e24.bin
     python tools/train/valset_eval.py --set library --weights generic --bpm off 70-140 --meters 3,4 4
     python tools/train/valset_eval.py --set library --weights generic --config tools/train/configs/electronic-library.yaml
+    python tools/train/valset_eval.py --set library --weights ... --run electronic-library-v2   # that run's own tracks
 
 finetune.py validates with `--bpm off` (the way the published trackers are measured), but
 the application runs with the operator's 70-140 window on, and TRACKING-PROPOSAL.md
@@ -29,7 +30,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ALIGNMENT, FPS, WORK, cli_path, load_json, load_manifest, read_beats, save_json  # noqa: E402
+from common import (ALIGNMENT, FPS, RUNS, WORK, cli_path, load_json, load_manifest,  # noqa: E402
+                    read_beats, save_json)
 import finetune  # noqa: E402
 
 
@@ -69,6 +71,26 @@ def score_one(args):
                  "published": round(published, 1), "ref_bpm": round(ref_bpm, 1), "beats": int(len(est_t))}
 
 
+def run_entries(run, set_name, manifest):
+    """The validation tracks a run was selected on, from its own record — which stays right
+    when the manifest's split has moved since, as it did whenever a track was added before
+    2026-09-26 (the audit's P2)."""
+    record = RUNS / run / "val_tracks_epoch_000.json"
+    if not record.exists():
+        raise SystemExit(f"{record} not found: is {run!r} a run under {RUNS}?")
+    ids = sorted(load_json(record).get(set_name, {}))
+    if not ids:
+        raise SystemExit(f"{run} validated nothing of {set_name}")
+    tracks = {t["id"]: t for t in manifest["sets"][set_name]["tracks"]}
+    missing = [i for i in ids if i not in tracks]
+    if missing:
+        raise SystemExit(f"{len(missing)} of {run}'s {set_name} validation tracks are no longer in "
+                         f"the manifest, e.g. {missing[0]}")
+    return [finetune.Entry(set_name, tracks[i],
+                           int(np.load(finetune.feature_paths(set_name, i)[0], mmap_mode="r").shape[0]))
+            for i in ids]
+
+
 def summary(rows):
     ok = [r for r in rows.values() if r is not None and "error" not in r]
     bad = [r for r in rows.values() if r is None or "error" in r]
@@ -97,6 +119,9 @@ def main(argv):
     ap.add_argument("--config", default=str(Path(__file__).resolve().parent / "configs" / "electronic-library.yaml"))
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--run", default=None,
+                    help="score the tracks that run validated on (its val_tracks_epoch_000.json) "
+                         "rather than the ones today's manifest and --config select")
     a = ap.parse_args(argv)
 
     cfg = finetune.load_config(a.config, [])
@@ -104,8 +129,12 @@ def main(argv):
     cfg["select_sets"] = [a.set]
     manifest = load_manifest()
     alignment = (load_json(ALIGNMENT) or {}).get("tracks", {})
-    _, val_sets, _ = finetune.select_tracks(cfg, manifest, alignment)
-    entries = val_sets[a.set][:a.limit] if a.limit else val_sets[a.set]
+    if a.run:
+        entries = run_entries(a.run, a.set, manifest)
+    else:
+        _, val_sets, _ = finetune.select_tracks(cfg, manifest, alignment)
+        entries = val_sets[a.set]
+    entries = entries[:a.limit] if a.limit else entries
     wavs = finetune.prepare_val_wavs({a.set: entries}, cfg)
     cli = cli_path()
     print(f"{cli}\n{len(entries)} validation excerpts of {a.set}, {cfg['val_seconds']} s each\n", flush=True)

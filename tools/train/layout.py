@@ -19,12 +19,15 @@ with `raw = references/datasets`. Ballroom is already in that layout under
                 genre and the original audio's duration from dataset/metadata.csv
     Ballroom    <genre>/<file>.wav + <file>.beats
 
-**The octave is left as annotated** — §3.1's data decision, settled by §7.7: the fast
-octave for drum and bass is the genre's own convention, and the window halves the number
-at the operator's request. No relabelling.
+**This script relabels nothing**: every `.beats` it writes is the set's own annotation.
+octave.py (half time for fast tracks; its docstring says why) and
+shift_labels.py (osu2beat's one-frame offset) relabel afterwards, and a re-layout carries
+their changes over (`carry_label_changes`) where the annotation they were made from is
+unchanged.
 
-Then WORK/manifest.json: every track with audio, its duration, tempo, meter, a seeded
-90/10 train/validation split per set, and `flags` that keep it out of training:
+Then WORK/manifest.json: every track with audio, its duration, tempo, meter, a 90/10
+train/validation split per set that a track keeps across re-layouts (`assign_split`), and
+`flags` that keep it out of training:
 
     held_out             it is one of references/audio's tracks (common.HELD_OUT)
     duration_mismatch    Raveform: the fetched video's length is more than 2 s from the
@@ -45,6 +48,7 @@ one changes no existing run until a config asks for it.
 """
 import argparse
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -376,8 +380,29 @@ LAYOUTS = {"raveform": layout_raveform, "osu2beat": layout_osu2beat,
 
 #: What octave.py and shift_labels.py write into a track's manifest entry. Their `.gt.npy`
 #: labels are rebuilt on disk as they go, so these fields are the manifest's half of a change
-#: that has already been made to the labels.
-LABEL_FIELDS = ("beats", "beats_original", "beats_annotated", "octave", "label_shift_frames")
+#: that has already been made to the labels. `bpm_halved` is also what finetune.py's
+#: `stretch_min_bpm` reads the tempo of a halved track from; without it a re-layout gave 721
+#: halved tracks their annotated tempo back (the 2026-09-25 audit's P3).
+LABEL_FIELDS = ("beats", "beats_original", "beats_annotated", "octave", "label_shift_frames",
+                "bpm_halved", "kick_parity", "octave_rule")
+
+#: What an entry says about the annotation it was laid out from. A change made to one
+#: annotation is not carried onto another: where these differ, the set's source has changed
+#: underneath octave.py's or shift_labels.py's file, and that file is out of date.
+ANNOTATION_FIELDS = ("n_beats", "n_downbeats", "first_beat", "last_beat", "bpm")
+
+
+def annotation_of(track):
+    """The file a track's labels were derived from: shift_labels.py's `beats_annotated`,
+    else octave.py's `beats_original`, else `beats` itself."""
+    return Path(track.get("beats_annotated", track.get("beats_original", track["beats"])))
+
+
+def same_annotation(before, after):
+    """Whether two entries were laid out from the same annotation: the same file name and
+    the same beats in it, as far as the entry records them."""
+    return (annotation_of(before).name == annotation_of(after).name
+            and all(before.get(k) == after.get(k) for k in ANNOTATION_FIELDS))
 
 
 def carry_label_changes(old_tracks, new_tracks):
@@ -387,8 +412,10 @@ def carry_label_changes(old_tracks, new_tracks):
     on the original file while the `.gt.npy` that octave.py halved and shift_labels.py moved
     stayed as they had left it — so training read halved labels and selection unhalved ones
     (the audit's Python-tools items). A change is carried when the files it names are still
-    there; one whose file has gone is dropped and said, since then the labels on disk have to
-    be rebuilt by running those scripts again. Returns (carried, dropped) track ids."""
+    there and the annotation it was made from is the one just laid out; otherwise it is
+    dropped and said, since then the labels on disk have to be rebuilt by running those
+    scripts again — and until they are, finetune.py refuses to start (labels.py).
+    Returns (carried, dropped) track ids."""
     old = {t["id"]: t for t in old_tracks}
     carried, dropped = [], []
     for t in new_tracks:
@@ -397,7 +424,7 @@ def carry_label_changes(old_tracks, new_tracks):
                                                            "beats_annotated")):
             continue
         paths = [before[k] for k in ("beats", "beats_original", "beats_annotated") if k in before]
-        if not all(Path(p).exists() for p in paths):
+        if not all(Path(p).exists() for p in paths) or not same_annotation(before, t):
             dropped.append(t["id"])
             continue
         for key in LABEL_FIELDS:
@@ -409,16 +436,26 @@ def carry_label_changes(old_tracks, new_tracks):
     return carried, dropped
 
 
-def assign_split(tracks, seed, val_fraction):
-    """A seeded, per-set split. Flagged tracks are split too, so that lifting a flag
-    later does not move any other track between train and validation."""
-    rng = np.random.RandomState(seed)
-    ids = sorted(t["id"] for t in tracks)
-    rng.shuffle(ids)
-    n_val = int(round(len(ids) * val_fraction))
-    val = set(ids[:n_val])
+def hashed_split(track_id, seed, val_fraction):
+    """"val" for about `val_fraction` of ids, decided by the id alone."""
+    digest = hashlib.sha256(f"{seed}/{track_id}".encode("utf-8")).digest()
+    return "val" if int.from_bytes(digest[:8], "big") / 2.0 ** 64 < val_fraction else "train"
+
+
+def assign_split(tracks, seed, val_fraction, previous=()):
+    """A per-set split that no other track's coming or going can change. Flagged tracks are
+    split too, so that lifting a flag later does not move any other track between train and
+    validation.
+
+    A track the set's previous layout had keeps the split it had there. A new one is split by
+    a hash of its id. The split used to be a seeded shuffle of the sorted ids, where one clip
+    missing from Ballroom moved a hundred others and one track added to the library moved
+    170, and a model was then scored on its own training data by every tool that reads the
+    current manifest (the 2026-09-25 audit's P2). `previous` is the old layout's tracks, and
+    is only passed when it was made with the same seed and fraction."""
+    kept = {t["id"]: t["split"] for t in previous if t.get("split") in ("train", "val")}
     for t in tracks:
-        t["split"] = "val" if t["id"] in val else "train"
+        t["split"] = kept.get(t["id"]) or hashed_split(t["id"], seed, val_fraction)
 
 
 def main(argv):
@@ -432,23 +469,39 @@ def main(argv):
     a = ap.parse_args(argv)
 
     manifest = {"created": now(), "seed": a.seed, "val_fraction": a.val_fraction, "sets": {}}
+    old = {}
     if MANIFEST.exists():
         with open(MANIFEST, encoding="utf-8") as f:
-            manifest["sets"] = json.load(f).get("sets", {})
+            old = json.load(f)
+        manifest["sets"] = old.get("sets", {})
     for name in a.sets:
         print(f"{name}: ", end="", flush=True)
         tracks, notes = LAYOUTS[name]()
-        assign_split(tracks, a.seed, a.val_fraction)
-        carried, dropped = carry_label_changes(
-            manifest["sets"].get(name, {}).get("tracks", []), tracks)
+        before = manifest["sets"].get(name, {})
+        previous = before.get("tracks", [])
+        # Each set records what it was split with; one laid out before that did has the
+        # manifest's own.
+        split_was = (before.get("seed", old.get("seed")), before.get("val_fraction", old.get("val_fraction")))
+        if previous and split_was != (a.seed, a.val_fraction):
+            print(f"(split anew: it was made with seed {split_was[0]} and fraction {split_was[1]}) ",
+                  end="")
+            previous_split = ()
+        else:
+            previous_split = previous
+        assign_split(tracks, a.seed, a.val_fraction, previous_split)
+        carried, dropped = carry_label_changes(previous, tracks)
         if carried:
             notes["label_changes_carried"] = len(carried)
         if dropped:
             notes["label_changes_dropped"] = dropped
+            print(f"\n  {len(dropped)} tracks' relabelling could not be carried; their .gt.npy are "
+                  "not what their beats make now, and finetune.py will refuse them until "
+                  "tools/train/labels.py or the relabelling script is run. ", end="")
         flagged = sum(1 for t in tracks if t["flags"])
         hours = sum(t["seconds"] for t in tracks) / 3600
         manifest["sets"][name] = {
             "dir": str(DATASETS / SETS[name][0]), "notes": notes, "tracks": tracks,
+            "seed": a.seed, "val_fraction": a.val_fraction,
             "n": len(tracks), "hours": round(hours, 2),
             "n_train": sum(t["split"] == "train" for t in tracks),
             "n_val": sum(t["split"] == "val" for t in tracks),

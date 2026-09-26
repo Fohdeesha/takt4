@@ -99,6 +99,56 @@ def write_beats(path, times, positions):
             f.write(f"{t:.6f}\t{int(p)}\n")
 
 
+def labels_from_beats(path, frames):
+    """The class per frame (0 beat, 1 downbeat, 2 neither) that a `.beats` file makes over
+    `frames` frames: prepare_data.py's build_ground_truth, imported, as features.py uses it.
+
+    Every script that writes a `.gt.npy` writes this, from the file it has just written —
+    never from the times it had in memory. The two are not the same: a beat shifted from
+    1.12 s to 1.1400000000000001 s is on frame 57, and the 1.140000 that reaches the file is
+    on frame 56. Seventeen osu2beat tracks carried exactly that difference from
+    shift_labels.py (2026-09-26)."""
+    add_tools_path()
+    from BeatNetPlus.prepare_data import build_ground_truth
+    times, positions = read_beats(path)
+    gt = build_ground_truth(times[positions != 1], times[positions == 1], frames, SAMPLE_RATE, HOP)
+    return np.argmax(gt, axis=0).astype(np.int8)
+
+
+def label_mismatches(tracks, jobs=8):
+    """[(set, id, why)] for every (set, id, beats path) whose `.gt.npy` is not exactly the
+    labels its beats make — or is missing, or has not the features' length.
+
+    finetune.py trains from the `.gt.npy` and validates against the beats, so where the
+    two disagree a run learns one labelling and is selected on another. That is how v4 and
+    v5 were run (TRACKING-PROPOSAL.md §7.16): 254 library tracks trained at half time and
+    scored against their annotations at full time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(item):
+        set_name, track_id, beats = item
+        feat_path, gt_path = feature_paths(set_name, track_id)
+        if not gt_path.exists():
+            return set_name, track_id, "no .gt.npy"
+        stored = np.load(gt_path)
+        if feat_path.exists():
+            frames = int(np.load(feat_path, mmap_mode="r").shape[0])
+            if frames != len(stored):
+                return set_name, track_id, f".gt.npy has {len(stored)} frames, the features {frames}"
+        made = labels_from_beats(beats, len(stored))
+        if np.array_equal(stored, made):
+            return None
+        counts = lambda c: (int((c == 0).sum()) + int((c == 1).sum()), int((c == 1).sum()))
+        (sb, sd), (mb, md) = counts(stored), counts(made)
+        return set_name, track_id, (f".gt.npy has {sb} beats ({sd} downbeats), {Path(beats).name} "
+                                    f"makes {mb} ({md}); {int((stored != made).sum())} frames differ")
+
+    add_tools_path()
+    import BeatNetPlus.prepare_data  # noqa: F401 - imported once here, not first in eight threads
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        return [r for r in pool.map(one, list(tracks)) if r is not None]
+
+
 def load_manifest():
     if not MANIFEST.exists():
         raise SystemExit(f"{MANIFEST} not found; run tools/train/layout.py first")

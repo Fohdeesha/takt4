@@ -41,6 +41,10 @@ something between a fine-tune and the set it started from:
 
     python tools/evaluate.py BallroomData --annotations BallroomAnnotations \
         --weights electronic --cli-args "--meters 3,4" --held-out build/training/manifest.json
+
+`--held-out` also takes a fine-tune's run directory (build/training/runs/<run>), and then
+scores the clips that run validated on: the manifest's split is today's, and a set laid out
+again before 2026-09-26 could move a hundred clips between train and validation.
 """
 
 import argparse
@@ -248,13 +252,27 @@ def evaluate_one(cli, audio, annotation, options):
     return result
 
 
-def trained_ids(manifest_path):
-    """Every track id a tools/train/layout.py manifest puts in a training split. Ids are file
-    stems, as they are here, so a file is matched to its track by name."""
-    with open(manifest_path, encoding="utf-8") as f:
+def held_out_filter(path):
+    """A test of whether a file stem was kept out of training. Ids are file stems, as they
+    are here, so a file is matched to its track by name.
+
+    A tools/train/layout.py manifest keeps out every track not in a training split. A
+    fine-tune's run directory keeps out the tracks that run validated on — the whole of
+    Ballroom's validation split, for every run so far — which is the right question when the
+    manifest's split has moved since the run was trained (the 2026-09-25 audit's P2)."""
+    path = Path(path)
+    if path.is_dir():
+        record = path / "val_tracks_epoch_000.json"
+        if not record.exists():
+            raise SystemExit(f"--held-out {path}: no val_tracks_epoch_000.json; not a run directory")
+        with open(record, encoding="utf-8") as f:
+            validated = {i for tracks in json.load(f).values() for i in tracks}
+        return lambda stem: stem in validated
+    with open(path, encoding="utf-8") as f:
         manifest = json.load(f)
-    return {t["id"] for info in manifest.get("sets", {}).values()
-            for t in info.get("tracks", []) if t.get("split") == "train"}
+    trained = {t["id"] for info in manifest.get("sets", {}).values()
+               for t in info.get("tracks", []) if t.get("split") == "train"}
+    return lambda stem: stem not in trained
 
 
 def main():
@@ -279,9 +297,10 @@ def main():
     parser.add_argument("--jobs", type=int, default=1,
                         help="files in parallel; each one is a whole takt4-cli run")
     parser.add_argument("--report", type=Path, help="write the per-file scores here as JSON")
-    parser.add_argument("--held-out", type=Path, metavar="MANIFEST",
-                        help="score only the files tools/train/layout.py's MANIFEST keeps out "
-                             "of training: its `val` split, or in no set at all")
+    parser.add_argument("--held-out", type=Path, metavar="MANIFEST_OR_RUN",
+                        help="score only the files kept out of training: by tools/train/layout.py's "
+                             "MANIFEST, its `val` split or in no set at all; or by a fine-tune's "
+                             "run directory, the tracks that run validated on")
     options = parser.parse_args()
 
     cli = find_cli(options.cli)
@@ -308,11 +327,11 @@ def main():
             groups[audio.stem] = audio.parent.name
     held_out_note = None
     if options.held_out:
-        trained = trained_ids(options.held_out)
+        kept_out = held_out_filter(options.held_out)
         before = len(pairs)
-        pairs = [(audio, annotation) for audio, annotation in pairs if audio.stem not in trained]
+        pairs = [(audio, annotation) for audio, annotation in pairs if kept_out(audio.stem)]
         held_out_note = (f"held out: {len(pairs)} of {before} files; the other {before - len(pairs)} "
-                         f"are in the training split of {options.held_out}")
+                         f"are not kept out of training by {options.held_out}")
         print(held_out_note)
     if options.limit:
         pairs = pairs[: options.limit]

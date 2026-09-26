@@ -2,6 +2,11 @@
 # at the octave taken out. v2 epoch 76 is what ships in 0.9.1 (§7.13.6) and v3 lost, so this
 # starts from v2 and changes one thing.
 #
+# CORRECTED 2026-09-26: it changed two. The run trained the library's half-time tracks from
+# their halved .gt.npy and selected its epoch against them at full time, because a re-layout
+# minutes before it started had dropped octave.py's fields from the manifest (TRACKING-PROPOSAL.md §7.16's
+# correction; see electronic-library-v5.yaml). finetune.py now refuses that state.
+#
 # What changed from electronic-library-v2.yaml, and why:
 #   - `teacher_octave_cross` joins exclude_flags. Every library label came from Beat This!,
 #     and v2's `teacher_disagree` is the spread of three of its own *seeds* — which measures

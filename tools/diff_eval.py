@@ -13,8 +13,9 @@ the committed reports have their per-file `groups` stripped, so the fresh side a
 thousands more, and that asymmetry must stay visible instead of quietly widening.
 
 A few differences are expected against a committed report and mean nothing: `dataset` and
-`annotations` are provenance strings, hand-edited when the report was trimmed, and `cli` and
-`platform` say where it ran. Any other difference is a real one — `cli_args` included, so the
+`annotations` are provenance strings, hand-edited when the report was trimmed, `cli` and
+`platform` say where it ran, and `held_out` and `held_out_note` name the file --held-out was
+given. Any other difference is a real one — `cli_args` included, so the
 fresh report has to be made the way the committed one was, which since the decoder's default
 became a bar of four alone is with the waltz put back:
 
@@ -36,8 +37,12 @@ import argparse
 import json
 import sys
 
-# Hand-edited when a report is trimmed for committing; not measurements.
-PROVENANCE = {"dataset", "annotations", "cli", "platform"}
+# Hand-edited when a report is trimmed for committing; not measurements. `held_out` is the
+# path --held-out was given, written relative in the committed reports and absolute by
+# tools/train/gate.ps1, and `held_out_note` quotes it; which clips were held out is measured
+# by `files` and every `per_group.*.files`, which are compared. Until 2026-09-26 the path was
+# compared too, so every held-out report came out red (the 2026-09-25 audit's P6).
+PROVENANCE = {"dataset", "annotations", "cli", "platform", "held_out", "held_out_note"}
 
 
 def leaves(node, path=""):
