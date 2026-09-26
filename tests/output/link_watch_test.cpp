@@ -115,6 +115,67 @@ TEST_CASE("a Link announcement is read as Link writes it", "[output][link]") {
             CHECK_FALSE(takt4::output::parseLinkAnnouncement(bad, read));
         }
     }
+
+    // The audit of 2026-09-25, coverage gap 12: the three edges nothing tried.
+    const auto header = [](Id node) {
+        Bytes out{'_', 'a', 's', 'd', 'p', '_', 'v', 1, 1, 5, 0, 0};
+        out.insert(out.end(), node.begin(), node.end());
+        return out;
+    };
+
+    SECTION("an entry Link knows, at a size Link never writes, is stepped over and not half read") {
+        Bytes bytes = header(id(9));
+        put32(bytes, 0x746d6c6e); // 'tmln', sixteen bytes rather than twenty-four
+        put32(bytes, 16);
+        put64(bytes, static_cast<std::int64_t>(60.0e6 / 128.0));
+        put64(bytes, 1234567);
+        put32(bytes, 0x73657373); // 'sess', four rather than eight
+        put32(bytes, 4);
+        bytes.insert(bytes.end(), {1, 2, 3, 4});
+        put32(bytes, 0x73747374); // 'stst', nine rather than seventeen
+        put32(bytes, 9);
+        bytes.push_back(1);
+        put64(bytes, 5555);
+        // A real 'sess' after them, which is still read: the wrong-sized ones were stepped over
+        // by the size they gave, not by the size they should have had.
+        put32(bytes, 0x73657373);
+        put32(bytes, 8);
+        const Id session = id(4);
+        bytes.insert(bytes.end(), session.begin(), session.end());
+        REQUIRE(takt4::output::parseLinkAnnouncement(bytes, read));
+        CHECK_FALSE(read.bpm.has_value());
+        CHECK_FALSE(read.playing.has_value());
+        CHECK(read.session == std::optional<Id>(id(4)));
+    }
+
+    SECTION("a beat that lasts no time, or less, is no tempo") {
+        for (const std::int64_t micros : {std::int64_t{0}, std::int64_t{-468750}}) {
+            INFO(micros << " microseconds a beat");
+            Bytes bytes = header(id(9));
+            put32(bytes, 0x746d6c6e);
+            put32(bytes, 24);
+            put64(bytes, micros);
+            put64(bytes, 0);
+            put64(bytes, 0);
+            REQUIRE(takt4::output::parseLinkAnnouncement(bytes, read));
+            CHECK_FALSE(read.bpm.has_value());
+        }
+    }
+
+    SECTION("a datagram longer than Link ever sends is refused, and one at the limit is read") {
+        // Link's `kMaxMessageSize` is 512. An entry nobody knows pads the announcement out to it.
+        const auto padded = [&](std::size_t total) {
+            Bytes bytes = announcement(1, id(9), 128.0, id(1));
+            REQUIRE(bytes.size() + 8 <= total);
+            put32(bytes, 0x70616464); // 'padd'
+            put32(bytes, static_cast<std::uint32_t>(total - bytes.size() - 4));
+            bytes.resize(total, 0);
+            return bytes;
+        };
+        CHECK(takt4::output::parseLinkAnnouncement(padded(512), read));
+        CHECK_THAT(*read.bpm, WithinAbs(128.0, 0.001));
+        CHECK_FALSE(takt4::output::parseLinkAnnouncement(padded(513), read));
+    }
 }
 
 TEST_CASE("the peers list is every Link peer but this process's own", "[output][link]") {

@@ -453,6 +453,58 @@ TEST_CASE("the control thread acts on what arrives and counts what it cannot", "
     CHECK_FALSE(control.running());
 }
 
+TEST_CASE("a new config while listening closes the old socket, and the next start is the new one",
+          "[control]") {
+    // The audit of 2026-09-25, coverage gap 14: `setConfig` on a control that is running — which
+    // is what the window does when the operator changes the port, the prefix or "allow other
+    // machines" with the listener on. It has to stop the thread that reads the old config before
+    // the config changes under it, give the old port back, and start as it now says.
+    auto engine = makeEngine();
+    OscControl control(*engine, localConfig(kAnyPort));
+    control.start();
+    REQUIRE(control.running());
+    const std::uint16_t before = control.port();
+    REQUIRE(before != 0);
+
+    const auto waitFor = [&control](std::uint64_t handled, std::uint64_t ignored) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (std::chrono::steady_clock::now() < until &&
+               (control.handled() < handled || control.ignored() < ignored)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+    };
+    OscSender first("127.0.0.1", before);
+    REQUIRE(first.send(OscMessage("/takt4/ctl/tap").packet()));
+    waitFor(1, 0);
+    REQUIRE(control.handled() == 1);
+
+    OscControl::Config renamed = localConfig(kAnyPort);
+    renamed.prefix = "/show";
+    const auto asked = std::chrono::steady_clock::now();
+    control.setConfig(renamed);
+    // Stopped, within the thread's own poll — not left reading with the old prefix.
+    CHECK(std::chrono::steady_clock::now() - asked < std::chrono::seconds{2});
+    CHECK_FALSE(control.running());
+    CHECK(control.port() == 0);
+    CHECK(control.config().prefix == "/show");
+    // The old port is free again.
+    CHECK_NOTHROW(OscReceiver(before, /*localOnly=*/true));
+
+    control.start();
+    REQUIRE(control.running());
+    const std::uint16_t after = control.port();
+    REQUIRE(after != 0);
+    OscSender second("127.0.0.1", after);
+    // The old prefix is somebody else's now; the new one is ours.
+    REQUIRE(second.send(OscMessage("/takt4/ctl/tap").packet()));
+    REQUIRE(second.send(OscMessage("/show/ctl/tap").packet()));
+    waitFor(2, 1);
+    CHECK(control.handled() == 2);
+    CHECK(control.ignored() == 1);
+    CHECK(control.lastMessage().find("/show/ctl/tap") != std::string::npos);
+    control.stop();
+}
+
 TEST_CASE("a control that was never enabled never opens a socket", "[control]") {
     // Off unless asked for: a listening socket is not something to open on somebody's
     // behalf, and two takt4s on one machine must not fight over a port neither wanted.

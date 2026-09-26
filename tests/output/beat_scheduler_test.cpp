@@ -4,7 +4,10 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -250,6 +253,151 @@ TEST_CASE("the beats are predicted at the spacing they arrive at, not at the tem
     const auto next = scheduler.due(2.0, 0.0, 10.0);
     REQUIRE(next.has_value());
     CHECK(next->moment == Approx(1.0 + 60.0 / 128.0));
+}
+
+namespace {
+
+/// The output thread's loop again, over beats at the moments and tempos given — heard a pipeline
+/// after each — so a test can change the tempo or move the grid part way through.
+std::vector<Fire> runAt(const std::vector<double>& moments, const std::vector<double>& bpms,
+                        double lead, double pipeline) {
+    BeatScheduler scheduler;
+    std::vector<Fire> fires;
+    std::size_t next = 0;
+    // Long enough after the last beat for the one prediction past it, whatever the lead, and not
+    // the second.
+    const double end = moments.back() + 0.5;
+    for (std::size_t round = 0;; ++round) {
+        const double now = static_cast<double>(round) * 0.001;
+        if (now > end) {
+            break;
+        }
+        while (next < moments.size() && moments[next] + pipeline <= now) {
+            if (auto heard = scheduler.heard(beat(next + 1, bpms[next]), moments[next], now, 0.35)) {
+                fires.push_back({*heard, now});
+            }
+            ++next;
+        }
+        while (auto due = scheduler.due(now, lead, 0.35)) {
+            fires.push_back({*due, now});
+        }
+    }
+    return fires;
+}
+
+/// The fire nearest `moment`, and how far from it.
+double nearestFire(const std::vector<Fire>& fires, double moment) {
+    double best = 1e9;
+    for (const Fire& fire : fires) {
+        best = std::min(best, std::abs(fire.beat.moment - moment));
+    }
+    return best;
+}
+
+} // namespace
+
+TEST_CASE("a tempo change while locked is fired once a beat and followed from the next beat heard",
+          "[output][scheduler]") {
+    // The audit of 2026-09-25, coverage gap 11. The predictions run on the spacing of the last
+    // beat heard, so the first beat at a new tempo arrives off where it was predicted — 40 ms early
+    // here, going from 128 to 140 — and is recognised as the beat already fired, not fired again.
+    // From it on the predictions are at the new tempo.
+    std::vector<double> moments;
+    std::vector<double> bpms;
+    double at = 1.0;
+    for (std::size_t k = 0; k < 40; ++k) {
+        const double bpm = k < 20 ? 128.0 : 140.0;
+        if (k > 0) {
+            at += 60.0 / bpm;
+        }
+        moments.push_back(at);
+        bpms.push_back(bpm);
+    }
+    const std::vector<Fire> fires = runAt(moments, bpms, -0.200, 0.060);
+    // Every beat once, and the prediction past the last.
+    CHECK(fires.size() == moments.size() + 1);
+    for (std::size_t i = 1; i < fires.size(); ++i) {
+        INFO("fire " << i);
+        CHECK(fires[i].beat.beats == fires[i - 1].beat.beats + 1);
+        CHECK(fires[i].beat.event.beatInBar == fires[i - 1].beat.event.beatInBar % 4 + 1);
+    }
+    // On every beat but the one where the tempo changed, which went at the old spacing.
+    for (std::size_t k = 0; k < moments.size(); ++k) {
+        INFO("beat " << k);
+        if (k == 20) {
+            CHECK(nearestFire(fires, moments[k]) == Approx(60.0 / 128.0 - 60.0 / 140.0).margin(1e-6));
+        } else {
+            CHECK(nearestFire(fires, moments[k]) < 1e-6);
+        }
+    }
+}
+
+TEST_CASE("the grid moved by less than a third of a beat while locked is not a second beat",
+          "[output][scheduler]") {
+    // Coverage gap 11. The tracker moves its phase by a fifth of a beat — a DOWNBEAT pressed a
+    // little late, the filter settling. The beat heard on the new grid is the one already
+    // predicted on the old one, and is not fired again; the predictions move with it.
+    std::vector<double> moments;
+    const double period = 60.0 / 128.0;
+    for (std::size_t k = 0; k < 32; ++k) {
+        moments.push_back(1.0 + static_cast<double>(k) * period + (k >= 16 ? 0.2 * period : 0.0));
+    }
+    const std::vector<Fire> fires = runAt(moments, std::vector<double>(32, 128.0), -0.200, 0.060);
+    CHECK(fires.size() == moments.size() + 1);
+    for (std::size_t i = 1; i < fires.size(); ++i) {
+        CHECK(fires[i].beat.beats == fires[i - 1].beat.beats + 1);
+    }
+    for (std::size_t k = 17; k < moments.size(); ++k) {
+        INFO("beat " << k);
+        CHECK(nearestFire(fires, moments[k]) < 1e-6); // on the new grid from the beat after
+    }
+}
+
+TEST_CASE("the grid moved by half a beat while locked costs one beat, and the counts go on",
+          "[output][scheduler]") {
+    // Coverage gap 11. Half a beat is further than a beat's stamp ever jitters, so the beat heard
+    // there is not the one predicted on the old grid — and a prediction already fired cannot be
+    // taken back. The jump costs one fire more than the music had, whichever way it lands:
+    //
+    //   * 50 ms ahead, the beat on the new grid is heard before the old grid's next is due, and
+    //     is fired as it is heard, half a beat after the old grid's.
+    //   * 200 ms ahead, the old grid's next beat has already gone by the time the jumped one is
+    //     heard, which then counts as fired: the music's beat has the old grid's two either side
+    //     of it, half a beat off each way, and nothing on it.
+    //
+    // Either way no two fires are closer than a third of a beat, the counts never repeat — a
+    // rule on every fourth beat is not fired twice running — and from the beat after the jump
+    // every beat is fired on the new grid. (Measured 2026-09-26, and not what this test first
+    // assumed of the 200 ms case.)
+    const double lead = GENERATE(-0.050, -0.200);
+    INFO("fired " << -lead * 1000.0 << " ms ahead");
+    std::vector<double> moments;
+    const double period = 60.0 / 128.0;
+    for (std::size_t k = 0; k < 32; ++k) {
+        moments.push_back(1.0 + static_cast<double>(k) * period + (k >= 16 ? 0.5 * period : 0.0));
+    }
+    const std::vector<Fire> fires = runAt(moments, std::vector<double>(32, 128.0), lead, 0.060);
+    for (std::size_t i = 1; i < fires.size(); ++i) {
+        INFO("fire " << i);
+        CHECK(fires[i].beat.beats == fires[i - 1].beat.beats + 1);
+        CHECK(fires[i].beat.moment - fires[i - 1].beat.moment > BeatScheduler::kSameBeat * period);
+    }
+    const auto jumped = std::find_if(fires.begin(), fires.end(), [&](const Fire& fire) {
+        return std::abs(fire.beat.moment - moments[16]) < 1e-6;
+    });
+    // Every beat, the one past the end, and the one the jump cost.
+    CHECK(fires.size() == moments.size() + 2);
+    if (lead > -0.1) {
+        REQUIRE(jumped != fires.end());
+        CHECK_FALSE(jumped->beat.predicted); // fired as heard
+    } else {
+        CHECK(jumped == fires.end());
+        CHECK(nearestFire(fires, moments[16]) == Approx(0.5 * period).margin(1e-6));
+    }
+    for (std::size_t k = 17; k < moments.size(); ++k) {
+        INFO("beat " << k);
+        CHECK(nearestFire(fires, moments[k]) < 1e-6);
+    }
 }
 
 TEST_CASE("a tracker that starts again starts the counts again", "[output][scheduler]") {

@@ -8,6 +8,7 @@
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
@@ -1330,6 +1331,115 @@ TEST_CASE("each Art-Net node has a beat's lighting on the beat plus its own dela
     }
 }
 
+TEST_CASE("each output's delay reaches that output by its id, with the Link row first",
+          "[output][osc][dmx][trigger]") {
+    // The audit of 2026-09-25, coverage gap 8. Every rig since the window was rebuilt around one
+    // list of outputs has Link as its first row, so an output's place in the list is never its
+    // place among the OSC targets or among the nodes — and every delay test before this one had
+    // no Link row, where the two happen to agree. Here the delays are moved afterwards, by id, as
+    // a dragged slider moves them, on a list laid out the way the window lays it out.
+    using takt4::output::OutputTarget;
+    using takt4::testing::kArtNetFrame;
+    LoopbackReceiver prompt;
+    LoopbackReceiver slow;
+    takt4::testing::ArtNetNodes nodes(2);
+    Transports::Config config;
+    takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("par", 1, 0, 1);
+    par.id = "par";
+    config.patch = {par};
+    OutputTarget link;
+    link.id = "o-link";
+    link.name = "Link";
+    link.kind = OutputTarget::Kind::Link;
+    config.outputs.push_back(link);
+    for (const auto& [id, port] : {std::pair<std::string, std::uint16_t>{"o-prompt", prompt.port()},
+                                   std::pair<std::string, std::uint16_t>{"o-slow", slow.port()}}) {
+        OutputTarget osc;
+        osc.id = id;
+        osc.name = id.substr(2);
+        osc.kind = OutputTarget::Kind::Osc;
+        osc.host = "127.0.0.1";
+        osc.port = port;
+        config.outputs.push_back(osc);
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+        OutputTarget node;
+        node.id = "o-node" + std::to_string(i);
+        node.name = "node " + std::to_string(i);
+        node.kind = OutputTarget::Kind::ArtNet;
+        node.host = "127.0.0.1";
+        node.port = nodes.port(i);
+        config.outputs.push_back(node);
+    }
+    Transports transports(config);
+    REQUIRE(transports.outputs().size() == 5);
+    REQUIRE(transports.outputs().front().kind == OutputTarget::Kind::Link);
+
+    // The second OSC output 200 ms late, the second node 100 ms early — by id.
+    REQUIRE(transports.setOutputDelay("o-slow", 0.200));
+    REQUIRE(transports.setOutputDelay("o-node1", -0.100));
+    CHECK_FALSE(transports.setOutputDelay("o-nobody", 0.1));
+    CHECK_THAT(transports.lightingLeadSeconds(), WithinAbs(0.100, 1e-12));
+
+    SECTION("the late OSC output is held, and the one beside it is not") {
+        transports.osc().setNow(10.0);
+        transports.osc().sendAddress("/cue");
+        CHECK_FALSE(prompt.receive().empty());
+        CHECK(slow.receive().empty());
+        transports.osc().setNow(10.199);
+        transports.osc().flushDue();
+        CHECK(slow.receive().empty());
+        transports.osc().setNow(10.2);
+        transports.osc().flushDue();
+        CHECK_FALSE(slow.receive().empty());
+    }
+
+    SECTION("a beat's lighting reaches the early node ahead of the beat, and the other on it") {
+        takt4::output::RuleSink sink(transports);
+        takt4::trigger::TriggerEngine triggers(sink);
+        takt4::trigger::Rule::Config rule;
+        rule.id = "red";
+        rule.trigger = takt4::trigger::Trigger::Beat;
+        rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+        rule.dmx.fixtures = {"par"};
+        rule.dmx.effect = takt4::dmx::EffectKind::Color;
+        rule.dmx.color.kind = takt4::trigger::GeneratorKind::Fixed;
+        rule.dmx.color.fixed = takt4::trigger::Value::ofText("#ff0000");
+        rule.dmx.level.kind = takt4::trigger::GeneratorKind::Fixed;
+        rule.dmx.level.fixed = takt4::trigger::Value::ofInt(255);
+        rule.dmx.durationBeats = 0.0;
+        triggers.setRules({rule});
+        REQUIRE(triggers.rule(0).valid());
+        triggers.rule(0).setFixtureMask(0b1);
+
+        const TempoState state;
+        const auto round = [&](double now) {
+            sink.releaseDue(now);
+            const std::uint64_t before = transports.artnet().sent();
+            transports.advance(now, state);
+            return static_cast<std::size_t>(transports.artnet().sent() - before);
+        };
+        nodes.run(round, 0, 800);
+        takt4::trigger::Context context;
+        context.bpm = 128.0;
+        context.locked = true;
+        context.meter = 4;
+        context.beatInBar = 1;
+        context.beats = 1;
+        context.bars = 1;
+        context.now = 0.8;
+        context.moment = 1.0;
+        sink.setNow(0.8);
+        triggers.onBeat(context);
+        nodes.run(round, 800, 1300);
+        // Node 0 is on time; node 1, set 100 ms early, has it 100 ms before the beat.
+        CHECK(nodes.first(0, 255) >= 1.000 - 1e-9);
+        CHECK(nodes.first(0, 255) < 1.000 + kArtNetFrame);
+        CHECK(nodes.first(1, 255) >= 0.900 - 1e-9);
+        CHECK(nodes.first(1, 255) < 0.900 + kArtNetFrame);
+    }
+}
+
 TEST_CASE("MIDI Start waits for a beat whose place in the bar is known", "[output][midi]") {
     // The audit of 2026-09-25, M6. The tracker publishes `beatInBar` 0 until it has found a bar,
     // and the clock read that as beat 1: a locked beat with no bar started a receiver's bar there,
@@ -1450,5 +1560,99 @@ TEST_CASE("a Link delay moved by more than the deadband is put under the beat at
         transports.setLatencySeconds(-0.050);
         nextBeat();
         CHECK(transports.link().beatRequests() == 2);
+    }
+}
+
+namespace {
+
+/// A Transports with Link switched on and never joined — Link keeps its timeline locally, and
+/// nothing leaves this machine — and a way to publish the beats of a 128 BPM grid on it, paced as
+/// the network test is so Link's own thread has finished with each commit.
+struct LocalLink {
+    static constexpr double kBpm = 128.0;
+    static constexpr double kPeriodMicros = 60.0e6 / kBpm;
+
+    Transports transports{[] {
+        Transports::Config config;
+        config.link = true;
+        return config;
+    }()};
+    const std::int64_t origin = transports.link().now().count() + 1'000'000;
+
+    /// Beat `k` of the grid, `offBeats` of a beat late, numbered `beatInBar` in a bar of four.
+    void beat(std::uint32_t k, std::uint32_t beatInBar, double offBeats = 0.0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        const auto at = origin + static_cast<std::int64_t>((k + offBeats) * kPeriodMicros);
+        transports.publish(beatAt(0.0, beatInBar, kBpm), at, 0.0);
+    }
+    double phaseAtBeat(std::uint32_t k) {
+        return transports.link().phaseAtTime(
+            std::chrono::microseconds{origin + static_cast<std::int64_t>(k * kPeriodMicros)}, 4.0);
+    }
+};
+
+} // namespace
+
+TEST_CASE("a phase error is taken out an eighth a beat at a time, and never faster than 2%",
+          "[output][link]") {
+    // The audit of 2026-09-25, coverage gap 7: the nudge's size and its clamp, which nothing
+    // measured. After the snap, a beat that arrives late against the session means the session
+    // is ahead, and the tempo it is sent is lowered by an eighth of the error — so a peer is
+    // pulled back over about eight beats — but never by more than a fiftieth, which a peer's
+    // tempo display barely shows. Inside the deadband, a fiftieth of a beat, nothing is nudged.
+    const double error = GENERATE(0.08, -0.08, 0.30, -0.30, 0.01);
+    INFO("the beat " << error << " of a beat late");
+    LocalLink link;
+    REQUIRE_FALSE(link.transports.link().enabled());
+    link.beat(0, 1);
+    REQUIRE(link.transports.link().beatRequests() == 1); // the snap
+    REQUIRE(link.transports.link().tempoUpdates() == 1);
+    link.beat(1, 2, error);
+
+    const double nudge = std::clamp(error / 8.0, -0.02, 0.02);
+    CHECK(link.transports.link().beatRequests() == 1); // pulled, never jumped
+    if (std::abs(error) < 0.02) {
+        CHECK(link.transports.link().tempoUpdates() == 1);
+        CHECK_THAT(link.transports.link().tempoBpm(), WithinAbs(LocalLink::kBpm, 1e-6));
+    } else {
+        CHECK(link.transports.link().tempoUpdates() == 2);
+        CHECK_THAT(link.transports.link().tempoBpm(),
+                   WithinAbs(LocalLink::kBpm * (1.0 - nudge), 1e-6));
+    }
+}
+
+TEST_CASE("a bar the tracker counts differently is taken up after a bar of it, and not before",
+          "[output][link]") {
+    // Coverage gap 7's other half. After the snap the tracker changes its mind about where the bar
+    // starts — every beat now numbered one on — which is a musical event, not drift: a nudge
+    // would take a hundred beats over a whole beat. A bar's worth of disagreement in a row is
+    // answered the way a DOWNBEAT is, with a snap; one beat of it is not.
+    LocalLink link;
+    link.beat(0, 1);
+    REQUIRE(link.transports.link().beatRequests() == 1);
+    REQUIRE_THAT(link.phaseAtBeat(0), WithinAbs(0.0, 1e-6));
+
+    SECTION("four beats numbered one on, and the fourth snaps the bar to them") {
+        for (std::uint32_t k = 1; k <= 3; ++k) {
+            link.beat(k, (k + 1) % 4 + 1);
+            INFO("beat " << k);
+            CHECK(link.transports.link().beatRequests() == 1);
+        }
+        link.beat(4, (4 + 1) % 4 + 1);
+        CHECK(link.transports.link().beatRequests() == 2);
+        // Beat 4 of the grid is where the tracker says bar beat 2 is, so Link's bar says so too.
+        CHECK_THAT(link.phaseAtBeat(4), WithinAbs(1.0, 1e-6));
+        CHECK_THAT(link.transports.link().tempoBpm(), WithinAbs(LocalLink::kBpm, 1e-6));
+    }
+
+    SECTION("a beat of disagreement between agreeing ones is not a new bar") {
+        // Four beats numbered one on, as many as the bar that would snap it — but never two in
+        // a row, so the count starts again after each.
+        for (std::uint32_t k = 1; k <= 8; ++k) {
+            const bool disagree = k % 2 == 1;
+            link.beat(k, disagree ? (k + 1) % 4 + 1 : k % 4 + 1);
+        }
+        CHECK(link.transports.link().beatRequests() == 1);
+        CHECK_THAT(link.phaseAtBeat(8), WithinAbs(0.0, 1e-6));
     }
 }

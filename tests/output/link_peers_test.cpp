@@ -202,3 +202,68 @@ TEST_CASE("a peer that was there first is put on the music's phase", "[output][l
     app.stopOutputs();
     peer.enable(false);
 }
+
+TEST_CASE("a peer that joins after the snap is put on the music's phase too",
+          "[output][link][network]") {
+    // The audit of 2026-09-25, coverage gap 7. takt4 snaps the session once and then only nudges
+    // it — and a peer that joins later can bring a timeline of its own. So a new peer is a reason
+    // to snap again, on the next beat, and only on that one.
+    takt4::output::Transports::Config config;
+    config.link = true;
+    takt4::output::Transports app(config);
+    app.startOutputs(0.0);
+    LinkSession& ours = app.link();
+    std::this_thread::sleep_for(std::chrono::milliseconds{300}); // Link's own first reset
+
+    constexpr double kBpm = 128.0;
+    const double beat = 60.0 / kBpm;
+    const std::int64_t origin = ours.now().count() + 1'000'000;
+    const auto at = [&](std::uint32_t k) {
+        return origin + static_cast<std::int64_t>(k * beat * 1e6);
+    };
+    const auto publish = [&](std::uint32_t k) {
+        takt4::tracking::BeatEvent event;
+        event.bpm = kBpm;
+        event.locked = true;
+        event.confidence = 0.9;
+        event.beatsPerBar = 4;
+        event.beatInBar = k % 4 + 1;
+        event.downbeat = event.beatInBar == 1;
+        app.publish(event, at(k), 0.0);
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+    };
+    publish(0);
+    publish(1);
+    REQUIRE(ours.beatRequests() == 1); // the snap, and a beat on its grid
+
+    // A peer whose bar is somewhere else.
+    LinkSession peer(kBpm);
+    peer.enable(true);
+    peer.forceBeat(0.0, peer.now() + std::chrono::milliseconds{170}, 4.0);
+    if (!eventually([&] { return ours.numPeers() >= 1 && peer.numPeers() >= 1; })) {
+        SKIP("two Link sessions in one process never found each other: multicast is blocked");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+    publish(2);
+    CHECK(ours.beatRequests() == 2); // snapped again for the newcomer
+    publish(3);
+    CHECK(ours.beatRequests() == 2); // and once
+    // And the peer reads the music's bar at the music's beats.
+    const auto onTheMusic = [&] {
+        for (std::uint32_t k = 2; k < 8; ++k) {
+            double apart = std::fmod(peer.phaseAtTime(std::chrono::microseconds{at(k)}, 4.0) -
+                                         static_cast<double>(k % 4) + 8.0,
+                                     4.0);
+            apart = std::min(apart, 4.0 - apart);
+            if (apart > 0.025) {
+                return false;
+            }
+        }
+        return true;
+    };
+    CHECK(eventually(onTheMusic, std::chrono::seconds{5}));
+
+    app.stopOutputs();
+    peer.enable(false);
+}

@@ -74,11 +74,15 @@ public:
         return -1.0;
     }
 
-private:
+    /// One frame a node was sent: the round that sent it, and its channel 1.
     struct Heard {
         double at = 0.0;
         std::uint8_t channel1 = 0;
     };
+    /// Every frame `node` was sent, in order.
+    const std::vector<Heard>& heard(std::size_t node) const { return heard_[node]; }
+
+private:
     std::vector<std::unique_ptr<LoopbackReceiver>> nodes_;
     std::vector<std::vector<Heard>> heard_;
 };

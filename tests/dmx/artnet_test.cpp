@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -491,5 +492,152 @@ TEST_CASE("an Art-Net node set earlier has the lighting as it is made, and the r
         INFO("node " << node);
         CHECK(nodes.first(node, 255) >= expected[node]);
         CHECK(nodes.first(node, 255) < expected[node] + kArtNetFrame);
+    }
+}
+
+TEST_CASE("a delay raised from nothing holds a node where it was, then plays on that far behind",
+          "[dmx][artnet]") {
+    // The audit of 2026-09-25, coverage gap 9. With every node on time no history is kept — half
+    // a megabyte a universe for nothing — so a delay raised mid-set has nothing to reach back
+    // into. The node is held on the lighting as it was when the delay was raised until the history
+    // reaches back that far, and from then on it is sent the lighting that long ago: a delay
+    // introduced live has to hold somewhere, and it holds on what the node already shows.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 0.0});
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+
+    nodes.run(round, 0, 200);
+    paint(engine, 255, 0.200);
+    nodes.run(round, 200, 300);
+    REQUIRE(nodes.first(1, 255) >= 0.200);
+    REQUIRE(nodes.first(1, 255) < 0.200 + kArtNetFrame);
+
+    REQUIRE(publisher.setDelay(1, 0.200)); // at 0.300
+    nodes.run(round, 300, 350);
+    paint(engine, 0, 0.350);
+    nodes.run(round, 350, 800);
+
+    CHECK(nodes.first(0, 0, 0.300) >= 0.350);
+    CHECK(nodes.first(0, 0, 0.300) < 0.350 + kArtNetFrame);
+    // Dark 200 ms after it went dark, and nothing in between but the lit frame it was holding.
+    CHECK(nodes.first(1, 0, 0.300) >= 0.550);
+    CHECK(nodes.first(1, 0, 0.300) < 0.550 + kArtNetFrame);
+    for (const auto& heard : nodes.heard(1)) {
+        if (heard.at >= 0.300 && heard.at < 0.550) {
+            INFO("sent at " << heard.at);
+            CHECK(heard.channel1 == 255);
+        }
+    }
+}
+
+TEST_CASE("a node's history goes round its ring and still sends what was that long ago",
+          "[dmx][artnet]") {
+    // Coverage gap 9. The history is a ring allocated once, 1033 frames kept at most one every
+    // 2 ms, and a universe that changes every round fills it in two to three seconds (a frame is
+    // kept only once 2 ms have passed, so the gaps come out 2 or 3 ms). So this runs a universe
+    // that changes every millisecond for eight, and holds the delayed node, every frame it is
+    // sent, to the level the universe had its delay ago — past six seconds reading frames written
+    // over older ones.
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 1.5});
+    // A level that climbs one step every 4 ms and wraps, never 0.
+    const auto level = [](long ms) { return static_cast<std::uint8_t>((ms / 4) % 250 + 1); };
+    const auto round = [&](double now) {
+        paint(engine, level(std::lround(now * 1000.0)), now);
+        return publisher.publish(engine, now);
+    };
+    nodes.run(round, 0, 8000);
+
+    // Kept at most every 2 ms, so what was that long ago is a frame of up to a few ms before it.
+    const auto wasAt = [&](long ms, std::uint8_t heard) {
+        for (long back = 0; back <= 5; ++back) {
+            if (ms - back >= 0 && level(ms - back) == heard) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::size_t checked = 0;
+    std::size_t afterGoingRound = 0;
+    for (const auto& heard : nodes.heard(1)) {
+        if (heard.at < 1.6) {
+            continue; // the delay's own first second and a half, held on the oldest frame
+        }
+        const long ms = std::lround(heard.at * 1000.0);
+        INFO("sent at " << heard.at << ": " << int{heard.channel1} << ", which was "
+                        << int{level(ms - 1500)} << " 1.5 s before");
+        CHECK(wasAt(ms - 1500, heard.channel1));
+        ++checked;
+        // Sent from a frame kept after 4.5 s, when the ring had gone round at least once.
+        afterGoingRound += heard.at >= 6.0 ? 1U : 0U;
+    }
+    CHECK(checked > 200);
+    // A node is only sent a frame that moved, so a ring that stopped going round — handing back
+    // one old frame from then on — would send it that frame once and then nothing more.
+    CHECK(afterGoingRound > 60);
+    // And the node on time is sent the universe as it is.
+    for (const auto& heard : nodes.heard(0)) {
+        const long ms = std::lround(heard.at * 1000.0);
+        CHECK(wasAt(ms, heard.channel1));
+    }
+}
+
+TEST_CASE("the same node given again keeps its sender, its sequence and its pacing",
+          "[dmx][artnet]") {
+    // Coverage gap 9, and the audit's H12 before it. Every edit of every output hands the
+    // publisher the whole list of nodes again; a node whose id and address are unchanged has to
+    // carry on as it was — its ArtDmx sequence numbers counting on, and its 44 Hz clock — or a
+    // slider dragged on another row sends it frames faster than it takes them.
+    LoopbackReceiver receiver;
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    ArtNetPublisher::TargetConfig node;
+    node.host = "127.0.0.1";
+    node.port = receiver.port();
+    node.id = "o-node";
+    node.bit = 1;
+    REQUIRE(publisher.setTargets({node}).empty());
+    // Byte 12 of an ArtDmx packet is its sequence number.
+    const auto sequence = [&receiver] {
+        const std::string datagram = receiver.receive();
+        REQUIRE(datagram.size() == takt4::dmx::kArtDmxMaxSize);
+        return static_cast<int>(static_cast<std::uint8_t>(datagram[12]));
+    };
+
+    REQUIRE(publisher.publish(engine, 0.0) == 1);
+    CHECK(sequence() == 1);
+    paint(engine, 100, 0.030);
+    REQUIRE(publisher.publish(engine, 0.030) == 1);
+    CHECK(sequence() == 2);
+
+    // The same node again, a row further down the list — as another output being added above it
+    // does — with the same id and the same address.
+    node.bit = 2;
+    REQUIRE(publisher.setTargets({node}).empty());
+    CHECK(publisher.outputOf(0) == 2);
+    paint(engine, 200, 0.031);
+    // A millisecond after its last frame it is inside its 44 Hz window, as it was; a new sender
+    // would have been fed at once.
+    CHECK(publisher.publish(engine, 0.031) == 0);
+    CHECK(publisher.publish(engine, 0.060) == 1);
+    CHECK(sequence() == 3);
+
+    SECTION("another address is another node, fed at once and counting from one") {
+        LoopbackReceiver other;
+        node.port = other.port();
+        REQUIRE(publisher.setTargets({node}).empty());
+        paint(engine, 50, 0.061);
+        CHECK(publisher.publish(engine, 0.061) == 1);
+        const std::string datagram = other.receive();
+        REQUIRE(datagram.size() == takt4::dmx::kArtDmxMaxSize);
+        CHECK(static_cast<std::uint8_t>(datagram[12]) == 1);
     }
 }

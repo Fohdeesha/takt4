@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -167,6 +168,63 @@ TEST_CASE("a bound control reaches the tracker", "[control][midi]") {
     (void)engine->step();
     CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
     CHECK(engine->commandsDropped() == 0);
+}
+
+TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them over",
+          "[control][midi]") {
+    // The audit of 2026-09-25, coverage gap 13: the callback's own path — raw bytes, read as a
+    // gesture or not, then dispatched — which every other test here skips by building the event
+    // itself. RtMidi delivering them needs a MIDI loopback this machine has not got; everything
+    // after that is here.
+    auto engine = makeEngine();
+    MidiControl control(*engine, offline());
+    trackUntilLocked(*engine);
+    REQUIRE(engine->state().locked);
+    MidiBinding halve;
+    halve.number = 40;
+    halve.target = ControlAction::TempoHalve;
+    MidiBinding redouble;
+    redouble.kind = MidiEvent::Kind::ControlChange;
+    redouble.channel = 3;
+    redouble.number = 21;
+    redouble.target = ControlAction::TempoDouble;
+    REQUIRE(control.bind(halve));
+    REQUIRE(control.bind(redouble));
+    const double shown = engine->state().bpm;
+    const auto receive = [&control](std::vector<unsigned char> bytes) {
+        control.receive(std::span<const unsigned char>(bytes.data(), bytes.size()));
+    };
+
+    receive({0x90, 40, 100}); // note on, channel 1
+    CHECK(control.handled() == 1);
+    (void)engine->step();
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
+
+    // The release of that press, both ways a keyboard spells it, and what a controller sends that
+    // is no gesture at all: none of it acts, and none of it is counted as a control ignored.
+    receive({0x80, 40, 0});
+    receive({0x90, 40, 0});
+    receive({0xF8});         // a clock tick
+    receive({0xFE});         // active sensing
+    receive({0xF0, 1, 0xF7}); // system exclusive
+    receive({0x90, 40});     // cut short
+    receive({});
+    CHECK(control.handled() == 1);
+    CHECK(control.ignored() == 0);
+
+    // A CC on channel 3, bound, doubles it back.
+    receive({0xB2, 21, 127});
+    CHECK(control.handled() == 2);
+    (void)engine->step();
+    CHECK_THAT(engine->state().bpm, WithinAbs(shown, 1e-9));
+
+    // The same note on channel 3 is another button, and not one of ours.
+    receive({0x92, 40, 100});
+    CHECK(control.handled() == 2);
+    CHECK(control.ignored() == 1);
+    REQUIRE(control.lastEvent().has_value());
+    CHECK(control.lastEvent()->channel == 3);
+    CHECK(control.lastEvent()->number == 40);
 }
 
 TEST_CASE("a switch bound to the lock pins with its own position", "[control][midi]") {

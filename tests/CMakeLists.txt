@@ -20,6 +20,7 @@ add_executable(takt4_tests
   audio/input_watchdog_test.cpp
   audio/playback_stream_test.cpp
   audio/resampler_test.cpp
+  audio/stream_setup_test.cpp
   control/midi_binding_test.cpp
   control/midi_control_test.cpp
   control/osc_control_test.cpp

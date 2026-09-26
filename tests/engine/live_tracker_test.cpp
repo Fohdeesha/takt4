@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <thread>
 #include <tuple>
+#include <vector>
 
 using takt4::audio::ChannelSelection;
 using takt4::audio::HopLevel;
@@ -218,5 +219,54 @@ TEST_CASE("LiveTracker installs the host time source around a run", "[audio][har
     // A second run forgets the first one's sample clock.
     tracker.start(*device, ChannelSelection::single(0));
     CHECK(clock.resets() == 2);
+    tracker.stop();
+}
+
+TEST_CASE("LiveTracker looks for devices again only while stopped, and opens them after",
+          "[audio][hardware]") {
+    // The audit of 2026-09-25, coverage gap 16. RESCAN makes PortAudio enumerate the machine
+    // again, which renumbers every device — so it is refused while a stream is open, doing
+    // nothing, and afterwards the interface has to be found again and open as it did. That is
+    // `LiveTracker::rescan` and the `PortAudioSession::restart` under it, on the real interface.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    INFO(device->hostApiName << " / " << device->name);
+    const auto hopsWithin = [&tracker](std::chrono::seconds limit) {
+        std::uint64_t levels = 0;
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (levels < 25 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            HopLevel level;
+            while (tracker.popLevel(level)) {
+                ++levels;
+            }
+        }
+        return levels;
+    };
+
+    tracker.start(*device, ChannelSelection::single(0));
+    REQUIRE(tracker.running());
+    const std::size_t listed = tracker.devices().size();
+    CHECK_FALSE(tracker.rescan());
+    CHECK(tracker.running()); // and nothing was done to the stream
+    CHECK(hopsWithin(std::chrono::seconds{10}) >= 25);
+    tracker.stop();
+
+    REQUIRE(tracker.rescan());
+    const std::vector<InputDevice> again = tracker.devices();
+    CHECK(again.size() == listed);
+    std::optional<InputDevice> found;
+    for (const InputDevice& candidate : again) {
+        if (candidate.name == device->name && candidate.hostApi == device->hostApi) {
+            found = candidate;
+        }
+    }
+    REQUIRE(found.has_value());
+    tracker.start(*found, ChannelSelection::single(0));
+    REQUIRE(tracker.running());
+    CHECK(hopsWithin(std::chrono::seconds{10}) >= 25);
     tracker.stop();
 }

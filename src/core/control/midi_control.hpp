@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,6 +113,11 @@ public:
     /// test drives this without hardware, and the seam a UI uses to show what arrived.
     /// True when the event was learned from or matched a binding.
     bool dispatch(const MidiEvent& event);
+    /// What RtMidi's callback does with a message while the port is open: the raw bytes read as
+    /// a gesture (`readMidiEvent`), and dispatched when they are one. Everything but RtMidi's
+    /// own delivery, which needs a MIDI loopback to test — the audit of 2026-09-25, coverage
+    /// gap 13. Never throws.
+    void receive(std::span<const unsigned char> message) noexcept;
 
     /// Messages that matched a binding and were acted on.
     std::uint64_t handled() const noexcept { return handled_.load(std::memory_order_relaxed); }

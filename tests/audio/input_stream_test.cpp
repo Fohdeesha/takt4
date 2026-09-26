@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <tuple>
 #include <vector>
 
+using Catch::Matchers::ContainsSubstring;
 using takt4::audio::ChannelSelection;
 using takt4::audio::HopLevel;
 using takt4::audio::HopMeter;
@@ -126,4 +128,52 @@ TEST_CASE("the input device streams hops end to end", "[audio][hardware]") {
         }
     }
     CHECK(outOfOrder == 0);
+}
+
+TEST_CASE("an ASIO interface is opened at the rate it is running at, and never moved",
+          "[audio][hardware]") {
+    // The audit's C5, and coverage gap 16 of 2026-09-25: the reopen at the interface's own rate
+    // had no test on an interface. The device list is read by a scan at startup; another program
+    // re-clocking the interface afterwards leaves the list's rate stale, and opening at that rate
+    // used to re-clock the interface under Live and the front-of-house mix. The patched ASIO host
+    // refuses instead, and the stream opens again at the rate the interface is running at. A rate
+    // asked for outright is refused, naming the rate it runs at, and never forced.
+    const takt4::audio::PortAudioSession session;
+    const std::optional<InputDevice> device = bestInputDevice(session);
+    if (!device || device->hostApi != takt4::audio::HostApiKind::Asio) {
+        SKIP("no ASIO interface on this machine");
+    }
+    INFO(device->name);
+    HopMeter meter;
+    double clocked = 0.0;
+    {
+        InputStream first(session, *device, ChannelSelection::single(0), meter);
+        clocked = first.reportedSampleRate();
+    }
+    REQUIRE(clocked > 0.0);
+    const double other = clocked == 48000.0 ? 44100.0 : 48000.0;
+    INFO("running at " << clocked << " Hz; the list says " << other);
+
+    InputDevice stale = *device;
+    stale.defaultSampleRate = other;
+    {
+        InputStream second(session, stale, ChannelSelection::single(0), meter);
+        CHECK(second.reportedSampleRate() == clocked);
+        second.start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (second.counters().framesIn < 4800 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        second.stop();
+        CHECK(second.counters().framesIn >= 4800);
+    }
+
+    InputStreamOptions asked;
+    asked.sampleRate = other;
+    CHECK_THROWS_WITH(InputStream(session, *device, ChannelSelection::single(0), meter, asked),
+                      ContainsSubstring("is running at"));
+
+    // And the interface is where it was.
+    InputStream after(session, *device, ChannelSelection::single(0), meter);
+    CHECK(after.reportedSampleRate() == clocked);
 }
