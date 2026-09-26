@@ -508,7 +508,7 @@ void OutputRunner::apply(const OutputCommand& command) {
             transports_.setMidiClockPort(command.port);
             break;
         case OutputCommand::Kind::Rules:
-            triggers_.setRules(command.ruleConfigs);
+            triggers_.setRules(command.ruleConfigs, command.freshRules);
             rulesApplied_ = command.generation;
             resolveRouting();
             break;

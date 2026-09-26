@@ -91,10 +91,13 @@ struct OutputCommand {
         command.enabled = on;
         return command;
     }
-    static OutputCommand rules(std::vector<trigger::Rule::Config> configs) {
+    /// A new set of rules. `fresh` for a set that was loaded rather than edited — nothing of the
+    /// running set carries over to it, whatever ids the two share (`TriggerEngine::setRules`).
+    static OutputCommand rules(std::vector<trigger::Rule::Config> configs, bool fresh = false) {
         OutputCommand command;
         command.kind = Kind::Rules;
         command.ruleConfigs = std::move(configs);
+        command.freshRules = fresh;
         return command;
     }
     static OutputCommand panic(bool on) {
@@ -202,6 +205,7 @@ struct OutputCommand {
     std::vector<OutputTarget> outputTargets;
     std::optional<std::string> port;
     std::vector<trigger::Rule::Config> ruleConfigs;
+    bool freshRules = false;
     std::vector<dmx::Fixture> fixtures;
     std::string ruleId;
     /// `Effect`'s target and instruction. The mask indexes the patch, exactly as a rule's
