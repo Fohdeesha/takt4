@@ -132,14 +132,18 @@ endif()
 if(TARGET takt4_assets)
   add_test(NAME "the console that ships reads the weights built into it"
            COMMAND takt4-cli beats "${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav")
-  add_test(NAME "the console that ships tracks with what is built into it"
-           COMMAND takt4-cli track "${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav"
-                   --decoder particle)
   set_tests_properties(
     "the console that ships reads the weights built into it"
-    "the console that ships tracks with what is built into it"
     PROPERTIES PASS_REGULAR_EXPRESSION "weights electronic \\(built in\\)" LABELS "cli"
                TIMEOUT 300 ENVIRONMENT "TAKT4_NO_ASIO=1;TAKT4_TEST_SANDBOX=1")
+  # A script, which holds the exit code and what was tracked as well as the header — see it.
+  add_test(NAME "the console that ships tracks with what is built into it"
+           COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:takt4-cli>"
+                   "-DWAV=${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav"
+                   -P "${CMAKE_CURRENT_SOURCE_DIR}/cli_track_file.cmake")
+  set_tests_properties(
+    "the console that ships tracks with what is built into it"
+    PROPERTIES LABELS "cli" TIMEOUT 300 ENVIRONMENT "TAKT4_NO_ASIO=1;TAKT4_TEST_SANDBOX=1")
 endif()
 
 # The console's own parsing (the audit's Low list): an empty value was read as 0, so
@@ -179,6 +183,11 @@ set_tests_properties("the console tracks a live input through the application's 
 if(WIN32)
   # GetFileVersionInfoW, for the test that reads the executables' version resources.
   target_link_libraries(takt4_tests PRIVATE version)
+  # UTF-8 as the process code page, as takt4 and takt4-cli have it (src/utf8.manifest): tests
+  # of the code that reads names through the ANSI API have to run as the app runs, and a test
+  # name with a character outside the old code page otherwise matches no filter at all (the
+  # audit of 2026-09-25, B7).
+  target_sources(takt4_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/utf8.manifest")
 endif()
 
 catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
@@ -227,6 +236,10 @@ if(TAKT4_BUILD_UI)
       Catch2::Catch2
       takt4::warnings
   )
+  if(WIN32)
+    # As takt4 has it — see takt4_tests above.
+    target_sources(takt4_ui_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/utf8.manifest")
+  endif()
 
   catch_discover_tests(takt4_ui_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
                        PROPERTIES TIMEOUT ${TAKT4_TEST_TIMEOUT})

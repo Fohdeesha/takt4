@@ -267,7 +267,9 @@ bool MidiControl::dispatch(const MidiEvent& event) {
             event.value < 64) {
             continue;
         }
-        (void)surface_.apply(target, argumentOf(event));
+        if (!surface_.apply(target, argumentOf(event))) {
+            refused_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     handled_.fetch_add(1, std::memory_order_relaxed);
     return true;

@@ -8,6 +8,7 @@
 #include "core/audio/portaudio_session.hpp"
 #include "core/control/osc_receiver.hpp"
 #include "core/dmx/artnet_sender.hpp"
+#include "core/net/resolver.hpp"
 #include "core/output/link_peers.hpp"
 #include "core/output/link_session.hpp"
 #include "core/output/midi_clock.hpp"
@@ -26,6 +27,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -197,4 +199,34 @@ TEST_CASE("the sandbox opens no audio device", "[sandbox][audio]") {
     }
     CHECK(takt4::sandbox::refusals() == before + 1);
     CHECK(takt4::sandbox::lastRefused() == takt4::sandbox::Refused::Audio);
+}
+
+TEST_CASE("the sandbox looks up no name but localhost", "[sandbox][net]") {
+    // A host typed as a name was looked up by the tests that check an unknown one is reported
+    // — a DNS query out of the rig's network card on every run (the audit of 2026-09-25, T4).
+    // It fails here the way an unknown name fails, so those tests still see "cannot resolve".
+    REQUIRE(takt4::sandbox::active());
+    const std::uint64_t before = takt4::sandbox::refusals(takt4::sandbox::Refused::Lookup);
+    takt4::net::AsyncAddress name("no.such.host.takt4.invalid", 9000);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (name.problem().rfind("cannot resolve", 0) != 0 &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(name.problem().rfind("cannot resolve", 0) == 0);
+    CHECK_FALSE(name.address().has_value());
+    CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Lookup) == before + 1);
+
+    // localhost is the system's own answer and asks nobody, so it is let through.
+    takt4::net::AsyncAddress local("LocalHost", 9000);
+    const auto by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!local.address() && std::chrono::steady_clock::now() < by) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(local.address().has_value());
+    CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Lookup) == before + 1);
+
+    // And a literal never needed looking up.
+    takt4::net::AsyncAddress literal("127.0.0.1", 9000);
+    CHECK(literal.address().has_value());
 }

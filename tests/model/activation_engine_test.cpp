@@ -271,18 +271,26 @@ TEST_CASE("a stamp stays on the audio it was made from after hops were dropped",
 
 TEST_CASE("the worker thread produces the same activations as stepping by hand",
           "[model][engine]") {
-    const std::vector<float> signal = syntheticExcerpt();
+    // **And two minutes of digital silence after the music** (the audit of 2026-09-25, T20).
+    // The worker reads denormals as zero, and a quiet passage is where a denormal would turn
+    // up, so the comparison runs through one. Since T20 the hand-stepped path runs in the
+    // worker's floating-point mode too, and the two are compared like for like. Measured on
+    // 2026-09-26 with `step()` left in the caller's mode: they still agree bit for bit here —
+    // this network over this audio makes no denormal that reaches an output — so this guards
+    // a model or a front end that does, and does not show the mode mattering today.
+    std::vector<float> signal = syntheticExcerpt();
+    signal.resize(signal.size() + std::size_t{120} * 50 * kHopSize, 0.0f);
     const std::size_t hops = signal.size() / kHopSize;
 
     const std::unique_ptr<ActivationEngine> stepped = makeEngine();
     std::vector<FrameActivation> byHand;
+    FrameActivation activation;
     for (std::size_t h = 0; h < hops; ++h) {
         stepped->processHop(signal.data() + h * kHopSize, h);
         (void)stepped->step();
-    }
-    FrameActivation activation;
-    while (stepped->pop(activation)) {
-        byHand.push_back(activation);
+        while (stepped->pop(activation)) { // as it goes: two minutes is more than the ring holds
+            byHand.push_back(activation);
+        }
     }
     REQUIRE(byHand.size() == hops - 1);
 
@@ -386,7 +394,10 @@ TEST_CASE("start() clears the queues and the model's memory of the last stream",
     }
 }
 
-TEST_CASE("a reader that never reads loses activations instead of blocking", "[model][engine]") {
+TEST_CASE("an audio thread that outruns the worker loses hops instead of blocking",
+          "[model][engine]") {
+    // What this was called — "a reader that never reads loses activations" — is the other
+    // queue, and is the test below (the audit of 2026-09-25, T13).
     const std::vector<float> signal = syntheticExcerpt();
     const std::unique_ptr<ActivationEngine> engine = makeEngine();
     const std::size_t hops =
@@ -400,6 +411,33 @@ TEST_CASE("a reader that never reads loses activations instead of blocking", "[m
     // One more than the queue holds: the audio thread carries on and counts the loss.
     engine->processHop(signal.data(), hops);
     CHECK(engine->hopsDropped() == 1);
+}
+
+TEST_CASE("a reader that never reads loses activations instead of blocking", "[model][engine]") {
+    // The activation ring, which the tracker drains: past its 512 the worker goes on working
+    // hops and counts each activation it had nowhere to put.
+    const std::vector<float> signal = syntheticExcerpt();
+    const std::unique_ptr<ActivationEngine> engine = makeEngine();
+    const std::size_t perPass = signal.size() / kHopSize;
+    const std::size_t total = ActivationEngine::kActivationQueueCapacity + 40;
+    for (std::size_t h = 0; h < total; ++h) {
+        engine->processHop(signal.data() + (h % perPass) * kHopSize, h);
+        REQUIRE(engine->step());
+    }
+    CHECK(engine->hopsDropped() == 0);
+    // A hop behind, so `total - 1` activations were made for a ring of 512: the ring's worth
+    // went in, and the rest are counted as lost.
+    CHECK(engine->framesEmitted() == ActivationEngine::kActivationQueueCapacity);
+    CHECK(engine->framesDropped() == total - 1 - ActivationEngine::kActivationQueueCapacity);
+
+    // And what is in the ring is the first 512, in order — the loss is at the end, not a gap.
+    FrameActivation activation;
+    std::uint64_t expected = 0;
+    while (engine->pop(activation)) {
+        CHECK(activation.frameIndex == expected);
+        ++expected;
+    }
+    CHECK(expected == ActivationEngine::kActivationQueueCapacity);
 }
 
 TEST_CASE("ActivationEngine::processHop() does not touch the heap", "[model][engine][rt]") {

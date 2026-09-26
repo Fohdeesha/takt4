@@ -19,7 +19,7 @@ std::array<std::atomic<std::uint16_t>, kMaxPorts> ports{};
 std::atomic<std::size_t> portCount{0};
 
 std::atomic<std::uint64_t> refusedCount{0};
-std::array<std::atomic<std::uint64_t>, 6> refusedByKind{};
+std::array<std::atomic<std::uint64_t>, 7> refusedByKind{};
 std::atomic<Refused> refusedLast{Refused::Nothing};
 std::atomic<std::uint16_t> refusedPort{0};
 

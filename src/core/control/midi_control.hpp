@@ -119,6 +119,11 @@ public:
     /// wrong channel looks exactly like a broken one until somebody can see that its
     /// messages are arriving.
     std::uint64_t ignored() const noexcept { return ignored_.load(std::memory_order_relaxed); }
+    /// Bound messages whose action could not be done — a panic or a rule action with no rules
+    /// wired to it. Counted apart from `handled`, which says the message was ours, because
+    /// "your panic button is not connected" is a different fault from "nothing arrived", and it
+    /// went uncounted anywhere (the audit of 2026-09-25, T13).
+    std::uint64_t refused() const noexcept { return refused_.load(std::memory_order_relaxed); }
 
     /// The last note or CC seen, whether or not it was bound. For a UI, and for an
     /// operator working out which channel their controller is on.
@@ -136,6 +141,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> handled_{0};
     std::atomic<std::uint64_t> ignored_{0};
+    std::atomic<std::uint64_t> refused_{0};
 
     mutable std::mutex mutex_;
     std::vector<MidiBinding> bindings_;

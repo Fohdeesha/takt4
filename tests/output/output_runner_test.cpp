@@ -127,6 +127,19 @@ std::uint64_t waitForFires(const OutputRunner& runner, std::uint64_t fires) {
     return firesOf(runner);
 }
 
+/// Waits until the output thread has made `count` more whole rounds from now — each of which
+/// reads what the engine has published — rather than for a length of time, which is a guess
+/// about how busy the machine is (the audit of 2026-09-25, T17). The first round counted may
+/// be one already under way, so the round after it is the first known to start afterwards.
+void waitForRounds(const OutputRunner& runner, std::uint64_t count) {
+    const std::uint64_t target = runner.rounds() + count + 1;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < until && runner.rounds() < target) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    REQUIRE(runner.rounds() >= target);
+}
+
 } // namespace
 
 TEST_CASE("the output thread drains every beat the tracker called", "[output]") {
@@ -651,22 +664,27 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     REQUIRE(pressed);
     REQUIRE(engine->state().barsDeclared == 1);
     waitForBeats(runner, kExpectedBeats);
+    // **Never `firesOf` under `mutex`** (the audit of 2026-09-25, T14): the observer takes
+    // `mutex` inside the runner's own lock, and `firesOf` takes the runner's lock — so holding
+    // this one while asking was the other order, and a beat arriving between them hung the test.
+    const auto published = [&mutex, &publishedDownbeats] {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return publishedDownbeats;
+    };
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     while (std::chrono::steady_clock::now() < until) {
-        {
-            const std::lock_guard<std::mutex> lock(mutex);
-            if (firesOf(runner) >= publishedDownbeats + 1) {
-                break;
-            }
+        const std::uint64_t fires = firesOf(runner);
+        if (fires >= published() + 1) {
+            break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     runner.stop();
 
-    const std::lock_guard<std::mutex> lock(mutex);
-    INFO(publishedDownbeats << " downbeats published");
+    const std::uint64_t downbeats = published();
+    INFO(downbeats << " downbeats published");
     // Every downbeat that went out, and the one the press declared.
-    CHECK(runner.triggers().rule(0).fires() == publishedDownbeats + 1);
+    CHECK(runner.triggers().rule(0).fires() == downbeats + 1);
 }
 
 TEST_CASE("starting the tracker again does not fire the onset rules", "[output][trigger]") {
@@ -685,7 +703,7 @@ TEST_CASE("starting the tracker again does not fire the onset rules", "[output][
     feedExcerpt(*engine);
     REQUIRE(engine->intensity().onsets > 0);
     waitForFires(runner, 1);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200}); // every onset seen
+    waitForRounds(runner, 3); // every onset seen
     const std::uint64_t fired = firesOf(runner);
     REQUIRE(fired >= 1);
 
@@ -693,7 +711,7 @@ TEST_CASE("starting the tracker again does not fire the onset rules", "[output][
     engine->start();
     engine->stop();
     REQUIRE(engine->intensity().onsets == 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200}); // a couple of hundred rounds
+    waitForRounds(runner, 20); // the zeroed count read, and read again
     runner.stop();
     CHECK(runner.triggers().rule(0).fires() == fired);
 }

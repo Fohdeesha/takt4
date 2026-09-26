@@ -696,6 +696,27 @@ TEST_CASE("a pinned lock goes on refining the tempo from the beats", "[tracking]
     CHECK(tracker.state().bpm == Approx(kTrue).margin(1.0));
     // Which is to say it is still the refined number and not the cloud's own, 2.4 BPM out.
     CHECK(tracker.state().bpm != Approx(bpmOf(23)));
+
+    // **And it goes on moving with the beats**, which the two checks above cannot tell from a
+    // refinement frozen at the moment of the pin: the record drifts a BPM slower while pinned,
+    // and the number follows it (the audit of 2026-09-25, T13). Thirty beats, so the window of
+    // gaps is all the new tempo's.
+    const double before = tracker.state().bpm;
+    constexpr double kDrifted = 127.0;
+    const double drifted = 60.0 / (kDrifted * kFramePeriod);
+    const double start = static_cast<double>(at);
+    for (int beat = 1; beat <= 30; ++beat) {
+        const auto on = static_cast<std::uint64_t>(start + static_cast<double>(beat) * drifted + 0.5);
+        while (at < on) {
+            (void)tracker.process(frameAt(at++, 23, 0.9));
+        }
+        TrackedFrame frame = frameAt(at++, 23, 0.9);
+        frame.emitted = TrackedFrame::Emitted::Beat;
+        (void)tracker.process(frame);
+    }
+    CHECK(tracker.state().refined);
+    CHECK(tracker.state().bpm == Approx(kDrifted).margin(0.3));
+    CHECK(tracker.state().bpm < before - 0.5);
 }
 
 TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][tempo]") {
@@ -1074,10 +1095,13 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
 
     SECTION("a missed beat is thrown out rather than halving the tempo") {
         // Skip one beat: the gap doubles, and a mean over the gaps would drag the tempo
-        // down by an eighth. Long enough to flush `refineOverBeats` of them, so what is
-        // being asserted is the outlier rejection rather than the length of the window.
+        // down to 125. **Twenty-eight beats, and it is the count that makes this a test**
+        // (the audit of 2026-09-25, T8): the window holds `refineOverBeats` gaps, 24, so it
+        // takes 25 beats to push out the older run's gaps and the 200-frame one, and past 30
+        // the doubled gap — the sixth — has left it too. It was forty, so the tempo came out
+        // the same with the rejection taken away.
         std::uint64_t at = next + 200;
-        for (int beat = 0; beat < 40; ++beat) {
+        for (int beat = 0; beat < 28; ++beat) {
             TrackedFrame frame = frameAt(at, 23, 0.9);
             frame.refinedIntervalFrames = 23.0;
             frame.emitted = TrackedFrame::Emitted::Beat;

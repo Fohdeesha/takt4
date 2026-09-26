@@ -78,6 +78,7 @@ struct TestProcess {
 #else
                 set("TAKT4_SETTINGS_DIR", folder.string());
 #endif
+                folder_ = folder;
             }
         }
         // **No file dialogs.** A window test drives real clicks, and one that lands on EXPORT or
@@ -100,6 +101,25 @@ struct TestProcess {
 #endif
 #endif
     }
+
+    // **And that folder goes with the process** (the audit of 2026-09-25, T4): one was left in the
+    // temp directory by every run of every test binary. Only the one made above — a folder named
+    // by this process's id, under "takt4-tests" — and never one handed in from outside, which
+    // could be anybody's.
+    ~TestProcess() {
+        if (folder_.empty()) {
+            return;
+        }
+        std::error_code code;
+        std::filesystem::remove_all(folder_, code);
+        std::filesystem::remove(folder_.parent_path(), code); // only if no other run is using it
+    }
+
+    TestProcess(const TestProcess&) = delete;
+    TestProcess& operator=(const TestProcess&) = delete;
+
+private:
+    std::filesystem::path folder_;
 };
 
 const TestProcess testProcess;

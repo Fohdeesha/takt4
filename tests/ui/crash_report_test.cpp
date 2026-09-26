@@ -157,11 +157,19 @@ DWORD runChild(const std::filesystem::path& dir, const std::string& how, bool no
     // and with the newer toolchain on the CI runners it went nowhere at all (2026-09-23) —
     // the test found neither a report nor a dump. A file of its own in the test's folder
     // leaves nothing to chance.
-    char previousAsan[4096] = {};
-    const DWORD hadAsan = GetEnvironmentVariableA("ASAN_OPTIONS", previousAsan, sizeof previousAsan);
-    // Quoted: ASAN_OPTIONS separates its options with ':', which a drive letter has one of.
+    const DWORD asanLength = GetEnvironmentVariableA("ASAN_OPTIONS", nullptr, 0);
+    const bool hadOptions = asanLength > 1;
+    std::string previousAsan(hadOptions ? asanLength : 0, '\0');
+    if (hadOptions) {
+        previousAsan.resize(
+            GetEnvironmentVariableA("ASAN_OPTIONS", previousAsan.data(), asanLength));
+    }
+    // Quoted: ASAN_OPTIONS separates its options with ':', which a drive letter has one of. And
+    // added to whatever the run already set rather than put in its place, so the child runs
+    // with the same checks as the test that started it (the audit of 2026-09-25, B1).
     const std::string asanLog = "log_path='" + (dir / "asan").string() + "'";
-    REQUIRE(SetEnvironmentVariableA("ASAN_OPTIONS", asanLog.c_str()) != 0);
+    const std::string options = hadOptions ? previousAsan + ":" + asanLog : asanLog;
+    REQUIRE(SetEnvironmentVariableA("ASAN_OPTIONS", options.c_str()) != 0);
 #endif
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -172,7 +180,7 @@ DWORD runChild(const std::filesystem::path& dir, const std::string& how, bool no
     SetEnvironmentVariableA(kHowVariable, nullptr);
     SetEnvironmentVariableA(kNoticeVariable, nullptr);
 #if defined(__SANITIZE_ADDRESS__)
-    SetEnvironmentVariableA("ASAN_OPTIONS", hadAsan > 0 ? previousAsan : nullptr);
+    SetEnvironmentVariableA("ASAN_OPTIONS", hadOptions ? previousAsan.c_str() : nullptr);
 #endif
     REQUIRE(started != 0);
     if (pid != nullptr) {

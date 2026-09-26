@@ -182,6 +182,13 @@ std::filesystem::path userSettingsDirectory();
 /// write.** Created on the first save if it is not there.
 std::filesystem::path settingsFile();
 
+/// Where takt4 writes a text it hands to another program to show — the About box's licence and
+/// notices: `%TEMP%\takt4` (the temp directory's "takt4" elsewhere), or empty if there is no
+/// temp directory. **In a process given `TAKT4_SETTINGS_DIR`, a folder inside that one**: a test
+/// process's texts went to the same `%TEMP%\takt4` the real takt4 uses, over whatever it had
+/// open (the audit of 2026-09-25, T4).
+std::filesystem::path scratchDirectory();
+
 /// **Where to read.** `settingsFile()` when that exists; otherwise the file under
 /// `userSettingsDirectory()` if a build before this one left one there, so a rig keeps its
 /// outputs, its device and its MIDI bindings across the move; otherwise `settingsFile()`

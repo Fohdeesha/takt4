@@ -2,7 +2,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <thread>
 
 #if defined(_WIN32)
@@ -51,7 +53,17 @@ TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]"
                 raised = scope.raised();
                 multimedia = scope.multimedia();
 #if defined(_WIN32)
+                // **The highest reading over a moment, not one reading.** MMCSS takes a
+                // registered thread down for its share of each period when the machine is busy
+                // — that is how it keeps time back for everything else — and a single reading
+                // can land there: this read -7 once in a ctest run of four at a time under
+                // AddressSanitizer (2026-09-26), and 15 on thirty runs alone.
                 during = ::GetThreadPriority(::GetCurrentThread());
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+                while (during <= before && std::chrono::steady_clock::now() < until) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    during = (std::max)(during, ::GetThreadPriority(::GetCurrentThread()));
+                }
 #endif
             }
 #if defined(_WIN32)

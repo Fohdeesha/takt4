@@ -380,7 +380,14 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         Recorder many;
         TriggerEngine overlapping(many);
         config.followUps[0].delaySeconds = 1.2; // longer than the gap between beats
-        config.segments = {fixedAt(1), fixedAt(1)};
+        // Each press to a different clip, so the releases can be told apart. They were all to
+        // the same address, and the check below them could not see an order at all (the audit
+        // of 2026-09-25, T13).
+        Generator::Config clips;
+        clips.kind = GeneratorKind::Cycle;
+        clips.pool = takt4::trigger::Pool::List;
+        clips.values = {Value::ofInt(3), Value::ofInt(7), Value::ofInt(1), Value::ofInt(12)};
+        config.segments = {fixedAt(1), clips};
         engine.setRules({config});
         overlapping.setRules({config});
         for (int i = 0; i < 4; ++i) {
@@ -390,10 +397,19 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         Context late = beatAt(1, 1, 1, 100.0);
         overlapping.advance(late);
         CHECK(overlapping.pending() == 0);
-        CHECK(many.sent.size() == 8);
+        REQUIRE(many.sent.size() == 8);
         // Four presses, then four releases: each release waited out a delay longer than the
         // gap between the presses.
         CHECK(many.arguments() == std::vector<std::int32_t>{1, 1, 1, 1, 0, 0, 0, 0});
+        // And the releases in the presses' order, each to the clip its own press opened.
+        const std::vector<std::string> sent = many.addresses();
+        const std::vector<std::string> presses(sent.begin(), sent.begin() + 4);
+        const std::vector<std::string> releases(sent.begin() + 4, sent.end());
+        CHECK(presses == std::vector<std::string>{"/composition/layers/1/clips/3/connect",
+                                                  "/composition/layers/1/clips/7/connect",
+                                                  "/composition/layers/1/clips/1/connect",
+                                                  "/composition/layers/1/clips/12/connect"});
+        CHECK(releases == presses);
     }
 }
 

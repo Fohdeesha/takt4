@@ -456,25 +456,24 @@ TEST_CASE("the control thread acts on what arrives and counts what it cannot", "
 TEST_CASE("a control that was never enabled never opens a socket", "[control]") {
     // Off unless asked for: a listening socket is not something to open on somebody's
     // behalf, and two takt4s on one machine must not fight over a port neither wanted.
+    //
+    // Asked of the control itself: whether it is listening, and on what. This used to bind a
+    // port, let it go, and bind it again to show it was still free — and a port let go is one
+    // any program on the rig may take in between, whose loopback datagrams a second bind would
+    // then take from it (the audit of 2026-09-25, T4).
     auto engine = makeEngine();
-    // A port we know is free, because we are holding it and letting it go.
-    std::uint16_t free = 0;
-    {
-        const OscReceiver probe(kAnyPort, /*localOnly=*/true);
-        free = probe.port();
-    }
     OscControl::Config config;
     config.enabled = false;
-    config.port = free;
+    config.port = 0; // any: were it to open, it would say which
     OscControl control(*engine, config);
 
     control.start();
     CHECK_FALSE(control.running());
-    // Which is to say the port is still free.
-    CHECK_NOTHROW(OscReceiver(free, /*localOnly=*/true));
+    CHECK(control.port() == 0); // nothing listening
 
     control.stop();
     CHECK_FALSE(control.running());
+    CHECK(control.port() == 0);
 }
 
 TEST_CASE("a control is safe to stop twice, and to never start", "[control]") {

@@ -78,41 +78,44 @@ int indexOf(Trigger which) {
 
 } // namespace
 
-TEST_CASE("Phase 6's exit criterion, built by clicking", "[ui][trigger]") {
+TEST_CASE("Phase 6's exit criterion, built through the window's callbacks", "[ui][trigger]") {
     // §8: "A rule that fires a non-repeating random clip on every fourth downbeat can be
     // built entirely by clicking, in under a minute, by someone who has not read the docs."
     //
-    // Every step below is a window callback and nothing else — no `Rule::Config` is
-    // assembled by hand. What it produces is then checked against what §5.6 and §5.8 say
-    // that rule has to be.
+    // Every step below is a window callback — what a click on that control calls — and nothing
+    // else: no `Rule::Config` is assembled by hand. It used to say so and call the controller's
+    // own methods, and was named "built by clicking" (the audit of 2026-09-25, T13); the clicks
+    // themselves are the gesture tests further down. What it produces is then checked against
+    // what §5.6 and §5.8 say that rule has to be.
     Rig rig;
     RulesController editor(rig.runner, {});
+    auto& window = editor.window();
     REQUIRE(editor.rules().empty());
 
     // 1. A rule.
-    editor.add();
+    window.invoke_rule_added();
     REQUIRE(editor.rules().size() == 1);
     CHECK(editor.selected() == 0);
-    editor.rename("Random clip on downbeat");
+    window.invoke_rule_renamed("Random clip on downbeat");
 
     // 2. Every fourth bar.
-    editor.pickTrigger(indexOf(Trigger::Bar));
-    editor.setEvery(4);
+    window.invoke_trigger_picked(indexOf(Trigger::Bar));
+    window.invoke_every_changed(4);
 
     // 3. Resolume's clip address, from §5.6's own preset rather than typed.
-    editor.pickHostPreset(1);
+    window.invoke_host_preset_picked(1);
 
     // 4. The layer, which for Resolume is one number and not a sequence. A preset fills
     //    the address and leaves both chips on §5.8's default, so this is the operator
     //    saying "this one does not vary".
     const int fixedKind = 4;
     REQUIRE(takt4::trigger::kGeneratorKinds[fixedKind] == GeneratorKind::Fixed);
-    editor.pickSlotKind(0, fixedKind);
-    editor.setSlotFixed(0, "3");
+    window.invoke_slot_kind_picked(0, fixedKind);
+    window.invoke_slot_fixed_edited(0, "3");
 
     // 5. The clips, as a sequence the operator picked. Typing a list is itself the
     //    instruction to draw from one.
-    editor.setSlotValues(1, "3, 7, 1, 12");
+    window.invoke_slot_values_edited(1, "3, 7, 1, 12");
 
     // 6. And on — which it already is. A new rule arrives armed now: it is invalid until it
     //    has an address, so it cannot fire while it is half-built whatever this says, and
@@ -120,7 +123,7 @@ TEST_CASE("Phase 6's exit criterion, built by clicking", "[ui][trigger]") {
     //    thing an operator could not see the reason for. Left as an explicit step because it
     //    is still the last question §5.9's editor asks.
     CHECK(editor.rules().front().enabled);
-    editor.setEnabled(true);
+    window.invoke_rule_enabled_changed(true);
 
     const Rule::Config& built = editor.rules().front();
     CHECK(built.name == "Random clip on downbeat");
@@ -1714,10 +1717,14 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     // on every keystroke.
     CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.0));
 
-    // Tab away, which is finishing rather than cancelling.
-    const slint::SharedString tab(std::string(1, '\t'));
-    window.window().dispatch_key_press_event(tab);
-    window.window().dispatch_key_release_event(tab);
+    // A click away — on the WHEN heading, which is nothing but the window behind it — which is
+    // finishing rather than cancelling. It pressed Tab, under a name that says a click (the
+    // audit of 2026-09-25, T13); a click on nothing is the case `FocusSink` exists for.
+    const slint::LogicalPosition heading({250.0f, 84.0f});
+    window.window().dispatch_pointer_move_event(heading);
+    window.window().dispatch_pointer_press_event(heading, slint::PointerEventButton::Left);
+    window.window().dispatch_pointer_release_event(heading, slint::PointerEventButton::Left);
+    slint::platform::update_timers_and_animations(); // the box's commit runs a loop late
 
     INFO("box held \"" << typed << "\"");
     CHECK(editor.rules().front().conditions.cooldownSeconds > 0.0);
@@ -2051,7 +2058,20 @@ TEST_CASE("a rule is only offered the outputs its kind can reach", "[ui][trigger
     node.kind = takt4::output::OutputTarget::Kind::ArtNet;
     node.host = "192.168.1.33";
     node.port = 6454;
-    editor.setTargets({wall, desk, node});
+    // And the two kinds every rig has had since the outputs became one list: Link, first, and a
+    // MIDI clock. Neither takes a rule's message — Link carries the timeline and the clock the
+    // clock — and this filter had never been shown either (the audit of 2026-09-25, T12; the test
+    // that looked at them tested a function nothing called).
+    takt4::output::OutputTarget link;
+    link.id = "o-000000dd";
+    link.name = "Link";
+    link.kind = takt4::output::OutputTarget::Kind::Link;
+    takt4::output::OutputTarget clock;
+    clock.id = "o-000000ee";
+    clock.name = "tempo clock";
+    clock.kind = takt4::output::OutputTarget::Kind::MidiClock;
+    clock.device = "Some MIDI Out";
+    editor.setTargets({link, wall, desk, node, clock});
     editor.add();
     editor.tick();
 
@@ -2066,7 +2086,13 @@ TEST_CASE("a rule is only offered the outputs its kind can reach", "[ui][trigger
 
     // A fresh rule sends OSC.
     CHECK(names() == std::vector<std::string>{"wall"});
-    CHECK(std::string(editor.window().get_outputs_available()).find("RDM10") == std::string::npos);
+    {
+        const std::string line(editor.window().get_outputs_available());
+        INFO(line);
+        CHECK(line.find("RDM10") == std::string::npos);
+        CHECK(line.find("Link") == std::string::npos);
+        CHECK(line.find("tempo clock") == std::string::npos);
+    }
 
     SECTION("a MIDI rule is offered the MIDI port and nothing else") {
         const auto midi =
@@ -2075,10 +2101,12 @@ TEST_CASE("a rule is only offered the outputs its kind can reach", "[ui][trigger
             takt4::trigger::kMessageKinds.begin();
         editor.pickSend(static_cast<int>(midi));
         editor.tick();
+        // Not the clock, which is a MIDI device as well — it sends the clock and nothing else.
         CHECK(names() == std::vector<std::string>{"desk"});
         const std::string line(editor.window().get_outputs_available());
         INFO(line);
         CHECK(line.find("RDM10") == std::string::npos);
+        CHECK(line.find("tempo clock") == std::string::npos);
         CHECK(line.find("desk") != std::string::npos);
     }
 
@@ -3102,10 +3130,14 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     };
     // A rule with one slot, built afresh before every probe: a probe that misses lands on
     // whatever is underneath it.
+    // A shuffle over 1-8, so a fire's readout moves: the gesture below fires the rule while
+    // the list is open.
     const auto build = [&] {
         editor.setRules({});
         editor.add();
         editor.setAddress("/fire/{what}");
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+        editor.setSlotRange(0, "1 - 8");
         editor.tick();
         settle();
     };
@@ -3160,14 +3192,36 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     }
 
     // Then the gesture: opened, left open through ten redraws, and that same entry clicked.
+    //
+    // **With the rule firing through them**, as it does on every beat while an operator edits
+    // it: each fire writes the slot's "last produced" readout into the very row whose list is
+    // open. Ten redraws with nothing moving could not have seen a rebuild, since nothing was
+    // stale (the audit of 2026-09-25, T13) — a readout counted as a change that needs a new
+    // element would take the list away on the first fire, and pass that test.
+    // Every probe above ended with Escape, which in this window is PANIC; a rule fires nothing
+    // while it is engaged.
+    editor.releasePanic();
     build();
+    const auto slots = window.get_slots();
+    const auto watch = std::make_shared<ModelWatch>();
+    slots->attach_peer(watch);
+    std::set<std::string> readouts;
     click(comboX, comboY);
     for (int redraw = 0; redraw < 10; ++redraw) {
+        editor.test();
         editor.tick();
         settle();
+        readouts.insert(std::string(slots->row_data(0)->last));
     }
     click(comboX, entryY);
     INFO("dropdown at " << comboX << ", " << comboY << "; entry at " << entryY);
+    std::string said;
+    for (const std::string& readout : readouts) {
+        said += "[" + readout + "]";
+    }
+    INFO("the slot's readout said " << said);
+    CHECK(readouts.size() > 1); // the row really was changing under the list
+    CHECK(watch->changes > 0);
     CHECK(kind() == picked);
 }
 

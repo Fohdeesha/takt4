@@ -4,6 +4,7 @@
 #include "core/engine/control.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
+#include "core/settings/settings.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tap_tempo.hpp"
@@ -11,15 +12,20 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -433,6 +439,8 @@ TEST_CASE("a consumer that never drains loses frames instead of blocking", "[eng
         (void)engine->step();
     }
     CHECK(engine->framesDropped() == 0);
+    const std::uint64_t beatsBefore = engine->state().beats;
+    REQUIRE(beatsBefore > 0);
 
     // Round again without draining and the ring fills. The engine must keep tracking —
     // §7.5's rule is that a slow consumer loses data, never that it stalls the producer.
@@ -442,8 +450,47 @@ TEST_CASE("a consumer that never drains loses frames instead of blocking", "[eng
     }
     CHECK(engine->framesDropped() > 0);
     CHECK(engine->framesTracked() == BeatEngine::kFrameQueueCapacity);
-    // ...and the published state is still current, because it is not on the ring.
-    CHECK(engine->state().beats > 0);
+    // ...and the published state is still current, because it is not on the ring: it went on
+    // counting beats through the second pass. `> 0` was true before the ring had filled, so it
+    // could not have seen a state that stopped with the ring (the audit of 2026-09-25, T13).
+    CHECK(engine->state().beats > beatsBefore + 10);
+}
+
+TEST_CASE("an output thread that never drains loses beats instead of blocking", "[engine]") {
+    // The beat ring's own overflow, which nothing drove (the audit of 2026-09-25, T13): the
+    // frame ring above fills long before this one, so a test of that one says nothing here.
+    // Frames are drained as they come — only the beats are left — and the excerpt is played
+    // over until more beats have been called than the ring holds.
+    const std::vector<float> signal = excerpt("winter-now.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
+    EngineFrame frame;
+    std::uint64_t hop = 0;
+    for (int pass = 0; pass < 40 && engine->beatsCalled() <= BeatEngine::kBeatQueueCapacity + 8;
+         ++pass) {
+        for (std::size_t h = 0; h < hops; ++h) {
+            engine->processHop(signal.data() + h * kHopSize, hop++);
+            (void)engine->step();
+            while (engine->popFrame(frame)) {
+            }
+        }
+    }
+    REQUIRE(engine->beatsCalled() > BeatEngine::kBeatQueueCapacity);
+    CHECK(engine->framesDropped() == 0);
+    CHECK(engine->beatsDropped() == engine->beatsCalled() - BeatEngine::kBeatQueueCapacity);
+    // And the engine went on calling them: the state is past the ring's worth.
+    CHECK(engine->state().beats > BeatEngine::kBeatQueueCapacity);
+
+    // What is left in the ring is the first 256, in order: the loss is the newest.
+    EngineBeat beat;
+    std::size_t held = 0;
+    double last = -1.0;
+    while (engine->popBeat(beat)) {
+        CHECK(beat.event.time > last);
+        last = beat.event.time;
+        ++held;
+    }
+    CHECK(held == BeatEngine::kBeatQueueCapacity);
 }
 
 TEST_CASE("a command posted while stopped applies to the run that follows", "[engine]") {
@@ -1080,4 +1127,159 @@ TEST_CASE("a beat's host time is the beat's own, not the frame it was called on"
     // And the case was worth testing: most beats are not on the frame that called them — a
     // frame back or more under the default emission, which is the lateness the stamp had.
     CHECK(offFrame > beats.size() / 2);
+}
+
+namespace {
+
+/// The engine exactly as takt4 builds it on a fresh install (`ui::run`): the weights that ship,
+/// the default state space, and the saved preset's tempo options, decoder and meters at their
+/// defaults.
+std::unique_ptr<BeatEngine> makeShippedEngine() {
+    static const ModelWeights electronic = ModelWeights::fromFile(kWeightsDir / "electronic.bin");
+    const takt4::settings::Settings fresh;
+    BeatEngine::Options options;
+    options.tempo = fresh.preset.tempo;
+    options.decoder = fresh.preset.decoder;
+    options.forward.meters = fresh.preset.meters;
+    return std::make_unique<BeatEngine>(electronic, stateSpace(), options);
+}
+
+/// One excerpt through it, a hop at a time, every frame and beat drained as it comes.
+std::vector<EngineBeat> trackShipped(BeatEngine& engine, const std::vector<float>& signal) {
+    std::vector<EngineBeat> beats;
+    EngineFrame frame;
+    EngineBeat beat;
+    for (std::size_t h = 0; h < signal.size() / kHopSize; ++h) {
+        engine.processHop(signal.data() + h * kHopSize, h);
+        (void)engine.step();
+        while (engine.popFrame(frame)) {
+        }
+        while (engine.popBeat(beat)) {
+            beats.push_back(beat);
+        }
+    }
+    return beats;
+}
+
+} // namespace
+
+TEST_CASE("the configuration that ships tracks real music at the tempo it is played",
+          "[engine][shipped]") {
+    // The audit of 2026-09-25, T18: every tracking, engine, output and UI test loaded the generic
+    // weights, and nothing in ctest ran the electronic weights, the forward filter and a fresh
+    // install's settings together — the one configuration anybody uses. A change that moved
+    // beats on real music passed ctest and was left to the manual gates.
+    //
+    // The reference is Beat This!'s median beat gap over each excerpt's last five seconds
+    // (tests/data/tracking/refeval/ref_beatthis, the excerpt's offset from its sidecar); madmom's
+    // agrees on each of these to the frame it is quantised to. They are the excerpts the shipped
+    // configuration got right on 2026-09-26 — measured with the tempo window off, as a fresh
+    // install has it, which is not `takt4-cli`'s default — and a reference quantised to 20 ms is
+    // two per cent coarse at these tempos, so that is the tolerance.
+    //
+    // The synthetic drum machine is 128.4 exactly, and is played three times over: with the
+    // window off the shipped chain locks on it only at 11.6 s, and ten seconds ended hunting.
+    struct Excerpt {
+        const char* name;
+        double reference;
+        int plays;
+    };
+    const Excerpt piece = GENERATE(values<Excerpt>({{"good-times.wav", 133.33, 1},
+                                                      {"in-yer-face.wav", 125.00, 1},
+                                                      {"pirates.wav", 136.36, 1},
+                                                      {"the-galaxist.wav", 136.36, 1},
+                                                      {"your-sweet-boom.wav", 107.14, 1},
+                                                      {"synthetic.wav", 128.40, 3}}));
+    INFO(piece.name);
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    REQUIRE(engine->decoderKind() == takt4::tracking::Decoder::Forward);
+    const std::vector<float> once = excerpt(piece.name);
+    std::vector<float> signal;
+    for (int play = 0; play < piece.plays; ++play) {
+        signal.insert(signal.end(), once.begin(), once.end());
+    }
+    const std::vector<EngineBeat> beats = trackShipped(*engine, signal);
+
+    const takt4::tracking::TempoState state = engine->state();
+    INFO("ended at " << state.bpm << " BPM, " << (state.locked ? "locked" : "hunting") << ", "
+                     << state.beatsPerBar << "/4, " << beats.size() << " beats");
+    CHECK(state.locked);
+    CHECK(state.beatsPerBar == 4);
+    CHECK(state.bpm == Approx(piece.reference).epsilon(0.025));
+    // Ten seconds at these tempos is eighteen to twenty-three beats; a chain that locked on a
+    // number and called none would still have passed the lines above.
+    CHECK(beats.size() >= 15);
+}
+
+TEST_CASE("the configuration that ships calls the beats it called when this was written",
+          "[engine][shipped]") {
+    // **A change detector, and labelled as one** (the audit of 2026-09-25, T18). The forward
+    // filter has no independent reference the way the particle filter has pf_reference.py:
+    // tools/refeval/decoders.py would have to learn peak emission, coasting and the meter margin
+    // first. Until then this holds the shipped chain to its own output of 2026-09-26, so a change
+    // that moves beats on real music is at least *seen* in ctest. A deliberate change regenerates
+    // the file: run this with TAKT4_WRITE_GOLDENS=1 and commit what it writes, saying why.
+    //
+    // Loose on purpose, for the compilers CI builds with: each beat within two decoder frames
+    // (20 ms) of where it was, the same downbeats, and one beat more or fewer at most.
+    const char* const name = GENERATE("pirates", "in-yer-face");
+    INFO(name);
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    const std::vector<EngineBeat> beats = trackShipped(*engine, excerpt((std::string(name) + ".wav").c_str()));
+    REQUIRE_FALSE(beats.empty());
+
+    const std::filesystem::path golden =
+        kTestData / "tracking" / "shipped" / (std::string(name) + ".txt");
+#if defined(_MSC_VER)
+    std::size_t writeLength = 0;
+    const bool writing = getenv_s(&writeLength, nullptr, 0, "TAKT4_WRITE_GOLDENS") == 0 &&
+                         writeLength > 1;
+#else
+    const char* const write = std::getenv("TAKT4_WRITE_GOLDENS");
+    const bool writing = write != nullptr && *write != '\0';
+#endif
+    if (writing) {
+        std::filesystem::create_directories(golden.parent_path());
+        std::ofstream out(golden);
+        out << "# frame downbeat — the shipped chain's beats over tests/data/features/" << name
+            << ".wav\n";
+        for (const EngineBeat& beat : beats) {
+            out << beat.event.frameIndex << ' ' << (beat.event.downbeat ? 1 : 0) << '\n';
+        }
+        SKIP("wrote " << golden.string());
+    }
+
+    std::ifstream in(golden);
+    REQUIRE(in.good());
+    std::vector<std::pair<std::uint64_t, bool>> was;
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+        std::istringstream fields(line);
+        std::uint64_t frame = 0;
+        int downbeat = 0;
+        fields >> frame >> downbeat;
+        was.emplace_back(frame, downbeat != 0);
+    }
+    INFO(beats.size() << " beats now, " << was.size() << " then");
+    const std::size_t larger = std::max(beats.size(), was.size());
+    const std::size_t smaller = std::min(beats.size(), was.size());
+    CHECK(larger - smaller <= 1);
+    // Paired by nearness, so one beat more or fewer at an end does not shift every pair.
+    std::size_t matched = 0;
+    std::size_t downbeatsAgree = 0;
+    for (const EngineBeat& beat : beats) {
+        const auto near = std::find_if(was.begin(), was.end(), [&](const auto& then) {
+            const auto a = static_cast<std::int64_t>(then.first);
+            const auto b = static_cast<std::int64_t>(beat.event.frameIndex);
+            return std::abs(a - b) <= 2;
+        });
+        if (near != was.end()) {
+            ++matched;
+            downbeatsAgree += near->second == beat.event.downbeat ? 1U : 0U;
+        }
+    }
+    CHECK(matched + 1 >= larger);
+    CHECK(downbeatsAgree == matched);
 }

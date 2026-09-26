@@ -1,0 +1,24 @@
+# frame downbeat — the shipped chain's beats over tests/data/features/pirates.wav
+9 1
+51 0
+95 1
+139 0
+182 0
+225 0
+271 1
+315 0
+357 0
+401 0
+445 1
+489 0
+533 1
+577 0
+621 0
+665 0
+709 1
+751 0
+795 0
+839 0
+883 1
+927 0
+971 0

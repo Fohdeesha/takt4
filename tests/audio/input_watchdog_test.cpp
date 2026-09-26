@@ -88,7 +88,8 @@ TEST_CASE("a healthy input reads healthy, at the rate it was opened at", "[audio
     CHECK(reading.measuredRate == Approx(44100.0).epsilon(0.002));
 }
 
-TEST_CASE("an input whose callbacks stop reads silent within half a second", "[audio][watchdog]") {
+TEST_CASE("an input whose callbacks stop reads silent after half a second of none",
+          "[audio][watchdog]") {
     // The MOTU unplugged or power-cycled: ASIO has no message for it, the callbacks simply
     // stop, and PortAudio goes on calling the stream active.
     Rig rig(48000.0, 128);
@@ -98,9 +99,13 @@ TEST_CASE("an input whose callbacks stop reads silent within half a second", "[a
 
     rig.stopCallbacks();
     CHECK(rig.run(watchdog, 0.3).verdict == Verdict::Healthy); // one buffer late is not dead
-    const InputWatchdog::Reading dead = rig.run(watchdog, 0.4);
+    // By 0.6 s. Silence is counted from the first look that found the last callbacks, and
+    // looks are up to 50 ms apart, so half a second of it is seen at most two looks late. This
+    // gave it 0.7 s under a name that said half a second (the audit of 2026-09-25, T17).
+    const InputWatchdog::Reading dead = rig.run(watchdog, 0.3);
     CHECK(dead.verdict == Verdict::Silent);
     CHECK(dead.silentForSeconds >= 0.5);
+    CHECK(dead.silentForSeconds <= 0.6);
 
     // And it comes back as healthy — without a false "rate changed" from measuring across
     // the gap, which would have made the window reopen a stream that had just recovered.

@@ -97,6 +97,12 @@ bool ActivationEngine::step() noexcept {
     if (!hops_.tryPop(hop)) {
         return false;
     }
+    // **In the worker's floating-point mode**, whichever thread this is (the audit of
+    // 2026-09-25, T20). The worker reads denormals as zero; a hop stepped on the caller's thread
+    // did not, so what the tests compare the worker against, and what `takt4-cli` measures
+    // offline, was computed in a mode the app never runs in. The scope puts the caller's own
+    // mode back afterwards, so the tracker stepped beside this keeps its.
+    const rt::DenormalsAsZero denormals;
     process(hop);
     return true;
 }

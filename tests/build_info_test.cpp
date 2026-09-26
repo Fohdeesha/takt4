@@ -123,6 +123,55 @@ TEST_CASE("the executables say which release and which commit they are", "[build
     }
     CHECK(checked >= 1);
 }
+
+namespace {
+
+/// An executable's application manifest, as the loader would read it, or empty.
+std::string manifestOf(const std::filesystem::path& exe) {
+    const HMODULE module = LoadLibraryExW(exe.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
+    if (module == nullptr) {
+        return {};
+    }
+    std::string text;
+    // RT_MANIFEST is 24, spelled out: the macro is the narrow or wide one by UNICODE.
+    if (const HRSRC found = FindResourceW(module, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(24))) {
+        if (const HGLOBAL loaded = LoadResource(module, found)) {
+            const auto* bytes = static_cast<const char*>(LockResource(loaded));
+            if (bytes != nullptr) {
+                text.assign(bytes, SizeofResource(module, found));
+            }
+        }
+    }
+    FreeLibrary(module);
+    return text;
+}
+
+} // namespace
+
+TEST_CASE("the executables and the tests run with UTF-8 as their code page", "[build_info]") {
+    // The audit of 2026-09-25, B7. takt4 and takt4-cli carry a manifest (src/utf8.manifest)
+    // that makes UTF-8 the process code page, so a device, a port or a file named outside the
+    // machine's code page reaches them whole — and nothing checked it stayed there. The test
+    // binaries had none, so they ran under the old code page: a test named with "÷" never
+    // matched a filter, and a path the app reads whole was mangled in its test.
+    CHECK(GetACP() == CP_UTF8); // this process, from its own manifest
+
+    std::wstring self(32768, L'\0');
+    self.resize(GetModuleFileNameW(nullptr, self.data(), static_cast<DWORD>(self.size())));
+    const std::filesystem::path bin = std::filesystem::path(self).parent_path();
+    int checked = 0;
+    for (const wchar_t* name : {L"takt4-cli.exe", L"takt4.exe"}) {
+        const std::filesystem::path exe = bin / name;
+        if (!std::filesystem::exists(exe)) {
+            continue; // a core-only build has no takt4.exe
+        }
+        INFO(exe.string());
+        CHECK_THAT(manifestOf(exe), ContainsSubstring("<activeCodePage"));
+        CHECK_THAT(manifestOf(exe), ContainsSubstring(">UTF-8</activeCodePage>"));
+        ++checked;
+    }
+    CHECK(checked >= 1);
+}
 #endif
 
 TEST_CASE("describe() renders one line per component", "[build_info]") {

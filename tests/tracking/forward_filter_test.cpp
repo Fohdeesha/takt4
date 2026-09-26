@@ -2,6 +2,7 @@
 
 #include "core/io/npy_file.hpp"
 #include "core/rt/alloc_guard.hpp"
+#include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -128,6 +129,59 @@ TEST_CASE("the forward filter's state space is madmom's bar-pointer model at 100
         CHECK(fifty.numMeters() == 3);
         CHECK(fifty.numStates() == 9 * 1449);
     }
+}
+
+TEST_CASE("the forward filter's tempo transitions are madmom's own numbers",
+          "[tracking][forward]") {
+    // The test above checks the shape: that every row is a distribution peaking at "stay".
+    // A wrong λ, a missing threshold or a ratio taken the wrong way up keeps that shape and
+    // is a different tracker (the audit of 2026-09-25, T19). madmom's own numbers are in the
+    // tree: the particle filter's blob holds `BarTransitionModel`'s tempo rows, and
+    // tools/dump_statespace.py refused to write it unless they rebuilt madmom's dense model
+    // exactly. Built with that blob's configuration — 50 fps, its tempo range, its λ — the
+    // forward filter has to come out with the same rows.
+    const takt4::tracking::StateSpaceModel blob = takt4::tracking::StateSpaceModel::fromFile(
+        std::filesystem::path(TAKT4_STATESPACE_DIR) / "default.bin");
+    const auto& config = blob.config();
+    ForwardFilter::Options options;
+    options.fps = config.fps;
+    options.minBpm = config.minBpm;
+    options.maxBpm = config.maxBpm;
+    options.transitionLambda = config.lambdaBeat;
+    options.meters = {2, 3, 4, 0};
+    const ForwardFilter filter(options);
+
+    const auto intervals = blob.beat().intervals();
+    REQUIRE(filter.numIntervals() == intervals.size());
+    for (std::size_t i = 0; i < intervals.size(); ++i) {
+        REQUIRE(filter.intervals()[i] == intervals[i]);
+        CHECK(filter.bpmOfInterval(i) == Approx(blob.bpmOfInterval(i)).epsilon(1e-12));
+    }
+    // One beat of every tempo, laid end to end, is madmom's beat state space.
+    CHECK(filter.numStates() == (2 + 3 + 4) * blob.beat().numStates());
+
+    std::size_t compared = 0;
+    for (std::size_t from = 0; from < intervals.size(); ++from) {
+        std::vector<double> madmom(intervals.size(), 0.0);
+        const auto to = blob.tempoDestinations(from);
+        const auto probability = blob.tempoProbabilities(from);
+        REQUIRE(to.size() == probability.size());
+        for (std::size_t k = 0; k < to.size(); ++k) {
+            madmom[to[k]] = probability[k];
+        }
+        const auto row = filter.tempoTransitions(from);
+        REQUIRE(row.size() == madmom.size());
+        for (std::size_t k = 0; k < row.size(); ++k) {
+            INFO("from interval " << intervals[from] << " to " << intervals[k]);
+            // The same zeros: what madmom thresholded away, and nothing else.
+            REQUIRE((row[k] == 0.0) == (madmom[k] == 0.0));
+            // numpy sums a row pairwise and this sums it in order, so the last bit or two of
+            // the normalisation can differ; nothing more.
+            CHECK(row[k] == Approx(madmom[k]).epsilon(1e-13).margin(0.0));
+            ++compared;
+        }
+    }
+    CHECK(compared == intervals.size() * intervals.size());
 }
 
 TEST_CASE("the forward filter tracks the synthetic excerpt at twice the network's rate",
@@ -300,6 +354,20 @@ TEST_CASE("a held tempo is tracked in phase only", "[tracking][forward]") {
     SECTION("released, the tempo is the network's to argue for again") {
         filter.holdTempo(0.0);
         CHECK(filter.heldBpm() == 0.0);
+        // **The released filter itself**, run on over the same music (the audit of 2026-09-25,
+        // T9): this section used to measure two fresh filters instead, so a release that left
+        // the hold in place passed. Held at 100 over a drum machine at 128, let go, it has to
+        // find its own way back to 128 — 47 frames at 100 fps.
+        TrackedFrame after;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const auto& [beat, down] : activations) {
+                after = filter.process(beat, down);
+            }
+        }
+        CHECK(after.intervalFrames >= 46);
+        CHECK(after.intervalFrames <= 48);
+        CHECK(after.bpm == Approx(128.0).margin(2.0));
+
         // A hold that agrees with the music costs nothing: held at what it plays, the
         // filter calls the same beats an unheld one does and ends on the same tempo.
         ForwardFilter agreeing;

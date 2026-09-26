@@ -116,8 +116,8 @@
     { "name": "linux-core-all", "inherits": "all-tests", "configurePreset": "linux-core" },
     { "name": "windows-asan", "inherits": "off-rig", "configurePreset": "windows-asan", "configuration": "Release" },
     { "name": "windows-asan-all", "inherits": "all-tests", "configurePreset": "windows-asan", "configuration": "Release" },
-    { "name": "linux-asan", "inherits": "off-rig", "configurePreset": "linux-asan" },
-    { "name": "linux-asan-all", "inherits": "all-tests", "configurePreset": "linux-asan" },
+    { "name": "linux-asan", "inherits": "off-rig", "configurePreset": "linux-asan", "environment": { "ASAN_OPTIONS": "detect_stack_use_after_return=1" } },
+    { "name": "linux-asan-all", "inherits": "all-tests", "configurePreset": "linux-asan", "environment": { "ASAN_OPTIONS": "detect_stack_use_after_return=1" } },
     { "name": "linux-tsan", "inherits": "off-rig", "configurePreset": "linux-tsan" },
     { "name": "linux-tsan-all", "inherits": "all-tests", "configurePreset": "linux-tsan" }
   ]

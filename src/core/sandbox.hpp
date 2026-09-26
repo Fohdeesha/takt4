@@ -29,6 +29,9 @@
 ///   lighting desk and synths — and Windows' GS Wavetable Synth plays through the speakers.
 /// - **No Link session is joined**, and no Link announcements are listened for.
 /// - **No audio device is opened.**
+/// - **No name is looked up**, apart from `localhost`: a host typed as a name would send a DNS
+///   query out of the rig's network card (the audit of 2026-09-25, T4). It fails the way a name
+///   nobody knows fails — "cannot resolve" — so the tests of that path still see it.
 ///
 /// Looking a device up is left alone: a port that is not there is still reported as not
 /// there, in the words an operator would get. Only the step that would open it is refused,
@@ -56,7 +59,7 @@ bool allowsSend(std::uint32_t ipv4, std::uint16_t port) noexcept;
 bool allowsBind(std::uint16_t port) noexcept;
 
 /// What was refused, for a test that wants to know nothing was.
-enum class Refused : std::uint8_t { Nothing, Send, Bind, Midi, Link, Audio };
+enum class Refused : std::uint8_t { Nothing, Send, Bind, Midi, Link, Audio, Lookup };
 
 /// Records a refusal. Allocates nothing: a send is refused on the output thread, which the
 /// real-time allocation guard is watching in the tests.

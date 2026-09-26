@@ -20,6 +20,7 @@
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/rule.hpp"
 #include "ui/fixtures_controller.hpp"
+#include "ui/model_watch.hpp"
 #include "ui/rules_controller.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -27,10 +28,14 @@
 #include <slint-platform.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,6 +44,7 @@ using takt4::dmx::Role;
 using takt4::engine::BeatEngine;
 using takt4::output::OutputRunner;
 using takt4::output::Transports;
+using takt4::tests::ModelWatch;
 using takt4::trigger::Rule;
 using takt4::ui::FixturesController;
 using takt4::ui::RulesController;
@@ -359,8 +365,10 @@ TEST_CASE("mute and rate are live, and are not saved with the rule", "[ui][dmx]"
 }
 
 TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
-    // The patch editor's per-channel TEST, all the way through: the button, the controller, the
-    // command queue, the engine, the universe buffer. Asked for on 2026-09-16 — "next to the
+    // The patch editor's per-channel TEST, all the way through: the button's callback, the
+    // controller, the command queue, the engine, the universe buffer. (It said "the button" and
+    // called the controller, which skips the wiring a click goes through — the audit of
+    // 2026-09-25, T13.) Asked for on 2026-09-16 — "next to the
     // channel assignments, there should also be a test button that will temporarily send a test
     // value of your choice" — and it is the question IDENTIFY cannot answer: IDENTIFY flashes
     // the whole fixture and says which lamp this is, not whether channel 72 is really its blue.
@@ -381,8 +389,8 @@ TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
     REQUIRE(engine.levels(5)[71] == 0); // channel 72: the blue one
 
     // Not full, so the check cannot pass on a value something else would have written.
-    patch.setTestLevel(180);
-    patch.testChannel(2); // the third channel of the map, which is DMX 72
+    patch.window().invoke_test_level_changed(180);
+    patch.window().invoke_channel_tested(2); // the third channel of the map, which is DMX 72
     CHECK(engine.levels(5)[71] == 180);
     // And only that one.
     CHECK(engine.levels(5)[69] == 0);
@@ -670,14 +678,33 @@ TEST_CASE("a channel's dropdown survives the redraws while it is open, and its p
     }
 
     // Then the gesture: opened, left open through ten redraws, and that same entry clicked.
+    //
+    // **With the channel's level moving through them**, as it does whenever the rig is playing:
+    // the row whose list is open carries what takt4 is sending on that channel, and the runner
+    // mirrors it sixty times a second. Ten redraws with nothing moving could not have seen a
+    // rebuild (the audit of 2026-09-25, T13); a live level taken for a change that needs a new
+    // element would take the list away on the first frame, and pass that test. The runner is
+    // running for this, as it is in the app, and each level is a channel test from elsewhere.
     reset();
+    rig.runner.start();
+    const auto channels = patch.window().get_channels();
+    const auto watch = std::make_shared<ModelWatch>();
+    channels->attach_peer(watch);
+    std::set<int> levels;
     clickAt(window, kDoesColumn, comboY);
     for (int redraw = 0; redraw < 10; ++redraw) {
+        rig.runner.post(takt4::output::OutputCommand::channelTest(
+            0, 1, static_cast<std::uint8_t>(20 + 20 * redraw), 5.0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(40)); // two of the mirror's frames
         settle();
+        levels.insert(channels->row_data(0)->live);
     }
     clickAt(window, kDoesColumn, entryY);
     settle();
+    rig.runner.stop();
     INFO("dropdown at " << kDoesColumn << ", " << comboY << "; entry at " << entryY);
+    CHECK(levels.size() > 1); // the row really was changing under the list
+    CHECK(watch->changes > 0);
     CHECK(patch.fixtures()[0].channels[0] == picked);
 }
 

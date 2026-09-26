@@ -9,10 +9,11 @@ collects every one of them, from where each already is:
 - the C and C++ libraries takt4 builds: their licence files in third_party/ and in the build
   tree's FetchContent checkouts;
 - the Rust crates inside Slint: every crate Slint links for Windows with the features takt4
-  builds it with (`cargo tree`), and the licence files each published crate carries;
-- Skia, which arrives prebuilt with no notices, the libraries compiled into it, and Eigen,
-  which arrives without its COPYING: tools/licenses/, fetched at pinned revisions by
-  tools/licenses/fetch.py.
+  builds it with and no others (`cargo tree --no-default-features`, as the build runs cargo),
+  and the licence files each published crate carries;
+- Skia, which arrives prebuilt with no notices, the libraries compiled into it, Eigen, which
+  arrives without its COPYING, and Rust's standard library, which is linked into Slint's
+  static library: tools/licenses/, fetched at pinned revisions by tools/licenses/fetch.py.
 
 The file is committed at the repository root, embedded in takt4.exe for the About box, and
 attached to every release. Run this after any dependency moves, from a configured and built
@@ -92,7 +93,23 @@ def components(build):
         component("Wuffs, in Skia", "https://github.com/google/wuffs", "Apache-2.0 OR MIT", "",
                   [skia / "wuffs-LICENSE.txt"]),
         component("zlib, in Skia", "https://zlib.net", "Zlib", "", [skia / "zlib-LICENSE.txt"]),
+        # Every Rust static library carries the parts of std it uses, and Slint is one. It was
+        # missing from this list until the audit of 2026-09-25 (B3).
+        component(f"The Rust standard library {rust_version()}", "https://www.rust-lang.org",
+                  "MIT OR Apache-2.0", "compiled into Slint",
+                  [LICENSES / "rust/LICENSE-MIT.txt", LICENSES / "rust/LICENSE-APACHE.txt"]),
     ]
+
+
+def rust_version():
+    """What rust-toolchain.toml pins, which tools/licenses/fetch.py fetched the texts for."""
+    sources = json.loads((LICENSES / "sources.json").read_text(encoding="utf-8"))
+    text = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+    match = re.search(r'^channel\s*=\s*"([0-9.]+)"', text, re.MULTILINE)
+    if not match or sources.get("rust") != match.group(1):
+        raise SystemExit("tools/licenses/ was not fetched for the Rust that rust-toolchain.toml pins: "
+                         "run tools/licenses/fetch.py")
+    return match.group(1)
 
 
 def crates(build):
@@ -101,8 +118,9 @@ def crates(build):
     if not manifest.is_file():
         raise SystemExit(f"{manifest} not found: configure and build a full tree first")
     tree = subprocess.run(
-        ["cargo", "tree", "--offline", "-e", "normal", "--target", TARGET, "--features", SLINT_FEATURES,
-         "-p", "slint-cpp", "--prefix", "none", "-f", "{p}", "--manifest-path", str(manifest)],
+        ["cargo", "tree", "--offline", "-e", "normal", "--target", TARGET, "--no-default-features",
+         "--features", SLINT_FEATURES, "-p", "slint-cpp", "--prefix", "none", "-f", "{p}",
+         "--manifest-path", str(manifest)],
         check=True, capture_output=True, text=True, encoding="utf-8").stdout
     wanted = set()
     for line in tree.splitlines():
@@ -135,12 +153,17 @@ def crates(build):
 
 
 def check_features(build):
-    """The build tree's cargo command has to ask for the features this lists."""
+    """The build tree's cargo command has to ask for the features this lists, and no others."""
     for project in (build / "_deps/slint-build").glob("_cargo-build_slint_cpp.vcxproj"):
         text = project.read_text(encoding="utf-8", errors="replace")
         match = re.search(r"--features=([\w,-]+)", text)
         if match and match.group(1) != SLINT_FEATURES:
             raise SystemExit(f"the build asks cargo for {match.group(1)}, this lists {SLINT_FEATURES}")
+        # Without it cargo tree also lists Slint's default features' crates — femtovg and four
+        # more that are never built (the audit of 2026-09-25, B3).
+        if match and "--no-default-features" not in text:
+            raise SystemExit("the build asks cargo for Slint's default features too; cargo tree above "
+                             "leaves them out")
 
 
 def rule(title):

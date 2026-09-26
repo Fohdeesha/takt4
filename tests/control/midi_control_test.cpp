@@ -293,15 +293,19 @@ TEST_CASE("a rule control that is not there refuses rather than swallows", "[con
 
     // The *event* was still ours — it matched a binding — so it counts as handled; what it
     // asked for is what could not be done. Those are two different claims and the counters
-    // keep them apart.
+    // keep them apart. The second was claimed here and counted nowhere: this asserted only
+    // the first, which is the swallow the name says it is not (the audit of 2026-09-25, T13).
     CHECK(control.dispatch(note(36)));
     CHECK(control.handled() == 1);
+    CHECK(control.refused() == 1);
 
     // And it becomes real the moment something is wired, with no rebinding.
     takt4::testing::RecordingRules rules;
     control.setRuleControl(&rules);
     CHECK(control.dispatch(note(36)));
     CHECK(rules.panics() == std::vector<bool>{true});
+    CHECK(control.handled() == 2);
+    CHECK(control.refused() == 1);
 }
 
 TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[control][midi]") {

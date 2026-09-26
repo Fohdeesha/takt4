@@ -1,5 +1,6 @@
 #include "core/settings/settings.hpp"
 
+#include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -686,6 +687,30 @@ TEST_CASE("the settings file lives beside the program", "[settings]") {
     }
     CHECK(foundAnExecutable);
 }
+
+#if defined(_WIN32)
+TEST_CASE("a folder named for the settings holds them, and the texts ABOUT opens", "[settings]") {
+    // What every test process relies on to keep off the show's settings.json — and set the way
+    // a test sets a variable, through `ScopedVariable`, which used to write only the process's
+    // block: `_wdupenv_s` reads the C runtime's copy and went on seeing the old folder (the
+    // audit of 2026-09-25, T16). And the texts ABOUT writes out go inside that folder rather
+    // than to the `%TEMP%\takt4` the real takt4 uses (T4).
+    const TempDir folder;
+    const takt4::test::ScopedVariable named("TAKT4_SETTINGS_DIR", folder.path().string().c_str());
+    CHECK(takt4::settings::settingsDirectory() == folder.path());
+    CHECK(takt4::settings::settingsFile() == folder.path() / "settings.json");
+    CHECK(takt4::settings::existingSettingsFile() == folder.path() / "settings.json");
+    CHECK(takt4::settings::scratchDirectory() == folder.path() / "texts");
+}
+
+TEST_CASE("with no folder named, the texts go to takt4's own temp folder", "[settings]") {
+    const NoSettingsFolder programs;
+    std::error_code code;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(code);
+    REQUIRE_FALSE(code);
+    CHECK(takt4::settings::scratchDirectory() == temp / "takt4");
+}
+#endif
 
 TEST_CASE("settings left by an older build are still read", "[settings]") {
     // The per-user location is where these used to be kept. A rig that has one there must

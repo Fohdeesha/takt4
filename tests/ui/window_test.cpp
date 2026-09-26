@@ -34,12 +34,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -577,12 +580,45 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     pumpTimers(std::chrono::milliseconds(250));
     const takt4::tests::Shot after = takt4::tests::render(*window, kWidth, kHeight);
 
-    // The body moved.
+    // The body moved — by how much, measured on the picture itself: the body scrolls as one
+    // piece, so the distance is the shift that lays the new picture over the old one. Not the
+    // distance between the first row found each time, which is the distance between two
+    // different rows as soon as one has gone off the top.
     const auto rowsAfter = rowsDown(after);
     REQUIRE(!rowsAfter.empty());
-    const int moved = rowsBefore.front().first - rowsAfter.front().first;
-    CAPTURE(rowsBefore.front().first, rowsAfter.front().first);
+    REQUIRE(rowsBefore.size() >= 2);
+    const auto mismatches = [&](int shift) {
+        int count = 0;
+        for (int y = 400; y + shift < kHeight - kFooter; y += 2) {
+            for (int x = 0; x < kWidth; x += 4) {
+                const slint::Rgb8Pixel a = before.at(x, y + shift);
+                const slint::Rgb8Pixel b = after.at(x, y);
+                count += (a.r != b.r || a.g != b.g || a.b != b.b) ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    // The best of the shifts rather than an exact one, since a button the pointer has crossed
+    // can be drawn lit in one picture and not the other.
+    int moved = 0;
+    int fewest = std::numeric_limits<int>::max();
+    for (int shift = 0; shift < 300; ++shift) {
+        const int count = mismatches(shift);
+        if (count < fewest) {
+            fewest = count;
+            moved = shift;
+        }
+    }
+    CAPTURE(fewest);
+    CHECK(fewest < 200);
     CHECK(moved > 0);
+    // Which row is first in the column now. Row 0 is `rowsBefore.front()` — the click above
+    // took 0 away — and the rows are a fixed pitch apart.
+    const int pitch = rowsBefore[1].first - rowsBefore[0].first;
+    REQUIRE(pitch > 0);
+    const int shown = static_cast<int>(std::lround(
+        static_cast<double>(rowsAfter.front().first + moved - rowsBefore.front().first) / pitch));
+    CAPTURE(rowsBefore.front().first, rowsAfter.front().first, moved, pitch, shown);
 
     // PANIC did not. It is below the scroll view, so every pixel of the footer — the
     // triggers row, the status bar and the two separators — is exactly where it was.
@@ -615,8 +651,9 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     window->window().dispatch_pointer_press_event(now, slint::PointerEventButton::Left);
     window->window().dispatch_pointer_release_event(now, slint::PointerEventButton::Left);
     REQUIRE(removed.size() == 1);
-    CHECK(removed.front() >= 0);
-    CHECK(removed.front() <= 3);
+    // **Which** row: the one drawn there now. This took any of the four (the audit of
+    // 2026-09-25, T13), and a click landing on whatever used to be there is one of them too.
+    CHECK(removed.front() == shown);
 }
 
 TEST_CASE("the fold window reaches the window unchanged", "[ui]") {
@@ -954,14 +991,19 @@ TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
     CHECK(controller.control().bindings().front().target.action == ControlAction::Downbeat);
     CHECK_FALSE(controller.control().learning().has_value());
 
-    SECTION("and it shows on the row, without repeating the action beside it") {
+    SECTION("and while no port is open the row says so, not that the binding is live") {
         // Off, because no port is open — the reading has to say that rather than claim a
-        // binding is live when nothing is listening.
+        // binding is live when nothing is listening. Named for what it can show: it was "it
+        // shows on the row", and with no port open the reading never gets as far as the binding
+        // (the audit of 2026-09-25, T13). Showing one needs a port listening, which the test
+        // sandbox refuses.
         controller.tick();
         CHECK_FALSE(controller.window().get_learning());
         CHECK_FALSE(controller.window().get_control_on());
-        CHECK(std::string(controller.window().get_control_reading()).find("note 36") ==
-              std::string::npos);
+        const std::string reading(controller.window().get_control_reading());
+        INFO(reading);
+        CHECK(reading.find("note 36") == std::string::npos);
+        CHECK((reading == "off — pick a port" || reading == "no MIDI inputs on this machine"));
     }
 
     SECTION("what was learned is what gets saved") {
@@ -1862,9 +1904,12 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         const auto watch = std::make_shared<ModelWatch>();
         rows->attach_peer(watch);
 
-        // One drag, sixty steps of it.
+        // One drag, sixty steps of it — with a redraw between each, which is where a rebuild
+        // would happen: they are queued (`staleTargetRows_`) and done in `tick`, so without one
+        // this could not have seen one (the audit of 2026-09-25, T11).
         for (int step = 0; step <= 60; ++step) {
             controller.setTargetDelay(2, static_cast<float>(step) * 5.0f);
+            controller.tick();
         }
         CHECK(watch->resets == 0);
         CHECK(watch->added == 0);
@@ -2778,6 +2823,10 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     clips.id = "clips";
     clips.address = "/composition/layers/1/clips/{}/connect";
     controller.setRules({lasers, clips});
+    // And an output, which the name promised and nothing checked (the audit of 2026-09-25, T13).
+    // At a receiver of the test's own, so the sandbox lets what the window sends to it through.
+    const takt4::testing::LoopbackReceiver deck;
+    controller.setOscTargets("deck = 127.0.0.1:" + std::to_string(deck.port()));
 
     const takt4::test::TempDir dir;
     const std::filesystem::path file = dir.path() / "show.json";
@@ -2799,6 +2848,15 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     CHECK(fresh.rules()[0].outputs[0] == "Lasers");
     CHECK(fresh.rules()[1].id == "clips");
     CHECK(fresh.rules()[1].address == "/composition/layers/1/clips/{}/connect");
+
+    // The output, by name, host and port, alongside the Link output every set has.
+    const auto outputs = seen(fresh).targets;
+    const auto found = std::find_if(outputs.begin(), outputs.end(),
+                                    [](const takt4::output::OutputTarget& t) { return t.name == "deck"; });
+    REQUIRE(found != outputs.end());
+    CHECK(found->kind == takt4::output::OutputTarget::Kind::Osc);
+    CHECK(found->host == "127.0.0.1");
+    CHECK(found->port == deck.port());
 }
 
 TEST_CASE("an import brings the lighting patch with it", "[ui][settings][dmx]") {
@@ -3314,6 +3372,74 @@ TEST_CASE("an output's on tick follows its row when the rows change under it", "
     nothingReal.check();
 }
 
+TEST_CASE("an output's delay slider follows a real drag on the running window", "[ui]") {
+    // The audit of 2026-09-25, T11: no test dragged the real slider on a window with a
+    // controller behind it — the drag tests used a bare window, or called the controller. What
+    // is being guarded is the slider taken away under the pointer when its row is built again;
+    // with the element destroyed the drag stops following the hand after the first redraw, so
+    // what is counted is how many different delays one drag produces, with a redraw between
+    // every move.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 1000.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    const takt4::tests::NothingReal nothingReal;
+    REQUIRE(rows->row_count() == 2);
+    settle();
+    const std::vector<float> at = outputRowsAt(controller, kHeight);
+    REQUIRE(at[1] > 0.0f);
+    const auto delay = [&rows] { return rows->row_data(1)->delay_ms; };
+
+    // The slider's track on that row: the first point along it whose click moves the delay.
+    float trackX = -1.0f;
+    for (float x = 420.0f; x < kWidth - 120.0f && trackX < 0.0f; x += 10.0f) {
+        clickAt(window, x, at[1]);
+        settle();
+        if (delay() != 0.0f) {
+            trackX = x;
+        }
+        controller.setTargetDelay(1, 0.0f);
+        settle();
+    }
+    INFO("track at " << trackX << ", " << at[1]);
+    REQUIRE(trackX > 0.0f);
+
+    const auto watch = std::make_shared<ModelWatch>();
+    rows->attach_peer(watch);
+    std::set<float> seenDelays;
+    const float startX = trackX + 20.0f;
+    window.dispatch_pointer_move_event(slint::LogicalPosition({startX, at[1]}));
+    window.dispatch_pointer_press_event(slint::LogicalPosition({startX, at[1]}),
+                                        slint::PointerEventButton::Left);
+    settle();
+    for (int step = 1; step <= 40; ++step) {
+        window.dispatch_pointer_move_event(
+            slint::LogicalPosition({startX + static_cast<float>(step) * 4.0f, at[1]}));
+        settle();
+        seenDelays.insert(delay());
+    }
+    window.dispatch_pointer_release_event(
+        slint::LogicalPosition({startX + 160.0f, at[1]}), slint::PointerEventButton::Left);
+    settle();
+
+    INFO(seenDelays.size() << " different delays over forty moves");
+    CHECK(seenDelays.size() >= 30);
+    CHECK(watch->resets == 0);
+    CHECK(watch->removed == 0);
+    CHECK(watch->added == 0);
+    nothingReal.check();
+}
+
 TEST_CASE("EXPORT carries a host still being typed", "[ui][settings]") {
     // The audit of 2026-09-25, M15's other half. EXPORT and SAVE write what the output thread
     // has, and a host typed and not entered was only a draft until the box let go of the
@@ -3820,7 +3946,11 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
         REQUIRE(picked > 0);
     }
 
-    // Then the gesture: opened, left open through ten redraws, and the same step taken.
+    // Then the gesture: opened, left open through ten redraws, and the same step taken. Unlike
+    // the rule editor's and the patch editor's, nothing in these rows moves on its own — no
+    // readout, no level — so ten redraws are all that happens to them while the list is open
+    // (the audit of 2026-09-25, T13, checked; the other two tests now move a readout under
+    // their list).
     reset();
     REQUIRE(kindOf() == 0);
     clickAt(window, kKindColumn, comboY);
@@ -4141,6 +4271,12 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
                 continue;
             }
             const std::string name = opened.front().filename().string();
+            // Written into this test process's own folder, never the temp directory's "takt4",
+            // which the real takt4 uses — a test run wrote over the texts it had open there (the
+            // audit of 2026-09-25, T4).
+            std::error_code code;
+            CHECK(opened.front().parent_path().parent_path().parent_path() ==
+                  std::filesystem::temp_directory_path(code) / "takt4-tests");
             if (name == "takt4-LICENSE.txt") {
                 licence = read(opened.front());
             } else if (name == "takt4-THIRD-PARTY-NOTICES.txt") {
@@ -4155,7 +4291,10 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     CHECK(licence.find("GNU GENERAL PUBLIC LICENSE") != std::string::npos);
     CHECK(licence.find("Version 3, 29 June 2007") != std::string::npos);
     CHECK(notices.rfind("takt4 — third-party notices", 0) == 0);
-    for (const char* name : {"PortAudio", "Ableton Link", "Slint", "Skia", "Steinberg ASIO SDK"}) {
+    // Rust's standard library is in takt4.exe inside Slint, and was missing until the audit of
+    // 2026-09-25 (B3).
+    for (const char* name : {"PortAudio", "Ableton Link", "Slint", "Skia", "Steinberg ASIO SDK",
+                             "The Rust standard library"}) {
         INFO(name);
         CHECK(notices.find(name) != std::string::npos);
     }
@@ -4205,6 +4344,12 @@ TEST_CASE("SAVE in a test process writes to a folder of its own, not over the ri
     if (existed) {
         CHECK(std::filesystem::last_write_time(beside, code) == stamp);
     }
-    std::filesystem::remove_all(written.parent_path(), code);
+    // The folder this process was given: under the temp directory, in "takt4-tests". Nothing is
+    // deleted here any more — the process removes its own folder on the way out
+    // (tests/support/crt_dialogs.cpp) — because this used to `remove_all` whatever folder the
+    // file landed in, which with TAKT4_SETTINGS_DIR set outside the tests would have been that
+    // (the audit of 2026-09-25, T4).
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(code);
+    CHECK(written.parent_path().parent_path() == temp / "takt4-tests");
 }
 #endif

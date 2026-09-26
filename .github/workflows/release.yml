@@ -29,6 +29,11 @@ jobs:
           submodules: recursive
           # Every tag and every commit, so `git describe` names the tag rather than a hash.
           fetch-depth: 0
+          # Not left in .git/config for the rest of the job (the audit of 2026-09-25, B4): this
+          # token can write releases, and every cargo build script and FetchContent step below
+          # runs with the checkout readable. Nothing here pushes; the last step hands the token
+          # to `gh` itself.
+          persist-credentials: false
 
       # A tag that is not the version in CMakeLists.txt would build a binary that calls itself
       # something else. Refused before anything is built.

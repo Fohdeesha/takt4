@@ -313,12 +313,29 @@ if(TAKT4_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------------------
-# Slint 1.18.1 (UI only). Built from source through Corrosion and cargo, so a Rust
-# toolchain (1.92 or newer) must be on PATH. Linked statically: takt4 is one executable
-# and this removes any question of where a shared slint_cpp library has to live.
-# The interpreter is not built; .slint files are compiled ahead of time.
+# Slint 1.18.1 (UI only). Built from source through Corrosion and cargo, with the Rust
+# toolchain rust-toolchain.toml pins, which rustup installs if it is missing. Linked
+# statically: takt4 is one executable and this removes any question of where a shared
+# slint_cpp library has to live. The interpreter is not built; .slint files are compiled
+# ahead of time.
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_UI)
+  # **The pinned toolchain, in a build tree configured before there was a pin too** (the audit
+  # of 2026-09-25, B2). Corrosion chooses a toolchain only when none is cached, and a tree
+  # configured before rust-toolchain.toml existed has `stable` cached for good — so the next
+  # `rustup update` would change the compiler behind the Release exe with nothing said. A
+  # cached one that is not the pinned channel is forgotten here, and Corrosion chooses again,
+  # through rustup, which reads the pin; a fresh tree, CI's, never had one to forget.
+  file(STRINGS "${PROJECT_SOURCE_DIR}/rust-toolchain.toml" takt4_rust_channel
+       REGEX "^channel *= *\"[^\"]+\"")
+  string(REGEX REPLACE "^channel *= *\"([^\"]+)\".*" "\\1" takt4_rust_channel
+         "${takt4_rust_channel}")
+  if(DEFINED CACHE{Rust_TOOLCHAIN} AND takt4_rust_channel
+     AND NOT Rust_TOOLCHAIN MATCHES "^${takt4_rust_channel}(-|$)")
+    message(STATUS "takt4: the cached Rust toolchain '${Rust_TOOLCHAIN}' is not the pinned "
+                   "${takt4_rust_channel}; choosing again")
+    unset(Rust_TOOLCHAIN CACHE)
+  endif()
   FetchContent_Declare(Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
     GIT_TAG v1.18.1
@@ -335,7 +352,9 @@ if(TAKT4_BUILD_UI)
     set(SLINT_STYLE "fluent")
     # Skia rather than FemtoVG (HANDOFF §2): Metal on macOS, OpenGL elsewhere. Skia itself
     # is not compiled here: skia-bindings' build script downloads rust-skia's prebuilt
-    # archive for the target (17-26 MB, with curl, not checksummed) on every clean build.
+    # archive for the target (17-26 MB, with curl) on every clean build. Its build script does
+    # not check what arrives; ctest does, library by library, against the archive takt4 was
+    # checked against (cmake/check_skia.cmake).
     set(SLINT_FEATURE_RENDERER_SKIA ON)
     set(SLINT_FEATURE_RENDERER_FEMTOVG OFF)
     if(WIN32)

@@ -24,7 +24,9 @@ name: full
 #
 # The path filter covers everything that can change the app (the audit found src/core,
 # tests/ui, tests/CMakeLists.txt, assets and tools/embed_asset.py all missing from it, so a
-# change there went unbuilt until the Monday run). Documentation alone does not trigger it.
+# change there went unbuilt until the Monday run; and the audit of 2026-09-25, B4, the Rust
+# pin, which is the compiler Slint is built with, and LICENSE and THIRD-PARTY-NOTICES.txt,
+# which are embedded in takt4.exe). Documentation alone does not trigger it.
 #
 # Note the concurrency group below cancels in-progress runs for the same ref: a second push
 # to main while this is building kills the first run rather than queueing behind it.
@@ -41,6 +43,9 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'tools/embed_asset.py'
+      - 'rust-toolchain.toml'
+      - 'LICENSE'
+      - 'THIRD-PARTY-NOTICES.txt'
       - '.github/workflows/full.yml'
   pull_request:
     paths:
@@ -52,6 +57,9 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'tools/embed_asset.py'
+      - 'rust-toolchain.toml'
+      - 'LICENSE'
+      - 'THIRD-PARTY-NOTICES.txt'
       - '.github/workflows/full.yml'
   schedule:
     - cron: '0 6 * * 1' # Mondays, 06:00 UTC

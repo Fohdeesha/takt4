@@ -163,6 +163,12 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
         transports.publish(beatAt(1.76, 3, 120.0), 0, 1.76);
         CHECK(transports.osc().messagesSent() > before);
         CHECK(transports.osc().pending() == queued);
+
+        // And the held ones go at the 1.8 they were given — not at 2.0, where the new offset
+        // would have put them. The check above was before both, so it held either way (the
+        // audit of 2026-09-25, T13).
+        transports.advance(1.85, steady);
+        CHECK(transports.osc().pending() == 0);
     }
 
     transports.stopOutputs();
@@ -839,6 +845,10 @@ TEST_CASE("a press and its release keep their gap on every output however each i
     CHECK(sink.queued() == 0);
 
     SECTION("a PANIC sends what is held at once rather than leaving it to go later") {
+        // What the output thread's PANIC does, in its order (`OutputRunner::apply`): the rules'
+        // owed releases first, then everything held for an output's offset. This called only
+        // the second, so the two note offs — owed by the rules, not held by the sink — were
+        // never part of the test (the audit of 2026-09-25, T13).
         context.now = 20.0;
         context.moment = 20.4;
         context.beats = 2;
@@ -847,9 +857,28 @@ TEST_CASE("a press and its release keep their gap on every output however each i
         sink.setNow(20.0);
         triggers.onBeat(context);
         REQUIRE(sink.queued() > 0);
+        triggers.panic(context);
         sink.flushQueued();
         CHECK(sink.queued() == 0);
-        CHECK(wire->heard.size() >= 2);
+        // Both presses and both releases, now — and each release after its own press, or a
+        // note would be left sounding.
+        REQUIRE(wire->heard.size() == 4);
+        for (const auto& [heard, at] : wire->heard) {
+            INFO(heard);
+            CHECK(at == 20.0);
+        }
+        const auto order = [&wire](const std::string& what) {
+            for (std::size_t i = 0; i < wire->heard.size(); ++i) {
+                if (wire->heard[i].first == what) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
+        CHECK(order("laser on") >= 0);
+        CHECK(order("desk on") >= 0);
+        CHECK(order("laser on") < order("laser off"));
+        CHECK(order("desk on") < order("desk off"));
     }
 }
 

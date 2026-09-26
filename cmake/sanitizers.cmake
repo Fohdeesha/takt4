@@ -60,10 +60,21 @@ if(MSVC)
   # 'annotate_string'` (measured 2026-09-16). Nothing here can instrument those.
   #
   # What this costs is container-overflow detection on those two types **and nothing else**:
-  # use-after-free, double free, heap and stack buffer overflow, stack-use-after-return and
-  # use-after-scope are all untouched — and use-after-free is the class this was turned on
-  # for. The Linux presets keep the annotations, because libstdc++ leaves them off by default
-  # and there is nothing to disagree with.
+  # use-after-free, double free, heap and stack buffer overflow and use-after-scope are all
+  # untouched — and use-after-free is the class this was turned on for. The Linux presets keep
+  # the annotations, because libstdc++ leaves them off by default and there is nothing to
+  # disagree with.
+  #
+  # **Stack-use-after-return is not caught here, and cannot be turned on.** It was claimed; it
+  # was never true (the audit of 2026-09-25, B1). MSVC finds one only with
+  # `/fsanitize-address-use-after-return` at compile time *and*
+  # `ASAN_OPTIONS=detect_stack_use_after_return=1` at run time — measured 2026-09-26 with a
+  # function returning the address of its own local: either alone reports nothing. And the flag
+  # breaks this toolset (19.44): a `memset` over a local array — which `char buf[N] = {}` is —
+  # is reported as a stack-buffer-underflow at the start of its own frame, option or no option,
+  # so the suite would drown in reports that are not bugs. A callback that captures a local by
+  # reference and runs after its function returned — the Slint shape — therefore passes this
+  # build clean. `linux-asan` asks for it at run time (CMakePresets.json).
   add_compile_definitions(_DISABLE_STRING_ANNOTATION=1 _DISABLE_VECTOR_ANNOTATION=1)
   # ASan cannot be linked incrementally, and `/DEBUG` is what puts the PDB beside the exe.
   add_link_options(/INCREMENTAL:NO /DEBUG)

@@ -120,8 +120,9 @@ void writeBmp(const std::filesystem::path& path, const std::vector<slint::Rgb8Pi
 
 /// Runs the committed synthetic excerpt through the engine and leaves the window holding
 /// what came out: the tempo it settled on, the lock, the bar it was in, and the last four
-/// seconds of activation. `takt4-cli track tests/data/features/synthetic.wav` prints the
-/// same run, so the picture and that line can be checked against each other.
+/// seconds of activation. `takt4-cli track tests/data/features/synthetic.wav --weights
+/// generic` prints the same run, so the picture and that line can be checked against each
+/// other.
 void fillFromSyntheticRun(MainWindow& window,
                           const std::shared_ptr<slint::VectorModel<TracePoint>>& traceModel) {
     const std::filesystem::path wav =
@@ -144,19 +145,25 @@ void fillFromSyntheticRun(MainWindow& window,
     // but a reader should not have to know that rule to follow this.
     auto beatEngine = std::make_unique<engine::BeatEngine>(weights, space);
     std::vector<TracePoint> trace(kTraceLength);
+    bool beatPending = false;
     for (std::size_t h = 0; h < hops; ++h) {
         beatEngine->processHop(padded.data() + h * audio::kHopSize, h);
         (void)beatEngine->step();
         engine::EngineFrame frame;
         while (beatEngine->popFrame(frame)) {
-            // The network's frames only, as the live window draws them; the shot engine is
-            // the particle filter, which interpolates nothing, so this is for the day it is
-            // not.
+            // The network's frames only, as the live window draws them, and a beat that
+            // landed on one the engine interpolated carried to the next — the shot's engine is
+            // the forward filter, the default, at twice the network's rate. This said it was
+            // the particle filter and dropped those beats (the audit of 2026-09-25).
             if (frame.interpolated) {
+                beatPending = beatPending || frame.beat;
                 continue;
             }
             std::rotate(trace.begin(), trace.begin() + 1, trace.end());
-            trace.back() = tracePoint(frame);
+            TracePoint point = tracePoint(frame);
+            point.called = point.called || beatPending;
+            beatPending = false;
+            trace.back() = point;
         }
         engine::EngineBeat beat;
         while (beatEngine->popBeat(beat)) {

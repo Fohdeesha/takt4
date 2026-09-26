@@ -16,18 +16,22 @@ void printUsage(std::ostream& out) {
     out << "takt4-shot " << takt4::buildInfo().version
         << " — render the main window to a BMP\n"
            "\n"
-           "  takt4-shot OUT.bmp [--size WxH] [--stopped] [--rules]\n"
+           "  takt4-shot OUT.bmp [--size WxH] [--stopped]\n"
+           "                     [--rules [--dmx] | --fixtures | --about]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
            "  --stopped       draw the idle window — blank readouts and the manual\n"
            "                  controls disabled — instead of a tracker running\n"
            "  --rules         draw §5.9's rule editor instead of the main window\n"
+           "  --dmx           with --rules, its lighting half rather than the OSC one\n"
+           "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
-           "tests/data/features/synthetic.wav, which `takt4-cli track` prints as\n"
-           "\"499 frames, 21 beats (5 downbeats), ending at 128.4 BPM in 4/4, locked\".\n";
+           "tests/data/features/synthetic.wav with the generic weights, which\n"
+           "`takt4-cli track tests/data/features/synthetic.wav --weights generic` prints as\n"
+           "\"997 frames, 22 beats (6 downbeats), ending at 128.3 BPM in 4/4, locked\".\n";
 }
 
 } // namespace

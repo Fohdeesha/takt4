@@ -14,10 +14,12 @@ beforehand — point it at the sound coming out of the mixer and it follows.
 copy the executable anywhere and run it. It keeps a `settings.json` beside itself, which
 makes two copies in two folders two rigs — a rehearsal setup and a show setup.
 
-It needs the Microsoft Visual C++ runtime, which most Windows machines already have. If
-takt4 will not start and Windows names `VCRUNTIME140.dll` or `MSVCP140.dll`, install the
-[Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) from
-Microsoft once. takt4 is not signed, so the first time you run a new download Windows may
+Before the first run, install the latest
+[Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe), even
+if the machine already has one: takt4 is built with Visual Studio 2026, and Microsoft's
+runtime has to be at least as new as the compiler that built the program. An older one is
+not reported as missing — the files are there — so takt4 can start and then fail. It needs
+Windows 10 or 11. takt4 is not signed, so the first time you run a new download Windows may
 say it "protected your PC": choose **More info**, then **Run anyway**.
 
 Your rig is saved on its own a few seconds after every change, and each save replaces the
@@ -35,7 +37,9 @@ but Windows is the only platform currently built and tested.
 - **Follows the music.** A neural network reads the audio 50 times a second; an exact
   forward filter over madmom's bar-pointer state space turns that into beats, downbeats,
   a tempo and a meter — with a confidence you can see and gate on. It costs 40 ms, which
-  is what a centred analysis window costs and nothing more.
+  is what a centred analysis window costs and nothing more. The meter is 4/4 unless you
+  ask for more: a set with waltzes in it needs `"meters": [3, 4]` in the `"preset"` part of
+  `settings.json` — edited with takt4 closed — or a waltz is counted in fours.
 - **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
   the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, MIDI notes, CC,
   program change and pitch bend, and Art-Net DMX to lighting nodes. Any number of named

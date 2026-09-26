@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <thread>
 
@@ -20,8 +21,28 @@ namespace {
 /// five. Nothing takt4 does reads a state back the microsecond it wrote it — it commits
 /// on a beat and reads on the next UI frame — so the tests wait the way an application
 /// would.
-void settle() {
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+///
+/// **Until the capture shows it** (the audit of 2026-09-25, T17): a fixed 50 ms was a guess
+/// about how busy the machine was, and under ASan with the suite in parallel it is a guess that
+/// can lose. Two seconds is the give-up, which nothing near a healthy machine comes close to.
+///
+/// **And never less than 50 ms**, because landing is not the whole of it. Link's own thread
+/// answers each commit by writing the session's timeline back into the app's copy, and a second
+/// commit made before that echo can be moved by it — measured: a beat forced 100 on came out
+/// 99.80 about one run in five with ten copies of this test at once, and never once the pause
+/// was back. A real beat is half a second after the last, so the pause is what an application
+/// does anyway (see `LinkSession::snap`, which exists for the same reason).
+template <typename Landed>
+void settleUntil(Landed landed) {
+    const auto start = std::chrono::steady_clock::now();
+    const auto earliest = start + std::chrono::milliseconds{50};
+    const auto until = start + std::chrono::seconds{2};
+    for (auto now = start; now < until; now = std::chrono::steady_clock::now()) {
+        if (now >= earliest && landed()) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
 }
 
 } // namespace
@@ -61,14 +82,14 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
     const std::chrono::microseconds at = session.now() + std::chrono::milliseconds{100};
 
     session.setTempo(128.0, at);
-    settle();
+    settleUntil([&] { return std::abs(session.tempoBpm() - 128.0) < 1e-9; });
     CHECK_THAT(session.tempoBpm(), WithinAbs(128.0, 1e-9));
     CHECK(session.tempoUpdates() == 1);
 
     SECTION("requesting a beat puts its phase where it was asked for") {
         // Four beats to the bar, and beat 8 is a downbeat: phase 0.
         session.requestBeat(8.0, at, 4.0);
-        settle();
+        settleUntil([&] { return std::abs(session.phaseAtTime(at, 4.0)) < 1e-2; });
         CHECK(session.beatRequests() == 1);
         CHECK_THAT(session.phaseAtTime(at, 4.0), WithinAbs(0.0, 1e-2));
 
@@ -88,7 +109,7 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
         for (const double quantum : {2.0, 3.0, 4.0, 7.0}) {
             INFO("quantum " << quantum);
             session.forceBeat(0.0, at, quantum);
-            settle();
+            settleUntil([&] { return std::abs(session.phaseAtTime(at, quantum)) < 1e-3; });
             CHECK_THAT(session.phaseAtTime(at, quantum), WithinAbs(0.0, 1e-3));
             for (int beat = 1; beat <= 8; ++beat) {
                 const std::chrono::microseconds when =
@@ -102,12 +123,24 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
     SECTION("forcing a beat moves the timeline's magnitude, not just its phase") {
         // requestBeat only ever changes where the phase falls. forceBeat also moves the
         // beat count, which is why §5.6 keeps it for the manual downbeat snap alone.
-        session.forceBeat(0.0, at, 4.0);
-        settle();
-        const double from = session.beatAtTime(at, 4.0);
-        session.forceBeat(100.0, at, 4.0);
-        settle();
-        CHECK_THAT(session.beatAtTime(at, 4.0) - from, WithinAbs(100.0, 1e-2));
+        // A moment of its own, next to now. The magnitude is re-anchored around the present at
+        // every capture, so a time that has drifted into the past — as the one at the top has,
+        // on a machine busy enough — comes back a fraction of a beat out: measured, 99.80 with
+        // eight copies of this test running at once.
+        const std::chrono::microseconds near = session.now() + std::chrono::milliseconds{100};
+        session.forceBeat(0.0, near, 4.0);
+        // Until the force shows: beat 0 is phase 0. Not "until two reads agree", which is what
+        // this was — two reads of the timeline from *before* the force agree too, and under a
+        // loaded machine that is what it saw, so `from` came from the wrong timeline.
+        settleUntil([&] {
+            const double phase = session.phaseAtTime(near, 4.0);
+            return std::abs(phase) < 1e-3 || std::abs(phase - 4.0) < 1e-3;
+        });
+        const double from = session.beatAtTime(near, 4.0);
+        session.forceBeat(100.0, near, 4.0);
+        settleUntil(
+            [&] { return std::abs(session.beatAtTime(near, 4.0) - from - 100.0) < 1e-2; });
+        CHECK_THAT(session.beatAtTime(near, 4.0) - from, WithinAbs(100.0, 1e-2));
         CHECK(session.beatRequests() == 2);
     }
 }
