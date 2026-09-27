@@ -20,7 +20,8 @@ struct TrackedFrame {
     /// decoder that can only say "this frame", which is the particle filter; a fraction
     /// either side of zero for one that reads the beat off a posterior and can say "a
     /// third of a frame ago" or "half a frame from now". `TempoTracker` adds it to the
-    /// beat's time and nothing else reads it. See `ForwardFilter::Options::emission`.
+    /// beat's time, and `BeatEngine` to the beat's host-time stamp (the audit's H15). See
+    /// `ForwardFilter::Options::emission`.
     double beatOffsetFrames = 0.0;
 
     /// The median of the beat particles, taken before this frame's motion. Every

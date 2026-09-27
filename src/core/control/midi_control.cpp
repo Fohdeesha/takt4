@@ -118,8 +118,12 @@ void MidiControl::stop() noexcept {
         running_.store(false, std::memory_order_release);
         return;
     }
-    // The flag first, then RtMidi's own teardown: cancelCallback joins its thread, so
-    // after these two lines nothing can be inside onMessage.
+    // The flag first, so a message arriving from here on is turned away at `onMessage`'s door;
+    // then RtMidi's teardown. **`cancelCallback` joins nothing** — it forgets the callback, and
+    // the WinMM backend has no thread of its own to join: messages arrive on WinMM's. What stops
+    // them is `closePort`'s `midiInReset` and `midiInClose`. A message already past the flag when
+    // this began is the one case these lines do not rule out, and this comment used to say they
+    // did (the audit of 2026-09-25's stale-comment list).
     running_.store(false, std::memory_order_release);
     try {
         impl_->in.cancelCallback();

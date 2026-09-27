@@ -285,13 +285,14 @@ std::string_view labelOf(Message::Kind kind) noexcept;
 std::string_view nameOf(Message::Kind kind) noexcept;
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept;
 
-/// `milliseconds` seconds, or `beats` worth of the tempo in `context` — whichever `unit` names.
+/// `clockSeconds`, or `beats` worth of the tempo in `context` — whichever `unit` names. The first
+/// is the wall-clock figure `DelayUnit::Milliseconds` asks for, held in seconds.
 ///
 /// The one place a musical length becomes a wall-clock one, shared by a follow-up's *delay*
 /// and a DMX effect's *duration* so the two cannot disagree about what a bar is. Falls back to
 /// the millisecond figure when the unit is musical and there is no tempo to measure against,
 /// and uses the meter the tracker reports rather than four (§5.5).
-double musicalSeconds(const Context& context, DelayUnit unit, double milliseconds,
+double musicalSeconds(const Context& context, DelayUnit unit, double clockSeconds,
                       double beats) noexcept;
 
 /// A rule's lighting instruction, before its generators have been run — the configuration
@@ -375,12 +376,14 @@ struct DmxSend {
     dmx::Curve curve = dmx::Curve::EaseOut;
     dmx::PathShape shape = dmx::PathShape::Circle;
 
-    /// The fixtures and groups this rule aims at, by name. **Empty reaches nothing**, and the
-    /// rule reports it as a problem rather than firing into the dark — see
-    /// `dmx::resolveFixtures` for why this is the opposite of what an empty output list means.
+    /// The fixtures this rule aims at, by `dmx::Fixture::id`, and the groups, by their label.
+    /// **Empty reaches nothing**, and the rule reports it as a problem rather than firing into
+    /// the dark — see `dmx::resolveFixtures` for why this is the opposite of what an empty output
+    /// list means.
     ///
-    /// Names rather than indices, for the reason `Config::outputs` gives: this travels in a
-    /// preset, and an index moves the moment a fixture above it is deleted.
+    /// Ids rather than indices, which move the moment a fixture above is deleted, and rather
+    /// than names, which are the operator's to change; a group is its label, which is what the
+    /// gesture of relabelling a fixture means (`dmx::Fixture::group`).
     std::vector<std::string> fixtures;
 
     /// The target level, peak or high end, 0 to 255. Clamped, not wrapped. Full by default —
@@ -495,7 +498,8 @@ struct FollowUp {
     std::optional<DmxFollow> dmx;
 
     DelayUnit unit = DelayUnit::Milliseconds;
-    /// The delay in milliseconds, used when `unit` is `Milliseconds`.
+    /// The delay **in seconds**, used when `unit` is `Milliseconds` — the unit the editor shows
+    /// it in, which is where the name of the unit comes from.
     double delaySeconds = 0.05;
     /// The same delay in beats — or in bars — used when `unit` says so. See `DelayUnit` for
     /// why both exist, and `Rule::followUpDelay` for the arithmetic.
@@ -622,15 +626,16 @@ public:
         /// preset do not fire the same clip as each other. See `Generator::Config::seed`.
         std::uint64_t seed = 1;
 
-        /// §5.6's *"rule subset"*: the names of the outputs this rule sends to. **Empty
-        /// means every output**, which is what a rule an operator has not routed means and
-        /// what every rule meant before there was more than one target.
+        /// §5.6's *"rule subset"*: the outputs this rule sends to, by `output::OutputTarget::id`.
+        /// **Empty means every output**, which is what a rule an operator has not routed means
+        /// and what every rule meant before there was more than one target.
         ///
-        /// Names rather than indices, because this travels in a preset (Q7) and an index
-        /// moves the moment an output above it is deleted. A name that matches nothing on
-        /// this rig contributes nothing and is *kept*: a preset written where there was a
-        /// "lights" output, opened where there is not, should still say "lights" so that
-        /// plugging it back in restores the routing rather than needing it typed again.
+        /// Ids rather than indices, which move the moment an output above is deleted, and
+        /// rather than names, which are the operator's to change (routing written by name in
+        /// an older file is re-pointed on load, `output::routeByIds`). An id that matches
+        /// nothing on this rig contributes nothing and is *kept* rather than dropped: the
+        /// editor says the routing reaches nothing, and nothing is lost if an output with that
+        /// id comes back — an import carries its outputs' ids along with its rules.
         std::vector<std::string> outputs;
     };
 
@@ -674,6 +679,8 @@ public:
     bool valid() const noexcept { return problem_.empty(); }
 
     /// Fresh generators, no cooldown owed, nothing remembered about the tempo or the lock.
+    /// **Only the tests call it**: a rule the application edits is built again and takes over
+    /// what it was doing (`carryFrom`), which is what an edit means.
     void reset() noexcept;
 
     /// Takes over what `previous` — the same rule before an edit — was in the middle of, so an

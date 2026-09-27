@@ -568,7 +568,9 @@ public:
         /// The OSC address, or "note 36 ch 10", exactly as it went out with every `{}`
         /// already filled in. §5.9: *"showing the actually-sent message"*, not the template.
         std::string message;
-        /// Seconds since `start()`, on the clock the transports are driven from.
+        /// Seconds since the runner was made — `elapsed()`, a clock that only goes forwards and
+        /// that the transports are driven from. Not since `start()`: that went back to zero on
+        /// every Start (see `start`).
         double when = 0.0;
         /// §5.6's release half rather than a fire of its own. It belongs in the log — a
         /// release that never left is a clip left held, and nothing else would say so — but

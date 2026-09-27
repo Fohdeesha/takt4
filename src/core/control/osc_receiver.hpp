@@ -24,8 +24,9 @@ namespace takt4::control {
 class OscReceiver {
 public:
     /// Bigger than anything §5.7 sends and small enough to sit on the stack of the thread
-    /// draining it. A datagram longer than this is read up to here and refused by the
-    /// parser rather than reassembled.
+    /// draining it. A datagram longer than this is not reassembled: on Windows `recvfrom` fails
+    /// it with WSAEMSGSIZE and it is dropped, not counted in `datagrams`; elsewhere it arrives
+    /// cut to this length.
     static constexpr std::size_t kMaxDatagram = 2048;
 
     /// Binds `port`, or any free one when it is 0 — `port()` then says which. Throws

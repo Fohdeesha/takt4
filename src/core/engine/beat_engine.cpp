@@ -60,6 +60,10 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
       decoderKind_(options.decoder), decoder_(makeDecoder(model, options)),
       tempo_(decoder_->secondsPerFrame(), forDecoder(options.tempo, *decoder_)),
       stepsPerActivation_(stepsFor(*decoder_)) {
+    // Sized now, so the first drain allocates nothing: `drain` swaps this buffer into the queue
+    // and sizes whatever it gets back, which for a buffer that had never held anything was an
+    // allocation on the inference thread (the audit of 2026-09-25's stale-comment list).
+    commands_.reserve(ControlQueue::kCapacity);
     syncDecoder();
     state_.publish(tempo_.state());
     options_.publish(tempo_.options());

@@ -4,6 +4,7 @@
 #include "core/engine/control.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
+#include "core/rt/alloc_guard.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/particle_filter.hpp"
 #include "core/tracking/state_space.hpp"
@@ -74,6 +75,26 @@ std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {})
 }
 
 } // namespace
+
+TEST_CASE("an engine takes its first command without touching the heap", "[engine][rt]") {
+    // The audit of 2026-09-25's stale-comment list. The engine says it allocates on
+    // construction and on reset and nothing after, and the first drain of its command queue
+    // did: `ControlQueue::drain` swaps the engine's buffer in and sizes what it gets back, and a
+    // buffer that had never held anything had no room.
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    REQUIRE(engine->post(Command::halve()));
+    const bool abortWas = takt4::rt::abortOnViolation();
+    takt4::rt::setAbortOnViolation(false);
+    const std::uint64_t before = takt4::rt::violationCount();
+    {
+        const takt4::rt::RealtimeScope scope;
+        (void)engine->step();
+    }
+    const std::uint64_t after = takt4::rt::violationCount();
+    takt4::rt::setAbortOnViolation(abortWas);
+    CHECK(takt4::rt::allocationGuardEnabled());
+    CHECK(after == before);
+}
 
 TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
     // The user's report, 2026-09-05: *"the time signature detected constantly changes and

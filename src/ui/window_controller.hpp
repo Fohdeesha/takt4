@@ -114,7 +114,8 @@ public:
     /// Looks for input devices and MIDI ports again — the RESCAN button. Only while stopped:
     /// PortAudio renumbers every device when it looks. Keeps the choice that was made (or the
     /// remembered one, if the last launch fell back from it) by name, and tries again anything
-    /// remembered that was missing: the MIDI clock port, and any MIDI output a target names.
+    /// remembered that was missing: the MIDI control input, and every MIDI output and MIDI clock
+    /// an output row names.
     void rescanDevices();
 
     /// Whether the operator has asked for the tracker to run: true from Start to Stop, and
@@ -198,9 +199,6 @@ public:
     /// Taps counted so far in the set being tapped in, for the button's own label.
     std::size_t taps() const noexcept { return taps_.taps(); }
 
-    /// The Link output's switch — the tick box on its row, which is always the first. Kept as
-    /// a call of its own for the callers that think of Link as a switch.
-    void setLinkEnabled(bool on);
     /// SHOW PEERS / HIDE PEERS: the list of Link peers under the Link row, and the listener
     /// behind it (`output::LinkPeerWatch`), which is open only while the list is.
     void toggleLinkPeers();
@@ -381,11 +379,12 @@ public:
     /// damaged and what was done about it. On the status line, as an error.
     void showNotice(const std::string& text);
 
-    /// Load a file and apply **the portable half** — Q7's preset: the rules, the outputs,
-    /// the fold window and the rest of `TempoTracker::Options`, the meters, Link and the OSC
-    /// prefix. The machine-local half is deliberately left alone: the audio device, the MIDI
-    /// clock port and the learned bindings describe *this* desk, and a preset carried from
-    /// another one naming a device that is not here would silently stop the tracker.
+    /// Load a file and apply **the portable half** — Q7's preset: the rules, the outputs (Link
+    /// and the MIDI clocks among them, since they became output rows on 2026-09-25), the
+    /// lighting patch, the fold window and the rest of `TempoTracker::Options`, the meters and
+    /// the OSC prefix. The machine-local half is deliberately left alone: the audio device, the
+    /// MIDI control input and the learned bindings describe *this* desk, and a preset carried
+    /// from another one naming a device that is not here would silently stop the tracker.
     ///
     /// False only when the file could not be read as settings at all. Note that
     /// `settings::load` never fails, so this reports on the file existing and parsing rather

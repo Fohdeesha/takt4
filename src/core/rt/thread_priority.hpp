@@ -15,8 +15,12 @@ namespace takt4::rt {
 /// What a thread does, which decides what it asks the scheduler for.
 enum class ThreadWork : std::uint8_t {
     /// A millisecond's work every millisecond, where a late round is a late MIDI tick and a
-    /// late cue: the output thread. MMCSS "Pro Audio" — the class ASIO and WASAPI give their
-    /// own audio threads — at normal priority within it, below the audio callback.
+    /// late cue: the output thread. MMCSS "Pro Audio", at normal priority within it. That is
+    /// the class PortAudio's WASAPI host gives its audio thread only in exclusive mode; in
+    /// shared mode, which is how takt4 opens WASAPI, that thread asks for "Audio" — so on a
+    /// WASAPI input the output thread is scheduled *ahead* of the audio callback, not behind it
+    /// as this said (the audit of 2026-09-25's stale-comment list). An ASIO driver's callback
+    /// thread is the driver's own business.
     Output,
     /// A few milliseconds of arithmetic per 20 ms hop, where falling behind loses hops: the
     /// model and the tracker. MMCSS "Audio", which is scheduled ahead of ordinary threads and

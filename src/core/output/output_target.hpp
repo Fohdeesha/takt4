@@ -123,7 +123,7 @@ struct OutputTarget {
 inline constexpr double kMaxOutputDelaySeconds = 1.0;
 inline constexpr double kMinOutputDelaySeconds = -1.0;
 
-/// How many targets a rule can be routed to by name.
+/// How many targets a rule can be routed to by id.
 ///
 /// A rule carries its routing as a bit per target (`trigger::Message::outputs`), which is
 /// what keeps a fire allocation-free and a follow-up safe to hold after the rule set has

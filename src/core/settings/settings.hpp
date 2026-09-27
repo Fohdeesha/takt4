@@ -139,7 +139,8 @@ struct Preset {
     /// the *show* — "a random clip on every fourth downbeat" — and travels to whatever
     /// laptop is running it. The one machine-shaped thing a rule could carry is a MIDI
     /// port, and it does not: a MIDI rule names a channel and a note, and which port they
-    /// leave by is `midiClockPort`'s business.
+    /// leave by is the business of the MIDI output rows it is routed to (`outputs`), which
+    /// name the device.
     ///
     /// Held as configuration rather than as live `trigger::Rule`s, which is what makes them
     /// storable at all — see `Rule::Config`, which is plain data for exactly this.

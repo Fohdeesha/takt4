@@ -121,8 +121,9 @@ public:
     /// operator's call of 2026-09-23 (the audit's Q3); PANIC is `cancelAll`, which freezes.
     void blackout(double now);
 
-    /// Every level back to its fixture's parked value, and every effect stopped. For a preset
-    /// load, not for panic.
+    /// Every level back to its fixture's parked value, and every effect stopped. **Only the
+    /// tests call it**, to start a case from the rig as patched: a preset load goes through
+    /// `setPatch`, and panic is `cancelAll` (the audit of 2026-09-25's stale-comment list).
     void reset();
 
     /// The universes the patch uses, ascending. Stable between `setPatch` calls.
