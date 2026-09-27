@@ -338,6 +338,13 @@ void fillRules(RulesWindow& window, bool dmx) {
         kinds->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
     }
     window.set_generator_kinds(kinds);
+    // As `RulesController` has them: a color's chip offers only what can make a color. Left
+    // out, a shot drew that chip's dropdown blank — a window the app never shows.
+    auto colorKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::GeneratorKind kind : trigger::kColorGeneratorKinds) {
+        colorKinds->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
+    }
+    window.set_color_generator_kinds(colorKinds);
 
     auto sources = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::LiveSource source : trigger::kLiveSources) {
@@ -618,13 +625,15 @@ void fillRules(RulesWindow& window, bool dmx) {
     window.set_last_fired_ago(slint::SharedString("2s ago"));
 
     auto log = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* line : {"184s  drop  /composition/layers/3/clips/7/connect 1",
-                             "184s  drop  /composition/layers/3/clips/7/connect 0",
-                             "177s  drop  /composition/layers/3/clips/12/connect 1",
-                             "177s  drop  /composition/layers/3/clips/12/connect 0",
-                             "170s  drop  /composition/layers/3/clips/1/connect 1",
-                             "170s  drop  /composition/layers/3/clips/1/connect 0",
-                             "163s  drop  /composition/layers/3/clips/3/connect 1"}) {
+    // Named as `RulesController::tick` names them: by the rule's name, as the list shows it.
+    for (const char* line :
+         {"184s  Layer 1 - random clip  /composition/layers/3/clips/7/connect 1",
+          "184s  Layer 1 - random clip  /composition/layers/3/clips/7/connect 0",
+          "177s  Layer 1 - random clip  /composition/layers/3/clips/12/connect 1",
+          "177s  Layer 1 - random clip  /composition/layers/3/clips/12/connect 0",
+          "170s  Layer 1 - random clip  /composition/layers/3/clips/1/connect 1",
+          "170s  Layer 1 - random clip  /composition/layers/3/clips/1/connect 0",
+          "163s  Layer 1 - random clip  /composition/layers/3/clips/3/connect 1"}) {
         log->push_back(slint::SharedString(line));
     }
     window.set_log(log);

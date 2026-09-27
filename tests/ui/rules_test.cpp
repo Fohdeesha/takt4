@@ -12,6 +12,7 @@
 #include "ui/delete_guard.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/rules_controller.hpp"
+#include "ui/shot.hpp"
 #include "ui/window_state.hpp"
 
 #include "support/loopback_receiver.hpp"
@@ -26,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <set>
@@ -1028,6 +1030,55 @@ TEST_CASE("what fired reaches the editor's log and its last-fired line", "[ui][t
     }
 }
 
+TEST_CASE("the event log names a rule as the list does, not by its id", "[ui][trigger]") {
+    // The audit of 2026-09-25, L38: the log said "rule1-copy2", a word this window shows
+    // nowhere else, so a line in it could not be matched to a rule.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/composition/master");
+    editor.rename("Strobe the wash");
+    editor.add(); // a second, unnamed, as the list shows one
+    editor.setAddress("/composition/tempo");
+    editor.rename("");
+    const std::string namedId = editor.rules().front().id;
+    const std::string unnamedId = editor.rules().back().id;
+
+    const auto lines = [&editor] {
+        std::vector<std::string> out;
+        const auto log = editor.window().get_log();
+        for (std::size_t i = 0; i < log->row_count(); ++i) {
+            out.emplace_back(*log->row_data(i));
+        }
+        return out;
+    };
+    editor.pick(0);
+    editor.test();
+    editor.pick(1);
+    editor.test();
+    editor.tick();
+    const std::vector<std::string> said = lines();
+    REQUIRE(said.size() >= 2);
+    bool named = false;
+    bool unnamed = false;
+    for (const std::string& line : said) {
+        INFO("log: " << line);
+        CHECK(line.find(namedId) == std::string::npos);
+        CHECK(line.find(unnamedId) == std::string::npos);
+        named = named || line.find("Strobe the wash") != std::string::npos;
+        unnamed = unnamed || line.find("(unnamed)") != std::string::npos;
+    }
+    CHECK(named);
+    CHECK(unnamed);
+
+    SECTION("and a rule deleted since it fired is said to be gone") {
+        editor.test(); // the second, again
+        editor.removeAt(1);
+        editor.tick();
+        CHECK(lines().front().find("(a rule since deleted)") != std::string::npos);
+    }
+}
+
 TEST_CASE("a rule firing does not rebuild the boxes being typed into", "[ui][trigger]") {
     // Reported from a set: *"editing triggers, like the text input boxes etc, was almost
     // impossible, every beat of the music, it would kick me out of the edit box"*.
@@ -1714,7 +1765,7 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     // passing for ever. This sweeps the conditions block until a typed digit lands in the
     // cooldown box, which is proof that box has the keyboard.
     std::string typed;
-    for (float y = 250.0f; y < 345.0f && typed.empty(); y += 2.0f) {
+    for (float y = 250.0f; y < 430.0f && typed.empty(); y += 2.0f) {
         for (float x = 540.0f; x < 660.0f && typed.empty(); x += 20.0f) {
             const slint::LogicalPosition at({x, y});
             window.window().dispatch_pointer_move_event(at);
@@ -1808,13 +1859,32 @@ TEST_CASE("the send-to ticks follow the rule that is selected", "[ui][trigger]")
     float openX = -1.0f;
     float openY = -1.0f;
     float everyOutputY = -1.0f;
+    // Inside the editor's pane: a probe in the rule list beside it selects the other rule, which
+    // the next probes then route — and the second rule has to be left unrouted for the question
+    // at the end.
+    const float paneLeft = window.get_list_width() + 8.0f;
     for (float y = 250.0f; y < 760.0f && everyOutputY < 0.0f; y += 4.0f) {
-        for (float x = 150.0f; x < 420.0f && everyOutputY < 0.0f; x += 10.0f) {
+        for (float x = paneLeft; x < 420.0f && everyOutputY < 0.0f; x += 10.0f) {
             editor.pickSend(oscKind);
             editor.setOutputs("wall"); // something for "every output" to clear
             click(700.0f, 40.0f);      // close whatever is open; outside every popup
             click(x, y);
-            for (float row = y + 20.0f; row < y + 80.0f && everyOutputY < 0.0f; row += 3.0f) {
+            slint::platform::update_timers_and_animations(); // `changed is-open` runs a loop late
+            // The opener is what opens the list — `routing-open` says so — and only then is the
+            // list itself hunted, which under AddressSanitizer is the difference between seconds
+            // and ctest's five-minute limit.
+            if (!window.get_routing_open()) {
+                continue;
+            }
+            // Above the opener as well as below it: **where a popup opens is Slint's to say**,
+            // and since the SEND rows were given a line each (the audit of 2026-09-25, L37) the
+            // field sits low enough that this one opens above it — measured, its first row 84px
+            // over a field at 540, placed inside the headless platform's 520px window whatever
+            // height the test dispatched. Opened again for each probe, since a probe that misses
+            // it is a click outside it, which closes it.
+            for (float row = y - 130.0f; row < y + 80.0f && everyOutputY < 0.0f; row += 8.0f) {
+                click(700.0f, 40.0f);
+                click(x, y);
                 click(x + 30.0f, row);
                 if (editor.rules().front().outputs.empty() && stillOsc()) {
                     openX = x;
@@ -1957,7 +2027,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
 
     float boxX = -1.0f;
     float boxY = -1.0f;
-    for (float y = 250.0f; y < 345.0f && boxX < 0.0f; y += 2.0f) {
+    for (float y = 250.0f; y < 430.0f && boxX < 0.0f; y += 2.0f) {
         for (float x = 540.0f; x < 660.0f && boxX < 0.0f; x += 20.0f) {
             click(x, y);
             type("5");
@@ -2298,8 +2368,11 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
     auto& window = editor.window();
     window.show();
     window.window().dispatch_scale_factor_change_event(1.0f);
-    // Tall enough that the picker, which hangs below its swatch, has somewhere to hang.
-    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 1000.0f}));
+    // Tall enough that the picker, which hangs below its swatch, has somewhere to hang — and
+    // that the pane does not scroll: a color rule's rows are taller than 1000px since each
+    // setting got a named row of its own (the audit of 2026-09-25, L37), and a pane that
+    // scrolled between the sweep and the drag put the drag on something else.
+    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 1400.0f}));
     window.window().dispatch_window_active_changed_event(true);
 
     const auto dmx =
@@ -2375,10 +2448,20 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
     // The swatch is clicked again whenever the picker has closed: a click that misses the
     // popup is a click outside it, which closes it, and every later probe would be pressing on
     // nothing.
+    //
+    // **REMOVE moves the first color too**, by taking it away — and the picker's REMOVE was met
+    // before any slider once the picker opened somewhere else (2026-09-26, when the rows above
+    // it were each given a line of their own). A probe that shrank the palette found a button,
+    // not a slider: the rule is built again and the hunt goes on.
+    const std::size_t colors = window.get_palette()->row_count();
     float sliderX = -1.0f;
     float sliderY = -1.0f;
-    for (float y = std::max(0.0f, swatchY - 360.0f); y < swatchY + 300.0f && sliderX < 0.0f;
-         y += 8.0f) {
+    //
+    // From the top of the window: a popup is placed inside the window the platform really has —
+    // the test binaries' headless one is 520px tall, whatever size a test dispatches — so a
+    // picker for a swatch at 828 opens wholly above 520, and a hunt that began 360px over the
+    // swatch reached only its last row.
+    for (float y = 0.0f; y < swatchY + 300.0f && sliderX < 0.0f; y += 8.0f) {
         for (float x = std::max(0.0f, swatchX - 300.0f); x < swatchX + 300.0f && sliderX < 0.0f;
              x += 8.0f) {
             if (!editor.pickerOpen()) {
@@ -2388,6 +2471,10 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
                 continue;
             }
             click(x, y);
+            if (window.get_palette()->row_count() != colors) {
+                buildRule();
+                continue;
+            }
             if (firstColor() != before) {
                 sliderX = x;
                 sliderY = y;
@@ -2769,11 +2856,13 @@ TEST_CASE("the rate buttons are greyed out on a trigger with no count", "[ui][tr
         window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
     };
 
-    // The ÷2 button, found by what pressing it does on a counted trigger.
+    // The ÷2 button, found by what pressing it does on a counted trigger. On the line under the
+    // trigger's since 2026-09-26 (the audit of 2026-09-25, L35), so the sweep starts below the
+    // trigger dropdown — a stray pick there would change the trigger it is checked against.
     float foundX = -1.0f;
     float foundY = -1.0f;
-    for (float y = 100.0f; y < 260.0f && foundX < 0.0f; y += 6.0f) {
-        for (float x = 560.0f; x < 1000.0f && foundX < 0.0f; x += 8.0f) {
+    for (float y = 140.0f; y < 300.0f && foundX < 0.0f; y += 6.0f) {
+        for (float x = 200.0f; x < 1000.0f && foundX < 0.0f; x += 8.0f) {
             click(x, y);
             if (std::string(window.get_rule_rate()) == "2× faster" &&
                 editor.rules().front().trigger == Trigger::Bar) {
@@ -3049,10 +3138,12 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
     REQUIRE(swatches->row_count() >= 2);
     const std::size_t before = swatches->row_count();
 
-    // A swatch: the first click that opens a picker.
+    // A swatch: the first click that opens a picker. Down to the window's foot: a color rule's
+    // palette sits lower since each lighting setting got a named row (the audit of 2026-09-25,
+    // L37).
     float swatchX = -1.0f;
     float swatchY = -1.0f;
-    for (float y = 300.0f; y < 740.0f && swatchX < 0.0f; y += 4.0f) {
+    for (float y = 300.0f; y < 860.0f && swatchX < 0.0f; y += 4.0f) {
         for (float x = 380.0f; x < 800.0f && swatchX < 0.0f; x += 6.0f) {
             shown.click(x, y);
             if (editor.pickerOpen()) {
@@ -3560,10 +3651,12 @@ TEST_CASE("a color's generator offers only the kinds that can make a color", "[u
     REQUIRE(kind() == GeneratorKind::Fixed);
     REQUIRE(window.get_slots()->row_data(0)->is_color);
 
-    // The dropdown, found by what one step of it does: from "fixed", one Up is "weighted".
+    // The dropdown, found by what one step of it does: from "fixed", one Up is "weighted". Down
+    // to the window's foot, where the chip sits since each lighting setting got a named row
+    // (the audit of 2026-09-25, L37).
     float comboX = -1.0f;
     float comboY = -1.0f;
-    for (float y = 400.0f; y < 720.0f && comboX < 0.0f; y += 8.0f) {
+    for (float y = 400.0f; y < 860.0f && comboX < 0.0f; y += 8.0f) {
         for (float x = 300.0f; x < 620.0f && comboX < 0.0f; x += 16.0f) {
             click(x, y);
             key(up);
@@ -3812,9 +3905,10 @@ FollowBoxes findFollowBoxes(RulesController& editor, const Shown& shown) {
             return owed().value.asInt() == 9;
         },
         rebuild);
+    // And the delay on the row's second line, under the kind and after "after", since the row
+    // was cut in two to fit the pane (the audit of 2026-09-25, L35).
     boxes.delay = sweep(
-        boxes.value.found() ? boxes.value.x + 40.0f : boxes.number.x + 60.0f, 1000.0f, 8.0f, row,
-        row + 1.0f, 1.0f,
+        200.0f, 1000.0f, 8.0f, row + 20.0f, row + 56.0f, 4.0f,
         [&](float x, float y) {
             nine(x, y);
             return owed().delayBeats == Approx(9.0);
@@ -4253,4 +4347,228 @@ TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][tri
     CHECK(bpm() == std::make_pair(100.0, 110.0)); // the first rule: the one it was typed into
     const auto& added = editor.rules().back().conditions;
     CHECK(std::make_pair(added.minBpm, added.maxBpm) == anyBpm); // and not the new one
+}
+
+TEST_CASE("a palette's + is still there to click after a dozen colors at the window's narrowest",
+          "[ui][trigger][dmx]") {
+    // The audit of 2026-09-25, L36: the swatches never wrapped, and at 900px the "+" left the
+    // pane after about eight colors — cut off by the pane, so no click could reach it and the
+    // palette could not be added to. The swatches are placed on a grid of their own, which adds
+    // nothing to a row's least width, so this asks the pointer rather than the layout.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.pickSend(static_cast<int>(
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::Dmx) -
+        takt4::trigger::kMessageKinds.begin()));
+    editor.pickEffect(static_cast<int>(
+        std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
+                  takt4::dmx::EffectKind::Color) -
+        takt4::dmx::kEffectKinds.begin()));
+    for (int i = 0; i < 12; ++i) {
+        editor.addPaletteColor();
+    }
+    editor.tick();
+    editor.tick();
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 1400.0f}));
+    window.window().dispatch_window_active_changed_event(true);
+    const auto click = [&window](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+        slint::platform::update_timers_and_animations();
+    };
+    const std::size_t colors = editor.rules().front().dmx.color.values.size();
+    REQUIRE(colors >= 12);
+
+    // Found by what it does. Each probe is preceded by a click on the WHEN heading — nothing
+    // but the window behind it — which closes whatever popup the last probe opened without
+    // choosing anything in it.
+    float plusX = -1.0f;
+    float plusY = -1.0f;
+    const float paneRight = 900.0f - window.get_log_width();
+    for (float y = 300.0f; y < 1350.0f && plusX < 0.0f; y += 6.0f) {
+        for (float x = window.get_list_width() + 8.0f; x < paneRight && plusX < 0.0f; x += 8.0f) {
+            click(250.0f, 84.0f);
+            click(x, y);
+            if (editor.rules().front().dmx.color.values.size() == colors + 1) {
+                plusX = x;
+                plusY = y;
+            }
+        }
+    }
+    INFO("+ at " << plusX << ", " << plusY);
+    CHECK(plusX >= 0.0f);
+    CHECK(editor.rules().front().dmx.effect == takt4::dmx::EffectKind::Color);
+}
+
+TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowest",
+          "[ui][trigger]") {
+    // The audit of 2026-09-25, L35 and L36, and what rendering at 900px found beside them. At
+    // the window's minimum width a THEN SEND row lost its unit, its summary and its ×, a
+    // palette's "+" left the pane after eight colors, and a pulse's numbers, a list chip's
+    // no-repeat and a ramp's "whole numbers" did the same. Each is laid out here at 900px wide,
+    // tall enough that nothing scrolls, and the least width the editor's rows ask for is held
+    // against the width the pane gives them. **Not by pixels**: the pane's scroll view holds
+    // its content to its own width, so a row too wide for it is cut off at the edge and draws
+    // nothing outside it — a first version of this read the divider beside the pane, and
+    // passed with the {clip} chip's no-repeat cut in half.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    using Kind = takt4::trigger::Message::Kind;
+    using takt4::dmx::EffectKind;
+    const auto sendAs = [&editor](Kind kind) {
+        editor.pickSend(static_cast<int>(std::find(takt4::trigger::kMessageKinds.begin(),
+                                                   takt4::trigger::kMessageKinds.end(), kind) -
+                                         takt4::trigger::kMessageKinds.begin()));
+    };
+    const auto effect = [&editor](EffectKind kind) {
+        editor.pickEffect(static_cast<int>(std::find(takt4::dmx::kEffectKinds.begin(),
+                                                     takt4::dmx::kEffectKinds.end(), kind) -
+                                           takt4::dmx::kEffectKinds.begin()));
+    };
+    const auto followKind = [&window](const std::string& label) {
+        const auto kinds = window.get_follow_kinds();
+        for (std::size_t i = 0; i < kinds->row_count(); ++i) {
+            if (std::string(*kinds->row_data(i)) == label) {
+                return static_cast<int>(i);
+            }
+        }
+        FAIL("no follow-up kind \"" << label << "\"");
+        return -1;
+    };
+    const auto fresh = [&editor] {
+        editor.setRules({});
+        editor.add();
+    };
+
+    struct Case {
+        const char* what;
+        std::function<void()> build;
+    };
+    const std::vector<Case> cases = {
+        {"a MIDI note with a note and a CC to follow it",
+         [&] {
+             fresh();
+             sendAs(Kind::MidiNote);
+             editor.addFollowUp();
+             editor.addFollowUp();
+             editor.addFollowUp();
+             editor.pickFollowKind(1, followKind("MIDI note"));
+             editor.pickFollowKind(2, followKind("MIDI CC"));
+         }},
+        {"an OSC address whose chip draws from a list, with a release",
+         [&] {
+             fresh();
+             sendAs(Kind::Osc);
+             editor.setAddress("/composition/layers/{layer}/clips/{clip}/connect");
+             editor.pickSlotKind(1, static_cast<int>(GeneratorKind::Shuffle));
+             editor.setSlotPool(1, true);
+             editor.setSlotValues(1, "3, 7, 1, 12");
+             editor.setSlotNoRepeat(1, 2);
+             editor.addFollowUp();
+             // And slowed from a control surface, which says so beside ÷2 and ×2 — and keeps
+             // saying it at this width rather than eliding to "…".
+             editor.window().set_rule_rate(slint::SharedString("16× slower"));
+         }},
+        {"a Euclidean pattern, sped up",
+         [&] {
+             fresh();
+             sendAs(Kind::Osc);
+             editor.pickTrigger(static_cast<int>(
+                 std::find(takt4::trigger::kTriggers.begin(), takt4::trigger::kTriggers.end(),
+                           takt4::trigger::Trigger::Euclid) -
+                 takt4::trigger::kTriggers.begin()));
+             REQUIRE(editor.rules().front().trigger == takt4::trigger::Trigger::Euclid);
+             editor.window().set_rule_rate(slint::SharedString("16× faster"));
+         }},
+        {"an OSC value that ramps",
+         [&] {
+             fresh();
+             sendAs(Kind::Osc);
+             editor.setAddress("/composition/master");
+             editor.setSendValue(true);
+             editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Ramp));
+             REQUIRE(editor.rules().front().value.kind == GeneratorKind::Ramp);
+         }},
+        {"an OSC value drawn by weight",
+         [&] {
+             fresh();
+             sendAs(Kind::Osc);
+             editor.setAddress("/composition/master");
+             editor.setSendValue(true);
+             editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Weighted));
+         }},
+        {"an OSC value that follows the tempo across a range",
+         [&] {
+             fresh();
+             sendAs(Kind::Osc);
+             editor.setAddress("/composition/master");
+             editor.setSendValue(true);
+             editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Live));
+             editor.pickSlotLive(
+                 0, static_cast<int>(std::find(takt4::trigger::kLiveSources.begin(),
+                                               takt4::trigger::kLiveSources.end(),
+                                               takt4::trigger::LiveSource::BpmNormalised) -
+                                     takt4::trigger::kLiveSources.begin()));
+             REQUIRE(editor.rules().front().value.source ==
+                     takt4::trigger::LiveSource::BpmNormalised);
+         }},
+        {"a fixed color",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Color);
+         }},
+        {"a pulse on a dimmer",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Pulse);
+         }},
+        {"a strobe",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Strobe);
+         }},
+        {"a hue sweep",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::HueSweep);
+         }},
+        {"a path",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Path);
+         }},
+        {"a palette of twelve colors",
+         [&] {
+             fresh();
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Color);
+             for (int i = 0; i < 12; ++i) {
+                 editor.addPaletteColor();
+             }
+         }},
+    };
+    for (const Case& c : cases) {
+        INFO(c.what);
+        c.build();
+        editor.tick();
+        editor.tick();
+        (void)takt4::tests::render(window, 900, 1900);
+        INFO("the rows ask for " << window.get_body_least_width() << "px and the pane has "
+                                 << window.get_body_width() << "px");
+        CHECK(window.get_body_width() > 400.0f); // laid out at 900, not at nothing
+        CHECK(window.get_body_least_width() <= window.get_body_width() + 0.5f);
+    }
 }

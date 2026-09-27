@@ -166,12 +166,30 @@ export component FixturesWindow inherits Window {
       padding: 14px;
       spacing: 10px;
 
-      Text {
-        text: "FIXTURES";
-        color: Theme.dim;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 1px;
+      HorizontalLayout {
+        spacing: 8px;
+
+        Text {
+          text: "FIXTURES";
+          color: Theme.dim;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 1px;
+          vertical-alignment: center;
+        }
+
+        // What the tick on each row is, which nothing said — it is the list's one control, and
+        // the same switch as "in the show" beside the selected fixture's address (the audit
+        // of 2026-09-25, L37).
+        Text {
+          text: "ticked: in the show";
+          color: Theme.dim;
+          font-size: 10px;
+          horizontal-alignment: right;
+          vertical-alignment: center;
+          horizontal-stretch: 1;
+          overflow: elide;
+        }
       }
 
       ListView {

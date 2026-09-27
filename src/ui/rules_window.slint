@@ -1012,7 +1012,7 @@ export component RulesWindow inherits Window {
           // not on screen. Two renders found it; nothing in the markup says it is wrong.
           viewport-width: self.visible-width;
 
-          VerticalLayout {
+          body := VerticalLayout {
             padding: 16px;
             spacing: 14px;
             alignment: start;
@@ -1059,7 +1059,7 @@ export component RulesWindow inherits Window {
                 minimum: 1;
                 maximum: 64;
                 enabled: root.selected >= 0;
-                width: 96px;
+                width: 76px; // two digits and the arrows
                 typed(v) => {
                   root.rule-typed(6, v);
                 }
@@ -1096,38 +1096,35 @@ export component RulesWindow inherits Window {
                 //
                 // For a Euclidean pattern the same line shows the pattern itself, which is the
                 // only way two numbers become something an operator can hear before it plays.
-                // And where the trigger has no count, why ÷2 and ×2 beside it are greyed out:
-                // they multiply the count, and a downbeat or a lock change has none (the
-                // audit's M10) — pressed, they changed a number nothing reads.
                 text: root.trigger-takes-pulses ? root.euclid-pattern
-                  : root.trigger-takes-every ? "counting from the first"
-                  : root.selected >= 0 ? "÷2 and ×2 need a count" : "";
+                  : root.trigger-takes-every ? "counting from the first" : "";
                 color: Theme.dim;
                 font-size: 12px;
                 font-family: root.trigger-takes-pulses ? "Consolas" : "";
                 vertical-alignment: center;
                 horizontal-stretch: 1;
-                // **This is what was eating the two buttons beside it.** A `Text` with no
-                // elide reports its whole string as its minimum width, and a layout will not
-                // shrink a child below its minimum — so in a pane dragged narrow this line
-                // kept all twenty-three characters and ÷2 and ×2 were squeezed until `Press`
-                // elided *their* labels to a single ellipsis each. Reported from a rig on
-                // 2026-09-16 as "wtf are these two buttons with 3 dots each". The prose is
-                // what should give way here; the buttons are what gets pressed.
+                // A `Text` with no elide reports its whole string as its minimum width, and a
+                // layout will not shrink a child below its minimum — which is how this line once
+                // squeezed ÷2 and ×2 to an ellipsis each ("wtf are these two buttons with 3 dots
+                // each", a rig on 2026-09-16). The prose gives way.
                 overflow: elide;
               }
+            }
 
-              // **How often, live** — §5.7's `double` and `halve` reached from the window
-              // rather than only from a control surface.
-              //
-              // Here and not in the title bar beside MUTE, which is where they started: the
-              // title row is a checkbox, a button, a name field and TEST, and three more
-              // controls pushed the editor pane past what the window's own 900px minimum
-              // leaves it. A pane test caught it. They read better here anyway, because this
-              // is the row that already says how often the rule fires.
-              // And a floor of their own, so that whatever else is on the row these two keep
-              // enough width for the label they exist to show. Wide enough for "÷2" at 17px
-              // with `Press`'s own padding either side.
+            // **How often, live** — §5.7's `double` and `halve` reached from the window rather
+            // than only from a control surface — and how far from the rule as written a surface
+            // has already moved it.
+            //
+            // **A line of their own**, under the trigger they multiply. Beside it, with the
+            // rate's readout after them, the row asked for 494px at the window's 900px minimum
+            // where the pane has 476, and a Euclidean rule's second box made it worse (the audit
+            // of 2026-09-25, L35's render). Not in the title bar either, which is where they
+            // started: that row is full.
+            HorizontalLayout {
+              spacing: 10px;
+
+              // A floor of their own, so whatever else is on the line these two keep the label
+              // they exist to show: "÷2" at 17px with `Press`'s own padding either side.
               Press {
                 text: "÷2";
                 pad: 8px;
@@ -1146,15 +1143,23 @@ export component RulesWindow inherits Window {
                   root.rule-rate-changed(2.0);
                 }
               }
+
               Text {
-                // Only when it is not 1: a rule at the rate it was written to has nothing to
-                // say, and a permanent "×1" beside every rule would be noise.
-                text: root.rule-rate;
-                color: Theme.holding;
+                // The rate, in amber, when a control surface has changed it: the one thing here
+                // that is not the rule as written. Empty at the written rate, so a rule nobody
+                // has touched says nothing. And where the trigger has no count, why the two
+                // buttons are greyed out: they multiply the count, and a downbeat or a lock
+                // change has none (the audit's M10) — pressed, they changed a number nothing
+                // reads.
+                text: root.rule-rate != "" ? root.rule-rate
+                  : root.selected >= 0 && !root.trigger-takes-every ? "÷2 and ×2 need a count"
+                  : "";
+                color: root.rule-rate != "" ? Theme.holding : Theme.dim;
                 font-size: 12px;
-                font-family: "Consolas";
+                font-family: root.rule-rate != "" ? "Consolas" : "";
                 vertical-alignment: center;
-                width: 80px;
+                horizontal-stretch: 1;
+                overflow: elide;
               }
             }
 
@@ -1379,8 +1384,21 @@ export component RulesWindow inherits Window {
               letter-spacing: 1px;
             }
 
+            // **Each control named in the gutter**, as "send to", "color from" and "lights" below
+            // already were. The kind, the host preset, the effect and the path's shape were four
+            // dropdowns side by side with nothing to say which was which — the SEND heading
+            // above all of them — and with a role and a shape beside the effect the row ran off
+            // the pane at the window's 900px minimum (the audit of 2026-09-25, L37).
             HorizontalLayout {
               spacing: 8px;
+
+              Text {
+                text: "send as";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
 
               ComboBox {
                 model: root.send-kinds;
@@ -1389,24 +1407,6 @@ export component RulesWindow inherits Window {
                 width: 140px;
                 selected => {
                   root.send-picked(self.current-index);
-                }
-              }
-
-              if root.sends-osc : ComboBox {
-                // §5.6's host presets. A starting point that fills the address and its
-                // slots, never a code path — everything it wrote stays editable.
-                //
-                // Bound to the rule rather than left wherever it was last clicked: this box
-                // used to keep saying "Resolume 7" over an address the operator had since
-                // typed over, and say it about the *next* rule they selected too. It now
-                // shows which preset the address in front of it is, and "custom" when it is
-                // none of them — including after an edit that took it off a preset.
-                model: root.host-presets;
-                current-index <=> root.host-preset-index;
-                enabled: root.selected >= 0;
-                width: 168px;
-                selected => {
-                  root.host-preset-picked(self.current-index);
                 }
               }
 
@@ -1431,15 +1431,71 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              // **Every control on the lighting rows is bound both ways** (the audit's H10). A
-              // one-way binding dies the first time the control is used, and the next rule picked
-              // went on showing this one's effect, unit or duration — and a focus-out then wrote
-              // it into that rule.
-              //
-              // The effect, which for a lighting rule is what the address is for an OSC one:
-              // the first thing decided and the thing that decides what the rest of the row is
-              // even asking.
-              if root.sends-dmx : ComboBox {
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.sends-osc : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "preset";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              ComboBox {
+                // §5.6's host presets. A starting point that fills the address and its
+                // slots, never a code path — everything it wrote stays editable.
+                //
+                // Bound to the rule rather than left wherever it was last clicked: this box
+                // used to keep saying "Resolume 7" over an address the operator had since
+                // typed over, and say it about the *next* rule they selected too. It now
+                // shows which preset the address in front of it is, and "custom" when it is
+                // none of them — including after an edit that took it off a preset.
+                model: root.host-presets;
+                current-index <=> root.host-preset-index;
+                enabled: root.selected >= 0;
+                width: 168px;
+                selected => {
+                  root.host-preset-picked(self.current-index);
+                }
+              }
+
+              Text {
+                text: "fills in the address and its slots";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+            }
+
+            // **Every control on the lighting rows is bound both ways** (the audit's H10). A
+            // one-way binding dies the first time the control is used, and the next rule picked
+            // went on showing this one's effect, unit or duration — and a focus-out then wrote
+            // it into that rule.
+            //
+            // The effect, which for a lighting rule is what the address is for an OSC one: the
+            // first thing decided and the thing that decides what the rows below even ask.
+            if root.sends-dmx : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "effect";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              ComboBox {
                 model: root.effect-kinds;
                 current-index <=> root.effect-index;
                 enabled: root.selected >= 0;
@@ -1452,14 +1508,15 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.sends-dmx && root.effect-takes-role : Text {
+              if root.effect-takes-role : Text {
+                // The channel the effect drives: "a flash on the dimmer".
                 text: "on";
                 color: Theme.dim;
                 font-size: 12px;
                 vertical-alignment: center;
               }
 
-              if root.sends-dmx && root.effect-takes-role : ComboBox {
+              if root.effect-takes-role : ComboBox {
                 model: root.effect-roles;
                 current-index <=> root.effect-role-index;
                 enabled: root.selected >= 0;
@@ -1472,7 +1529,25 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.sends-dmx && root.effect-takes-shape : ComboBox {
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // A path's figure, on its own row beside the "size" below; beside the effect it was
+            // a third unnamed dropdown.
+            if root.sends-dmx && root.effect-takes-shape : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "shape";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              ComboBox {
                 model: root.effect-shapes;
                 current-index <=> root.effect-shape-index;
                 enabled: root.selected >= 0;
@@ -1626,7 +1701,28 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.effect-takes-curve : ComboBox {
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // **One named row each** for what used to follow the duration on its row: the curve
+            // with no name at all, the low level behind "from", the repeats behind "×", and the
+            // hues behind nothing but a placeholder, which is gone once the box holds a number.
+            // A pulse needed 660px there, and the pane has 460 at the window's 900px minimum
+            // (the audit of 2026-09-25, L37).
+            if root.sends-dmx && root.effect-takes-curve : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "curve";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              ComboBox {
                 model: root.effect-curves;
                 current-index <=> root.effect-curve-index;
                 enabled: root.selected >= 0;
@@ -1636,14 +1732,25 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.effect-takes-base : Text {
-                text: "from";
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.sends-dmx && root.effect-takes-base : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                // The low end of the sweep: what a flash decays to, and what a pulse and a
+                // strobe come down to between peaks. The peak is the level chip below.
+                text: "down to";
                 color: Theme.dim;
                 font-size: 12px;
+                width: 116px;
                 vertical-alignment: center;
               }
 
-              if root.effect-takes-base : NumberBox {
+              NumberBox {
                 value <=> root.effect-base;
                 minimum: 0;
                 maximum: 255;
@@ -1657,14 +1764,30 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.effect-takes-cycles : Text {
-                text: "×";
+              Text {
+                text: "0 to 255";
                 color: Theme.dim;
-                font-size: 12px;
+                font-size: 11px;
                 vertical-alignment: center;
               }
 
-              if root.effect-takes-cycles : Field {
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.sends-dmx && root.effect-takes-cycles : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "times";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              Field {
                 text <=> root.effect-cycles;
                 placeholder-text: "1";
                 font-size: 12px;
@@ -1684,7 +1807,30 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              if root.effect-takes-hue : Field {
+              Text {
+                text: "within the time above";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
+            }
+
+            if root.sends-dmx && root.effect-takes-hue : HorizontalLayout {
+              vertical-stretch: 0;
+              height: 36px;
+              spacing: 8px;
+
+              Text {
+                text: "hues";
+                color: Theme.dim;
+                font-size: 12px;
+                width: 116px;
+                vertical-alignment: center;
+              }
+
+              Field {
                 text <=> root.effect-hue;
                 placeholder-text: "0 - 360";
                 font-size: 12px;
@@ -1704,7 +1850,14 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              Rectangle { horizontal-stretch: 1; }
+              Text {
+                text: "degrees round the color wheel, from - to";
+                color: Theme.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+              }
             }
 
             // A strobe's duty cycle and a path's radius, each a slider because each is found by
@@ -1735,8 +1888,9 @@ export component RulesWindow inherits Window {
                 color: Theme.text;
                 font-size: 12px;
                 vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
               }
-              Rectangle { horizontal-stretch: 1; }
             }
 
             if root.sends-dmx && root.effect-takes-shape : HorizontalLayout {
@@ -1767,8 +1921,11 @@ export component RulesWindow inherits Window {
                 color: Theme.text;
                 font-size: 12px;
                 vertical-alignment: center;
+                // Elided rather than holding the row wider than the pane: whole, it was what
+                // made a path's rows 553px at the window's 900px minimum.
+                horizontal-stretch: 1;
+                overflow: elide;
               }
-              Rectangle { horizontal-stretch: 1; }
             }
 
             // --- which fixtures ---------------------------------------------------
@@ -1968,6 +2125,13 @@ export component RulesWindow inherits Window {
                   }
                 }
 
+                // Watched from out here, as the color pickers are: a `changed is-open` inside the
+                // popup is built with it and never sees a change. See `routing-open`.
+                property <bool> routing: outputs-popup.is-open;
+                changed routing => {
+                  root.routing-open = self.routing;
+                }
+
                 outputs-popup := PopupWindow {
                   x: 0;
                   y: parent.height + 2px;
@@ -2112,15 +2276,24 @@ export component RulesWindow inherits Window {
             // Every `{...}` of the address, plus the value and — for MIDI — the note. Each
             // one is a generator, and this is where "custom random triggers and sequences"
             // actually gets designed.
+            //
+            // **A ramp takes two lines**: its shape, its range, how many bars and whether it steps
+            // make it the one chip with six controls, and on one line it asked for 784px where the
+            // pane has 476 at the window's 900px minimum. So does a tempo-normalised live value,
+            // for its range. Every other chip keeps one line.
             for slot[index] in root.slots: Rectangle {
               background: Theme.panel;
               border-radius: 5px;
               vertical-stretch: 0;
-              height: 48px;
+              height: slot.is-ramp || (slot.is-live && slot.is-normalised) ? 84px : 48px;
 
-              HorizontalLayout {
+              VerticalLayout {
                 padding: 8px;
                 spacing: 6px;
+
+              HorizontalLayout {
+                spacing: 6px;
+                height: 32px;
 
                 Text {
                   text: slot.label;
@@ -2138,7 +2311,9 @@ export component RulesWindow inherits Window {
                   // go on showing an index into the other one.
                   model: slot.is-color ? root.color-generator-kinds : root.generator-kinds;
                   current-index: slot.kind-index;
-                  width: 104px;
+                  // Wide enough for "weighted" and the arrow. It was 104, and the 8px went to
+                  // making a list chip fit the pane at the window's 900px minimum.
+                  width: 96px;
                   selected => {
                     root.slot-kind-picked(index, self.current-index);
                   }
@@ -2174,6 +2349,7 @@ export component RulesWindow inherits Window {
                   font-size: 11px;
                   horizontal-stretch: 1;
                   vertical-alignment: center;
+                  overflow: elide;
                 }
 
                 // Every box on these rows is a `LiveField`, which commits on Enter or a click
@@ -2188,6 +2364,10 @@ export component RulesWindow inherits Window {
                   placeholder-text: slot.wanting ? "choose a range" : "1 - 8";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  // Its own floor rather than the text box's 160px, which held a list chip wider
+                  // than the pane at the window's 900px minimum. The box still takes whatever
+                  // the row has left.
+                  min-width: 64px;
                   typed(text) => {
                     root.slot-typed(index, 1, text);
                   }
@@ -2201,6 +2381,7 @@ export component RulesWindow inherits Window {
                   placeholder-text: slot.wanting ? "choose the numbers" : "3, 7, 1, 12 — in this order";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  min-width: 64px; // as the range box beside it
                   typed(text) => {
                     root.slot-typed(index, 2, text);
                   }
@@ -2352,6 +2533,7 @@ export component RulesWindow inherits Window {
                   placeholder-text: slot.is-color ? "#ff2040" : slot.wanting ? "choose one" : "value";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  min-width: 64px; // as the range boxes: not the text box's own 160px
                   typed(text) => {
                     root.slot-typed(index, 0, text);
                   }
@@ -2364,28 +2546,9 @@ export component RulesWindow inherits Window {
                   model: root.live-sources;
                   current-index: slot.live-index;
                   horizontal-stretch: 1;
+                  min-width: 110px;
                   selected => {
                     root.slot-live-picked(index, self.current-index);
-                  }
-                }
-
-                // The tempo range "BPM normalised" maps onto 0 to 1 — the host's, so settable.
-                if slot.is-live && slot.is-normalised : Text {
-                  text: "across BPM";
-                  color: Theme.dim;
-                  font-size: 11px;
-                  vertical-alignment: center;
-                }
-                if slot.is-live && slot.is-normalised : LiveField {
-                  value: slot.normalise;
-                  placeholder-text: "20 - 500";
-                  font-size: 12px;
-                  width: 96px;
-                  typed(text) => {
-                    root.slot-typed(index, 4, text);
-                  }
-                  committed(text) => {
-                    root.slot-normalise-edited(index, text);
                   }
                 }
 
@@ -2395,6 +2558,7 @@ export component RulesWindow inherits Window {
                   placeholder-text: slot.wanting ? "choose them, 7:3, 12:1" : "7:3, 12:1 — value:weight";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  min-width: 64px; // as the range boxes
                   typed(text) => {
                     root.slot-typed(index, 3, text);
                   }
@@ -2420,53 +2584,12 @@ export component RulesWindow inherits Window {
                   placeholder-text: slot.wanting ? "choose a range" : "0 - 1";
                   font-size: 12px;
                   horizontal-stretch: 1;
+                  min-width: 64px; // as the range boxes above
                   typed(text) => {
                     root.slot-typed(index, 1, text);
                   }
                   committed(text) => {
                     root.slot-range-edited(index, text);
-                  }
-                }
-
-                if slot.is-ramp : Text {
-                  text: "over";
-                  color: Theme.dim;
-                  font-size: 11px;
-                  vertical-alignment: center;
-                }
-
-                if slot.is-ramp : NumberBox {
-                  value: slot.ramp-bars;
-                  minimum: 1;
-                  maximum: 64;
-                  width: 76px;
-                  typed(v) => {
-                    root.slot-typed(index, 6, v);
-                  }
-                  edited(v) => {
-                    root.slot-ramp-bars-changed(index, v);
-                  }
-                }
-
-                if slot.is-ramp : Text {
-                  text: "bars";
-                  color: Theme.dim;
-                  font-size: 11px;
-                  vertical-alignment: center;
-                }
-
-                if slot.is-ramp : CheckBox {
-                  // A float sweeps and an int steps — see `Generator::nextRamp`, where the
-                  // difference is spelled out. Which one a host wants is not guessable.
-                  //
-                  // It said "whole", which is half a sentence: whole *what*? Asked from a rig
-                  // on 2026-09-16 — *"wtf does this 'whole' option mean next to the color
-                  // code?"* — where it was sitting beside a last-fired readout and read as a
-                  // property of that. The label now names the thing it does.
-                  text: "whole numbers";
-                  checked: !slot.ramp-float;
-                  toggled => {
-                    root.slot-ramp-float-changed(index, !self.checked);
                   }
                 }
 
@@ -2490,7 +2613,7 @@ export component RulesWindow inherits Window {
                   value: slot.no-repeat;
                   minimum: 0;
                   maximum: 64;
-                  width: 76px;
+                  width: 64px; // two digits and the arrows
                   typed(v) => {
                     root.slot-typed(index, 5, v);
                   }
@@ -2511,12 +2634,105 @@ export component RulesWindow inherits Window {
                   color: Theme.locked;
                   font-size: 12px;
                   font-family: "Consolas";
-                  // A hex color is seven characters and a MIDI value is three.
-                  width: slot.is-color ? 92px : 52px;
+                  // "→ #ff2040" and "→ 127", at 12px Consolas, with a little to spare.
+                  width: slot.is-color ? 72px : 44px;
                   horizontal-stretch: 0;
                   horizontal-alignment: right;
                   vertical-alignment: center;
                 }
+              }
+
+              // The tempo range "BPM normalised" maps onto 0 to 1 — the host's, so settable. On a
+              // line of its own: beside the source it made the chip 566px wide.
+              if slot.is-live && slot.is-normalised : HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
+
+                Rectangle { width: 64px; horizontal-stretch: 0; }
+
+                Text {
+                  text: "across BPM";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                LiveField {
+                  value: slot.normalise;
+                  placeholder-text: "20 - 500";
+                  font-size: 12px;
+                  width: 96px;
+                  typed(text) => {
+                    root.slot-typed(index, 4, text);
+                  }
+                  committed(text) => {
+                    root.slot-normalise-edited(index, text);
+                  }
+                }
+
+                Text {
+                  text: "is 0 to 1";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                  horizontal-stretch: 1;
+                  overflow: elide;
+                }
+              }
+
+              // A ramp's second line, under its shape and range: how long it takes and whether
+              // it steps. An `if` row, so its height is said (see the lighting rows).
+              if slot.is-ramp : HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
+
+                // Under the label, so the line reads as the chip's and not the next one's.
+                Rectangle { width: 64px; horizontal-stretch: 0; }
+
+                Text {
+                  text: "over";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                NumberBox {
+                  value: slot.ramp-bars;
+                  minimum: 1;
+                  maximum: 64;
+                  width: 76px;
+                  typed(v) => {
+                    root.slot-typed(index, 6, v);
+                  }
+                  edited(v) => {
+                    root.slot-ramp-bars-changed(index, v);
+                  }
+                }
+
+                Text {
+                  text: "bars";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                }
+
+                CheckBox {
+                  // A float sweeps and an int steps — see `Generator::nextRamp`, where the
+                  // difference is spelled out. Which one a host wants is not guessable.
+                  //
+                  // It said "whole", which is half a sentence: whole *what*? Asked from a rig
+                  // on 2026-09-16 — *"wtf does this 'whole' option mean next to the color
+                  // code?"* — where it was sitting beside a last-fired readout and read as a
+                  // property of that. The label now names the thing it does.
+                  text: "whole numbers";
+                  checked: !slot.ramp-float;
+                  toggled => {
+                    root.slot-ramp-float-changed(index, !self.checked);
+                  }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+              }
               }
             }
 
@@ -2533,24 +2749,47 @@ export component RulesWindow inherits Window {
             //
             // Each swatch opens the same hue/saturation/brightness picker the fixed color has,
             // with a hex box for pasting one in and a REMOVE for taking it out.
-            if root.palette-shown : HorizontalLayout {
+            //
+            // **The swatches wrap.** In one row the "+" left the pane after about eight colors
+            // at the window's 900px minimum, and the list could not be added to at all (the
+            // audit of 2026-09-25, L36). Slint has no wrapping layout, so each swatch is placed
+            // on a grid of 48px cells, as many to a line as the pane has room for.
+            if root.palette-shown : VerticalLayout {
               vertical-stretch: 0;
-              height: 36px;
+              height: swatches.lines * 36px + 18px;
+              spacing: 0px;
+
+            HorizontalLayout {
+              height: swatches.lines * 36px;
               spacing: 8px;
 
-              Text {
-                text: "palette";
-                color: Theme.accent;
-                font-size: 13px;
-                font-family: "Consolas";
+              Rectangle {
                 width: 64px;
-                vertical-alignment: center;
+                horizontal-stretch: 0;
+
+                Text {
+                  y: 0;
+                  height: 36px;
+                  text: "palette";
+                  color: Theme.accent;
+                  font-size: 13px;
+                  font-family: "Consolas";
+                  vertical-alignment: center;
+                }
               }
 
+              swatches := Rectangle {
+                horizontal-stretch: 1;
+                /// How many 48px cells a line holds, and how many lines the swatches and the
+                /// "+" after them take.
+                property <int> per-line: max(1, Math.floor((self.width + 8px) / 48px));
+                property <int> lines: Math.ceil((root.palette.length + 1) / self.per-line);
+
               for entry[index] in root.palette : Rectangle {
+                x: Math.mod(index, swatches.per-line) * 48px;
+                y: Math.floor(index / swatches.per-line) * 36px + 3px;
                 width: 40px;
                 height: 30px;
-                horizontal-stretch: 0;
                 background: entry.swatch;
                 border-radius: 4px;
                 border-width: 1px;
@@ -2715,29 +2954,42 @@ export component RulesWindow inherits Window {
                 }
               }
 
-              Press {
+              add-color := Press {
+                // In the cell after the last swatch, wherever that falls.
+                x: Math.mod(root.palette.length, swatches.per-line) * 48px;
+                y: Math.floor(root.palette.length / swatches.per-line) * 36px + 3px;
+                width: 40px;
+                height: 30px;
                 text: "+";
                 font: 14px;
                 pad: 8px;
-                min-width: 34px;
-                min-height: 30px;
                 enabled: root.selected >= 0;
                 clicked => {
                   root.palette-added();
                 }
               }
+              }
+            }
 
-              Text {
-                // What the chip above and these swatches mean *together*, which neither says on
-                // its own: the kind is how they are drawn and this is the set they come from.
-                text: root.palette.length == 0
-                    ? "no colors yet — + adds one"
-                    : root.palette.length + " colors, drawn the way the chip above says";
-                color: Theme.dim;
-                font-size: 11px;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
+              HorizontalLayout {
+                height: 18px;
+                spacing: 8px;
+
+                Rectangle { width: 64px; horizontal-stretch: 0; }
+
+                Text {
+                  // What the chip above and these swatches mean *together*, which neither says
+                  // on its own: the kind is how they are drawn and this is the set they come
+                  // from. Under the swatches now, which no longer leave it a place beside them.
+                  text: root.palette.length == 0
+                      ? "no colors yet — + adds one"
+                      : root.palette.length + " colors, drawn the way the chip above says";
+                  color: Theme.dim;
+                  font-size: 11px;
+                  vertical-alignment: center;
+                  horizontal-stretch: 1;
+                  overflow: elide;
+                }
               }
             }
 
@@ -2813,15 +3065,24 @@ export component RulesWindow inherits Window {
               }
             }
 
+            // **Two lines: what is sent, then when.** On one line the row needed about 620px, and
+            // at the window's 900px minimum the pane has 460: the unit, the summary and the ×
+            // went off its edge, and a MIDI note's row lost its delay as well (the audit of
+            // 2026-09-25, L35). The first line is at most 444px — a MIDI note's "note" and
+            // "velocity" beside its 176px kind — so the × goes on the second.
             for owed[index] in root.follow-ups : Rectangle {
               background: Theme.panel;
               border-radius: 5px;
               vertical-stretch: 0;
-              height: 48px;
+              height: 84px;
 
-              HorizontalLayout {
+              VerticalLayout {
                 padding: 8px;
                 spacing: 6px;
+
+              HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
 
                 ComboBox {
                   // "release" first, then whatever fits this rule. An OSC rule gets the one
@@ -2891,6 +3152,13 @@ export component RulesWindow inherits Window {
                     root.follow-value-edited(index, text);
                   }
                 }
+
+                Rectangle { horizontal-stretch: 1; }
+              }
+
+              HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
 
                 Text {
                   text: "after";
@@ -2966,6 +3234,7 @@ export component RulesWindow inherits Window {
                     }
                   }
                 }
+              }
               }
             }
           }
@@ -3098,4 +3367,14 @@ export component RulesWindow inherits Window {
   /// How often this rule is currently firing against how often it was written to — "half as
   /// often", "×4". **Empty at the written rate**, so a rule nobody has touched says nothing.
   in-out property <string> rule-rate;
+
+  /// For the tests: the least width the editor's column of rows asks for, and the width it
+  /// is given. The scroll view holds its content to its own width, so a row wider than that
+  /// is not scrolled to or drawn over anything — it is cut off at the pane's edge, which no
+  /// pixel outside the pane shows (the audit of 2026-09-25, L35).
+  out property <length> body-least-width: body.min-width;
+  out property <length> body-width: scroller.visible-width;
+  /// Whether the "send to" list is open — what a test finds the field by, where a popup can open
+  /// above its field or below it as Slint finds room.
+  out property <bool> routing-open;
 }

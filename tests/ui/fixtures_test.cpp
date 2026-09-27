@@ -103,6 +103,32 @@ int effectIndexOf(takt4::dmx::EffectKind kind) {
 
 } // namespace
 
+TEST_CASE("picking custom as a fixture's mode says how a custom map is made", "[ui][dmx]") {
+    // The audit of 2026-09-25, L39. "custom" is what an edited channel map shows as, and
+    // picking it did nothing — the dropdown went on saying "custom" over a fixture that was
+    // still an RGB par. Picked as the dropdown picks it: its index written through the
+    // two-way binding, then the callback.
+    Rig rig;
+    FixturesController patch(rig.runner, {});
+    auto& window = patch.window();
+    window.invoke_added(); // an RGB par
+    const int rgb = window.get_mode_index();
+    REQUIRE(rgb > 0);
+    const std::vector<Role> before = patch.fixtures()[0].channels;
+
+    window.set_mode_index(0);
+    window.invoke_mode_picked(0);
+    CHECK(window.get_mode_index() == rgb);             // it still says what the map is
+    CHECK(patch.fixtures()[0].channels == before);     // and nothing was changed
+    const std::string said(window.get_status());
+    INFO(said);
+    CHECK(said.find("editing the channels below") != std::string::npos);
+    CHECK_FALSE(window.get_status_error());
+    // And the entry says what it is where it is offered.
+    CHECK(std::string(*window.get_modes()->row_data(0)).find("the channels below") !=
+          std::string::npos);
+}
+
 TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     Rig rig;
     FixturesController patch(rig.runner, {});

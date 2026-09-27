@@ -70,7 +70,8 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     auto modes = std::make_shared<slint::VectorModel<slint::SharedString>>();
     // Index 0 is "custom", so that a channel map the operator has edited has something
     // honest to be — and so picking nothing is a state rather than a fixture nobody meant.
-    modes->push_back(shared("custom"));
+    // Worded as what it is, since picking it changes nothing (see `pickMode`).
+    modes->push_back(shared("custom (the channels below)"));
     for (const dmx::FixtureMode& mode : dmx::builtinModes()) {
         modes->push_back(shared(std::string(mode.name)));
     }
@@ -654,8 +655,21 @@ void FixturesController::setEnabled(bool on) {
 
 void FixturesController::pickMode(int mode) {
     dmx::Fixture* const fixture = current();
-    if (fixture == nullptr || mode <= 0) {
-        return; // 0 is "custom", which describes the map rather than setting one
+    if (fixture == nullptr) {
+        return;
+    }
+    if (mode <= 0) {
+        // **"custom" describes a map; it sets none.** Picked, it did nothing, and the dropdown
+        // went on saying "custom" over a fixture that was still an RGB par (the audit of
+        // 2026-09-25, L39). It goes back to naming the map, and the line says how a custom one
+        // is made.
+        window_->set_mode_index(modeOf(*fixture));
+        if (modeOf(*fixture) != 0) {
+            setStatus("A custom map is made by editing the channels below; the mode then says "
+                      "custom by itself.",
+                      false);
+        }
+        return;
     }
     const auto modes = dmx::builtinModes();
     const auto index = static_cast<std::size_t>(mode - 1);

@@ -2926,7 +2926,17 @@ void RulesController::tick() {
             // nothing left, and the log said it had (the audit's M11).
             const std::string message =
                 entry.muted ? entry.message + "  (muted, not sent)" : entry.message;
-            log_.push_back(spellNumber(entry.when) + "s  " + entry.ruleId + "  " + message);
+            // **By the name the list shows**, not the id — "rule1-copy2" is a word this window
+            // shows nowhere else, so a log line could not be matched to a rule (the audit of
+            // 2026-09-25, L38). Named as the rule is called when it fired; the id stays the
+            // key, and only one no longer in the set is said to be gone.
+            const auto named =
+                std::find_if(rules_.begin(), rules_.end(),
+                             [&entry](const Rule::Config& one) { return one.id == entry.ruleId; });
+            const std::string who = named == rules_.end() ? "(a rule since deleted)"
+                                    : named->name.empty() ? "(unnamed)"
+                                                          : named->name;
+            log_.push_back(spellNumber(entry.when) + "s  " + who + "  " + message);
             lastFiredAnywhere_ = message;
             if (!entry.followUp) {
                 // The press, not the release: see `OutputRunner::Fired::followUp`.
