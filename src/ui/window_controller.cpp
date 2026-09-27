@@ -604,9 +604,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         rules_ = rules;
         rulesActive_ = activeRules(rules_);
     });
-    // The same for the patch — and one more thing: a rule aims at a fixture by *name*, so the
-    // rule editor's "send to" list has to be rebuilt whenever the patch changes or a rule will
-    // go on offering a fixture that has been renamed out from under it.
+    // The same for the patch — and one more thing: the rule editor's "lights" list shows every
+    // fixture and group by name, so it has to be rebuilt whenever the patch changes or it will
+    // go on offering a fixture under a name it no longer has. (A rule aims at a fixture by id,
+    // so a rename moves no routing.)
     patch_.setPatchChanged([this](const std::vector<dmx::Fixture>& fixtures) {
         fixtures_ = fixtures;
         editor_.setPatch(fixtures_);
@@ -1377,16 +1378,6 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     case audio::InputWatchdog::Verdict::Starting:
     case audio::InputWatchdog::Verdict::Healthy:
         break;
-    }
-}
-
-void WindowController::setLinkEnabled(bool on) {
-    // The Link row's own tick box, so the row, the transports and the saved file all agree.
-    for (std::size_t i = 0; i < targetDrafts_.size(); ++i) {
-        if (targetDrafts_[i].kind_index == static_cast<int>(output::OutputTarget::Kind::Link)) {
-            setTargetEnabled(static_cast<int>(i), on);
-            return;
-        }
     }
 }
 

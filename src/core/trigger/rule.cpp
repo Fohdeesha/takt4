@@ -308,9 +308,9 @@ std::string_view nameOf(Message::Kind kind) noexcept {
     return "";
 }
 
-double musicalSeconds(const Context& context, DelayUnit unit, double milliseconds,
+double musicalSeconds(const Context& context, DelayUnit unit, double clockSeconds,
                       double beats) noexcept {
-    const double fixed = std::max(0.0, milliseconds);
+    const double fixed = std::max(0.0, clockSeconds);
     if (unit == DelayUnit::Milliseconds) {
         return fixed;
     }

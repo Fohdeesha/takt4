@@ -99,8 +99,9 @@ public:
     bool post(const Command& command);
 
     /// The consumer. Takes everything waiting, in the order it was posted, and leaves the
-    /// queue empty. `out` is cleared first; keep the same vector across calls and this
-    /// allocates nothing.
+    /// queue empty. `out` is cleared first. Keep the same vector across calls, **reserved to
+    /// `kCapacity` before the first**, and this allocates nothing: the queue swaps it in and
+    /// sizes what it is given, so an empty one costs an allocation on the first call.
     void drain(std::vector<Command>& out);
 
     std::size_t pending() const;

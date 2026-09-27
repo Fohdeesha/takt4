@@ -68,7 +68,8 @@ public:
     };
 
     /// Adds a node. Throws `std::runtime_error` only when a socket cannot be had at all; a
-    /// name that does not resolve is the sender's `problem()`, not an error here.
+    /// name that does not resolve is the sender's `problem()`, not an error here. **The tests'
+    /// way in**: the application hands over every node at once, with `setTargets`.
     void addTarget(const TargetConfig& config);
 
     /// Replaces the nodes with `configs`, **keeping a node's sender and its pacing while its id
@@ -84,10 +85,6 @@ public:
 
     /// Which output node `index` is — its routing bit.
     std::size_t outputOf(std::size_t index) const noexcept { return targets_[index].bit; }
-
-    /// Removes every node and forgets every pacing clock, so a node added afterwards is sent
-    /// a frame immediately rather than waiting out a keep-alive it was not there for.
-    void clearTargets() noexcept;
 
     std::size_t targetCount() const noexcept { return targets_.size(); }
     const ArtNetSender& target(std::size_t index) const noexcept { return *targets_[index].sender; }

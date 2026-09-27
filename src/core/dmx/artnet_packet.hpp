@@ -56,8 +56,9 @@ inline constexpr std::size_t kArtDmxMaxSize = kArtDmxHeaderSize + kChannelsPerUn
 /// always be the maximum rate of 44Hz."*
 ///
 /// It is a ceiling and not a target. A node handed frames faster than it can pass them on
-/// drops them, and dropping them is the *good* case — some drop the wrong ones. `DmxHub`
-/// paces every universe against this and nothing in takt4 may send faster.
+/// drops them, and dropping them is the *good* case — some drop the wrong ones.
+/// `ArtNetPublisher` paces every universe of every node against this, and nothing in takt4 may
+/// send faster.
 inline constexpr double kMaxRefreshHz = 44.0;
 
 /// How long a universe may go unchanged before it is sent again anyway.

@@ -176,10 +176,6 @@ void ArtNetPublisher::refresh() noexcept {
     }
 }
 
-void ArtNetPublisher::clearTargets() noexcept {
-    targets_.clear();
-}
-
 const ArtNetPublisher::Paced* ArtNetPublisher::findPaced(const Target& target,
                                                          PortAddress universe) noexcept {
     for (const Paced& paced : target.paced) {

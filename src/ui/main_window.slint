@@ -1434,9 +1434,10 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 0;
               }
 
-              // The destination slot, which is a host and a port — and on Art-Net a universe
-              // list as well, and on MIDI a device picker instead. One heading per shape, over
-              // the same widths the row uses.
+              // The destination slot, which is a host and a port — on MIDI a device picker
+              // instead. One heading per shape, over the same widths the row uses. (An Art-Net
+              // row had a universe list here as well until 2026-09-25; its universes are the
+              // patch's now.)
               HorizontalLayout {
                 preferred-width: 210px;
                 max-width: 210px;
