@@ -1373,6 +1373,39 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
     }
 }
 
+TEST_CASE("picking another rule forgets the rows the last one had waiting to be rebuilt",
+          "[ui][trigger]") {
+    // A row to be rebuilt is remembered by its index until the next `tick`. Picking another
+    // rule empties the chips and builds that rule's from nothing — and an index left over from
+    // the rule before then named a row of the *new* rule's, which the redraw rebuilt: a fresh
+    // element for a box nothing had changed, taking the keyboard from whoever had just clicked
+    // into it. Found splitting `rules_controller.cpp` (2026-09-28): the model and its indices
+    // were two members, emptied together in one place and not in the others.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    for (int i = 0; i < 2; ++i) {
+        editor.add();
+        editor.setAddress("/deck/{clip}");
+        editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Shuffle));
+    }
+    editor.pick(0);
+    editor.tick();
+
+    // A dropdown picked in rule 1 — its row is due a rebuild — and rule 2 picked before the
+    // redraw that would have done it.
+    editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Random));
+    editor.pick(1);
+    const auto slots = editor.window().get_slots();
+    REQUIRE(slots->row_count() == 2);
+    const auto watch = std::make_shared<ModelWatch>();
+    slots->attach_peer(watch);
+
+    editor.tick();
+    CHECK(watch->removed == 0);
+    CHECK(watch->added == 0);
+    CHECK(watch->resets == 0);
+}
+
 TEST_CASE("the BPM range and the cooldown follow the rule that is selected", "[ui][trigger]") {
     // Both boxes are two-way bound, so the *property* is the box: the controller spells the
     // text (`publishSelected`) and parses it back. A one-way binding died on the first
@@ -2290,7 +2323,7 @@ TEST_CASE("dragging a color slider does not tear its own picker down", "[ui][tri
     // `publishPalette` asked `rowsNeedRebuild` whether any surviving row had moved — with a
     // comparator that compared *every* field, including the swatch and the hue the slider had
     // just changed. So every pixel of the drag said "this row moved, build the repeater
-    // again", and the next redraw did: `rebuildRows` clears `paletteModel_`, the repeater
+    // again", and the next redraw did: `rebuildRows` clears `paletteRows_`, the repeater
     // throws its items away, and the item being thrown away is the one holding the open popup
     // and the slider under the operator's finger.
     //
@@ -2337,7 +2370,7 @@ TEST_CASE("dragging a color slider does not tear its own picker down", "[ui][tri
 
     SECTION("and the same is true of the fixed color's picker") {
         // The other picker on the same row, which has the same popup in the same repeater —
-        // `slotModel_` rather than `paletteModel_`, and `setSlotColor` rather than
+        // `slotRows_` rather than `paletteRows_`, and `setSlotColor` rather than
         // `setPaletteColor`, but the same drag and the same teardown.
         editor.setRules({});
         editor.add();

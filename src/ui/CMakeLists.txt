@@ -44,8 +44,15 @@ add_library(takt4_ui STATIC
   model_rows.hpp
   native_window.cpp
   native_window.hpp
+  rule_presets.cpp
+  rule_presets.hpp
+  rule_text.cpp
+  rule_text.hpp
   rules_controller.cpp
   rules_controller.hpp
+  rules_controller_publish.cpp
+  rules_controller_slots.cpp
+  rules_editor_support.hpp
   shot.cpp
   window_controller.cpp
   window_controller.hpp
