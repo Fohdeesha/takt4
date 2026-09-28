@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/audio/callback_clock.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/hop_processor.hpp"
@@ -25,7 +26,20 @@ struct InputStreamCounters {
     std::uint64_t hopsOut = 0;       // hops handed to the processor
     std::uint32_t inputOverflows = 0; // callbacks flagged paInputOverflow: the device dropped input
     std::uint64_t samplesRepaired = 0; // not a number, so passed on as silence — InputPipeline
+    /// The callbacks' own account of their clock (`CallbackClock`): the frames and the seconds
+    /// of every callback that came a normal distance after the one before, which is what the
+    /// device's rate is measured over — a dropout is left out with the time it lasted.
+    std::uint64_t normalFrames = 0;
+    double normalSeconds = 0.0;
+    /// How long ago the last callback came, as of the moment these were read; 0 before any.
+    double sinceLastCallbackSeconds = 0.0;
 };
+
+/// Puts `clock` into `counters` as of `nowNanos` on `CallbackClock::steadyNanos()`'s clock — how
+/// `InputStream::counters` fills the clock's fields, and how a test that drives a `CallbackClock`
+/// of its own on a clock of its own does the same.
+void addClockReading(InputStreamCounters& counters, const CallbackClock::Reading& clock,
+                     std::int64_t nowNanos) noexcept;
 
 /// One channel (or pair) of one device, open through PortAudio and feeding a
 /// HopProcessor: the live end of HANDOFF §4.1's input stage. The callback does nothing
@@ -46,6 +60,13 @@ public:
     void start(); // throws PortAudioError
     void stop();  // throws PortAudioError; no-op when not running
     bool running() const noexcept;
+
+    /// Shuts the callback off from the `HopProcessor`, and waits until no callback is inside it
+    /// — a callback's length. From here on the driver may call back as it likes; nothing reaches
+    /// the processor. Makes no PortAudio call at all, so it is what a caller does on its own
+    /// thread before handing the stream to another to be stopped and closed, however long the
+    /// driver takes over that (the audit of 2026-09-25, L23; see `CallbackGate`).
+    void detach() noexcept;
 
     const InputDevice& device() const noexcept;
     const ChannelPicker& picker() const noexcept;

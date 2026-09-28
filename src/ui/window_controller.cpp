@@ -1114,6 +1114,12 @@ void WindowController::toggleRun() {
     const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
     try {
         tracker_.start(device, audio::ChannelSelection::single(channel_));
+    } catch (const audio::DriverNotAnswering& e) {
+        // Not the busy-interface advice below: nothing says another program has it, and the way
+        // round is time, or a restart — see `publishDriverState`.
+        setStatus("Cannot open " + device.name + ": " + e.what() + ".", true);
+        publishStopped();
+        return;
     } catch (const audio::PortAudioError& e) {
         // HANDOFF Q3 and R2: most ASIO drivers are single-client, and a busy interface is
         // the exact situation takt4 exists for. A PortAudio error code is no use to anyone
@@ -1238,6 +1244,31 @@ void WindowController::restartInput(const std::string& why, double now) {
         return;
     }
     beginOutage(why + ", and it would not open again (" + error + ")", now, now);
+}
+
+void WindowController::publishDriverState() {
+    const bool stuck = tracker_.stuck();
+    if (stuck == driverStuckShown_) {
+        return;
+    }
+    driverStuckShown_ = stuck;
+    if (stuck) {
+        // **Said, and gone on from** (the audit of 2026-09-25, L23): the window used to be frozen
+        // by now, PANIC and all. The stream was detached before it was handed over, so nothing
+        // the driver sends reaches the tracker; the outputs carry the last tempo on.
+        const std::string asked = tracker_.stuckOn();
+        report("The audio driver has stopped answering (it was asked to " + asked +
+                   "). takt4 has let it go and carries on \xE2\x80\x94 the outputs keep the last "
+                   "tempo \xE2\x80\x94 but cannot open an input until the driver answers. If it "
+                   "does not, restart takt4.",
+               true);
+        window_->set_input_trouble(shared("audio driver not answering since it was asked to " +
+                                          asked + " \xE2\x80\x94 restart takt4 if it does not "
+                                                  "come back"));
+    } else {
+        report("The audio driver is answering again.", false);
+        window_->set_input_trouble(shared(""));
+    }
 }
 
 void WindowController::superviseInput(const audio::InputWatchdog::Reading& reading,
@@ -3221,6 +3252,7 @@ void WindowController::tick() {
         }
         superviseInput(reading, events, now);
     }
+    publishDriverState();
     if (!tracker_.running()) {
         // The outputs keep going through an outage, so what they are doing is still shown.
         if (runner_.running()) {

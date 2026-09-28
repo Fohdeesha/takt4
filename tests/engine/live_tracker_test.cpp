@@ -1,3 +1,4 @@
+#include "core/audio/audio_thread.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/hop_meter.hpp"
@@ -11,8 +12,11 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -268,5 +272,144 @@ TEST_CASE("LiveTracker looks for devices again only while stopped, and opens the
     tracker.start(*found, ChannelSelection::single(0));
     REQUIRE(tracker.running());
     CHECK(hopsWithin(std::chrono::seconds{10}) >= 25);
+    tracker.stop();
+}
+
+namespace {
+
+/// Waits up to `limit` for `done`, looking every millisecond.
+template <typename Done>
+bool within(std::chrono::milliseconds limit, Done done) {
+    const auto until = std::chrono::steady_clock::now() + limit;
+    while (!done()) {
+        if (std::chrono::steady_clock::now() >= until) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+/// Limits a test can wait out: a real driver deserves seconds, a test's stand-in for one that
+/// never answers does not.
+LiveTracker::Limits shortLimits() {
+    LiveTracker::Limits limits;
+    limits.open = std::chrono::milliseconds(300);
+    limits.stop = std::chrono::milliseconds(300);
+    limits.rescan = std::chrono::milliseconds(300);
+    limits.list = std::chrono::milliseconds(300);
+    return limits;
+}
+
+} // namespace
+
+TEST_CASE("a driver that does not answer costs the caller its limit, and is asked nothing more "
+          "until it does",
+          "[audio]") {
+    // The audit of 2026-09-25, L23: a driver wedged in PortAudio held whichever thread had asked,
+    // which was the window's. Here the drivers are asked to look for devices again and do not
+    // answer — a hook on the audio thread that waits until the test lets it go.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setLimits(shortLimits());
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            released.wait();
+        }
+    });
+
+    const auto asked = std::chrono::steady_clock::now();
+    CHECK_THROWS_AS(tracker.rescan(), takt4::audio::DriverNotAnswering);
+    const auto waited = std::chrono::steady_clock::now() - asked;
+    CHECK(waited >= std::chrono::milliseconds(290));
+    CHECK(waited < std::chrono::seconds(2));
+    CHECK(tracker.stuck());
+    CHECK(tracker.stuckOn() == "rescan");
+
+    // Nothing more is asked of it: an input to open is refused at once, and says why.
+    InputDevice anything;
+    anything.name = "takt4 test - an input";
+    anything.maxInputChannels = 2;
+    const auto opening = std::chrono::steady_clock::now();
+    try {
+        tracker.start(anything, ChannelSelection::single(0));
+        FAIL("an input was opened while the audio thread was held");
+    } catch (const takt4::audio::DriverNotAnswering& e) {
+        INFO(e.what());
+        CHECK(std::string(e.what()).find("since it was asked to rescan") != std::string::npos);
+    }
+    CHECK(std::chrono::steady_clock::now() - opening < std::chrono::milliseconds(100));
+    CHECK_FALSE(tracker.running());
+    CHECK_FALSE(tracker.engine().running());
+    // And the device list is the last one it had, not a wait.
+    const auto listing = std::chrono::steady_clock::now();
+    (void)tracker.devices();
+    CHECK(std::chrono::steady_clock::now() - listing < std::chrono::milliseconds(100));
+
+    // The drivers answer after all: the tracker is itself again.
+    release.set_value();
+    REQUIRE(within(std::chrono::milliseconds(2000), [&] { return !tracker.stuck(); }));
+    CHECK(tracker.rescan());
+}
+
+TEST_CASE("a stream whose driver does not return from its stop is let go of, and sends the "
+          "engine nothing more",
+          "[audio][hardware]") {
+    // The same on a real interface: the stop that never returns. `stop` detaches the stream on
+    // this thread, hands it to the audio thread, and returns within its limit — and from the
+    // moment it returns nothing the driver sends reaches the meter or the engine.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    INFO(device->hostApiName << " / " << device->name);
+    tracker.setLimits(shortLimits());
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> holding{false};
+    tracker.setAudioJobHook([released, &holding](const char* what) {
+        if (std::string_view(what) == "stop" && holding) {
+            released.wait();
+        }
+    });
+
+    tracker.start(*device, ChannelSelection::single(0));
+    REQUIRE(tracker.running());
+    std::uint64_t levels = 0;
+    REQUIRE(within(std::chrono::milliseconds(10000), [&] {
+        HopLevel level;
+        while (tracker.popLevel(level)) {
+            ++levels;
+        }
+        return levels >= 25;
+    }));
+
+    holding = true;
+    const auto asked = std::chrono::steady_clock::now();
+    tracker.stop();
+    const auto waited = std::chrono::steady_clock::now() - asked;
+    CHECK(waited < std::chrono::seconds(2));
+    CHECK(tracker.stuck());
+    CHECK_FALSE(tracker.running());
+
+    // Still open on the audio thread, still calling back — and none of it arrives.
+    HopLevel level;
+    while (tracker.popLevel(level)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::uint64_t after = 0;
+    while (tracker.popLevel(level)) {
+        ++after;
+    }
+    CHECK(after == 0);
+
+    // The driver returns: the stream is closed where it was opened, and the interface opens again.
+    holding = false;
+    release.set_value();
+    REQUIRE(within(std::chrono::milliseconds(3000), [&] { return !tracker.stuck(); }));
+    tracker.start(*device, ChannelSelection::single(0));
+    CHECK(tracker.running());
     tracker.stop();
 }

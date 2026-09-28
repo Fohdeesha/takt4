@@ -23,6 +23,15 @@ namespace takt4::audio {
 /// Pure arithmetic over `InputStream::counters()`, so a test can drive it with any story it
 /// likes. The window calls `observe` on its redraw timer and decides what to do about the
 /// answer; this decides nothing but the reading.
+///
+/// **Measured over the callbacks' own account of their clock** (`CallbackClock`), not over when
+/// the window happened to look: silence is the time since the last callback came, and the rate
+/// is frames over seconds of the callbacks that came a normal distance after the one before. It
+/// used to be the frame counter as each look found it, and a pair of looks had to be allowed to
+/// be as far apart as a busy redraw — up to 160 ms — so audio a driver dropped inside that span
+/// read as a slower clock, and with 2048- to 4096-frame buffers could land on another standard
+/// rate and reopen a stream that had recovered (the audit of 2026-09-25's watchdog residue).
+/// Now how often the window looks changes nothing but how soon it knows.
 class InputWatchdog {
 public:
     struct Options {
@@ -41,16 +50,10 @@ public:
         /// it counts as a different clock — and it must then also be another clock's rate
         /// (`observe`). The smallest real change, 44.1 to 48 kHz or back, is 8 %; a crystal
         /// drifts by parts per million. What sets the floor is a dropout the driver recovers
-        /// from on its own: one just under the stall limit loses that much audio from the
-        /// window — 3.3 % of three seconds — and must not read as a new clock.
+        /// from on its own: the callback clock keeps a gap of up to two buffers as normal, so a
+        /// dropout of one buffer loses that much audio from the window — 3 % of three seconds
+        /// at 4096 frames — and must not read as a new clock.
         double rateTolerance = 0.04;
-        /// A pause in the callbacks longer than this, even one that recovers before it counts
-        /// as silence, starts the rate measurement again. Frames missing from the window read
-        /// as a slower clock, and a 0.3 s hiccup would otherwise have reopened a healthy stream
-        /// (measured, by the test that found it). The floor: the pause allowed is two callback
-        /// periods when that is longer, since a 4096-frame buffer at 44.1 kHz calls back only
-        /// every 93 ms (the audit of 2026-09-25, L21).
-        double stallSeconds = 0.1;
     };
 
     enum class Verdict : std::uint8_t {
@@ -89,21 +92,16 @@ public:
     double openedRate() const noexcept { return openedRate_; }
 
 private:
+    /// The callback clock's totals as one look found them.
     struct Sample {
-        double at = 0.0;
-        std::uint64_t frames = 0;
-        /// How long before this look the one before it was.
-        double sinceLastLook = 0.0;
+        double normalSeconds = 0.0;
+        std::uint64_t normalFrames = 0;
     };
 
     Options options_;
     double openedRate_ = 0.0;
     double openedAt_ = 0.0;
-    double lastLookAt_ = 0.0;
-    std::uint64_t lastCallbacks_ = 0;
-    double lastCallbackAt_ = 0.0;
-    bool anyCallback_ = false;
-    /// The frame counter over the last window, oldest first.
+    /// A little over the last window's worth of looks, oldest first.
     std::deque<Sample> samples_;
 };
 

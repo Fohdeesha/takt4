@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/audio/audio_thread.hpp"
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/hop_fanout.hpp"
@@ -31,6 +32,13 @@ namespace takt4::engine {
 /// `takt4_core` alone, so a UI-side version of this could not be tested at all, and Q8's
 /// headless mode would have to be written a second time.
 ///
+/// **Every PortAudio call it makes is made on an `audio::AudioThread` of its own**, and waited
+/// for no longer than `Limits` says (the audit of 2026-09-25, L23): a driver wedged in a stop, an
+/// open or a rescan holds that thread, not the caller's — which is the window's, and was frozen
+/// with PANIC in it. Such a driver is `stuck()`: the stream it was stopping is let go of,
+/// detached first so nothing it sends reaches the engine, and until the driver answers nothing
+/// else is asked of it — `start` and `rescan` throw `audio::DriverNotAnswering` at once.
+///
 /// **It deliberately does not own the transports**, exactly as `BeatEngine` does not:
 /// `core/engine` stays clear of `core/output`, and whoever wants beats drains
 /// `engine().popBeat()`. A caller that does want Link installs its clock on
@@ -41,6 +49,16 @@ public:
     struct Options {
         BeatEngine::Options engine;
         audio::InputStreamOptions stream;
+    };
+
+    /// How long each kind of call to the drivers is waited for before the caller gets on
+    /// without it. A healthy ASIO driver stops in milliseconds and opens in a second or two;
+    /// listing the machine's devices runs the ASIO scan, which has twenty seconds of its own.
+    struct Limits {
+        std::chrono::milliseconds open{10'000};
+        std::chrono::milliseconds stop{3'000};
+        std::chrono::milliseconds rescan{30'000};
+        std::chrono::milliseconds list{10'000};
     };
 
     /// What is running, for a caller that has to draw it. Empty until `start()`.
@@ -101,23 +119,42 @@ public:
     /// Makes PortAudio enumerate the machine's devices again — an interface switched on
     /// late, or one that went away and came back. Only while stopped, because every device
     /// index changes: false, and nothing done, while a stream is open. Throws
-    /// `audio::PortAudioError` if PortAudio will not come back up.
+    /// `audio::PortAudioError` if PortAudio will not come back up, and
+    /// `audio::DriverNotAnswering` if the drivers do not answer within `Limits::rescan`.
     bool rescan();
 
     /// Opens `device` on `selection` and starts tracking it, stopping whatever was
     /// running first — so this doubles as "switch to that one".
     ///
     /// Throws `audio::PortAudioError`, which is how R2's single-client driver says it is
-    /// busy, or `std::invalid_argument` for a channel the device does not have. Nothing
-    /// is left running either way, and a failed switch does not leave the previous
-    /// device running: it was stopped before the attempt.
+    /// busy, `std::invalid_argument` for a channel the device does not have, or
+    /// `audio::DriverNotAnswering` when the driver does not answer within `Limits::open` — or
+    /// is still holding the audio thread from before. Nothing is left running either way, and a
+    /// failed switch does not leave the previous device running: it was stopped before the
+    /// attempt.
     void start(const audio::InputDevice& device, const audio::ChannelSelection& selection);
 
-    /// Stops the stream, then the engine — that order, so the last hops in flight are
-    /// still tracked. Safe to call when nothing is running.
+    /// Detaches the stream from the engine, stops and closes it on the audio thread, and stops
+    /// the engine. Returns within `Limits::stop` however the driver behaves: a driver that has
+    /// not answered by then is left to finish on the audio thread, and `stuck()` says so. Safe to
+    /// call when nothing is running.
     void stop() noexcept;
 
     bool running() const noexcept { return stream_ != nullptr; }
+
+    /// A driver did not answer a call in its time and has not answered since. See the class.
+    bool stuck() const { return thread_.stuck(); }
+    /// What it was asked — "stop", "open", "rescan" — or empty.
+    std::string stuckOn() const { return thread_.stuckOn(); }
+
+    /// For the tests: shorter limits than a real driver deserves, so a test of one that never
+    /// answers does not wait ten seconds for it.
+    void setLimits(const Limits& limits) noexcept { limits_ = limits; }
+    /// For the tests: see `audio::AudioThread::setJobHook` — a hook that blocks on a job's name
+    /// is a driver that does not return from that call.
+    void setAudioJobHook(std::function<void(const char*)> hook) {
+        thread_.setJobHook(std::move(hook));
+    }
 
     /// What `start()` was last given, while it is still running.
     const std::optional<Running>& current() const noexcept { return current_; }
@@ -138,7 +175,19 @@ public:
     const tracking::StateSpaceModel& stateSpace() const noexcept { return stateSpace_; }
 
 private:
-    audio::PortAudioSession session_;
+    /// Brings PortAudio up on the audio thread — the constructors' last step.
+    void initialise();
+    /// Throws `audio::DriverNotAnswering` while a driver holds the audio thread.
+    void refuseWhileStuck(const char* asked) const;
+
+    /// **First**, so it is built before anything that is made on it and destroyed after it all.
+    /// Mutable because asking it for the device list is a const question with a thread's answer.
+    mutable audio::AudioThread thread_;
+    Limits limits_;
+    /// Made, restarted and ended on `thread_`, like every other PortAudio call.
+    std::unique_ptr<audio::PortAudioSession> session_;
+    /// The list the last look found, answered while the drivers are not answering.
+    mutable std::vector<audio::InputDevice> lastDevices_;
     /// Before the engine: `BeatEngine` keeps a pointer to it and must not outlive it.
     tracking::StateSpaceModel stateSpace_;
     std::filesystem::path weightsPath_;

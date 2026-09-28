@@ -1,3 +1,4 @@
+#include "core/audio/callback_clock.hpp"
 #include "core/audio/input_watchdog.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -13,18 +14,24 @@ using Verdict = takt4::audio::InputWatchdog::Verdict;
 
 namespace {
 
-/// A device delivering `rate` frames a second in buffers of `buffer` frames, watched on a
-/// redraw timer that fires every 33 ms give or take a scheduler's worth of jitter — the shape
-/// the window really has — or, given `lookFrom` and `lookTo`, as far apart as a busy one.
-/// Advances in 1 ms steps and reports what each look saw.
+/// A device delivering `rate` frames a second in buffers of `buffer` frames, each callback at the
+/// moment its buffer is full, and timed by the stream's own `CallbackClock` as the real callback
+/// times it — watched on a redraw timer that fires every 33 ms give or take a scheduler's worth
+/// of jitter, the shape the window really has, or, given `lookFrom` and `lookTo`, as far apart as
+/// a busy one. A stopped device loses the audio it would have sent. Advances in 1 ms steps and
+/// reports what each look saw.
 class Rig {
 public:
     Rig(double rate, std::uint64_t buffer, double lookFrom = 0.020, double lookTo = 0.050)
-        : rate_(rate), buffer_(buffer), jitter_(lookFrom, lookTo) {}
+        : rate_(rate), buffer_(buffer), jitter_(lookFrom, lookTo), clock_(rate),
+          nextCallback_(now_ + static_cast<double>(buffer) / rate) {}
 
     void setRate(double rate) { rate_ = rate; }
     void stopCallbacks() { stopped_ = true; }
     void resumeCallbacks() { stopped_ = false; }
+    /// The device loses `seconds` of audio before its next callback: that callback comes that
+    /// much later and brings one buffer, as a driver that dropped the audio does.
+    void loseBeforeNextCallback(double seconds) { nextCallback_ += seconds; }
 
     /// Runs for `seconds`, looking every ~33 ms, and returns the last reading. `worst`
     /// collects whether any look along the way said something other than Healthy/Starting.
@@ -33,15 +40,20 @@ public:
         const double until = now_ + seconds;
         while (now_ < until) {
             now_ += 0.001;
-            if (!stopped_) {
-                owed_ += rate_ * 0.001;
-                while (owed_ >= static_cast<double>(buffer_)) {
-                    owed_ -= static_cast<double>(buffer_);
+            if (stopped_) {
+                // Nothing arrives, and what the device would have sent is gone: the first buffer
+                // after it comes back is a buffer's length after it came back.
+                nextCallback_ = now_ + static_cast<double>(buffer_) / rate_;
+            } else {
+                while (nextCallback_ <= now_) {
                     counters_.framesIn += buffer_;
                     ++counters_.callbacks;
+                    clock_.onCallback(static_cast<std::uint32_t>(buffer_), nanos(nextCallback_));
+                    nextCallback_ += static_cast<double>(buffer_) / rate_;
                 }
             }
             if (now_ >= nextLook_) {
+                takt4::audio::addClockReading(counters_, clock_.read(), nanos(now_));
                 last = watchdog.observe(counters_, now_);
                 if (anyAlarm != nullptr && last.verdict != Verdict::Healthy &&
                     last.verdict != Verdict::Starting) {
@@ -64,15 +76,18 @@ public:
     double firstAlarmAt = 0.0;
 
 private:
+    static std::int64_t nanos(double seconds) { return static_cast<std::int64_t>(seconds * 1e9); }
+
     double rate_;
     std::uint64_t buffer_;
     bool stopped_ = false;
-    double owed_ = 0.0;
     double now_ = 100.0;
     double nextLook_ = 100.0;
     InputStreamCounters counters_;
     std::mt19937 random_{20260923};
     std::uniform_real_distribution<double> jitter_;
+    takt4::audio::CallbackClock clock_;
+    double nextCallback_;
 };
 
 /// Seconds until the watchdog says the clock moved, after the device underneath it goes from
@@ -137,13 +152,14 @@ TEST_CASE("an input whose callbacks stop reads silent after half a second of non
 
     rig.stopCallbacks();
     CHECK(rig.run(watchdog, 0.3).verdict == Verdict::Healthy); // one buffer late is not dead
-    // By 0.6 s. Silence is counted from the first look that found the last callbacks, and
-    // looks are up to 50 ms apart, so half a second of it is seen at most two looks late. This
-    // gave it 0.7 s under a name that said half a second (the audit of 2026-09-25, T17).
+    // By 0.6 s. Silence is counted from the last callback as the callback timed it, which came up
+    // to a buffer (2.7 ms here) before the stop, and looks are up to 50 ms apart — so half a
+    // second of it is seen within 0.6 s of the stop and a buffer. This gave it 0.7 s under a name
+    // that said half a second (the audit of 2026-09-25, T17).
     const InputWatchdog::Reading dead = rig.run(watchdog, 0.3);
     CHECK(dead.verdict == Verdict::Silent);
     CHECK(dead.silentForSeconds >= 0.5);
-    CHECK(dead.silentForSeconds <= 0.6);
+    CHECK(dead.silentForSeconds <= 0.6 + 128.0 / 48000.0);
 
     // And it comes back as healthy — without a false "rate changed" from measuring across
     // the gap, which would have made the window reopen a stream that had just recovered.
@@ -249,6 +265,69 @@ TEST_CASE("a healthy input with large buffers reads healthy, and its dropouts ar
             CHECK_FALSE(dropoutsAlarm(rate, buffer));
         }
     }
+}
+
+TEST_CASE("a redraw 160 ms apart with 2048- to 4096-frame buffers makes no clock of a dropout",
+          "[audio][watchdog]") {
+    // The last of the 2026-09-25 audit's watchdog residue: measured from the looks, a pair of them
+    // had to be allowed as far apart as the redraw, so audio a driver lost inside that span read
+    // as a slower clock — two false "rate changed" in the worst simulated case, each reopening a
+    // stream that had recovered. Timed by the callbacks themselves, a dropout is left out with
+    // the time it lasted, however seldom the window looks. Dropouts shorter than a callback
+    // period among them, at every buffer and rate the case named, with looks 20 to 160 ms apart.
+    for (const std::uint64_t buffer : {2048U, 4096U}) {
+        for (const double rate : {44100.0, 48000.0, 96000.0}) {
+            INFO(rate << " Hz in " << buffer << "-frame buffers, looks 20 to 160 ms apart");
+            Rig rig(rate, buffer, 0.020, 0.160);
+            InputWatchdog watchdog;
+            watchdog.reset(rate, rig.now());
+            rig.run(watchdog, 5.0);
+            bool alarm = false;
+            const double period = static_cast<double>(buffer) / rate;
+            for (int i = 0; i < 30; ++i) {
+                rig.stopCallbacks();
+                // A third of a period, two thirds, a period, then the old story's 80 and 350 ms.
+                const double lengths[] = {period / 3.0, 2.0 * period / 3.0, period, 0.08, 0.35};
+                rig.run(watchdog, lengths[i % 5], &alarm);
+                rig.resumeCallbacks();
+                rig.run(watchdog, 1.9, &alarm);
+            }
+            INFO("first alarm: verdict " << static_cast<int>(rig.firstAlarm.verdict)
+                                         << ", measured " << rig.firstAlarm.measuredRate
+                                         << " Hz at t=" << rig.firstAlarmAt);
+            CHECK_FALSE(alarm);
+            // And a clock that really moves is still noticed, looks that far apart or not.
+            const double moved = secondsToNotice(rate, rate == 48000.0 ? 44100.0 : 48000.0,
+                                                 buffer, 0.020, 0.160);
+            CHECK(moved > 0.0);
+            CHECK(moved < 4.0);
+        }
+    }
+}
+
+TEST_CASE("two dropouts of just under a buffer in three seconds are not taken for another clock",
+          "[audio][watchdog]") {
+    // The worst the callback clock lets through: a gap of up to two buffers is normal, so a
+    // dropout losing just under a buffer is counted as time with no audio in it. Two of those in
+    // one window, at 48 kHz in 4096-frame buffers, lose 6 % of it: measured, the lowest reading
+    // here is 45.19 kHz, 2.47 % off 44.1 kHz — inside the 2.5 % a clock used to be matched
+    // within, and outside today's 1.5 %. (A dropout every 1.5 s puts three in a window and
+    // reads 43.9 kHz, which either match takes for a clock: that is a stream losing a tenth of
+    // its audio, and reopening it is no wrong answer.)
+    const double rate = 48000.0;
+    const std::uint64_t buffer = 4096;
+    const double period = static_cast<double>(buffer) / rate;
+    Rig rig(rate, buffer);
+    InputWatchdog watchdog;
+    watchdog.reset(rate, rig.now());
+    rig.run(watchdog, 5.0);
+    bool alarm = false;
+    for (int i = 0; i < 20; ++i) {
+        rig.loseBeforeNextCallback(period + 0.0048);
+        rig.run(watchdog, 1.6, &alarm);
+    }
+    INFO("first alarm: measured " << rig.firstAlarm.measuredRate << " Hz at t=" << rig.firstAlarmAt);
+    CHECK_FALSE(alarm);
 }
 
 TEST_CASE("a busy redraw neither hides a moved clock nor makes one of a dropout",

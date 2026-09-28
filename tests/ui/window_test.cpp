@@ -40,10 +40,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -1661,6 +1663,78 @@ TEST_CASE("an output that reaches nothing says why on its own row, for as long a
         INFO(std::string(link->problem));
         CHECK(std::string(link->problem).rfind("cannot list peers: ", 0) == 0);
     }
+}
+
+TEST_CASE("a driver that does not answer leaves the window working, says so, and says when it is "
+          "back",
+          "[ui]") {
+    // The audit of 2026-09-25, L23: PortAudio's hosts wait with no limit for a driver, and one
+    // wedged there held the window's own thread — PANIC included — with nothing to press. Here the
+    // drivers do not answer RESCAN: a hook on the audio thread that waits until the test says.
+    LiveTracker tracker(kWeights, kStateSpace);
+    LiveTracker::Limits limits;
+    limits.open = std::chrono::milliseconds(300);
+    limits.stop = std::chrono::milliseconds(300);
+    limits.rescan = std::chrono::milliseconds(300);
+    limits.list = std::chrono::milliseconds(300);
+    tracker.setLimits(limits);
+    WindowController controller(tracker);
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            released.wait();
+        }
+    });
+
+    const auto pressed = std::chrono::steady_clock::now();
+    controller.rescanDevices();
+    CHECK(std::chrono::steady_clock::now() - pressed < std::chrono::seconds(2));
+    CHECK(controller.statusIsError());
+    {
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("did not answer") != std::string::npos);
+    }
+    controller.tick();
+    {
+        const std::string trouble(controller.window().get_input_trouble());
+        INFO(trouble);
+        CHECK(trouble.find("audio driver not answering since it was asked to rescan") !=
+              std::string::npos);
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("stopped answering") != std::string::npos);
+    }
+
+    // **The window goes on**: PANIC engages from its own button, and the redraw runs.
+    const std::uint64_t ticks = controller.ticks();
+    controller.window().invoke_panic_clicked();
+    CHECK(panickedNow(controller));
+    controller.tick();
+    CHECK(controller.ticks() > ticks);
+    controller.releasePanic();
+
+    // START asks nothing of the driver while it is held, and says why at once.
+    if (!controller.devices().empty()) {
+        const auto started = std::chrono::steady_clock::now();
+        controller.toggleRun();
+        CHECK(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(200));
+        CHECK_FALSE(controller.wantsRunning());
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("has not answered since it was asked to rescan") != std::string::npos);
+    }
+
+    // The drivers answer: said, and the line under the meter goes.
+    release.set_value();
+    waitUntil(controller, [&] { return !tracker.stuck(); });
+    REQUIRE_FALSE(tracker.stuck());
+    controller.tick();
+    CHECK(std::string(controller.window().get_input_trouble()).empty());
+    const std::string back(controller.window().get_status());
+    INFO(back);
+    CHECK(back.find("answering again") != std::string::npos);
 }
 
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {

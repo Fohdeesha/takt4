@@ -1461,6 +1461,19 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                   << transports.link().beatRequests() << " beat requests, "
                   << transports.link().numPeers() << " peers at the end\n";
     }
+    if (tracker.stuck()) {
+        // The driver has not returned from being stopped (the audit of 2026-09-25, L23): the
+        // stream was let go of, and an ordinary exit would go on to unload a driver still inside
+        // a call. Everything has been said; the process ends here.
+        std::cout << "the audio driver did not return from being asked to " << tracker.stuckOn()
+                  << "; ending here rather than waiting on it\n"
+                  << std::flush;
+#if defined(_WIN32)
+        ::TerminateProcess(::GetCurrentProcess(), 0);
+#else
+        std::_Exit(0);
+#endif
+    }
     return 0;
 }
 

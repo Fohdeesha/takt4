@@ -19,6 +19,16 @@
 #include <string>
 #include <string_view>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace takt4::ui {
 
 namespace {
@@ -163,11 +173,25 @@ int run() {
         reportFatal("Could not write " + io::pathText(settingsPath) +
                     ", so this session's settings were not kept.");
     }
+    // Asked before the tracker goes: whether a driver is still holding its audio thread.
+    const bool driverHeld = tracker->stuck();
     controller.reset();
     tracker.reset();
     // The session ended as it should, so its log goes: one still there at the next launch is
     // what "did not close normally" means.
     CrashReport::cleanExit();
+    if (driverHeld) {
+        // A driver that stopped answering still holds the audio thread (the audit of 2026-09-25,
+        // L23), and an ordinary exit would go on to tell that driver's DLL it is being unloaded —
+        // which may wait on whatever the driver is holding, and so never finish. Everything worth
+        // keeping has been kept by now: the settings saved above, the lights blacked out by the
+        // controller on its way. So the process ends here rather than asking the driver.
+#if defined(_WIN32)
+        ::TerminateProcess(::GetCurrentProcess(), 0);
+#else
+        std::_Exit(0);
+#endif
+    }
     return 0;
 }
 

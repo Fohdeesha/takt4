@@ -1,6 +1,7 @@
 #include "core/audio/input_stream.hpp"
 
 #include "core/audio/asio_driver.hpp"
+#include "core/audio/callback_gate.hpp"
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/stream_setup.hpp"
 #include "core/rt/alloc_guard.hpp"
@@ -15,7 +16,8 @@ namespace takt4::audio {
 
 struct InputStream::Impl {
     Impl(const InputDevice& dev, const ChannelPicker& pick, double rate, HopProcessor& processor)
-        : device(dev), picker(pick), sampleRate(rate), pipeline(pick, rate, processor) {}
+        : device(dev), picker(pick), sampleRate(rate), pipeline(pick, rate, processor),
+          clock(rate) {}
 
     InputDevice device;
     ChannelPicker picker;
@@ -28,12 +30,22 @@ struct InputStream::Impl {
 
     std::atomic<std::uint64_t> callbacks{0};
     std::atomic<std::uint32_t> inputOverflows{0};
+    /// See `detach`.
+    CallbackGate gate;
+    /// The callbacks' own account of when they came — what the watchdog measures the device's
+    /// rate over, however seldom the window looks.
+    CallbackClock clock;
 
     static int callback(const void* input, void* /*output*/, unsigned long frameCount,
                         const PaStreamCallbackTimeInfo* /*timeInfo*/,
                         PaStreamCallbackFlags statusFlags, void* userData) noexcept {
         auto* self = static_cast<Impl*>(userData);
         const rt::RealtimeScope realtime;
+        // Detached: whatever the driver does now, nothing it sends reaches the processor.
+        const CallbackGate::Pass pass(self->gate);
+        if (!pass.admitted()) {
+            return paContinue;
+        }
         self->callbacks.fetch_add(1, std::memory_order_relaxed);
         if ((statusFlags & paInputOverflow) != 0) {
             self->inputOverflows.fetch_add(1, std::memory_order_relaxed);
@@ -41,9 +53,18 @@ struct InputStream::Impl {
         if (input != nullptr) {
             self->pipeline.process(static_cast<const float*>(input), frameCount);
         }
+        self->clock.onCallback(static_cast<std::uint32_t>(frameCount), CallbackClock::steadyNanos());
         return paContinue;
     }
 };
+
+void addClockReading(InputStreamCounters& counters, const CallbackClock::Reading& clock,
+                     std::int64_t nowNanos) noexcept {
+    counters.normalFrames = clock.normalFrames;
+    counters.normalSeconds = static_cast<double>(clock.normalNanos) / 1e9;
+    counters.sinceLastCallbackSeconds =
+        clock.lastNanos == 0 ? 0.0 : static_cast<double>(nowNanos - clock.lastNanos) / 1e9;
+}
 
 namespace {
 
@@ -137,12 +158,11 @@ void InputStream::stop() {
         return;
     }
     // Abort rather than stop: an input stream has nothing queued to play out, so nothing is lost
-    // by not waiting for the buffers in flight. **It is no guard against a hung driver**, which
-    // this comment used to claim (the audit of 2026-09-25, L23): in PortAudio's ASIO and WASAPI
-    // hosts both calls end in the same blocking code — `ASIOStop`, and a wait with no timeout —
-    // so a driver wedged in there holds this thread, which is the UI's, and an outage now
-    // reopens the input on its own a second after the audio stops. Stopping on another thread
-    // would not be safe either: the stream's callback writes into the engine until it returns.
+    // by not waiting for the buffers in flight. **It is no guard against a hung driver** (the
+    // audit of 2026-09-25, L23): in PortAudio's ASIO and WASAPI hosts both calls end in the same
+    // blocking code — `ASIOStop`, and a wait with no timeout — so a driver wedged in there holds
+    // whichever thread called this. That is why `engine::LiveTracker` calls it on its audio
+    // thread, having `detach`ed the stream first on its own, and waits only as long as it chooses.
     if (const PaError err = Pa_AbortStream(impl_->stream); err != paNoError) {
         detail::throwPortAudioError("Pa_AbortStream failed", err);
     }
@@ -150,6 +170,10 @@ void InputStream::stop() {
 
 bool InputStream::running() const noexcept {
     return Pa_IsStreamActive(impl_->stream) == 1;
+}
+
+void InputStream::detach() noexcept {
+    (void)impl_->gate.close();
 }
 
 const InputDevice& InputStream::device() const noexcept {
@@ -183,6 +207,7 @@ InputStreamCounters InputStream::counters() const noexcept {
     c.hopsOut = impl_->pipeline.hopsOut();
     c.inputOverflows = impl_->inputOverflows.load(std::memory_order_relaxed);
     c.samplesRepaired = impl_->pipeline.samplesRepaired();
+    addClockReading(c, impl_->clock.read(), CallbackClock::steadyNanos());
     return c;
 }
 
