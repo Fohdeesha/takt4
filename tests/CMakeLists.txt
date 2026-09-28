@@ -231,6 +231,7 @@ if(TAKT4_BUILD_UI)
     ui/main.cpp
     ui/model_watch.hpp
     ui/nothing_real.hpp
+    ui/rule_text_test.cpp
     ui/rules_test.cpp
     ui/shot.hpp
     ui/window_test.cpp

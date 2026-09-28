@@ -4,6 +4,7 @@
 #include "core/output/output_runner.hpp"
 #include "core/trigger/rule.hpp"
 #include "ui/delete_guard.hpp"
+#include "ui/model_rows.hpp"
 
 #include "main_window.h" // generated; holds RulesWindow too — see src/ui/CMakeLists.txt
 
@@ -378,10 +379,20 @@ private:
     /// The THEN SEND rows, and the list of kinds this rule's send kind allows one to be.
     void publishFollowUps();
     void publishFiring();
-    /// Builds the two repeaters from nothing, so every text box in them comes back *bound*.
-    /// Called by `tick` when a publisher found a row it could not honestly update in place —
-    /// see `rowsDirty_`.
+    /// Builds again, as new elements, the rows a publisher found it could not honestly update
+    /// in place — or, after `rebuildAll_`, every row of every repeater. Called by `tick`; see
+    /// `rowsDirty_`.
     void rebuildRows();
+    /// Every repeater `rebuildRows` looks after, handed to `fn` in turn. One list, so that a
+    /// repeater added later cannot be renewed there and not emptied, or the other way round.
+    template <typename Fn>
+    void eachRepeater(Fn fn) {
+        fn(slotRows_);
+        fn(paletteRows_);
+        fn(followRows_);
+        fn(choiceRows_);
+        fn(fixtureRows_);
+    }
     void setStatus(const std::string& text, bool error);
 
     /// Puts the selection back in step with `rules_` after the set has changed shape, keeping
@@ -409,17 +420,17 @@ private:
 
     slint::ComponentHandle<RulesWindow> window_;
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
-    std::shared_ptr<slint::VectorModel<OutputChoice>> choiceModel_;
-    std::shared_ptr<slint::VectorModel<OutputChoice>> fixtureModel_;
-    std::shared_ptr<slint::VectorModel<SlotRow>> slotModel_;
+    Repeater<OutputChoice> choiceRows_;
+    Repeater<OutputChoice> fixtureRows_;
+    Repeater<SlotRow> slotRows_;
     /// A rule row's ×, and a follow-up row's: a double-click on either is one deletion.
     DeleteGuard ruleMarks_;
     DeleteGuard followMarks_;
     /// The palette swatches. A model of its own rather than a field of `SlotRow`, because a
     /// rule has at most one color generator and a repeater nested inside a repeater's own
     /// struct is not a thing Slint models do.
-    std::shared_ptr<slint::VectorModel<PaletteEntry>> paletteModel_;
-    std::shared_ptr<slint::VectorModel<FollowRow>> followModel_;
+    Repeater<PaletteEntry> paletteRows_;
+    Repeater<FollowRow> followRows_;
     std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
     bool visible_ = false;
 
@@ -452,13 +463,6 @@ private:
     std::unordered_map<std::string, double> rateSeen_;
     /// `OutputRunner::liveRulesVersion` as `tick` last adopted it. See `adoptLive`.
     std::uint64_t liveSeen_ = 0;
-    /// The rows each repeater has to build again, by index — see `renewRows`, and `rebuildAll_`
-    /// for the two edits that still need the whole list.
-    std::vector<std::size_t> staleSlots_;
-    std::vector<std::size_t> staleFollows_;
-    std::vector<std::size_t> staleChoices_;
-    std::vector<std::size_t> staleFixtures_;
-    std::vector<std::size_t> stalePalette_;
     /// A palette swatch added or taken away: every swatch after it has moved, so the whole
     /// palette — and the chips, whose color rows read from it — are built again.
     bool rebuildAll_ = false;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -109,5 +110,49 @@ void renewRows(slint::VectorModel<Row>& model, std::vector<std::size_t>& indices
     }
     indices.clear();
 }
+
+/// A repeater's model, and the rows of it that are to be built again as new elements the next
+/// time `renew` is called (see `renewRows`).
+///
+/// **One thing, so they are emptied together.** They were two members each in
+/// `RulesController`, and a model emptied for another rule's rows kept the indices marked in
+/// the last rule's — which then named rows of the new rule's, and rebuilt one of them for
+/// nothing on the next redraw, taking the keyboard from a box that had just been clicked into
+/// (found 2026-09-28).
+template <typename Row>
+class Repeater {
+public:
+    Repeater() : model_(std::make_shared<slint::VectorModel<Row>>()) {}
+
+    /// What the window's repeater is bound to.
+    [[nodiscard]] const std::shared_ptr<slint::VectorModel<Row>>& model() const noexcept {
+        return model_;
+    }
+
+    /// Empties it, so the window throws its items away and builds new ones.
+    void clear() {
+        model_->clear();
+        stale_.clear();
+    }
+
+    /// `staleRows`: whether any of the rows now in the model has to be built again rather than
+    /// updated to `rows`. The indices are kept for `renew`.
+    template <typename Changed>
+    bool markStale(const std::vector<Row>& rows, Changed changed) {
+        const std::vector<std::size_t> stale = staleRows(*model_, rows, changed);
+        stale_.insert(stale_.end(), stale.begin(), stale.end());
+        return !stale.empty();
+    }
+
+    /// `writeRows`: the model updated to `rows` in place.
+    void write(const std::vector<Row>& rows) { writeRows(*model_, rows); }
+
+    /// Builds the rows `markStale` found again, as new elements, and forgets them.
+    void renew() { renewRows(*model_, stale_); }
+
+private:
+    std::shared_ptr<slint::VectorModel<Row>> model_;
+    std::vector<std::size_t> stale_;
+};
 
 } // namespace takt4::ui
