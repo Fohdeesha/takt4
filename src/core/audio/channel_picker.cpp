@@ -87,8 +87,8 @@ void ChannelPicker::addPairSums(const float* interleaved, std::size_t frames,
     double both = 0.0;
     std::uint64_t counted = 0;
     for (std::size_t i = 0; i < frames; ++i, src += stride) {
-        const double x = src[a];
-        const double y = src[b];
+        const auto x = static_cast<double>(src[a]);
+        const auto y = static_cast<double>(src[b]);
         if (!std::isfinite(x) || !std::isfinite(y)) {
             continue;
         }

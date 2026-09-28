@@ -808,10 +808,17 @@ struct VirtualMidi {
 
     VirtualMidi() {
         if (library != nullptr) {
-            create = reinterpret_cast<CreatePort>(::GetProcAddress(library, "virtualMIDICreatePortEx2"));
-            send = reinterpret_cast<SendData>(::GetProcAddress(library, "virtualMIDISendData"));
-            close = reinterpret_cast<ClosePort>(::GetProcAddress(library, "virtualMIDIClosePort"));
+            create = find<CreatePort>("virtualMIDICreatePortEx2");
+            send = find<SendData>("virtualMIDISendData");
+            close = find<ClosePort>("virtualMIDIClosePort");
         }
+    }
+    /// An export of the driver's as the type it is. Through `void (*)()`, the one function type a
+    /// cast to or from is not a claim about the signature — `FARPROC` straight to another is, and
+    /// clang says so.
+    template <typename Fn>
+    Fn find(const char* name) const {
+        return reinterpret_cast<Fn>(reinterpret_cast<void (*)()>(::GetProcAddress(library, name)));
     }
     ~VirtualMidi() {
         if (library != nullptr) {
