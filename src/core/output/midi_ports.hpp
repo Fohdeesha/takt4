@@ -2,11 +2,41 @@
 
 #include <cstddef>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace takt4::output {
+
+/// A MIDI port that is not on this machine: nothing in the list matches what was asked for.
+/// What an operator does about it is plug the device in.
+class MidiPortMissing : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// A MIDI port that **is** on this machine and would not open. On Windows that is nearly always
+/// another program holding it — a WinMM port is one program's at a time — and saying "no such
+/// device" about a device the operator can see plugged in sends them looking for the wrong fault
+/// (2026-09-28: "if it can't bind ... it should say so in the UI so it doesn't just silently
+/// fail").
+class MidiPortBusy : public std::runtime_error {
+public:
+    /// `prefix` is who is saying it ("MIDI output: "), and `detail` the driver's own words, which
+    /// go on the end of `what()` for a log and are left off `reason()`.
+    MidiPortBusy(const std::string& prefix, const std::string& name, const std::string& detail);
+    /// The sentence for a row or a line on screen: which port, and that another program probably
+    /// has it — without RtMidi's "MidiOutWinMM::openPort: error creating ...", which is noise to
+    /// an operator and pushed the rest of the line off the end of it.
+    const std::string& reason() const noexcept { return reason_; }
+
+private:
+    std::string reason_;
+};
+
+/// What to tell an operator about a port `name` that is listed but would not open.
+std::string midiPortBusyMessage(const std::string& name);
 
 struct MidiApiInfo {
     std::string name;        // RtMidi's short identifier: "winmm", "core", "alsa", ...

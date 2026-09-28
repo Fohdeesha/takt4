@@ -224,8 +224,8 @@ bool LinkPeerWatch::open(std::string& problem) {
     address.sin_port = htons(kLinkPort);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
     if (::bind(socket->handle, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
-        problem = "cannot listen on Link's port " + std::to_string(kLinkPort) + " (" +
-                  std::to_string(net::lastSocketError()) + ")";
+        problem = "cannot listen on Link's port: " +
+                  net::bindFailure(net::lastSocketError(), kLinkPort);
         return false;
     }
     // On every interface, as Link announces on every interface; and on the default one when

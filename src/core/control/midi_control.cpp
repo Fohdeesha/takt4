@@ -37,7 +37,7 @@ unsigned int findPort(RtMidiIn& in, std::string_view spec) {
             message += "\n  " + std::to_string(i) + ": " + names[i];
         }
     }
-    throw std::runtime_error(message);
+    throw output::MidiPortMissing(message);
 }
 
 /// The end of a press: a note at 0 (`readMidiEvent`), or a CC below the switch threshold
@@ -76,25 +76,32 @@ void MidiControl::start() {
                                  error.getMessage() + ")");
     }
 
+    unsigned int index = 0;
+    std::string name;
     try {
-        const unsigned int index = findPort(impl->in, config_.port);
-        const std::string name = impl->in.getPortName(index);
-        if (sandbox::active()) {
-            // The test binaries' sandbox: this controller is the rig's. See `sandbox.hpp`.
-            sandbox::refuse(sandbox::Refused::Midi);
-            throw std::runtime_error("MIDI control: \"" + name +
-                                     "\" is not opened in the test sandbox");
-        }
-        impl->in.openPort(index, "takt4 control");
-        // A controller's clock and active-sensing streams are not control gestures, and
-        // letting them through would spend a callback per tick doing nothing.
-        impl->in.ignoreTypes(/*sysex=*/true, /*time=*/true, /*sense=*/true);
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            portName_ = name;
-        }
+        index = findPort(impl->in, config_.port); // output::MidiPortMissing: not here
+        name = impl->in.getPortName(index);
     } catch (const RtMidiError& error) {
         throw std::runtime_error("MIDI control: " + error.getMessage());
+    }
+    if (sandbox::active()) {
+        // The test binaries' sandbox: this controller is the rig's. See `sandbox.hpp`.
+        sandbox::refuse(sandbox::Refused::Midi);
+        throw std::runtime_error("MIDI control: \"" + name + "\" is not opened in the test sandbox");
+    }
+    try {
+        impl->in.openPort(index, "takt4 control");
+    } catch (const RtMidiError& error) {
+        // Listed and refused: a WinMM input is one program's at a time, and a DAW that opened
+        // every input it saw is the usual holder. Not "no such port" — the operator can see it.
+        throw output::MidiPortBusy("MIDI control: ", name, error.getMessage());
+    }
+    // A controller's clock and active-sensing streams are not control gestures, and letting
+    // them through would spend a callback per tick doing nothing.
+    impl->in.ignoreTypes(/*sysex=*/true, /*time=*/true, /*sense=*/true);
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        portName_ = name;
     }
 
     // A set of taps does not span a stop.

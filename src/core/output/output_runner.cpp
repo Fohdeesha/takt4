@@ -220,7 +220,7 @@ void OutputRunner::takeSnapshot() {
     taken.patch = transports_.patch();
     taken.lostMidi = transports_.lostMidiDevices();
     lostInSnapshot_ = taken.lostMidi.size();
-    taken.outputProblems = transports_.outputProblems();
+    taken.outputProblems = transports_.problems();
     taken.trouble = currentTrouble();
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
@@ -929,7 +929,7 @@ void OutputRunner::drainOnce(double now) {
         if (++sinceRefresh_ >= kRefreshRounds) {
             sinceRefresh_ = 0;
             transports_.refreshTargets();
-            std::vector<std::string> problems = transports_.outputProblems();
+            std::vector<Transports::Problem> problems = transports_.problems();
             const Snapshot::Trouble trouble = currentTrouble();
             const std::lock_guard<std::mutex> lock(snapshotMutex_);
             retake = retake || problems != snapshot_.outputProblems || trouble != snapshot_.trouble;

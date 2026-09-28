@@ -193,6 +193,50 @@ inline std::string sendFailure(int error) {
     return why + " (" + std::to_string(error) + ")";
 }
 
+/// Why port `port` could not be listened on, in words an operator can act on, with the code
+/// after it. The one that matters is the first: another program — a second takt4, Companion,
+/// a lighting desk's own OSC input — already has the port, and the fix is to close that or pick
+/// another number (2026-09-28: *"if it can't bind the osc port (or any port) it should say so
+/// in the UI so it doesn't just silently fail"*).
+inline std::string bindFailure(int error, unsigned port) {
+    const std::string number = std::to_string(port);
+    std::string why;
+#if defined(_WIN32)
+    switch (error) {
+    case WSAEADDRINUSE:
+        why = "port " + number + " is in use by another program";
+        break;
+    case WSAEACCES:
+        // A socket bound with SO_EXCLUSIVEADDRUSE by someone else, or a port Windows has set
+        // aside for itself (`netsh int ipv4 show excludedportrange`).
+        why = "port " + number + " is held exclusively by another program or reserved by Windows";
+        break;
+    case WSAEADDRNOTAVAIL:
+        why = "that is not an address on this machine";
+        break;
+    default:
+        why = "port " + number + " could not be opened";
+        break;
+    }
+#else
+    switch (error) {
+    case EADDRINUSE:
+        why = "port " + number + " is in use by another program";
+        break;
+    case EACCES:
+        why = "port " + number + " needs privileges this program has not got";
+        break;
+    case EADDRNOTAVAIL:
+        why = "that is not an address on this machine";
+        break;
+    default:
+        why = "port " + number + " could not be opened";
+        break;
+    }
+#endif
+    return why + " (" + std::to_string(error) + ")";
+}
+
 /// Whether the test binaries' sandbox lets a datagram go to `address` — always, outside them.
 /// A refusal is counted here. See `sandbox.hpp`: in short, a loopback port a test's own receiver
 /// was given, or 0.0.0.0/8, and nothing else. IPv6's loopback is held to the same port rule;

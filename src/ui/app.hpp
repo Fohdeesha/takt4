@@ -33,6 +33,10 @@ struct ShotOptions {
     /// The two are alternatives in the markup — `if root.sends-dmx` — so only one of them is
     /// ever on screen, and only a render says whether the other fits.
     bool dmx = false;
+    /// With the running window, draw it with things failing: a MIDI clock row whose device
+    /// another program holds, an OSC row whose host will not resolve, and both control inputs
+    /// asked for and not open — the red lines each says under itself (2026-09-28).
+    bool trouble = false;
 };
 
 /// The size the rule editor opens at, kept beside the main window's for the same reason, and
