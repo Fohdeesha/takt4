@@ -708,8 +708,13 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         });
     }
 
-    const auto w = static_cast<std::uint32_t>(width);
-    const auto h = static_cast<std::uint32_t>(height);
+    // Physical pixels: the logical size at the display's scale.
+    const int physicalWidth =
+        static_cast<int>(std::lround(width * static_cast<double>(options.scale)));
+    const int physicalHeight =
+        static_cast<int>(std::lround(height * static_cast<double>(options.scale)));
+    const auto w = static_cast<std::uint32_t>(physicalWidth);
+    const auto h = static_cast<std::uint32_t>(physicalHeight);
 
     HeadlessWindow* const* rendered = installHeadlessPlatform(w, h);
 
@@ -946,7 +951,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     // show() creates the adapter; the two dispatches give the scene its scale and size,
     // which nothing else would do without a window manager to hear from.
     window->show();
-    window->window().dispatch_scale_factor_change_event(1.0f);
+    window->window().dispatch_scale_factor_change_event(options.scale);
     window->window().dispatch_resize_event(
         slint::LogicalSize({static_cast<float>(width), static_cast<float>(height)}));
 
@@ -954,13 +959,13 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         std::cerr << "takt4-shot: the platform was never asked for a window\n";
         return 1;
     }
-    std::vector<slint::Rgb8Pixel> pixels(static_cast<std::size_t>(width) *
-                                         static_cast<std::size_t>(height));
-    (*rendered)->software().render(pixels, static_cast<std::size_t>(width));
-    writeBmp(out, pixels, width, height);
+    std::vector<slint::Rgb8Pixel> pixels(static_cast<std::size_t>(physicalWidth) *
+                                         static_cast<std::size_t>(physicalHeight));
+    (*rendered)->software().render(pixels, static_cast<std::size_t>(physicalWidth));
+    writeBmp(out, pixels, physicalWidth, physicalHeight);
 
-    std::cout << "takt4-shot: " << width << " x " << height << " written to " << out.string()
-              << '\n';
+    std::cout << "takt4-shot: " << physicalWidth << " x " << physicalHeight << " written to "
+              << out.string() << '\n';
     return 0;
 }
 

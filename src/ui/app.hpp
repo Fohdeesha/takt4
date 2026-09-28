@@ -37,6 +37,10 @@ struct ShotOptions {
     /// another program holds, an OSC row whose host will not resolve, and both control inputs
     /// asked for and not open — the red lines each says under itself (2026-09-28).
     bool trouble = false;
+    /// The display's scale, as Windows' "Scale" setting gives it: 1.25 is 125 %. `width` and
+    /// `height` stay logical, as the window's own sizes are, and the picture is that many times
+    /// larger — what a laptop at 125 % shows (the 2026-09-22 audit's M26). The main window only.
+    float scale = 1.0f;
 };
 
 /// The size the rule editor opens at, kept beside the main window's for the same reason, and

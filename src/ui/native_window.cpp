@@ -225,7 +225,29 @@ LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
     if (monitor == nullptr || GetMonitorInfoW(monitor, &info) == 0) {
         return wanted;
     }
-    const UINT dpi = GetDpiForSystem();
+    // **The monitor's own scale, as it is now** (the 2026-09-22 audit's M26). `GetDpiForSystem`
+    // is the scale the machine was signed in at: a laptop moved to 125 % since, or a primary
+    // screen scaled unlike the one Windows started on, gave a work area converted at the wrong
+    // ratio — at 125 % read as 100 %, a window 25 % taller than the screen, which is exactly the
+    // PANIC-under-the-taskbar this exists to prevent. The effective DPI of the monitor is what
+    // winit, and so Slint, sizes the window by. From shcore at run time rather than linked, and
+    // the system's DPI where it cannot be had.
+    UINT dpi = 0;
+    if (const HMODULE shcore = LoadLibraryW(L"shcore.dll"); shcore != nullptr) {
+        using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+        const auto getDpi =
+            reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor"));
+        UINT x = 0;
+        UINT y = 0;
+        constexpr int kEffectiveDpi = 0; // MDT_EFFECTIVE_DPI
+        if (getDpi != nullptr && SUCCEEDED(getDpi(monitor, kEffectiveDpi, &x, &y))) {
+            dpi = y;
+        }
+        FreeLibrary(shcore);
+    }
+    if (dpi == 0) {
+        dpi = GetDpiForSystem();
+    }
     const double scale = dpi > 0 ? static_cast<double>(dpi) / 96.0 : 1.0;
     const LogicalExtent work{
         static_cast<float>(static_cast<double>(info.rcWork.right - info.rcWork.left) / scale),
