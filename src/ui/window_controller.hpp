@@ -461,6 +461,9 @@ private:
     void watchOpenedInput();
     /// A reopen for `why`, now; an outage when it fails.
     void restartInput(const std::string& why, double now);
+    /// An audio driver that has stopped answering, said when it happens and when it comes back —
+    /// `engine::LiveTracker::stuck`, looked at every redraw.
+    void publishDriverState();
     void beginOutage(const std::string& why, double since, double now);
     /// Which MIDI devices have gone quiet, from the runner's snapshot, said on the status line
     /// when the set changes. "Back" only of a device one of `outputs` still sends to.
@@ -657,6 +660,8 @@ private:
     InputTrouble inputTroubleShown_;
     /// The driver's resync messages since the input was opened (`AsioDriverEvents::resync`).
     std::uint64_t driverResyncs_ = 0;
+    /// Whether the window has said the audio driver stopped answering. See `publishDriverState`.
+    bool driverStuckShown_ = false;
 
     tracking::TapTempo taps_;
     /// When the last tap landed, so a set that has gone quiet stops claiming to be

@@ -25,6 +25,10 @@ add_library(takt4_core STATIC
   audio/asio_probe.h
   audio/asio_scan.cpp
   audio/asio_scan.hpp
+  audio/audio_thread.cpp
+  audio/audio_thread.hpp
+  audio/callback_clock.hpp
+  audio/callback_gate.hpp
   audio/channel_meter.cpp
   audio/channel_meter.hpp
   audio/channel_picker.cpp
