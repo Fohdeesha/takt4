@@ -148,7 +148,10 @@ soon as its switch is on, and a fixture can be identified or tested before any m
 playing. **START** and **STOP** start and stop the listening, and the MIDI clock with it, so
 a DAW following the clock starts and stops with you. The clock ticks from **START**, so a
 receiver can show the tempo, but it is told to play only on the first downbeat after the
-tempo locks: its bar 1 is a bar 1 of the music. **STOP** also puts the lights out, and
+tempo locks: its bar 1 is a bar 1 of the music. If the bar moves after that — **DOWNBEAT**
+pressed, or the bar found again somewhere else after a break — a receiver whose bar no longer
+agrees for two beats running is stopped and started again on the next downbeat (Stop, Song
+Position 0, Start), without a tick added or dropped. **STOP** also puts the lights out, and
 so does quitting: that last dark frame is sent before takt4 goes, so no node is left holding
 the rig lit.
 
