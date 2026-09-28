@@ -780,11 +780,11 @@ void DmxEngine::preempt(const Running& running) {
     std::erase_if(running_, [](const Running& r) { return r.tracks.empty() && r.moves.empty(); });
 }
 
-void DmxEngine::start(std::uint64_t fixtures, const Payload& payload, double now) {
+void DmxEngine::start(const FixtureSet& fixtures, const Payload& payload, double now) {
     launch(payload, now, fixtures, false);
 }
 
-void DmxEngine::launch(const Payload& payload, double now, std::uint64_t fixtures,
+void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fixtures,
                        bool everyFixture) {
     staging_.tracks.clear();
     staging_.moves.clear();
@@ -795,7 +795,7 @@ void DmxEngine::launch(const Payload& payload, double now, std::uint64_t fixture
     const std::size_t count =
         everyFixture ? patch_.size() : std::min(patch_.size(), kMaxRoutableFixtures);
     for (std::size_t i = 0; i < count; ++i) {
-        if (!everyFixture && (fixtures & (std::uint64_t{1} << i)) == 0) {
+        if (!everyFixture && !fixtures.test(i)) {
             continue;
         }
         if (!patch_[i].enabled) {

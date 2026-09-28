@@ -133,6 +133,48 @@ TEST_CASE("a DMX rule reaches the fixtures it names and no others", "[dmx][trigg
     CHECK(sink.delivered() == 1);
 }
 
+TEST_CASE("a rule reaches the 300th fixture of a patch, not only the first 64", "[dmx][trigger]") {
+    // 2026-09-28, the operator: "Is the 64 fixture limit hard coded or can we up that?" It was the
+    // width of one machine word: a rule carried its fixtures as a 64-bit mask, so on a rig of more
+    // than 64 lamps the rest could be patched and tested and never reached by a rule. A set of
+    // `dmx::kMaxRoutableFixtures` bits now — 512 — so here 300 pars, three to a universe'
+    // worth of channels, and a rule aimed at the 300th and at a group of the last few.
+    Transports::Config config;
+    for (int i = 0; i < 300; ++i) {
+        config.patch.push_back(
+            rgb("par " + std::to_string(i + 1), static_cast<std::uint16_t>(1 + 3 * (i % 170))));
+        config.patch.back().universe = static_cast<takt4::dmx::PortAddress>(i / 170);
+        config.patch.back().group = i >= 296 ? "far end" : "";
+    }
+    Transports transports(config);
+    RuleSink sink(transports);
+    TriggerEngine engine(sink);
+
+    Rule::Config rule = fadeRule("last-par", {config.patch[299].id, "far end"}, 255, 0.0);
+    rule.dmx.effect = EffectKind::Color;
+    rule.dmx.color = fixedText("#ff2040");
+    engine.setRules({rule});
+    const takt4::dmx::FixtureSet reached =
+        takt4::dmx::resolveFixtures(transports.patch(), rule.dmx.fixtures);
+    CHECK(reached.count() == 4); // 297 to 300, the 300th named twice
+    CHECK(reached.test(299));
+    CHECK_FALSE(reached.test(63));
+    engine.rule(0).setFixtureMask(reached);
+    sink.setNow(0.0);
+
+    engine.onBeat(beatAt(1, 1, 1, 0.0));
+
+    // The 300th par is the 130th on universe 1: channels 388 to 390.
+    const std::span<const std::uint8_t> second = transports.dmx().levels(1);
+    REQUIRE(second.size() >= 390);
+    CHECK(second[387] == 255);
+    CHECK(second[388] == 32);
+    CHECK(second[389] == 64);
+    // And a par not named, on the same universe, stays dark.
+    CHECK(second[0] == 0);
+    CHECK(sink.delivered() == 1);
+}
+
 TEST_CASE("a DMX rule that names no fixture is invalid rather than aimed at everything",
           "[dmx][trigger]") {
     // The asymmetry with `outputs` is deliberate and this is where it bites: an unrouted OSC

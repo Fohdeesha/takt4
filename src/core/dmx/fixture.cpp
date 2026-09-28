@@ -194,9 +194,8 @@ std::string problemWith(const Fixture& fixture) {
     return {};
 }
 
-std::uint64_t resolveFixtures(const std::vector<Fixture>& patch,
-                              const std::vector<std::string>& aims) {
-    std::uint64_t mask = 0;
+FixtureSet resolveFixtures(const std::vector<Fixture>& patch, const std::vector<std::string>& aims) {
+    FixtureSet mask;
     if (aims.empty()) {
         return mask; // see the header: no fixtures, not every fixture
     }
@@ -206,7 +205,7 @@ std::uint64_t resolveFixtures(const std::vector<Fixture>& patch,
         for (const std::string& aim : aims) {
             if ((!fixture.id.empty() && aim == fixture.id) ||
                 (!fixture.group.empty() && aim == fixture.group)) {
-                mask |= std::uint64_t{1} << i;
+                mask.set(i);
                 break;
             }
         }

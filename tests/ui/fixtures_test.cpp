@@ -575,31 +575,45 @@ TEST_CASE("the patch says when two fixtures share channels, and what no rule can
     INFO(summary);
     CHECK(summary.find("left and right share channel 3 of universe 0") != std::string::npos);
 
-    SECTION("past the 64th") {
-        while (patch.fixtures().size() < 64) {
-            patch.add();
+    SECTION("past the last a rule can reach") {
+        // 512 since 2026-09-28 — it was 64, one machine word, and the operator asked whether it
+        // had to be. Started with that many rather than clicked up to it.
+        const std::size_t limit = takt4::dmx::kMaxRoutableFixtures;
+        REQUIRE(limit == 512);
+        std::vector<takt4::dmx::Fixture> many;
+        for (std::size_t i = 0; i < limit; ++i) {
+            many.push_back(takt4::dmx::fixtureFromMode("par " + std::to_string(i + 1), 1,
+                                                       static_cast<takt4::dmx::PortAddress>(i / 170),
+                                                       static_cast<std::uint16_t>(1 + 3 * (i % 170))));
         }
-        CHECK_FALSE(patch.window().get_status_error());
-        patch.add(); // the 65th
-        CHECK(patch.window().get_status_error());
-        CHECK(std::string(patch.window().get_status()).find("first 64") != std::string::npos);
+        takt4::dmx::ensureFixtureIds(many);
+        FixturesController full(rig.runner, many);
+        REQUIRE(full.fixtures().size() == limit);
+        CHECK_FALSE(full.window().get_status_error());
+        full.add(); // the 513th
+        CHECK(full.window().get_status_error());
+        CHECK(std::string(full.window().get_status()).find("first 512") != std::string::npos);
 
-        // IDENTIFY cannot aim at it — said, rather than a button that does nothing.
-        patch.pick(64);
-        patch.identify();
-        CHECK(std::string(patch.window().get_status()).find("IDENTIFY reaches the first 64") !=
+        // IDENTIFY cannot aim at it — said, rather than a button that does nothing — and can at
+        // the 512th, which the old limit could not.
+        full.pick(static_cast<int>(limit));
+        full.identify();
+        CHECK(std::string(full.window().get_status()).find("IDENTIFY reaches the first 512") !=
               std::string::npos);
+        full.pick(static_cast<int>(limit) - 1);
+        full.identify();
+        CHECK(std::string(full.window().get_status()).find("IDENTIFY reaches") == std::string::npos);
 
-        // And a rule is offered the 64 it can reach, not the 65th.
+        // And a rule is offered the 512 it can reach, not the 513th.
         RulesController editor(rig.runner, {});
-        editor.setPatch(patch.fixtures());
+        editor.setPatch(full.fixtures());
         editor.add();
         const auto dmx = std::find(takt4::trigger::kMessageKinds.begin(),
                                    takt4::trigger::kMessageKinds.end(),
                                    takt4::trigger::Message::Kind::Dmx) -
                          takt4::trigger::kMessageKinds.begin();
         editor.pickSend(static_cast<int>(dmx));
-        CHECK(editor.window().get_fixture_choices()->row_count() == 64);
+        CHECK(editor.window().get_fixture_choices()->row_count() == limit);
     }
 }
 

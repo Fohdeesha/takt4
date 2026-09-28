@@ -3,6 +3,7 @@
 #include "core/dmx/artnet_packet.hpp"
 
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -163,12 +164,21 @@ struct Fixture {
 
 /// How many fixtures a rule can be routed to.
 ///
-/// A rule carries its fixtures as a bit each (`trigger::Message::fixtures`), which is what
-/// keeps a fire allocation-free and a follow-up safe to hold after the patch has been
-/// replaced — the same argument `output::kMaxRoutableTargets` makes, and the same number.
-/// Fixtures past it are patched, shown and driven by their own rules; what they cannot be is
-/// *named* by one. `resolveFixtures` says so rather than failing quietly.
-inline constexpr std::size_t kMaxRoutableFixtures = 64;
+/// A rule carries its fixtures as a bit each (`FixtureSet`), which is what keeps a fire
+/// allocation-free and a follow-up safe to hold after the patch has been replaced — the same
+/// argument `output::kMaxRoutableTargets` makes. Fixtures past it are patched, shown and driven by
+/// their own rules; what they cannot be is *named* by one. `resolveFixtures` says so rather than
+/// failing quietly.
+///
+/// **512 since 2026-09-28**, when the operator asked whether 64 was hard-coded: it was the width of
+/// one machine word, and a rig of more than 64 lamps is not a large one. 512 is a universe's worth
+/// of single-channel fixtures, and a set of them is 64 bytes a message.
+inline constexpr std::size_t kMaxRoutableFixtures = 512;
+
+/// The fixtures a rule reaches, a bit each, in the order the patch holds them — what
+/// `resolveFixtures` makes and every effect, fire and held follow-up carries. Fixed-size, so
+/// nothing is allocated to fire a rule.
+using FixtureSet = std::bitset<kMaxRoutableFixtures>;
 
 /// The 1-based DMX channel carrying `role`, or 0 when the fixture has no such channel.
 ///
@@ -226,8 +236,7 @@ std::string problemWith(const Fixture& fixture);
 /// An entry that matches nothing contributes no bit and is kept — a preset written on a rig
 /// with "heads" opened on one without should still say "heads", so that plugging the rig back
 /// in restores the routing.
-std::uint64_t resolveFixtures(const std::vector<Fixture>& patch,
-                              const std::vector<std::string>& aims);
+FixtureSet resolveFixtures(const std::vector<Fixture>& patch, const std::vector<std::string>& aims);
 
 /// A fresh fixture id no fixture in `patch` has — random, for `output::newOutputId`'s reason.
 std::string newFixtureId(const std::vector<Fixture>& patch);

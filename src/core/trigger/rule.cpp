@@ -491,6 +491,16 @@ std::uint64_t remapBits(std::uint64_t mask, const std::vector<int>& moved) noexc
     return out;
 }
 
+dmx::FixtureSet remapBits(const dmx::FixtureSet& mask, const std::vector<int>& moved) noexcept {
+    dmx::FixtureSet out;
+    for (std::size_t i = 0; i < moved.size() && i < mask.size(); ++i) {
+        if (mask.test(i) && moved[i] >= 0 && static_cast<std::size_t>(moved[i]) < out.size()) {
+            out.set(static_cast<std::size_t>(moved[i]));
+        }
+    }
+    return out;
+}
+
 void Rule::carryFrom(const Rule& previous) {
     // A generator is kept whole when its accepted configuration — the seed included — is the
     // one it had, which is exactly when it would have drawn the same sequence from scratch.
