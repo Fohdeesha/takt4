@@ -413,3 +413,38 @@ TEST_CASE("a stream whose driver does not return from its stop is let go of, and
     CHECK(tracker.running());
     tracker.stop();
 }
+
+TEST_CASE("LiveTracker opens a stereo pair on a real interface and the pair's sums arrive",
+          "[audio][hardware][stereo]") {
+    // 2026-09-28: stereo unless asked otherwise, so the pair is what opens on a rig — on ASIO
+    // through its channel selectors, two of them. The engine gets hops, and the stereo check gets
+    // both sides' sums, from the one stream.
+    LiveTracker tracker(kWeights, kStateSpace);
+    std::optional<InputDevice> device;
+    for (const InputDevice& candidate : tracker.devices()) {
+        if (!candidate.isLoopback && candidate.maxInputChannels >= 2 &&
+            (!device || (takt4::audio::hasNativeChannelSelection(candidate.hostApi) &&
+                         !takt4::audio::hasNativeChannelSelection(device->hostApi)))) {
+            device = candidate;
+        }
+    }
+    if (!device) {
+        SKIP("no input device with two inputs on this machine");
+    }
+    INFO(device->hostApiName << " / " << device->name);
+    tracker.start(*device, ChannelSelection::pair(0, 1));
+    REQUIRE(tracker.running());
+    REQUIRE(tracker.stream() != nullptr);
+    std::uint64_t levels = 0;
+    REQUIRE(within(std::chrono::milliseconds(10000), [&] {
+        HopLevel level;
+        while (tracker.popLevel(level)) {
+            ++levels;
+        }
+        return levels >= 25;
+    }));
+    const takt4::audio::StereoSums sums = tracker.stream()->stereo();
+    CHECK(sums.frames > 0);
+    CHECK(tracker.stream()->picker().selection().count == 2);
+    tracker.stop();
+}

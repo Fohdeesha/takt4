@@ -57,6 +57,8 @@ add_library(takt4_core STATIC
   audio/rates.hpp
   audio/resampler.cpp
   audio/resampler.hpp
+  audio/stereo_check.cpp
+  audio/stereo_check.hpp
   audio/stream_setup.cpp
   audio/stream_setup.hpp
   control/control_action.cpp

@@ -18,6 +18,7 @@
 #include "core/audio/devices.hpp"
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/rates.hpp"
+#include "core/audio/stereo_check.hpp"
 #include "core/build_info.hpp"
 #include "core/control/control_action.hpp"
 #include "core/dmx/effect.hpp"
@@ -225,8 +226,11 @@ void fillPickers(MainWindow& window) {
             chosen = &found.front();
         }
         if (chosen != nullptr) {
-            for (int c = 0; c < chosen->maxInputChannels; ++c) {
-                channels->push_back(slint::SharedString(describeChannel(*chosen, c)));
+            // Pairs, as the window lists them unless "mono" is ticked (2026-09-28).
+            for (int c = 0; c < chosen->maxInputChannels; c += 2) {
+                channels->push_back(slint::SharedString(c + 1 < chosen->maxInputChannels
+                                                            ? describePair(*chosen, c)
+                                                            : describeChannel(*chosen, c)));
             }
             for (std::size_t i = 0; i < found.size(); ++i) {
                 if (found[i].index == chosen->index) {
@@ -891,6 +895,9 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
                 "NOT OPEN \xE2\x80\x94 \"nanoKONTROL2\" is not on this machine \xE2\x80\x94 plug it "
                 "in. Trying again every 5 s."));
             window->set_osc_control_error(true);
+            // A stereo pair with a leg wired backwards, as `superviseStereo` says it.
+            window->set_input_trouble(slint::SharedString(audio::StereoCheck::describe(
+                audio::StereoCheck::Verdict::OutOfPhase, "In 11", "In 12")));
             window->set_osc_control_reading(slint::SharedString(
                 "NOT LISTENING \xE2\x80\x94 port 7001 is in use by another program (10048). Trying "
                 "again every 5 s."));

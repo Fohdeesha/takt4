@@ -1737,6 +1737,143 @@ TEST_CASE("a driver that does not answer leaves the window working, says so, and
     CHECK(back.find("answering again") != std::string::npos);
 }
 
+TEST_CASE("the channel picker offers stereo pairs unless mono is ticked, and START opens what it "
+          "shows",
+          "[ui]") {
+    // 2026-09-28: stereo unless asked otherwise. Measured over the 23 electronic tracks and
+    // GiantSteps' 664, the average of a feed's two sides tracked as well as the better side
+    // alone, better on downbeats, and never worse than either — and it is what the model was
+    // trained on. So the picker offers the pairs an interface numbers its inputs in, and a
+    // "mono" tick offers single inputs for a feed that is on one.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    int at = -1;
+    for (std::size_t i = 0; i < controller.devices().size(); ++i) {
+        if (controller.devices()[i].maxInputChannels >= 2 &&
+            (at < 0 || controller.devices()[i].maxInputChannels >
+                           controller.devices()[static_cast<std::size_t>(at)].maxInputChannels)) {
+            at = static_cast<int>(i);
+        }
+    }
+    if (at < 0) {
+        SKIP("no device on this machine has two inputs");
+    }
+    controller.pickDevice(at);
+    const InputDevice& device = controller.devices()[static_cast<std::size_t>(at)];
+    INFO(device.name << ", " << device.maxInputChannels << " inputs");
+
+    CHECK_FALSE(controller.mono());
+    CHECK_FALSE(controller.window().get_input_mono());
+    auto channels = controller.window().get_channels();
+    CHECK(channels->row_count() == static_cast<std::size_t>((device.maxInputChannels + 1) / 2));
+    CHECK(std::string(*channels->row_data(0)).rfind("In 1 + 2", 0) == 0);
+    takt4::audio::ChannelSelection opened = controller.selection();
+    CHECK(opened.count == 2);
+    CHECK(opened.channels[0] == 0);
+    CHECK(opened.channels[1] == 1);
+
+    // Ticked: the inputs one by one, the pair's first kept.
+    controller.window().invoke_input_mono_toggled(true);
+    CHECK(controller.mono());
+    channels = controller.window().get_channels();
+    CHECK(channels->row_count() == static_cast<std::size_t>(device.maxInputChannels));
+    CHECK(controller.window().get_channel_index() == 0);
+    opened = controller.selection();
+    CHECK(opened.count == 1);
+    CHECK(opened.channels[0] == 0);
+    CHECK(controller.currentSettings().machine.mono);
+
+    // Input 2 alone, and back to stereo: the pair it is in.
+    controller.window().invoke_channel_picked(1);
+    CHECK(controller.channelIndex() == 1);
+    controller.window().invoke_input_mono_toggled(false);
+    CHECK(controller.window().get_channel_index() == 0);
+    opened = controller.selection();
+    CHECK(opened.count == 2);
+    CHECK(opened.channels[0] == 0);
+    CHECK(opened.channels[1] == 1);
+    CHECK_FALSE(controller.currentSettings().machine.mono);
+
+    if (device.maxInputChannels >= 4) {
+        // The second pair is inputs 3 and 4.
+        controller.window().invoke_channel_picked(1);
+        opened = controller.selection();
+        CHECK(opened.channels[0] == 2);
+        CHECK(opened.channels[1] == 3);
+    }
+}
+
+TEST_CASE("a stereo pair out of phase is said under the meter and on the status line", "[ui]") {
+    // The failure an average has that one side has not: a leg wired backwards cancels the kick
+    // and the bass. Measured with one side flipped: beat F 0.84 to 0.70, downbeat F 0.66 to 0.43.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    InputDevice device;
+    device.name = "takt4 test stereo";
+    device.hostApi = takt4::audio::HostApiKind::Wasapi;
+    device.maxInputChannels = 12;
+    double now = 100.0;
+    controller.assumeRunningOn({device, takt4::audio::ChannelSelection::pair(10, 11)}, now);
+
+    takt4::audio::StereoSums sums;
+    const auto play = [&](double seconds, double both) {
+        for (double t = 0.0; t < seconds; t += 0.033) {
+            sums.frames += 1584;
+            sums.left += 1584 * 0.01;
+            sums.right += 1584 * 0.01;
+            sums.both += 1584 * both;
+            now += 0.033;
+            controller.superviseStereo(sums, now);
+            controller.superviseInput({}, {}, now);
+        }
+    };
+    play(4.0, 0.009); // in phase, correlation 0.9
+    CHECK(std::string(controller.window().get_input_trouble()).empty());
+
+    play(4.0, -0.009); // a leg flipped
+    const std::string trouble(controller.window().get_input_trouble());
+    INFO(trouble);
+    CHECK(trouble.find("In 11 and In 12 are out of phase") != std::string::npos);
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("out of phase") != std::string::npos);
+    CHECK(controller.statusIsError());
+
+    // Wired back: the line goes.
+    play(4.0, 0.009);
+    CHECK(std::string(controller.window().get_input_trouble()).empty());
+}
+
+TEST_CASE("a settings file from before the mono tick opens on the stereo pair and says so",
+          "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    std::optional<InputDevice> multi;
+    for (const InputDevice& device : tracker.devices()) {
+        if (device.maxInputChannels >= 2) {
+            multi = device;
+            break;
+        }
+    }
+    if (!multi) {
+        SKIP("no device on this machine has two inputs");
+    }
+    // What `settings::load` makes of a file with a channel and no "mono" (settings_test.cpp).
+    takt4::settings::Settings old;
+    old.machine.deviceName = multi->name;
+    old.machine.hostApiName = multi->hostApiName;
+    old.machine.channel = 1;
+    old.machine.stereoFromMono = true;
+    WindowController controller(tracker, old);
+    const takt4::audio::ChannelSelection opened = controller.selection();
+    CHECK(opened.count == 2);
+    CHECK(opened.channels[0] == 0);
+    CHECK(opened.channels[1] == 1);
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("Listening to In 1 + 2 as a stereo pair now") != std::string::npos);
+    CHECK(status.find("Tick mono to go back to In 2 alone") != std::string::npos);
+}
+
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
@@ -2624,6 +2761,7 @@ TEST_CASE("the window restores the device and channel it was left on", "[ui][har
     saved.machine.deviceName = multi->name;
     saved.machine.hostApiName = multi->hostApiName;
     saved.machine.channel = 1;
+    saved.machine.mono = true; // one input remembered, as a single input
 
     WindowController controller(tracker, saved);
     REQUIRE(controller.deviceIndex() >= 0);

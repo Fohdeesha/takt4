@@ -79,6 +79,8 @@ public:
     std::size_t resamplerDelayFrames() const noexcept;
 
     InputStreamCounters counters() const noexcept;
+    /// For a pair, what its two sides have brought — see `StereoCheck`. Zero for one channel.
+    StereoSums stereo() const noexcept;
 
 private:
     struct Impl;

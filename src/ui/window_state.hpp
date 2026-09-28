@@ -100,6 +100,9 @@ std::string describeDevice(const audio::InputDevice& device);
 /// What the channel picker shows, numbered from 1 as it is printed on the interface.
 /// ASIO and CoreAudio hand over the driver's own names for them; nothing else does.
 std::string describeChannel(const audio::InputDevice& device, int channel);
+/// A stereo pair of inputs, `first` and the one after it, as the channel picker lists it:
+/// "In 11 + 12", with the driver's names for the two when it has them.
+std::string describePair(const audio::InputDevice& device, int first);
 
 /// One decimal place or two, without disturbing any stream's flags.
 std::string fixed(double value, int places);

@@ -1,5 +1,7 @@
 #include "core/audio/channel_picker.hpp"
 
+#include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -69,6 +71,36 @@ void ChannelPicker::pickMono(const float* interleaved, std::size_t frames, float
             mono[i] = 0.5f * (src[a] + src[b]);
         }
     }
+}
+
+void ChannelPicker::addPairSums(const float* interleaved, std::size_t frames,
+                                StereoSums& sums) const noexcept {
+    if (selection_.count != 2) {
+        return;
+    }
+    const auto stride = static_cast<std::size_t>(streamChannels_);
+    const std::size_t a = offsets_[0];
+    const std::size_t b = offsets_[1];
+    const float* src = interleaved;
+    double left = 0.0;
+    double right = 0.0;
+    double both = 0.0;
+    std::uint64_t counted = 0;
+    for (std::size_t i = 0; i < frames; ++i, src += stride) {
+        const double x = src[a];
+        const double y = src[b];
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            continue;
+        }
+        left += x * x;
+        right += y * y;
+        both += x * y;
+        ++counted;
+    }
+    sums.frames += counted;
+    sums.left += left;
+    sums.right += right;
+    sums.both += both;
 }
 
 } // namespace takt4::audio
