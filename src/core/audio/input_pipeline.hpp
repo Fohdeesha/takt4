@@ -4,6 +4,8 @@
 #include "core/audio/hop_accumulator.hpp"
 #include "core/audio/hop_processor.hpp"
 #include "core/audio/resampler.hpp"
+#include "core/audio/stereo_check.hpp"
+#include "core/rt/published.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -51,6 +53,9 @@ public:
     std::uint64_t samplesRepaired() const noexcept {
         return samplesRepaired_.load(std::memory_order_relaxed);
     }
+    /// A pair's sums since construction — `ChannelPicker::addPairSums`, whole as of one block.
+    /// Always zero for a single channel. Any thread.
+    StereoSums stereoSums() const noexcept { return publishedSums_.load(); }
 
 private:
     ChannelPicker picker_;
@@ -63,6 +68,9 @@ private:
     std::atomic<std::uint64_t> samplesOut_{0};
     std::atomic<std::uint64_t> hopsOut_{0};
     std::atomic<std::uint64_t> samplesRepaired_{0};
+    /// The audio thread's own running sums, and the copy other threads read.
+    StereoSums pairSums_;
+    rt::Published<StereoSums> publishedSums_;
 };
 
 } // namespace takt4::audio

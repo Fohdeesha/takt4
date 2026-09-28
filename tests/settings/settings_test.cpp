@@ -1078,3 +1078,37 @@ TEST_CASE("a file routed by name loads routed by id, and a rename afterwards mov
         CHECK(again.preset.rules[0].outputs == std::vector<std::string>{wall});
     }
 }
+
+TEST_CASE("a file from before the mono tick is heard as the stereo pair its input is in",
+          "[settings]") {
+    // 2026-09-28: stereo unless asked otherwise, and a file written before there was a choice
+    // listened to one input only because that was all there was. It is read as the pair that
+    // input is in, and marked so the window can say so; a file that says what it wants keeps it.
+    const Settings old = takt4::settings::fromJson(
+        R"({"machine": {"deviceName": "MOTU Pro Audio", "hostApiName": "ASIO", "channel": 10}})");
+    CHECK(old.machine.channel == 10);
+    CHECK_FALSE(old.machine.mono);
+    CHECK(old.machine.stereoFromMono);
+
+    const Settings mono = takt4::settings::fromJson(R"({"machine": {"channel": 10, "mono": true}})");
+    CHECK(mono.machine.mono);
+    CHECK_FALSE(mono.machine.stereoFromMono);
+
+    // A fresh file is stereo, with nothing to say about it.
+    const Settings fresh = takt4::settings::fromJson("{}");
+    CHECK_FALSE(fresh.machine.mono);
+    CHECK_FALSE(fresh.machine.stereoFromMono);
+
+    // And the choice is written, so the next launch has one.
+    Settings chosen;
+    chosen.machine.channel = 3;
+    chosen.machine.mono = true;
+    const Settings again = roundTrip(chosen);
+    CHECK(again.machine.mono);
+    CHECK(again.machine.channel == 3);
+    CHECK_FALSE(again.machine.stereoFromMono);
+    Settings paired;
+    paired.machine.channel = 3;
+    CHECK_FALSE(roundTrip(paired).machine.mono);
+    CHECK_FALSE(roundTrip(paired).machine.stereoFromMono);
+}

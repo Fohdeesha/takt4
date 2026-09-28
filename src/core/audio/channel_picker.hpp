@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/audio/devices.hpp"
+#include "core/audio/stereo_check.hpp"
 
 #include <array>
 #include <cstddef>
@@ -53,6 +54,11 @@ public:
     /// Real-time. Reads `frames` interleaved frames of streamChannelCount() channels
     /// and writes `frames` mono samples. A pair is averaged, (a + b) / 2.
     void pickMono(const float* interleaved, std::size_t frames, float* mono) const noexcept;
+
+    /// Real-time. Adds a pair's energies and their product over `frames` frames to `sums` —
+    /// what `StereoCheck` judges the pair by — and nothing for a single channel. A sample that is
+    /// not a number is left out, as the mono path repairs it to silence.
+    void addPairSums(const float* interleaved, std::size_t frames, StereoSums& sums) const noexcept;
 
 private:
     ChannelSelection selection_;

@@ -36,7 +36,18 @@ struct MachineSettings {
     /// in, and restoring the wrong interface is worse than restoring none.
     std::string deviceName;
     std::string hostApiName;
+    /// The input listened to, from 0 — or, in stereo, one of the pair's two: the pair is always
+    /// an odd input and the even one after it as an interface numbers them (1 and 2, 11 and 12),
+    /// which is how a stereo feed is patched into one.
     int channel = 0;
+    /// One input rather than the pair `channel` is in — the operator's "mono" tick (2026-09-28).
+    /// **Off unless asked for**: a stereo feed is heard as the average of its two sides, which is
+    /// what the model was trained on, and which measured as well as the better side alone and
+    /// better on downbeats (TRACKING-PROPOSAL.md §7.18).
+    bool mono = false;
+    /// Read from a file written before there was a choice — a `channel` and no `mono` — which is
+    /// taken as the stereo pair that input is in, and said so once by the window. Never written.
+    bool stereoFromMono = false;
     /// The MIDI output port the clock went to, by name, in a file written before 2026-09-25 —
     /// read so that file keeps its clock, which `load` turns into a MIDI clock output in
     /// `Preset::outputs`, and empty after that. Still written, as the first clock output's

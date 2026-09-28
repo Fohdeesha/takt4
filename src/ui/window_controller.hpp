@@ -3,6 +3,7 @@
 #include "core/audio/asio_driver.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/input_watchdog.hpp"
+#include "core/audio/stereo_check.hpp"
 #include "core/control/midi_control.hpp"
 #include "core/control/osc_control.hpp"
 #include "core/engine/live_tracker.hpp"
@@ -110,7 +111,21 @@ public:
 
     /// What the window's callbacks do, reachable directly as well as through a click.
     void pickDevice(int index);
-    void pickChannel(int index) { channel_ = index; }
+    /// The channel picker's entry `index`: an input, or — in stereo, which is the default — the
+    /// pair `index` is (0 is inputs 1 and 2).
+    void pickChannel(int index);
+    /// The "mono" tick: single inputs rather than pairs, the input kept — a pair's first input
+    /// alone, or the pair a single input is in (2026-09-28).
+    void setMono(bool mono);
+    bool mono() const noexcept { return mono_; }
+    /// What START opens on the device picked: the pair the channel is in, unless mono is ticked
+    /// or the device has no second input to pair it with.
+    audio::ChannelSelection selection() const;
+    /// One look at a stereo input's two sides — out of phase, one silent, unrelated — said under
+    /// the meter while it lasts and on the status line when it starts (`audio::StereoCheck`).
+    /// What the redraw timer does with the running stream's sums; public so a test can hand it
+    /// any pair of sides.
+    void superviseStereo(const audio::StereoSums& sums, double now);
     void toggleRun();
     /// START or STOP as the button presses it: says so on the button, lets the window draw
     /// that, and then `toggleRun` — refusing another press until a moment after it is done
@@ -437,6 +452,11 @@ private:
     /// Reads the tracker's device list into `devices_` and the picker's model, selecting
     /// nothing.
     void listDevices();
+    /// The channel picker's model for the device picked — pairs or single inputs, as `mono_`
+    /// says — with `channel_` selected in it.
+    void publishChannels();
+    /// `channel_` set to an input, and the picker moved to the entry that holds it.
+    void selectChannel(int channel);
     /// After an outage's rescan: the list again, and the input the outage is about found in it
     /// by name — or, when it is not there, nothing selected in its place and it remembered as
     /// the one wanted (the audit of 2026-09-25, H1).
@@ -560,7 +580,13 @@ private:
 
     std::vector<audio::InputDevice> devices_;
     int device_ = -1;
+    /// An input, from 0; in stereo, either of the pair it is in (see `selection`).
     int channel_ = 0;
+    /// See `setMono`.
+    bool mono_ = false;
+    /// See `superviseStereo`: its check, and what it last said — empty while the pair is fine.
+    audio::StereoCheck stereoCheck_;
+    std::string stereoProblem_;
 
     /// The machine half as the last run left it, kept for the whole session — see
     /// `deviceFallback_` for why a fallback must not overwrite it.
@@ -655,6 +681,8 @@ private:
         std::uint64_t framesDropped = 0;
         std::uint64_t beatsDropped = 0;
         std::uint64_t samplesRepaired = 0;
+        /// A stereo pair's own trouble, from `superviseStereo`, or empty.
+        std::string stereo;
         bool operator==(const InputTrouble&) const = default;
     };
     InputTrouble inputTroubleShown_;

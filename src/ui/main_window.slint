@@ -179,6 +179,9 @@ export component MainWindow inherits Window {
   in-out property <[string]> channels;
   in-out property <int> device-index;
   in-out property <int> channel-index;
+  /// One input rather than a stereo pair — see `mono-check`. `channels` lists single inputs
+  /// when this is true and pairs when it is not.
+  in-out property <bool> input-mono;
   in-out property <bool> running;
   /// The input has stopped delivering audio, or is being reopened after it did — the audit's
   /// C4. While this is true the readouts are the last ones before the audio stopped, and the
@@ -360,6 +363,7 @@ export component MainWindow inherits Window {
 
   callback device-picked(int);
   callback channel-picked(int);
+  callback input-mono-toggled(bool);
   callback toggle-run();
   /// START or STOP has been pressed and is being carried out, or has only just been — an ASIO
   /// driver can take seconds to open, and the window cannot draw while it does (the audit's
@@ -555,6 +559,20 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 selected => {
                   root.channel-picked(self.current-index);
+                }
+              }
+
+              // **Stereo unless asked otherwise** (2026-09-28): the picker offers pairs of
+              // inputs — 1 + 2, 11 + 12 — heard as the average of the two, which is what the
+              // model was trained on and what measured best. Ticked, it offers single inputs, for
+              // a feed that really is on one of them.
+              mono-check := CheckBox {
+                text: "mono";
+                checked <=> root.input-mono;
+                enabled: !root.running;
+                horizontal-stretch: 0;
+                toggled => {
+                  root.input-mono-toggled(self.checked);
                 }
               }
 

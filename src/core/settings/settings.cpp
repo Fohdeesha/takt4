@@ -475,6 +475,7 @@ std::string toJson(const Settings& settings) {
              {"deviceName", settings.machine.deviceName},
              {"hostApiName", settings.machine.hostApiName},
              {"channel", settings.machine.channel},
+             {"mono", settings.machine.mono},
              {"midiClockPort", clockPort},
              {"midiControlPort", settings.machine.midiControlPort},
              {"midiBindings", bindings},
@@ -516,6 +517,15 @@ Settings fromDocument(const json& document) {
         read(machine, "deviceName", settings.machine.deviceName);
         read(machine, "hostApiName", settings.machine.hostApiName);
         read(machine, "channel", settings.machine.channel);
+        // A file from before the choice existed listened to one input, because that was all
+        // there was: it is heard as the stereo pair that input is in now, as a fresh install is,
+        // and the window says so — "mono" puts it back (2026-09-28).
+        if (machine.contains("mono")) {
+            read(machine, "mono", settings.machine.mono);
+        } else if (machine.contains("channel")) {
+            settings.machine.mono = false;
+            settings.machine.stereoFromMono = true;
+        }
         read(machine, "midiClockPort", settings.machine.midiClockPort);
         read(machine, "midiControlPort", settings.machine.midiControlPort);
         read(machine, "oscControlEnabled", settings.machine.oscControlEnabled);

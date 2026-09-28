@@ -1,7 +1,7 @@
 # takt4
 
-takt4 listens to one channel of your audio interface, works out where the beat, the
-downbeat, the tempo and the meter are, and tells the rest of the rig — over **Ableton
+takt4 listens to your audio interface — a stereo pair of its inputs, or one — works out
+where the beat, the downbeat, the tempo and the meter are, and tells the rest of the rig — over **Ableton
 Link, OSC, MIDI beat clock and MIDI notes, and Art-Net DMX** — with a rule engine for
 firing events on the music.
 
@@ -40,6 +40,12 @@ but Windows is the only platform currently built and tested.
   is what a centred analysis window costs and nothing more. The meter is 4/4 unless you
   ask for more: a set with waltzes in it needs `"meters": [3, 4]` in the `"preset"` part of
   `settings.json` — edited with takt4 closed — or a waltz is counted in fours.
+- **Listens in stereo.** The input picker offers pairs of inputs — 1 + 2, 11 + 12 — and
+  takt4 hears the average of the two sides, which is what its network was trained on and
+  which tracks as well as the better side alone and better on downbeats. Tick **mono** for a
+  feed that is on one input. A pair with a leg wired backwards (which cancels the kick and
+  the bass), a side with nothing on it, or two inputs that are not one feed is said under
+  the input meter while it lasts.
 - **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
   the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, MIDI notes, CC,
   program change and pitch bend, and Art-Net DMX to lighting nodes. Any number of named
@@ -65,7 +71,12 @@ but Windows is the only platform currently built and tested.
   the interface is already running at. **RESCAN** finds devices switched on after takt4
   started, and a MIDI device unplugged mid-set is picked up again when it comes back. The
   ASIO drivers are asked what they are from a separate process, so a driver that crashes
-  while the devices are listed takes that process with it, not takt4.
+  while the devices are listed takes that process with it, not takt4; and every call to an
+  audio driver is made on a thread of its own and waited for only so long, so a driver that
+  stops answering is let go of and said, while the window, PANIC and the outputs carry on.
+  An output that cannot be reached, and a control input whose port another program holds,
+  say why on their own line for as long as it lasts — and a control input is tried again by
+  itself every few seconds.
 - **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
   your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
   often from a Stream Deck, mid-set.

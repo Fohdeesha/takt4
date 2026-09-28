@@ -22,6 +22,7 @@ void InputPipeline::process(const float* interleaved, std::size_t frames) noexce
     while (frames > 0) {
         const std::size_t take = std::min(frames, mono_.size());
         picker_.pickMono(interleaved, take, mono_.data());
+        picker_.addPairSums(interleaved, take, pairSums_);
         std::uint64_t repaired = 0;
         for (std::size_t i = 0; i < take; ++i) {
             if (!std::isfinite(mono_[i])) {
@@ -47,6 +48,9 @@ void InputPipeline::process(const float* interleaved, std::size_t frames) noexce
     }
 
     framesIn_.store(framesIn_.load(std::memory_order_relaxed) + total, std::memory_order_relaxed);
+    if (picker_.selection().count == 2) {
+        publishedSums_.publish(pairSums_);
+    }
 }
 
 } // namespace takt4::audio

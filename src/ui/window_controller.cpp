@@ -547,6 +547,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         deviceChosen_ = true;
         pickChannel(index);
     });
+    window_->on_input_mono_toggled([this](bool mono) {
+        deviceChosen_ = true;
+        setMono(mono);
+    });
     window_->on_toggle_run([this] { requestToggleRun(); });
     window_->on_rescan_clicked([this] { rescanDevices(); });
 
@@ -679,6 +683,19 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     control_.setBindings(std::move(bindings));
 
     refreshDevices(settings.machine);
+    // A file from before there was a choice listened to one input: it is heard as the pair that
+    // input is in now, and the operator is told so, once, with the way back (2026-09-28). Said
+    // at the end, so nothing else the constructor says writes it away.
+    std::string stereoNotice;
+    if (settings.machine.stereoFromMono && !deviceFallback_ && selection().count == 2) {
+        const audio::ChannelSelection pair = selection();
+        stereoNotice = "Listening to In " + std::to_string(pair.channels[0] + 1) + " + " +
+                       std::to_string(pair.channels[1] + 1) +
+                       " as a stereo pair now: takt4 hears the average of the two, which tracks "
+                       "as well as the better one alone and better on downbeats. Tick mono to go "
+                       "back to In " +
+                       std::to_string(settings.machine.channel + 1) + " alone.";
+    }
     // The outputs, after the pickers, so one that has gone missing since the last run reports on
     // a status line the window already has rather than during construction. Posted whole,
     // exactly as they were saved: `Transports::setOutputs` opens every target it can and names
@@ -784,6 +801,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         holdStartupMessage(all);
     }
     startupErrors_.clear();
+    if (!stereoNotice.empty()) {
+        report(stereoNotice, false); // joins the startup errors when there are any
+    }
 
     timer_.start(slint::TimerMode::Repeated, kRedrawInterval, [this] { tick(); });
 }
@@ -827,8 +847,7 @@ void WindowController::relistDuringOutage() {
             window_->set_device_index(static_cast<int>(i));
             pickDevice(static_cast<int>(i));
             if (channel > 0 && channel < devices_[i].maxInputChannels) {
-                pickChannel(channel);
-                window_->set_channel_index(channel);
+                selectChannel(channel);
             }
             return;
         }
@@ -848,6 +867,7 @@ void WindowController::relistDuringOutage() {
 }
 
 void WindowController::refreshDevices(const settings::MachineSettings& remembered) {
+    mono_ = remembered.mono;
     listDevices();
     // Said whenever it is true, and last, so nothing below talks over it: an interface missing
     // from the list for a reason the operator cannot see would otherwise read as unplugged.
@@ -907,8 +927,7 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     // happened to be second in the list is exactly the wrong kind of restored setting.
     if (restored && remembered.channel > 0 &&
         remembered.channel < devices_[static_cast<std::size_t>(device_)].maxInputChannels) {
-        pickChannel(remembered.channel);
-        window_->set_channel_index(remembered.channel);
+        selectChannel(remembered.channel);
     }
     if (!asioProblem.empty()) {
         setStatus(asioProblem, true);
@@ -1002,6 +1021,7 @@ void WindowController::rescanDevices() {
         keep.deviceName = devices_[static_cast<std::size_t>(device_)].name;
         keep.hostApiName = devices_[static_cast<std::size_t>(device_)].hostApiName;
         keep.channel = channel_;
+        keep.mono = mono_;
     }
     setStatus("Looking for devices...", false);
     try {
@@ -1045,17 +1065,100 @@ void WindowController::pickDevice(int index) {
     }
     device_ = index;
     channel_ = 0;
-    const audio::InputDevice& device = devices_[static_cast<std::size_t>(index)];
-    auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (int c = 0; c < device.maxInputChannels; ++c) {
-        names->push_back(shared(describeChannel(device, c)));
-    }
-    window_->set_channels(names);
-    window_->set_channel_index(0);
+    publishChannels();
     if (statusIsError_) {
         // Whatever went wrong was about the device that is no longer selected.
         setStatus("Pick an input and press Start.", false);
     }
+}
+
+namespace {
+
+/// "In 11" — an input as the window names it in a sentence, without the driver's own name, which
+/// can be long.
+std::string inputName(int channel) {
+    return "In " + std::to_string(channel + 1);
+}
+
+} // namespace
+
+void WindowController::publishChannels() {
+    window_->set_input_mono(mono_);
+    auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
+        const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
+        if (mono_ || device.maxInputChannels < 2) {
+            for (int c = 0; c < device.maxInputChannels; ++c) {
+                names->push_back(shared(describeChannel(device, c)));
+            }
+        } else {
+            // The pairs an interface numbers its inputs in — 1 and 2, 3 and 4 — which is how a
+            // stereo feed is patched into one. An odd one out at the end is offered alone.
+            for (int c = 0; c < device.maxInputChannels; c += 2) {
+                names->push_back(shared(c + 1 < device.maxInputChannels
+                                            ? describePair(device, c)
+                                            : describeChannel(device, c)));
+            }
+        }
+    }
+    window_->set_channels(names);
+    selectChannel(channel_);
+}
+
+void WindowController::selectChannel(int channel) {
+    channel_ = std::max(channel, 0);
+    const bool pairs = !mono_ && device_ >= 0 &&
+                       static_cast<std::size_t>(device_) < devices_.size() &&
+                       devices_[static_cast<std::size_t>(device_)].maxInputChannels >= 2;
+    window_->set_channel_index(pairs ? channel_ / 2 : channel_);
+}
+
+void WindowController::pickChannel(int index) {
+    const bool pairs = !mono_ && device_ >= 0 &&
+                       static_cast<std::size_t>(device_) < devices_.size() &&
+                       devices_[static_cast<std::size_t>(device_)].maxInputChannels >= 2;
+    channel_ = std::max(pairs ? index * 2 : index, 0);
+}
+
+void WindowController::setMono(bool mono) {
+    if (mono == mono_) {
+        window_->set_input_mono(mono_);
+        return;
+    }
+    // The input stays: a pair's first alone, or the pair a single input is in.
+    mono_ = mono;
+    publishChannels();
+}
+
+audio::ChannelSelection WindowController::selection() const {
+    if (device_ < 0 || static_cast<std::size_t>(device_) >= devices_.size()) {
+        return audio::ChannelSelection::single(channel_);
+    }
+    const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
+    const int first = channel_ - channel_ % 2;
+    if (mono_ || first + 1 >= device.maxInputChannels) {
+        return audio::ChannelSelection::single(channel_);
+    }
+    return audio::ChannelSelection::pair(first, first + 1);
+}
+
+void WindowController::superviseStereo(const audio::StereoSums& sums, double now) {
+    const audio::StereoCheck::Reading reading = stereoCheck_.observe(sums, now);
+    std::string problem;
+    if (input_ && input_->selection.count == 2) {
+        problem = audio::StereoCheck::describe(reading.verdict,
+                                               inputName(input_->selection.channels[0]),
+                                               inputName(input_->selection.channels[1]));
+    }
+    if (problem == stereoProblem_) {
+        return;
+    }
+    // On the status line when it starts, under the meter for as long as it lasts (the input's
+    // trouble line, which `superviseInput` writes).
+    if (!problem.empty()) {
+        report(problem + ".", true);
+    }
+    stereoProblem_ = problem;
 }
 
 void WindowController::requestToggleRun() {
@@ -1089,6 +1192,7 @@ void WindowController::toggleRun() {
         outageEndedAt_ = -1.0;
         nothingPlaying_ = false;
         input_.reset();
+        stereoProblem_.clear();
         window_->set_input_lost(false);
         window_->set_input_trouble(shared(""));
         // The tracker first, so it is quiet before the runner is told. The runner itself goes
@@ -1113,7 +1217,7 @@ void WindowController::toggleRun() {
     }
     const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
     try {
-        tracker_.start(device, audio::ChannelSelection::single(channel_));
+        tracker_.start(device, selection());
     } catch (const audio::DriverNotAnswering& e) {
         // Not the busy-interface advice below: nothing says another program has it, and the way
         // round is time, or a restart — see `publishDriverState`.
@@ -1151,6 +1255,8 @@ void WindowController::toggleRun() {
 
 void WindowController::watchOpenedInput() {
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
+    stereoCheck_.reset();
+    stereoProblem_.clear();
     // What the driver said while it was being opened belongs to that open, not to the stream it
     // made. Left for the next redraw, a driver that says anything as it starts was answered with
     // another reopen, and so on every tick (the audit of 2026-09-25, L22).
@@ -1382,9 +1488,13 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     trouble.samplesRepaired =
         engine.activations().samplesRepaired() +
         (tracker_.stream() != nullptr ? tracker_.stream()->counters().samplesRepaired : 0);
+    trouble.stereo = stereoProblem_;
     if (trouble != inputTroubleShown_) {
         inputTroubleShown_ = trouble;
         std::vector<std::string> parts;
+        if (!trouble.stereo.empty()) {
+            parts.push_back(trouble.stereo); // first: the one an operator can fix at the desk
+        }
         if (trouble.overflows != 0) {
             parts.push_back(counted(trouble.overflows, "input overflow", "input overflows",
                                     "the interface dropped audio"));
@@ -2549,6 +2659,7 @@ settings::Settings WindowController::currentSettings() const {
         out.machine.deviceName = input_->device.name;
         out.machine.hostApiName = input_->device.hostApiName;
         out.machine.channel = input_->selection.channels.front();
+        out.machine.mono = mono_;
     } else if (deviceFallback_ && !deviceChosen_) {
         // The remembered interface was not here and nobody picked another — so it is still the
         // one wanted. Saving the fallback as if chosen made one launch before the MOTU was
@@ -2556,11 +2667,15 @@ settings::Settings WindowController::currentSettings() const {
         out.machine.deviceName = remembered_.deviceName;
         out.machine.hostApiName = remembered_.hostApiName;
         out.machine.channel = remembered_.channel;
+        out.machine.mono = remembered_.mono;
     } else if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
         const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
         out.machine.deviceName = device.name;
         out.machine.hostApiName = device.hostApiName;
         out.machine.channel = channel_;
+        out.machine.mono = mono_;
+    } else {
+        out.machine.mono = mono_;
     }
     // **The snapshot, not the live transports.** SAVE and EXPORT are pressed while a set is
     // running, and `OutputRunner::transports()` hands back references the output thread
@@ -3072,8 +3187,13 @@ void WindowController::publishOpenStream() {
     const double resamplerMs =
         1000.0 * static_cast<double>(stream->resamplerDelayFrames()) / stream->sampleRate();
     const engine::LiveTracker::Running& running = *tracker_.current();
-    setStatus("In " + std::to_string(running.selection.channels[0] + 1) + " of " +
-                  running.device.name + "  ·  " + fixed(stream->sampleRate(), 0) + " Hz -> " +
+    const std::string inputs =
+        running.selection.count == 2
+            ? "In " + std::to_string(running.selection.channels[0] + 1) + " + " +
+                  std::to_string(running.selection.channels[1] + 1) + " (stereo)"
+            : inputName(running.selection.channels[0]);
+    setStatus(inputs + " of " + running.device.name + "  ·  " + fixed(stream->sampleRate(), 0) +
+                  " Hz -> " +
                   fixed(audio::kInternalSampleRate, 0) + " Hz  ·  " +
                   audio::toString(stream->picker().mode()) + " pick  ·  latency " +
                   fixed(stream->inputLatencySeconds() * 1000.0, 1) + " ms input + " +
@@ -3245,6 +3365,9 @@ void WindowController::tick() {
         audio::InputWatchdog::Reading reading;
         audio::AsioDriverEvents events;
         if (!outage_ && tracker_.stream() != nullptr) {
+            if (input_ && input_->selection.count == 2) {
+                superviseStereo(tracker_.stream()->stereo(), now);
+            }
             reading = watchdog_.observe(tracker_.stream()->counters(), now);
             if (input_ && input_->device.hostApi == audio::HostApiKind::Asio) {
                 events = audio::takeAsioDriverEvents();

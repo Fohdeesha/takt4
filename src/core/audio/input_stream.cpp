@@ -200,6 +200,10 @@ std::size_t InputStream::resamplerDelayFrames() const noexcept {
     return impl_->pipeline.inputDelayFrames();
 }
 
+StereoSums InputStream::stereo() const noexcept {
+    return impl_->pipeline.stereoSums();
+}
+
 InputStreamCounters InputStream::counters() const noexcept {
     InputStreamCounters c;
     c.callbacks = impl_->callbacks.load(std::memory_order_relaxed);

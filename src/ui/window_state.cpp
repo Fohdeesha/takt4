@@ -125,4 +125,16 @@ std::string describeChannel(const audio::InputDevice& device, int channel) {
     return "In " + number;
 }
 
+std::string describePair(const audio::InputDevice& device, int first) {
+    std::string text =
+        "In " + std::to_string(first + 1) + " + " + std::to_string(first + 2);
+    const auto a = static_cast<std::size_t>(first);
+    const auto b = a + 1;
+    if (b < device.channelNames.size() && !device.channelNames[a].empty() &&
+        !device.channelNames[b].empty()) {
+        text += " — " + device.channelNames[a] + " / " + device.channelNames[b];
+    }
+    return text;
+}
+
 } // namespace takt4::ui
