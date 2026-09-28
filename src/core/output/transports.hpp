@@ -150,8 +150,21 @@ public:
     /// effects this much early; every node is then sent the lighting its own delay after that.
     double lightingLeadSeconds() const noexcept { return artnet_->leadSeconds(); }
 
-    /// Every output that cannot be sent to and why, as "name: reason" — a host name that will
-    /// not resolve, most often. Not one still being looked up: that is not a problem yet.
+    /// One output that cannot be sent to, and why.
+    struct Problem {
+        /// `OutputTarget::id`, so a window can put the reason on the row it is about.
+        std::string id;
+        /// "name: reason", the way a status line says it.
+        std::string text;
+        /// The reason alone — what the row itself shows under its boxes.
+        std::string why;
+        friend bool operator==(const Problem&, const Problem&) = default;
+    };
+    /// Every output that cannot be sent to and why, in the order the outputs are listed — a host
+    /// name that will not resolve, a MIDI device that is not here or that another program holds.
+    /// Not one still being looked up: that is not a problem yet.
+    std::vector<Problem> problems() const;
+    /// The same as "name: reason" lines.
     std::vector<std::string> outputProblems() const;
     /// Lets every OSC and Art-Net target find its address and open its socket, and try a
     /// failed look-up again when it is due. The output thread calls it now and then, so a
@@ -321,9 +334,13 @@ private:
     std::map<std::string, std::unique_ptr<MidiOutput>> midiDevices_;
     /// Every MIDI clock output that is switched on and open, in the order of `outputs_`.
     std::vector<Clock> clocks_;
-    /// Clock outputs that could not be had, by row: a device not on the machine, or one
-    /// another clock already ticks. Said by `outputProblems`.
+    /// Clock outputs that could not be had, by row: a device not on the machine, one another
+    /// program holds, or one another clock already ticks. Said by `problems`, as it is to be read.
     std::map<std::size_t, std::string> clockProblems_;
+    /// The same for a MIDI output row whose device would not open. By row, and in words, from
+    /// what opening it threw: "not on this machine" and "another program has it" are different
+    /// faults with different fixes, and this used to say the first of both.
+    std::map<std::size_t, std::string> deviceProblems_;
     bool linkEnabled_ = false;
     double linkDelay_ = 0.0;
     bool started_ = false;

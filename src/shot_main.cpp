@@ -16,12 +16,14 @@ void printUsage(std::ostream& out) {
     out << "takt4-shot " << takt4::buildInfo().version
         << " — render the main window to a BMP\n"
            "\n"
-           "  takt4-shot OUT.bmp [--size WxH] [--stopped]\n"
+           "  takt4-shot OUT.bmp [--size WxH] [--stopped | --trouble]\n"
            "                     [--rules [--dmx] | --fixtures | --about]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
            "  --stopped       draw the idle window — blank readouts and the manual\n"
            "                  controls disabled — instead of a tracker running\n"
+           "  --trouble       the running window with outputs and control inputs that\n"
+           "                  cannot be reached, each saying why under itself\n"
            "  --rules         draw §5.9's rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
@@ -59,6 +61,8 @@ int main(int argc, char** argv) {
             options.about = true;
         } else if (arg == "--dmx") {
             options.dmx = true;
+        } else if (arg == "--trouble") {
+            options.trouble = true;
         } else if (arg == "--size") {
             sized = true;
             if (i + 1 >= argc) {

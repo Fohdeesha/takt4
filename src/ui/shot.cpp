@@ -856,6 +856,45 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
+        if (options.trouble) {
+            // What each thing that cannot be reached says under itself, in the words the window
+            // really uses (`output::midiPortBusyMessage`, `net::bindFailure`): a drum machine's
+            // clock held by a DAW, a wall whose name will not resolve, and both control inputs
+            // asked for and not open.
+            for (std::size_t i = 0; i < targets->row_count(); ++i) {
+                OutputRow row = *targets->row_data(i);
+                if (std::string(row.name) == "TR-8S") {
+                    row.problem = slint::SharedString(output::midiPortBusyMessage("TR-8S"));
+                } else if (std::string(row.name) == "wall") {
+                    row.host = slint::SharedString("wall.local");
+                    row.problem =
+                        slint::SharedString("looking up \"wall.local\" failed: no such host is known");
+                } else {
+                    continue;
+                }
+                targets->set_row_data(i, row);
+            }
+            window->set_control_on(false);
+            // The picker names the controller asked for, as the window's own list does.
+            if (const auto inputs = window->get_midi_in_ports()) {
+                auto withMissing = std::make_shared<slint::VectorModel<slint::SharedString>>();
+                for (std::size_t i = 0; i < inputs->row_count(); ++i) {
+                    withMissing->push_back(*inputs->row_data(i));
+                }
+                withMissing->push_back(
+                    slint::SharedString("nanoKONTROL2 \xE2\x80\x94 not plugged in"));
+                window->set_midi_in_ports(withMissing);
+                window->set_midi_in_port_index(static_cast<int>(withMissing->row_count()) - 1);
+            }
+            window->set_control_error(true);
+            window->set_control_reading(slint::SharedString(
+                "NOT OPEN \xE2\x80\x94 \"nanoKONTROL2\" is not on this machine \xE2\x80\x94 plug it "
+                "in. Trying again every 5 s."));
+            window->set_osc_control_error(true);
+            window->set_osc_control_reading(slint::SharedString(
+                "NOT LISTENING \xE2\x80\x94 port 7001 is in use by another program (10048). Trying "
+                "again every 5 s."));
+        }
     } else {
         // What the app looks like the moment it opens: no tempo, an empty trace, and
         // every one of §5.5's manual controls disabled because there is nothing yet for

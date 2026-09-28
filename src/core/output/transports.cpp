@@ -1,5 +1,7 @@
 #include "core/output/transports.hpp"
 
+#include "core/output/midi_ports.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -32,6 +34,21 @@ constexpr double kLinkMaxNudge = 0.02;
 
 std::int64_t toMicros(double seconds) noexcept {
     return static_cast<std::int64_t>(seconds * 1e6);
+}
+
+/// Why `device` would not open, in the words its row shows — from inside the `catch` that
+/// caught what opening it threw. Not on the machine and held by another program are told apart:
+/// they have different fixes, and the first used to be said of both.
+std::string whyNotOpened(const std::string& device) {
+    try {
+        throw;
+    } catch (const MidiPortBusy& e) {
+        return e.reason();
+    } catch (const MidiPortMissing&) {
+        return "no MIDI device called \"" + device + "\" \xE2\x80\x94 plug it in and press RESCAN";
+    } catch (const std::exception& e) {
+        return e.what();
+    }
 }
 
 } // namespace
@@ -199,6 +216,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
     outputs_ = targets;
     outputPorts_.assign(outputs_.size(), nullptr);
     clockProblems_.clear();
+    deviceProblems_.clear();
     std::vector<Clock> previous = std::move(clocks_);
     clocks_.clear();
     // Link's switch and delay come from the Link output — and a list with none leaves both as
@@ -250,7 +268,11 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
         case OutputTarget::Kind::Midi:
             try {
                 outputPorts_[i] = openDevice(target.device);
+                if (outputPorts_[i] == nullptr) {
+                    deviceProblems_[i] = "no MIDI device chosen";
+                }
             } catch (const std::exception& e) {
+                deviceProblems_[i] = whyNotOpened(target.device);
                 fail(target.name, e.what());
             }
             break;
@@ -268,7 +290,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
             try {
                 port = openDevice(target.device);
             } catch (const std::exception& e) {
-                clockProblems_[i] = e.what();
+                clockProblems_[i] = whyNotOpened(target.device);
                 fail(target.name, e.what());
                 break;
             }
@@ -360,7 +382,7 @@ bool Transports::setOutputDelay(std::string_view id, double seconds) {
     return false;
 }
 
-std::vector<std::string> Transports::outputProblems() const {
+std::vector<Transports::Problem> Transports::problems() const {
     // One per output, in the order the outputs are listed, so a status line built from these
     // reads in the order the rows do.
     std::vector<std::string> byOutput(outputs_.size());
@@ -370,7 +392,7 @@ std::vector<std::string> Transports::outputProblems() const {
         if (why.empty() || why.rfind("looking up", 0) == 0 || bit >= outputs_.size()) {
             return;
         }
-        byOutput[bit] = outputs_[bit].name + ": " + why;
+        byOutput[bit] = why;
     };
     for (std::size_t i = 0; i < osc_->targetCount(); ++i) {
         note(osc_->outputOf(i), osc_->target(i).problem());
@@ -381,34 +403,35 @@ std::vector<std::string> Transports::outputProblems() const {
     // And a MIDI output whose device would not open. It used to be said once, from the command
     // that opened it, and then written over by whatever the status line said next — a host
     // that would not resolve, most often, which is found out later.
-    for (std::size_t i = 0; i < outputs_.size() && i < outputPorts_.size(); ++i) {
-        const OutputTarget& target = outputs_[i];
-        if (target.enabled && target.kind == OutputTarget::Kind::Midi &&
-            outputPorts_[i] == nullptr) {
-            byOutput[i] = target.name + ": no MIDI device called \"" + target.device +
-                          "\" — plug it in and press RESCAN";
+    for (const auto& [row, why] : deviceProblems_) {
+        if (row < outputs_.size() && row < outputPorts_.size() && outputs_[row].enabled &&
+            outputPorts_[row] == nullptr) {
+            byOutput[row] = why;
         }
     }
-    // And a MIDI clock that could not be had: its device is not here, or another clock has it.
+    // And a MIDI clock that could not be had: its device is not here, another program holds
+    // it, or another clock already ticks it. Already in the words the row shows.
     for (const auto& [row, why] : clockProblems_) {
-        if (row >= outputs_.size()) {
-            continue;
+        if (row < outputs_.size()) {
+            byOutput[row] = why;
         }
-        const OutputTarget& target = outputs_[row];
-        byOutput[row] =
-            target.name + ": " +
-            (target.device.empty() || why.find("already") != std::string::npos ||
-                     why == "no MIDI device chosen"
-                 ? why
-                 : "no MIDI device called \"" + target.device + "\" — plug it in and press RESCAN");
     }
-    std::vector<std::string> problems;
-    for (std::string& problem : byOutput) {
-        if (!problem.empty()) {
-            problems.push_back(std::move(problem));
+    std::vector<Problem> problems;
+    for (std::size_t i = 0; i < byOutput.size(); ++i) {
+        if (!byOutput[i].empty()) {
+            problems.push_back(
+                Problem{outputs_[i].id, outputs_[i].name + ": " + byOutput[i], byOutput[i]});
         }
     }
     return problems;
+}
+
+std::vector<std::string> Transports::outputProblems() const {
+    std::vector<std::string> lines;
+    for (Problem& problem : problems()) {
+        lines.push_back(std::move(problem.text));
+    }
+    return lines;
 }
 
 void Transports::refreshTargets() noexcept {

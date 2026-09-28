@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -64,6 +65,12 @@ public:
 
     /// How often the autosave looks, in redraws — about twice a second. See `enableAutosave`.
     static constexpr std::uint64_t kAutosaveCheckTicks = 15;
+
+    /// How often a control input that was asked for and would not open — an OSC port another
+    /// program holds, a MIDI controller not plugged in or held elsewhere — is tried again, in
+    /// seconds. Its line says so in the error colour meanwhile, and it starts listening by
+    /// itself once the port is free, without anybody having to find the tick box again.
+    static constexpr double kControlRetrySeconds = 5.0;
 
     /// The tracker must outlive this. Builds the window, fills the pickers from the
     /// tracker's device list, and starts the redraw timer.
@@ -280,6 +287,17 @@ public:
     /// control surface on another machine needs, and is the operator's call because OSC
     /// carries no authentication and takt4 invents none.
     void setOscControlNetwork(bool allowNetwork);
+    /// For the tests: how long before a control input that would not open is tried again —
+    /// `kControlRetrySeconds` everywhere else. A test that frees a port and watches it taken
+    /// should not have to wait five seconds of wall clock for it.
+    /// A retry already waiting is brought forward to it too: the constructor schedules one for a
+    /// port that would not open at launch, before a test can say anything.
+    void setControlRetrySeconds(double seconds) {
+        controlRetrySeconds_ = seconds;
+        const double soonest = nowSeconds() + seconds;
+        oscControlRetryAt_ = oscControlRetryAt_ > soonest ? soonest : oscControlRetryAt_;
+        midiControlRetryAt_ = midiControlRetryAt_ > soonest ? soonest : midiControlRetryAt_;
+    }
 
     /// The OSC control surface, for reading and for a test to `dispatch` into.
     control::OscControl& oscControl() noexcept { return oscControl_; }
@@ -426,6 +444,12 @@ private:
     /// The MIDI pickers' models, from `deviceNames_` and `midiInputPorts_` — and every MIDI row
     /// built again with them, since a dropdown given a new list stops following its row.
     void publishPortLists();
+    /// The control input's picker alone: this machine's MIDI inputs, and after them the port the
+    /// control input asks for when it is not among them, said to be not plugged in — so the
+    /// picker names what is wanted rather than falling back to "select input" beside a red line
+    /// about it.
+    void publishMidiInputList();
+    std::vector<std::string> midiInputChoices() const;
     /// `deviceNames_` for `targets`: this machine's MIDI outputs and the devices those targets
     /// name that it has not. True when that changed the list.
     bool listDevicesFor(const std::vector<output::OutputTarget>& targets);
@@ -444,7 +468,12 @@ private:
                          const std::vector<output::OutputTarget>& outputs);
     /// The same for outputs that cannot be sent to — a host name that will not resolve, found
     /// out on a thread of its own long after the edit that typed it was applied.
-    void publishOutputProblems(const std::vector<std::string>& problems);
+    void publishOutputProblems(const std::vector<output::Transports::Problem>& problems);
+    /// Each row's own reason, under the row, for as long as it holds — see `rowProblems_`.
+    void publishRowProblems(const output::OutputRunner::Snapshot& live);
+    /// A control input that was asked for and would not open, tried again when it is due — see
+    /// `kControlRetrySeconds`. `now` is `nowSeconds()`.
+    void retryControls(double now);
     /// The output thread's counters, from the runner's snapshot, on the line under the outputs
     /// heading — and a stage that threw on the status line, when what it said is new.
     void publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble);
@@ -545,6 +574,23 @@ private:
     /// bound. Saved as it is, so a port that was taken at one launch is still wanted at the
     /// next (the audit's M24).
     bool oscControlWanted_ = false;
+    /// Why OSC control, asked for, is not listening — the port's own reason, in words — or
+    /// empty. Shown on its line for as long as it is true, and tried again every
+    /// `kControlRetrySeconds` from `oscControlRetryAt_` (on `nowSeconds()`'s clock; negative is
+    /// never).
+    std::string oscControlProblem_;
+    double oscControlRetryAt_ = -1.0;
+    /// `kControlRetrySeconds`, unless a test says otherwise (`setControlRetrySeconds`).
+    double controlRetrySeconds_ = kControlRetrySeconds;
+    /// The same for the MIDI control input: a controller that is not plugged in, or that another
+    /// program holds (a WinMM input is one program's at a time).
+    std::string midiControlProblem_;
+    double midiControlRetryAt_ = -1.0;
+    /// Why each output reaches nothing, by `OutputTarget::id` — what each row says under itself.
+    /// From the runner's snapshot, the lost MIDI devices, and a Link peer list that could not
+    /// listen (`linkPeersProblem_`). See `publishRowProblems`.
+    std::map<std::string, std::string> rowProblems_;
+    std::string linkPeersProblem_;
     /// True until the constructor has finished, and the errors it met meanwhile — shown
     /// together at the end of it rather than each writing the last away (the audit's M25).
     bool constructing_ = true;

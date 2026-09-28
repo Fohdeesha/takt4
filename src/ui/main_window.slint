@@ -79,6 +79,11 @@ export struct OutputRow {
   address: string,
   /// §5.6's per-target enabled state. Off sends nothing and keeps the address.
   enabled: bool,
+  /// Why this output is reaching nothing, while that is so — a host that will not resolve, a
+  /// MIDI device that is not here or that another program holds, sends that are failing — or
+  /// empty. Shown under the row in the error colour, for as long as it is true: the status
+  /// line said it once and the next message wrote it away.
+  problem: string,
   /// How long everything to this target is held back, in milliseconds — `OutputTarget::
   /// delaySeconds`. Milliseconds here rather than seconds because that is what the slider
   /// moves in and what the row reads out; the C++ side owns the conversion.
@@ -294,6 +299,10 @@ export component MainWindow inherits Window {
   /// what tells an operator their controller is on a channel nothing is listening to,
   /// which otherwise looks exactly like a broken cable.
   in-out property <string> control-reading;
+  /// The reading is saying why the port picked is not open — not on the machine, or another
+  /// program has it — rather than what arrived. Drawn in the colour everything that needs the
+  /// operator is, so it is not read as one more quiet readout.
+  in-out property <bool> control-error;
 
   callback midi-in-picked(int);
   callback learn-action-picked(int);
@@ -314,6 +323,9 @@ export component MainWindow inherits Window {
   /// The last address that arrived and where from, or the counts. What tells an operator
   /// their surface is aimed at the wrong prefix, which otherwise looks like a dead cable.
   in-out property <string> osc-control-reading;
+  /// Listening was asked for and the port would not bind: the reading says why, and that it is
+  /// being tried again. The tick stays ticked — it is what was asked for, and what is saved.
+  in-out property <bool> osc-control-error;
 
   callback osc-control-toggled(bool);
   callback osc-control-port-edited(string);
@@ -1237,12 +1249,35 @@ export component MainWindow inherits Window {
                 }
               }
 
+              // What arrived, or what the picked action is bound to. Not why the port is not open:
+              // that goes on a line of its own below, since beside four controls it was cut to
+              // "NOT OPEN —…" at the window's own width (rendered 2026-09-28).
               Text {
-                text: root.control-reading;
+                text: root.control-error ? "" : root.control-reading;
                 color: Theme.soft;
                 font-size: 14px;
                 font-family: "Consolas";
                 horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+              }
+            }
+
+            // **Why the port picked is not open, for as long as it is not** — a controller left at
+            // home, or one another program holds — in the error colour, the whole width of the
+            // panel under the row it is about. The status line said it once and the next message
+            // wrote it away. An explicit height: an `if` in a vertical layout otherwise takes a
+            // share of the spare height.
+            if root.control-error : HorizontalLayout {
+              padding-left: 16px + 40px + 10px;
+              padding-right: 16px;
+              padding-bottom: 8px;
+              height: 26px;
+
+              Text {
+                text: root.control-reading;
+                color: Theme.holding;
+                font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
               }
@@ -1322,11 +1357,28 @@ export component MainWindow inherits Window {
               }
 
               Text {
-                text: root.osc-control-reading;
+                text: root.osc-control-error ? "" : root.osc-control-reading;
                 color: Theme.soft;
                 font-size: 13px;
                 font-family: "Consolas";
                 horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+              }
+            }
+
+            // Why listening was asked for and is not happening — a port another program holds —
+            // on a line of its own, for the reason the MIDI line above has one.
+            if root.osc-control-error : HorizontalLayout {
+              padding-left: 16px + 40px + 10px;
+              padding-right: 16px;
+              padding-bottom: 8px;
+              height: 26px;
+
+              Text {
+                text: root.osc-control-reading;
+                color: Theme.holding;
+                font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
               }
@@ -1784,6 +1836,29 @@ export component MainWindow inherits Window {
                       root.output-removed(index);
                     }
                   }
+                }
+              }
+
+              // **Why this output reaches nothing, under it, for as long as that is so** — a host
+              // that will not resolve, a MIDI device that is not here or that another program has,
+              // sends that are failing, a list of peers that could not listen. The status line
+              // says each once, and the next thing it said wrote it away; a row that has stopped
+              // working must go on saying so (2026-09-28: *"it should say so in the UI so it
+              // doesn't just silently fail"*). Under the name column, so it reads as the row's.
+              // An explicit height: an `if` in a vertical layout otherwise takes a share of the
+              // spare height.
+              if target.problem != "" : HorizontalLayout {
+                padding-left: 16px + 28px + 8px;
+                padding-right: 16px;
+                padding-bottom: 6px;
+                height: 22px;
+
+                Text {
+                  text: target.problem;
+                  color: Theme.holding;
+                  font-size: 12px;
+                  vertical-alignment: center;
+                  overflow: elide;
                 }
               }
 

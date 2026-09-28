@@ -49,6 +49,16 @@ std::vector<std::string> listMidiInputPorts() {
     return listPorts<RtMidiIn>();
 }
 
+std::string midiPortBusyMessage(const std::string& name) {
+    return "\"" + name + "\" is on this machine but would not open \xE2\x80\x94 another program " +
+           "is probably using it";
+}
+
+MidiPortBusy::MidiPortBusy(const std::string& prefix, const std::string& name,
+                           const std::string& detail)
+    : std::runtime_error(prefix + midiPortBusyMessage(name) + " (" + detail + ")"),
+      reason_(midiPortBusyMessage(name)) {}
+
 std::string_view midiPortBaseName(std::string_view name) noexcept {
     std::size_t end = name.size();
     while (end > 0 && name[end - 1] >= '0' && name[end - 1] <= '9') {

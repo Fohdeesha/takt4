@@ -322,6 +322,9 @@ namespace {
 /// reach the cable.
 struct Cable {
     bool plugged = true;
+    /// Plugged in and held by another program, which is what a WinMM port another application
+    /// has open is: listed, and refused.
+    bool held = false;
     int opens = 0;
     std::uint64_t delivered = 0;
 };
@@ -336,8 +339,15 @@ public:
     explicit UnpluggablePort(std::shared_ptr<Cable> cable) : cable_(std::move(cable)) {}
     std::string open(std::string_view spec) override {
         ++cable_->opens;
+        // What RtMidi's port throws for each, since the audit's C1 said to make the fakes honest.
         if (!cable_->plugged) {
-            throw std::runtime_error("MIDI output: no port matching \"" + std::string(spec) + "\"");
+            throw takt4::output::MidiPortMissing("MIDI output: no port matching \"" +
+                                                 std::string(spec) + "\"");
+        }
+        if (cable_->held) {
+            throw takt4::output::MidiPortBusy(
+                "MIDI output: ", "Desk " + std::string(spec),
+                "MidiOutWinMM::openPort: error creating Windows MM MIDI output port.");
         }
         open_ = true;
         return "Desk " + std::string(spec);
@@ -439,6 +449,60 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
     transports.setMidiClockPort(std::string("Clock"));
     CHECK(transports.lostMidiCount() == 0);
     transports.stopOutputs();
+}
+
+TEST_CASE("a MIDI device another program holds is said to be held, not missing",
+          "[output][midi]") {
+    // 2026-09-28: "if it can't bind ... it should say so in the UI so it doesn't just silently
+    // fail". A WinMM port is one program's at a time, so a DAW with every output open is the
+    // usual reason a MIDI row reaches nothing — and the row said "no MIDI device called ... plug
+    // it in" of a device the operator could see plugged in. Each reason is now its own, by row,
+    // with the output's id so a window can put it on the row it is about.
+    using takt4::output::OutputTarget;
+    auto held = std::make_shared<Cable>();
+    held->held = true;
+    auto missing = std::make_shared<Cable>();
+    missing->plugged = false;
+    const auto output = [](std::string id, std::string name, OutputTarget::Kind kind,
+                           std::string device) {
+        OutputTarget target;
+        target.id = std::move(id);
+        target.name = std::move(name);
+        target.kind = kind;
+        target.device = std::move(device);
+        return target;
+    };
+    Transports::Config config;
+    config.openMidi = [held, missing](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<UnpluggablePort>(name == "Held" ? held : missing));
+    };
+    Transports transports(config);
+    CHECK_THROWS(transports.setOutputs(
+        {output("o-00000001", "desk", OutputTarget::Kind::Midi, "Held"),
+         output("o-00000002", "drums", OutputTarget::Kind::MidiClock, "Gone"),
+         output("o-00000003", "unpicked", OutputTarget::Kind::Midi, "")}));
+
+    const std::vector<Transports::Problem> problems = transports.problems();
+    REQUIRE(problems.size() == 3);
+    CHECK(problems[0].id == "o-00000001");
+    INFO(problems[0].why);
+    CHECK(problems[0].why.find("is on this machine but would not open") != std::string::npos);
+    CHECK(problems[0].why.find("another program") != std::string::npos);
+    CHECK(problems[0].why.find("no MIDI device called") == std::string::npos);
+    CHECK(problems[0].text == "desk: " + problems[0].why);
+
+    CHECK(problems[1].id == "o-00000002");
+    CHECK(problems[1].why == "no MIDI device called \"Gone\" \xE2\x80\x94 plug it in and press RESCAN");
+
+    CHECK(problems[2].id == "o-00000003");
+    CHECK(problems[2].why == "no MIDI device chosen");
+
+    // Let go of by the other program, the row stops saying so.
+    held->held = false;
+    CHECK_NOTHROW(
+        transports.setOutputs({output("o-00000001", "desk", OutputTarget::Kind::Midi, "Held")}));
+    CHECK(transports.problems().empty());
 }
 
 namespace {

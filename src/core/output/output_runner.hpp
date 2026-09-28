@@ -394,10 +394,11 @@ public:
         /// which, because a lighting desk or a sequencer that has stopped hearing takt4 is not
         /// otherwise visible from here at all.
         std::vector<std::string> lostMidi;
-        /// Outputs that cannot be sent to and why — `Transports::outputProblems`. A host name
-        /// that will not resolve is found out on a thread of its own, after the command that
-        /// set it has long been answered, so this is where it is reported.
-        std::vector<std::string> outputProblems;
+        /// Outputs that cannot be sent to and why — `Transports::problems`, by output, so the
+        /// window can say each under its own row as well as on the status line. A host name that
+        /// will not resolve is found out on a thread of its own, after the command that set it
+        /// has long been answered, so this is where it is reported.
+        std::vector<Transports::Problem> outputProblems;
         /// What went wrong on the output thread that nothing else says — the audit's M12,
         /// whose counters were kept and never shown. Counted since the runner started, which is
         /// launch: the thread runs for the application's life.

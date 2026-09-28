@@ -58,10 +58,8 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
     address.sin_addr.s_addr =
         htonl(static_cast<std::uint32_t>(localOnly ? INADDR_LOOPBACK : INADDR_ANY));
     if (::bind(impl->socket, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
-        const int error = lastSocketError();
-        throw std::runtime_error("OSC control: cannot listen on port " + std::to_string(port) +
-                                 " (" + std::to_string(error) +
-                                 "); something else is probably using it");
+        throw std::runtime_error("OSC control: cannot listen: " +
+                                 net::bindFailure(lastSocketError(), port));
     }
 
     // Asked for any free port: say which one it got, so a caller can tell somebody.

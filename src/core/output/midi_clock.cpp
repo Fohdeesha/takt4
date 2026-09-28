@@ -44,7 +44,7 @@ unsigned int findPort(RtMidiOut& out, std::string_view spec) {
             message += "\n  " + std::to_string(i) + ": " + names[i];
         }
     }
-    throw std::runtime_error(message);
+    throw MidiPortMissing(message);
 }
 
 } // namespace
@@ -74,22 +74,32 @@ public:
                                      "\": no usable MIDI API on this machine (" + unusable_ +
                                      ")");
         }
+        // Looked up afresh every time: a device that went away and came back can come back at
+        // another index, and RtMidi enumerates again on every count.
+        unsigned int index = 0;
+        std::string name;
         try {
-            // Looked up afresh every time: a device that went away and came back can come
-            // back at another index, and RtMidi enumerates again on every count.
-            const unsigned int index = findPort(*out_, spec);
-            std::string name = out_->getPortName(index);
-            if (sandbox::active()) {
-                // The test binaries' sandbox: this port is one of the rig's. See `sandbox.hpp`.
-                sandbox::refuse(sandbox::Refused::Midi);
-                throw std::runtime_error("MIDI output: \"" + name +
-                                         "\" is not opened in the test sandbox");
-            }
-            out_->openPort(index, "takt4");
-            return name;
+            index = findPort(*out_, spec); // MidiPortMissing: not on this machine
+            name = out_->getPortName(index);
         } catch (const RtMidiError& error) {
             throw std::runtime_error("MIDI output: " + error.getMessage());
         }
+        if (sandbox::active()) {
+            // The test binaries' sandbox: this port is one of the rig's. See `sandbox.hpp`.
+            sandbox::refuse(sandbox::Refused::Midi);
+            throw std::runtime_error("MIDI output: \"" + name +
+                                     "\" is not opened in the test sandbox");
+        }
+        try {
+            out_->openPort(index, "takt4");
+        } catch (const RtMidiError& error) {
+            // Listed, and refused: on Windows a MIDI port is one program's at a time, so this is
+            // another program holding it far more often than a broken driver — and saying "no
+            // such device" of one the operator can see plugged in sends them after the wrong
+            // fault.
+            throw MidiPortBusy("MIDI output: ", name, error.getMessage());
+        }
+        return name;
     }
 
     void close() noexcept override {

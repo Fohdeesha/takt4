@@ -1448,6 +1448,221 @@ TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[u
     }
 }
 
+namespace {
+
+/// The row of the output with this id, as the window's model holds it.
+std::optional<OutputRow> outputRow(WindowController& controller, const std::string& id) {
+    const auto rows = controller.window().get_outputs_list();
+    for (std::size_t i = 0; i < rows->row_count(); ++i) {
+        if (const std::optional<OutputRow> row = rows->row_data(i); row && std::string(row->id) == id) {
+            return row;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("an OSC control port another program holds stays asked for, says why, and is taken "
+          "once it is free",
+          "[ui]") {
+    // 2026-09-28, on the decision to save "wanted" rather than "running": *"if it can't bind the
+    // osc port (or any port) it should say so in the UI so it doesn't just silently fail"*. It
+    // was said once, on the status line, and the next message wrote it away; the tick went back
+    // to empty as if it had never been asked for, while the file went on saving it as asked for;
+    // and nothing tried the port again. In the sandbox's own terms: a port a receiver of this
+    // test holds, which takt4 may bind and will find taken.
+    std::optional<takt4::testing::LoopbackReceiver> holder;
+    holder.emplace();
+    const std::uint16_t port = holder->port();
+    takt4::settings::Settings settings;
+    settings.machine.oscControlEnabled = true;
+    settings.machine.oscControlPort = port;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    controller.tick();
+
+    CHECK_FALSE(controller.oscControl().running());
+    // The tick as it was put: what was asked for, and what is saved.
+    CHECK(controller.window().get_osc_control_on());
+    CHECK(controller.currentSettings().machine.oscControlEnabled);
+    // And beside it, in red, why it is not listening.
+    CHECK(controller.window().get_osc_control_error());
+    const std::string failing(controller.window().get_osc_control_reading());
+    INFO(failing);
+    CHECK(failing.rfind("NOT LISTENING", 0) == 0);
+    CHECK(failing.find("port " + std::to_string(port) + " is in use by another program") !=
+          std::string::npos);
+
+    // **Not said once**: the status line moves on to something else, redraws come and go, the
+    // port is tried again and is still taken — and the line still says so, without the status
+    // line being written over by every try.
+    controller.setLatencyTyped("not a number");
+    const std::string status(controller.window().get_status());
+    controller.setControlRetrySeconds(0.02);
+    pumpTimers(std::chrono::milliseconds(150));
+    for (int i = 0; i < 10; ++i) {
+        controller.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK_FALSE(controller.oscControl().running());
+    CHECK(controller.window().get_osc_control_error());
+    CHECK(std::string(controller.window().get_osc_control_reading()).rfind("NOT LISTENING", 0) == 0);
+    CHECK(std::string(controller.window().get_status()) == status);
+
+    SECTION("the other program lets go, and it listens with nobody touching the tick") {
+        holder.reset();
+        waitUntil(controller, [&] { return controller.oscControl().running(); });
+        REQUIRE(controller.oscControl().running());
+        CHECK(controller.oscControlPort() == port);
+        CHECK_FALSE(controller.window().get_osc_control_error());
+        const std::string reading(controller.window().get_osc_control_reading());
+        INFO(reading);
+        CHECK(reading.find("NOT LISTENING") == std::string::npos);
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("OSC control listening on " + std::to_string(port)) != std::string::npos);
+    }
+
+    SECTION("unticked, the red line goes and nothing is tried again") {
+        controller.window().invoke_osc_control_toggled(false);
+        CHECK_FALSE(controller.window().get_osc_control_error());
+        CHECK(std::string(controller.window().get_osc_control_reading()) == "off");
+        CHECK_FALSE(controller.currentSettings().machine.oscControlEnabled);
+        holder.reset(); // free now, and not asked for
+        for (int i = 0; i < 10; ++i) {
+            controller.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+        CHECK_FALSE(controller.oscControl().running());
+    }
+}
+
+TEST_CASE("a MIDI control input that is not here says so on its own line until it is", "[ui]") {
+    // The same for §5.7's MIDI input: a controller left at home, or held by a DAW that opened
+    // every input it saw (a WinMM input is one program's at a time). Its line used to read
+    // "off - pick a port" with a port picked.
+    takt4::settings::Settings settings;
+    settings.machine.midiControlPort = "takt4 test - a controller left at home";
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    controller.tick();
+
+    CHECK_FALSE(controller.control().running());
+    CHECK(controller.window().get_control_error());
+    const std::string reading(controller.window().get_control_reading());
+    INFO(reading);
+    CHECK(reading.rfind("NOT OPEN", 0) == 0);
+    CHECK(reading.find("\"takt4 test - a controller left at home\" is not on this machine") !=
+          std::string::npos);
+    // And the picker names it, as not plugged in — not "select input" beside a line about it.
+    {
+        const auto ports = controller.window().get_midi_in_ports();
+        const int picked = controller.window().get_midi_in_port_index();
+        REQUIRE(picked > 0);
+        REQUIRE(static_cast<std::size_t>(picked) < ports->row_count());
+        CHECK(std::string(*ports->row_data(static_cast<std::size_t>(picked))) ==
+              "takt4 test - a controller left at home \xE2\x80\x94 not plugged in");
+        // Picking it again asks for the same port, not for the one below or nothing.
+        controller.pickMidiControlPort(picked);
+        CHECK(controller.control().config().port == "takt4 test - a controller left at home");
+    }
+
+    // Still said after the status line has moved on and the port has been looked for again.
+    controller.setLatencyTyped("not a number");
+    const std::string status(controller.window().get_status());
+    controller.setControlRetrySeconds(0.02);
+    for (int i = 0; i < 10; ++i) {
+        controller.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(controller.window().get_control_error());
+    CHECK(std::string(controller.window().get_control_reading()).rfind("NOT OPEN", 0) == 0);
+    CHECK(std::string(controller.window().get_status()) == status);
+    // Asked for, so still saved as asked for.
+    CHECK(controller.currentSettings().machine.midiControlPort ==
+          "takt4 test - a controller left at home");
+
+    // Nothing picked, nothing failing.
+    controller.pickMidiControlPort(0);
+    CHECK_FALSE(controller.window().get_control_error());
+    const std::string off(controller.window().get_control_reading());
+    CHECK((off == "off \xE2\x80\x94 pick a port" || off == "no MIDI inputs on this machine"));
+}
+
+TEST_CASE("an output that reaches nothing says why on its own row, for as long as it does",
+          "[ui]") {
+    // The status line said "outputs: desk: no MIDI device called ..." once, and whatever it said
+    // next wrote it away — so a row that reached nothing sat there looking like one that worked.
+    takt4::output::OutputTarget desk;
+    desk.id = "o-0000de5c";
+    desk.name = "desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "takt4 test - a desk left at home";
+    takt4::settings::Settings settings;
+    settings.preset.outputs = {desk};
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    waitUntil(controller, [&] {
+        const std::optional<OutputRow> row = outputRow(controller, desk.id);
+        return row && !std::string(row->problem).empty();
+    });
+    std::optional<OutputRow> row = outputRow(controller, desk.id);
+    REQUIRE(row);
+    const std::string problem(row->problem);
+    INFO(problem);
+    CHECK(problem.find("no MIDI device called \"takt4 test - a desk left at home\"") !=
+          std::string::npos);
+
+    // After the status line has said something else, and a redraw or two, still on the row.
+    controller.setLatencyTyped("not a number");
+    for (int i = 0; i < 5; ++i) {
+        controller.tick();
+    }
+    row = outputRow(controller, desk.id);
+    REQUIRE(row);
+    CHECK(std::string(row->problem) == problem);
+
+    SECTION("switched off, it is not failing, and says nothing") {
+        std::size_t index = 0;
+        const auto rows = controller.window().get_outputs_list();
+        for (std::size_t i = 0; i < rows->row_count(); ++i) {
+            if (std::string(rows->row_data(i)->id) == desk.id) {
+                index = i;
+            }
+        }
+        controller.setTargetEnabled(static_cast<int>(index), false);
+        waitUntil(controller, [&] {
+            const std::optional<OutputRow> now = outputRow(controller, desk.id);
+            return now && std::string(now->problem).empty();
+        });
+        row = outputRow(controller, desk.id);
+        REQUIRE(row);
+        CHECK(std::string(row->problem).empty());
+    }
+
+    SECTION("a list of Link peers that cannot listen says so on the Link row") {
+        // The test sandbox refuses Link's port, which is exactly what a port another program
+        // holds exclusively looks like from here.
+        controller.toggleLinkPeers();
+        CHECK_FALSE(controller.linkPeersShown());
+        std::optional<OutputRow> link;
+        waitUntil(controller, [&] {
+            const auto rows = controller.window().get_outputs_list();
+            for (std::size_t i = 0; i < rows->row_count(); ++i) {
+                if (rows->row_data(i)->kind_index ==
+                    static_cast<int>(takt4::output::OutputTarget::Kind::Link)) {
+                    link = rows->row_data(i);
+                }
+            }
+            return link && !std::string(link->problem).empty();
+        });
+        REQUIRE(link);
+        INFO(std::string(link->problem));
+        CHECK(std::string(link->problem).rfind("cannot list peers: ", 0) == 0);
+    }
+}
+
 TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);

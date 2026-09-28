@@ -286,6 +286,32 @@ int deviceIndexOf(const std::vector<std::string>& ports, const std::string& devi
     return 0;
 }
 
+/// `text` without `prefix` at its start, when it has one.
+std::string withoutPrefix(std::string text, std::string_view prefix) {
+    return text.rfind(prefix, 0) == 0 ? text.substr(prefix.size()) : text;
+}
+
+/// Why the MIDI control input would not open `port`, in the words its line shows — from inside
+/// the `catch` that caught what opening it threw. Not on the machine and held by another program
+/// are told apart, as they are for an output row: they have different fixes.
+std::string midiControlProblem(const std::string& port) {
+    try {
+        throw;
+    } catch (const output::MidiPortMissing&) {
+        return "\"" + port + "\" is not on this machine \xE2\x80\x94 plug it in";
+    } catch (const output::MidiPortBusy& e) {
+        return e.reason();
+    } catch (const std::exception& e) {
+        return withoutPrefix(e.what(), "MIDI control: ");
+    }
+}
+
+/// Why the OSC control socket would not bind, in the words its line shows: the port's reason
+/// alone, without the "OSC control: cannot listen" the line already says by being red.
+std::string oscControlProblem(const std::exception& e) {
+    return withoutPrefix(withoutPrefix(e.what(), "OSC control: "), "cannot listen: ");
+}
+
 /// A target as the boxes of its row hold it.
 ///
 /// The name box is left **empty** when the target is named after its own address, which is
@@ -918,11 +944,29 @@ void WindowController::publishPortLists() {
         }
     }
 
+    publishMidiInputList();
+}
+
+std::vector<std::string> WindowController::midiInputChoices() const {
+    std::vector<std::string> choices = midiInputPorts_;
+    const std::string& wanted = control_.config().port;
+    // By the rule the control input finds its port by, so a name saved from another numbering
+    // of the same device is that device, not a second entry.
+    if (!wanted.empty() && !output::findMidiPort(midiInputPorts_, wanted)) {
+        choices.push_back(wanted);
+    }
+    return choices;
+}
+
+void WindowController::publishMidiInputList() {
+    const std::vector<std::string> choices = midiInputChoices();
     auto inputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
     inputs->push_back(
         shared(midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "select input"));
-    for (const std::string& port : midiInputPorts_) {
-        inputs->push_back(shared(port));
+    for (std::size_t i = 0; i < choices.size(); ++i) {
+        inputs->push_back(shared(i < midiInputPorts_.size()
+                                     ? choices[i]
+                                     : choices[i] + " \xE2\x80\x94 not plugged in"));
     }
     window_->set_midi_in_ports(inputs);
 }
@@ -1389,11 +1433,16 @@ void WindowController::toggleLinkPeers() {
     } else {
         std::string problem;
         if (!linkPeers_.open(problem)) {
+            // On the Link row as well as the status line, until the list is asked for again or
+            // opens: a port that would not bind is said where the button that needed it is.
+            linkPeersProblem_ = "cannot list peers: " + problem;
             setStatus("Link peers: " + problem, true);
+            publishOutputs();
             return;
         }
         linkPeersShown_ = true;
     }
+    linkPeersProblem_.clear();
     window_->set_link_peers_shown(linkPeersShown_);
     publishLinkPeers();
 }
@@ -1858,6 +1907,14 @@ void WindowController::publishTargetRows() {
     // PANIC, reached nothing until the next click, and a click from the name box into the host
     // box lost what was typed there (found 2026-09-25, when the tests learned to let the redraw
     // that does it run).
+    //
+    // Each row's reason for reaching nothing goes in with it — `rowProblems_`, by id, since the
+    // drafts are rebuilt from the targets by every apply. Not part of what a box shows, so it
+    // never makes a row stale: it is a line of text under the row, updated in place.
+    for (OutputRow& row : targetDrafts_) {
+        const auto found = rowProblems_.find(std::string(row.id));
+        row.problem = shared(found == rowProblems_.end() ? std::string{} : found->second);
+    }
     const std::size_t common =
         std::min<std::size_t>(targetModel_->row_count(), targetDrafts_.size());
     for (std::size_t i = 0; i < common && i < shownRows_.size(); ++i) {
@@ -1882,14 +1939,18 @@ void WindowController::publishTargetRows() {
 
 void WindowController::pickMidiControlPort(int index) {
     const auto port = static_cast<std::size_t>(index);
-    setMidiControlPort(index <= 0 || port > midiInputPorts_.size() ? std::string{}
-                                                                   : midiInputPorts_[port - 1]);
+    const std::vector<std::string> choices = midiInputChoices();
+    setMidiControlPort(index <= 0 || port > choices.size() ? std::string{} : choices[port - 1]);
 }
 
 void WindowController::setMidiControlPort(const std::string& name) {
     // The bindings survive this: `setPort` keeps them, because an operator moving from
     // one controller to another is not asking to forget what they learned.
     control_.setPort(name);
+    midiControlProblem_.clear();
+    midiControlRetryAt_ = -1.0;
+    // A port asked for that is not on the machine is one of the picker's choices from here.
+    publishMidiInputList();
     if (!name.empty()) {
         try {
             control_.start();
@@ -1899,7 +1960,12 @@ void WindowController::setMidiControlPort(const std::string& name) {
         } catch (const std::exception& e) {
             // The port list is what the machine offered when the window opened; a
             // controller unplugged since then lands here, and saying so is the whole
-            // reason `start()` throws rather than quietly listening to nothing.
+            // reason `start()` throws rather than quietly listening to nothing. And it goes on
+            // being said on the input's own line, and tried again every few seconds, so a
+            // controller plugged back in — or let go of by the program that had it — is picked
+            // up without anybody having to find this dropdown again.
+            midiControlProblem_ = midiControlProblem(name);
+            midiControlRetryAt_ = nowSeconds() + controlRetrySeconds_;
             setStatus(e.what(), true);
         }
     }
@@ -2020,7 +2086,15 @@ void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
 void WindowController::setOscControlEnabled(bool on) {
     // What was asked for, before anything can fail: see `oscControlWanted_`.
     oscControlWanted_ = on;
+    if (!on) {
+        // Nothing wanted, so nothing is failing and nothing is to be tried again — whether or
+        // not a socket was open. Unticking a port that would not bind has to take its red line
+        // away with it.
+        oscControlProblem_.clear();
+        oscControlRetryAt_ = -1.0;
+    }
     if (on == oscControl_.running()) {
+        publishControl();
         return;
     }
     if (!on) {
@@ -2038,15 +2112,23 @@ void WindowController::setOscControlEnabled(bool on) {
     oscControl_.setConfig(config);
     try {
         oscControl_.start();
+        oscControlProblem_.clear();
+        oscControlRetryAt_ = -1.0;
         setStatus("OSC control listening on " + std::to_string(oscControl_.port()) +
                       (config.localOnly ? " (this machine only)." : " (any address)."),
                   false);
     } catch (const std::exception& e) {
         // A port another application already has. Saying so is the point: a control
-        // surface that silently does nothing is worse than one that will not start.
+        // surface that silently does nothing is worse than one that will not start. **And
+        // going on saying so**, on the line itself: the status line said it once and the next
+        // message wrote it away, and the tick box went back to empty as if it had never been
+        // asked for — while the saved settings still asked for it. It is tried again every few
+        // seconds, so a port the other program lets go of is picked up without a hand on it.
         config.enabled = false;
         oscControl_.setConfig(config);
-        setStatus(std::string("OSC control: ") + e.what(), true);
+        oscControlProblem_ = oscControlProblem(e);
+        oscControlRetryAt_ = nowSeconds() + controlRetrySeconds_;
+        setStatus(e.what(), true);
     }
     publishControl();
 }
@@ -2156,14 +2238,25 @@ void WindowController::publishMidiControl() {
     window_->set_learn_action_index(learnAction_);
     // The picker follows the port rather than being the only record of it: it is written
     // from a settings file at startup and by `setMidiControlPort` from anywhere else, and
-    // a ComboBox cannot be moved from outside by its value at all (Slint 11970).
-    window_->set_midi_in_port_index(deviceIndexOf(midiInputPorts_, control_.config().port));
+    // a ComboBox cannot be moved from outside by its value at all (Slint 11970). Found by the
+    // rule the port is opened by, among the choices — a port not plugged in is one of them.
+    const std::string& wanted = control_.config().port;
+    const std::optional<std::size_t> at = output::findMidiPort(midiInputChoices(), wanted);
+    window_->set_midi_in_port_index(wanted.empty() || !at ? 0 : static_cast<int>(*at) + 1);
 
     if (!control_.running()) {
+        // A port asked for and not open is a fault, and says which and why for as long as it
+        // lasts; the status line said it once.
+        const bool failing = !control_.config().port.empty() && !midiControlProblem_.empty();
+        window_->set_control_error(failing);
         window_->set_control_reading(shared(
-            midiInputPorts_.empty() ? "no MIDI inputs on this machine" : "off — pick a port"));
+            failing ? "NOT OPEN \xE2\x80\x94 " + midiControlProblem_ + ". Trying again every " +
+                          fixed(controlRetrySeconds_, 0) + " s."
+            : midiInputPorts_.empty() ? std::string("no MIDI inputs on this machine")
+                                      : std::string("off \xE2\x80\x94 pick a port")));
         return;
     }
+    window_->set_control_error(false);
     if (control_.learning()) {
         window_->set_control_reading(shared("waiting for a control..."));
         return;
@@ -2209,7 +2302,10 @@ void WindowController::publishTriggers() {
 void WindowController::publishOscControl(bool force) {
     const control::OscControl::Config& config = oscControl_.config();
     const bool listening = oscControl_.running();
-    window_->set_osc_control_on(listening);
+    // **What was asked for**, not what bound: a port another program holds leaves the tick as
+    // it was put, beside a line that says in red that it is not listening and why. The tick
+    // going back to empty read as "never asked for" — while the file saved it as asked for.
+    window_->set_osc_control_on(listening || oscControlWanted_);
     window_->set_osc_control_network(!config.localOnly);
     // The port bound while it is listening, and the one asked for while it is not. With 0
     // meaning "any free one" those differ, and only the bound one is a number an operator
@@ -2229,9 +2325,15 @@ void WindowController::publishOscControl(bool force) {
     }
 
     if (!listening) {
-        window_->set_osc_control_reading(shared("off"));
+        const bool failing = oscControlWanted_ && !oscControlProblem_.empty();
+        window_->set_osc_control_error(failing);
+        window_->set_osc_control_reading(shared(
+            failing ? "NOT LISTENING \xE2\x80\x94 " + oscControlProblem_ + ". Trying again every " +
+                          fixed(controlRetrySeconds_, 0) + " s."
+                    : std::string("off")));
         return;
     }
+    window_->set_osc_control_error(false);
     // Two different questions, and only one of them is live at a time. Before anything has
     // arrived the operator needs the address to aim at; once packets are landing they need
     // to know what landed, and the address has answered itself.
@@ -2747,6 +2849,7 @@ void WindowController::publishOutputs() {
     window_->set_beats_sent(static_cast<int>(runner_.transports().beats()));
     publishLostMidi(live.lostMidi, live.outputs);
     publishOutputProblems(live.outputProblems);
+    publishRowProblems(live);
     publishOutputTrouble(live.trouble);
 }
 
@@ -2784,7 +2887,77 @@ void WindowController::publishOutputTrouble(const output::OutputRunner::Snapshot
     window_->set_output_trouble(shared(joined(parts)));
 }
 
-void WindowController::publishOutputProblems(const std::vector<std::string>& problems) {
+void WindowController::retryControls(double now) {
+    if (oscControlWanted_ && !oscControl_.running() && oscControlRetryAt_ >= 0.0 &&
+        now >= oscControlRetryAt_) {
+        oscControlRetryAt_ = now + controlRetrySeconds_;
+        control::OscControl::Config config = oscControl_.config();
+        config.enabled = true;
+        oscControl_.setConfig(config);
+        try {
+            oscControl_.start();
+            oscControlProblem_.clear();
+            oscControlRetryAt_ = -1.0;
+            report("OSC control listening on " + std::to_string(oscControl_.port()) +
+                       " \xE2\x80\x94 the port is free again.",
+                   false);
+        } catch (const std::exception& e) {
+            // Still taken. Said on its own line already; the status line is not written again
+            // every few seconds with the same thing.
+            config.enabled = false;
+            oscControl_.setConfig(config);
+            oscControlProblem_ = oscControlProblem(e);
+        }
+        publishOscControl(false);
+    }
+    const std::string& port = control_.config().port;
+    if (!port.empty() && !control_.running() && midiControlRetryAt_ >= 0.0 &&
+        now >= midiControlRetryAt_) {
+        midiControlRetryAt_ = now + controlRetrySeconds_;
+        try {
+            control_.start();
+            midiControlProblem_.clear();
+            midiControlRetryAt_ = -1.0;
+            report("Control input on " + control_.portName() + " \xE2\x80\x94 it is back.", false);
+        } catch (const std::exception&) {
+            midiControlProblem_ = midiControlProblem(port);
+        }
+        publishMidiControl();
+    }
+}
+
+void WindowController::publishRowProblems(const output::OutputRunner::Snapshot& live) {
+    std::map<std::string, std::string> problems;
+    for (const output::Transports::Problem& problem : live.outputProblems) {
+        problems[problem.id] = problem.why;
+    }
+    for (const output::OutputTarget& target : live.outputs) {
+        const bool device = target.kind == output::OutputTarget::Kind::Midi ||
+                            target.kind == output::OutputTarget::Kind::MidiClock;
+        if (device && target.enabled && problems.count(target.id) == 0 &&
+            std::find(live.lostMidi.begin(), live.lostMidi.end(), target.device) !=
+                live.lostMidi.end()) {
+            problems[target.id] = "\"" + target.device +
+                                  "\" has stopped responding \xE2\x80\x94 unplugged? takt4 keeps "
+                                  "trying to reopen it";
+        }
+        if (target.kind == output::OutputTarget::Kind::Link && !linkPeersProblem_.empty()) {
+            problems[target.id] = linkPeersProblem_;
+        }
+    }
+    if (problems == rowProblems_) {
+        return;
+    }
+    rowProblems_ = std::move(problems);
+    publishTargetRows();
+}
+
+void WindowController::publishOutputProblems(
+    const std::vector<output::Transports::Problem>& found) {
+    std::vector<std::string> problems;
+    for (const output::Transports::Problem& problem : found) {
+        problems.push_back(problem.text);
+    }
     if (problems == outputProblemsShown_) {
         return;
     }
@@ -2996,6 +3169,9 @@ void WindowController::tick() {
     // redraw, and binding buttons is something an operator does *before* pressing Start.
     // Unforced, so the port field is left alone unless the port itself has moved.
     publishControl(false);
+    // A control input that was asked for and would not open, tried again when it is due — so a
+    // port another program lets go of, or a controller plugged back in, is picked up by itself.
+    retryControls(nowSeconds());
     // And what the output thread made of the last change posted to it. **Here rather than at
     // the post**, because `post` is asynchronous while the tracker runs: the thread applies a
     // command about a millisecond later, so `lastError()` read straight after posting one
