@@ -8,9 +8,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <optional>
@@ -447,4 +449,49 @@ TEST_CASE("LiveTracker opens a stereo pair on a real interface and the pair's su
     CHECK(sums.frames > 0);
     CHECK(tracker.stream()->picker().selection().count == 2);
     tracker.stop();
+}
+
+TEST_CASE("an ASIO stream opens and closes hundreds of times without its driver falling over",
+          "[.stress][hardware]") {
+    // Not run by any preset: `takt4_tests "[.stress]"` with the rig free. The MOTU's ASIO driver
+    // was caught fast-failing inside ASIOExit about once in 840 releases, while PortAudio probed
+    // drivers (the 2026-09-22 audit). Probing moved to a child process; what the app still does
+    // in-process is open and close a stream — this, as many times as TAKT4_STRESS_CYCLES says
+    // (default 300), through the audio thread as the window does. A fast fail ends the process,
+    // which ctest or the shell reports; nothing here could catch it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    std::optional<InputDevice> asio;
+    for (const InputDevice& device : tracker.devices()) {
+        if (device.hostApi == takt4::audio::HostApiKind::Asio && device.maxInputChannels >= 2) {
+            asio = device;
+            break;
+        }
+    }
+    if (!asio) {
+        SKIP("no ASIO input on this machine (TAKT4_TEST_HARDWARE=1 lets the test binary load ASIO)");
+    }
+    int cycles = 300;
+#if defined(_MSC_VER)
+    char* given = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&given, &length, "TAKT4_STRESS_CYCLES") == 0 && given != nullptr) {
+        cycles = std::max(1, std::atoi(given));
+    }
+    std::free(given);
+#else
+    if (const char* given = std::getenv("TAKT4_STRESS_CYCLES"); given != nullptr) {
+        cycles = std::max(1, std::atoi(given));
+    }
+#endif
+    INFO(asio->name << ", " << cycles << " cycles");
+    int opened = 0;
+    for (int i = 0; i < cycles; ++i) {
+        tracker.start(*asio, ChannelSelection::pair(0, 1));
+        REQUIRE(tracker.running());
+        std::this_thread::sleep_for(std::chrono::milliseconds(20 + (i % 7) * 10));
+        tracker.stop();
+        REQUIRE_FALSE(tracker.stuck());
+        ++opened;
+    }
+    CHECK(opened == cycles);
 }
