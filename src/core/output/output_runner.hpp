@@ -163,7 +163,7 @@ struct OutputCommand {
         command.relative = relative;
         return command;
     }
-    static OutputCommand effect(std::uint64_t fixtures, const dmx::Payload& payload) {
+    static OutputCommand effect(const dmx::FixtureSet& fixtures, const dmx::Payload& payload) {
         OutputCommand command;
         command.kind = Kind::Effect;
         command.fixtureMask = fixtures;
@@ -210,7 +210,7 @@ struct OutputCommand {
     std::string ruleId;
     /// `Effect`'s target and instruction. The mask indexes the patch, exactly as a rule's
     /// `Message::fixtures` does.
-    std::uint64_t fixtureMask = 0;
+    dmx::FixtureSet fixtureMask{};
     dmx::Payload payload;
     /// `ChannelTest`'s target: a universe, a 1-based DMX channel and the byte to hold it at.
     /// How long for rides in `factor`, which is otherwise `RuleRate`'s.

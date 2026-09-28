@@ -191,7 +191,7 @@ struct Message {
     ///
     /// A mask rather than the names, for the reasons `outputs` gives: a fire allocates
     /// nothing, and a follow-up outlives the rule that owed it.
-    std::uint64_t fixtures = 0;
+    dmx::FixtureSet fixtures{};
     /// Dmx: the effect, already resolved — every generator run, every duration converted to
     /// seconds against the tempo that was playing.
     dmx::Payload payload;
@@ -227,6 +227,9 @@ struct Message {
 /// carries bits rather than names, which is what keeps a fire allocation-free, and the bits
 /// have to follow their outputs rather than land on whatever now sits where they were.
 std::uint64_t remapBits(std::uint64_t mask, const std::vector<int>& moved) noexcept;
+/// The same for a set of fixtures. No "every bit" case: a set of fixtures that names none names
+/// none, and one that names them all names them all.
+dmx::FixtureSet remapBits(const dmx::FixtureSet& mask, const std::vector<int>& moved) noexcept;
 
 inline constexpr std::array<Message::Kind, 7> kMessageKinds{
     Message::Kind::Osc,    Message::Kind::MidiNote,          Message::Kind::MidiNoteOff,
@@ -711,8 +714,8 @@ public:
     /// `output::OutputRunner`, exactly as `outputMask` is. Set again whenever the patch
     /// changes, or a rule keeps aiming at the bit its old neighbour used to occupy, and one
     /// deleted fixture sends a strobe to the front wash.
-    std::uint64_t fixtureMask() const noexcept { return fixtureMask_; }
-    void setFixtureMask(std::uint64_t mask) noexcept { fixtureMask_ = mask; }
+    const dmx::FixtureSet& fixtureMask() const noexcept { return fixtureMask_; }
+    void setFixtureMask(const dmx::FixtureSet& mask) noexcept { fixtureMask_ = mask; }
 
     /// Whether `context` is a change of the kind this rule's trigger names — tempo, lock or
     /// intensity — and remembers it either way.
@@ -836,7 +839,7 @@ private:
     /// See `fixtureMask`. **Nothing** until somebody who knows the patch says otherwise —
     /// the opposite default, and the safe one: a lighting rule that reached every fixture
     /// because nobody had resolved it yet would swing the whole rig on its first fire.
-    std::uint64_t fixtureMask_ = 0;
+    dmx::FixtureSet fixtureMask_{};
     /// What `seesChange` last counted as a change. Negative means "nothing seen yet", which
     /// is not a change: a rule must not fire on the first round merely for existing.
     double lastBpmSeen_ = -1.0;

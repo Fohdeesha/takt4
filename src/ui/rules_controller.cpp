@@ -2644,8 +2644,8 @@ void RulesController::previewColor(dmx::Color color) {
                   true);
         return;
     }
-    const std::uint64_t mask = dmx::resolveFixtures(patch_, rule->dmx.fixtures);
-    if (mask == 0) {
+    const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, rule->dmx.fixtures);
+    if (mask.none()) {
         return;
     }
     dmx::Payload payload;
@@ -3320,9 +3320,10 @@ void RulesController::publishFixtureChoices() {
         row.missing = false;
         rows.push_back(std::move(row));
     }
-    // Only the first 64: a rule carries its fixtures as a bit each, and `dmx::resolveFixtures`
-    // reaches no further, so a tick on the 65th looked like aiming at it and reached nothing
-    // (the audit's M21). The patch editor says as much when the 65th is added.
+    // Only the first `dmx::kMaxRoutableFixtures` (512): a rule carries its fixtures as a bit
+    // each, and `dmx::resolveFixtures` reaches no further, so a tick past them would look like
+    // aiming and reach nothing (the audit's M21). The patch editor says as much when one past the
+    // last is added.
     const std::size_t reachable = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
     for (std::size_t i = 0; i < reachable; ++i) {
         const dmx::Fixture& fixture = patch_[i];
@@ -3370,13 +3371,7 @@ void RulesController::publishFixtureChoices() {
         shared(aims.empty() ? "nothing — this rule sends nowhere" : join(shown)));
     // What the rule actually reaches on *this* rig, in fixtures. The count matters: "heads"
     // reaching three fixtures and "heads" reaching none look identical in a list of ticks.
-    const std::uint64_t mask = dmx::resolveFixtures(patch_, aims);
-    std::size_t reached = 0;
-    for (std::size_t i = 0; i < patch_.size() && i < dmx::kMaxRoutableFixtures; ++i) {
-        if ((mask & (std::uint64_t{1} << i)) != 0) {
-            ++reached;
-        }
-    }
+    const std::size_t reached = dmx::resolveFixtures(patch_, aims).count();
     std::string available;
     if (aims.empty()) {
         available = "pick at least one — a DMX rule with no fixtures does nothing";
@@ -3403,8 +3398,8 @@ std::string RulesController::describeRoleReach(const trigger::DmxSend& send) con
     if (!dmx::takesRole(send.effect)) {
         return {};
     }
-    const std::uint64_t mask = dmx::resolveFixtures(patch_, send.fixtures);
-    if (mask == 0) {
+    const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, send.fixtures);
+    if (mask.none()) {
         return {}; // "reaches no fixtures" is already said beside the fixture picker
     }
     std::size_t reached = 0;
@@ -3412,7 +3407,7 @@ std::string RulesController::describeRoleReach(const trigger::DmxSend& send) con
     std::size_t total = 0;
     const std::size_t count = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
     for (std::size_t i = 0; i < count; ++i) {
-        if ((mask & (std::uint64_t{1} << i)) == 0) {
+        if (!mask.test(i)) {
             continue;
         }
         ++total;

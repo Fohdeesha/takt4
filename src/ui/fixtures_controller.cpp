@@ -518,10 +518,11 @@ void FixturesController::add() {
     if (fixtures_.size() >= dmx::kMaxRoutableFixtures) {
         // Past this a fixture can still be patched, parked and tested from here; what it
         // cannot be is reached by a rule, by name or by group, because a rule carries its
-        // fixtures as a bit each (`dmx::resolveFixtures` stops at the 64th). Said out loud
-        // rather than discovered — see `dmx::kMaxRoutableFixtures`.
-        setStatus("Rules can aim at the first 64 fixtures only. This one and any after it can "
-                  "be patched and tested here, but no rule will reach them.",
+        // fixtures as a bit each (`dmx::resolveFixtures` stops at the last it can name). Said
+        // out loud rather than discovered — see `dmx::kMaxRoutableFixtures`.
+        setStatus("Rules can aim at the first " + std::to_string(dmx::kMaxRoutableFixtures) +
+                      " fixtures only. This one and any after it can be patched and tested here, "
+                      "but no rule will reach them.",
                   true);
     }
     // Patched after the last one on its universe rather than at 1, because that is what an
@@ -768,12 +769,13 @@ void FixturesController::identify() {
     if (static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures) {
         // An effect is aimed by a bit per fixture, like a rule's, so this one cannot be flashed;
         // said, rather than a button that does nothing (the audit's M21). TEST reaches it.
-        setStatus("IDENTIFY reaches the first 64 fixtures only. Use a channel's TEST for this "
-                  "one.",
+        setStatus("IDENTIFY reaches the first " + std::to_string(dmx::kMaxRoutableFixtures) +
+                      " fixtures only. Use a channel's TEST for this one.",
                   true);
         return;
     }
-    const std::uint64_t mask = std::uint64_t{1} << static_cast<std::size_t>(selected_);
+    dmx::FixtureSet mask;
+    mask.set(static_cast<std::size_t>(selected_));
 
     // **A flash on every light-emitting channel the fixture actually has.**
     //

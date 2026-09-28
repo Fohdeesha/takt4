@@ -83,7 +83,7 @@ public:
     /// A payload aimed at channels no selected fixture has — a pan on a wash, a color on a
     /// dimmer — starts nothing and is counted in `missed()`. That is not an error: one rule
     /// aimed at a group holding both kinds of fixture is an ordinary thing to want.
-    void start(std::uint64_t fixtures, const Payload& payload, double now);
+    void start(const FixtureSet& fixtures, const Payload& payload, double now);
 
     /// Advances every running effect and writes the frames. Call every round, effect or no
     /// effect — that is what makes a duration mean seconds rather than rounds.
@@ -286,7 +286,7 @@ private:
     void releaseTestHolds() noexcept;
     /// `start`, on the fixtures `fixtures` names — or, with `everyFixture`, on every enabled
     /// fixture of the patch, past the 64 a mask can name. `blackout`'s.
-    void launch(const Payload& payload, double now, std::uint64_t fixtures, bool everyFixture);
+    void launch(const Payload& payload, double now, const FixtureSet& fixtures, bool everyFixture);
     /// Re-aims every running effect at the new patch, by fixture — see `setPatch`.
     /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.
     void retarget(const std::vector<std::uint16_t>& mapped);

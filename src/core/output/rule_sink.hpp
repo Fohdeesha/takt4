@@ -106,7 +106,7 @@ private:
     void sendMidi(const trigger::Message& message);
     void sendDmx(const trigger::Message& message);
     /// Starts one effect now, counting whether it reached a real channel.
-    void startDmx(std::uint64_t fixtures, const dmx::Payload& payload);
+    void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload);
 
     Transports& transports_;
     /// See `setNow`. Zero until the first round, which only matters offline: an effect started
@@ -129,7 +129,7 @@ private:
     /// One lighting effect held until its start.
     struct HeldDmx {
         double due = 0.0;
-        std::uint64_t fixtures = 0;
+        dmx::FixtureSet fixtures{};
         dmx::Payload payload;
     };
     /// In the order queued, and released in that order among whatever has come due — the rule

@@ -90,7 +90,7 @@ void RuleSink::send(const trigger::Message& message) {
     }
 }
 
-void RuleSink::startDmx(std::uint64_t fixtures, const dmx::Payload& payload) {
+void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload) {
     // So "delivered" means something different for this kind than for the other two: it means
     // the effect reached at least one real channel, not that a datagram left. That is the
     // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
