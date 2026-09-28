@@ -16,10 +16,12 @@ void printUsage(std::ostream& out) {
     out << "takt4-shot " << takt4::buildInfo().version
         << " — render the main window to a BMP\n"
            "\n"
-           "  takt4-shot OUT.bmp [--size WxH] [--stopped | --trouble]\n"
+           "  takt4-shot OUT.bmp [--size WxH] [--scale S] [--stopped | --trouble]\n"
            "                     [--rules [--dmx] | --fixtures | --about]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
+           "  --scale S       the display's scale, 1.25 for 125 %: the size stays\n"
+           "                  logical and the picture is S times larger\n"
            "  --stopped       draw the idle window — blank readouts and the manual\n"
            "                  controls disabled — instead of a tracker running\n"
            "  --trouble       the running window with outputs and control inputs that\n"
@@ -63,6 +65,20 @@ int main(int argc, char** argv) {
             options.dmx = true;
         } else if (arg == "--trouble") {
             options.trouble = true;
+        } else if (arg == "--scale") {
+            if (i + 1 >= argc) {
+                std::cerr << "takt4-shot: --scale needs a number, 1.25 for 125 %\n";
+                return 2;
+            }
+            try {
+                options.scale = std::stof(argv[++i]);
+            } catch (const std::exception&) {
+                options.scale = 0.0f;
+            }
+            if (!(options.scale >= 0.5f && options.scale <= 4.0f)) {
+                std::cerr << "takt4-shot: --scale is 0.5 to 4\n";
+                return 2;
+            }
         } else if (arg == "--size") {
             sized = true;
             if (i + 1 >= argc) {
