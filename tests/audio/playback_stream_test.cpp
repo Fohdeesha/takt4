@@ -87,8 +87,8 @@ TEST_CASE("A silent buffer plays to its end and the clock reaches it", "[audio][
     takt4::audio::PlaybackStream player(session, *device, silence, kInternalSampleRate);
     CHECK(player.durationSeconds() == Approx(0.3).margin(0.001));
     CHECK(player.positionSeconds() == Approx(0.0));
-    CHECK(player.channels() >= 1);
-    CHECK(player.channels() <= 2);
+    // Every output the device has, the track on the first two (see the next test).
+    CHECK(player.channels() == device->maxOutputChannels);
     CHECK_FALSE(player.finished());
 
     player.start();
@@ -118,4 +118,31 @@ TEST_CASE("Playback can start part-way in, with absolute positions", "[audio][ha
     }
     CHECK(player.finished());
     CHECK(player.positionSeconds() == Approx(2.0).margin(0.05));
+}
+
+TEST_CASE("Playback opens on every output device, a multichannel one included",
+          "[audio][hardware]") {
+    // Found driving `annotate` end to end on 2026-09-28: the MOTU's 24-channel "Out 1-24" would
+    // not open at all — "Invalid number of channels" — because playback asked for two and
+    // WASAPI's shared mode takes only the device's own mix. Every output, a tenth of a second of
+    // silence each: nothing to hear.
+    const takt4::audio::PortAudioSession session;
+    const auto devices = takt4::audio::listOutputDevices(session);
+    if (devices.empty()) {
+        SKIP("no output device on this machine");
+    }
+    const std::vector<float> silence(static_cast<std::size_t>(0.1 * kInternalSampleRate), 0.0f);
+    for (const auto& device : devices) {
+        INFO(device.hostApiName << " / " << device.name << ", " << device.maxOutputChannels
+                                << " outputs");
+        takt4::audio::PlaybackStream player(session, device, silence, kInternalSampleRate);
+        CHECK(player.channels() == device.maxOutputChannels);
+        player.start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!player.finished() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        CHECK(player.finished());
+        player.stop();
+    }
 }

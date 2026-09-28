@@ -137,8 +137,10 @@ struct PlaybackStream::Impl {
         const std::size_t copy = std::min<std::size_t>(available, frameCount);
         for (std::size_t i = 0; i < copy; ++i) {
             const float sample = self->buffer[self->cursor + i];
+            // The first two outputs — a pair's left and right — and silence on the rest of a
+            // multichannel device's.
             for (std::size_t c = 0; c < channels; ++c) {
-                out[i * channels + c] = sample;
+                out[i * channels + c] = c < 2 ? sample : 0.0f;
             }
         }
         for (std::size_t i = copy; i < frameCount; ++i) {
@@ -165,7 +167,12 @@ PlaybackStream::PlaybackStream(const PortAudioSession& /*session*/, const Output
     detail::refuseInSandbox(device.name);
     impl_->device = device;
     impl_->rate = device.defaultSampleRate > 0.0 ? device.defaultSampleRate : sampleRate;
-    impl_->channels = std::clamp(device.maxOutputChannels, 1, 2);
+    // **Every output the device has**, the track on the first two. It was two, and WASAPI's
+    // shared mode takes only the channel count of the device's own mix: on the MOTU's 24-channel
+    // "Out 1-24" the stream would not open at all ("Invalid number of channels", found driving
+    // `annotate` end to end, 2026-09-28). The input side opens every channel and slices for the
+    // same reason.
+    impl_->channels = std::max(device.maxOutputChannels, 1);
     impl_->buffer = resampleForPlayback(samples, sampleRate, impl_->rate);
     const double startFrame = std::max(0.0, startSeconds) * impl_->rate;
     impl_->startCursor = std::min<std::uint64_t>(static_cast<std::uint64_t>(startFrame), impl_->buffer.size());
