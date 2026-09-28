@@ -802,15 +802,21 @@ TEST_CASE("picking a device fills the channel list from that device", "[ui][hard
     WindowController controller(tracker);
 
     // Through the window's own callback, so this covers the binding the constructor makes
-    // and not just the handler behind it.
-    for (std::size_t i = 0; i < tracker.devices().size(); ++i) {
-        controller.window().invoke_device_picked(static_cast<int>(i));
-        CHECK(controller.deviceIndex() == static_cast<int>(i));
-        CHECK(controller.channelIndex() == 0); // a new device starts at its first input
-        const auto channels = controller.window().get_channels();
-        REQUIRE(channels);
-        CHECK(channels->row_count() ==
-              static_cast<std::size_t>(tracker.devices()[i].maxInputChannels));
+    // and not just the handler behind it. Pairs unless "mono" is ticked (since 2026-09-28): an
+    // 18-input interface offers nine, and an odd input at the end is offered alone.
+    for (const bool mono : {false, true}) {
+        controller.window().invoke_input_mono_toggled(mono);
+        for (std::size_t i = 0; i < tracker.devices().size(); ++i) {
+            controller.window().invoke_device_picked(static_cast<int>(i));
+            CHECK(controller.deviceIndex() == static_cast<int>(i));
+            CHECK(controller.channelIndex() == 0); // a new device starts at its first input
+            const auto channels = controller.window().get_channels();
+            REQUIRE(channels);
+            const int inputs = tracker.devices()[i].maxInputChannels;
+            const int shown = mono || inputs < 2 ? inputs : (inputs + 1) / 2;
+            INFO(tracker.devices()[i].name << ": " << inputs << " inputs, mono " << mono);
+            CHECK(channels->row_count() == static_cast<std::size_t>(shown));
+        }
     }
 
     // An index the list does not have is ignored rather than crashing: a stale click from

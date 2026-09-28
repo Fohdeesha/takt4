@@ -44,6 +44,17 @@ bool within(std::chrono::milliseconds limit, Done done) {
     return true;
 }
 
+/// Has `thread` take one job and come back, so it is up and waiting for the next.
+///
+/// A test that times a job against a limit of a few hundred milliseconds is timing the job, not
+/// the thread's start: the first job waits for the thread to be created and join its apartment,
+/// which is the process's first COM call. Measured on 2026-09-28: about 11 ms in Release and
+/// 390 to 430 ms under AddressSanitizer, so a job given 200 ms there had not started when its
+/// caller gave up, and the thread was not yet stuck on it.
+void settle(AudioThread& thread) {
+    REQUIRE(thread.run("settle", [] {}, 10s));
+}
+
 } // namespace
 
 TEST_CASE("every job runs on the one audio thread, never on the caller's", "[audio][thread]") {
@@ -100,6 +111,7 @@ TEST_CASE("a job that does not come back costs its caller its limit and no more"
     // change, and the outage's own reopen froze the whole window. Here the driver is a job that
     // waits on a promise nobody keeps until the test says so.
     AudioThread thread;
+    settle(thread);
     std::promise<void> release;
     const std::shared_future<void> released = release.get_future().share();
     std::atomic<bool> stopFinished{false};
@@ -175,9 +187,11 @@ TEST_CASE("the audio thread's destructor does not wait on a driver holding it", 
     std::promise<void> release;
     const std::shared_future<void> released = release.get_future().share();
     auto finished = std::make_shared<std::atomic<bool>>(false);
-    const auto start = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point start;
     {
         AudioThread thread;
+        settle(thread);
+        start = std::chrono::steady_clock::now();
         CHECK_FALSE(thread.handOver(
             "stop",
             [released, finished] {
