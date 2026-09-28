@@ -349,9 +349,13 @@ TEST_CASE("a driver that does not answer costs the caller its limit, and is aske
     (void)tracker.devices();
     CHECK(std::chrono::steady_clock::now() - listing < std::chrono::milliseconds(100));
 
-    // The drivers answer after all: the tracker is itself again.
+    // The drivers answer after all: the tracker is itself again. Asked with the limits the window
+    // uses: this rescan really lists the drivers, and with ASIO allowed (the `-all` presets) that
+    // is a scan in a process of its own, which took more than the 300 ms above under
+    // AddressSanitizer (2026-09-28).
     release.set_value();
     REQUIRE(within(std::chrono::milliseconds(2000), [&] { return !tracker.stuck(); }));
+    tracker.setLimits(LiveTracker::Limits{});
     CHECK(tracker.rescan());
 }
 
