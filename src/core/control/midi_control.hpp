@@ -118,6 +118,14 @@ public:
     /// own delivery, which needs a MIDI loopback to test — the audit of 2026-09-25, coverage
     /// gap 13. Never throws.
     void receive(std::span<const unsigned char> message) noexcept;
+    /// Exactly what RtMidi's callback thread does with a message: turned away once `stop` has
+    /// begun, and counted while it is being handled, so that `stop` can wait for it. For a test
+    /// that plays that thread; RtMidi's own callback calls nothing else.
+    void deliver(std::span<const unsigned char> message) noexcept;
+    /// For the tests: listening as far as `deliver` and `stop` can tell, with no port behind it —
+    /// the test sandbox opens none, and a message on its way when `stop` begins cannot be arranged
+    /// with a real one.
+    void listenWithoutPort() noexcept { running_.store(true, std::memory_order_seq_cst); }
 
     /// Messages that matched a binding and were acted on.
     std::uint64_t handled() const noexcept { return handled_.load(std::memory_order_relaxed); }
@@ -136,15 +144,14 @@ public:
     std::optional<MidiEvent> lastEvent() const;
 
 private:
-    /// RtMidi's callback, and the only thing that runs on its thread.
-    void onMessage(std::span<const unsigned char> message) noexcept;
-
     Config config_;
     ControlSurface surface_;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::atomic<bool> running_{false};
+    /// Messages past `running_` and not yet handled — what `stop` waits for. See `deliver`.
+    std::atomic<int> inFlight_{0};
     std::atomic<std::uint64_t> handled_{0};
     std::atomic<std::uint64_t> ignored_{0};
     std::atomic<std::uint64_t> refused_{0};

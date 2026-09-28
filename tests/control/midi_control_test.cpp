@@ -2,6 +2,7 @@
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
 #include "core/control/midi_control.hpp"
+#include "core/control/rule_control.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -15,17 +16,31 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
+#include <iostream>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 using Catch::Approx;
 using Catch::Matchers::WithinAbs;
@@ -702,3 +717,177 @@ TEST_CASE("a push button that sends 1 then 0 taps once a press", "[control]") {
         CHECK(rules.panics() == std::vector<bool>{true, true, false});
     }
 }
+
+namespace {
+
+/// Rules whose PANIC blocks until the test lets it go — a message that is still being handled
+/// when the control input is told to stop.
+class HeldPanic final : public takt4::control::RuleControl {
+public:
+    void panic(bool) override {
+        inside = true;
+        while (!release) {
+            std::this_thread::yield();
+        }
+        ++panics;
+    }
+    void setRuleEnabled(std::string_view, bool) override {}
+    void setRuleMuted(std::string_view, bool) override {}
+    void setRuleRate(std::string_view, double, bool) override {}
+    void fireManual() override {}
+
+    std::atomic<bool> inside{false};
+    std::atomic<bool> release{false};
+    std::atomic<int> panics{0};
+};
+
+} // namespace
+
+TEST_CASE("a message already on its way when the control input stops is finished before stop "
+          "returns, and none is handled after",
+          "[control]") {
+    // The audit of 2026-09-25's residue: RtMidi's `cancelCallback` joins nothing, so a message
+    // that had passed the running flag when `stop` began went on being handled after it — a
+    // PANIC or a tap acted on by a surface already switched off, and on the way out a dispatch
+    // into an object being destroyed. Here the message is a PANIC whose handling waits, played
+    // on a thread of its own as RtMidi's would.
+    auto engine = makeEngine();
+    HeldPanic rules;
+    MidiControl control(*engine, MidiControl::Config{}, &rules);
+    MidiBinding pad;
+    pad.number = 36;
+    pad.target = ControlAction::Panic;
+    REQUIRE(control.bind(pad));
+    control.listenWithoutPort();
+
+    const std::vector<unsigned char> press{0x90, 36, 100};
+    std::thread midi([&] { control.deliver(std::span<const unsigned char>(press.data(), press.size())); });
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!rules.inside && std::chrono::steady_clock::now() < until) {
+        std::this_thread::yield();
+    }
+    REQUIRE(rules.inside);
+
+    std::atomic<bool> stopped{false};
+    std::thread stopping([&] {
+        control.stop();
+        stopped = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK_FALSE(stopped); // waiting for the PANIC being handled
+    rules.release = true;
+    midi.join();
+    stopping.join();
+    CHECK(stopped);
+    CHECK(rules.panics == 1);
+
+    // And once stopped, a message is turned away at the door.
+    control.deliver(std::span<const unsigned char>(press.data(), press.size()));
+    CHECK(rules.panics == 1);
+    CHECK_FALSE(control.running());
+}
+
+#if defined(_WIN32)
+
+namespace {
+
+/// teVirtualMIDI's driver API, which rtpMIDI and loopMIDI install: a MIDI port a program can make
+/// for itself, whose input side another program opens like any WinMM input. Loaded when present.
+struct VirtualMidi {
+    using Port = void*;
+    using DataCallback = void(CALLBACK*)(Port, LPBYTE, DWORD, DWORD_PTR);
+    using CreatePort = Port(CALLBACK*)(LPCWSTR, DataCallback, DWORD_PTR, DWORD, DWORD);
+    using SendData = BOOL(CALLBACK*)(Port, LPBYTE, DWORD);
+    using ClosePort = void(CALLBACK*)(Port);
+    static constexpr DWORD kParseRx = 1; // TE_VM_FLAGS_PARSE_RX
+
+    HMODULE library = ::LoadLibraryW(L"teVirtualMIDI64.dll");
+    CreatePort create = nullptr;
+    SendData send = nullptr;
+    ClosePort close = nullptr;
+
+    VirtualMidi() {
+        if (library != nullptr) {
+            create = reinterpret_cast<CreatePort>(::GetProcAddress(library, "virtualMIDICreatePortEx2"));
+            send = reinterpret_cast<SendData>(::GetProcAddress(library, "virtualMIDISendData"));
+            close = reinterpret_cast<ClosePort>(::GetProcAddress(library, "virtualMIDIClosePort"));
+        }
+    }
+    ~VirtualMidi() {
+        if (library != nullptr) {
+            ::FreeLibrary(library);
+        }
+    }
+    bool usable() const { return create != nullptr && send != nullptr && close != nullptr; }
+};
+
+void CALLBACK ignoreData(VirtualMidi::Port, LPBYTE, DWORD, DWORD_PTR) {}
+
+} // namespace
+
+TEST_CASE("a MIDI input closed while SysEx pours into it closes, every time",
+          "[control][midi][hardware]") {
+    // The 2026-09-22 audit's M14. RtMidi 6.0.0's WinMM `closePort` takes its lock and, holding
+    // it, calls `midiInReset`, which hands back every SysEx buffer being filled through the input
+    // callback — and the callback took the same lock to queue the buffer again: a close that
+    // never returned, on STOP, on a port change and on the way out. cmake/rtmidi_patch.cmake
+    // applies upstream's fix. Its own test could not arrange SysEx arriving at the moment of a
+    // close, and passed with or without the patch; a virtual port this test makes and floods
+    // arranges exactly that.
+    VirtualMidi virtualMidi;
+    if (!virtualMidi.usable()) {
+        SKIP("teVirtualMIDI is not installed here (rtpMIDI and loopMIDI both bring it)");
+    }
+    const VirtualMidi::Port port = virtualMidi.create(L"takt4 test sysex", &ignoreData, 0, 65535,
+                                                      VirtualMidi::kParseRx);
+    REQUIRE(port != nullptr);
+
+    std::atomic<bool> pouring{true};
+    std::thread flood([&] {
+        std::vector<BYTE> sysex(512, 0x11);
+        sysex.front() = 0xF0;
+        sysex[1] = 0x7D; // non-commercial / educational
+        sysex.back() = 0xF7;
+        while (pouring) {
+            (void)virtualMidi.send(port, sysex.data(), static_cast<DWORD>(sysex.size()));
+        }
+    });
+
+    auto engine = makeEngine();
+    int closes = 0;
+    for (int round = 0; round < 40; ++round) {
+        MidiControl::Config config;
+        config.enabled = true;
+        config.port = "takt4 test sysex";
+        MidiControl control(*engine, config);
+        control.start();
+        REQUIRE(control.running());
+        std::this_thread::sleep_for(std::chrono::milliseconds(15 + (round % 5) * 7));
+        std::atomic<bool> closed{false};
+        std::thread closing([&] {
+            control.stop();
+            closed = true;
+        });
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!closed && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!closed) {
+            // A close that does not return cannot be joined or unwound: say so, and end here
+            // rather than hang the run.
+            FAIL_CHECK("closing the input deadlocked on round " << round);
+            std::cerr << "a MIDI input close deadlocked with SysEx arriving (round " << round
+                      << "); ending the test process\n"
+                      << std::flush;
+            ::TerminateProcess(::GetCurrentProcess(), 3);
+        }
+        closing.join();
+        ++closes;
+    }
+    pouring = false;
+    flood.join();
+    virtualMidi.close(port);
+    CHECK(closes == 40);
+}
+
+#endif

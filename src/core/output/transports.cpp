@@ -623,13 +623,19 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         // 2026-09-25, M6). The tracker publishes `beatInBar` 0 before it has found a bar, and
         // that was read as beat 1 — so a receiver's bar 1 could land on beat 2, 3 or 4 and stay
         // there for the run. Link's path already waited for this (`phased`, below).
-        if (event.locked && event.bpm > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0 &&
-            midi.waitingToStart()) {
+        if (event.locked && event.bpm > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0) {
             const double beat = 60.0 / event.bpm;
             const std::uint32_t meter = event.beatsPerBar;
             const std::uint32_t inBar = std::clamp<std::uint32_t>(event.beatInBar, 1, meter);
-            midi.startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
-                                 static_cast<double>(meter) * beat);
+            if (midi.waitingToStart()) {
+                midi.startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
+                                     static_cast<double>(meter) * beat);
+            } else {
+                // And once it has started, its bars follow the tracker's: a DOWNBEAT press, or a
+                // bar found again elsewhere after a break, restarts the receiver on the new
+                // downbeat — Song Position cannot move it while it plays (M19's other half).
+                midi.followBar(heardAt, inBar, meter);
+            }
         }
     }
     if (linkEnabled_) {

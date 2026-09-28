@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <optional>
 #include <span>
+#include <thread>
 #include <stdexcept>
 #include <utility>
 
@@ -113,7 +114,7 @@ void MidiControl::start() {
     impl_->in.setCallback(
         [](double, std::vector<unsigned char>* message, void* self) {
             if (message != nullptr && self != nullptr) {
-                static_cast<MidiControl*>(self)->onMessage(
+                static_cast<MidiControl*>(self)->deliver(
                     std::span<const unsigned char>(message->data(), message->size()));
             }
         },
@@ -121,25 +122,30 @@ void MidiControl::start() {
 }
 
 void MidiControl::stop() noexcept {
-    if (!impl_) {
-        running_.store(false, std::memory_order_release);
-        return;
+    // The flag first, so a message arriving from here on is turned away at `deliver`'s door —
+    // and **then every message already past it, waited for** (the audit of 2026-09-25's residue).
+    // RtMidi's `cancelCallback` joins nothing: it forgets the callback, and the WinMM backend has
+    // no thread of its own to join, messages arriving on WinMM's. So a message that had passed
+    // the flag when this began went on being handled after it — a tap or a PANIC acted on by a
+    // surface that had been switched off, and on the way out, a dispatch into an object being
+    // destroyed. Both sides are sequentially consistent: `deliver` raises the count and then
+    // reads the flag, this lowers the flag and then reads the count, and only with both orders
+    // total does one always see the other. Handling a message never waits on this thread, so the
+    // wait is one message's length.
+    running_.store(false, std::memory_order_seq_cst);
+    while (inFlight_.load(std::memory_order_seq_cst) != 0) {
+        std::this_thread::yield();
     }
-    // The flag first, so a message arriving from here on is turned away at `onMessage`'s door;
-    // then RtMidi's teardown. **`cancelCallback` joins nothing** — it forgets the callback, and
-    // the WinMM backend has no thread of its own to join: messages arrive on WinMM's. What stops
-    // them is `closePort`'s `midiInReset` and `midiInClose`. A message already past the flag when
-    // this began is the one case these lines do not rule out, and this comment used to say they
-    // did (the audit of 2026-09-25's stale-comment list).
-    running_.store(false, std::memory_order_release);
-    try {
-        impl_->in.cancelCallback();
-        impl_->in.closePort();
-    } catch (const RtMidiError&) {
-        // Closing a port that is already gone — an unplugged controller — is not
-        // something a stop path can usefully report.
+    if (impl_) {
+        try {
+            impl_->in.cancelCallback();
+            impl_->in.closePort();
+        } catch (const RtMidiError&) {
+            // Closing a port that is already gone — an unplugged controller — is not
+            // something a stop path can usefully report.
+        }
+        impl_.reset();
     }
-    impl_.reset();
     const std::lock_guard<std::mutex> lock(mutex_);
     portName_.clear();
     learning_.reset();
@@ -294,11 +300,12 @@ bool MidiControl::dispatch(const MidiEvent& event) {
     return true;
 }
 
-void MidiControl::onMessage(std::span<const unsigned char> message) noexcept {
-    if (!running_.load(std::memory_order_acquire)) {
-        return;
+void MidiControl::deliver(std::span<const unsigned char> message) noexcept {
+    inFlight_.fetch_add(1, std::memory_order_seq_cst);
+    if (running_.load(std::memory_order_seq_cst)) {
+        receive(message);
     }
-    receive(message);
+    inFlight_.fetch_sub(1, std::memory_order_release);
 }
 
 void MidiControl::receive(std::span<const unsigned char> message) noexcept {

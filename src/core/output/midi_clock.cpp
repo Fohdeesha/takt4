@@ -216,12 +216,16 @@ void MidiClock::start(double now, bool asContinue) noexcept {
     emit(asContinue ? kContinue : kStart);
     startTicking(now);
     started_ = true;
+    // The next tick is the receiver's first: pulse 0 of its bar 1.
+    startTick_ = ticks_;
 }
 
 void MidiClock::startTicking(double now) noexcept {
     running_ = true;
     started_ = false;
     startPending_ = false;
+    restart_ = false;
+    barMismatches_ = 0;
     steering_ = 0;
     anchor(now, tickSeconds());
     pulse_ = 0;
@@ -254,11 +258,58 @@ void MidiClock::startIfDue() noexcept {
     if (std::abs(at - startAt_) > window) {
         return; // a pulse 0 on another beat, or off the beat altogether: not yet
     }
+    if (restart_) {
+        // A receiver already playing: Song Position only moves it while it is stopped.
+        emit(kStop);
+        ++realigned_;
+        restart_ = false;
+    }
     const unsigned char position[3] = {kSongPosition, 0x00, 0x00};
     sink_->send(std::span<const unsigned char>(position, 3));
     emit(kStart);
     started_ = true;
     startPending_ = false;
+    // The tick about to go is the one this is ahead of: the receiver's bar 1 begins with it.
+    startTick_ = ticks_;
+    barMismatches_ = 0;
+}
+
+void MidiClock::followBar(double beatTime, std::uint32_t beatInBar,
+                          std::uint32_t beatsPerBar) noexcept {
+    if (!running_ || !started_ || startPending_ || beatsPerBar == 0 || beatInBar == 0 ||
+        beatInBar > beatsPerBar || !std::isfinite(beatTime)) {
+        return;
+    }
+    const double beat = tickSeconds() * static_cast<double>(kPulsesPerQuarterNote);
+    // The pulse 0 nearest the beat, and which of the receiver's quarter notes that is: every
+    // tick since Start has been counted, and each 24 of them is a quarter note to the receiver.
+    const std::size_t toPulse0 = (kPulsesPerQuarterNote - pulse_) % kPulsesPerQuarterNote;
+    const std::uint64_t nextPulse0 = ticks_ + toPulse0;
+    if (nextPulse0 < startTick_) {
+        return;
+    }
+    const double nextPulse0At = nextTick() + static_cast<double>(toPulse0) * spacing_;
+    const long long quarter =
+        static_cast<long long>((nextPulse0 - startTick_) / kPulsesPerQuarterNote) +
+        std::llround((beatTime - nextPulse0At) / beat);
+    const long long meter = static_cast<long long>(beatsPerBar);
+    const long long receiverBeat = ((quarter % meter) + meter) % meter + 1;
+    if (receiverBeat == static_cast<long long>(beatInBar)) {
+        barMismatches_ = 0;
+        return;
+    }
+    // Two in a row, so one beat called in the wrong place — which the tracker corrects itself —
+    // does not stop and start a receiver.
+    if (++barMismatches_ < 2) {
+        return;
+    }
+    barMismatches_ = 0;
+    // Stop, Song Position 0 and Start ahead of the tick on the tracker's next downbeat: the grid
+    // through this beat's bar line, which `startIfDue` walks forward to the first still to come.
+    startPending_ = true;
+    restart_ = true;
+    startAt_ = beatTime - static_cast<double>(beatInBar - 1) * beat;
+    startBar_ = static_cast<double>(beatsPerBar) * beat;
 }
 
 void MidiClock::stop() noexcept {
@@ -268,6 +319,8 @@ void MidiClock::stop() noexcept {
     running_ = false;
     started_ = false;
     startPending_ = false;
+    restart_ = false;
+    barMismatches_ = 0;
 }
 
 void MidiClock::setTempo(double bpm) noexcept {

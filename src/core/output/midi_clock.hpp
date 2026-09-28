@@ -174,6 +174,23 @@ public:
     /// keeps it up to date with the tempo. Does nothing unless the clock is ticking and has
     /// not been started.
     void startOnDownbeat(double downbeat, double barSeconds) noexcept;
+    /// Keeps a receiver's bars on the tracker's once it has been started — what a DOWNBEAT press
+    /// is for (the 2026-09-22 audit's M19, the half it left).
+    ///
+    /// A receiver counts its bars from the first tick after Start, and Song Position only moves
+    /// it while it is stopped, so a DOWNBEAT pressed after Start — or a bar the tracker has found
+    /// again somewhere else after a break — moved the lights and Link and left every drum machine
+    /// and sequencer a beat or three off for the rest of the run. The clock knows where the
+    /// receiver's bar is: it has counted every tick since Start. Given each locked beat's place in
+    /// the bar — `beatInBar` of `beatsPerBar`, at `beatTime` on the clock `advance` is given —
+    /// it compares; when two beats in a row say the receiver's bar is somewhere else, it sends
+    /// Stop, Song Position 0 and Start between the tick before the tracker's next downbeat and
+    /// the downbeat's own, so the receiver's bar 1 lands on it. Two, so a beat the tracker called
+    /// once in the wrong place costs nothing. Does nothing unless the receiver has been started.
+    void followBar(double beatTime, std::uint32_t beatInBar, std::uint32_t beatsPerBar) noexcept;
+    /// How many times `followBar` has put a receiver's bar back — Stop and Start again.
+    std::uint64_t barsRealigned() const noexcept { return realigned_; }
+
     /// Sends Stop, if the receiver was told to play. advance() emits nothing until the clock is
     /// started again.
     void stop() noexcept;
@@ -232,8 +249,16 @@ private:
     bool started_ = false;
     /// A Start waiting for its downbeat: the grid `startAt_ + k * startBar_`.
     bool startPending_ = false;
+    /// And the one waiting is a restart: Stop goes out ahead of it. See `followBar`.
+    bool restart_ = false;
     double startAt_ = 0.0;
     double startBar_ = 0.0;
+    /// The tick the receiver counts as the first of bar 1: `ticks_` when Start went out, which
+    /// is the tick that followed it. What `followBar` counts the receiver's bars from.
+    std::uint64_t startTick_ = 0;
+    /// Beats in a row whose place in the bar the receiver's count disagrees with.
+    std::uint32_t barMismatches_ = 0;
+    std::uint64_t realigned_ = 0;
     double origin_ = 0.0;
     std::uint64_t sinceOrigin_ = 0;
     /// The spacing in force from `origin_`: the tempo's own, or a steered one.

@@ -205,6 +205,83 @@ TEST_CASE("MIDI Start waits for a downbeat, and the downbeat's tick is the first
     }
 }
 
+namespace {
+
+/// A clock started on a downbeat at 0 at 120 BPM, fed a locked beat every half second whose
+/// place in the bar `inBar(k)` says, as the output thread feeds it: synced, then asked to follow.
+template <typename InBar>
+void playBeats(MidiClock& clock, Wire& wire, int from, int to, InBar inBar) {
+    for (int k = from; k < to; ++k) {
+        const double at = 0.5 * k;
+        runTo(clock, wire, at + 0.01); // drained a round or so after the beat, as it is live
+        clock.syncToBeat(at);
+        clock.followBar(at, static_cast<std::uint32_t>(inBar(k)), 4);
+    }
+}
+
+std::size_t count(const Wire& wire, unsigned char status) {
+    return static_cast<std::size_t>(
+        std::count_if(wire.messages.begin(), wire.messages.end(), [status](const auto& m) {
+            return !m.bytes.empty() && m.bytes[0] == status;
+        }));
+}
+
+} // namespace
+
+TEST_CASE("a DOWNBEAT pressed after Start moves a receiver's bars with the tracker's",
+          "[output][midi]") {
+    // The 2026-09-22 audit's M19, the half it left open. A receiver counts its bars from the
+    // first tick after Start, and Song Position only moves it while it is stopped — so a DOWNBEAT
+    // press once the clock had started moved the lights and Link and left every drum machine a
+    // beat off for the rest of the run. Now the clock sends Stop, Song Position 0 and Start ahead
+    // of the tracker's next downbeat when two beats in a row say the receiver's bar is elsewhere.
+    Wire wire;
+    MidiClock clock(wire, 120.0);
+    clock.start(0.0); // the receiver's bar 1 begins with the tick at 0
+    REQUIRE(clock.started());
+    const auto fourFour = [](int k) { return (k % 4) + 1; };
+    playBeats(clock, wire, 0, 9, fourFour);
+    CHECK(count(wire, MidiClock::kStop) == 0);
+    CHECK(clock.barsRealigned() == 0);
+
+    SECTION("a beat the tracker called once in the wrong place costs nothing") {
+        playBeats(clock, wire, 9, 10, [](int) { return 3; }); // beat 9 is a 2, called a 3
+        playBeats(clock, wire, 10, 24, fourFour);
+        CHECK(count(wire, MidiClock::kStop) == 0);
+        CHECK(clock.barsRealigned() == 0);
+    }
+
+    SECTION("pressed on beat 9, the receiver's bar 1 is beat 13 — the tracker's next downbeat") {
+        // The operator presses DOWNBEAT on beat 9: from there the tracker calls beat 9 the one.
+        const auto pressed = [](int k) { return ((k - 9) % 4 + 4) % 4 + 1; };
+        playBeats(clock, wire, 9, 24, pressed);
+        REQUIRE(count(wire, MidiClock::kStop) == 1);
+        CHECK(clock.barsRealigned() == 1);
+        const std::size_t stop = wire.find(MidiClock::kStop);
+        REQUIRE(stop + 3 < wire.messages.size());
+        // Stop, then Song Position 0, then Start, then the tick on the downbeat: beat 13, at 6.5.
+        CHECK(wire.messages[stop + 1].bytes ==
+              std::vector<unsigned char>{MidiClock::kSongPosition, 0x00, 0x00});
+        CHECK(wire.messages[stop + 2].bytes[0] == MidiClock::kStart);
+        CHECK(wire.messages[stop + 3].bytes[0] == MidiClock::kTick);
+        CHECK_THAT(wire.messages[stop + 3].at, Catch::Matchers::WithinAbs(6.5, 0.0011));
+        // And not one tick added or dropped for it: 24 a beat from the first to the last.
+        const std::size_t ticks = count(wire, MidiClock::kTick);
+        const double last = wire.messages.back().at;
+        CHECK(static_cast<double>(ticks) ==
+              Catch::Approx(std::floor(last * 48.0) + 1.0).margin(1.0));
+        // After it the receiver's bars and the tracker's agree, so nothing more is sent.
+        playBeats(clock, wire, 24, 40, pressed);
+        CHECK(count(wire, MidiClock::kStop) == 1);
+    }
+
+    SECTION("a receiver stopped by the operator is not started again by the bar") {
+        clock.stop();
+        playBeats(clock, wire, 9, 20, [](int k) { return ((k - 9) % 4 + 4) % 4 + 1; });
+        CHECK(count(wire, MidiClock::kStart) == 1); // the one at 0
+    }
+}
+
 TEST_CASE("the tick rate follows the tempo", "[output][midi]") {
     Recorder recorder;
     MidiClock clock(recorder, 60.0); // one quarter note a second: 24 ticks
