@@ -744,7 +744,7 @@ TEST_CASE("the scroller scrolls on the wheel and by its bar, and keeps in range 
     CHECK(b.ui->get_scrolled() == 0.0f);
     b.click(90.0f, 386.0f);
     CHECK(b.insides == 1);
-    // The bar — 6 px wide in the right-hand 9 px, 35.5 px long over 600 px of content in a
+    // The bar — 8 px wide, 1 px in from the right, 35.5 px long over 600 px of content in a
     // 150 px view — dragged to the bottom.
     b.drag(314.0f, 370.0f, 314.0f, 700.0f, 10);
     CHECK(b.ui->get_scrolled() == Catch::Approx(600.0f - 150.0f).margin(1.0f));
@@ -762,6 +762,70 @@ TEST_CASE("the scroller scrolls on the wheel and by its bar, and keeps in range 
     CHECK(b.ui->get_scrolled() == 0.0f);
     b.click(90.0f, 386.0f);
     CHECK(b.insides == 2);
+}
+
+TEST_CASE("the scroller's bar is drawn 8 px wide, is grabbed 15 px wide, and a click on its track "
+          "moves a page",
+          "[ui][widgets]") {
+    // The operator: the first 6 px bar was "super small hard to grab". The bench's scroller runs
+    // x 20 to 320; its bar is drawn at 311 to 318 and taken anywhere from 305 to 319.
+    Bench b;
+    const takt4::tests::Shot shot = takt4::tests::render(*b.ui, 900, 720);
+    b.window().dispatch_window_active_changed_event(true);
+    int first = -1;
+    int last = -1;
+    for (int x = 290; x < 330; ++x) {
+        if (shot.is(x, 370, 0x55, 0x55, 0x53)) {
+            first = first < 0 ? x : first;
+            last = x;
+        }
+    }
+    CHECK(first == 311);
+    CHECK(last == 318);
+
+    // Grabbed 6 px left of what is drawn, over the content's own edge, and dragged to the end.
+    b.drag(305.0f, 370.0f, 305.0f, 700.0f, 10);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(450.0f).margin(1.0f));
+    // And from its right-hand pixel back to the top.
+    b.drag(319.0f, 490.0f, 319.0f, 300.0f, 10);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(0.0f).margin(1.0f));
+
+    // The track below the bar: a page down — the 150 px view less 40, so a line stays in sight.
+    b.click(314.0f, 480.0f);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(110.0f).margin(0.5f));
+    b.click(314.0f, 480.0f);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(220.0f).margin(0.5f));
+    // A click on the bar itself, now at 406 to 441, moves nothing.
+    b.click(314.0f, 424.0f);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(220.0f).margin(0.5f));
+    // Above it, a page up; and never past either end.
+    b.click(314.0f, 395.0f);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(110.0f).margin(0.5f));
+    b.click(314.0f, 352.0f);
+    b.click(314.0f, 352.0f);
+    CHECK(b.ui->get_scrolled() == Catch::Approx(0.0f).margin(0.5f));
+    for (int i = 0; i < 6; ++i) {
+        b.click(314.0f, 498.0f);
+    }
+    CHECK(b.ui->get_scrolled() == Catch::Approx(450.0f).margin(0.5f));
+
+    // A slow drag, a pixel at a time: at every step the view is where the pointer says — 450 px
+    // of scrolling over the 106.5 px the bar can travel — and never somewhere the last step put it.
+    b.down(314.0f, 478.0f);
+    settle();
+    for (int i = 1; i <= 20; ++i) {
+        b.move(314.0f, 478.0f - static_cast<float>(i));
+        settle();
+        INFO("step " << i);
+        CHECK(b.ui->get_scrolled() ==
+              Catch::Approx(450.0f - static_cast<float>(i) * 450.0f / 106.5f).margin(0.5f));
+    }
+    b.up(314.0f, 458.0f);
+    settle();
+
+    // Nothing under the track was pressed on the way.
+    CHECK(b.clicks.empty());
+    CHECK(b.insides == 0);
 }
 
 // --- rows: a repeater being driven keeps its elements -------------------------------------

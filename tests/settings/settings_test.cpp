@@ -47,6 +47,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.machine.oscControlEnabled = true;
     in.machine.oscControlPort = 7005;
     in.machine.oscControlLocalOnly = false;
+    in.machine.inputsFolded = true;
+    in.machine.outputsFolded = true;
     in.preset.tempo.minBpm = 88.0;
     in.preset.tempo.maxBpm = 176.0;
     in.preset.tempo.octaveFold = false;
@@ -93,6 +95,17 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.machine.oscControlEnabled);
     CHECK(out.machine.oscControlPort == 7005);
     CHECK_FALSE(out.machine.oscControlLocalOnly);
+    CHECK(out.machine.inputsFolded);
+    CHECK(out.machine.outputsFolded);
+    // Each on its own, so neither is read from the other's key.
+    Settings one;
+    one.machine.outputsFolded = true;
+    CHECK_FALSE(roundTrip(one).machine.inputsFolded);
+    CHECK(roundTrip(one).machine.outputsFolded);
+    one.machine.outputsFolded = false;
+    one.machine.inputsFolded = true;
+    CHECK(roundTrip(one).machine.inputsFolded);
+    CHECK_FALSE(roundTrip(one).machine.outputsFolded);
     CHECK_THAT(out.preset.tempo.minBpm, WithinAbs(88.0, 1e-9));
     CHECK_THAT(out.preset.tempo.maxBpm, WithinAbs(176.0, 1e-9));
     CHECK_FALSE(out.preset.tempo.octaveFold);
@@ -196,6 +209,10 @@ TEST_CASE("the two layers stay apart in the file", "[settings]") {
     CHECK(text.find("oscControlEnabled", preset) == std::string::npos);
     CHECK(text.find("oscControlPort", preset) == std::string::npos);
     CHECK(text.find("oscControlLocalOnly", preset) == std::string::npos);
+    // Nor how the window was folded: what a desk's screen has room for.
+    CHECK(text.find("inputsFolded") < preset);
+    CHECK(text.find("outputsFolded") < preset);
+    CHECK(text.find("Folded", preset) == std::string::npos);
     CHECK(text.find("version") != std::string::npos);
 }
 
@@ -230,6 +247,14 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK_FALSE(out.machine.oscControlEnabled);
     CHECK(out.machine.oscControlPort == defaults.machine.oscControlPort);
     CHECK(out.machine.oscControlLocalOnly);
+    // A file from before folding opens with both sections open; so does a fold that is not a
+    // yes or a no.
+    CHECK_FALSE(out.machine.inputsFolded);
+    CHECK_FALSE(out.machine.outputsFolded);
+    const Settings odd =
+        takt4::settings::fromJson(R"({"machine": {"inputsFolded": 1, "outputsFolded": "yes"}})");
+    CHECK_FALSE(odd.machine.inputsFolded);
+    CHECK_FALSE(odd.machine.outputsFolded);
 }
 
 TEST_CASE("a control port a file could not have meant is refused", "[settings]") {

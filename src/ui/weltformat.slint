@@ -1314,9 +1314,12 @@ export component SectionHead inherits Rectangle {
     }
 }
 
-/// The main window's scroller: vertical only, the content as wide as the view, and a 6 px bar in
-/// the page's right-hand margin that can be dragged — where std's Fluent scroll bar lay over the
-/// right 14 px of the content and took the clicks meant for it.
+/// The main window's scroller: vertical only, the content as wide as the view, and an 8 px bar
+/// centred in the page's 10 px right-hand margin — where std's Fluent scroll bar lay over the
+/// right 14 px of the content and took the clicks meant for it. The bar is grabbed anywhere in
+/// the margin and 5 px into the sheets' own empty edge beside it, 15 px in all (the operator:
+/// the first 6 px bar was "super small hard to grab"); a click on the margin above or below it
+/// moves the view a page that way, as a Windows scroll bar's track does.
 ///
 /// Like std's ScrollView it does not pan when the background is dragged with the mouse, and the
 /// wheel scrolls it wherever the pointer is.
@@ -1343,31 +1346,54 @@ export component Scroller inherits Rectangle {
 
     private property <length> most: max(0px, flick.content-height - flick.height);
     private property <length> bar-length: max(24px, (flick.height - 8px) * flick.height / max(1px, flick.content-height));
+    private property <length> bar-y: 4px + (flick.height - 8px - root.bar-length) * (-flick.content-y / max(1px, root.most));
     private property <length> pressed-scroll;
+    // Whether the press that is down began on the bar (a drag) rather than on the track (a page).
+    private property <bool> dragging;
 
+    // One touch area for the bar and the track together, and it does not move: the pointer is
+    // read against it. The first build hung the drag on the bar itself, which moves as the view
+    // scrolls, so each move was measured from where the last one had put the bar — a drag fed
+    // back on itself, jittered, and stopped short of the end (widget_test.cpp).
     if root.most > 0: Rectangle {
-        x: parent.width - 9px;
-        y: 4px + (flick.height - 8px - root.bar-length) * (-flick.content-y / max(1px, root.most));
-        width: 6px;
-        height: root.bar-length;
-        border-radius: 3px;
-        background: bar-touch.pressed || bar-touch.has-hover ? Wf.scrollbar-hover : Wf.scrollbar;
+        x: parent.width - 15px;
+        width: 15px;
+        y: 0;
+        height: flick.height;
 
-        bar-touch := TouchArea {
-            x: -2px;
-            width: parent.width + 4px;
+        track := TouchArea {
             pointer-event(event) => {
                 if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.dragging = self.pressed-y >= root.bar-y && self.pressed-y < root.bar-y + root.bar-length;
                     root.pressed-scroll = -flick.content-y;
+                    // Off the bar: a page that way, the view less a line's worth, so the line at
+                    // the edge stays in sight across the jump.
+                    let page = max(10px, flick.height - 40px);
+                    if (self.pressed-y < root.bar-y) {
+                        flick.content-y = -clamp(-flick.content-y - page, 0px, root.most);
+                    } else if (!root.dragging) {
+                        flick.content-y = -clamp(-flick.content-y + page, 0px, root.most);
+                    }
                 }
             }
             moved => {
-                if (self.pressed) {
+                if (self.pressed && root.dragging) {
                     let track = flick.height - 8px - root.bar-length;
                     let to = root.pressed-scroll + (self.mouse-y - self.pressed-y) * root.most / max(1px, track);
                     flick.content-y = -clamp(to, 0px, root.most);
                 }
             }
+        }
+
+        Rectangle {
+            x: 6px;
+            y: root.bar-y;
+            width: 8px;
+            height: root.bar-length;
+            border-radius: 4px;
+            background: (track.pressed && root.dragging)
+                || (track.has-hover && track.mouse-y >= root.bar-y && track.mouse-y < root.bar-y + root.bar-length)
+                ? Wf.scrollbar-hover : Wf.scrollbar;
         }
     }
 }
