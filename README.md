@@ -414,6 +414,11 @@ GPLv3 — see [LICENSE](LICENSE). The licences of everything built into takt4 ar
 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which is also inside the program:
 **ABOUT**, beside the version at the bottom of the window, opens both.
 
+The tests read seventeen ten-second excerpts of commercial recordings, in
+[tests/data/features/](tests/data/features/README.md). They are not part of takt4, not
+covered by its licence, and never built into it; they remain their rights holders'. That
+folder's README lists them, and says how a rights holder can have one removed.
+
 | Component | Used for | License |
 |---|---|---|
 | [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |

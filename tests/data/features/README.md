@@ -25,6 +25,70 @@ The test fails when this directory has no excerpts and warns while it has fewer 
 ten, the number the gate calls for. There are eighteen: seventeen ten-second windows of
 real music, and `synthetic`, a generated drum-machine pattern that carries no rights.
 
+## The recordings
+
+Seventeen of the excerpts are ten seconds of commercially released recordings, listed below.
+**They are not covered by takt4's licence** (GPLv3, in [LICENSE](../../../LICENSE)): each
+remains the property of its rights holders, and nothing here grants any right to them.
+
+They are here because what this folder checks has to be checked on real music, and a check
+nobody else can run is not one. Each is ten seconds of a track two and a half to eight
+minutes long, reduced to 22 kHz mono, and used only as input to automated tests, which read
+the samples and never play them. None is a substitute for the recording. They are included
+in the belief that this is fair use.
+
+**If you hold the rights to one of these recordings and want it removed,** open an issue at
+<https://github.com/Fohdeesha/takt4/issues> saying which one, and it will be taken out —
+from the repository's history as well, not only from its current files (see *Taking one
+out*, below).
+
+| Artist | Title | The ten seconds | Of a track | Excerpt |
+|---|---|---|---|---|
+| 808 State | In Yer Face (Bicep Remix) | 2:51–3:01 | 7:42 | `in-yer-face` |
+| Autechre | Rale | 2:26–2:36 | 3:43 | `rale` |
+| Brazilian Girls | Pirates | 0:14–0:24 | 3:33 | `pirates` |
+| Broadcast | Winter Now | 1:27–1:37 | 3:48 | `winter-now` |
+| Clark | Outside Plume | 3:47–3:57 | 4:21 | `outside-plume` |
+| Clipping | True Believer | 1:01–1:11 | 3:45 | `true-believer` |
+| Daedelus | A Complicated Geometry | 0:17–0:27 | 3:32 | `complicated-geometry` |
+| Deerhoof | The Galaxist | 1:05–1:15 | 2:41 | `the-galaxist` |
+| Jamie Lidell | Your Sweet Boom | 2:00–2:10 | 3:13 | `your-sweet-boom` |
+| Jensen Interceptor | Model 2029 | 1:13–1:23 | 4:59 | `model-2029` |
+| Jungle | Good Times | 0:52–1:02 | 3:01 | `good-times` |
+| Mitsuto Suzuki | Jack Yourself | 1:37–1:47 | 4:23 | `jack-yourself` |
+| Nourished By Time | Hell of A Ride | 0:33–0:43 | 3:44 | `hell-of-a-ride` |
+| Primus | Wynona's Big Brown Beaver | 3:29–3:39 | 4:24 | `big-brown-beaver` |
+| Squarepusher | Vic Acid | 2:19–2:29 | 3:07 | `vic-acid` |
+| Two Fingers | Keman Rhythm | 1:38–1:48 | 3:17 | `keman-rhythm` |
+| Zuli | Trigger Finger | 3:47–3:57 | 4:33 | `trigger-finger` |
+
+Each excerpt's `.json` names the file it was cut from and the offset. The `.npy` beside it,
+and the model outputs under `tests/data/model/`, are measurements taken from the excerpts;
+these seventeen `.wav` files are the only commercial audio anywhere in the repository.
+
+What reads the audio: `tests/features/feature_extractor_test.cpp` takes every `.wav` in
+this folder, and `tests/engine/beat_engine_test.cpp` names several, holding `in-yer-face`
+and `pirates` against the beats in `tests/data/tracking/shipped/`. The model test reads the
+`.npy` features, not the audio.
+
+### Taking one out
+
+First, point any test that names the excerpt at another one (search the tests for `NAME`),
+check the suite passes, and commit and push that. Keep at least ten `.wav` files here, or
+the feature test warns. Then, with [git-filter-repo](https://github.com/newren/git-filter-repo)
+2.47 or later, in a fresh clone:
+
+```sh
+git filter-repo --sensitive-data-removal --invert-paths \
+  --path tests/data/features/NAME.wav
+git push --force --mirror origin
+```
+
+Then ask GitHub Support to purge what they keep of the old commits: GitHub's guide
+[Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
+says what to send them. Every commit id changes, tags included, and every other clone has to
+be cloned again.
+
 ## Adding an excerpt
 
 The Python side is madmom, built from a pinned commit; see `tools/requirements.txt`
@@ -41,8 +105,9 @@ works — WAV, FLAC, MP3, OGG, AIFF; AAC/M4A do not. The tool decodes and resamp
 librosa (soundfile + soxr, the way BeatNet+ loads audio), quantises to 16 bits, writes
 the WAV, reads it back, and computes the features from what it read, so both sides
 start from identical samples. Pick tracks that differ in genre, tempo, density and
-production — sparse and busy, acoustic and electronic, quiet and loud — and that are
-short enough not to matter: ten seconds each, in the repository forever.
+production — sparse and busy, acoustic and electronic, quiet and loud. Ten seconds each,
+and in the history for good once pushed, so add a commercial recording to the table under
+*The recordings* in the same commit.
 
 Which ten seconds is what `--auto` decides, since a fixed offset lands in the quiet
 intro of some tracks and the outro of others. It reads the whole track and scores every
