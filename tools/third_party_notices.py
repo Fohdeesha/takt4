@@ -79,6 +79,14 @@ def components(build):
                   "The upstream project states no licence for its code or its trained models."),
         component("Slint", "https://slint.dev", "GPL-3.0-only (Slint's triple licence; takt4 takes the GPL option)",
                   "the user interface", [deps / "slint-src/LICENSE.md"]),
+        # The two typefaces the main window is set in (HANDOFF §0.5), embedded in the binary from
+        # assets/fonts. The files are Google Fonts' own instances, fetched 2026-09-29.
+        component("Archivo", "https://github.com/Omnibus-Type/Archivo", "OFL-1.1",
+                  "the main window's typeface (Medium, Bold and ExtraBold)",
+                  [ROOT / "assets/fonts/archivo/OFL.txt"]),
+        component("DM Mono", "https://github.com/googlefonts/dm-mono", "OFL-1.1",
+                  "the main window's numbers and addresses (Medium)",
+                  [ROOT / "assets/fonts/dm-mono/OFL.txt"]),
         component("Skia, prebuilt by rust-skia", "https://skia.org", "BSD-3-Clause", "drawing the user interface",
                   [skia / "skia-LICENSE.txt"]),
         component("expat, in Skia", "https://libexpat.github.io", "MIT", "", [skia / "expat-COPYING.txt"]),

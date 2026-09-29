@@ -14,3 +14,6 @@ third_party/asiosdk/** -text
 
 # Converted model weights (assets/weights), written by tools/convert_weights.py.
 *.bin binary
+
+# The fonts the windows are set in (assets/fonts), embedded in takt4.exe.
+*.ttf binary

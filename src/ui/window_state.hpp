@@ -24,13 +24,16 @@ namespace takt4::ui {
 /// the size explicit, and the backend then leaves it alone.
 ///
 /// Only the first show. Whatever the operator drags a window to afterwards is theirs.
-inline constexpr float kMainWindowWidth = 1000.0f;
-/// Tall enough for the status bar — which holds the version — to be on screen with a couple
-/// of output rows above it. Short of this the bottom row is simply cut off. 900 until the
-/// "keep for the next track" row went in under the latency slider (the audit's H2); the 34 px
-/// it takes are given back here, so five outputs and their ADD OUTPUT row still fit, and it
-/// still opens whole on a 1080-line screen under a title bar and a taskbar.
+///
+/// 800 wide since the Weltformat-dark redesign (HANDOFF §0.5, 2026-09-29): the operator cut the
+/// width by a fifth, and every row of the outputs table is laid out to read whole at it.
+inline constexpr float kMainWindowWidth = 800.0f;
+/// It opens at this with a scroll bar rather than sized to its content (1146 px with five
+/// outputs and their peers): §0.5 kept today's height, which opens whole on a 1080-line screen
+/// under a title bar and a taskbar.
 inline constexpr float kMainWindowHeight = 934.0f;
+/// The markup's `min-height` — what folding a section never shrinks the window below.
+inline constexpr float kMainWindowMinHeight = 420.0f;
 /// Measured on a rig: what the editor was dragged to and asked to open at.
 inline constexpr float kRulesWindowWidth = 1164.0f;
 inline constexpr float kRulesWindowHeight = 872.0f;
@@ -106,6 +109,12 @@ std::string describePair(const audio::InputDevice& device, int first);
 
 /// One decimal place or two, without disturbing any stream's flags.
 std::string fixed(double value, int places);
+
+/// The version as the status bar's corner shows it, on two lines: the version, and under it
+/// "release" for a release or "dev" for a build between releases — the operator's call of
+/// 2026-09-29, "always two lines". A dev build's full label, commit and all, is in the title bar
+/// and the About box; see `MainWindow.version-short` for why the corner cannot hold it.
+std::string shortVersionLabel(std::string_view version, std::string_view commit);
 
 /// A number of milliseconds as somebody typed it into a reading (`NumberEntry`): "12", "+12",
 /// "-30.5", "12 ms", "12ms", with spaces anywhere around it. Nothing for anything else — the

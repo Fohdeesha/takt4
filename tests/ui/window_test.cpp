@@ -17,11 +17,10 @@
 #include "ui/file_dialog.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/native_window.hpp"
+#include "ui/nothing_real.hpp"
 #include "ui/shot.hpp"
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
-
-#include "ui/nothing_real.hpp"
 
 #include "support/loopback_receiver.hpp"
 #include "support/scoped_env.hpp"
@@ -41,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <set>
@@ -188,6 +188,126 @@ OutputsSeen seen(WindowController& controller) {
     });
 }
 
+/// The Weltformat-dark colours the window tests read off a render (weltformat.slint's `Wf`).
+struct Rgb {
+    std::uint8_t r, g, b;
+};
+constexpr Rgb kPage{0x0e, 0x0e, 0x0e};
+constexpr Rgb kSheet{0x1b, 0x1b, 0x1a};
+constexpr Rgb kEdge{0xef, 0xee, 0xe9};
+constexpr Rgb kPanicRed{0xd8, 0x30, 0x1f};
+constexpr Rgb kThumb{0xb5, 0x47, 0x3b};
+
+bool is(const takt4::tests::Shot& shot, int x, int y, Rgb c) {
+    return shot.is(x, y, c.r, c.g, c.b);
+}
+
+/// The window's sheets, top to bottom: runs of anything but the page's colour down x = 15, which
+/// is inside every sheet's 10 px margin and clear of everything drawn on them. The status bar is
+/// the page's colour and is not one of them: the seven are the top bar, the tempo, the activation,
+/// the controls, the inputs, the outputs and the triggers row.
+std::vector<std::pair<int, int>> sheetsDown(const takt4::tests::Shot& shot) {
+    std::vector<std::pair<int, int>> sheets;
+    int start = -1;
+    for (int y = 0; y < shot.height; ++y) {
+        const bool page = is(shot, 15, y, kPage);
+        if (!page && start < 0) {
+            start = y;
+        } else if (page && start >= 0) {
+            sheets.emplace_back(start, y - 1);
+            start = -1;
+        }
+    }
+    if (start >= 0) {
+        sheets.emplace_back(start, shot.height - 1);
+    }
+    return sheets;
+}
+
+/// Runs of ink — anything visibly unlike `ground`, a box's dark fill included — along row y between
+/// x0 and x1, joining runs whose gap is at most `join` pixels (a dashed edge, the letters of a
+/// word).
+std::vector<std::pair<int, int>> inkAlong(const takt4::tests::Shot& shot, int y, int x0, int x1,
+                                          Rgb ground, int join) {
+    std::vector<std::pair<int, int>> runs;
+    for (int x = x0; x < x1; ++x) {
+        const slint::Rgb8Pixel p = shot.at(x, y);
+        const int d =
+            std::abs(p.r - ground.r) + std::abs(p.g - ground.g) + std::abs(p.b - ground.b);
+        if (d <= 12) {
+            continue;
+        }
+        if (!runs.empty() && x - runs.back().second <= join + 1) {
+            runs.back().second = x;
+        } else {
+            runs.emplace_back(x, x);
+        }
+    }
+    return runs;
+}
+
+float middleOf(std::pair<int, int> run) {
+    return static_cast<float>(run.first + run.second) / 2.0f;
+}
+
+/// What the controls in a row occupy: the columns between x0 and x1 where any pixel of rows y0 to
+/// y1 is unlike `ground`, in runs, joining gaps of at most `join` pixels (the spaces between the
+/// words of a label). A button's face is the sheet's own colour, so along one line it is two edges
+/// and a label; projected over its height, its top and bottom edges make it one run.
+std::vector<std::pair<int, int>> occupied(const takt4::tests::Shot& shot, int y0, int y1, int x0,
+                                          int x1, Rgb ground, int join) {
+    std::vector<std::pair<int, int>> runs;
+    for (int x = x0; x < x1; ++x) {
+        bool any = false;
+        for (int y = y0; y <= y1 && !any; ++y) {
+            const slint::Rgb8Pixel p = shot.at(x, y);
+            any =
+                std::abs(p.r - ground.r) + std::abs(p.g - ground.g) + std::abs(p.b - ground.b) > 12;
+        }
+        if (!any) {
+            continue;
+        }
+        if (!runs.empty() && x - runs.back().second <= join + 1) {
+            runs.back().second = x;
+        } else {
+            runs.emplace_back(x, x);
+        }
+    }
+    return runs;
+}
+
+/// Runs as text, for a failure message: Catch cannot print a pair.
+std::string spans(const std::vector<std::pair<int, int>>& runs) {
+    std::string out;
+    for (const auto& [a, b] : runs) {
+        out += (out.empty() ? "" : " ") + std::to_string(a) + ".." + std::to_string(b);
+    }
+    return out;
+}
+
+/// The output rows' × buttons at the window's width: each a 24 px box with a 2 px off-white edge,
+/// the last thing in its row. Found by its left edge, a run of off-white at least 20 px tall down
+/// the column just inside it; nothing else in that column is that tall (the fold arrows' edges
+/// cross it for 2 px). Between `from` and `to`, top and bottom of each.
+std::vector<std::pair<int, int>> removeButtonsDown(const takt4::tests::Shot& shot, int from,
+                                                   int to) {
+    const int x = shot.width - 26 - 24; // the sheet's right padding, then the 24 px column
+    std::vector<std::pair<int, int>> spans;
+    int start = -1;
+    for (int y = from; y < to; ++y) {
+        const bool edge = is(shot, x, y, kEdge);
+        if (edge && start < 0) {
+            start = y;
+        } else if (!edge && start >= 0) {
+            if (y - start >= 20) {
+                spans.emplace_back(start, y - 1);
+            }
+            start = -1;
+        }
+    }
+    return spans;
+}
+
 /// Whether PANIC is engaged once the output thread has taken what was posted — a gesture posts
 /// it, and the thread applies it a round later.
 bool panickedNow(WindowController& controller) {
@@ -260,25 +380,37 @@ TEST_CASE("the build's version is on screen and stays there", "[ui]") {
     CHECK(std::string(controller.window().get_status()).find(version) == std::string::npos);
 }
 
+TEST_CASE("the status bar's corner says the version and, under it, release or dev", "[ui]") {
+    // The operator's call of 2026-09-29: "always two lines". The full label of a build between
+    // releases — "0.9.9 (v0.9.9-1-g16611d86d-dirty)" — left the status line too narrow for either
+    // of its lines; it is in the title bar.
+    using takt4::ui::shortVersionLabel;
+    CHECK(shortVersionLabel("0.9.9", "v0.9.9") == "0.9.9\nrelease");
+    CHECK(shortVersionLabel("0.9.9", "v0.9.9-1-g16611d86d-dirty") == "0.9.9\ndev");
+    CHECK(shortVersionLabel("0.9.9", "v0.9.9-dirty") == "0.9.9\ndev");
+    CHECK(shortVersionLabel("0.9.10", "v0.9.1") == "0.9.10\ndev");
+    CHECK(shortVersionLabel("0.9.9", "") == "0.9.9\ndev");
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const std::string corner(controller.window().get_version_short());
+    CHECK(corner == shortVersionLabel(takt4::buildInfo().version, takt4::buildInfo().commit));
+    CHECK(corner.find('\n') != std::string::npos);
+}
+
 TEST_CASE("a short window scrolls rather than losing its bottom row", "[ui]") {
     // Measured, not reasoned about: the window is rendered at each height and the pixels
     // at the bottom of it are read.
     //
-    // 0.9.4 shipped with this broken. At the size the app opens at — 1000x900, see
-    // `kMainWindowHeight` — with four outputs configured, the status bar was not on screen
-    // at all and PANIC was cut in half, because the layout had nowhere to put them and
-    // nothing to scroll. Every height below 1105 or so lost something, and a 1366x768
-    // laptop could not show the window at all.
-    //
-    // What is asserted is what an operator would look for: the status bar is the bottom of
-    // the window, and PANIC is a whole button. Both are pinned below the scroll view now,
-    // so both hold at every height down to the window's own floor.
+    // 0.9.4 shipped with this broken: at the size the app opened at, with four outputs, the status
+    // bar was not on screen at all and PANIC was cut in half, because the layout had nowhere to
+    // put them and nothing to scroll. Both are pinned below the scroll view, so both hold at every
+    // height down to the window's own floor.
     auto window = MainWindow::create();
     window->set_version(slint::SharedString("0.0.0-test"));
     window->set_status(slint::SharedString("In 7 of MOTU Pro Audio"));
 
-    // Four of them, which is what made the content taller than the window. A rig with one
-    // output fits at 900 and would not have found this.
+    // Four of them, which is what makes the content taller than the window.
     auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
     for (const char* name : {"deck", "wall", "robot", "lights"}) {
         OutputRow row{};
@@ -290,45 +422,39 @@ TEST_CASE("a short window scrolls rather than losing its bottom row", "[ui]") {
     }
     window->set_outputs_list(targets);
 
-    // Theme.line, Theme.panel and Theme.control, from theme.slint.
-    constexpr std::uint8_t kLine[3] = {0x2b, 0x2f, 0x36};
-    constexpr std::uint8_t kPanel[3] = {0x19, 0x1b, 0x1f};
-    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
-
-    // 420 is the window's own `min-height`; 1200 is taller than the content needs, which is
-    // the case that must keep working exactly as it did before there was a scroll view.
-    for (const int height : {1200, 900, 800, 700, 600, 500, 420}) {
+    // 420 is the window's own `min-height`; 1400 is taller than the content needs, which is the
+    // case that must keep working exactly as it does with a scroll bar.
+    constexpr int kWidth = 800;
+    for (const int height : {1400, 934, 800, 700, 600, 500, 420}) {
         CAPTURE(height);
-        const takt4::tests::Shot shot = takt4::tests::render(*window, 1000, height);
+        const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, height);
 
-        // The status bar is 34px of Theme.panel with the 1px separator above it. Read at
-        // x=8, which is inside the bar's left padding and so clear of the status text.
-        CHECK(shot.is(8, height - 35, kLine[0], kLine[1], kLine[2]));
-        for (int y = height - 34; y < height; ++y) {
+        // The status bar: 51 px of the page's colour at the bottom, read at x = 4, left of where
+        // its text starts.
+        for (int y = height - 51; y < height; ++y) {
             CAPTURE(y);
-            REQUIRE(shot.is(8, y, kPanel[0], kPanel[1], kPanel[2]));
+            REQUIRE(is(shot, 4, y, kPage));
         }
-
-        // And PANIC is a whole button: 40px tall less its 1px border, in a column inside
-        // its right-hand end and clear of the label. Cut in half, this read 30.
+        // Over it the triggers row: a 66 px sheet, 10 px in from the edge.
+        for (int y = height - 51 - 66; y < height - 51; ++y) {
+            CAPTURE(y);
+            REQUIRE(is(shot, 15, y, kSheet));
+        }
+        // And PANIC is a whole button: 46 px of its red, in a column inside its right-hand end and
+        // clear of its label. Cut in half, this read 23.
         int face = 0;
-        int y = height - 36;
-        while (y > 0 && !shot.is(966, y, kControl[0], kControl[1], kControl[2])) {
-            --y;
+        for (int y = height - 51 - 10; y > height - 51 - 66; --y) {
+            face += is(shot, kWidth - 36, y, kPanicRed) ? 1 : 0;
         }
-        while (y > 0 && shot.is(966, y, kControl[0], kControl[1], kControl[2])) {
-            ++face;
-            --y;
-        }
-        CHECK(face == 38);
+        CHECK(face == 46);
     }
 }
 
 TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
-    // Rendered, not reasoned about. At the window's minimum width, with an Art-Net node in
-    // the rig, a row used to need 870 px: the text boxes' Fluent minimum of 160 px held the
-    // destination slot wider than its floor, the port box slid under the delay slider, and
-    // each row's "−" was clipped off the right-hand edge. Every row's "−" is looked for, whole.
+    // Rendered, not reasoned about. At the window's width — 800, which is also its minimum —
+    // with an Art-Net node and a MIDI device in the rig, every row's × is looked for, whole, at the
+    // end of its row; and every column heading is held to being centred over the column it names
+    // (HANDOFF §0.5), since a row that merely fits can still put a box under the wrong heading.
     auto window = MainWindow::create();
     auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
     const auto row = [](const char* name, int kind, const char* host, const char* port) {
@@ -347,90 +473,51 @@ TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     window->set_outputs_list(targets);
 
     constexpr int kWidth = 800;   // MainWindow's min-width
-    constexpr int kHeight = 1100; // tall enough that nothing scrolls
+    constexpr int kHeight = 1300; // tall enough that nothing scrolls
     const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
-    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
-    // Down a column just inside the "−" buttons' right-hand end, below the trace and above the
-    // footer — the same way the wheel test finds rows.
-    const int x = kWidth - 34;
-    std::vector<std::pair<int, int>> rows; // top, bottom of each "−"
-    int start = -1;
-    for (int y = 450; y < kHeight - 110; ++y) {
-        const bool face = shot.is(x, y, kControl[0], kControl[1], kControl[2]);
-        if (face && start < 0) {
-            start = y;
-        } else if (!face && start >= 0) {
-            if (y - start > 20) {
-                rows.emplace_back(start, y - 1);
-            }
-            start = -1;
-        }
-    }
-    // Four rows, four "−" buttons, all whole; ADD OUTPUT and the rest sit further left.
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const std::vector<std::pair<int, int>> rows =
+        removeButtonsDown(shot, sheets[5].first, sheets[5].second);
+    // Four rows, four × buttons, whole.
     REQUIRE(rows.size() == 4);
-
-    // **And every heading stands over the column it names** — the markup's own promise, and
-    // the part a row that merely fits can still break: with a text box's Fluent minimum
-    // holding the destination slot open, the row fitted and the port box slid right, under
-    // "universes". Everything on this panel that is not the panel's own colour is ink: a
-    // text box or a dropdown is one solid run of it along a row's middle, and a heading is a
-    // run of glyphs. So the columns' left edges can be read off both and compared.
-    constexpr std::uint8_t kPanel[3] = {0x19, 0x1b, 0x1f};
-    const auto runsAlong = [&](int y, int mergeGap) {
-        std::vector<int> starts;
-        int lastInk = -1000;
-        for (int px = 48; px < kWidth - 60; ++px) {
-            if (shot.is(px, y, kPanel[0], kPanel[1], kPanel[2])) {
-                continue;
-            }
-            if (px - lastInk > mergeGap) {
-                starts.push_back(px);
-            }
-            lastInk = px;
-        }
-        return starts;
-    };
-    // The headings' text line: the densest line of ink in the strip above the first row — and
-    // clear of the row's own boxes, whose top edges are a few pixels above the "×" found
-    // (a box is taller than that button) and are one unbroken line of ink each.
-    int headingY = rows.front().first - 18;
-    std::size_t densest = 0;
-    for (int y = rows.front().first - 26; y < rows.front().first - 8; ++y) {
-        std::size_t ink = 0;
-        for (int px = 48; px < kWidth - 60; ++px) {
-            ink += shot.is(px, y, kPanel[0], kPanel[1], kPanel[2]) ? 0U : 1U;
-        }
-        if (ink > densest) {
-            densest = ink;
-            headingY = y;
-        }
+    for (const auto& span : rows) {
+        CHECK(span.second - span.first + 1 == 24);
     }
-    // Letters and the spaces inside "host / device" are a few pixels apart; columns are ten.
-    const std::vector<int> headings = runsAlong(headingY, 7);
-    // name, protocol, host / device, port, this output's own delay
+
+    // The headings' line: 8 px above the first row, 18 px tall — its middle.
+    const int headingY = rows.front().first - 5 - 8 - 9;
+    const std::vector<std::pair<int, int>> headings =
+        inkAlong(shot, headingY, 20, kWidth - 20, kSheet, 7);
     INFO("headings at y=" << headingY << ": " << Catch::Detail::stringify(headings));
-    REQUIRE(headings.size() >= 5);
-    const auto checkRow = [&](std::size_t index, std::size_t columns) {
+    // on, name, protocol, host / device, port, this output's own delay
+    REQUIRE(headings.size() == 6);
+    const auto checkRow = [&](std::size_t index, std::vector<std::size_t> columns) {
         const int middle = (rows[index].first + rows[index].second) / 2;
-        const std::vector<int> boxes = runsAlong(middle, 3);
-        INFO("row " << index << " at y=" << middle);
-        REQUIRE(boxes.size() >= columns);
-        for (std::size_t c = 0; c < columns; ++c) {
-            INFO("column " << c << ": heading at x=" << headings[c] << ", box at x=" << boxes[c]);
-            CHECK(std::abs(boxes[c] - headings[c]) <= 3);
+        const std::vector<std::pair<int, int>> boxes = inkAlong(shot, middle, 20, 505, kSheet, 2);
+        INFO("row " << index << " at y=" << middle << ": " << Catch::Detail::stringify(boxes));
+        REQUIRE(boxes.size() >= columns.size());
+        for (std::size_t c = 0; c < columns.size(); ++c) {
+            const std::size_t h = columns[c];
+            INFO("column " << h << ": heading centred at " << middleOf(headings[h]) << ", box at "
+                           << middleOf(boxes[c]));
+            CHECK(std::abs(middleOf(boxes[c]) - middleOf(headings[h])) <= 3.0f);
         }
     };
-    // Name, protocol, host and port. Not the slider: its track is drawn inside its element,
-    // a handle's width in from where the heading over it starts.
-    checkRow(0, 4); // an OSC row
-    checkRow(3, 4); // the Art-Net row: the same four, fed every universe the patch uses
+    // The tick, the name, the protocol, the host and the port under their headings.
+    checkRow(0, {0, 1, 2, 3, 4}); // an OSC row
+    checkRow(3, {0, 1, 2, 3, 4}); // the Art-Net row
+    checkRow(2, {0, 1, 2, 3});    // the MIDI row: its device where the host is, and no port
+    // The delay heading over the slider and its reading, not over the × column.
+    CHECK(std::abs(middleOf(headings[5]) - (kWidth - 26 - 24 - 6 - 239 / 2.0f)) <= 3.0f);
 }
 
 TEST_CASE("a delay slider follows its row after it has been dragged", "[ui]") {
-    // Slint drops a slider's `value:` binding the first time it is dragged, so after one drag a
-    // delay typed into the reading beside it — or brought in by an import — moved the reading
-    // and left the thumb where the drag had put it. The row pushes its delay into the slider
-    // now (`changed delay`). Read off the picture: the thumb is where the track's fill ends.
+    // A slider that sets its own value drops its binding the first time it is dragged, and after
+    // one drag a delay typed into the reading beside it — or brought in by an import — moved the
+    // reading and left the handle where the drag had put it. This one never sets its own value:
+    // it says where the hand is, and shows its row. Read off the picture: the handle is the
+    // brick-red run along the row's middle.
     auto window = MainWindow::create();
     auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
     OutputRow deck{};
@@ -440,70 +527,80 @@ TEST_CASE("a delay slider follows its row after it has been dragged", "[ui]") {
     deck.enabled = true;
     targets->push_back(deck);
     window->set_outputs_list(targets);
+    // The owner, as the window's controller is: what the slider says goes into the row.
+    bool owner = true;
     std::vector<float> moved;
-    window->on_output_delay_changed([&moved](int, float ms) { moved.push_back(ms); });
-
-    constexpr int kWidth = 1000;
-    constexpr int kHeight = 1100; // tall enough that nothing scrolls
-    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
-    const takt4::tests::Shot first = takt4::tests::render(*window, kWidth, kHeight);
-    // The row's middle, by its "×" button as the other row tests find it.
-    int top = -1;
-    int bottom = -1;
-    for (int y = 450; y < kHeight - 130 && bottom < 0; ++y) {
-        const bool face = first.is(kWidth - 34, y, kControl[0], kControl[1], kControl[2]);
-        if (face && top < 0) {
-            top = y;
-        } else if (!face && top >= 0) {
-            if (y - top > 20) {
-                bottom = y - 1;
-            } else {
-                top = -1;
-            }
+    window->on_output_delay_changed([&](int index, float ms) {
+        moved.push_back(ms);
+        if (owner) {
+            OutputRow row = *targets->row_data(static_cast<std::size_t>(index));
+            row.delay_ms = ms;
+            targets->set_row_data(static_cast<std::size_t>(index), row);
         }
-    }
-    REQUIRE(bottom > 0);
-    const int middle = (top + bottom) / 2;
-    // Where the track's fill ends along the row's middle: the last blue pixel over the slider.
-    const auto fillEnd = [&](const takt4::tests::Shot& shot) {
+    });
+
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1300; // tall enough that nothing scrolls
+    const auto handleOn = [&](const takt4::tests::Shot& shot, int y) {
+        int first = -1;
         int last = -1;
-        for (int x = 480; x < 890; ++x) {
-            const slint::Rgb8Pixel px = shot.at(x, middle);
-            if (px.b > 200 && px.r < 170) {
+        for (int x = 480; x < 700; ++x) {
+            if (is(shot, x, y, kThumb)) {
+                first = first < 0 ? x : first;
                 last = x;
             }
         }
-        return last;
+        return first < 0 ? -1.0f : static_cast<float>(first + last) / 2.0f;
     };
-    const int atZero = fillEnd(first);
-    INFO("fill ends at " << atZero << " at 0 ms");
-    REQUIRE(atZero > 0);
+    const takt4::tests::Shot first = takt4::tests::render(*window, kWidth, kHeight);
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(first);
+    REQUIRE(sheets.size() == 7);
+    const std::vector<std::pair<int, int>> rows =
+        removeButtonsDown(first, sheets[5].first, sheets[5].second);
+    REQUIRE(rows.size() == 1);
+    const int middle = (rows[0].first + rows[0].second) / 2;
+    const float atZero = handleOn(first, middle);
+    INFO("the handle at 0 ms is at x=" << atZero);
+    REQUIRE(atZero > 0.0f);
 
-    // Dragged well to the left: a press on the track, a move, a release.
+    // Dragged well to the left by its handle: a press, a move, a release.
     const float y = static_cast<float>(middle);
     auto& handle = window->window();
-    handle.dispatch_pointer_move_event(slint::LogicalPosition({static_cast<float>(atZero), y}));
-    handle.dispatch_pointer_press_event(slint::LogicalPosition({static_cast<float>(atZero), y}),
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({atZero, y}));
+    handle.dispatch_pointer_press_event(slint::LogicalPosition({atZero, y}),
                                         slint::PointerEventButton::Left);
-    handle.dispatch_pointer_move_event(
-        slint::LogicalPosition({static_cast<float>(atZero) - 120.0f, y}));
-    handle.dispatch_pointer_release_event(
-        slint::LogicalPosition({static_cast<float>(atZero) - 120.0f, y}),
-        slint::PointerEventButton::Left);
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({atZero - 60.0f, y}));
+    handle.dispatch_pointer_release_event(slint::LogicalPosition({atZero - 60.0f, y}),
+                                          slint::PointerEventButton::Left);
+    // Off the handle, which is drawn a lighter brick under the pointer.
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({5.0f, 5.0f}));
     REQUIRE_FALSE(moved.empty());
-    REQUIRE(moved.back() < -100.0f);
-    const takt4::tests::Shot dragged = takt4::tests::render(*window, kWidth, kHeight);
-    const int afterDrag = fillEnd(dragged);
-    CHECK(afterDrag < atZero - 60);
+    REQUIRE(moved.back() < -300.0f);
+    const float afterDrag = handleOn(takt4::tests::render(*window, kWidth, kHeight), middle);
+    CHECK(afterDrag == Catch::Approx(atZero - 60.0f).margin(1.5f));
 
-    // Then the row changes from outside — what a typed number or an import does — to well to
-    // the right of zero. The thumb follows.
+    // Then the row changes from outside — what a typed number or an import does — to well to the
+    // right of zero. The handle follows.
+    deck = *targets->row_data(0);
     deck.delay_ms = 500.0f;
     targets->set_row_data(0, deck);
-    const takt4::tests::Shot typed = takt4::tests::render(*window, kWidth, kHeight);
-    const int afterTyped = fillEnd(typed);
-    INFO("fill ends at " << afterDrag << " after the drag and " << afterTyped << " at +500 ms");
-    CHECK(afterTyped > atZero + 60);
+    const float afterTyped = handleOn(takt4::tests::render(*window, kWidth, kHeight), middle);
+    INFO("handle at " << afterDrag << " after the drag and " << afterTyped << " at +500 ms");
+    // A quarter of the way along the 150 px the handle travels, from the middle.
+    CHECK(afterTyped == Catch::Approx(atZero + 37.5f).margin(1.5f));
+
+    // And with nobody writing it back, a drag moves nothing: the slider shows its row.
+    owner = false;
+    moved.clear();
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({afterTyped, y}));
+    handle.dispatch_pointer_press_event(slint::LogicalPosition({afterTyped, y}),
+                                        slint::PointerEventButton::Left);
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({afterTyped - 50.0f, y}));
+    handle.dispatch_pointer_release_event(slint::LogicalPosition({afterTyped - 50.0f, y}),
+                                          slint::PointerEventButton::Left);
+    handle.dispatch_pointer_move_event(slint::LogicalPosition({5.0f, 5.0f}));
+    CHECK_FALSE(moved.empty());
+    CHECK(handleOn(takt4::tests::render(*window, kWidth, kHeight), middle) == afterTyped);
 }
 
 TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
@@ -530,36 +627,19 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     int panics = 0;
     window->on_panic_clicked([&panics] { ++panics; });
 
-    constexpr int kWidth = 1000;
+    constexpr int kWidth = 800;
     // Tall enough that the first rows are on screen before anything scrolls, and short enough
-    // that the body still has to: since 2026-09-25 the inputs sit above the outputs.
+    // that the body still has to: the inputs sit above the outputs.
     constexpr int kHeight = 900;
-    // Inside the "×" button at the end of each target row, just inside its left edge: the
-    // middle of that button is where the "×" is drawn, which splits the run.
-    constexpr int kRemoveX = 966;
-    constexpr std::uint8_t kControl[3] = {0x2b, 0x31, 0x3a};
-    // The pinned footer: a line, the triggers row with its title, a line, and the 34px status
-    // bar — measured off a render, 125 px.
-    constexpr int kFooter = 125;
+    // The middle of the "×" at the end of each target row.
+    constexpr int kRemoveX = kWidth - 26 - 12;
+    // The pinned footer: 10 px of page, the 66 px triggers row, the 51 px status bar.
+    constexpr int kFooter = 127;
 
-    // The runs of button face down a column, which is how a row is found without hardcoding
-    // a y that a font change would move. Bounded below the trace and above the footer, so
-    // neither START at the top nor PANIC at the bottom is mistaken for a target row.
+    // The × buttons down their column, which is how a row is found without hardcoding a y that a
+    // font change would move. Bounded above the footer, so PANIC is never taken for a row.
     const auto rowsDown = [&](const takt4::tests::Shot& shot) {
-        std::vector<std::pair<int, int>> spans; // first row, last row
-        int start = -1;
-        for (int y = 400; y < shot.height - kFooter; ++y) {
-            const bool face = shot.is(kRemoveX, y, kControl[0], kControl[1], kControl[2]);
-            if (face && start < 0) {
-                start = y;
-            } else if (!face && start >= 0) {
-                if (y - start > 20) {
-                    spans.emplace_back(start, y - 1);
-                }
-                start = -1;
-            }
-        }
-        return spans;
+        return removeButtonsDown(shot, 400, shot.height - kFooter);
     };
 
     const takt4::tests::Shot before = takt4::tests::render(*window, kWidth, kHeight);
@@ -639,7 +719,7 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     }
     CHECK(firstMoved.empty());
     const slint::LogicalPosition panic(
-        {static_cast<float>(kRemoveX), static_cast<float>(kHeight - 65)});
+        {static_cast<float>(kWidth - 36), static_cast<float>(kHeight - 51 - 10 - 23)});
     window->window().dispatch_pointer_move_event(panic);
     window->window().dispatch_pointer_press_event(panic, slint::PointerEventButton::Left);
     window->window().dispatch_pointer_release_event(panic, slint::PointerEventButton::Left);
@@ -673,9 +753,9 @@ TEST_CASE("a status longer than the bar keeps its first line and loses its end",
     for (int i = 0; i < 1500; ++i) {
         message += ". ";
     }
-    constexpr int kWidth = 1000;
+    constexpr int kWidth = 800;
     constexpr int kHeight = 760;
-    constexpr int kBar = 34;
+    constexpr int kBar = 51;
     // Ink: pixels unlike the bar's own colour, in the text's stretch of it, by row.
     const auto inkByRow = [&](const takt4::tests::Shot& shot) {
         const slint::Rgb8Pixel bar = shot.at(4, kHeight - 2);
@@ -1630,6 +1710,20 @@ TEST_CASE("an output that reaches nothing says why on its own row, for as long a
     row = outputRow(controller, desk.id);
     REQUIRE(row);
     CHECK(std::string(row->problem) == problem);
+    // And counted, for the Outputs heading to say while the section is folded: a fold must not
+    // leave it reading as if all were well. The desk is on; Link, brought in by a file that did not
+    // name it, is off.
+    const auto enabledRows = [&controller] {
+        const auto rows = controller.window().get_outputs_list();
+        int on = 0;
+        for (std::size_t i = 0; i < rows->row_count(); ++i) {
+            on += rows->row_data(i)->enabled ? 1 : 0;
+        }
+        return on;
+    };
+    CHECK(controller.window().get_outputs_failing() == 1);
+    CHECK(controller.window().get_outputs_on() == 1);
+    CHECK(controller.window().get_outputs_on() == enabledRows());
 
     SECTION("switched off, it is not failing, and says nothing") {
         std::size_t index = 0;
@@ -1647,6 +1741,9 @@ TEST_CASE("an output that reaches nothing says why on its own row, for as long a
         row = outputRow(controller, desk.id);
         REQUIRE(row);
         CHECK(std::string(row->problem).empty());
+        CHECK(controller.window().get_outputs_failing() == 0);
+        CHECK(controller.window().get_outputs_on() == 0);
+        CHECK(controller.window().get_outputs_on() == enabledRows());
     }
 
     SECTION("a list of Link peers that cannot listen says so on the Link row") {
@@ -2573,13 +2670,16 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(watch->removed == 0);
         CHECK(watch->added == 0);
 
-        // But one the controller changed after it was typed comes back as what it is: a name
-        // that is only the output's own address is shown as no name at all.
+        // And one the controller changed after it was typed comes back as what it is — a name that
+        // is only the output's own address is shown as no name at all — **without the row being
+        // built again**: the box shows its row whatever it was typed (weltformat.slint's `Entry`,
+        // held to it in widget_test.cpp). It was rebuilt until the redesign of 2026-09-29.
         controller.setTargetName(1, "127.0.0.1:57000", true);
         controller.tick();
         CHECK(std::string(rows->row_data(1)->name).empty());
-        CHECK(watch->removed == 1);
-        CHECK(watch->added == 1);
+        CHECK(watch->resets == 0);
+        CHECK(watch->removed == 0);
+        CHECK(watch->added == 0);
     }
 
     SECTION("a port outside the range is not a port") {
@@ -3917,11 +4017,12 @@ TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
     auto& window = controller.window().window();
     const takt4::tests::NothingReal nothingReal;
 
-    // The "×" at the end of a row: found by clicking down the column until a row goes — the
-    // Link row, first, has none, and stays.
-    const float removeX = kWidth - 34.0f;
+    // The "×" at the end of a row: found by clicking **up** the column from the pinned footer until
+    // a row goes. Up, because the fold arrows of Inputs and Outputs are in this column above the
+    // rows, and a sweep down it folded both sections away before it reached a row (rendered).
+    const float removeX = kWidth - 38.0f;
     bool removed = false;
-    for (float y = 380.0f; y < kHeight - 125.0f && !removed; y += 4.0f) {
+    for (float y = kHeight - 140.0f; y > 380.0f && !removed; y -= 4.0f) {
         clickAt(window, removeX, y);
         removed = controller.window().get_outputs_list()->row_count() == 2;
     }
@@ -4206,7 +4307,7 @@ TEST_CASE("an output's on tick follows its row when the rows change under it", "
     // the Link row's, which is first and would be met last.
     float tickY = -1.0f;
     for (float y = kHeight - 128.0f; y > 380.0f && tickY < 0.0f; y -= 4.0f) {
-        clickAt(window, 30.0f, y);
+        clickAt(window, 41.0f, y); // the middle of the "on" column, 26 to 56
         settle();
         while (rows->row_count() > 3) {
             controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
@@ -4229,7 +4330,7 @@ TEST_CASE("an output's on tick follows its row when the rows change under it", "
     REQUIRE(rows->row_data(2)->enabled);
 
     // The tick under the pointer is y's now, and shows it on — so clicking it switches y off.
-    clickAt(window, 30.0f, tickY);
+    clickAt(window, 41.0f, tickY);
     settle();
     CHECK_FALSE(rows->row_data(2)->enabled);
     nothingReal.check();
@@ -5606,3 +5707,640 @@ TEST_CASE("SAVE in a test process writes to a folder of its own, not over the ri
     CHECK(written.parent_path().parent_path() == temp / "takt4-tests");
 }
 #endif
+
+TEST_CASE("every control in the main window does what it says, once, and a switched-off one "
+          "nothing",
+          "[ui]") {
+    // A bare window — no controller, so no device, socket or port is anywhere behind it — with a
+    // rig's worth of everything in it, and every callback it has written down as it fires. Each
+    // control is found on a render of the window as it is laid out (the sheets down its left
+    // edge, then the ink along each row), clicked or keyed as an operator would, and the list of
+    // what fired is held to exactly the one thing that control is for.
+    auto window = MainWindow::create();
+    std::vector<std::string> fired;
+    const auto note = [&fired](std::string what) { fired.push_back(std::move(what)); };
+    window->on_device_picked([&](int i) { note("device-picked " + std::to_string(i)); });
+    window->on_channel_picked([&](int i) { note("channel-picked " + std::to_string(i)); });
+    window->on_input_mono_toggled([&](bool on) { note(std::string("mono ") + (on ? "1" : "0")); });
+    window->on_rescan_clicked([&] { note("rescan"); });
+    window->on_toggle_run([&] { note("toggle-run"); });
+    window->on_halve([&] { note("halve"); });
+    window->on_redouble([&] { note("redouble"); });
+    window->on_tap([&] { note("tap"); });
+    window->on_pin_changed([&](bool on) { note(std::string("pin ") + (on ? "1" : "0")); });
+    window->on_snap_downbeat([&] { note("downbeat"); });
+    window->on_keep_shift_changed([&](bool on) { note(std::string("keep ") + (on ? "1" : "0")); });
+    window->on_fold_on_changed([&](bool on) { note(std::string("fold-on ") + (on ? "1" : "0")); });
+    window->on_fold_min_changed([&](float) { note("fold-min"); });
+    window->on_fold_max_changed([&](float) { note("fold-max"); });
+    window->on_latency_changed([&](float) { note("latency"); });
+    window->on_latency_typed(
+        [&](const slint::SharedString& t) { note("latency-typed " + std::string(t)); });
+    window->on_midi_in_picked([&](int i) { note("midi-in " + std::to_string(i)); });
+    window->on_learn_action_picked([&](int i) { note("action " + std::to_string(i)); });
+    window->on_learn_clicked([&] { note("learn"); });
+    window->on_forget_clicked([&] { note("forget"); });
+    window->on_osc_control_toggled(
+        [&](bool on) { note(std::string("listen ") + (on ? "1" : "0")); });
+    window->on_osc_control_port_edited(
+        [&](const slint::SharedString& t) { note("osc-port " + std::string(t)); });
+    window->on_osc_control_network_toggled(
+        [&](bool on) { note(std::string("network ") + (on ? "1" : "0")); });
+    window->on_fold_clicked([&](int s) { note("fold " + std::to_string(s)); });
+    window->on_link_peers_toggled([&] { note("peers"); });
+    window->on_output_enabled_changed(
+        [&](int i, bool on) { note("on " + std::to_string(i) + (on ? " 1" : " 0")); });
+    window->on_output_name_edited([&](int, const slint::SharedString&) { note("name-key"); });
+    window->on_output_name_accepted([&](int i, const slint::SharedString& t) {
+        note("name " + std::to_string(i) + " " + std::string(t));
+    });
+    window->on_output_host_edited([&](int, const slint::SharedString&) { note("host-key"); });
+    window->on_output_host_accepted([&](int i, const slint::SharedString& t) {
+        note("host " + std::to_string(i) + " " + std::string(t));
+    });
+    window->on_output_port_edited([&](int, const slint::SharedString&) { note("port-key"); });
+    window->on_output_port_accepted([&](int i, const slint::SharedString& t) {
+        note("port " + std::to_string(i) + " " + std::string(t));
+    });
+    window->on_output_kind_changed(
+        [&](int i, int k) { note("kind " + std::to_string(i) + " " + std::to_string(k)); });
+    window->on_output_device_picked(
+        [&](int i, int d) { note("device " + std::to_string(i) + " " + std::to_string(d)); });
+    window->on_output_delay_changed([&](int i, float) { note("delay " + std::to_string(i)); });
+    window->on_output_delay_typed([&](int i, const slint::SharedString& t) {
+        note("delay-typed " + std::to_string(i) + " " + std::string(t));
+    });
+    window->on_output_removed([&](int i) { note("remove " + std::to_string(i)); });
+    window->on_output_added([&] { note("add"); });
+    window->on_rules_clicked([&] { note("rules"); });
+    window->on_fixtures_clicked([&] { note("fixtures"); });
+    window->on_panic_clicked([&] { note("panic"); });
+    window->on_panic_released([&] { note("release"); });
+    window->on_save_now([&] { note("save"); });
+    window->on_export_settings([&] { note("export"); });
+    window->on_import_settings([&] { note("import"); });
+    window->on_about_opened([&] { note("about"); });
+    window->on_manual_fired([&] { note("manual"); });
+
+    const auto strings = [](std::initializer_list<const char*> items) {
+        auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        for (const char* item : items) {
+            model->push_back(slint::SharedString(item));
+        }
+        return model;
+    };
+    window->set_devices(strings({"ASIO / interface A", "WASAPI / interface B"}));
+    window->set_channels(strings({"In 1 + 2", "In 3 + 4"}));
+    window->set_midi_in_ports(strings({"select input", "pad A", "pad B"}));
+    window->set_learn_actions(strings({"tap tempo", "downbeat", "halve"}));
+    window->set_output_kinds(strings({"OSC", "MIDI", "Art-Net", "MIDI clock"}));
+    window->set_output_devices(strings({"select a MIDI device", "synth X", "synth Y"}));
+    window->set_control_on(true);
+    window->set_osc_control_port(slint::SharedString("7001"));
+    window->set_link_peers(2);
+    window->set_fold_on(true);
+    window->set_fold_min(70.0f);
+    window->set_fold_max(140.0f);
+    window->set_rules_total(3);
+    window->set_rules_active(2);
+    window->set_fixtures_total(5);
+    auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+    OutputRow link{};
+    link.name = slint::SharedString("Link");
+    link.kind_index = 4;
+    link.enabled = true;
+    rows->push_back(link);
+    OutputRow deck{};
+    deck.name = slint::SharedString("deck");
+    deck.host = slint::SharedString("10.0.0.40");
+    deck.port = slint::SharedString("7000");
+    deck.enabled = true;
+    rows->push_back(deck);
+    OutputRow clock{};
+    clock.name = slint::SharedString("clock");
+    clock.kind_index = 3;
+    clock.device_index = 1;
+    clock.enabled = true;
+    rows->push_back(clock);
+    window->set_outputs_list(rows);
+
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1200; // nothing scrolls
+    auto& handle = window->window();
+    const auto settle = [] { slint::platform::update_timers_and_animations(); };
+    const auto click = [&](auto x, auto y) {
+        clickAt(handle, static_cast<float>(x), static_cast<float>(y));
+        settle();
+    };
+    const auto key = [&](const std::string& k) {
+        press(handle, k);
+        settle();
+    };
+    const auto expect = [&](const std::vector<std::string>& wanted, const char* what) {
+        INFO(what << ": fired " << Catch::Detail::stringify(fired));
+        CHECK(fired == wanted);
+        fired.clear();
+    };
+    const auto background = [&] { click(5.0f, 5.0f); };
+
+    // --- stopped: the top bar is live, the performance controls are not -------------------
+    window->set_running(false);
+    takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
+    std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    // Top bar, tempo, activation, controls, inputs, outputs, triggers.
+    REQUIRE(sheets.size() == 7);
+    handle.dispatch_window_active_changed_event(true);
+
+    // The top bar's controls: 12 px down the sheet, a 16 px label, 3 px, then 34 px pickers with
+    // 40 px buttons centred on them.
+    const int topRow = sheets[0].first + 48;
+    const auto top = occupied(shot, topRow - 20, topRow + 20, 20, kWidth - 20, kSheet, 5);
+    // The device picker, the channel picker, the mono box, its word, RESCAN, START.
+    INFO("top bar: " << spans(top));
+    REQUIRE(top.size() == 6);
+    click(middleOf(top[0]), topRow);
+    key(kDown);
+    key("\n");
+    expect({"device-picked 1"}, "the device picker");
+    click(middleOf(top[1]), topRow);
+    key(kDown);
+    key("\n");
+    expect({"channel-picked 1"}, "the channel picker");
+    click(middleOf(top[2]), topRow);
+    click(middleOf(top[3]), topRow);
+    expect({"mono 1", "mono 0"}, "the mono box, then its word");
+    click(middleOf(top[4]), topRow);
+    expect({"rescan"}, "RESCAN");
+    click(middleOf(top[5]), topRow);
+    expect({"toggle-run"}, "START");
+
+    const int buttonsRow = sheets[3].first + 26;
+    const auto buttons =
+        occupied(shot, buttonsRow - 16, buttonsRow + 15, 20, kWidth - 20, kSheet, 5);
+    // ÷2, ×2, tap, lock, downbeat, the keep box, and the words after it.
+    INFO("controls: " << spans(buttons));
+    REQUIRE(buttons.size() == 7);
+    for (int i = 0; i < 5; ++i) {
+        click(middleOf(buttons[static_cast<std::size_t>(i)]), buttonsRow);
+    }
+    expect({}, "the performance controls while stopped");
+    // The keep box is a setting, live while stopped: box, then words.
+    click(middleOf(buttons[5]), buttonsRow);
+    click(static_cast<float>(buttons[6].first + 20), buttonsRow);
+    expect({"keep 1", "keep 0"}, "the keep-for-the-next-track box, then its words");
+
+    // --- running: the performance controls are live, the top bar is locked ----------------
+    window->set_running(true);
+    shot = takt4::tests::render(*window, kWidth, kHeight);
+    sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    handle.dispatch_window_active_changed_event(true);
+    const auto lockedTop = occupied(shot, topRow - 20, topRow + 20, 20, kWidth - 20, kSheet, 5);
+    // The locked pickers, the locked mono box, its word, "stop to change", STOP.
+    INFO("running top bar: " << spans(lockedTop));
+    REQUIRE(lockedTop.size() == 6);
+    for (std::size_t i = 0; i + 1 < lockedTop.size(); ++i) {
+        click(middleOf(lockedTop[i]), topRow);
+        key(kDown);
+        key("\n");
+    }
+    // Only the last one, STOP, does anything; the keys typed at the locked pickers went to the
+    // window, where Down and Enter are nothing.
+    expect({}, "the locked pickers, the locked mono box and the note in RESCAN's place");
+    click(middleOf(lockedTop.back()), topRow);
+    expect({"toggle-run"}, "STOP");
+
+    const std::vector<std::string> perf = {"halve", "redouble", "tap", "pin 1", "downbeat"};
+    for (int i = 0; i < 5; ++i) {
+        click(middleOf(buttons[static_cast<std::size_t>(i)]), buttonsRow);
+    }
+    expect(perf, "÷2, ×2, tap, lock, downbeat");
+    // And their keys, from the window's resting place.
+    background();
+    key("t");
+    key("d");
+    key("m");
+    key(kEscape);
+    expect({"tap", "downbeat", "manual", "panic"}, "T, D, M and Escape");
+
+    // The settings row: the fold box, the two handles, the latency handle and its reading.
+    const int settingsRow = sheets[3].first + 64;
+    const auto settings =
+        occupied(shot, settingsRow - 9, settingsRow + 9, 20, kWidth - 20, kSheet, 5);
+    INFO("settings: " << spans(settings));
+    std::vector<float> thumbs;
+    for (int x = 20; x < kWidth - 20; ++x) {
+        if (is(shot, x, settingsRow, kThumb) && (thumbs.empty() || x - thumbs.back() > 24.0f)) {
+            thumbs.push_back(static_cast<float>(x));
+        }
+    }
+    REQUIRE(thumbs.size() == 3); // the fold window's two ends and the latency
+    // The fold box: the first run after "keep BPM in".
+    REQUIRE(settings.size() >= 3);
+    click(middleOf(settings[1]), settingsRow);
+    expect({"fold-on 0"}, "the keep-BPM-in box");
+    // Each handle dragged a little: it says so as it goes.
+    for (std::size_t i = 0; i < 3; ++i) {
+        const float x = thumbs[i] + 8.0f;
+        handle.dispatch_pointer_move_event(
+            slint::LogicalPosition({x, static_cast<float>(settingsRow)}));
+        handle.dispatch_pointer_press_event(
+            slint::LogicalPosition({x, static_cast<float>(settingsRow)}),
+            slint::PointerEventButton::Left);
+        settle();
+        handle.dispatch_pointer_move_event(
+            slint::LogicalPosition({x + 20.0f, static_cast<float>(settingsRow)}));
+        settle();
+        handle.dispatch_pointer_release_event(
+            slint::LogicalPosition({x + 20.0f, static_cast<float>(settingsRow)}),
+            slint::PointerEventButton::Left);
+        settle();
+    }
+    // The fold window is off since the box was clicked: its handles are switched off.
+    expect({"latency"}, "the fold window's handles while it is off, then the latency handle");
+    click(middleOf(settings[1]), settingsRow);
+    expect({"fold-on 1"}, "the keep-BPM-in box again");
+    for (std::size_t i = 0; i < 2; ++i) {
+        const float x = thumbs[i];
+        handle.dispatch_pointer_move_event(
+            slint::LogicalPosition({x, static_cast<float>(settingsRow)}));
+        handle.dispatch_pointer_press_event(
+            slint::LogicalPosition({x, static_cast<float>(settingsRow)}),
+            slint::PointerEventButton::Left);
+        settle();
+        handle.dispatch_pointer_move_event(
+            slint::LogicalPosition({x - 12.0f, static_cast<float>(settingsRow)}));
+        settle();
+        handle.dispatch_pointer_release_event(
+            slint::LogicalPosition({x - 12.0f, static_cast<float>(settingsRow)}),
+            slint::PointerEventButton::Left);
+        settle();
+    }
+    expect({"fold-min", "fold-max"}, "the fold window's two handles");
+    // The latency reading, typed into.
+    click(static_cast<float>(settings.back().first + 6), settingsRow);
+    key("-");
+    key("7");
+    key("\n");
+    expect({"latency-typed -7"}, "the latency reading");
+
+    // --- inputs ------------------------------------------------------------------------------
+    const int midiRow = sheets[4].first + 73;
+    const auto midi = occupied(shot, midiRow - 17, midiRow + 16, 20, kWidth - 20, kSheet, 5);
+    INFO("MIDI: " << spans(midi));
+    // MIDI, port, its picker, action, its picker, learn, forget (and the reading, empty here).
+    REQUIRE(midi.size() == 7);
+    click(middleOf(midi[2]), midiRow);
+    key(kDown);
+    key("\n");
+    expect({"midi-in 1"}, "the MIDI port picker");
+    click(middleOf(midi[4]), midiRow);
+    key(kDown);
+    key("\n");
+    expect({"action 1"}, "the action picker");
+    click(middleOf(midi[5]), midiRow);
+    click(middleOf(midi[6]), midiRow);
+    expect({"learn", "forget"}, "learn and forget");
+
+    const int oscRow = sheets[4].first + 119;
+    const auto osc = occupied(shot, oscRow - 17, oscRow + 17, 20, kWidth - 20, kSheet, 5);
+    INFO("OSC: " << spans(osc));
+    // OSC, the listen box and its word, port, the port box, the allow box and its words.
+    REQUIRE(osc.size() == 7);
+    click(middleOf(osc[1]), oscRow);
+    expect({"listen 1"}, "the listen box");
+    // The port box: the run that holds "7001".
+    float portX = -1.0f;
+    for (const auto& run : osc) {
+        if (run.second - run.first + 1 >= 68 && run.second - run.first + 1 <= 72) {
+            portX = middleOf(run);
+        }
+    }
+    REQUIRE(portX > 0.0f);
+    click(portX, oscRow);
+    press(handle, "\xEF\x9C\xAB"); // End
+    key("2");
+    key("\n");
+    expect({"osc-port 70012"}, "the OSC port box, on Enter");
+    // The allow box: the first run right of the port box.
+    for (const auto& run : osc) {
+        if (middleOf(run) > portX + 40.0f) {
+            click(middleOf(run), oscRow);
+            break;
+        }
+    }
+    expect({"network 1"}, "the allow-other-machines box");
+
+    // --- outputs -------------------------------------------------------------------------------
+    // The Link row, 28 px, then the rows, 34 px, 8 px apart.
+    const int linkRow = sheets[5].first + 10 + 28 + 8 + 18 + 8 + 14;
+    const int deckRow = linkRow + 14 + 8 + 17;
+    const int clockRow = deckRow + 17 + 8 + 17;
+    click(41.0f, linkRow);
+    expect({"on 0 0"}, "Link's on box");
+    const auto linkInk = occupied(shot, linkRow - 14, linkRow + 13, 150, 500, kSheet, 5);
+    INFO("Link row: " << spans(linkInk));
+    REQUIRE_FALSE(linkInk.empty());
+    click(middleOf(linkInk.back()), linkRow);
+    expect({"peers"}, "show peers");
+
+    click(41.0f, deckRow);
+    expect({"on 1 0"}, "the deck's on box");
+    click(107.0f, deckRow);
+    press(handle, "\xEF\x9C\xAB");
+    key("2");
+    key("\n");
+    expect({"name-key", "name 1 deck2"}, "the deck's name box");
+    click(352.0f, deckRow);
+    press(handle, "\xEF\x9C\xAB");
+    key("1");
+    key("\n");
+    expect({"host-key", "host 1 10.0.0.401"}, "the deck's host box");
+    click(470.0f, deckRow);
+    press(handle, "\xEF\x9C\xAB");
+    key("9");
+    key("\n");
+    expect({"port-key", "port 1 70009"}, "the deck's port box");
+    click(211.0f, deckRow);
+    key(kDown);
+    key("\n");
+    expect({"kind 1 1"}, "the deck's kind picker");
+    click(352.0f, clockRow);
+    key(kDown);
+    key("\n");
+    expect({"device 2 2"}, "the clock's device picker");
+    // The delay handle on the deck's row, and its reading.
+    float deckThumb = -1.0f;
+    for (int x = 500; x < 700 && deckThumb < 0.0f; ++x) {
+        if (is(shot, x, deckRow, kThumb)) {
+            deckThumb = static_cast<float>(x) + 9.0f;
+        }
+    }
+    REQUIRE(deckThumb > 0.0f);
+    handle.dispatch_pointer_move_event(
+        slint::LogicalPosition({deckThumb, static_cast<float>(deckRow)}));
+    handle.dispatch_pointer_press_event(
+        slint::LogicalPosition({deckThumb, static_cast<float>(deckRow)}),
+        slint::PointerEventButton::Left);
+    settle();
+    handle.dispatch_pointer_move_event(
+        slint::LogicalPosition({deckThumb + 15.0f, static_cast<float>(deckRow)}));
+    settle();
+    handle.dispatch_pointer_release_event(
+        slint::LogicalPosition({deckThumb + 15.0f, static_cast<float>(deckRow)}),
+        slint::PointerEventButton::Left);
+    settle();
+    expect({"delay 1"}, "the deck's delay handle");
+    click(735.0f, deckRow);
+    key("3");
+    key("\n");
+    expect({"delay-typed 1 3"}, "the deck's delay reading");
+    click(762.0f, deckRow);
+    expect({"remove 1"}, "the deck's ×");
+    // Link has no ×: the same column on its row is nothing.
+    click(762.0f, linkRow);
+    expect({}, "the empty cell at the end of Link's row");
+
+    // [+ add output], under the rows.
+    const int addRow = clockRow + 17 + 8 + 4 + 14;
+    click(80.0f, addRow);
+    expect({"add"}, "+ add output");
+
+    // The two fold arrows, at the right of each heading.
+    click(760.0f, sheets[4].first + 24);
+    click(760.0f, sheets[5].first + 24);
+    expect({"fold 0", "fold 1"}, "the fold arrows");
+
+    // --- triggers and the status bar ---------------------------------------------------------
+    const int trigRow = sheets[6].first + 33;
+    const auto trig = occupied(shot, trigRow - 23, trigRow + 22, 20, kWidth - 20, kSheet, 5);
+    INFO("triggers: " << spans(trig));
+    // 04, triggers, the rules button, the fixtures button, PANIC.
+    REQUIRE(trig.size() == 5);
+    // 04, triggers, the rules button, the fixtures button, ..., PANIC.
+    click(middleOf(trig[2]), trigRow);
+    click(middleOf(trig[3]), trigRow);
+    click(middleOf(trig.back()), trigRow);
+    expect({"rules", "fixtures", "panic"}, "the rules, the fixtures, PANIC");
+    // Engaged, RELEASE appears to PANIC's left, and PANIC does not move.
+    window->set_panicked(true);
+    shot = takt4::tests::render(*window, kWidth, kHeight);
+    handle.dispatch_window_active_changed_event(true);
+    const auto engaged = occupied(shot, trigRow - 23, trigRow + 22, 20, kWidth - 20, kSheet, 5);
+    INFO("triggers, panicked: " << spans(engaged));
+    REQUIRE(engaged.size() == 6);
+    CHECK(engaged.back().second == trig.back().second);
+    click(middleOf(engaged[engaged.size() - 2]), trigRow);
+    click(middleOf(engaged.back()), trigRow);
+    expect({"release", "panic"}, "RELEASE, then PANIC again");
+
+    const int statusRow = kHeight - 25;
+    const auto status = occupied(shot, statusRow - 12, statusRow + 12, 400, kWidth, kPage, 5);
+    INFO("status bar: " << spans(status));
+    REQUIRE(status.size() == 4);
+    // From the right: about, import, export, save — so a sweep never meets the file routes first.
+    for (std::size_t i = 0; i < 4; ++i) {
+        click(middleOf(status[status.size() - 1 - i]), statusRow);
+    }
+    expect({"about", "import", "export", "save"}, "the status bar's buttons");
+}
+
+TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
+    // HANDOFF §0.5: the operator cut the width by a fifth, and kept the height with a scroll bar.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto* const adapter = takt4::ui::headlessAdapterFor(controller.window().window());
+    REQUIRE(adapter != nullptr);
+    const auto asked = adapter->requested();
+    REQUIRE(asked.has_value());
+    CHECK(asked->width == 800);
+    CHECK(asked->height == 934);
+}
+
+TEST_CASE("folding a section takes its height off the window, keeps its heading in sight, and "
+          "gives the height back",
+          "[ui]") {
+    // HANDOFF §0.5: a fold takes the section's height off the *window* — the trace keeps its
+    // height — but never so much that the folded heading, with the arrow that opens it again,
+    // scrolls out of sight; opening it gives the height back. Driven by clicks on the real arrows,
+    // with the window then made the size the controller asked for, as a window manager would; and
+    // every height checked against the sheets measured off a render, not the controller's figures.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    // Outputs tall enough that folding them would take the window above their own heading.
+    for (int i = 0; i < 4; ++i) {
+        controller.addTarget();
+    }
+    constexpr int kWidth = 800;
+    auto* const adapter = takt4::ui::headlessAdapterFor(controller.window().window());
+    REQUIRE(adapter != nullptr);
+    auto& window = controller.window().window();
+    const takt4::tests::NothingReal nothingReal;
+    int height = 934;
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto look = [&] {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, height);
+        window.dispatch_window_active_changed_event(true);
+        return sheetsDown(shot);
+    };
+    // The size the controller asked for, taken as a window manager takes it.
+    const auto obey = [&] {
+        const auto asked = adapter->requested();
+        REQUIRE(asked.has_value());
+        height = static_cast<int>(asked->height);
+        CHECK(asked->width == static_cast<std::uint32_t>(kWidth));
+    };
+    const auto clickArrow = [&](const std::pair<int, int>& sheet) {
+        clickAt(window, static_cast<float>(kWidth - 26 - 14), static_cast<float>(sheet.first + 24));
+        settle();
+    };
+    constexpr int kPinned = 10 + 66 + 51; // the triggers row and the status bar, which never scroll
+
+    std::vector<std::pair<int, int>> open = look();
+    REQUIRE(open.size() == 7);
+    const int inputsOpen = open[4].second - open[4].first + 1;
+    const int outputsOpen = open[5].second - open[5].first + 1;
+    INFO("inputs " << inputsOpen << " px open, outputs " << outputsOpen << " px open");
+
+    SECTION("Inputs, folded and opened") {
+        clickArrow(open[4]);
+        CHECK(controller.window().get_inputs_folded());
+        obey();
+        const std::vector<std::pair<int, int>> folded = look();
+        REQUIRE(folded.size() == 7);
+        CHECK(folded[4].second - folded[4].first + 1 == 40);
+        // Shorter by exactly what the fold took off the section.
+        CHECK(height == 934 - (inputsOpen - 40));
+        clickArrow(folded[4]);
+        CHECK_FALSE(controller.window().get_inputs_folded());
+        obey();
+        CHECK(height == 934);
+        CHECK(look()[4].second - look()[4].first + 1 == inputsOpen);
+    }
+
+    SECTION("Outputs, folded: its heading stays in sight") {
+        clickArrow(open[5]);
+        CHECK(controller.window().get_outputs_folded());
+        obey();
+        const std::vector<std::pair<int, int>> folded = look();
+        REQUIRE(folded.size() == 7);
+        // Their whole height off the window would put the heading under the triggers row; the
+        // window stops where the heading's bottom edge meets what is pinned.
+        CHECK(934 - (outputsOpen - 40) < folded[5].second + 1 + kPinned);
+        CHECK(height == folded[5].second + 1 + kPinned);
+        // And it is there to be clicked: the arrow opens the section again, and the height the
+        // fold took comes back.
+        clickArrow(folded[5]);
+        CHECK_FALSE(controller.window().get_outputs_folded());
+        obey();
+        CHECK(height == 934);
+    }
+
+    SECTION("both, and opened in the other order") {
+        clickArrow(open[4]);
+        obey();
+        const int afterInputs = height;
+        std::vector<std::pair<int, int>> now = look();
+        clickArrow(now[5]);
+        obey();
+        now = look();
+        REQUIRE(now.size() == 7);
+        CHECK(now[4].second - now[4].first + 1 == 40);
+        CHECK(now[5].second - now[5].first + 1 == 40);
+        // Both folded, nothing is left to scroll: the window is its content.
+        CHECK(height == now[5].second + 1 + kPinned);
+        CHECK(controller.window().get_content_least() <= static_cast<float>(height - kPinned));
+        clickArrow(now[4]);
+        obey();
+        now = look();
+        clickArrow(now[5]);
+        obey();
+        CHECK(height == 934);
+        CHECK(afterInputs < 934);
+    }
+
+    nothingReal.check();
+}
+
+TEST_CASE("folding a section while one of its boxes is being typed in keeps the edit", "[ui]") {
+    // A box commits a turn of the event loop after it loses the keyboard — which the click on
+    // the fold arrow takes. A section removed by the fold took the box, and the edit, with it;
+    // a folded section's body is clipped to nothing instead, so the commit lands. A bare window,
+    // with its owner folding as the controller does.
+    auto window = MainWindow::create();
+    std::vector<std::string> fired;
+    window->on_osc_control_port_edited(
+        [&](const slint::SharedString& t) { fired.push_back("osc-port " + std::string(t)); });
+    window->on_output_host_accepted([&](int i, const slint::SharedString& t) {
+        fired.push_back("host " + std::to_string(i) + " " + std::string(t));
+    });
+    window->on_fold_clicked([&](int section) {
+        if (section == 0) {
+            window->set_inputs_folded(!window->get_inputs_folded());
+        } else {
+            window->set_outputs_folded(!window->get_outputs_folded());
+        }
+    });
+    window->set_osc_control_port(slint::SharedString("7001"));
+    auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+    OutputRow deck{};
+    deck.name = slint::SharedString("deck");
+    deck.host = slint::SharedString("10.0.0.40");
+    deck.port = slint::SharedString("7000");
+    deck.enabled = true;
+    rows->push_back(deck);
+    window->set_outputs_list(rows);
+
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1200;
+    auto& handle = window->window();
+    const auto settle = [] { slint::platform::update_timers_and_animations(); };
+    const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    handle.dispatch_window_active_changed_event(true);
+
+    // The OSC port box: on the OSC row, the run of ink 70 px wide.
+    const int oscRow = sheets[4].first + 119;
+    float portX = -1.0f;
+    for (const auto& run : inkAlong(shot, oscRow, 20, kWidth - 20, kSheet, 3)) {
+        if (run.second - run.first + 1 >= 68 && run.second - run.first + 1 <= 72) {
+            portX = middleOf(run);
+        }
+    }
+    REQUIRE(portX > 0.0f);
+    clickAt(handle, portX, static_cast<float>(oscRow));
+    settle();
+    press(handle, "\xEF\x9C\xAB"); // End
+    press(handle, "5");
+    settle();
+    // The arrow, and the edit is not lost with the section.
+    clickAt(handle, static_cast<float>(kWidth - 40), static_cast<float>(sheets[4].first + 24));
+    settle();
+    settle();
+    CHECK(window->get_inputs_folded());
+    CHECK(fired == std::vector<std::string>{"osc-port 70015"});
+    fired.clear();
+
+    // The same for an output's host, with Outputs folded. Its sheet moved up with the fold.
+    const takt4::tests::Shot now = takt4::tests::render(*window, kWidth, kHeight);
+    const std::vector<std::pair<int, int>> after = sheetsDown(now);
+    REQUIRE(after.size() == 7);
+    handle.dispatch_window_active_changed_event(true);
+    const int deckRow = after[5].first + 10 + 28 + 8 + 18 + 8 + 17;
+    clickAt(handle, 352.0f, static_cast<float>(deckRow));
+    settle();
+    press(handle, "\xEF\x9C\xAB");
+    press(handle, "7");
+    settle();
+    clickAt(handle, static_cast<float>(kWidth - 40), static_cast<float>(after[5].first + 24));
+    settle();
+    settle();
+    CHECK(window->get_outputs_folded());
+    CHECK(fired == std::vector<std::string>{"host 0 10.0.0.407"});
+}

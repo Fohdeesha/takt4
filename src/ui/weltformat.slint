@@ -1,0 +1,1373 @@
+// Weltformat dark — the look of the main window since 2026-09-29 (HANDOFF §0.5).
+//
+// The Swiss poster wall at night: flat square charcoal sheets on a near-black page, Archivo in
+// bold lowercase, DM Mono for every number and address, one red. The operator chose it over four
+// other directions and shaped it over thirteen rounds of renders; the approved mockup is
+// `design/weltformat-dark/` (excluded from git) and every value here is its `swissdark` tokens.
+//
+// **Why the controls are built here rather than taken from std-widgets.** Slint 1.18.1's
+// `Palette.accent-background` is an `out` property with Fluent's `#60CDFF` compiled in, so a
+// ComboBox, a CheckBox, a Slider and a LineEdit keep Fluent's cyan whatever a theme says — the
+// grey-and-cyan the operator asked to be rid of. Everything here is drawn from Slint's own
+// elements instead: `TextInput`, `TouchArea`, `FocusScope`, `PopupWindow`, `Flickable`, `Path`.
+//
+// **And each one keeps what the std widgets taught the hard way:**
+//
+// - **None of them assigns its own value.** A widget that sets its own `checked`, `value` or
+//   `current-index` drops the binding its owner gave it, and goes on showing a row that is no
+//   longer there (the audit of 2026-09-25, M14, M17, L27). These say what was asked for through
+//   a callback, and show whatever their owner then holds. The window's controller writes back
+//   in the same callback, so a slider still follows the hand.
+// - **Every one of them takes the keyboard on a click**, so a text box being typed into loses
+//   it and commits — see `FocusSink`. Keys they do not want pass up to the window, which is
+//   where T, D, M and Escape (PANIC) are handled.
+// - **Nothing here changes a setting under the mouse wheel.** The wheel scrolls the page; a
+//   dropdown or a number box that moved as the pointer crossed it was how parked levels changed
+//   on the rig (H2, M19).
+// - **Escape inside a box, or inside an open list, is never PANIC.** It finishes the edit, or
+//   closes the list, and goes no further.
+//
+// The rule editor, the patch editor and the About box are still in `theme.slint`'s look: the
+// rule editor's round of this design is to be shown to the operator before it is built.
+
+import { FocusSink } from "theme.slint";
+
+// The two typefaces, embedded in the binary (SLINT_EMBED_RESOURCES). Google Fonts' own static
+// instances — what the mockup was rendered with — under the SIL Open Font License; the notices
+// are in THIRD-PARTY-NOTICES.txt. Archivo's figures are not tabular at 500, but they are at the
+// tempo's 800 (every digit 625/1000 em but the 4, at 626: 0.06 px at 62 px, measured), and every
+// other number is set in DM Mono, whose digits are all 600.
+import "../../assets/fonts/archivo/Archivo-Medium.ttf";
+import "../../assets/fonts/archivo/Archivo-Bold.ttf";
+import "../../assets/fonts/archivo/Archivo-ExtraBold.ttf";
+import "../../assets/fonts/dm-mono/DMMono-Medium.ttf";
+
+/// The `swissdark` tokens of the approved mockup (`t-swiss.css`), and nothing else. Every text
+/// colour here was measured against the surface it sits on at 4.5:1 or better, and nothing is set
+/// under 13 px — the bar the operator accepted.
+export global Wf {
+    // --- the page and its sheets -------------------------------------------------------------
+    out property <color> page: #0e0e0e;
+    /// Every section is a sheet of this, flat and square, 10 px apart on the page.
+    out property <color> sheet: #1b1b1a;
+    /// The tempo's sheet, darker than the rest: it is the one read from across the room.
+    out property <color> tempo-sheet: #000000;
+    out property <color> line: #343432;
+
+    // --- ink ---------------------------------------------------------------------------------
+    /// Warm off-white, never pure white.
+    out property <color> ink: #efeee9;
+    /// Labels, headings over columns, readings that are not the main thing.
+    out property <color> ink2: #c9c8c2;
+    /// Switched off, and still readable (7.1:1 on a sheet).
+    out property <color> ink-off: #a09f99;
+    out property <color> tempo-ink: #f6f5f0;
+    out property <color> tempo-ink2: #cfcec8;
+
+    // --- the one red, and the states ---------------------------------------------------------
+    /// Section numbers, downbeat marks, alarm.
+    out property <color> red: #ff5646;
+    /// The current beat's disc, which carries a white numeral (4.55:1).
+    out property <color> beat-disc: #e0301f;
+    /// A reading that can be clicked and typed into, underlined like a link.
+    out property <color> link: #ff6a5a;
+    out property <color> link-hover: #ff8f82;
+    out property <color> locked: #52d98a;
+    out property <color> holding: #ffb541;
+    out property <color> alarm: #ff5646;
+
+    // --- controls ----------------------------------------------------------------------------
+    out property <color> edge: #efeee9;
+    out property <color> face-hover: #2c2c2a;
+    out property <color> face-pressed: #0e0e0e;
+    /// The one control in a row to reach for: DOWNBEAT, START.
+    out property <color> primary: #efeee9;
+    out property <color> primary-hover: #ffffff;
+    out property <color> primary-pressed: #d3d2cc;
+    out property <color> on-primary: #111111;
+    /// A toggle that is held on: LOCK.
+    out property <color> active: #3ecf73;
+    out property <color> active-hover: #5ad98a;
+    out property <color> active-pressed: #33b562;
+    out property <color> on-active: #0b0b0b;
+    out property <color> panic: #d8301f;
+    /// Darker rather than lighter under the pointer, so the white label keeps its contrast.
+    out property <color> panic-hover: #c12817;
+    out property <color> panic-pressed: #a82214;
+    out property <color> on-panic: #ffffff;
+    /// A control that cannot be used keeps a readable label on this, with a dashed edge.
+    out property <color> off-face: #161616;
+    out property <color> off-edge: #6c6b67;
+    /// Boxes and dropdowns.
+    out property <color> field: #111111;
+    out property <color> field-edge: #7f7e79;
+    out property <color> field-edge-hover: #b3b2ac;
+    out property <color> field-off: #161616;
+    /// What is picked in an open list, as the rule list marks its picked rule.
+    out property <color> row-picked: #2e2e2c;
+
+    // --- sliders -----------------------------------------------------------------------------
+    out property <color> track: #3c3c3a;
+    out property <color> fill: #efeee9;
+    /// Brick, quieter than the red: a handle still stands out from its track (3:1 and more).
+    out property <color> thumb: #b5473b;
+    out property <color> thumb-hover: #c85548;
+    out property <color> thumb-off: #6c6b67;
+
+    // --- the activation plot and the meters --------------------------------------------------
+    out property <color> plot: #111111;
+    out property <color> plot-bar: #5e5e5b;
+    out property <color> plot-grid: #202020;
+    out property <color> meter-track: #343432;
+    out property <color> tempo-meter-track: #2e2e2e;
+    out property <color> beat-edge: #8f8e89;
+
+    // --- the paper behind the tempo ----------------------------------------------------------
+    out property <color> paper-fine: #0f0f0f;
+    out property <color> paper-coarse: #1e1e1e;
+
+    out property <color> scrollbar: #555553;
+    out property <color> scrollbar-hover: #7a7a77;
+
+    // --- type --------------------------------------------------------------------------------
+    /// fontique and fontdb both name the three Archivo files "Archivo" (their typographic family),
+    /// so weight picks among them: 500 text, 700 labels and buttons, 800 headings and the tempo.
+    out property <string> sans: "Archivo";
+    /// DM Mono Medium has no typographic family name, so it is a family of its own. Medium is the
+    /// weight the mockup rendered every number in (its body text is 500).
+    out property <string> mono: "DM Mono Medium";
+}
+
+/// A dashed outline — what says "locked" or "switched off" on a box, a tick box or a button.
+/// Slint draws only solid borders, so the dashes are drawn one by one along each edge, spaced
+/// evenly so both ends of an edge finish on a dash, the way a browser draws `border-style:
+/// dashed`. 3 px dashes and 2 px gaps at 1 px, measured off the approved render.
+export component Dashes inherits Rectangle {
+    in property <color> ink;
+    in property <length> thickness: 1px;
+
+    private property <length> dash: 3 * root.thickness;
+    private property <length> gap: 2 * root.thickness;
+    // Rounded up, as a browser does it: a 20 px tick box has three 6 px dashes a side, not two
+    // (measured off the approved render's "mono" box).
+    private property <int> across: max(2, ceil((root.width + root.gap) / (root.dash + root.gap)));
+    private property <int> down: max(2, ceil((root.height + root.gap) / (root.dash + root.gap)));
+    private property <length> step-x: (root.width - root.dash) / (root.across - 1);
+    private property <length> step-y: (root.height - root.dash) / (root.down - 1);
+
+    for i in root.across: Rectangle {
+        x: i * root.step-x;
+        y: 0;
+        width: root.dash;
+        height: root.thickness;
+        background: root.ink;
+    }
+    for i in root.across: Rectangle {
+        x: i * root.step-x;
+        y: root.height - root.thickness;
+        width: root.dash;
+        height: root.thickness;
+        background: root.ink;
+    }
+    for i in root.down: Rectangle {
+        x: 0;
+        y: i * root.step-y;
+        width: root.thickness;
+        height: root.dash;
+        background: root.ink;
+    }
+    for i in root.down: Rectangle {
+        x: root.width - root.thickness;
+        y: i * root.step-y;
+        width: root.thickness;
+        height: root.dash;
+        background: root.ink;
+    }
+}
+
+/// The key that does the same thing as a button, drawn as a keycap after its label: "T", "D",
+/// "Esc". A shortcut nobody can see is one nobody uses (the audit's H18).
+export component Keycap inherits Rectangle {
+    in property <string> text;
+    in property <color> ink;
+    in property <length> font-size: 13px;
+    in property <length> size: 17px;
+
+    height: root.size;
+    width: max(root.size, label.preferred-width + 6px);
+    border-width: 1.5px;
+    border-color: root.ink;
+
+    label := Text {
+        text: root.text;
+        color: root.ink;
+        font-family: Wf.mono;
+        font-size: root.font-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+/// A button: the sheet's colour inside a 2 px off-white edge, an off-white bold lowercase label.
+///
+/// `primary` fills it off-white with a dark label — the one in a row to reach for. `active` fills
+/// it green — a toggle held on. `danger` is PANIC's red. Switched off it keeps a readable label on
+/// a dark face with a dashed edge, rather than sinking into the sheet: on a freshly opened window
+/// every performance control is off, and a row of holes is not what the app should look like.
+///
+/// A click takes the keyboard to a `FocusSink` before it does anything, which is what makes a
+/// text box being typed into let go and commit (see `FocusSink`).
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    in property <bool> active;
+    in property <bool> danger;
+    /// The key that does the same thing, drawn as a keycap after the label.
+    in property <string> hint;
+    /// A state that is on and must be seen to be — PANIC engaged: a ring inside the edge, in the
+    /// label's colour.
+    in property <bool> engaged;
+    in property <length> font-size: 15px;
+    in property <length> pad: 13px;
+    in property <length> keycap-size: 17px;
+    out property <bool> has-hover: touch.has-hover;
+    callback clicked;
+
+    private property <color> face: !root.enabled ? Wf.off-face
+        : root.active ? (touch.pressed ? Wf.active-pressed : touch.has-hover ? Wf.active-hover : Wf.active)
+        : root.danger ? (touch.pressed ? Wf.panic-pressed : touch.has-hover ? Wf.panic-hover : Wf.panic)
+        : root.primary ? (touch.pressed ? Wf.primary-pressed : touch.has-hover ? Wf.primary-hover : Wf.primary)
+        : (touch.pressed ? Wf.face-pressed : touch.has-hover ? Wf.face-hover : Wf.sheet);
+    private property <color> ink: !root.enabled ? Wf.ink-off
+        : root.active ? Wf.on-active
+        : root.danger ? Wf.on-panic
+        : root.primary ? Wf.on-primary
+        : Wf.ink;
+
+    height: 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: root.face;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+    border-width: root.enabled ? 2px : 0px;
+    border-color: root.active || root.danger || root.primary ? root.face : Wf.edge;
+
+    if !root.enabled: Dashes {
+        width: 100%;
+        height: 100%;
+        thickness: 2px;
+        ink: Wf.off-edge;
+    }
+
+    if root.engaged: Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        border-width: 2px;
+        border-color: root.ink;
+    }
+
+    layout := HorizontalLayout {
+        // Inside the 2 px edge, as the mockup's CSS pads a bordered box — and the same whether or
+        // not the edge is drawn, so a button does not change size as it is switched off.
+        padding-left: root.pad + 2px;
+        padding-right: root.pad + 2px;
+        spacing: 7px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-family: Wf.sans;
+            font-size: root.font-size;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            // A label with no elide reports its whole width as the button's minimum, and a
+            // layout will not shrink a child past its minimum.
+            overflow: elide;
+        }
+
+        if root.hint != "": VerticalLayout {
+            alignment: center;
+            Keycap {
+                text: root.hint;
+                ink: root.ink;
+                size: root.keycap-size;
+            }
+        }
+    }
+
+    sink := FocusSink { }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            // Focus first, action second — see `Press` in theme.slint for why the controllers
+            // do not lean on the order the two finish in.
+            sink.take();
+            root.clicked();
+        }
+    }
+}
+
+/// The square button at the far right of a heading that folds its section away: the arrow points
+/// down while the section is open and left while it is folded (HANDOFF §0.5).
+export component FoldArrow inherits Rectangle {
+    in property <bool> folded;
+    callback clicked;
+
+    width: 28px;
+    height: 28px;
+    background: touch.pressed ? Wf.face-pressed : touch.has-hover ? Wf.face-hover : Wf.sheet;
+    border-width: 2px;
+    border-color: Wf.edge;
+    accessible-role: button;
+    accessible-label: root.folded ? "open the section" : "fold the section";
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.folded ? 7px : 12px;
+        height: root.folded ? 12px : 7px;
+        viewbox-width: root.folded ? 7 : 12;
+        viewbox-height: root.folded ? 12 : 7;
+        commands: root.folded ? "M 6 1 L 1 6 L 6 11" : "M 1 1 L 6 6 L 11 1";
+        stroke: Wf.edge;
+        stroke-width: 2.5px;
+        stroke-line-cap: LineCap.square;
+    }
+
+    sink := FocusSink { }
+
+    touch := TouchArea {
+        clicked => {
+            sink.take();
+            root.clicked();
+        }
+    }
+}
+
+/// A tick box: a 2 px off-white square, filled off-white with a dark tick when on, and its words
+/// beside it — a click on the words ticks it too, as it would on a CheckBox's own text.
+///
+/// **It never ticks itself.** `toggled` says the state being asked for and the owner sets
+/// `checked`. `locked` is the running window's "you cannot change this now": the edge dashed, the
+/// state still shown, and a click ignored.
+export component Tick inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <bool> locked;
+    in property <string> text;
+    in property <length> box-size: 20px;
+    in property <length> font-size: 15px;
+    in property <color> ink: Wf.ink;
+    callback toggled(bool);
+
+    private property <bool> usable: root.enabled && !root.locked;
+
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+    accessible-checkable: true;
+    accessible-enabled: root.usable;
+    accessible-action-default => {
+        if (root.usable) {
+            root.toggled(!root.checked);
+        }
+    }
+
+    min-height: root.box-size;
+    preferred-height: max(root.box-size, root.text == "" ? 0px : words.preferred-height);
+    vertical-stretch: 0;
+    horizontal-stretch: root.text == "" ? 0 : 1;
+    min-width: root.box-size + (root.text == "" ? 0px : 8px + min(40px, words.preferred-width));
+    preferred-width: root.box-size + (root.text == "" ? 0px : 8px + words.preferred-width);
+
+    square := Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: root.box-size;
+        height: root.box-size;
+        border-width: root.usable || root.checked ? 2px : 0px;
+        border-color: root.usable || root.locked ? root.ink : Wf.off-edge;
+        background: root.checked ? (root.usable ? root.ink : Wf.ink-off)
+            : root.usable && touch.has-hover ? Wf.face-hover : transparent;
+
+        if !root.usable && !root.checked: Dashes {
+            width: 100%;
+            height: 100%;
+            thickness: 2px;
+            ink: root.locked ? root.ink : Wf.off-edge;
+        }
+
+        // The mockup's tick: a 45-degree hook, in the page's near-black on the filled square.
+        if root.checked: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 20;
+            viewbox-height: 20;
+            commands: "M 5.2 10.2 L 8.6 13.6 L 15 6.4";
+            stroke: Wf.field;
+            stroke-width: root.box-size * 0.125;
+            stroke-line-cap: LineCap.square;
+        }
+    }
+
+    words := Text {
+        x: root.box-size + 8px;
+        width: max(0px, parent.width - self.x);
+        height: parent.height;
+        text: root.text;
+        visible: root.text != "";
+        color: root.enabled ? root.ink : Wf.ink-off;
+        font-family: Wf.sans;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // Space ticks it while it has the keyboard; everything else goes up to the window.
+    keyboard := FocusScope {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == " " && root.usable && !event.repeat) {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.usable;
+        clicked => {
+            keyboard.focus();
+            root.toggled(!root.checked);
+        }
+    }
+}
+
+/// A dropdown: a dark box with a 1 px edge and a chevron, and a list that opens under it.
+///
+/// **It never picks for itself.** `selected` says which entry was chosen and the owner sets
+/// `current-index` — so a row bound to one follows its row whatever happens to the rows, and is
+/// never built again to catch up (the audit of 2026-09-25, L27; `WindowController::shownRows_`
+/// existed for std's ComboBox, which sets its own index). An entry chosen again is not a pick.
+///
+/// Keys, as std's ComboBox has them: with the box focused, Up and Down choose the entry before and
+/// after, and Enter or Space opens the list; in the open list Up and Down move the light, Enter
+/// chooses it and Escape closes the list. Escape there is never PANIC — nor is any key: a key the
+/// list does not take goes no further than the list (measured: the list passing Escape on, it still
+/// did not reach the window). Unlike std's, **the wheel never changes it**: it scrolls the page,
+/// whatever is under the pointer.
+///
+/// `locked` is the running window's pickers: dashed, no chevron, the choice still readable, and
+/// nothing opens (HANDOFF §0.5).
+export component Pick inherits Rectangle {
+    in property <[string]> model;
+    in property <int> current-index;
+    in property <bool> enabled: true;
+    in property <bool> locked;
+    in property <length> font-size: 15px;
+    in property <string> font-family: Wf.sans;
+    in property <length> pad-left: 10px;
+    /// Room at the right for the chevron: 32 px, or 26 px with the chevron pulled in to 10 px in
+    /// the outputs table, where "MIDI clock" has to fit 106 px whole.
+    in property <length> pad-right: 32px;
+    in property <length> chevron-right: 12px;
+    out property <bool> open: list.is-open;
+    out property <bool> has-focus: keyboard.has-focus;
+    callback selected(int);
+
+    private property <bool> usable: root.enabled && !root.locked && root.model.length > 0;
+    /// The entry the box shows: `model[current-index]`, or nothing for an index off the list.
+    out property <string> shown: root.current-index >= 0 && root.current-index < root.model.length
+        ? root.model[root.current-index] : "";
+    /// The entry lit in the open list: the pointer's, or the keyboard's.
+    private property <int> lit;
+    private property <length> item-height: 30px;
+    private property <int> rows-shown: min(10, max(1, root.model.length));
+
+    height: 34px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    background: root.usable ? Wf.field : Wf.field-off;
+    accessible-role: combobox;
+    accessible-value: root.shown;
+    accessible-enabled: root.usable;
+    accessible-expandable: true;
+    accessible-expanded: list.is-open;
+    accessible-action-expand => {
+        root.show-list();
+    }
+    border-width: root.usable ? 1px : 0px;
+    border-color: keyboard.has-focus || list.is-open || touch.has-hover ? Wf.edge : Wf.field-edge;
+
+    function choose(index: int) {
+        if (index >= 0 && index < root.model.length && index != root.current-index) {
+            root.selected(index);
+        }
+    }
+
+    public function show-list() {
+        if (!root.usable) {
+            return;
+        }
+        root.lit = max(0, root.current-index);
+        list.show();
+    }
+
+    if !root.usable: Dashes {
+        width: 100%;
+        height: 100%;
+        thickness: 1px;
+        ink: root.locked ? Wf.field-edge : Wf.off-edge;
+    }
+
+    Text {
+        x: root.pad-left;
+        width: max(0px, parent.width - self.x - (root.usable ? root.pad-right : root.pad-left));
+        height: parent.height;
+        text: root.shown;
+        color: root.enabled ? Wf.ink : Wf.ink-off;
+        font-family: root.font-family;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    if root.usable: Path {
+        x: parent.width - root.chevron-right - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 11px;
+        height: 7px;
+        viewbox-width: 11;
+        viewbox-height: 7;
+        commands: list.is-open ? "M 1 6 L 5.5 1.5 L 10 6" : "M 1 1 L 5.5 5.5 L 10 1";
+        stroke: Wf.ink;
+        stroke-width: 2px;
+        stroke-line-cap: LineCap.square;
+    }
+
+    keyboard := FocusScope {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (!root.usable) {
+                return reject;
+            }
+            if (event.text == Key.UpArrow) {
+                root.choose(root.current-index - 1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.choose(root.current-index + 1);
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.show-list();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.usable;
+        mouse-cursor: pointer;
+        clicked => {
+            keyboard.focus();
+            root.show-list();
+        }
+    }
+
+    list := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        // As wide as the box, or as the longest entry needs, whichever is more — a device name in
+        // a 165 px box would otherwise be cut short in the one place it has to be read whole.
+        width: max(root.width, min(520px, widest.preferred-width + root.pad-left + 12px));
+        height: root.rows-shown * root.item-height + 2px;
+        close-policy: close-on-click-outside;
+        forward-focus: list-keys;
+
+        // The longest entry's width, measured and never drawn. A layout of its own, because the
+        // entries below are as wide as the list, and the list is as wide as this says.
+        widest := VerticalLayout {
+            visible: false;
+            for entry in root.model: Text {
+                text: entry;
+                font-family: root.font-family;
+                font-size: root.font-size;
+                font-weight: 700;
+            }
+        }
+
+        list-keys := FocusScope {
+            // The entry lit, kept in sight as the keys move it.
+            function reveal() {
+                if (root.lit * root.item-height + scroller.content-y < 0) {
+                    scroller.content-y = -root.lit * root.item-height;
+                } else if ((root.lit + 1) * root.item-height + scroller.content-y > scroller.height) {
+                    scroller.content-y = scroller.height - (root.lit + 1) * root.item-height;
+                }
+            }
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    root.lit = max(0, root.lit - 1);
+                    self.reveal();
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.lit = min(root.model.length - 1, root.lit + 1);
+                    self.reveal();
+                    return accept;
+                }
+                if (event.text == Key.Return || event.text == " ") {
+                    root.choose(root.lit);
+                    list.close();
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    list.close();
+                    return accept;
+                }
+                return reject;
+            }
+
+            Rectangle {
+                background: Wf.sheet;
+                border-width: 1px;
+                border-color: Wf.edge;
+
+                scroller := Flickable {
+                    x: 1px;
+                    y: 1px;
+                    width: parent.width - 2px;
+                    height: parent.height - 2px;
+                    interactive: false;
+                    content-width: self.width;
+                    content-height: root.model.length * root.item-height;
+                    // Opened on the entry chosen, not on the first of a long list.
+                    init => {
+                        self.content-y = -max(0, min(root.current-index - root.rows-shown + 1,
+                            root.model.length - root.rows-shown)) * root.item-height;
+                    }
+
+                    VerticalLayout {
+                        for entry[index] in root.model: Rectangle {
+                            height: root.item-height;
+                            background: index == root.lit ? Wf.ink
+                                : index == root.current-index ? Wf.row-picked : transparent;
+
+                            Text {
+                                x: root.pad-left;
+                                width: parent.width - root.pad-left - 10px;
+                                text: entry;
+                                color: index == root.lit ? Wf.on-primary : Wf.ink;
+                                font-family: root.font-family;
+                                font-size: root.font-size;
+                                font-weight: index == root.current-index ? 700 : 500;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            item-touch := TouchArea {
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        root.lit = index;
+                                    }
+                                }
+                                clicked => {
+                                    root.choose(index);
+                                    list.close();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A bar to say there is more, on a list that scrolls.
+                if root.model.length > root.rows-shown: Rectangle {
+                    x: parent.width - 6px;
+                    width: 4px;
+                    y: 1px + (parent.height - 2px - self.height)
+                        * (-scroller.content-y / max(1px, scroller.content-height - scroller.height));
+                    height: max(20px, (parent.height - 2px) * root.rows-shown / root.model.length);
+                    background: Wf.scrollbar;
+                }
+            }
+        }
+    }
+}
+
+/// A text box: dark, a 1 px edge, off-white type — and it shows what its owner says it holds, and
+/// never stops showing it (the audit of 2026-09-25, M17: `LiveField` in theme.slint, for this look).
+///
+/// `value` is shown whenever the box is not being typed in, and put back the moment an edit is
+/// finished, so what the controller made of it — a port clamped, a name trimmed — is what the box
+/// then says. `typed` is every keystroke, for an owner keeping drafts; `committed` is the edit
+/// finished — Enter, a click away, or Escape — **once**.
+///
+/// Escape finishes the edit, as clicking away does, unless `revert-on-escape` is set, which a
+/// reading typed into wants (`Reading`): there Escape leaves the number as it was. Either way it
+/// goes no further than the box, so it is never PANIC.
+///
+/// Built on Slint's `TextInput`, which does not scroll itself: the text is moved within the box to
+/// keep the cursor in sight, as std's LineEdit does it.
+export component Entry inherits Rectangle {
+    in property <string> value;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <length> font-size: 15px;
+    in property <string> font-family: Wf.sans;
+    in property <length> pad: 10px;
+    in property <TextHorizontalAlignment> align: left;
+    in property <bool> revert-on-escape;
+    out property <bool> has-focus: input.has-focus;
+    /// What the box holds this moment: what is being typed, or `value` when it is not.
+    out property <string> shown: input.text;
+    callback typed(string);
+    callback committed(string);
+    /// Escape was pressed in it — said before the focus leaves.
+    callback escaped();
+
+    // Enter has committed; the focus leaving because of it is not a second edit.
+    private property <bool> entered;
+    // Escape in a box that puts back what it held: the focus leaving commits nothing.
+    private property <bool> reverting;
+
+    height: 34px;
+    min-width: 2 * root.pad + 20px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    background: root.enabled ? Wf.field : Wf.field-off;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Wf.edge : hover.has-hover && root.enabled ? Wf.field-edge-hover : Wf.field-edge;
+
+    /// Into the box with everything in it selected, so that typing replaces it.
+    public function edit-now() {
+        input.focus();
+        input.select-all();
+    }
+
+    /// Finished with the box: the keyboard goes where it commits the edit and still passes the
+    /// window's shortcuts up.
+    public function leave() {
+        sink.take();
+    }
+
+    // What the owner changed it to, into the box — never over what is being typed.
+    changed value => {
+        if (!input.has-focus) {
+            input.text = root.value;
+        }
+    }
+
+    // Under everything, so a click on the box's padding still reaches the text.
+    hover := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    Text {
+        x: root.pad;
+        width: parent.width - 2 * root.pad;
+        height: parent.height;
+        visible: input.text == "" && input.preedit-text == "";
+        text: root.placeholder;
+        color: Wf.ink-off;
+        font-family: root.font-family;
+        font-size: root.font-size;
+        horizontal-alignment: root.align;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    window := Rectangle {
+        x: root.pad;
+        width: parent.width - 2 * root.pad;
+        height: parent.height;
+        clip: true;
+
+        input := TextInput {
+            property <length> computed-x;
+            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+            width: max(parent.width - self.text-cursor-width, self.preferred-width);
+            height: 100%;
+            text: root.value;
+            enabled: root.enabled;
+            single-line: true;
+            vertical-alignment: center;
+            horizontal-alignment: root.align;
+            color: root.enabled ? Wf.ink : Wf.ink-off;
+            font-family: root.font-family;
+            font-size: root.font-size;
+            selection-background-color: Wf.ink;
+            selection-foreground-color: Wf.on-primary;
+            text-cursor-width: 2px;
+
+            cursor-position-changed(at) => {
+                if (at.x + self.computed-x < 0px) {
+                    self.computed-x = -at.x;
+                } else if (at.x + self.computed-x > parent.width - self.text-cursor-width) {
+                    self.computed-x = parent.width - at.x - self.text-cursor-width;
+                }
+            }
+            edited => {
+                root.typed(self.text);
+            }
+            accepted => {
+                root.entered = true;
+                // Focus first, callback second: the callback may publish, and the keyboard has to
+                // be somewhere that passes the window's shortcuts up before it does.
+                sink.take();
+                root.committed(self.text);
+                self.text = root.value;
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.reverting = root.revert-on-escape;
+                    root.escaped();
+                    sink.take();
+                    return accept;
+                }
+                return reject;
+            }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    if (root.entered) {
+                        root.entered = false;
+                    } else if (root.reverting) {
+                        root.reverting = false;
+                    } else {
+                        root.committed(self.text);
+                    }
+                    self.text = root.value;
+                    self.computed-x = 0px;
+                }
+            }
+        }
+    }
+
+    sink := FocusSink { }
+}
+
+/// A reading that can be clicked and typed into: the number in red, underlined like a link (the
+/// operator's ask of 2026-09-25, "just a underlined blue number like a URL" — red since the
+/// redesign). Clicked, a box opens in its place holding the number alone, all of it selected;
+/// Enter or a click away sets it, Escape leaves it as it was. What was typed goes to the C++ side
+/// as text, which reads it and clamps it.
+///
+/// Right-justified in its column, so it sits against whatever is at the end of its row.
+export component Reading inherits Rectangle {
+    /// What it reads at rest: "+12 ms".
+    in property <string> text;
+    /// What the box holds when it opens: "12".
+    in property <string> value-text;
+    in property <bool> enabled: true;
+    in property <length> font-size: 14px;
+    /// Right-justified in an output row, against its delete button; the latency reading above
+    /// the table, which has no delete button, starts at the left of its column (the approved render).
+    in property <TextHorizontalAlignment> align: right;
+    out property <bool> editing;
+    callback committed(string);
+
+    reading := Text {
+        x: root.align == TextHorizontalAlignment.right ? parent.width - self.width : 0px;
+        y: (parent.height - self.height) / 2;
+        width: min(self.preferred-width, parent.width);
+        visible: !root.editing;
+        text: root.text;
+        color: !root.enabled ? Wf.ink-off : touch.has-hover ? Wf.link-hover : Wf.link;
+        font-family: Wf.mono;
+        font-size: root.font-size;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+
+    // The line under it, which is what says it can be clicked — only while it can.
+    Rectangle {
+        visible: !root.editing && root.enabled;
+        x: reading.x;
+        y: reading.y + reading.height - 1px;
+        width: reading.width;
+        height: 1px;
+        background: reading.color;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && !root.editing;
+        mouse-cursor: pointer;
+        clicked => {
+            root.editing = true;
+            box.edit-now();
+        }
+    }
+
+    box := Entry {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: parent.width;
+        height: 28px;
+        visible: root.editing;
+        enabled: root.editing;
+        value: root.value-text;
+        font-family: Wf.mono;
+        font-size: root.font-size;
+        pad: 5px;
+        align: root.align;
+        revert-on-escape: true;
+        escaped => {
+            root.editing = false;
+        }
+        committed(text) => {
+            root.editing = false;
+            root.committed(text);
+        }
+    }
+}
+
+/// A slider: a 3 px track, filled off-white from the left to an 18 px round brick handle.
+///
+/// **It never moves itself.** A drag says where it is through `moved`, as an absolute value on the
+/// step, and the handle is drawn where `value` then is — the window's controller writes the
+/// setting back inside that same callback, so the handle follows the hand; a controller that
+/// clamps it stops the handle at the clamp. A press on the track jumps there and goes on dragging.
+/// With the keyboard: Left and Right step, Home and End go to the ends. Never the wheel.
+export component Track inherits Rectangle {
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <bool> enabled: true;
+    out property <bool> dragging: touch.pressed;
+    /// The handle's centre, from the slider's left edge.
+    out property <length> handle-x: root.centre;
+    callback moved(float);
+
+    private property <length> thumb: 18px;
+    private property <length> span: root.width - root.thumb;
+    private property <float> share: root.maximum > root.minimum
+        ? clamp((root.value - root.minimum) / (root.maximum - root.minimum), 0.0, 1.0) : 0.0;
+    private property <length> centre: root.thumb / 2 + root.span * root.share;
+    // Where the handle was, in value, when the press began — so a press on the handle itself
+    // grabs it where it is rather than jumping its centre under the pointer.
+    private property <float> grabbed;
+    private property <length> grabbed-at;
+
+    height: 24px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    accessible-role: slider;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => {
+        root.send(root.value + max(root.step, 0.01));
+    }
+    accessible-action-decrement => {
+        root.send(root.value - max(root.step, 0.01));
+    }
+
+    pure function at(x: length) -> float {
+        root.span > 0 ? root.minimum + (root.maximum - root.minimum) * clamp((x - root.thumb / 2) / root.span, 0.0, 1.0)
+            : root.minimum
+    }
+
+    function send(v: float) {
+        let stepped = root.step > 0 ? round((v - root.minimum) / root.step) * root.step + root.minimum : v;
+        let clamped = clamp(stepped, root.minimum, root.maximum);
+        if (clamped != root.value) {
+            root.moved(clamped);
+        }
+    }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 3px;
+        background: Wf.track;
+    }
+
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: root.centre;
+        height: 3px;
+        background: root.enabled ? Wf.fill : Wf.off-edge;
+    }
+
+    Rectangle {
+        x: root.centre - root.thumb / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.thumb;
+        height: root.thumb;
+        border-radius: root.thumb / 2;
+        background: !root.enabled ? Wf.thumb-off
+            : touch.pressed || touch.has-hover ? Wf.thumb-hover : Wf.thumb;
+    }
+
+    keyboard := FocusScope {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (!root.enabled) {
+                return reject;
+            }
+            if (event.text == Key.RightArrow) {
+                root.send(root.value + max(root.step, 0.01));
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.send(root.value - max(root.step, 0.01));
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.send(root.minimum);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.send(root.maximum);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                keyboard.focus();
+                if (abs(self.mouse-x - root.centre) <= root.thumb / 2) {
+                    root.grabbed = root.value;
+                    root.grabbed-at = self.mouse-x;
+                } else {
+                    root.grabbed = root.at(self.mouse-x);
+                    root.grabbed-at = self.mouse-x;
+                    root.send(root.grabbed);
+                }
+            }
+        }
+        moved => {
+            if (self.pressed && root.span > 0) {
+                root.send(root.grabbed + (self.mouse-x - root.grabbed-at) / root.span * (root.maximum - root.minimum));
+            }
+        }
+    }
+}
+
+/// One slider with two handles: the part between them is the range. The fold window's two ends
+/// (40 to 220 BPM, at least `least-span` apart), which were two sliders — one handle cannot be
+/// dragged past the other, so the range cannot be turned inside out.
+///
+/// A press takes whichever handle is nearer, and a press between them the nearer too; a press on
+/// the track outside them jumps that end there. It never moves itself: `low-moved` and `high-moved`
+/// say where, and the owner sets `low` and `high`.
+export component SpanTrack inherits Rectangle {
+    in property <float> low;
+    in property <float> high;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> least-span: 0;
+    in property <float> step: 1;
+    in property <bool> enabled: true;
+    callback low-moved(float);
+    callback high-moved(float);
+
+    private property <length> thumb: 18px;
+    private property <length> span: root.width - root.thumb;
+    pure function share(v: float) -> float {
+        root.maximum > root.minimum ? clamp((v - root.minimum) / (root.maximum - root.minimum), 0.0, 1.0) : 0.0
+    }
+    /// Each handle's centre, from the slider's left edge.
+    out property <length> low-x: root.thumb / 2 + root.span * root.share(root.low);
+    out property <length> high-x: root.thumb / 2 + root.span * root.share(root.high);
+    // Which end the press took: 0 none, 1 the low end, 2 the high end — and the last one moved,
+    // which the arrow keys move.
+    private property <int> holding: 0;
+    private property <int> last: 1;
+    private property <float> grabbed;
+    private property <length> grabbed-at;
+
+    height: 24px;
+    min-width: 110px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    pure function at(x: length) -> float {
+        root.span > 0 ? root.minimum + (root.maximum - root.minimum) * clamp((x - root.thumb / 2) / root.span, 0.0, 1.0)
+            : root.minimum
+    }
+
+    function send(end: int, v: float) {
+        let stepped = root.step > 0 ? round((v - root.minimum) / root.step) * root.step + root.minimum : v;
+        if (end == 1) {
+            let clamped = clamp(stepped, root.minimum, root.high - root.least-span);
+            if (clamped != root.low) {
+                root.low-moved(clamped);
+            }
+        } else {
+            let clamped = clamp(stepped, root.low + root.least-span, root.maximum);
+            if (clamped != root.high) {
+                root.high-moved(clamped);
+            }
+        }
+    }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 3px;
+        background: Wf.track;
+    }
+
+    Rectangle {
+        x: root.low-x;
+        y: (parent.height - self.height) / 2;
+        width: max(0px, root.high-x - root.low-x);
+        height: 3px;
+        background: root.enabled ? Wf.fill : Wf.off-edge;
+    }
+
+    for end in 2: Rectangle {
+        x: (end == 0 ? root.low-x : root.high-x) - root.thumb / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.thumb;
+        height: root.thumb;
+        border-radius: root.thumb / 2;
+        background: !root.enabled ? Wf.thumb-off
+            : root.holding == end + 1 || (touch.has-hover && root.holding == 0
+                && abs(touch.mouse-x - (end == 0 ? root.low-x : root.high-x)) <= root.thumb / 2)
+            ? Wf.thumb-hover : Wf.thumb;
+    }
+
+    keyboard := FocusScope {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (!root.enabled) {
+                return reject;
+            }
+            let now = root.last == 1 ? root.low : root.high;
+            if (event.text == Key.RightArrow) {
+                root.send(root.last, now + max(root.step, 0.01));
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.send(root.last, now - max(root.step, 0.01));
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.button != PointerEventButton.left) {
+                return;
+            }
+            if (event.kind == PointerEventKind.down) {
+                keyboard.focus();
+                // The nearer end; on a tie — the two handles drawn over each other — the side of
+                // the pair the press is on.
+                let to-low = abs(self.mouse-x - root.low-x);
+                let to-high = abs(self.mouse-x - root.high-x);
+                root.holding = to-low < to-high ? 1
+                    : to-high < to-low ? 2
+                    : self.mouse-x < root.low-x ? 1 : 2;
+                root.last = root.holding;
+                let end-x = root.holding == 1 ? root.low-x : root.high-x;
+                if (abs(self.mouse-x - end-x) <= root.thumb / 2) {
+                    root.grabbed = root.holding == 1 ? root.low : root.high;
+                } else {
+                    root.grabbed = root.at(self.mouse-x);
+                    root.send(root.holding, root.grabbed);
+                }
+                root.grabbed-at = self.mouse-x;
+            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                root.holding = 0;
+            }
+        }
+        moved => {
+            if (self.pressed && root.holding != 0 && root.span > 0) {
+                root.send(root.holding,
+                    root.grabbed + (self.mouse-x - root.grabbed-at) / root.span * (root.maximum - root.minimum));
+            }
+        }
+    }
+}
+
+/// A level: a flat bar filled from the left. The confidence and the input.
+export component Meter inherits Rectangle {
+    in property <float> value;
+    in property <color> fill: Wf.fill;
+    in property <color> track: Wf.meter-track;
+
+    height: 10px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    background: root.track;
+    clip: true;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0.0, 1.0);
+        height: 100%;
+        background: root.fill;
+    }
+}
+
+/// A section's heading: its number in red, its name in lowercase, and — for a section that folds —
+/// the arrow at the far right and, while folded, a line saying what the section holds, so a folded
+/// section still reports (HANDOFF §0.5).
+export component SectionHead inherits Rectangle {
+    in property <string> number;
+    in property <string> title;
+    in property <bool> folds;
+    in property <bool> folded;
+    in property <string> summary;
+    /// The alarm colour when something in the folded section is not working, which a fold must
+    /// not hide.
+    in property <color> summary-color: Wf.ink2;
+    callback fold-clicked;
+
+    height: root.folds ? 28px : 22px;
+    vertical-stretch: 0;
+
+    no := Text {
+        x: 0;
+        y: parent.height - self.height - 2px;
+        text: root.number;
+        color: Wf.red;
+        font-family: Wf.sans;
+        font-size: 14px;
+        font-weight: 800;
+    }
+
+    name := Text {
+        x: no.width + 10px;
+        y: parent.height - self.height;
+        text: root.title;
+        color: Wf.ink;
+        font-family: Wf.sans;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.36px;
+    }
+
+    if root.folds && root.folded: Text {
+        x: name.x + name.width + 10px;
+        y: parent.height - self.height - 2px;
+        width: max(0px, parent.width - self.x - 28px - 12px);
+        text: root.summary;
+        color: root.summary-color;
+        font-family: Wf.sans;
+        font-size: 14px;
+        overflow: elide;
+    }
+
+    if root.folds: FoldArrow {
+        x: parent.width - self.width;
+        y: 0;
+        folded: root.folded;
+        clicked => {
+            root.fold-clicked();
+        }
+    }
+}
+
+/// The main window's scroller: vertical only, the content as wide as the view, and a 6 px bar in
+/// the page's right-hand margin that can be dragged — where std's Fluent scroll bar lay over the
+/// right 14 px of the content and took the clicks meant for it.
+///
+/// Like std's ScrollView it does not pan when the background is dragged with the mouse, and the
+/// wheel scrolls it wherever the pointer is.
+export component Scroller inherits Rectangle {
+    out property <length> visible-height: flick.height;
+    out property <length> scrolled: -flick.content-y;
+    out property <length> content-height: flick.content-height;
+
+    min-height: 50px;
+
+    // A fold makes the content shorter: Slint's Flickable keeps a view scrolled past the new end
+    // in range by itself (measured, widget_test.cpp's scroller test).
+
+    flick := Flickable {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        mouse-drag-pan-enabled: false;
+        content-width: self.width;
+
+        @children
+    }
+
+    private property <length> most: max(0px, flick.content-height - flick.height);
+    private property <length> bar-length: max(24px, (flick.height - 8px) * flick.height / max(1px, flick.content-height));
+    private property <length> pressed-scroll;
+
+    if root.most > 0: Rectangle {
+        x: parent.width - 9px;
+        y: 4px + (flick.height - 8px - root.bar-length) * (-flick.content-y / max(1px, root.most));
+        width: 6px;
+        height: root.bar-length;
+        border-radius: 3px;
+        background: bar-touch.pressed || bar-touch.has-hover ? Wf.scrollbar-hover : Wf.scrollbar;
+
+        bar-touch := TouchArea {
+            x: -2px;
+            width: parent.width + 4px;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.pressed-scroll = -flick.content-y;
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    let track = flick.height - 8px - root.bar-length;
+                    let to = root.pressed-scroll + (self.mouse-y - self.pressed-y) * root.most / max(1px, track);
+                    flick.content-y = -clamp(to, 0px, root.most);
+                }
+            }
+        }
+    }
+}

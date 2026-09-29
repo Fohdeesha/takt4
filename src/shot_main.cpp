@@ -17,7 +17,8 @@ void printUsage(std::ostream& out) {
         << " — render the main window to a BMP\n"
            "\n"
            "  takt4-shot OUT.bmp [--size WxH] [--scale S] [--stopped | --trouble]\n"
-           "                     [--rules [--dmx] | --fixtures | --about]\n"
+           "                     [--mockup] [--fold inputs,outputs] [--panicked]\n"
+           "                     [--rules [--dmx] | --fixtures | --about | --widgets]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
            "  --scale S       the display's scale, 1.25 for 125 %: the size stays\n"
@@ -26,10 +27,16 @@ void printUsage(std::ostream& out) {
            "                  controls disabled — instead of a tracker running\n"
            "  --trouble       the running window with outputs and control inputs that\n"
            "                  cannot be reached, each saying why under itself\n"
+           "  --mockup        the running window holding exactly what the approved mockup\n"
+           "                  of 2026-09-29 holds (design/weltformat-dark), to lay the two\n"
+           "                  pictures over each other\n"
+           "  --fold WHICH    draw inputs, outputs or both (inputs,outputs) folded\n"
+           "  --panicked      draw PANIC engaged, with RELEASE beside it\n"
            "  --rules         draw §5.9's rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
+           "  --widgets       draw one of each of the main window's controls, in each state\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
            "display: the readouts are filled by running the tracker over\n"
@@ -61,10 +68,28 @@ int main(int argc, char** argv) {
             options.fixtures = true;
         } else if (arg == "--about") {
             options.about = true;
+        } else if (arg == "--widgets") {
+            options.widgets = true;
         } else if (arg == "--dmx") {
             options.dmx = true;
         } else if (arg == "--trouble") {
             options.trouble = true;
+        } else if (arg == "--mockup") {
+            options.mockup = true;
+        } else if (arg == "--panicked") {
+            options.panicked = true;
+        } else if (arg == "--fold") {
+            if (i + 1 >= argc) {
+                std::cerr << "takt4-shot: --fold needs inputs, outputs or inputs,outputs\n";
+                return 2;
+            }
+            const std::string which = argv[++i];
+            options.foldInputs = which.find("inputs") != std::string::npos;
+            options.foldOutputs = which.find("outputs") != std::string::npos;
+            if (!options.foldInputs && !options.foldOutputs) {
+                std::cerr << "takt4-shot: --fold takes inputs, outputs or inputs,outputs\n";
+                return 2;
+            }
         } else if (arg == "--scale") {
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --scale needs a number, 1.25 for 125 %\n";
@@ -120,6 +145,10 @@ int main(int argc, char** argv) {
     if (options.rules && !sized) {
         width = takt4::ui::kRulesShotWidth;
         height = takt4::ui::kRulesShotHeight;
+    }
+    if (options.widgets && !sized) {
+        width = 900;
+        height = 720;
     }
     if (options.fixtures && !sized) {
         width = takt4::ui::kFixturesShotWidth;

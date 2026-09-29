@@ -525,6 +525,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // at a glance and stays answerable — the opening status line used to be the only place
     // it was said, and the first status after it took the answer away.
     window_->set_version(slint::SharedString(versionLabel(buildInfo())));
+    window_->set_version_short(
+        slint::SharedString(shortVersionLabel(buildInfo().version, buildInfo().commit)));
 
     // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
@@ -569,6 +571,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_keep_shift_changed([this](bool keep) { setKeepShift(keep); });
 
     window_->on_link_peers_toggled([this] { toggleLinkPeers(); });
+    window_->on_fold_clicked([this](int section) { toggleFold(section); });
     window_->on_output_name_edited([this](int index, const slint::SharedString& name) {
         setTargetName(index, std::string(name), false);
     });
@@ -950,18 +953,10 @@ void WindowController::publishPortLists() {
         devices->push_back(shared(i < midiPorts_.size() ? deviceNames_[i]
                                                         : deviceNames_[i] + " \xE2\x80\x94 not plugged in"));
     }
+    // A MIDI row's dropdown shows the entry its row names, from whichever list this is: it never
+    // answers a new list by picking for itself, as std's ComboBox did (the audit of 2026-09-25,
+    // L27, which had every MIDI row built again here).
     window_->set_output_devices(devices);
-    // **Every MIDI row built again with the list** (the audit of 2026-09-25, L27). A dropdown
-    // answers a new model by setting its own `current-index` (Slint's `ComboBoxBase`, `changed
-    // model => reset-current()`), which cuts it loose from its row: after a RESCAN every MIDI
-    // row's dropdown went on showing whatever it showed then, whatever device the row moved to.
-    for (std::size_t i = 0; i < targetDrafts_.size(); ++i) {
-        const int kind = targetDrafts_[i].kind_index;
-        if (kind == static_cast<int>(output::OutputTarget::Kind::Midi) ||
-            kind == static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
-            staleTargetRows_.push_back(i);
-        }
-    }
 
     publishMidiInputList();
 }
@@ -1588,6 +1583,52 @@ void WindowController::toggleLinkPeers() {
     publishLinkPeers();
 }
 
+void WindowController::toggleFold(int section) {
+    if (section != 0 && section != 1) {
+        return;
+    }
+    // What is typed into an output row is applied first, as every action here does (see
+    // `applyDrafts`): the click on the arrow took the keyboard from the box, and the box's own
+    // commit comes a turn of the event loop later.
+    applyDrafts();
+    const auto at = static_cast<std::size_t>(section);
+    const bool folding =
+        section == 0 ? !window_->get_inputs_folded() : !window_->get_outputs_folded();
+    // What the fold takes off the content, or gives back: its least height either side of the
+    // change. Read straight after setting the property, since Slint works a layout out when it is
+    // read — which is also what makes `fold-keep` below the new layout's and not the old one's.
+    const float before = window_->get_content_least();
+    if (section == 0) {
+        window_->set_inputs_folded(folding);
+    } else {
+        window_->set_outputs_folded(folding);
+    }
+    const float after = window_->get_content_least();
+
+    slint::Window& handle = window_->window();
+    if (handle.is_maximized() || handle.is_fullscreen()) {
+        foldTaken_[at] = 0.0f; // the operator's size, not this class's to change
+        return;
+    }
+    const float width = window_->get_shown_width();
+    const float height = window_->get_shown_height();
+    float next = height;
+    if (folding) {
+        // Shorter by what was folded — but the lowest folded heading, and the arrow that opens it
+        // again, stays in sight above what is pinned, and the window keeps its own minimum.
+        const float keep = window_->get_fold_keep() + window_->get_pinned_height();
+        next = std::min(height, std::max({kMainWindowMinHeight, height - (before - after), keep}));
+        foldTaken_[at] = height - next;
+    } else {
+        // What the fold took, given back — no taller than the screen has room for.
+        next = fitToScreen({width, height + foldTaken_[at]}).height;
+        foldTaken_[at] = 0.0f;
+    }
+    if (next != height) {
+        handle.set_size(slint::LogicalSize({width, next}));
+    }
+}
+
 void WindowController::publishLinkPeers() {
     if (!linkPeersShown_) {
         return;
@@ -1635,7 +1676,6 @@ void WindowController::setTargetName(int index, const std::string& name, bool ap
     if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
         return;
     }
-    shownRow(index).name = std::string(shared(name)); // what the box now shows
     targetDrafts_[static_cast<std::size_t>(index)].name = shared(name);
     if (apply) {
         applyTargets();
@@ -1649,7 +1689,6 @@ void WindowController::setTargetHost(int index, const std::string& host, bool ap
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    shownRow(index).host = std::string(shared(host));
     row.host = shared(host);
     row.address = shared(addressOf(row, deviceNames_));
     if (apply) {
@@ -1664,7 +1703,6 @@ void WindowController::setTargetPort(int index, const std::string& port, bool ap
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    shownRow(index).port = std::string(shared(port));
     row.port = shared(port);
     row.address = shared(addressOf(row, deviceNames_));
     if (apply) {
@@ -1685,29 +1723,9 @@ void WindowController::setTargetKind(int index, int kind) {
         return;
     }
     if (row.kind_index == kind) {
-        // The kind the row already is, picked again: nothing changes — except that the dropdown
-        // has set its own index doing it, and follows its row no more. Recorded like any pick,
-        // so the row is built again when something else moves its kind (the audit of
-        // 2026-09-25, L27): it returned before this, and the dropdown went on showing the old
-        // kind over a row a paste or an IMPORT had changed.
-        shownRow(index).kind = kind;
-        return;
+        return; // the kind the row already is: nothing changes
     }
     const bool wasArtNet = row.kind_index == static_cast<int>(output::OutputTarget::Kind::ArtNet);
-    // The dropdown shows what was picked. And a row that changes shape — a host and a port, or a
-    // device — has new boxes for the other shape, bound from the start, so what was typed into
-    // the old ones no longer shows anywhere.
-    const auto hostShaped = [](int k) {
-        return k == static_cast<int>(output::OutputTarget::Kind::Osc) ||
-               k == static_cast<int>(output::OutputTarget::Kind::ArtNet);
-    };
-    ShownRow& shown = shownRow(index);
-    if (hostShaped(row.kind_index) != hostShaped(kind)) {
-        shown.host.reset();
-        shown.port.reset();
-        shown.device.reset();
-    }
-    shown.kind = kind;
     row.kind_index = kind;
     // Art-Net has one port and everybody uses it. A row switched to it while holding 7000 —
     // an OSC port an operator typed, or the default a new row is born with — would be a node
@@ -1733,7 +1751,6 @@ void WindowController::setTargetDevice(int index, int device) {
         return;
     }
     OutputRow& row = targetDrafts_[static_cast<std::size_t>(index)];
-    shownRow(index).device = device;
     row.device_index = device;
     // A device picked on a row that asks for one — MIDI or a MIDI clock — and made MIDI when
     // it did not, which is the only other kind with a device.
@@ -1788,9 +1805,6 @@ void WindowController::removeTarget(int index) {
     if (at < targetModel_->row_count()) {
         targetModel_->erase(at);
     }
-    if (at < shownRows_.size()) {
-        shownRows_.erase(shownRows_.begin() + index);
-    }
     applyTargets();
 }
 
@@ -1798,7 +1812,6 @@ void WindowController::setTargetEnabled(int index, bool on) {
     if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
         return;
     }
-    shownRow(index).enabled = on; // the tick shows its own click now; see `ShownRow`
     targetDrafts_[static_cast<std::size_t>(index)].enabled = on;
     applyTargets();
 }
@@ -2021,61 +2034,32 @@ void WindowController::applyTargets() {
     publishOutputs();
 }
 
-WindowController::ShownRow& WindowController::shownRow(int index) {
-    const auto at = static_cast<std::size_t>(index);
-    if (at >= shownRows_.size()) {
-        shownRows_.resize(at + 1);
-    }
-    return shownRows_[at];
-}
-
 void WindowController::publishTargetRows() {
     // In place. `applyTargets` calls this, and `setTargetDelay` calls `applyTargets` on every
     // step of a drag — so replacing the model here destroyed and rebuilt the very slider the
     // pointer was holding, and the drag ended on the first pixel of movement. See `writeRows`.
     //
-    // But updating in place also keeps a *dead* `text:` binding, and these rows are three text
-    // boxes each. Delete the first of three outputs and every row below moves up one: the
-    // rows are rewritten, and any box that had been typed into goes on showing the name that
-    // belonged to the target above it. The same failure the rule editor's chips had, on the
-    // same mechanism — Slint drops a binding the moment the property is assigned.
-    //
-    // So a row is built again when **what its boxes show** is not what it now holds — and only
-    // then, and only that row. What a box shows is what was typed there (`shownRows_`) or, if
-    // nobody typed there, the model, which it follows by itself. It used to be rebuilt whenever
-    // its text moved at all, which included the edit just made: renaming an output and pressing
-    // Enter rebuilt the row, and the box holding the keyboard went with it — so Escape, which is
-    // PANIC, reached nothing until the next click, and a click from the name box into the host
-    // box lost what was typed there (found 2026-09-25, when the tests learned to let the redraw
-    // that does it run).
+    // **And never a row built again for what it shows.** Every control on a row follows its row
+    // whatever happens to the rows — none of them sets its own value (weltformat.slint) — so a
+    // row rewritten in place is a row that shows its new data, and a row built again would only
+    // take away the box the operator is typing in or the list they have open: an element somebody
+    // is holding is never destroyed.
     //
     // Each row's reason for reaching nothing goes in with it — `rowProblems_`, by id, since the
-    // drafts are rebuilt from the targets by every apply. Not part of what a box shows, so it
-    // never makes a row stale: it is a line of text under the row, updated in place.
+    // drafts are rebuilt from the targets by every apply: a line of text under the row.
+    int on = 0;
+    int failing = 0;
     for (OutputRow& row : targetDrafts_) {
         const auto found = rowProblems_.find(std::string(row.id));
         row.problem = shared(found == rowProblems_.end() ? std::string{} : found->second);
-    }
-    const std::size_t common =
-        std::min<std::size_t>(targetModel_->row_count(), targetDrafts_.size());
-    for (std::size_t i = 0; i < common && i < shownRows_.size(); ++i) {
-        const ShownRow& shown = shownRows_[i];
-        const OutputRow& now = targetDrafts_[i];
-        const auto differs = [](const auto& typed, const auto& value) {
-            return typed.has_value() && *typed != value;
-        };
-        if (differs(shown.name, std::string(now.name)) ||
-            differs(shown.host, std::string(now.host)) ||
-            differs(shown.port, std::string(now.port)) || differs(shown.kind, now.kind_index) ||
-            differs(shown.device, now.device_index) || differs(shown.enabled, now.enabled)) {
-            staleTargetRows_.push_back(i);
-        }
+        on += row.enabled ? 1 : 0;
+        failing += row.problem.empty() ? 0 : 1;
     }
     writeRows(*targetModel_, targetDrafts_);
-    // A row taken off the end took its element, and whatever was typed in it, with it.
-    if (shownRows_.size() > targetDrafts_.size()) {
-        shownRows_.resize(targetDrafts_.size());
-    }
+    // For the line the Outputs heading reads while the section is folded, which a fold must not
+    // leave saying all is well while a row below it is reaching nothing.
+    window_->set_outputs_on(on);
+    window_->set_outputs_failing(failing);
 }
 
 void WindowController::pickMidiControlPort(int index) {
@@ -2472,6 +2456,8 @@ void WindowController::publishOscControl(bool force) {
             failing ? "NOT LISTENING \xE2\x80\x94 " + oscControlProblem_ + ". Trying again every " +
                           fixed(controlRetrySeconds_, 0) + " s."
                     : std::string("off")));
+        window_->set_osc_control_from(shared(""));
+        window_->set_osc_control_counts(shared(""));
         return;
     }
     window_->set_osc_control_error(false);
@@ -2482,17 +2468,25 @@ void WindowController::publishOscControl(bool force) {
     const std::uint64_t ignored = oscControl_.ignored();
     if (handled == 0 && ignored == 0) {
         window_->set_osc_control_reading(shared(config.prefix + "/ctl/...  nothing yet"));
+        window_->set_osc_control_from(shared(""));
+        window_->set_osc_control_counts(shared(""));
         return;
     }
-    std::string text = oscControl_.lastMessage();
-    if (!text.empty()) {
-        text += "  ";
+    // The address on the first line and where it came from beside it, in the secondary colour;
+    // the counts under them (the approved render, HANDOFF §0.5).
+    std::string address = oscControl_.lastMessage();
+    std::string from;
+    if (const std::size_t at = address.rfind("  from "); at != std::string::npos) {
+        from = address.substr(at + 2);
+        address.erase(at);
     }
+    window_->set_osc_control_reading(shared(address));
+    window_->set_osc_control_from(shared(from));
     // Counted separately, because "arriving but not understood" is a different fault from
     // "not arriving" and they need different fixes — a wrong prefix against a wrong
     // address. Nothing else on screen tells the two apart.
-    text += std::to_string(handled) + " acted, " + std::to_string(ignored) + " ignored";
-    window_->set_osc_control_reading(shared(text));
+    window_->set_osc_control_counts(
+        shared(std::to_string(handled) + " acted, " + std::to_string(ignored) + " ignored"));
 }
 
 double WindowController::nowSeconds() const {
@@ -3192,10 +3186,12 @@ void WindowController::publishOpenStream() {
             ? "In " + std::to_string(running.selection.channels[0] + 1) + " + " +
                   std::to_string(running.selection.channels[1] + 1) + " (stereo)"
             : inputName(running.selection.channels[0]);
-    setStatus(inputs + " of " + running.device.name + "  ·  " + fixed(stream->sampleRate(), 0) +
-                  " Hz -> " +
-                  fixed(audio::kInternalSampleRate, 0) + " Hz  ·  " +
-                  audio::toString(stream->picker().mode()) + " pick  ·  latency " +
+    // Two lines: what is being listened to, and the latency figures on a line of their own
+    // (asked for on 2026-09-29, with the redesign), so neither is broken across the other.
+    setStatus(inputs + " of " + running.device.name + " \xC2\xB7 " +
+                  fixed(stream->sampleRate(), 0) + " Hz \xE2\x86\x92 " +
+                  fixed(audio::kInternalSampleRate, 0) + " Hz \xC2\xB7 " +
+                  audio::toString(stream->picker().mode()) + " pick\nlatency " +
                   fixed(stream->inputLatencySeconds() * 1000.0, 1) + " ms input + " +
                   fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing",
               false);
@@ -3291,19 +3287,6 @@ void WindowController::tick() {
     if (!runPending_ && window_->get_run_busy() &&
         nowSeconds() - runSettledAt_ >= kRunGraceSeconds) {
         window_->set_run_busy(false);
-    }
-    // First, and outside every widget callback: `publishTargetRows` found rows it could not
-    // honestly update in place, so each is built again here rather than from inside the × that
-    // was pressed on the row being destroyed. One redraw later is 33 ms. One row at a time, so
-    // every other row keeps its element and whatever has the keyboard keeps it (the audit's M16,
-    // for the rule editor, and the same here).
-    if (!staleTargetRows_.empty()) {
-        for (const std::size_t i : staleTargetRows_) {
-            if (i < shownRows_.size()) {
-                shownRows_[i] = ShownRow{}; // a new element, bound again
-            }
-        }
-        renewRows(*targetModel_, staleTargetRows_);
     }
     if (!tickProbe_.empty()) {
         writeTickProbe();

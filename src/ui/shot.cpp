@@ -49,6 +49,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <ios>
 #include <iostream>
 #include <memory>
@@ -672,6 +673,92 @@ int renderWindow(const std::filesystem::path& out, int width, int height, Build 
     return 0;
 }
 
+/// What the approved mockup of the Weltformat-dark redesign holds (HANDOFF §0.5,
+/// `design/weltformat-dark/main.html` and `data.js`), over a window already filled as running —
+/// so that a render and the approved picture can be laid over each other. The trace is the
+/// synthetic run's, which is where the mockup's trace was lifted from.
+void fillAsMockup(MainWindow& window) {
+    const auto strings = [](std::initializer_list<const char*> items) {
+        auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        for (const char* item : items) {
+            model->push_back(slint::SharedString(item));
+        }
+        return model;
+    };
+    window.set_devices(strings({"ASIO / MOTU Pro Audio (18 in)"}));
+    window.set_device_index(0);
+    window.set_channels(strings({"In 1 + 2 \xE2\x80\x94 Mic 2 / Mic 2"}));
+    window.set_channel_index(0);
+    window.set_input_mono(false);
+
+    window.set_bpm(128.29f);
+    window.set_called_bpm(128.29f);
+    window.set_raw_bpm(128.29f);
+    window.set_refined(true);
+    window.set_locked(true);
+    window.set_holding(false);
+    window.set_input_lost(false);
+    window.set_confidence(0.62f);
+    window.set_beats_per_bar(4);
+    window.set_beat_in_bar(2);
+    window.set_bars(6);
+    window.set_input_level(0.63f);
+    window.set_input_peak(0.5f);
+    window.set_input_reading(slint::SharedString("-21.7 dB"));
+    window.set_fold_on(true);
+    window.set_fold_min(70.0f);
+    window.set_fold_max(140.0f);
+    window.set_latency_ms(0.0f);
+    window.set_keep_shift(false);
+    window.set_pinned(true);
+    window.set_tap_count(0);
+
+    window.set_midi_in_ports(strings({"select input"}));
+    window.set_midi_in_port_index(0);
+    window.set_control_on(true);
+    window.set_control_error(false);
+    window.set_control_reading(slint::SharedString("note 36 ch 10"));
+
+    window.set_output_devices(strings(
+        {"select a MIDI device", "Microsoft GS Wavetable Synth", "MOTU Pro Audio Midi Out 1"}));
+    auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+    OutputRow link{};
+    link.name = slint::SharedString("Link");
+    link.kind_index = 4;
+    link.enabled = true;
+    rows->push_back(link);
+    const auto clock = [](const char* name, int device, float delayMs) {
+        OutputRow row{};
+        row.name = slint::SharedString(name);
+        row.kind_index = 3;
+        row.device_index = device;
+        row.enabled = true;
+        row.delay_ms = delayMs;
+        return row;
+    };
+    rows->push_back(clock("DAW clock", 1, -12.0f));
+    rows->push_back(clock("TR-8S", 2, 25.0f));
+    const auto osc = [](const char* name, const char* host, float delayMs) {
+        OutputRow row{};
+        row.name = slint::SharedString(name);
+        row.kind_index = 0;
+        row.host = slint::SharedString(host);
+        row.port = slint::SharedString("7000");
+        row.enabled = true;
+        row.delay_ms = delayMs;
+        return row;
+    };
+    rows->push_back(osc("deck", "192.168.1.40", 0.0f));
+    rows->push_back(osc("wall", "192.168.1.41", -80.0f));
+    window.set_outputs_list(rows);
+    window.set_link_peers(2);
+    window.set_link_peers_shown(true);
+    window.set_beats_sent(22);
+    window.set_fixtures_total(5);
+    window.set_rules_active(2);
+    window.set_rules_total(3);
+}
+
 } // namespace
 
 int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
@@ -694,6 +781,24 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         return renderWindow(out, width, height, [] {
             auto window = FixturesWindow::create();
             fillFixtures(*window);
+            return window;
+        });
+    }
+
+    if (options.widgets) {
+        return renderWindow(out, width, height, [] {
+            auto window = WidgetBench::create();
+            auto rows = std::make_shared<slint::VectorModel<BenchRow>>();
+            rows->push_back(BenchRow{slint::SharedString("deck"), true, 0, 0.0f});
+            rows->push_back(BenchRow{slint::SharedString("wall"), false, 3, -40.0f});
+            window->set_rows(rows);
+            auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
+            for (int i = 1; i <= 30; ++i) {
+                names->push_back(slint::SharedString("device " + std::to_string(i)));
+            }
+            window->set_long_list(names);
+            window->set_tick_a(true);
+            window->set_track_value(40.0f);
             return window;
         });
     }
@@ -854,8 +959,9 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // since "off" is two blank fields and says nothing about the layout.
         window->set_osc_control_on(true);
         window->set_osc_control_port(slint::SharedString("7001"));
-        window->set_osc_control_reading(
-            slint::SharedString("/takt4/ctl/tap  from 192.168.1.40  9 acted, 0 ignored"));
+        window->set_osc_control_reading(slint::SharedString("/takt4/ctl/tap"));
+        window->set_osc_control_from(slint::SharedString("from 192.168.1.40"));
+        window->set_osc_control_counts(slint::SharedString("9 acted, 0 ignored"));
         // §5.9's TRIGGERS row, with a rule set behind it: what the main window says about
         // the editor without the editor being open.
         window->set_rules_active(2);
@@ -863,7 +969,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_rules_last_fired(
             slint::SharedString("/composition/layers/3/clips/7/connect 1"));
         window->set_status(slint::SharedString(
-            "In 7 of MOTU Pro Audio  ·  48000 Hz -> 22050 Hz  ·  native pick  ·  "
+            "In 7 of MOTU Pro Audio \xC2\xB7 48000 Hz \xE2\x86\x92 22050 Hz \xC2\xB7 native pick\n"
             "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
         if (options.trouble) {
             // What each thing that cannot be reached says under itself, in the words the window
@@ -943,10 +1049,34 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_status(slint::SharedString("pick an input and press Start."));
     }
     window->set_status_is_error(false);
+    if (options.mockup && options.running) {
+        fillAsMockup(*window);
+    }
+    // What the controller counts for the folded Outputs heading, counted the same way.
+    if (const auto rows = window->get_outputs_list()) {
+        int on = 0;
+        int failing = 0;
+        for (std::size_t i = 0; i < rows->row_count(); ++i) {
+            const OutputRow row = *rows->row_data(i);
+            on += row.enabled ? 1 : 0;
+            failing += row.problem.empty() ? 0 : 1;
+        }
+        window->set_outputs_on(on);
+        window->set_outputs_failing(failing);
+    }
+    window->set_inputs_folded(options.foldInputs);
+    window->set_outputs_folded(options.foldOutputs);
+    window->set_panicked(options.panicked);
     // As the real app does it: the build belongs in the title bar and the status bar's
     // corner, where a status cannot take it away. A screenshot that did not carry it would
     // be a picture with no way of saying which build it is a picture of.
     window->set_version(slint::SharedString(versionLabel(buildInfo())));
+    window->set_version_short(
+        slint::SharedString(shortVersionLabel(buildInfo().version, buildInfo().commit)));
+    if (options.mockup && options.running) {
+        // The mockup's label, a release's, so the two pictures do not differ in the corner.
+        window->set_version_short(slint::SharedString("0.9.9\nrelease"));
+    }
 
     // show() creates the adapter; the two dispatches give the scene its scale and size,
     // which nothing else would do without a window manager to hear from.

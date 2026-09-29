@@ -234,6 +234,7 @@ if(TAKT4_BUILD_UI)
     ui/rule_text_test.cpp
     ui/rules_test.cpp
     ui/shot.hpp
+    ui/widget_test.cpp
     ui/window_test.cpp
     support/crt_dialogs.cpp
     support/rig_sandbox.cpp

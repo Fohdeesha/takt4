@@ -13,7 +13,7 @@ struct ShotOptions {
     /// window_state.hpp, which shot.cpp holds these to), so the picture is the window an
     /// operator first sees. They were 900 by 836, which no window opened at (the audit of
     /// 2026-09-25, L34).
-    int width = 1000;
+    int width = 800;
     int height = 934;
     /// Draw the window as it looks with a tracker running. False renders the idle
     /// window — blank readouts, every manual control disabled — which is what the app
@@ -25,6 +25,9 @@ struct ShotOptions {
     bool rules = false;
     /// Render the About box instead.
     bool about = false;
+    /// Render the widget bench instead: one of each of the main window's own controls, in each
+    /// of their states (src/ui/widget_bench.slint).
+    bool widgets = false;
     /// Render the lighting patch editor instead. The third window, and the same argument:
     /// a Slint layout bug is silent rather than a compile error, and nobody can see this one
     /// from a session with no display either.
@@ -37,6 +40,15 @@ struct ShotOptions {
     /// another program holds, an OSC row whose host will not resolve, and both control inputs
     /// asked for and not open — the red lines each says under itself (2026-09-28).
     bool trouble = false;
+    /// With the running window, hold exactly what the approved mockup of 2026-09-29 holds
+    /// (`design/weltformat-dark/`, HANDOFF §0.5) — its readouts, its five outputs, its pickers —
+    /// so the render and the approved picture can be laid over each other and compared.
+    bool mockup = false;
+    /// Draw Inputs, Outputs, or both folded down to their headings.
+    bool foldInputs = false;
+    bool foldOutputs = false;
+    /// Draw PANIC engaged, with RELEASE beside it.
+    bool panicked = false;
     /// The display's scale, as Windows' "Scale" setting gives it: 1.25 is 125 %. `width` and
     /// `height` stay logical, as the window's own sizes are, and the picture is that many times
     /// larger — what a laptop at 125 % shows (the 2026-09-22 audit's M26). The main window only.

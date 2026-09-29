@@ -226,6 +226,14 @@ public:
     void toggleLinkPeers();
     bool linkPeersShown() const noexcept { return linkPeersShown_; }
 
+    /// Folds a section of the window down to its heading, or opens it again — 0 is Inputs, 1 is
+    /// Outputs (HANDOFF §0.5). **A fold takes the section's height off the window**, and the
+    /// trace keeps its height: the window gets shorter by what was folded — but never so short
+    /// that a folded heading, with the arrow that opens it again, is scrolled out of sight, nor
+    /// below the window's 420 px minimum. Opening the section gives back what its fold took. A
+    /// maximised or full-screen window is left the size it is.
+    void toggleFold(int section);
+
     /// §5.6's targets, one row each — see `OutputRow`.
     ///
     /// A row is two boxes and a switch, and the two boxes are edited a character at a time,
@@ -724,25 +732,13 @@ private:
     /// window's copy and the one the rows are drawn from; `applyTargets` is what turns it
     /// into the transports' list.
     std::vector<OutputRow> targetDrafts_;
-    /// What each output row's boxes show **because somebody typed or picked it there**, since
-    /// that row's element was built — by element, which is by index. A box typed into has lost
-    /// its `text:` binding (a dropdown picked from, its `current-index:`), so it shows this and
-    /// not the model; a box nobody has touched follows the model on its own.
-    ///
-    /// **And the "on" tick** (the audit of 2026-09-25, M14): a `CheckBox` sets its own `checked`
-    /// when clicked, which drops the binding, and a row not rebuilt for it went on showing the
-    /// tick of whichever output had been on that row — untick A, remove A, and B below it read
-    /// off while it was still sending.
-    struct ShownRow {
-        std::optional<std::string> name;
-        std::optional<std::string> host;
-        std::optional<std::string> port;
-        std::optional<int> kind;
-        std::optional<int> device;
-        std::optional<bool> enabled;
-    };
-    std::vector<ShownRow> shownRows_;
-    ShownRow& shownRow(int index);
+    // **No row is ever built again to catch up with its own data.** Until the Weltformat-dark
+    // redesign (2026-09-29) the rows were std widgets, and a std LineEdit typed into, a ComboBox
+    // picked from and a CheckBox clicked each set their own value, dropping their binding to the
+    // row — so this class kept what each row showed and rebuilt any row that had drifted from its
+    // data (the audit of 2026-09-25, M14, M15, L27). The rows are weltformat.slint's own widgets
+    // now, none of which ever sets its own value: each shows its row whatever happens to the
+    // rows, and a rebuild would only take away the element somebody is holding.
     /// A row's boxes have keystrokes in them that `applyTargets` has not applied yet — kept in
     /// `targetDrafts_` as they are typed, and applied on Enter, on a click away, or at the start
     /// of anything that reads or reshapes the list (`applyDrafts`).
@@ -750,12 +746,6 @@ private:
     /// Applies them, when there are any: before SAVE, EXPORT and IMPORT, which read the
     /// runner's list, and before a row is removed (the audit of 2026-09-25, M15).
     void applyDrafts();
-    /// Rows `publishTargetRows` found showing something other than the row they now hold — a
-    /// value the controller normalised after an edit, or a delete that moved every row below
-    /// it up one — consumed by `tick`, which builds each **one** again (`renewRows`) so its boxes
-    /// come back bound. Deferred rather than done there and then, because the publisher runs
-    /// inside the callback of the row being destroyed.
-    std::vector<std::size_t> staleTargetRows_;
     /// The last thing the output thread said went wrong, as this window has already shown it.
     /// Watched in `tick` because `post` is asynchronous while the tracker runs — see the note
     /// there, which is a bug report about MIDI ports that failed to open in silence.
@@ -764,6 +754,10 @@ private:
 
     /// SHOW PEERS: whether the list is open, the listener behind it, and its rows. The
     /// listener joins Link's multicast group only while the list is shown.
+    /// How much height each section's fold took off the window, in logical pixels — given back
+    /// when it is opened again. Inputs, then Outputs.
+    std::array<float, 2> foldTaken_{};
+
     bool linkPeersShown_ = false;
     output::LinkPeerWatch linkPeers_;
     std::shared_ptr<slint::VectorModel<LinkPeer>> peerModel_;

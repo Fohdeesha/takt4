@@ -49,6 +49,13 @@ std::string fixed(double value, int places) {
     return out.str();
 }
 
+std::string shortVersionLabel(std::string_view version, std::string_view commit) {
+    // `versionLabel`'s own test for a release: the commit is the release's tag.
+    const bool release =
+        commit.size() == version.size() + 1 && commit.front() == 'v' && commit.substr(1) == version;
+    return std::string(version) + (release ? "\nrelease" : "\ndev");
+}
+
 TracePoint tracePoint(const engine::EngineFrame& frame) {
     // By name rather than by position: the generated struct happens to keep the order the
     // markup declares, but nothing promises that across a Slint bump.

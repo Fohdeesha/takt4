@@ -52,7 +52,12 @@ struct Shot {
 template <typename Window>
 Shot render(Window& window, int width, int height) {
     window.show();
-    takt4::ui::HeadlessWindow* const adapter = *headlessPlatform();
+    // This window's own adapter: a window controller makes more windows after its main one, so
+    // the platform's most recent adapter is often somebody else's.
+    takt4::ui::HeadlessWindow* adapter = takt4::ui::headlessAdapterFor(window.window());
+    if (adapter == nullptr) {
+        adapter = *headlessPlatform();
+    }
     adapter->resize(slint::PhysicalSize(
         {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)}));
     window.window().dispatch_scale_factor_change_event(1.0f);
