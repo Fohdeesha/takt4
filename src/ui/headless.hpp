@@ -3,17 +3,27 @@
 #include <slint-platform.h>
 
 #include <cstdint>
+#include <optional>
 
 namespace takt4::ui {
 
 /// A window that is never shown: it reports a fixed size and owns a software renderer.
 class HeadlessWindow final : public slint::platform::WindowAdapter {
 public:
-    explicit HeadlessWindow(slint::PhysicalSize size)
-        : size_(size), renderer_(slint::platform::SoftwareRenderer::RepaintBufferType::NewBuffer) {}
+    explicit HeadlessWindow(slint::PhysicalSize size);
+    ~HeadlessWindow() override;
+    HeadlessWindow(const HeadlessWindow&) = delete;
+    HeadlessWindow& operator=(const HeadlessWindow&) = delete;
 
     slint::platform::AbstractRenderer& renderer() override { return renderer_; }
     slint::PhysicalSize size() override { return size_; }
+
+    /// What the program last asked the window to be — `Window::set_size`, which the window
+    /// controller calls when it opens and on every fold. Kept rather than obeyed: nothing here is
+    /// a window manager, and the size the adapter reports is the one a test lays the window out
+    /// at (and places popups inside). A test reads this to see what a fold asked for.
+    void set_size(slint::PhysicalSize size) override { requested_ = size; }
+    std::optional<slint::PhysicalSize> requested() const noexcept { return requested_; }
 
     /// What the adapter reports from here on. Slint permits one platform per process, and
     /// the platform fixes this size when it builds the adapter — so without a way to change
@@ -28,6 +38,7 @@ public:
 
 private:
     slint::PhysicalSize size_;
+    std::optional<slint::PhysicalSize> requested_;
     slint::platform::SoftwareRenderer renderer_;
 };
 
@@ -54,5 +65,11 @@ private:
 /// owned by the runtime and stays valid for the life of the process; it is null until the
 /// runtime asks for a window, which it does when the first component is created.
 HeadlessWindow* const* installHeadlessPlatform(std::uint32_t width, std::uint32_t height);
+
+/// The adapter behind `window`, among every one the headless platform has made and not yet
+/// destroyed — or null. The most recent adapter is not always the one wanted: a window
+/// controller makes the rule editor, the patch editor and the About box after its main window,
+/// so a test rendering the main window, or reading the size it asked for, has to find its own.
+HeadlessWindow* headlessAdapterFor(const slint::Window& window);
 
 } // namespace takt4::ui

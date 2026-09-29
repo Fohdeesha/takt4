@@ -1,0 +1,463 @@
+// A window holding one of each of weltformat.slint's controls, in each of their states, at fixed
+// places — for `takt4_ui_tests`, which drive them with real clicks and keys and read back what
+// they did, and for `takt4-shot --widgets`, which draws every one of them in one picture.
+//
+// **Why it exists.** The main window's controls can only be found by sweeping clicks across a
+// layout that moves, and what a control *shows* — the text in a box, the entry in a dropdown —
+// cannot be read from outside it at all. Here every control is where the test says it is, and
+// everything it shows or says is a property of this window. It is re-exported through
+// main_window.slint for the reason RulesWindow is: one generated header, one copy of the fonts.
+//
+// **The owner writes back.** None of these controls sets its own value; a real owner (the
+// window's controller) writes what was asked for back. `write-back` plays that owner. Off, a
+// control has to go on showing what its owner holds — which is the test that it never assigns
+// its own value.
+
+import { Btn, Dashes, Entry, FoldArrow, Meter, Pick, Reading, Scroller, SectionHead, SpanTrack, Tick, Track, Wf } from "weltformat.slint";
+
+/// One row of the repeated controls, the shape of an output row.
+export struct BenchRow {
+    name: string,
+    on: bool,
+    kind: int,
+    level: float,
+}
+
+export component WidgetBench inherits Window {
+    width: 900px;
+    height: 720px;
+    background: Wf.page;
+    default-font-family: Wf.sans;
+    default-font-size: 15px;
+    default-font-weight: 500;
+
+    /// Whether a control's request is written back, as a real owner would.
+    in-out property <bool> write-back: true;
+    /// Every key that reached the window itself — what the main window would take as a shortcut.
+    in-out property <string> keys-seen;
+
+    // --- buttons ---------------------------------------------------------------------------
+    callback button-clicked(int);
+
+    // --- tick boxes: 0 unlabelled, 1 labelled, 2 locked, 3 switched off ----------------------
+    in-out property <bool> tick-a;
+    in-out property <bool> tick-b;
+    in-out property <bool> tick-locked: true;
+    in-out property <bool> tick-off;
+    callback toggled(int, bool);
+
+    // --- dropdowns -------------------------------------------------------------------------
+    in-out property <[string]> short-list: ["first", "second", "third", "fourth", "fifth"];
+    in-out property <[string]> long-list;
+    in-out property <int> pick-a;
+    in-out property <int> pick-long;
+    /// 0 the short list, 1 the long one, 2 the locked one, 3 the switched-off one.
+    callback picked(int, int);
+    out property <bool> pick-a-open: pick-a-box.open;
+    out property <string> pick-a-shown: pick-a-box.shown;
+    out property <bool> pick-long-open: pick-long-box.open;
+    out property <string> pick-long-shown: pick-long-box.shown;
+    out property <bool> pick-a-focused: pick-a-box.has-focus;
+
+    // --- text boxes and the reading --------------------------------------------------------
+    in-out property <string> entry-value: "deck";
+    in-out property <string> revert-value: "7001";
+    /// 0 the box that finishes on Escape, 1 the one that puts back what it held.
+    callback typed(int, string);
+    callback committed(int, string);
+    callback escaped(int);
+    out property <string> entry-shown: entry-box.shown;
+    out property <bool> entry-focused: entry-box.has-focus;
+    out property <string> revert-shown: revert-box.shown;
+    out property <bool> revert-focused: revert-box.has-focus;
+    in-out property <string> reading-value: "12";
+    /// 0 the live reading, 1 the switched-off one.
+    callback reading-committed(int, string);
+    out property <bool> reading-editing: reading-box.editing;
+
+    // --- sliders ---------------------------------------------------------------------------
+    in-out property <float> track-value: 0;
+    in-out property <bool> track-on: true;
+    callback track-moved(float);
+    out property <length> track-handle: track-box.handle-x;
+    in-out property <float> span-low: 70;
+    in-out property <float> span-high: 140;
+    callback low-moved(float);
+    callback high-moved(float);
+    out property <length> span-low-x: span-box.low-x;
+    out property <length> span-high-x: span-box.high-x;
+
+    // --- folding and scrolling -------------------------------------------------------------
+    in-out property <bool> folded;
+    callback fold-clicked();
+    in-out property <length> scroll-content: 600px;
+    out property <length> scrolled: scroller.scrolled;
+    callback inside-clicked();
+
+    // --- a repeater, the shape of the outputs table ----------------------------------------
+    in-out property <[BenchRow]> rows;
+    in-out property <[string]> kinds: ["OSC", "MIDI", "Art-Net", "MIDI clock"];
+    /// Row N's tick, name, kind and level — never written back: the rows are the test's model.
+    callback row-toggled(int, bool);
+    callback row-named(int, string);
+    callback row-kind(int, int);
+    callback row-level(int, float);
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            root.keys-seen += event.text;
+            return accept;
+        }
+
+        TouchArea {
+            clicked => {
+                keys.focus();
+            }
+        }
+
+        // Buttons: y 20, 36 high.
+        for kind[i] in 7: Btn {
+            x: 20px + i * 120px;
+            y: 20px;
+            width: 110px;
+            height: 36px;
+            text: ["plain", "primary", "active", "danger", "off", "hint", "engaged"][i];
+            primary: i == 1;
+            active: i == 2;
+            danger: i == 3 || i == 6;
+            enabled: i != 4;
+            hint: i == 5 ? "T" : "";
+            engaged: i == 6;
+            clicked => {
+                root.button-clicked(i);
+            }
+        }
+
+        // Tick boxes: y 80.
+        Tick {
+            x: 20px;
+            y: 80px;
+            width: 20px;
+            height: 20px;
+            checked: root.tick-a;
+            toggled(on) => {
+                if (root.write-back) {
+                    root.tick-a = on;
+                }
+                root.toggled(0, on);
+            }
+        }
+        Tick {
+            x: 60px;
+            y: 80px;
+            width: 220px;
+            height: 24px;
+            text: "keep for next track";
+            box-size: 16px;
+            font-size: 14px;
+            checked: root.tick-b;
+            toggled(on) => {
+                if (root.write-back) {
+                    root.tick-b = on;
+                }
+                root.toggled(1, on);
+            }
+        }
+        Tick {
+            x: 300px;
+            y: 80px;
+            width: 120px;
+            height: 24px;
+            text: "mono";
+            checked: root.tick-locked;
+            locked: true;
+            toggled(on) => {
+                root.toggled(2, on);
+            }
+        }
+        Tick {
+            x: 440px;
+            y: 80px;
+            width: 120px;
+            height: 24px;
+            text: "off";
+            checked: root.tick-off;
+            enabled: false;
+            toggled(on) => {
+                root.toggled(3, on);
+            }
+        }
+
+        // Dropdowns: y 130, 34 high. Their lists open below them, inside the test platform's
+        // 900 x 520 window.
+        pick-a-box := Pick {
+            x: 20px;
+            y: 130px;
+            width: 200px;
+            model: root.short-list;
+            current-index: root.pick-a;
+            selected(index) => {
+                if (root.write-back) {
+                    root.pick-a = index;
+                }
+                root.picked(0, index);
+            }
+        }
+        pick-long-box := Pick {
+            x: 240px;
+            y: 130px;
+            width: 160px;
+            model: root.long-list;
+            current-index: root.pick-long;
+            font-family: Wf.mono;
+            font-size: 14px;
+            selected(index) => {
+                if (root.write-back) {
+                    root.pick-long = index;
+                }
+                root.picked(1, index);
+            }
+        }
+        Pick {
+            x: 420px;
+            y: 130px;
+            width: 160px;
+            model: root.short-list;
+            current-index: 1;
+            locked: true;
+            selected(index) => {
+                root.picked(2, index);
+            }
+        }
+        Pick {
+            x: 600px;
+            y: 130px;
+            width: 160px;
+            model: root.short-list;
+            current-index: 2;
+            enabled: false;
+            selected(index) => {
+                root.picked(3, index);
+            }
+        }
+
+        // Text boxes and the reading: y 190.
+        entry-box := Entry {
+            x: 20px;
+            y: 190px;
+            width: 200px;
+            value: root.entry-value;
+            placeholder: "name";
+            typed(text) => {
+                root.typed(0, text);
+            }
+            committed(text) => {
+                if (root.write-back) {
+                    root.entry-value = text;
+                }
+                root.committed(0, text);
+            }
+            escaped => {
+                root.escaped(0);
+            }
+        }
+        revert-box := Entry {
+            x: 240px;
+            y: 190px;
+            width: 120px;
+            value: root.revert-value;
+            font-family: Wf.mono;
+            revert-on-escape: true;
+            typed(text) => {
+                root.typed(1, text);
+            }
+            committed(text) => {
+                if (root.write-back) {
+                    root.revert-value = text;
+                }
+                root.committed(1, text);
+            }
+            escaped => {
+                root.escaped(1);
+            }
+        }
+        reading-box := Reading {
+            x: 380px;
+            y: 193px;
+            width: 59px;
+            height: 28px;
+            text: "+" + root.reading-value + " ms";
+            value-text: root.reading-value;
+            committed(text) => {
+                if (root.write-back) {
+                    root.reading-value = text;
+                }
+                root.reading-committed(0, text);
+            }
+        }
+        Reading {
+            x: 460px;
+            y: 193px;
+            width: 59px;
+            height: 28px;
+            text: "0 ms";
+            value-text: "0";
+            enabled: false;
+            committed(text) => {
+                root.reading-committed(1, text);
+            }
+        }
+
+        // Sliders: y 250.
+        track-box := Track {
+            x: 20px;
+            y: 250px;
+            width: 300px;
+            value: root.track-value;
+            minimum: -100;
+            maximum: 100;
+            step: 1;
+            enabled: root.track-on;
+            moved(v) => {
+                if (root.write-back) {
+                    root.track-value = v;
+                }
+                root.track-moved(v);
+            }
+        }
+        span-box := SpanTrack {
+            x: 360px;
+            y: 250px;
+            width: 360px;
+            low: root.span-low;
+            high: root.span-high;
+            minimum: 40;
+            maximum: 220;
+            least-span: 5;
+            step: 1;
+            low-moved(v) => {
+                if (root.write-back) {
+                    root.span-low = v;
+                }
+                root.low-moved(v);
+            }
+            high-moved(v) => {
+                if (root.write-back) {
+                    root.span-high = v;
+                }
+                root.high-moved(v);
+            }
+        }
+
+        // A section heading that folds: y 300.
+        SectionHead {
+            x: 20px;
+            y: 300px;
+            width: 500px;
+            number: "02";
+            title: "inputs";
+            folds: true;
+            folded: root.folded;
+            summary: "MIDI: no port chosen · OSC: off";
+            fold-clicked => {
+                if (root.write-back) {
+                    root.folded = !root.folded;
+                }
+                root.fold-clicked();
+            }
+        }
+
+        // Meters and dashes, to be looked at: y 300, right.
+        Meter {
+            x: 560px;
+            y: 305px;
+            width: 300px;
+            value: 0.62;
+        }
+        Dashes {
+            x: 560px;
+            y: 320px;
+            width: 140px;
+            height: 34px;
+            thickness: 2px;
+            ink: Wf.off-edge;
+        }
+
+        // The scroller: y 350, 150 high, with content as tall as `scroll-content`.
+        scroller := Scroller {
+            x: 20px;
+            y: 350px;
+            width: 300px;
+            height: 150px;
+            background: Wf.sheet;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 10px;
+                Rectangle {
+                    height: root.scroll-content - 60px;
+                    background: Wf.field;
+                    Btn {
+                        x: 10px;
+                        y: 10px;
+                        width: 100px;
+                        text: "inside";
+                        clicked => {
+                            root.inside-clicked();
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 30px;
+                    background: Wf.red;
+                }
+            }
+        }
+
+        // The repeated rows: y 540, 42 apart. Below the test platform's 900 x 520 window, as the
+        // outputs table is on a short one — so a list opened from one of these opens above it.
+        for row[i] in root.rows: HorizontalLayout {
+            x: 360px;
+            y: 540px + i * 42px;
+            width: 520px;
+            height: 34px;
+            spacing: 6px;
+            HorizontalLayout {
+                width: 30px;
+                alignment: center;
+                Tick {
+                    checked: row.on;
+                    toggled(on) => {
+                        root.row-toggled(i, on);
+                    }
+                }
+            }
+            Entry {
+                width: 120px;
+                value: row.name;
+                committed(text) => {
+                    root.row-named(i, text);
+                }
+            }
+            Pick {
+                width: 120px;
+                model: root.kinds;
+                current-index: row.kind;
+                selected(kind) => {
+                    root.row-kind(i, kind);
+                }
+            }
+            Track {
+                value: row.level;
+                minimum: -100;
+                maximum: 100;
+                moved(v) => {
+                    root.row-level(i, v);
+                }
+            }
+        }
+    }
+}
