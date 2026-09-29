@@ -97,7 +97,13 @@ public:
     WindowController(const WindowController&) = delete;
     WindowController& operator=(const WindowController&) = delete;
 
-    /// Shows the window and runs Slint's event loop until it is closed.
+    /// Shows the window — folded as the settings file left it, and as much shorter for that as a
+    /// click on each arrow would have made it. The height waits for this: until a window is first
+    /// shown Slint has not built its repeated rows, so its content measures short (711 px for 941
+    /// on a rig of five outputs, measured 2026-09-29), and a fold worked out in the constructor
+    /// took the wrong height off.
+    void show();
+    /// Shows the window (`show`) and runs Slint's event loop until it is closed.
     void run();
 
     /// The window itself, for reading properties back.
@@ -231,7 +237,8 @@ public:
     /// trace keeps its height: the window gets shorter by what was folded — but never so short
     /// that a folded heading, with the arrow that opens it again, is scrolled out of sight, nor
     /// below the window's 420 px minimum. Opening the section gives back what its fold took. A
-    /// maximised or full-screen window is left the size it is.
+    /// maximised or full-screen window is left the size it is. Folds are remembered in the
+    /// settings file, and a window opens folded as it was left, shorter by the same rule.
     void toggleFold(int section);
 
     /// §5.6's targets, one row each — see `OutputRow`.
@@ -520,6 +527,10 @@ private:
     /// The Link peers list, while it is shown: what the listener has heard since the last
     /// round, into the rows under the Link row.
     void publishLinkPeers();
+    /// Folds or opens section `at` (see `toggleFold`) and returns the window height that goes
+    /// with it, from a window `height` tall — what `toggleFold` asks the window for, and what
+    /// the constructor opens it at when the settings say a section was left folded.
+    float refold(std::size_t at, bool folding, float width, float height);
     /// The drafts, parsed into targets and handed to the output thread. Rows that will not
     /// parse are kept as they were typed and named on the status line; a row whose address
     /// holds several targets — a pasted line — becomes several rows.
@@ -752,12 +763,15 @@ private:
     std::string outputErrorShown_;
     std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
 
-    /// SHOW PEERS: whether the list is open, the listener behind it, and its rows. The
-    /// listener joins Link's multicast group only while the list is shown.
     /// How much height each section's fold took off the window, in logical pixels — given back
     /// when it is opened again. Inputs, then Outputs.
     std::array<float, 2> foldTaken_{};
+    /// The size the window was asked to open at, in logical pixels, before any fold the settings
+    /// remembered — what `show` takes those folds' height off.
+    std::array<float, 2> opening_{};
 
+    /// SHOW PEERS: whether the list is open, the listener behind it, and its rows. The
+    /// listener joins Link's multicast group only while the list is shown.
     bool linkPeersShown_ = false;
     output::LinkPeerWatch linkPeers_;
     std::shared_ptr<slint::VectorModel<LinkPeer>> peerModel_;

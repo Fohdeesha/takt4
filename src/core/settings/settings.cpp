@@ -482,6 +482,8 @@ std::string toJson(const Settings& settings) {
              {"oscControlEnabled", settings.machine.oscControlEnabled},
              {"oscControlPort", settings.machine.oscControlPort},
              {"oscControlLocalOnly", settings.machine.oscControlLocalOnly},
+             {"inputsFolded", settings.machine.inputsFolded},
+             {"outputsFolded", settings.machine.outputsFolded},
          }},
         {"preset",
          json{
@@ -530,6 +532,8 @@ Settings fromDocument(const json& document) {
         read(machine, "midiControlPort", settings.machine.midiControlPort);
         read(machine, "oscControlEnabled", settings.machine.oscControlEnabled);
         read(machine, "oscControlLocalOnly", settings.machine.oscControlLocalOnly);
+        read(machine, "inputsFolded", settings.machine.inputsFolded);
+        read(machine, "outputsFolded", settings.machine.outputsFolded);
         if (settings.machine.channel < 0) {
             settings.machine.channel = 0;
         }

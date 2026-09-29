@@ -773,6 +773,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // And no taller than the screen has room for — see `fitToScreen` (the audit's M26).
     const LogicalExtent opening = fitToScreen({kMainWindowWidth, kMainWindowHeight});
     window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
+    opening_ = {opening.width, opening.height};
+    // Folded as it was left. The height that goes with it is `show`'s to work out.
+    window_->set_inputs_folded(settings.machine.inputsFolded);
+    window_->set_outputs_folded(settings.machine.outputsFolded);
 
     // **The outputs from now until the window goes**, not from Start to Stop — the audit's H5
     // and the operator's call of 2026-09-23. Last, after every setting above has been applied
@@ -821,8 +825,36 @@ WindowController::~WindowController() {
     tracker_.engine().setHostTimeSource(nullptr);
 }
 
+void WindowController::show() {
+    window_->show();
+    // The sections the settings left folded, folded again from the opening height exactly as a
+    // click on each arrow folds them — so opening one gives back what its fold took here too.
+    // Opened for a moment first, to measure what each fold takes; nothing is drawn before the
+    // event loop runs.
+    const bool inputs = window_->get_inputs_folded();
+    const bool outputs = window_->get_outputs_folded();
+    slint::Window& handle = window_->window();
+    if ((!inputs && !outputs) || handle.is_maximized() || handle.is_fullscreen()) {
+        return;
+    }
+    window_->set_inputs_folded(false);
+    window_->set_outputs_folded(false);
+    float height = opening_[1];
+    if (inputs) {
+        height = refold(0, true, opening_[0], height);
+    }
+    if (outputs) {
+        height = refold(1, true, opening_[0], height);
+    }
+    if (height != opening_[1]) {
+        handle.set_size(slint::LogicalSize({opening_[0], height}));
+    }
+}
+
 void WindowController::run() {
-    window_->run();
+    show();
+    slint::run_event_loop();
+    window_->hide();
 }
 
 void WindowController::listDevices() {
@@ -1594,39 +1626,48 @@ void WindowController::toggleFold(int section) {
     const auto at = static_cast<std::size_t>(section);
     const bool folding =
         section == 0 ? !window_->get_inputs_folded() : !window_->get_outputs_folded();
-    // What the fold takes off the content, or gives back: its least height either side of the
-    // change. Read straight after setting the property, since Slint works a layout out when it is
-    // read — which is also what makes `fold-keep` below the new layout's and not the old one's.
-    const float before = window_->get_content_least();
-    if (section == 0) {
-        window_->set_inputs_folded(folding);
-    } else {
-        window_->set_outputs_folded(folding);
-    }
-    const float after = window_->get_content_least();
-
     slint::Window& handle = window_->window();
     if (handle.is_maximized() || handle.is_fullscreen()) {
+        if (section == 0) {
+            window_->set_inputs_folded(folding);
+        } else {
+            window_->set_outputs_folded(folding);
+        }
         foldTaken_[at] = 0.0f; // the operator's size, not this class's to change
         return;
     }
     const float width = window_->get_shown_width();
     const float height = window_->get_shown_height();
-    float next = height;
+    const float next = refold(at, folding, width, height);
+    if (next != height) {
+        handle.set_size(slint::LogicalSize({width, next}));
+    }
+}
+
+float WindowController::refold(std::size_t at, bool folding, float width, float height) {
+    // What the fold takes off the content, or gives back: its least height either side of the
+    // change. Read straight after setting the property, since Slint works a layout out when it is
+    // read — which is also what makes `fold-keep` below the new layout's and not the old one's.
+    const float before = window_->get_content_least();
+    if (at == 0) {
+        window_->set_inputs_folded(folding);
+    } else {
+        window_->set_outputs_folded(folding);
+    }
+    const float after = window_->get_content_least();
     if (folding) {
         // Shorter by what was folded — but the lowest folded heading, and the arrow that opens it
         // again, stays in sight above what is pinned, and the window keeps its own minimum.
         const float keep = window_->get_fold_keep() + window_->get_pinned_height();
-        next = std::min(height, std::max({kMainWindowMinHeight, height - (before - after), keep}));
+        const float next =
+            std::min(height, std::max({kMainWindowMinHeight, height - (before - after), keep}));
         foldTaken_[at] = height - next;
-    } else {
-        // What the fold took, given back — no taller than the screen has room for.
-        next = fitToScreen({width, height + foldTaken_[at]}).height;
-        foldTaken_[at] = 0.0f;
+        return next;
     }
-    if (next != height) {
-        handle.set_size(slint::LogicalSize({width, next}));
-    }
+    // What the fold took, given back — no taller than the screen has room for.
+    const float next = fitToScreen({width, height + foldTaken_[at]}).height;
+    foldTaken_[at] = 0.0f;
+    return next;
 }
 
 void WindowController::publishLinkPeers() {
@@ -2699,6 +2740,8 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.oscControlEnabled = oscControlWanted_;
     out.machine.oscControlPort = oscControl_.config().port;
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
+    out.machine.inputsFolded = window_->get_inputs_folded();
+    out.machine.outputsFolded = window_->get_outputs_folded();
 
     // `settings()`: the engine's own, or a change posted moments ago that it has not taken
     // yet. **Not the engine's alone**, which is what this read until the audit (M27): a

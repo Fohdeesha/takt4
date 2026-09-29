@@ -78,6 +78,13 @@ struct MachineSettings {
     bool oscControlEnabled = false;
     std::uint16_t oscControlPort = 7001;
     bool oscControlLocalOnly = true;
+
+    /// The main window's Inputs and Outputs folded down to their headings, as they were left —
+    /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
+    /// window a desk's screen has room for is that desk's business, not the music's. Both open
+    /// in a fresh install and in a file from before there was folding.
+    bool inputsFolded = false;
+    bool outputsFolded = false;
 };
 
 /// §5.5's tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s

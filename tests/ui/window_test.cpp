@@ -6183,10 +6183,21 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
         controller.tick();
         slint::platform::update_timers_and_animations();
     };
-    const auto look = [&] {
+    const auto shoot = [&] {
         const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, height);
         window.dispatch_window_active_changed_event(true);
-        return sheetsDown(shot);
+        return shot;
+    };
+    const auto look = [&] { return sheetsDown(shoot()); };
+    constexpr int kPinned = 10 + 66 + 51; // the triggers row and the status bar, which never scroll
+    // Whether the body has anything left to scroll: its bar, in the page's right-hand margin.
+    const auto scrolls = [&](const takt4::tests::Shot& shot) {
+        for (int y = 0; y < shot.height - kPinned; ++y) {
+            if (is(shot, kWidth - 5, y, Rgb{0x55, 0x55, 0x53})) {
+                return true;
+            }
+        }
+        return false;
     };
     // The size the controller asked for, taken as a window manager takes it.
     const auto obey = [&] {
@@ -6199,13 +6210,26 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
         clickAt(window, static_cast<float>(kWidth - 26 - 14), static_cast<float>(sheet.first + 24));
         settle();
     };
-    constexpr int kPinned = 10 + 66 + 51; // the triggers row and the status bar, which never scroll
-
-    std::vector<std::pair<int, int>> open = look();
-    REQUIRE(open.size() == 7);
-    const int inputsOpen = open[4].second - open[4].first + 1;
-    const int outputsOpen = open[5].second - open[5].first + 1;
+    // Each section's own height, from a window tall enough to show all of it: in a shorter one the
+    // lowest sheet is cut off where the view ends. A section's height is the same in any window
+    // (only the trace takes spare height).
+    height = 2000;
+    const std::vector<std::pair<int, int>> whole = look();
+    REQUIRE(whole.size() == 7);
+    const int inputsOpen = whole[4].second - whole[4].first + 1;
+    const int outputsOpen = whole[5].second - whole[5].first + 1;
     INFO("inputs " << inputsOpen << " px open, outputs " << outputsOpen << " px open");
+
+    // At 934 this rig's content is taller than the view, so it is laid out at its least — each
+    // sheet's top is where it stays when a fold shortens what is below it. (In a window with
+    // height to spare the trace stretches and pushes every sheet under it to the bottom: the
+    // first build read a heading's place from that, and a fold of Outputs moved nothing.)
+    height = 934;
+    const takt4::tests::Shot first = shoot();
+    REQUIRE(scrolls(first));
+    const std::vector<std::pair<int, int>> open = sheetsDown(first);
+    REQUIRE(open.size() == 7);
+    REQUIRE(open[4].second - open[4].first + 1 == inputsOpen);
 
     SECTION("Inputs, folded and opened") {
         clickArrow(open[4]);
@@ -6213,58 +6237,138 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
         obey();
         const std::vector<std::pair<int, int>> folded = look();
         REQUIRE(folded.size() == 7);
-        CHECK(folded[4].second - folded[4].first + 1 == 40);
-        // Shorter by exactly what the fold took off the section.
+        CHECK(folded[4] == std::make_pair(open[4].first, open[4].first + 39));
+        // Shorter by exactly what the fold took off the section: its heading is far above the
+        // bottom.
         CHECK(height == 934 - (inputsOpen - 40));
         clickArrow(folded[4]);
         CHECK_FALSE(controller.window().get_inputs_folded());
         obey();
         CHECK(height == 934);
-        CHECK(look()[4].second - look()[4].first + 1 == inputsOpen);
+        const std::vector<std::pair<int, int>> reopened = look();
+        CHECK(reopened[4].second - reopened[4].first + 1 == inputsOpen);
     }
 
-    SECTION("Outputs, folded: its heading stays in sight") {
+    SECTION("Outputs, folded: the window stops at its heading") {
+        // Their whole height off the window would put the heading under the triggers row. The
+        // window stops where the heading's bottom edge meets what is pinned — shorter than it
+        // was, and with nothing left to scroll.
+        const int stop = open[5].first + 40 + kPinned;
+        REQUIRE(934 - (outputsOpen - 40) < stop);
+        REQUIRE(stop < 934);
         clickArrow(open[5]);
         CHECK(controller.window().get_outputs_folded());
         obey();
-        const std::vector<std::pair<int, int>> folded = look();
+        CHECK(height == stop);
+        const takt4::tests::Shot shot = shoot();
+        const std::vector<std::pair<int, int>> folded = sheetsDown(shot);
         REQUIRE(folded.size() == 7);
-        // Their whole height off the window would put the heading under the triggers row; the
-        // window stops where the heading's bottom edge meets what is pinned.
-        CHECK(934 - (outputsOpen - 40) < folded[5].second + 1 + kPinned);
-        CHECK(height == folded[5].second + 1 + kPinned);
+        CHECK(folded[5] == std::make_pair(open[5].first, open[5].first + 39));
+        CHECK_FALSE(scrolls(shot));
         // And it is there to be clicked: the arrow opens the section again, and the height the
         // fold took comes back.
         clickArrow(folded[5]);
         CHECK_FALSE(controller.window().get_outputs_folded());
         obey();
         CHECK(height == 934);
+        CHECK(scrolls(shoot()));
     }
 
     SECTION("both, and opened in the other order") {
         clickArrow(open[4]);
         obey();
         const int afterInputs = height;
+        CHECK(afterInputs == 934 - (inputsOpen - 40));
         std::vector<std::pair<int, int>> now = look();
         clickArrow(now[5]);
         obey();
-        now = look();
+        // Outputs' heading has come up by what Inputs gave; the window stops at it again.
+        const int stop = open[5].first - (inputsOpen - 40) + 40 + kPinned;
+        REQUIRE(afterInputs - (outputsOpen - 40) < stop);
+        CHECK(height == stop);
+        CHECK(height < afterInputs);
+        const takt4::tests::Shot shot = shoot();
+        now = sheetsDown(shot);
         REQUIRE(now.size() == 7);
         CHECK(now[4].second - now[4].first + 1 == 40);
-        CHECK(now[5].second - now[5].first + 1 == 40);
-        // Both folded, nothing is left to scroll: the window is its content.
-        CHECK(height == now[5].second + 1 + kPinned);
-        CHECK(controller.window().get_content_least() <= static_cast<float>(height - kPinned));
+        CHECK(now[5] == std::make_pair(stop - kPinned - 40, stop - kPinned - 1));
+        CHECK_FALSE(scrolls(shot));
         clickArrow(now[4]);
         obey();
+        CHECK(height == stop + (inputsOpen - 40));
         now = look();
         clickArrow(now[5]);
         obey();
         CHECK(height == 934);
-        CHECK(afterInputs < 934);
     }
 
     nothingReal.check();
+}
+
+TEST_CASE("a window opens folded as it was left, shorter for it, and opening gives the height "
+          "back",
+          "[ui][settings]") {
+    // The operator's call of 2026-09-29: folds are remembered across launches. The second window
+    // must open at the height the first reached by clicks, from a file read back as the next
+    // launch reads it.
+    constexpr int kWidth = 800;
+    const takt4::testing::LoopbackReceiver added;
+    takt4::settings::Settings saved;
+    int foldedHeight = 0;
+    {
+        LiveTracker tracker(kWeights, kStateSpace);
+        WindowController first(tracker);
+        first.setNewOutputPort(added.port());
+        for (int i = 0; i < 4; ++i) {
+            first.addTarget();
+        }
+        auto* const adapter = takt4::ui::headlessAdapterFor(first.window().window());
+        REQUIRE(adapter != nullptr);
+        (void)takt4::tests::render(first.window(), kWidth, 934);
+        CHECK_FALSE(first.currentSettings().machine.inputsFolded);
+        first.toggleFold(0);
+        (void)takt4::tests::render(first.window(), kWidth,
+                                   static_cast<int>(adapter->requested()->height));
+        first.toggleFold(1);
+        foldedHeight = static_cast<int>(adapter->requested()->height);
+        REQUIRE(foldedHeight < 934 - 100);
+        saved = first.currentSettings();
+    }
+    CHECK(saved.machine.inputsFolded);
+    CHECK(saved.machine.outputsFolded);
+    saved = takt4::settings::fromJson(takt4::settings::toJson(saved));
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController second(tracker, saved);
+    auto* const adapter = takt4::ui::headlessAdapterFor(second.window().window());
+    REQUIRE(adapter != nullptr);
+    // Folded from the start, so nothing is drawn open and then shut. The height waits for the
+    // window to be shown: before that Slint has not built the output rows, and the content
+    // measures 230 px short (the first build worked it out in the constructor, and opened this
+    // window at 774).
+    CHECK(second.window().get_inputs_folded());
+    CHECK(second.window().get_outputs_folded());
+    REQUIRE(adapter->requested().has_value());
+    CHECK(adapter->requested()->height == 934);
+    second.show();
+    CHECK(static_cast<int>(adapter->requested()->height) == foldedHeight);
+    CHECK(second.window().get_inputs_folded());
+    CHECK(second.window().get_outputs_folded());
+    const std::vector<std::pair<int, int>> sheets =
+        sheetsDown(takt4::tests::render(second.window(), kWidth, foldedHeight));
+    REQUIRE(sheets.size() == 7);
+    CHECK(sheets[4].second - sheets[4].first + 1 == 40);
+    CHECK(sheets[5].second - sheets[5].first + 1 == 40);
+
+    // Opening both gives back what folding them took at the launch.
+    second.toggleFold(1);
+    (void)takt4::tests::render(second.window(), kWidth,
+                               static_cast<int>(adapter->requested()->height));
+    second.toggleFold(0);
+    CHECK(adapter->requested()->height == 934);
+    // And what the next launch is told is what the window is now.
+    CHECK_FALSE(second.currentSettings().machine.inputsFolded);
+    CHECK_FALSE(second.currentSettings().machine.outputsFolded);
 }
 
 TEST_CASE("folding a section while one of its boxes is being typed in keeps the edit", "[ui]") {

@@ -418,10 +418,15 @@ export component MainWindow inherits Window {
   /// part's content can have; the height of what is pinned below it; the lowest folded
   /// heading's bottom edge, in the content's own coordinates, which must stay on screen so the
   /// arrow that opens it again can be reached; and the height the window is laid out at now.
+  ///
+  /// `fold-keep` is where that edge is with the content at its *least* height — Outputs is the
+  /// content's last sheet, with nothing under it. Not the sheets' `y`: in a window taller than
+  /// the content the trace takes what is spare, which pushes every sheet below it to the window's
+  /// bottom, so the heading's `y` said the window could not shrink at all.
   out property <length> content-least: content.min-height;
-  out property <length> pinned-height: pinned.height;
-  out property <length> fold-keep: root.outputs-folded ? outputs-sheet.y + outputs-sheet.height
-    : root.inputs-folded ? inputs-sheet.y + inputs-sheet.height : 0px;
+  out property <length> pinned-height: pinned.min-height;
+  out property <length> fold-keep: root.outputs-folded ? content.min-height
+    : root.inputs-folded ? content.min-height - outputs-sheet.min-height - content.spacing : 0px;
   out property <length> shown-width: root.width;
   out property <length> shown-height: root.height;
 
