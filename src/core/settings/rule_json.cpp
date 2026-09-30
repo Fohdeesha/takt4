@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -207,7 +208,6 @@ json conditionsToJson(const trigger::Conditions& conditions) {
         {"minBpm", conditions.minBpm},
         {"maxBpm", conditions.maxBpm},
         {"probability", conditions.probability},
-        {"cooldownSeconds", conditions.cooldownSeconds},
     };
 }
 
@@ -220,7 +220,6 @@ trigger::Conditions conditionsFromJson(const json& node) {
     read(node, "minBpm", conditions.minBpm);
     read(node, "maxBpm", conditions.maxBpm);
     read(node, "probability", conditions.probability);
-    read(node, "cooldownSeconds", conditions.cooldownSeconds);
     if (node.contains("intensities") && node.at("intensities").is_array()) {
         // Named ones in, everything else out. An array that is present says exactly what is
         // allowed, so an unreadable name excludes rather than includes — a rule firing on an
@@ -385,6 +384,15 @@ json ruleToJson(const Rule::Config& rule) {
     if (rule.trigger == trigger::Trigger::TempoChange) {
         out["tempoChangeTolerance"] = rule.tempoChangeTolerance;
     }
+    // B's switch, always: a file from before it existed is read by what its conditions exclude
+    // (see `ruleFromJson`), so a key left out would be that guess made again on every load.
+    out["conditionsOn"] = rule.conditionsOn;
+    // The cooldown is the trigger's since 2026-09-30, and is written whatever the trigger —
+    // ignored on a beat or a bar, but kept, so switching the rule to an onset brings it back.
+    // **And where a build before then looks for it**, inside the conditions: given this file,
+    // an older takt4 keeps the cooldown on the onset rules it was set for.
+    out["cooldownSeconds"] = rule.cooldownSeconds;
+    out["conditions"]["cooldownSeconds"] = rule.cooldownSeconds;
     // **Every half an operator has filled in, whichever kind the rule sends now** (the audit's
     // M22). `Rule::Config::dmx` promises that a rule switched to MIDI and back gets its fixtures
     // and its fade back, and the loader reads every half whatever the kind — but only the kind
@@ -505,6 +513,25 @@ Rule::Config ruleFromJson(const json& node) {
 
     if (node.contains("conditions")) {
         rule.conditions = conditionsFromJson(node.at("conditions"));
+    }
+    // **B's switch, and what a file from before it means** (HANDOFF §0.5, agreed 2026-09-30): a
+    // rule that used any of the conditions loads with them on, so nothing fires differently
+    // after the upgrade; one that used none loads with them off, as a new rule starts.
+    if (node.contains("conditionsOn")) {
+        read(node, "conditionsOn", rule.conditionsOn);
+    } else {
+        rule.conditionsOn = rule.conditions.excludesAnything();
+    }
+    // The cooldown where this build writes it, or where a build before 2026-09-30 did.
+    if (node.contains("cooldownSeconds")) {
+        read(node, "cooldownSeconds", rule.cooldownSeconds);
+    } else if (node.contains("conditions")) {
+        read(node.at("conditions"), "cooldownSeconds", rule.cooldownSeconds);
+    }
+    // A negative cooldown is no cooldown, whoever wrote it — and so is one that is not a number
+    // at all, which would otherwise hold the rule silent for ever after its first fire.
+    if (!std::isfinite(rule.cooldownSeconds) || rule.cooldownSeconds < 0.0) {
+        rule.cooldownSeconds = 0.0;
     }
     if (node.contains("value")) {
         rule.value = generatorFromJson(node.at("value"));

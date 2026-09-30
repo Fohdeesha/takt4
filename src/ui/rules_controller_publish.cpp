@@ -175,8 +175,7 @@ void RulesController::publishSelected() {
                                       spellNumber(rule->conditions.maxBpm)));
     }
     if (!typingInto(kCooldownBox)) {
-        window_->set_cooldown_ms(
-            shared(spellNumber(rule->conditions.cooldownSeconds * 1000.0)));
+        window_->set_cooldown_ms(shared(spellNumber(rule->cooldownSeconds * 1000.0)));
     }
 
     const auto sendIndex =

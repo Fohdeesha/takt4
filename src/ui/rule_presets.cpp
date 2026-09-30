@@ -107,7 +107,10 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         resync.address = "/composition/tempocontroller/resync";
         resync.value.kind = GeneratorKind::Fixed;
         resync.value.fixed = trigger::Value::ofInt(1);
-        resync.conditions.minConfidence = 0.5; // not while it is still hunting
+        // Not while it is still hunting — and B switched on for it, since a condition set with B
+        // off is one kept for later and not one that applies.
+        resync.conditionsOn = true;
+        resync.conditions.minConfidence = 0.5;
         resync.seed = 505;
         return {tempo, resync};
     }

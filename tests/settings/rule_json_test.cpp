@@ -34,12 +34,14 @@ Rule::Config resolumeClip() {
     rule.name = "Random clip on downbeat";
     rule.trigger = Trigger::Bar;
     rule.every = 4;
+    rule.conditionsOn = true;
     rule.conditions.minConfidence = 0.7;
     rule.conditions.intensities = {false, true, true}; // not while it is calm
     rule.conditions.minBpm = 120.0;
     rule.conditions.maxBpm = 140.0;
     rule.conditions.probability = 0.9;
-    rule.conditions.cooldownSeconds = 0.5;
+    // Ignored on a bar rule, and kept: switched to an onset, it applies again.
+    rule.cooldownSeconds = 0.5;
     rule.address = "/composition/layers/{L}/clips/{C}/connect";
 
     Generator::Config layer;
@@ -84,11 +86,12 @@ TEST_CASE("a rule survives being written down and read back", "[settings][trigge
     CHECK(out.sendKind == Message::Kind::Osc);
     CHECK(out.seed == 4242);
 
+    CHECK(out.conditionsOn);
     CHECK(out.conditions.minConfidence == Approx(0.7));
     CHECK(out.conditions.minBpm == Approx(120.0));
     CHECK(out.conditions.maxBpm == Approx(140.0));
     CHECK(out.conditions.probability == Approx(0.9));
-    CHECK(out.conditions.cooldownSeconds == Approx(0.5));
+    CHECK(out.cooldownSeconds == Approx(0.5));
     CHECK_FALSE(out.conditions.allows(Intensity::Calm));
     CHECK(out.conditions.allows(Intensity::Normal));
     CHECK(out.conditions.allows(Intensity::Intense));
@@ -394,6 +397,82 @@ TEST_CASE("a rule file written before follow-ups were a list still opens", "[set
         }
         many += "]}]";
         CHECK(first(many).followUps.size() == takt4::trigger::kMaxFollowUps);
+    }
+}
+
+TEST_CASE("a rule file written before B had a switch fires as it did", "[settings][trigger]") {
+    // HANDOFF §0.5, agreed 2026-09-30: the ONLY IF stage has an on/off tick now, off for a new
+    // rule. A file from before it holds no switch, and upgrading must not change what fires — so
+    // a rule that used any of the four conditions loads with them on, and one that used none
+    // loads with them off, as a new rule starts. And the cooldown, which was one of them, is
+    // read from where that build wrote it.
+    SECTION("a rule that used a condition loads with them on") {
+        const Rule::Config out = first(R"([{
+            "id": "gated",
+            "trigger": "onset",
+            "conditions": {"minConfidence": 0.7, "intensities": ["calm","normal","intense"],
+                           "minBpm": 0, "maxBpm": 1000, "probability": 1,
+                           "cooldownSeconds": 0.25}
+        }])");
+        CHECK(out.conditionsOn);
+        CHECK(out.conditions.minConfidence == Approx(0.7));
+        CHECK(out.cooldownSeconds == Approx(0.25));
+    }
+
+    SECTION("each of the four counts as using one") {
+        for (const char* conditions :
+             {R"({"intensities": ["normal","intense"]})", R"({"minBpm": 120})",
+              R"({"maxBpm": 140})", R"({"probability": 0.5})"}) {
+            INFO(conditions);
+            CHECK(first(std::string(R"([{"id":"x","conditions":)") + conditions + "}]")
+                      .conditionsOn);
+        }
+    }
+
+    SECTION("a rule that used none loads with them off, its cooldown kept") {
+        const Rule::Config out = first(R"([{
+            "id": "open",
+            "trigger": "manual",
+            "conditions": {"minConfidence": 0, "intensities": ["calm","normal","intense"],
+                           "minBpm": 0, "maxBpm": 1000, "probability": 1,
+                           "cooldownSeconds": 2}
+        }])");
+        CHECK_FALSE(out.conditionsOn);
+        CHECK(out.cooldownSeconds == Approx(2.0));
+    }
+
+    SECTION("a file written since keeps the switch it was saved with") {
+        // Set for later with B off: the conditions are there and the switch says they do not
+        // apply, which the migration must not second-guess.
+        Rule::Config later = resolumeClip();
+        later.conditionsOn = false;
+        const Rule::Config out = first(rulesToJson({later}));
+        CHECK_FALSE(out.conditionsOn);
+        CHECK(out.conditions.minConfidence == Approx(0.7));
+    }
+
+    SECTION("the cooldown is written where an older build looks for it too") {
+        // An older takt4 given this file keeps the cooldown on the onset rules it was set for.
+        Rule::Config onset = resolumeClip();
+        onset.trigger = Trigger::Onset;
+        onset.cooldownSeconds = 0.3;
+        const std::string text = rulesToJson({onset});
+        INFO(text);
+        // Twice: at the top of the rule, where this build reads it, and inside the conditions.
+        // (Not "after the conditions key": the writer sorts its keys, so the top-level one
+        // comes after that too, and a first version of this passed with the second removed.)
+        std::size_t written = 0;
+        for (std::size_t at = text.find("\"cooldownSeconds\""); at != std::string::npos;
+             at = text.find("\"cooldownSeconds\"", at + 1)) {
+            ++written;
+        }
+        CHECK(written == 2);
+        CHECK(first(text).cooldownSeconds == Approx(0.3));
+    }
+
+    SECTION("a cooldown that is not a length of time is no cooldown") {
+        CHECK(first(R"([{"id":"x","cooldownSeconds":-3}])").cooldownSeconds == 0.0);
+        CHECK(first(R"([{"id":"x","cooldownSeconds":"soon"}])").cooldownSeconds == 0.0);
     }
 }
 

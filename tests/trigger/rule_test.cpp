@@ -334,6 +334,7 @@ TEST_CASE("the ONLY IF stage excludes only what it was set to exclude", "[trigge
     Rule::Config config;
     config.id = "r";
     config.address = "/a";
+    config.conditionsOn = true; // the stage switched on: see the test after this one for off
     Rule open(config);
     Context context;
     CHECK(open.conditionsHold(context));
@@ -372,23 +373,6 @@ TEST_CASE("the ONLY IF stage excludes only what it was set to exclude", "[trigge
         CHECK_FALSE(ranged.conditionsHold(context));
     }
 
-    SECTION("a cooldown, measured from the last fire and not the last look") {
-        config.conditions.cooldownSeconds = 0.5;
-        Rule cooled(config);
-        context.now = 10.0;
-        REQUIRE(cooled.conditionsHold(context)); // never fired, so nothing is owed
-        (void)cooled.fire(context);
-
-        context.now = 10.4;
-        CHECK_FALSE(cooled.conditionsHold(context));
-        // Asking and being refused must not restart the clock, or a rule evaluated every
-        // millisecond would never come off cooldown.
-        context.now = 10.49;
-        CHECK_FALSE(cooled.conditionsHold(context));
-        context.now = 10.5;
-        CHECK(cooled.conditionsHold(context));
-    }
-
     SECTION("a probability, which is a proportion over many looks") {
         config.conditions.probability = 0.25;
         Rule chancy(config);
@@ -408,6 +392,96 @@ TEST_CASE("the ONLY IF stage excludes only what it was set to exclude", "[trigge
         for (int i = 0; i < 100; ++i) {
             CHECK_FALSE(never.conditionsHold(context));
             CHECK(always.conditionsHold(context));
+        }
+    }
+}
+
+TEST_CASE("the ONLY IF stage applies only while it is switched on", "[trigger][rule]") {
+    // The tick on the editor's B heading (HANDOFF §0.5, locked 2026-09-30). Off — as a new rule
+    // starts — the rule fires every time its trigger comes round, whatever the conditions hold;
+    // they are kept, set for later, and switching B on is what makes them apply.
+    Rule::Config config;
+    config.id = "r";
+    config.address = "/a";
+    config.conditions.minConfidence = 0.9;
+    config.conditions.intensities = {false, false, true};
+    config.conditions.minBpm = 150.0;
+    config.conditions.maxBpm = 160.0;
+    config.conditions.probability = 0.0;
+    Context context;
+    context.confidence = 0.1;
+    context.intensity = Intensity::Calm;
+    context.bpm = 120.0;
+    REQUIRE(config.conditions.excludesAnything());
+
+    CHECK_FALSE(Rule::Config{}.conditionsOn); // a rule starts with B off
+    CHECK(Rule(config).conditionsHold(context));
+
+    config.conditionsOn = true;
+    CHECK_FALSE(Rule(config).conditionsHold(context));
+
+    SECTION("and each of the four is what excludes it, once B is on") {
+        // One at a time back to admitting, so each is seen to be the one that refused.
+        config.conditions.probability = 1.0;
+        config.conditions.minConfidence = 0.0;
+        config.conditions.intensities = {true, true, true};
+        CHECK_FALSE(Rule(config).conditionsHold(context)); // the BPM range still refuses
+        config.conditions.minBpm = 0.0;
+        config.conditions.maxBpm = 1000.0;
+        CHECK(Rule(config).conditionsHold(context));
+        CHECK_FALSE(config.conditions.excludesAnything());
+    }
+}
+
+TEST_CASE("a cooldown holds a trigger that comes in bursts, and no other", "[trigger][rule]") {
+    // The cooldown is A's since 2026-09-30 (HANDOFF §0.5), and the editor shows it switched off
+    // for beats, bars, the downbeat and a Euclidean pattern — so the engine has to ignore it
+    // there, or a control shown switched off would still be thinning a pattern.
+    Rule::Config config;
+    config.id = "r";
+    config.address = "/a";
+    config.cooldownSeconds = 0.5;
+    Context context;
+
+    for (const Trigger bursty : {Trigger::Onset, Trigger::TempoChange, Trigger::LockChange,
+                                 Trigger::IntensityChange, Trigger::Manual}) {
+        INFO("trigger " << takt4::trigger::labelOf(bursty));
+        CHECK(takt4::trigger::takesCooldown(bursty));
+        config.trigger = bursty;
+        Rule cooled(config);
+        context.now = 10.0;
+        REQUIRE(cooled.conditionsHold(context)); // never fired, so nothing is owed
+        (void)cooled.fire(context);
+        context.now = 10.4;
+        CHECK_FALSE(cooled.conditionsHold(context));
+        // Asking and being refused must not restart the clock, or a rule evaluated every
+        // millisecond would never come off cooldown.
+        context.now = 10.49;
+        CHECK_FALSE(cooled.conditionsHold(context));
+        context.now = 10.5;
+        CHECK(cooled.conditionsHold(context));
+    }
+
+    for (const Trigger steady : {Trigger::Beat, Trigger::Bar, Trigger::Downbeat, Trigger::Euclid}) {
+        INFO("trigger " << takt4::trigger::labelOf(steady));
+        CHECK_FALSE(takt4::trigger::takesCooldown(steady));
+        config.trigger = steady;
+        Rule steadyRule(config);
+        context.now = 10.0;
+        (void)steadyRule.fire(context);
+        context.now = 10.1;
+        CHECK(steadyRule.conditionsHold(context)); // kept, and ignored
+    }
+
+    SECTION("whether or not the ONLY IF stage is switched on") {
+        config.trigger = Trigger::Onset;
+        for (const bool on : {false, true}) {
+            config.conditionsOn = on;
+            Rule cooled(config);
+            context.now = 10.0;
+            (void)cooled.fire(context);
+            context.now = 10.2;
+            CHECK_FALSE(cooled.conditionsHold(context));
         }
     }
 }

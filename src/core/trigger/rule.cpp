@@ -145,6 +145,23 @@ bool takesPulses(Trigger trigger) noexcept {
     return trigger == Trigger::Euclid;
 }
 
+bool takesCooldown(Trigger trigger) noexcept {
+    switch (trigger) {
+    case Trigger::TempoChange:
+    case Trigger::LockChange:
+    case Trigger::IntensityChange:
+    case Trigger::Onset:
+    case Trigger::Manual:
+        return true;
+    case Trigger::Beat:
+    case Trigger::Bar:
+    case Trigger::Downbeat:
+    case Trigger::Euclid:
+        return false;
+    }
+    return false;
+}
+
 std::string_view labelOf(DelayUnit unit) noexcept {
     switch (unit) {
     case DelayUnit::Milliseconds:
@@ -627,6 +644,16 @@ bool Rule::seesChange(const Context& context) noexcept {
 }
 
 bool Rule::conditionsHold(const Context& context) noexcept {
+    // The cooldown first: it is the trigger's, and applies whether or not B is switched on — but
+    // only to a trigger that can come in bursts. On a beat or a bar the control is shown switched
+    // off, and a control shown switched off must do nothing (HANDOFF §0.5).
+    if (takesCooldown(config_.trigger) && lastFired_ >= 0.0 &&
+        context.now - lastFired_ < config_.cooldownSeconds) {
+        return false;
+    }
+    if (!config_.conditionsOn) {
+        return true;
+    }
     const Conditions& only = config_.conditions;
     if (context.confidence < only.minConfidence) {
         return false;
@@ -635,9 +662,6 @@ bool Rule::conditionsHold(const Context& context) noexcept {
         return false;
     }
     if (context.bpm < only.minBpm || context.bpm > only.maxBpm) {
-        return false;
-    }
-    if (lastFired_ >= 0.0 && context.now - lastFired_ < only.cooldownSeconds) {
         return false;
     }
     // Last, and only when it can exclude anything. See the header.

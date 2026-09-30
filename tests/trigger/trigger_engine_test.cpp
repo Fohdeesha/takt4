@@ -633,16 +633,18 @@ TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
     }
 
     SECTION("a cooldown already running is still running") {
+        // On an onset, which is where a cooldown means anything (`trigger::takesCooldown`).
+        config.trigger = Trigger::Onset;
         config.value = fixedAt(1);
-        config.conditions.cooldownSeconds = 10.0;
+        config.cooldownSeconds = 10.0;
         engine.setRules({config});
-        engine.onBeat(beatAt(1, 1, 1, 0.0));
+        engine.onOnset(beatAt(1, 1, 1, 0.0));
         REQUIRE(sink.sent.size() == 1);
         config.name = "edited";
         engine.setRules({config});
-        engine.onBeat(beatAt(2, 2, 1, 1.0));
+        engine.onOnset(beatAt(2, 2, 1, 1.0));
         CHECK(sink.sent.size() == 1);
-        engine.onBeat(beatAt(3, 3, 1, 11.0));
+        engine.onOnset(beatAt(3, 3, 1, 11.0));
         CHECK(sink.sent.size() == 2);
     }
 
@@ -705,8 +707,9 @@ TEST_CASE("the test button fires one rule past everything that would stop it",
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Downbeat);
     config.enabled = false;
+    config.conditionsOn = true;
     config.conditions.minConfidence = 0.99;
-    config.conditions.cooldownSeconds = 60.0;
+    config.cooldownSeconds = 60.0;
     engine.setRules({config});
 
     Context context = beatAt(1, 1, 1, 0.0);
@@ -819,18 +822,53 @@ TEST_CASE("an invalid rule is held and shown rather than dropped", "[trigger][en
 TEST_CASE("the ONLY IF stage is asked on every fire, not only the first", "[trigger][engine]") {
     Recorder sink;
     TriggerEngine engine(sink);
-    Rule::Config config = simple("gated", Trigger::Beat);
+    Rule::Config config = simple("gated", Trigger::Onset);
+    config.conditionsOn = true;
     config.conditions.minConfidence = 0.5;
-    config.conditions.cooldownSeconds = 1.4; // longer than one beat at 120 BPM, shorter than three
+    config.cooldownSeconds = 1.4; // longer than two onsets half a second apart, shorter than three
     engine.setRules({config});
 
     for (int i = 0; i < 8; ++i) {
         Context context = beatAt(static_cast<std::uint64_t>(i) + 1, 1, 1, 0.5 * i);
         context.confidence = i < 4 ? 0.1 : 0.9; // below the gate for the first four
-        engine.onBeat(context);
+        engine.onOnset(context);
     }
-    // Beats at 2.0 and 3.5: the first one over the gate, then the next past the cooldown.
+    // Onsets at 2.0 and 3.5: the first one over the gate, then the next past the cooldown.
     CHECK(sink.sent.size() == 2);
+
+    SECTION("and with the stage switched off, every onset past the cooldown fires") {
+        sink.sent.clear();
+        config.id = "ungated";
+        config.address = "/fire/ungated";
+        config.conditionsOn = false;
+        engine.setRules({config});
+        for (int i = 0; i < 8; ++i) {
+            Context context = beatAt(static_cast<std::uint64_t>(i) + 1, 1, 1, 10.0 + 0.5 * i);
+            context.confidence = 0.1;
+            engine.onOnset(context);
+        }
+        // 10.0, 11.5 and 13.0: the gate says nothing, the cooldown still spaces them.
+        CHECK(sink.sent.size() == 3);
+    }
+}
+
+TEST_CASE("a cooldown on a beat or a bar rule changes nothing", "[trigger][engine]") {
+    // The consequence accepted with the cooldown's move to A (HANDOFF §0.5, 2026-09-30): the
+    // editor shows it switched off on the steady triggers, so a saved "every 1 beat" rule whose
+    // cooldown was longer than a beat — quietly thinning it — fires on every beat again. A
+    // cooldown on a bar rule never did anything, and still does not.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config beat = simple("beat", Trigger::Beat);
+    beat.cooldownSeconds = 1.4; // longer than two beats at 120 BPM
+    Rule::Config euclid = simple("euclid", Trigger::Euclid, 8);
+    euclid.pulses = 8; // every step a hit, so the pattern cannot be what thins it
+    euclid.cooldownSeconds = 1.4;
+    engine.setRules({beat, euclid});
+    playBars(engine, 2);
+    const std::vector<std::string> sent = sink.addresses();
+    CHECK(std::count(sent.begin(), sent.end(), "/fire/beat") == 8);
+    CHECK(std::count(sent.begin(), sent.end(), "/fire/euclid") == 8);
 }
 
 TEST_CASE("an observer is told which values a fire produced, and which sends are releases",

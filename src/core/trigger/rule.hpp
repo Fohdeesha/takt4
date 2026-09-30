@@ -68,6 +68,14 @@ bool takesEvery(Trigger trigger) noexcept;
 /// True where `Trigger::pulses` means anything — `Euclid` alone.
 bool takesPulses(Trigger trigger) noexcept;
 
+/// True where `Rule::Config::cooldownSeconds` means anything: the triggers that can come in
+/// bursts — an onset, a tempo, lock or intensity change, the M key. **Not** beats, bars, the
+/// downbeat or a Euclidean pattern, which come round at the music's own pace: a cooldown there
+/// only ever thinned a steady pattern into an irregular one, and on a bar it never did anything
+/// at all. The editor switches the control off for them and the engine ignores it (HANDOFF §0.5,
+/// the rule editor locked 2026-09-30) — a control shown switched off must do nothing.
+bool takesCooldown(Trigger trigger) noexcept;
+
 /// How §5.8's *"optional follow-up value after a delay"* counts that delay.
 ///
 /// Milliseconds was the only answer, and it is the wrong one for what the follow-up is
@@ -98,12 +106,18 @@ std::optional<DelayUnit> delayUnitOf(std::string_view name) noexcept;
 bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept;
 
 /// §5.8's ONLY IF column: *"confidence above threshold · intensity in set · BPM in range ·
-/// probability percentage · minimum cooldown in ms"*.
+/// probability percentage"*. Its fifth, *"minimum cooldown in ms"*, is `Rule::Config::
+/// cooldownSeconds` since 2026-09-30: it says how often the trigger may come round, which is
+/// the WHEN's business, and the editor shows it there.
 ///
 /// Every field defaults to "does not exclude anything", so a rule with untouched conditions
 /// fires whenever its trigger says to. That is the only sane default for a stage whose
 /// entire job is to *stop* a rule firing: an operator adding a rule and seeing nothing
 /// happen has no way to tell a broken rule from a condition they did not know was set.
+///
+/// **And none of it applies unless `Rule::Config::conditionsOn` says so** — the tick on the
+/// editor's B heading. Off, the rule fires every time its trigger comes round, whatever is
+/// set here; the values are kept, so switching B back on brings them back.
 struct Conditions {
     /// Fires only at or above this. `TempoState::confidence`, 0 to 1.
     double minConfidence = 0.0;
@@ -118,12 +132,17 @@ struct Conditions {
     /// rule that was going to be excluded anyway does not consume a draw — otherwise two
     /// rules sharing a stream would fire in a pattern neither of them describes.
     double probability = 1.0;
-    /// §5.8's *"minimum cooldown in ms"*, in seconds, against `Context::now`. Measured from
-    /// the last time this rule *fired*, not from the last time it was evaluated.
-    double cooldownSeconds = 0.0;
 
     bool allows(features::Intensity intensity) const noexcept {
         return intensities[static_cast<std::size_t>(intensity)];
+    }
+
+    /// Whether any of the four can exclude a fire — what a file written before B had a switch
+    /// is read by: a rule that used one loads with B on, so nothing fires differently, and one
+    /// that used none loads with it off.
+    bool excludesAnything() const noexcept {
+        return minConfidence > 0.0 || !intensities[0] || !intensities[1] || !intensities[2] ||
+               minBpm > 0.0 || maxBpm < 1000.0 || probability < 1.0;
     }
 };
 
@@ -589,7 +608,20 @@ public:
         /// that last fired rather than the last one seen, so a slow drift is one change and
         /// not a stream of them.
         double tempoChangeTolerance = 0.02;
+        /// §5.8's *"minimum cooldown in ms"*, in seconds, against `Context::now`: after the rule
+        /// fires it waits this long before it can fire again. Measured from the last time this
+        /// rule *fired*, not from the last time it was evaluated. **Read only where
+        /// `takesCooldown(trigger)`** — the triggers that come in bursts; on a beat, a bar, the
+        /// downbeat or a Euclidean pattern it is kept and ignored, and the editor shows it
+        /// switched off. It was one of the conditions until 2026-09-30, and a file from before
+        /// then still has it there (`settings::rulesFromJson` reads both).
+        double cooldownSeconds = 0.0;
 
+        /// Whether the ONLY IF stage applies at all — the tick on the editor's B heading (HANDOFF
+        /// §0.5, locked 2026-09-30). **Off by default**: nothing optional is on until somebody
+        /// switches it on, and off is a rule that fires every time its trigger comes round. The
+        /// conditions are kept while it is off, so it can be set for later and switched on.
+        bool conditionsOn = false;
         Conditions conditions;
 
         Message::Kind sendKind = Message::Kind::Osc;
@@ -731,13 +763,14 @@ public:
     /// watching while disabled would fire the moment it was switched back on.
     bool seesChange(const Context& context) noexcept;
 
-    /// Whether §5.8's ONLY IF stage lets this fire now.
+    /// Whether this may fire now, once its trigger has said so: the cooldown — only where
+    /// `takesCooldown(trigger)` — and §5.8's ONLY IF stage, only while `Config::conditionsOn`.
     ///
     /// Not const, and each rule owns the stream its probability is drawn from, for the
     /// reason `Generator::Config::seed` gives: rules sharing one stream would fire in a
     /// pattern neither of them describes. The draw is taken last and only when the
     /// probability is short of certain, so a rule excluded by its confidence gate does not
-    /// consume one.
+    /// consume one — nor one with the stage switched off.
     bool conditionsHold(const Context& context) noexcept;
 
     /// Builds the message this rule sends, advancing its generators and starting its
