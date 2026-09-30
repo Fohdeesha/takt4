@@ -167,6 +167,29 @@ void OscPublisher::flushAll() {
     pending_.clear();
 }
 
+void OscPublisher::flushTo(std::uint64_t outputs) {
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        Pending& item = pending_[i];
+        const bool going = item.target < targets_.size() &&
+                           targets_[item.target].output < kMaxRoutableTargets &&
+                           (outputs & (std::uint64_t{1} << targets_[item.target].output)) != 0;
+        if (!going) {
+            if (kept != i) {
+                pending_[kept] = std::move(item);
+            }
+            ++kept;
+            continue;
+        }
+        if (targets_[item.target].sender->send(item.packet)) {
+            ++sent_;
+        } else {
+            ++failed_;
+        }
+    }
+    pending_.resize(kept);
+}
+
 void OscPublisher::flushDue() {
     if (pending_.empty()) {
         return;

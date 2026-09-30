@@ -52,6 +52,34 @@ std::vector<int> movedOutputs(const std::vector<OutputTarget>& before,
     return moved;
 }
 
+/// The routing bits of the outputs in `before` that stop being where a rule's message went:
+/// switched off, gone from `after`, or the same row pointed at another MIDI device, host or port.
+/// Only MIDI and OSC — what is owed to an output is a rule's message, and only those two carry
+/// one; lighting goes to fixtures.
+std::uint64_t leavingOutputs(const std::vector<OutputTarget>& before,
+                             const std::vector<OutputTarget>& after) {
+    std::uint64_t leaving = 0;
+    for (std::size_t i = 0; i < before.size() && i < kMaxRoutableTargets; ++i) {
+        const OutputTarget& was = before[i];
+        if (!was.enabled ||
+            (was.kind != OutputTarget::Kind::Midi && was.kind != OutputTarget::Kind::Osc)) {
+            continue;
+        }
+        const auto now = std::find_if(after.begin(), after.end(), [&](const OutputTarget& t) {
+            return !was.id.empty() && t.id == was.id;
+        });
+        const bool stays =
+            now != after.end() && now->enabled && now->kind == was.kind &&
+            (was.kind == OutputTarget::Kind::Midi
+                 ? now->device == was.device
+                 : now->host == was.host && now->port == was.port);
+        if (!stays) {
+            leaving |= std::uint64_t{1} << i;
+        }
+    }
+    return leaving;
+}
+
 /// The same for the patch, by `dmx::Fixture::id` — or by name for a fixture built in code with
 /// no id, which is the one kind that can have none.
 std::vector<int> movedFixtures(const std::vector<dmx::Fixture>& before,
@@ -711,6 +739,17 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
     // to move — so each follows its output by id afterwards, rather than being flushed early
     // or sent to whatever takes its place (the audit's H12).
     const std::vector<OutputTarget> before = transports_.outputs();
+    // **But what is owed to an output that is going goes to it first**, while its port is still
+    // open: switched off, deleted, or pointed somewhere else. The operator, 2026-09-30: "if I
+    // uncheck a midi target for instance, it immediately dies, so it never sends the note off,
+    // and the midi device keeps playing that note". The same order as Stop — the rules' releases,
+    // then what the sink holds for a MIDI target's delay, then the OSC publisher's — so a note
+    // on still held for its delay goes before its own note off.
+    if (const std::uint64_t leaving = leavingOutputs(before, targets); leaving != 0) {
+        triggers_.flushFollowUpsTo(leaving);
+        sink_.flushQueuedTo(leaving);
+        transports_.osc().flushTo(leaving);
+    }
     const auto follow = [&] {
         const std::vector<int> moved = movedOutputs(before, transports_.outputs());
         triggers_.remapPending(moved, {});

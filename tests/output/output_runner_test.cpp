@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -772,6 +773,19 @@ private:
     std::shared_ptr<std::vector<std::vector<unsigned char>>> sent_;
 };
 
+/// An OSC int argument's value, from a datagram that carries exactly one: the last four bytes,
+/// big-endian.
+int lastInt(const std::string& datagram) {
+    if (datagram.size() < 4) {
+        return -1;
+    }
+    const auto byte = [&datagram](std::size_t at) {
+        return static_cast<int>(static_cast<std::uint8_t>(datagram[at]));
+    };
+    const std::size_t at = datagram.size() - 4;
+    return (byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) | byte(at + 3);
+}
+
 } // namespace
 
 TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
@@ -841,6 +855,148 @@ TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
     // And on the cable: the Note On, then its Note Off, and nothing left owing.
     const std::vector<std::vector<unsigned char>> want{{0x90, 60, 100}, {0x80, 60, 0}};
     CHECK(*sent == want);
+}
+
+TEST_CASE("an output switched off or deleted is sent what it is owed first", "[output][trigger]") {
+    // The operator, 2026-09-30: "if I uncheck a midi target for instance, it immediately dies, so
+    // it never sends the note off, and the midi device keeps playing that note". Unticking a row
+    // closed its port with the note off still owed to it, and the note off went nowhere a beat
+    // later. Now what is owed to an output that is going — a rule's release, a note held for the
+    // output's delay, an OSC datagram held for its — goes to it before it goes. What is owed to
+    // the outputs that stay is left for its own time.
+    using Kind = takt4::output::OutputTarget::Kind;
+    using Bytes = std::vector<std::vector<unsigned char>>;
+    std::map<std::string, std::shared_ptr<Bytes>> cables;
+    for (const char* device : {"Laser", "Synth", "Other"}) {
+        cables[device] = std::make_shared<Bytes>();
+    }
+    LoopbackReceiver deckSocket;
+    LoopbackReceiver stageSocket;
+
+    const auto output = [](const char* id, Kind kind, double delay) {
+        takt4::output::OutputTarget target;
+        target.id = id;
+        target.name = id;
+        target.kind = kind;
+        target.delaySeconds = delay;
+        return target;
+    };
+    auto desk = output("o-desk", Kind::Midi, 0.0);
+    desk.device = "Laser";
+    // Held 400 ms by its own delay, so its note on has not left yet either.
+    auto synth = output("o-synth", Kind::Midi, 0.4);
+    synth.device = "Synth";
+    auto deck = output("o-deck", Kind::Osc, 0.4);
+    deck.host = "127.0.0.1";
+    deck.port = deckSocket.port();
+    auto stage = output("o-stage", Kind::Osc, 0.0);
+    stage.host = "127.0.0.1";
+    stage.port = stageSocket.port();
+
+    Transports::Config config;
+    config.outputs = {desk, synth, deck, stage};
+    config.openMidi = [cables](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<KeepingPort>(cables.at(name)));
+    };
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 600.0; // never due within the test
+    Rule::Config laser;
+    laser.id = "laser";
+    laser.trigger = takt4::trigger::Trigger::Manual;
+    laser.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    laser.number.kind = takt4::trigger::GeneratorKind::Fixed;
+    laser.number.fixed = takt4::trigger::Value::ofInt(60);
+    laser.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    laser.value.fixed = takt4::trigger::Value::ofInt(100);
+    laser.followUps = {release};
+    laser.outputs = {"o-desk", "o-synth"};
+    Rule::Config clip;
+    clip.id = "clip";
+    clip.trigger = takt4::trigger::Trigger::Manual;
+    clip.address = "/clip";
+    clip.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    clip.value.fixed = takt4::trigger::Value::ofInt(1);
+    clip.followUps = {release};
+    clip.outputs = {"o-deck", "o-stage"};
+    runner.post(OutputCommand::rules({laser, clip}));
+    REQUIRE(runner.triggers().rule(0).valid());
+    REQUIRE(runner.triggers().rule(1).valid());
+
+    // Not started, so each command is applied as it is posted and nothing comes due.
+    runner.post(OutputCommand::testRule("laser"));
+    runner.post(OutputCommand::testRule("clip"));
+    const Bytes noteOn{{0x90, 60, 100}};
+    const Bytes noteOnAndOff{{0x90, 60, 100}, {0x80, 60, 0}};
+    REQUIRE(*cables["Laser"] == noteOn);
+    REQUIRE(cables["Synth"]->empty()); // held for its delay
+    REQUIRE(runner.triggers().pending() == 2);
+    const std::string pressed = stageSocket.receive();
+    REQUIRE(pressed.rfind("/clip", 0) == 0);
+    REQUIRE(lastInt(pressed) == 1);
+    REQUIRE_FALSE(deckSocket.ready(50)); // held for its delay
+
+    // What the OSC deck must now hear, in order: its held press, then its release.
+    const auto deckGotPressAndRelease = [&] {
+        const std::string first = deckSocket.receive();
+        const std::string second = deckSocket.receive();
+        CHECK(first.rfind("/clip", 0) == 0);
+        CHECK(lastInt(first) == 1);
+        CHECK(second.rfind("/clip", 0) == 0);
+        CHECK(lastInt(second) == 0);
+    };
+
+    SECTION("switched off") {
+        auto off = config.outputs;
+        off[0].enabled = false;
+        off[1].enabled = false;
+        off[2].enabled = false;
+        runner.post(OutputCommand::outputs(off));
+        CHECK(*cables["Laser"] == noteOnAndOff);
+        CHECK(*cables["Synth"] == noteOnAndOff);
+        deckGotPressAndRelease();
+        // The stage stays, and its release is still owed at its own time, once — not sent
+        // early, and not handed to the publisher to hold as well as being owed by the rule.
+        CHECK_FALSE(stageSocket.ready(50));
+        CHECK(runner.triggers().pending() == 1);
+        CHECK(runner.transports().osc().pending() == 0);
+        CHECK(runner.ruleSink().queued() == 0);
+    }
+    SECTION("deleted") {
+        runner.post(OutputCommand::outputs({stage}));
+        CHECK(*cables["Laser"] == noteOnAndOff);
+        CHECK(*cables["Synth"] == noteOnAndOff);
+        deckGotPressAndRelease();
+        CHECK_FALSE(stageSocket.ready(50));
+        CHECK(runner.triggers().pending() == 1);
+        CHECK(runner.transports().osc().pending() == 0);
+        CHECK(runner.ruleSink().queued() == 0);
+    }
+    SECTION("the same row pointed at another device") {
+        auto moved = config.outputs;
+        moved[0].device = "Other";
+        runner.post(OutputCommand::outputs(moved));
+        // The note off to the laser that was sent the note on; nothing to the other device.
+        CHECK(*cables["Laser"] == noteOnAndOff);
+        CHECK(cables["Other"]->empty());
+        CHECK(cables["Synth"]->empty());
+        CHECK_FALSE(deckSocket.ready(50));
+    }
+    SECTION("renamed, which is not going anywhere") {
+        auto renamed = config.outputs;
+        for (auto& target : renamed) {
+            target.name += " (renamed)";
+        }
+        runner.post(OutputCommand::outputs(renamed));
+        CHECK(*cables["Laser"] == noteOn);
+        CHECK(cables["Synth"]->empty());
+        CHECK_FALSE(deckSocket.ready(50));
+        CHECK(runner.triggers().pending() == 2);
+    }
 }
 
 TEST_CASE("panic reaches the rules through the same queue as everything else",
@@ -1119,23 +1275,6 @@ TEST_CASE("two control surfaces can post to a stopped runner at once", "[output]
     runner.panic(false);
     CHECK_FALSE(runner.panicked());
 }
-
-namespace {
-
-/// An OSC int argument's value, from a datagram that carries exactly one: the last four bytes,
-/// big-endian.
-int lastInt(const std::string& datagram) {
-    if (datagram.size() < 4) {
-        return -1;
-    }
-    const auto byte = [&datagram](std::size_t at) {
-        return static_cast<int>(static_cast<std::uint8_t>(datagram[at]));
-    };
-    const std::size_t at = datagram.size() - 4;
-    return (byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) | byte(at + 3);
-}
-
-} // namespace
 
 TEST_CASE("a negative offset lands a beat's cue before that beat from live audio",
           "[output][trigger][slow]") {

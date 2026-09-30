@@ -176,6 +176,19 @@ void RuleSink::flushQueued() {
     dmxQueue_.clear();
 }
 
+void RuleSink::flushQueuedTo(std::uint64_t outputs) {
+    std::erase_if(midiQueue_, [&](const HeldMidi& held) {
+        if (held.target >= kMaxRoutableTargets ||
+            (outputs & (std::uint64_t{1} << held.target)) == 0) {
+            return false;
+        }
+        if (MidiOutput* const port = transports_.midiTarget(held.target)) {
+            port->send(std::span<const unsigned char>(held.bytes.data(), held.length));
+        }
+        return true;
+    });
+}
+
 void RuleSink::sendOsc(const trigger::Message& message) {
     OscPublisher& osc = transports_.osc();
     // §5.6's rule subset. A rule routed to a target that is switched off, or named one this

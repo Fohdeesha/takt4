@@ -173,6 +173,15 @@ public:
     /// would not let go.
     void flushFollowUps() { flushPending(); }
 
+    /// Sends now the part of every owed follow-up that goes to `outputs` (routing bits), and
+    /// leaves the rest owed at its own time. Lighting is not touched: it goes to fixtures, not
+    /// to an output.
+    ///
+    /// **For an output that is going** — switched off, deleted, or pointed at another device.
+    /// Its port closes as it goes, so a note off owed to it later went nowhere and the synth
+    /// on the end of it kept playing the note (the operator, 2026-09-30).
+    void flushFollowUpsTo(std::uint64_t outputs);
+
     /// Messages handed to the sink, follow-ups included.
     std::uint64_t sent() const noexcept { return sent_; }
     /// Fires whose message could not be built — an address that came out illegal once its
