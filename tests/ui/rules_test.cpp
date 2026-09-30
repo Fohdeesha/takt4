@@ -889,7 +889,7 @@ TEST_CASE("the conditions an operator types are read leniently", "[ui][trigger]"
 
     SECTION("milliseconds on screen, seconds in the rule") {
         editor.setCooldown("500");
-        CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.5));
+        CHECK(editor.rules().front().cooldownSeconds == Approx(0.5));
         // The same for a follow-up's own delay, which is two numbers rather than one — see
         // `trigger::FollowUp::delayBeats` — so the unit is picked before the number is typed.
         editor.addFollowUp();
@@ -1421,13 +1421,13 @@ TEST_CASE("the BPM range and the cooldown follow the rule that is selected", "[u
     CHECK(std::string(editor.window().get_bpm_range()) == "120 - 140");
     CHECK(std::string(editor.window().get_cooldown_ms()) == "500");
     CHECK(editor.rules().front().conditions.minBpm == Approx(120.0));
-    CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.5));
+    CHECK(editor.rules().front().cooldownSeconds == Approx(0.5));
 
     // The second rule has neither, and has to say so rather than showing the first's.
     editor.pick(1);
     CHECK(std::string(editor.window().get_bpm_range()) == "0 - 1000");
     CHECK(std::string(editor.window().get_cooldown_ms()) == "0");
-    CHECK(editor.rules().back().conditions.cooldownSeconds == Approx(0.0));
+    CHECK(editor.rules().back().cooldownSeconds == Approx(0.0));
 
     // And back, unchanged by the excursion.
     editor.pick(0);
@@ -1816,7 +1816,7 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
 
     // The box has it and the **rule has not**: a box commits when the edit is finished, not
     // on every keystroke.
-    CHECK(editor.rules().front().conditions.cooldownSeconds == Approx(0.0));
+    CHECK(editor.rules().front().cooldownSeconds == Approx(0.0));
 
     // A click away — on the WHEN heading, which is nothing but the window behind it — which is
     // finishing rather than cancelling. It pressed Tab, under a name that says a click (the
@@ -1828,7 +1828,7 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     slint::platform::update_timers_and_animations(); // the box's commit runs a loop late
 
     INFO("box held \"" << typed << "\"");
-    CHECK(editor.rules().front().conditions.cooldownSeconds > 0.0);
+    CHECK(editor.rules().front().cooldownSeconds > 0.0);
     CHECK_FALSE(window.get_status_is_error());
 }
 
@@ -2074,7 +2074,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
     REQUIRE(boxX >= 0.0f);
     // Typed, not committed: that is the contract, and it is what makes the rest of this test
     // mean something.
-    REQUIRE(editor.rules().front().conditions.cooldownSeconds == Approx(0.0));
+    REQUIRE(editor.rules().front().cooldownSeconds == Approx(0.0));
 
     SECTION("a click on the panel behind the rows commits it") {
         // **A click that touches nothing else**, which is the whole claim: the commit has to
@@ -2097,7 +2097,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         for (float y = 220.0f; y < 400.0f && !committed; y += 10.0f) {
             for (float x = 760.0f; x < 890.0f && !committed; x += 20.0f) {
                 click(x, y);
-                committed = editor.rules().front().conditions.cooldownSeconds > 0.0 && inert() &&
+                committed = editor.rules().front().cooldownSeconds > 0.0 && inert() &&
                             window.get_rule_rate() == rate;
             }
         }
@@ -2136,7 +2136,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         click(boxX, boxY);
         type("7");
         slint::platform::update_timers_and_animations();
-        const double committed = editor.rules().front().conditions.cooldownSeconds;
+        const double committed = editor.rules().front().cooldownSeconds;
         const std::string typed(window.get_cooldown_ms());
         REQUIRE(typed.find('7') != std::string::npos);
         // Typed, not committed, as before.
@@ -2146,7 +2146,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         slint::platform::update_timers_and_animations();
         CHECK(rig.runner.panicked()); // it was PANIC that was pressed
         INFO("cooldown box held \"" << std::string(window.get_cooldown_ms()) << "\"");
-        CHECK(editor.rules().front().conditions.cooldownSeconds * 1000.0 ==
+        CHECK(editor.rules().front().cooldownSeconds * 1000.0 ==
               Approx(std::stod(typed)).margin(0.5));
         editor.releasePanic();
     }

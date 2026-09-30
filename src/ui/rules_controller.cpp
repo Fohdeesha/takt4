@@ -1238,14 +1238,14 @@ void RulesController::setCooldown(const std::string& text) {
     // that is not a number is said rather than silently read as zero — `text.to-float()` used
     // to do that in the markup, so a typo turned a two-second cooldown off without a word.
     if (trimmed.empty()) {
-        rule->conditions.cooldownSeconds = 0.0;
+        rule->cooldownSeconds = 0.0;
     } else {
         const std::optional<double> number = readNumber(trimmed);
         if (!number) {
             setStatus("A cooldown is a number of milliseconds, like 250.", true);
             return;
         }
-        rule->conditions.cooldownSeconds = std::max(0.0, *number) / 1000.0;
+        rule->cooldownSeconds = std::max(0.0, *number) / 1000.0;
     }
     commit();
     publishSelected();
