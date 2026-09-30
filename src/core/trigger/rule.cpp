@@ -480,9 +480,10 @@ void Rule::validate() {
     }
     const std::size_t placeholders = countPlaceholders(config_.address);
     if (placeholders != config_.segments.size()) {
+        // In the editor's words: a `{name}` in the address is a slot, and each has a row of its own.
         problem_ = "the address has " + std::to_string(placeholders) +
-                   " templated segments and the rule has " +
-                   std::to_string(config_.segments.size()) + " generators for them";
+                   (placeholders == 1 ? " {slot}" : " {slots}") + " and the rule fills " +
+                   std::to_string(config_.segments.size());
         return;
     }
     // Fill it once with zeroes. That proves the fixed part of the template is a legal
