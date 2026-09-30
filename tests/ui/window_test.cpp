@@ -2461,7 +2461,9 @@ TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself",
         std::size_t count = 0;
         for (std::size_t i = 0; i < peers->row_count(); ++i) {
             const std::string shown(peers->row_data(i)->address);
-            count += takt4::testing::onThisMachine(shown, ours) ? 1 : 0;
+            if (takt4::testing::onThisMachine(shown, ours)) {
+                ++count;
+            }
         }
         return count;
     };
@@ -3222,6 +3224,7 @@ TEST_CASE("an outage that looks for the devices again finds its interface there 
     }
 }
 
+#if defined(_WIN32) // the ASIO scan and ScopedVariable are Windows'
 TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN clears it", "[ui]") {
     // The ASIO drivers are asked from a process of their own (core/audio/asio_scan.hpp). When
     // that process falls over twice the interface is missing from the list, and the operator
@@ -3266,6 +3269,7 @@ TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN cl
     CHECK_FALSE(controller.statusIsError());
     CHECK(after.find("Found ") != std::string::npos);
 }
+#endif
 
 TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     // The audit's C4, the window's half. The watchdog's arithmetic is input_watchdog_test.cpp's
@@ -4863,7 +4867,7 @@ TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's
     const takt4::testing::LoopbackReceiver deckEnd;
     const takt4::testing::LoopbackReceiver nodeEnd;
     takt4::settings::Settings saved;
-    for (const std::string line : {"deck = 127.0.0.1:" + std::to_string(deckEnd.port()),
+    for (const std::string& line : {"deck = 127.0.0.1:" + std::to_string(deckEnd.port()),
                                    "node = artnet 127.0.0.1:" + std::to_string(nodeEnd.port())}) {
         takt4::output::OutputTarget target;
         REQUIRE(takt4::output::parseOutputTarget(line, target));
@@ -5189,7 +5193,11 @@ TEST_CASE("a kind picked again on an output row still follows the row when it ch
     constexpr float kKindColumn = 208.0f;
     const auto kindOf = [&controller] {
         const int row = rowNamed(controller, "deck");
-        return row < 0 ? -1 : controller.window().get_outputs_list()->row_data(row)->kind_index;
+        return row < 0 ? -1
+                       : controller.window()
+                             .get_outputs_list()
+                             ->row_data(static_cast<std::size_t>(row))
+                             ->kind_index;
     };
     REQUIRE(kindOf() == 0); // OSC
 
@@ -5336,11 +5344,14 @@ TEST_CASE("an output whose MIDI device is not plugged in shows that device, and 
     WindowController controller(tracker, saved);
     const int row = rowNamed(controller, "desk");
     REQUIRE(row > 0);
-    const int index = controller.window().get_outputs_list()->row_data(row)->device_index;
+    const int index = controller.window()
+                          .get_outputs_list()
+                          ->row_data(static_cast<std::size_t>(row))
+                          ->device_index;
     REQUIRE(index > 0);
     const auto devices = controller.window().get_output_devices();
     REQUIRE(static_cast<std::size_t>(index) < devices->row_count());
-    CHECK(std::string(*devices->row_data(index)) ==
+    CHECK(std::string(*devices->row_data(static_cast<std::size_t>(index))) ==
           "takt4 test desk at home \xE2\x80\x94 not plugged in");
     // Still that device, as the output the runner has.
     CHECK(outputNamed(controller, "desk").device == "takt4 test desk at home");
@@ -6121,7 +6132,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     INFO("settings: " << spans(settings));
     std::vector<float> thumbs;
     for (int x = 20; x < kWidth - 20; ++x) {
-        if (is(shot, x, settingsRow, kThumb) && (thumbs.empty() || x - thumbs.back() > 24.0f)) {
+        if (is(shot, x, settingsRow, kThumb) &&
+            (thumbs.empty() || static_cast<float>(x) - thumbs.back() > 24.0f)) {
             thumbs.push_back(static_cast<float>(x));
         }
     }
