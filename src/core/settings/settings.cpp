@@ -8,6 +8,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -484,6 +486,9 @@ std::string toJson(const Settings& settings) {
              {"oscControlLocalOnly", settings.machine.oscControlLocalOnly},
              {"inputsFolded", settings.machine.inputsFolded},
              {"outputsFolded", settings.machine.outputsFolded},
+             {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
+             {"ruleLogOpen", settings.machine.ruleLogOpen},
+             {"ruleLogHeight", settings.machine.ruleLogHeight},
          }},
         {"preset",
          json{
@@ -534,6 +539,25 @@ Settings fromDocument(const json& document) {
         read(machine, "oscControlLocalOnly", settings.machine.oscControlLocalOnly);
         read(machine, "inputsFolded", settings.machine.inputsFolded);
         read(machine, "outputsFolded", settings.machine.outputsFolded);
+        // The rule editor's folds, four booleans in A-to-D order; anything else keeps the default.
+        if (machine.is_object() && machine.contains("ruleSectionsFolded") &&
+            machine.at("ruleSectionsFolded").is_array() &&
+            machine.at("ruleSectionsFolded").size() == settings.machine.ruleSectionsFolded.size()) {
+            const json& folds = machine.at("ruleSectionsFolded");
+            for (std::size_t i = 0; i < settings.machine.ruleSectionsFolded.size(); ++i) {
+                if (folds.at(i).is_boolean()) {
+                    settings.machine.ruleSectionsFolded[i] = folds.at(i).get<bool>();
+                }
+            }
+        }
+        read(machine, "ruleLogOpen", settings.machine.ruleLogOpen);
+        read(machine, "ruleLogHeight", settings.machine.ruleLogHeight);
+        // A line's height to half the height of a large screen: a hand-edited 0 or a million
+        // would otherwise open a log with no lines, or one that pushes the editor off the window.
+        if (!std::isfinite(settings.machine.ruleLogHeight)) {
+            settings.machine.ruleLogHeight = MachineSettings{}.ruleLogHeight;
+        }
+        settings.machine.ruleLogHeight = std::clamp(settings.machine.ruleLogHeight, 18.0, 800.0);
         if (settings.machine.channel < 0) {
             settings.machine.channel = 0;
         }

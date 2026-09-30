@@ -2,6 +2,7 @@
 
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/features/intensity.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -327,6 +328,147 @@ std::string spellEuclid(const Rule::Config& rule) {
         pattern += trigger::euclidHit(step, rule.pulses, steps) ? 'x' : '.';
     }
     return pattern;
+}
+
+namespace {
+
+/// "4 bars", "1 beat": a count and its unit, singular where it is one.
+std::string counted(double count, const char* one, const char* many) {
+    return spellNumber(count) + " " + (count == 1.0 ? one : many);
+}
+
+/// Where a rule's routing goes, by the names the rig has now.
+std::string routedTo(const Rule::Config& rule, const std::vector<output::OutputTarget>& targets) {
+    if (rule.outputs.empty()) {
+        return "every output";
+    }
+    std::vector<std::string> names;
+    for (const std::string& id : rule.outputs) {
+        const output::OutputTarget* const target = output::findTarget(targets, id);
+        names.push_back(target != nullptr ? target->name : std::string("an output that is gone"));
+    }
+    return join(names);
+}
+
+} // namespace
+
+std::string describeWhen(const Rule::Config& rule, double rate) {
+    const auto every = static_cast<double>(std::max<std::uint32_t>(1, rule.every));
+    std::string text;
+    switch (rule.trigger) {
+    case trigger::Trigger::Beat:
+        text = every == 1 ? "every beat" : "every " + counted(every, "beat", "beats") + ", counting from the first";
+        break;
+    case trigger::Trigger::Bar:
+        text = every == 1 ? "every bar" : "every " + counted(every, "bar", "bars") + ", counting from the first";
+        break;
+    case trigger::Trigger::Downbeat:
+        text = "every downbeat";
+        break;
+    case trigger::Trigger::Euclid:
+        text = std::to_string(rule.pulses) + " in " + counted(every, "beat", "beats") + " · " +
+               spellEuclid(rule);
+        break;
+    default:
+        // The ones that come in bursts, whose cooldown is what spaces them out — said either way,
+        // since "no limit" is as much worth knowing about an onset rule as a limit is.
+        text = std::string(trigger::labelOf(rule.trigger)) + " · " +
+               (rule.cooldownSeconds > 0.0
+                    ? "at most once every " + spellNumber(std::round(rule.cooldownSeconds * 1000.0)) + " ms"
+                    : std::string("no limit"));
+        break;
+    }
+    if (trigger::takesEvery(rule.trigger) && rate != 1.0) {
+        text += " · " + describeRate(rate);
+    }
+    return text;
+}
+
+std::string describeOnlyIf(const Rule::Config& rule) {
+    if (!rule.conditionsOn) {
+        return "off — fires every time A comes round";
+    }
+    const trigger::Conditions& only = rule.conditions;
+    std::vector<std::string> parts;
+    if (only.minConfidence > 0.0) {
+        parts.push_back("confidence over " + spellNumber(std::round(only.minConfidence * 100.0) / 100.0));
+    }
+    if (only.probability < 1.0) {
+        parts.push_back(spellNumber(std::round(only.probability * 100.0)) + "%");
+    }
+    if (!only.intensities[0] || !only.intensities[1] || !only.intensities[2]) {
+        std::vector<std::string> allowed;
+        for (const features::Intensity intensity : features::kIntensities) {
+            if (only.allows(intensity)) {
+                allowed.emplace_back(features::labelOf(intensity));
+            }
+        }
+        parts.push_back(allowed.empty() ? "no intensity ticked, so never" : join(allowed));
+    }
+    if (only.minBpm > 0.0 || only.maxBpm < 1000.0) {
+        parts.push_back(spellNumber(only.minBpm) + " - " + spellNumber(only.maxBpm) + " BPM");
+    }
+    if (parts.empty()) {
+        return "on — nothing set yet, so it fires every time A comes round";
+    }
+    std::string text;
+    for (const std::string& part : parts) {
+        text += text.empty() ? "" : " · ";
+        text += part;
+    }
+    return text;
+}
+
+std::string describeSend(const Rule::Config& rule, const std::vector<output::OutputTarget>& targets,
+                         const std::vector<dmx::Fixture>& patch) {
+    if (rule.sendKind == trigger::Message::Kind::Osc) {
+        return "OSC to " + routedTo(rule, targets) + " · " +
+               (rule.address.empty() ? std::string("no address yet") : rule.address);
+    }
+    if (rule.sendKind == trigger::Message::Kind::Dmx) {
+        std::vector<std::string> names;
+        for (const std::string& key : rule.dmx.fixtures) {
+            const dmx::Fixture* const fixture = dmx::findFixture(patch, key);
+            names.push_back(fixture != nullptr ? fixture->name
+                            : key.rfind("f-", 0) == 0 ? std::string("a fixture that is gone")
+                                                      : key);
+        }
+        return std::string(dmx::labelOf(rule.dmx.effect)) + " on " +
+               (names.empty() ? std::string("no fixtures — it sends nowhere") : join(names));
+    }
+    return std::string(trigger::labelOf(rule.sendKind)) + " ch " + std::to_string(rule.channel) +
+           " to " + routedTo(rule, targets);
+}
+
+std::string describeThen(const Rule::Config& rule) {
+    if (rule.followUps.empty()) {
+        return "nothing — this trigger sends once and is done";
+    }
+    std::string text;
+    for (const trigger::FollowUp& entry : rule.followUps) {
+        std::string what = "release";
+        if (entry.kind) {
+            what = std::string(trigger::labelOf(*entry.kind));
+            if (trigger::sendsNumber(*entry.kind)) {
+                what += " " + std::to_string(entry.number);
+            }
+        }
+        std::string when;
+        switch (entry.unit) {
+        case trigger::DelayUnit::Milliseconds:
+            when = spellNumber(std::round(entry.delaySeconds * 1000.0)) + " ms";
+            break;
+        case trigger::DelayUnit::Beats:
+            when = counted(entry.delayBeats, "beat", "beats");
+            break;
+        case trigger::DelayUnit::Bars:
+            when = counted(entry.delayBeats, "bar", "bars");
+            break;
+        }
+        text += text.empty() ? "" : " · ";
+        text += what + " after " + when;
+    }
+    return text;
 }
 
 } // namespace takt4::ui::rule_text
