@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #if defined(_WIN32)
@@ -123,6 +124,17 @@ std::vector<std::wstring> installedAsioDrivers() {
     }
     RegCloseKey(asio);
     return dlls;
+}
+
+/// How many installed drivers have their DLL on disk — the ones a scan loads (the patched
+/// asiolist.cpp skips the rest). None on a CI runner, where a scan rightly lists nothing.
+std::size_t asioDriversPresent() {
+    std::size_t present = 0;
+    for (const std::wstring& dll : installedAsioDrivers()) {
+        std::error_code code;
+        present += std::filesystem::exists(std::filesystem::path(dll), code) ? 1 : 0;
+    }
+    return present;
 }
 
 /// The installed ASIO drivers that are loaded into this process.
@@ -245,6 +257,12 @@ TEST_CASE("ASIO devices are listed as their drivers describe them with none load
     const AsioScan scan = takt4::audio::scanAsio();
     INFO("the problem: " << scan.problem);
     REQUIRE(scan.problem.empty());
+    if (asioDriversPresent() == 0) {
+        // A machine with no ASIO driver — a CI runner — lists none, and that is the right answer.
+        // (These two tests first met a runner on 2026-09-30, and failed there asking for one.)
+        CHECK(scan.devices.empty());
+        SKIP("no ASIO driver is installed on this machine");
+    }
     REQUIRE_FALSE(scan.devices.empty());
 
     const takt4::audio::PortAudioSession session;
@@ -311,7 +329,8 @@ TEST_CASE("an ASIO scan that falls over once is asked again and lists the device
     INFO("the problem: " << scan.problem);
     CHECK(std::filesystem::exists(marker)); // the first one did fall over
     CHECK(scan.problem.empty());
-    CHECK_FALSE(scan.devices.empty());
+    // The answer the second one gave: the devices, where the machine has any drivers to list.
+    CHECK(scan.devices.empty() == (asioDriversPresent() == 0));
 }
 
 #endif
