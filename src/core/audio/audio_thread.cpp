@@ -200,8 +200,14 @@ bool AudioThread::enqueue(const char* what, std::function<void()> fn,
         job->abandoned = true;
         return false;
     }
-    if (job->error) {
-        std::rethrow_exception(job->error);
+    // **Taken out of the job under the lock**, so the exception lives and dies on this thread.
+    // The audio thread drops its own share of the job when it moves on, and a job still holding
+    // the exception then freed it there while this thread was reading its message — the first
+    // linux-tsan run over this code (2026-09-30) reported exactly that.
+    const std::exception_ptr error = std::exchange(job->error, nullptr);
+    lock.unlock();
+    if (error) {
+        std::rethrow_exception(error);
     }
     return true;
 }

@@ -255,6 +255,9 @@ TEST_CASE("an output the network will not send to says so, and the others carry 
     // of M12 that goes with it: nothing said so, and the target just went quiet. The socket
     // refuses every send to `kUnsendableHost`, which is what a network that is down does to
     // all of them.
+    if constexpr (!takt4::testing::kUnsendableFails) {
+        SKIP(takt4::testing::kUnsendableSkip);
+    }
     takt4::testing::LoopbackReceiver receiver;
     takt4::output::OutputTarget deck;
     deck.id = "o-0000d0c0";

@@ -30,13 +30,27 @@
 
 namespace takt4::testing {
 
-/// A destination every send to fails, on every system CI runs on — the stand-in for a network
-/// that is down, since no test can pull a cable. Not 0.0.0.0, which the tests used first:
-/// Windows refuses that one, but Linux takes a zero destination to mean this machine and
-/// quietly delivers it over loopback, so those tests failed on the Linux runner. Anything else
-/// in 0.0.0.0/8 Linux refuses outright (`__mkroute_output` in net/ipv4/route.c), and Windows
-/// calls it an unreachable network (measured).
+/// A destination a send to fails — the stand-in for a network that is down, since no test can
+/// pull a cable. Windows calls 0.0.0.1 an unreachable network (measured). Not 0.0.0.0, which
+/// the tests used first: Linux takes a zero destination to mean this machine.
+///
+/// **And not on Linux at all** (`kUnsendableFails`): this said Linux refuses the rest of
+/// 0.0.0.0/8, which no run had checked, and the first linux-tsan job that reached the tests
+/// (2026-09-30, Ubuntu's kernel) sent to 0.0.0.1 without complaint — five tests failed. Their
+/// point is what takt4 says when a send fails, which only a failing send can show, so they skip
+/// there and run on Windows, which is where takt4 ships.
 inline constexpr const char* kUnsendableHost = "0.0.0.1";
+
+/// Whether a send to `kUnsendableHost` fails on this system. See there.
+#if defined(__linux__)
+inline constexpr bool kUnsendableFails = false;
+#else
+inline constexpr bool kUnsendableFails = true;
+#endif
+
+/// The reason a test gives when `kUnsendableFails` is false.
+inline constexpr const char* kUnsendableSkip =
+    "sends to 0.0.0.1 go through on this system (see kUnsendableHost)";
 
 /// What `net::sendFailure` makes of a send to `kUnsendableHost` here — words, so a test can
 /// check the reason an operator is given and not merely that a send failed. Empty where it
