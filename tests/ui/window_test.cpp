@@ -25,6 +25,7 @@
 #include "support/loopback_receiver.hpp"
 #include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
+#include "support/this_machine.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -1329,7 +1330,7 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
     CHECK(live.ruleValid[0]);
     // A valid rule says nothing — but only the *rule's* silence is being claimed here. On a
     // machine with no audio input the controller has already set an error of its own at
-    // construction ("No input device. Connect an interface and start takt4 again."), which is
+    // construction ("No input device. Connect an interface and press RESCAN."), which is
     // about the hardware and not about the preset this test loaded. Asserting into that was a
     // false failure on any headless machine, and it went unseen until 2026-09-14 because CI
     // had not reached the test step since the test was written: every run before then stopped
@@ -2452,9 +2453,31 @@ TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself",
         }
     };
 
+    // **Only the peers on this machine count** — see support/this_machine.hpp: the rig's network
+    // has Link sessions of its own, which failed this test on 2026-09-30 by being listed,
+    // correctly, and say nothing about takt4 or the peer process below.
+    const std::vector<std::string> ours = takt4::testing::thisMachinesAddresses();
+    const auto onThisMachine = [&peers, &ours] {
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < peers->row_count(); ++i) {
+            const std::string shown(peers->row_data(i)->address);
+            count += takt4::testing::onThisMachine(shown, ours) ? 1 : 0;
+        }
+        return count;
+    };
+    const auto listed = [&peers] {
+        std::string text;
+        for (std::size_t i = 0; i < peers->row_count(); ++i) {
+            const auto peer = *peers->row_data(i);
+            text += std::string(peer.address) + " at " + std::string(peer.tempo) + "; ";
+        }
+        return text;
+    };
+
     // Two seconds of takt4's own announcements, a few a second: none of them is a peer.
     rounds(40);
-    CHECK(peers->row_count() == 0);
+    INFO("listed: " << listed());
+    CHECK(onThisMachine() == 0);
 
 #if defined(_WIN32)
     // The peer: takt4_tests, built beside this binary, running its two Link sessions.
@@ -2474,13 +2497,13 @@ TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself",
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (std::chrono::steady_clock::now() < until && most == 0) {
         rounds(1);
-        most = std::max<std::size_t>(most, peers->row_count());
+        most = std::max<std::size_t>(most, onThisMachine());
         if (peers->row_count() > 0) {
             tempo = std::string(peers->row_data(0)->tempo);
         }
     }
     peer.join();
-    INFO("tempo shown: " << tempo);
+    INFO("tempo shown: " << tempo << "; listed: " << listed());
     CHECK(most >= 1);
     CHECK(tempo.find("BPM") != std::string::npos);
 #endif
@@ -4675,6 +4698,48 @@ TEST_CASE("closing the main window closes the About box with it", "[ui]") {
     CHECK_FALSE(controller.about()->window().is_visible());
 }
 
+TEST_CASE("the add a rule button adds one when there are none, and only opens the editor after",
+          "[ui]") {
+    // Found walking the window as a new user on 2026-09-30: with no rules the triggers row's
+    // button reads "add a rule", and clicking it opened an empty editor that said "pick a rule
+    // on the left, or + to add one". Clicked for real, on the row where the sweep of every
+    // control finds it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    REQUIRE(controller.editor().rules().empty());
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1200;
+    auto& window = controller.window().window();
+    const auto trigButton = [&] {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, kHeight);
+        window.dispatch_window_active_changed_event(true);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        const int row = sheets[6].first + 33;
+        const auto trig = occupied(shot, row - 23, row + 22, 20, kWidth - 20, kSheet, 5);
+        INFO("triggers: " << spans(trig));
+        // 04, triggers, the rules button, the fixtures button, PANIC.
+        REQUIRE(trig.size() == 5);
+        return std::pair<float, float>{middleOf(trig[2]), static_cast<float>(row)};
+    };
+    const auto [x, y] = trigButton();
+    clickAt(window, x, y);
+    slint::platform::update_timers_and_animations();
+    controller.tick();
+    CHECK(controller.editor().visible());
+    REQUIRE(controller.editor().rules().size() == 1);
+    CHECK(controller.editor().window().get_selected() == 0);
+    CHECK(controller.window().get_rules_total() == 1);
+
+    // With a rule, the button says how many are active and only opens the editor.
+    controller.editor().hide();
+    const auto [again, row] = trigButton();
+    clickAt(window, again, row);
+    slint::platform::update_timers_and_animations();
+    CHECK(controller.editor().visible());
+    CHECK(controller.editor().rules().size() == 1);
+}
+
 TEST_CASE("an editor's own close box closes it as CLOSE does", "[ui]") {
     // M16's other half: the window's close box hid it behind its controller's back, so the patch
     // editor went on redrawing its levels thirty times a second with nothing on screen, and what
@@ -5485,9 +5550,13 @@ TEST_CASE("a click made while START is still opening the input does not stop it 
         SKIP("no input device on this machine");
     }
     WindowController controller(tracker);
-    constexpr float kWidth = 900.0f;
-    constexpr float kHeight = 836.0f;
-    constexpr float kButtonY = 31.0f;
+    // The window as it opens, and the top bar's buttons: 10 px of page, 12 px down the sheet, a
+    // 16 px label and 3 px over the 34 px pickers they are centred on — the sweep of every control
+    // ("every control in the main window does what it says") clicks the same row. (This test is
+    // [hardware], so the redesign's default runs did not see it still aiming at the old top bar.)
+    constexpr float kWidth = 800.0f;
+    constexpr float kHeight = 934.0f;
+    constexpr float kButtonY = 58.0f;
     layOut(controller, kWidth, kHeight);
     auto& window = controller.window().window();
     const auto click = [&window](float x) {

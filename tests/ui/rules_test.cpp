@@ -1026,6 +1026,76 @@ TEST_CASE("the editor's PANIC holds through a double click and answers Escape", 
     CHECK(editor.rules().front().name.find('q') != std::string::npos);
 }
 
+TEST_CASE("the M key fires the manual rules from the editor too, and is a letter in a box",
+          "[ui][trigger]") {
+    // The trigger list offers "manual (M key)", and M only worked on the main window: a manual
+    // rule built in the editor could not be fired from it (found 2026-09-30). Real keys, into the
+    // window; the runner is not started, so what is posted is applied as it is posted.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.setAddress("/fire");
+    editor.pickTrigger(indexOf(Trigger::Manual));
+    REQUIRE(editor.rules().front().trigger == Trigger::Manual);
+    REQUIRE(rig.runner.triggers().rule(0).valid());
+    const std::string before = editor.rules().front().name;
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
+    window.window().dispatch_window_active_changed_event(true);
+    const auto settle = [] { slint::platform::update_timers_and_animations(); };
+    const auto click = [&](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+        settle();
+    };
+    const auto press = [&](const std::string& key) {
+        window.window().dispatch_key_press_event(slint::SharedString(key));
+        window.window().dispatch_key_release_event(slint::SharedString(key));
+        settle();
+    };
+    const auto fires = [&rig] { return rig.runner.triggers().rule(0).fires(); };
+
+    // From the window's resting place, as it opens.
+    press("m");
+    CHECK(fires() == 1);
+    press("M");
+    CHECK(fires() == 2);
+    // A held key repeats; only its first press counts.
+    window.window().dispatch_key_press_event(slint::SharedString("m"));
+    window.window().dispatch_key_press_repeat_event(slint::SharedString("m"));
+    window.window().dispatch_key_press_repeat_event(slint::SharedString("m"));
+    window.window().dispatch_key_release_event(slint::SharedString("m"));
+    settle();
+    CHECK(fires() == 3);
+
+    // In the rule's name box it is a letter. Found as the Escape test finds it, by typing into
+    // candidates until the name changes.
+    bool found = false;
+    for (float y = 12.0f; y < 58.0f && !found; y += 4.0f) {
+        for (float x = 480.0f; x < 880.0f && !found; x += 20.0f) {
+            click(x, y);
+            const std::uint64_t seen = fires();
+            press("m");
+            if (editor.rules().front().name != before) {
+                found = true;
+                CHECK(fires() == seen);
+            }
+            press(std::string(1, '\x1b')); // leaves the box, or panics from outside one
+            if (rig.runner.panicked()) {
+                editor.releasePanic();
+            }
+        }
+    }
+    INFO("no click landed in the rule's name box");
+    REQUIRE(found);
+    CHECK(editor.rules().front().name.find('m') != std::string::npos);
+}
+
 TEST_CASE("what fired reaches the editor's log, in columns", "[ui][trigger]") {
     // §5.9: "the last-fired line ... showing the actually-sent message with a timestamp". The
     // editor's own bar for it is gone (HANDOFF §0.5, 2026-09-30): the log says it, in three columns

@@ -54,7 +54,7 @@ export component AboutWindow inherits Window {
       overflow: elide;
     }
     Text {
-      text: "Beat, downbeat, tempo and meter from one channel of audio, sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
+      text: "Beat, downbeat, tempo and meter from the audio coming in — a stereo pair of inputs, or one — sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
       color: Theme.text;
       font-size: 13px;
       wrap: word-wrap;
@@ -74,8 +74,10 @@ export component AboutWindow inherits Window {
       wrap: word-wrap;
     }
     Text {
+      // Not a link — nothing here opens a browser — so not in the colour this window's
+      // clickable things are drawn in.
       text: "Source: https://github.com/Fohdeesha/takt4";
-      color: Theme.accent;
+      color: Theme.text;
       font-size: 13px;
       overflow: elide;
     }

@@ -625,7 +625,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     });
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
 
-    window_->on_rules_clicked([this] { openEditor(); });
+    window_->on_rules_clicked([this] {
+        openEditor();
+        // With no rules the button reads "add a rule", so that is what it does: one added and
+        // picked, ready to fill in. It used to open an empty editor, which added nothing.
+        if (editor_.rules().empty()) {
+            editor_.add();
+        }
+    });
     window_->on_about_opened([this] { openAbout(); });
     window_->on_fixtures_clicked([this] { patch_.show(); });
     window_->on_panic_clicked([this] { engagePanic(); });
@@ -914,7 +921,7 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
         device_ = -1;
         window_->set_channels(std::make_shared<slint::VectorModel<slint::SharedString>>());
         setStatus(asioProblem.empty()
-                      ? "No input device. Connect an interface and start takt4 again."
+                      ? "No input device. Connect an interface and press RESCAN."
                       : asioProblem,
                   true);
         return;
@@ -2180,6 +2187,8 @@ void WindowController::openAbout() {
         about.window().set_size(slint::LogicalSize({580.0f, 520.0f}));
     }
     (*about_)->show();
+    // Forward, if it was already open behind this one — see `RulesController::show`.
+    (void)bringWindowToFront("About takt4");
 }
 
 std::filesystem::path WindowController::openEmbeddedText(const std::string& name,

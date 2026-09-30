@@ -178,6 +178,10 @@ void FixturesController::show() {
     // Directly rather than through `tick`, because nothing is being destroyed from inside its
     // own handler here and a window that opened a frame empty would flicker.
     rebuildChannels();
+    // And brought forward, as the rule editor is (`RulesController::show`): `show()` leaves a
+    // window that is already up where it is in the Z order, so the button looked dead with the
+    // patch behind the main window. "fixtures" is in this window's title and no other of ours.
+    (void)bringWindowToFront("fixtures");
 }
 
 void FixturesController::hide() {

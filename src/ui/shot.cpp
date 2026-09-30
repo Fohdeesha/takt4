@@ -395,8 +395,8 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     if (dmx) {
         rules->push_back(rule("Heads change color on the drop", true, "", 37, true, false));
     }
-    rules->push_back(rule("Resync every 8 bars", true,
-                          "the address has 1 templated segment and the rule has 0", 0, false, false));
+    // Worded as `Rule::problem` words the commonest: a new MIDI rule before its number is picked.
+    rules->push_back(rule("Laser stab on the drop", true, "choose a note number", 0, false, false));
     window.set_rules(rules);
     window.set_selected(dmx ? 5 : 0);
     window.set_panicked(panicked);
@@ -570,6 +570,7 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
         window.set_fixture_choices(lights);
         window.set_fixtures_summary(slint::SharedString("heads, lasers"));
         window.set_fixtures_available(slint::SharedString("reaches 2 fixtures"));
+        window.set_fixtures_list_note(slint::SharedString("reaches 2 fixtures"));
 
         slots = std::make_shared<slint::VectorModel<SlotRow>>();
         SlotRow color = fixedSlot("color", "#ff2040", "#20ff80");
@@ -650,9 +651,10 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
             rules->set_row_data(i, row);
         }
     } else if (state == "no-lights") {
-        window.set_fixtures_summary(slint::SharedString("nothing — this rule sends nowhere"));
+        window.set_fixtures_summary(slint::SharedString("nothing — sends nowhere"));
         window.set_fixtures_available(
             slint::SharedString("pick at least one — a DMX rule with no fixtures does nothing"));
+        window.set_fixtures_list_note(slint::SharedString("pick at least one"));
         window.set_fixtures_reaches_nothing(true);
     }
 }
@@ -1087,8 +1089,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_version_short(
         slint::SharedString(shortVersionLabel(buildInfo().version, buildInfo().commit)));
     if (options.mockup && options.running) {
-        // The mockup's label, a release's, so the two pictures do not differ in the corner.
-        window->set_version_short(slint::SharedString("0.9.9\nrelease"));
+        // A release's label, as the mockup has — this build's version, as its release would
+        // show it (the README's picture is this render).
+        const std::string version(buildInfo().version);
+        window->set_version_short(slint::SharedString(shortVersionLabel(version, "v" + version)));
     }
 
     // show() creates the adapter; the two dispatches give the scene its scale and size,

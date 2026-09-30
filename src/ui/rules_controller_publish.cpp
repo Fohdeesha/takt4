@@ -408,6 +408,7 @@ void RulesController::publishFixtureChoices() {
         fixtureRows_.clear();
         window_->set_fixtures_summary(slint::SharedString(""));
         window_->set_fixtures_available(slint::SharedString(""));
+        window_->set_fixtures_list_note(slint::SharedString(""));
         window_->set_fixtures_reaches_nothing(false);
         return;
     }
@@ -477,8 +478,9 @@ void RulesController::publishFixtureChoices() {
                         : key.rfind("f-", 0) == 0 ? std::string("a fixture that is gone")
                                                   : key);
     }
-    window_->set_fixtures_summary(
-        shared(aims.empty() ? "nothing — this rule sends nowhere" : join(shown)));
+    // 176 px in Archivo 15, where the closed field has 198: "nothing — this rule sends nowhere" was
+    // 232, and was only ever seen cut off.
+    window_->set_fixtures_summary(shared(aims.empty() ? "nothing — sends nowhere" : join(shown)));
     // What the rule actually reaches on *this* rig, in fixtures. The count matters: "heads"
     // reaching three fixtures and "heads" reaching none look identical in a list of ticks.
     const std::size_t reached = dmx::resolveFixtures(patch_, aims).count();
@@ -492,6 +494,9 @@ void RulesController::publishFixtureChoices() {
             "reaches " + std::to_string(reached) + (reached == 1 ? " fixture" : " fixtures");
     }
     window_->set_fixtures_available(shared(available));
+    // In the list itself the first line has 258 px, and the sentence above is 373 in Archivo 14:
+    // the list says what to do, and the field's note beside it says why.
+    window_->set_fixtures_list_note(shared(aims.empty() ? "pick at least one" : available));
     window_->set_fixtures_reaches_nothing(reached == 0);
 }
 

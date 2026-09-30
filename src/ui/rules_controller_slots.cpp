@@ -348,8 +348,8 @@ void RulesController::previewColor(dmx::Color color) {
     // And none while PANIC is engaged — the runner drops it then (the audit's M17), so the
     // editor says why the fixtures are not following the picker.
     if (runner_.panicked()) {
-        setStatus("PANIC is engaged, so the preview is not sent to the lights. Press RELEASE "
-                  "on the main window first.",
+        setStatus("PANIC is engaged, so the preview is not sent to the lights. Press RELEASE, "
+                  "above the preset menu, first.",
                   true);
         return;
     }

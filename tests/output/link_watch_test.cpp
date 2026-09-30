@@ -2,6 +2,7 @@
 #include "core/output/link_session.hpp"
 
 #include "support/loopback_receiver.hpp"
+#include "support/this_machine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -297,12 +298,24 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
     const auto seconds = [&start] {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     };
-    while (seconds() < 10.0 && (everyone.peers().size() < 2 || !asTakt4.ownSession())) {
+    // Only the sessions on this machine: the network may have Link sessions of its own, which
+    // both watches hear, correctly (support/this_machine.hpp).
+    const std::vector<std::string> ours = takt4::testing::thisMachinesAddresses();
+    const auto here = [&ours](const std::vector<LinkPeer>& peers) {
+        std::vector<LinkPeer> mine;
+        for (const LinkPeer& peer : peers) {
+            if (takt4::testing::onThisMachine(peer.addresses, ours)) {
+                mine.push_back(peer);
+            }
+        }
+        return mine;
+    };
+    while (seconds() < 10.0 && (here(everyone.peers()).size() < 2 || !asTakt4.ownSession())) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
         everyone.poll(seconds());
         asTakt4.poll(seconds());
     }
-    const std::vector<LinkPeer> heard = everyone.peers();
+    const std::vector<LinkPeer> heard = here(everyone.peers());
     REQUIRE(heard.size() >= 2);
     // Link settles two sessions on one tempo once they meet; either is what a peer announces.
     for (const LinkPeer& peer : heard) {
@@ -311,7 +324,13 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
         CHECK_FALSE(peer.addresses.empty());
     }
     CHECK(asTakt4.ownSession().has_value());
-    CHECK(asTakt4.peers().empty());
+    std::string listed;
+    for (const LinkPeer& peer : asTakt4.peers()) {
+        listed += (peer.addresses.empty() ? std::string("?") : peer.addresses.front()) + " at " +
+                  std::to_string(peer.bpm) + " BPM; ";
+    }
+    INFO("listed as peers: " << listed);
+    CHECK(here(asTakt4.peers()).empty());
 
     first.enable(false);
     second.enable(false);

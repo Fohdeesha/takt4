@@ -1144,6 +1144,8 @@ export component RulesWindow inherits Window {
   callback panic-clicked();
   /// PANIC let go of — RELEASE, which is the only way back.
   callback panic-released();
+  /// The M key: fires the rules whose trigger is "manual (M key)", as it does on the main window.
+  callback manual-fired();
   /// §5.6's presets at rig scale: a whole set of rules in one pick.
   in-out property <[string]> rig-presets;
   callback rig-added(int);
@@ -1241,6 +1243,9 @@ export component RulesWindow inherits Window {
   in-out property <[OutputChoice]> fixture-choices;
   in-out property <string> fixtures-summary;
   in-out property <string> fixtures-available;
+  /// The same, short enough for the list's first line (258 px inside its edge): the whole
+  /// sentence stays beside the field.
+  in-out property <string> fixtures-list-note;
   in-out property <bool> fixtures-reaches-nothing;
 
   in-out property <[string]> effect-kinds;
@@ -1379,17 +1384,28 @@ export component RulesWindow inherits Window {
   // The keyboard's resting place, so Escape works the moment the editor opens.
   forward-focus: keys;
 
-  // **PANIC from the keyboard** — the audit's H18. Escape only; in a text box it leaves the box, in
-  // an open list it closes the list, and neither panics anything.
+  // **PANIC from the keyboard** — the audit's H18. Escape; in a text box it leaves the box, in an
+  // open list it closes the list, and neither panics anything. And **M**, which the trigger list
+  // offers as "manual (M key)": it only worked on the main window, so a manual rule built here
+  // could not be fired from here (found 2026-09-30). In a text box M is a letter, as Escape is
+  // leaving the box — the box has the keyboard, and this only hears what it passes on.
   keys := FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
 
     key-pressed(event) => {
-      if (event.text == Key.Escape && !event.modifiers.control && !event.modifiers.alt &&
-          !event.modifiers.meta) {
+      if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+        return reject;
+      }
+      if (event.text == Key.Escape) {
         if (!event.repeat) {
           root.panic-clicked();
+        }
+        return accept;
+      }
+      if (event.text == "m" || event.text == "M") {
+        if (!event.repeat) {
+          root.manual-fired();
         }
         return accept;
       }
@@ -2099,7 +2115,9 @@ export component RulesWindow inherits Window {
                     enabled: !root.none;
                     all-row: true;
                     all-ticked: root.outputs-all;
-                    empty-note: "no outputs yet — add one on the main window";
+                    // 214 px in Archivo 14 — the list is 258 inside its edge. "add one on the main
+                    // window" was 287, and was cut off for exactly the operator who had none.
+                    empty-note: "no outputs yet — use + add output";
                     chosen(key, on) => {
                       root.output-chosen(key, on);
                     }
@@ -2431,7 +2449,10 @@ export component RulesWindow inherits Window {
                       summary: root.fixtures-summary;
                       enabled: !root.none;
                       warn: !root.none && root.fixtures-reaches-nothing;
-                      head-note: root.fixtures-available;
+                      head-note: root.fixtures-list-note;
+                      // With nothing patched the list has only "none" in it; say where fixtures
+                      // come from — the main window's "patch lights" button.
+                      empty-note: "no fixtures yet — use patch lights";
                       none-row: true;
                       chosen(key, on) => {
                         root.fixture-chosen(key, on);

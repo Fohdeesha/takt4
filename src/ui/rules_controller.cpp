@@ -177,6 +177,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_tested(finishing([this] { test(); }));
     window_->on_panic_clicked(finishing([this] { panic(); }));
     window_->on_panic_released(finishing([this] { releasePanic(); }));
+    // The M key, as the main window has it: the manual rules fire, whatever the tracker is doing.
+    window_->on_manual_fired(finishing([this] { runner_.post(output::OutputCommand::manual()); }));
 
     window_->on_trigger_picked(finishing([this](int index) { pickTrigger(index); }));
     window_->on_every_changed([this, number](int every) {
@@ -1580,7 +1582,7 @@ void RulesController::pickHostPreset(int index) {
         rule->followUps.clear();
         commit();
         publishSelected();
-        setStatus("Cleared the address. Type one, or pick a host to start from.", false);
+        setStatus("Cleared the address. Type one, or pick a preset to start from.", false);
         return;
     }
     const HostPreset& preset = kHostPresets[static_cast<std::size_t>(index)];
