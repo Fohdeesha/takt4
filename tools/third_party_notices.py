@@ -62,7 +62,11 @@ def components(build):
                   "BSL-1.0", "networking for Link",
                   [ROOT / "third_party/link/modules/asio-standalone/asio/LICENSE_1_0.txt"]),
         component("r8brain-free-src", "https://github.com/avaneev/r8brain-free-src", "MIT", "resampling",
-                  [deps / "r8brain-src/LICENSE"]),
+                  [deps / "r8brain-src/LICENSE"],
+                  "Includes the FFT package by Takuya Ooura (fft4g), Copyright (C) 1996-2001 Takuya "
+                  "OOURA, http://www.kurims.kyoto-u.ac.jp/~ooura/fft.html, modified by r8brain's "
+                  "author as that package's licence permits: wrapped in a class, its tables made "
+                  "once."),
         component("KissFFT", "https://github.com/mborgerding/kissfft", "BSD-3-Clause", "the STFT",
                   [deps / "kissfft-src/COPYING", deps / "kissfft-src/LICENSES/BSD-3-Clause"]),
         component("RTNeural", "https://github.com/jatinchowdhury18/RTNeural", "BSD-3-Clause",

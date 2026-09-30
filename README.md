@@ -1,377 +1,190 @@
 # takt4
 
-takt4 listens to your audio interface — a stereo pair of its inputs, or one — works out
-where the beat, the downbeat, the tempo and the meter are, and tells the rest of the rig — over **Ableton
-Link, OSC, MIDI beat clock and MIDI notes, and Art-Net DMX** — with a rule engine for
-firing events on the music.
+![takt4's main window, tracking a track at 128 BPM and sending it to Link, two MIDI clocks and OSC, beside the rule editor with a Resolume clip rule open](docs/screenshot.png)
 
-It is built for playing out: VJ software (Resolume, TouchDesigner, MadMapper), lighting
-desks, media servers, lasers, DAWs. No click track, no tapping along, nothing to line up
-beforehand — point it at the sound coming out of the mixer and it follows.
+takt4 listens to the music coming out of your mixer, works out where the beat, the downbeat
+and the tempo are, and drives the rest of your rig with it: **Ableton Link, MIDI clock, OSC,
+MIDI notes and Art-Net lighting**, all at once. On top of that there's a rule engine for
+firing things on the music, like clips, cues, notes and light looks.
 
-**[Download the latest release](https://github.com/Fohdeesha/takt4/releases/latest).**
-`takt4.exe` is one file: the neural network and the state space are compiled in, so you
-copy the executable anywhere and run it. It keeps a `settings.json` beside itself, which
-makes two copies in two folders two rigs — a rehearsal setup and a show setup.
+No click track, no tapping along, nothing to line up beforehand. Point it at the sound and it
+follows. It's made for playing out: VJ software (Resolume, TouchDesigner, MadMapper), lights,
+lasers, media servers, DAWs and drum machines.
 
-Before the first run, install the latest
-[Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe), even
-if the machine already has one: takt4 is built with Visual Studio 2026, and Microsoft's
-runtime has to be at least as new as the compiler that built the program. An older one is
-not reported as missing — the files are there — so takt4 can start and then fail. It needs
-Windows 10 or 11. takt4 is not signed, so the first time you run a new download Windows may
-say it "protected your PC": choose **More info**, then **Run anyway**.
+## Get it
 
-Your rig is saved on its own a few seconds after every change, and each save replaces the
-file whole, so a crash or a power cut never leaves half of one. Each clean start also keeps
-a copy as `settings.json.bak`. If the file is ever damaged, takt4 sets it aside as
-`settings.json.corrupt-<date>`, starts from that copy and tells you so. If takt4 itself
-falls over, it stops at once, writes a crash report (`takt4-crash-<date>.dmp`) beside the
-executable, and offers to start again.
+- Grab `takt4.exe` from the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)**.
+  It's one file with the model built in, so put it anywhere and run it. It keeps its settings
+  in a `settings.json` next to itself, so two copies in two folders are two separate rigs.
+- You need Windows 10 or 11 and the latest
+  [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe).
+  Install it even if you think you already have it: an older one lets takt4 start and then
+  fall over.
+- takt4 isn't code-signed, so Windows may say it "protected your PC". Click **More info**,
+  then **Run anyway**.
 
-Windows today. The macOS and Linux presets are in the tree and the code is kept portable,
-but Windows is the only platform currently built and tested.
+## Quick start
+
+1. Pick your interface under **audio in** and the inputs under **channels**. It listens to a
+   stereo pair by default; tick **mono** for a feed on a single input. Hit **start**.
+2. Give it a few bars. The tempo shows up, the beat circles start moving, and it says
+   **locked** once it's sure.
+3. Under **outputs**, tick **Link** to join an Ableton Link session, or use **+ add output**
+   for OSC, MIDI, MIDI clock or Art-Net.
+4. Click **add a rule** to start firing things on the beat.
+
+If it's a beat or two out, press **downbeat** (or **D**) on the one. If it's running at half
+or double speed, use **÷2** or **×2**, and tick **keep BPM in** to hold it inside a range for
+good.
 
 ## What it does
 
-- **Follows the music.** A neural network reads the audio 50 times a second; an exact
-  forward filter over madmom's bar-pointer state space turns that into beats, downbeats,
-  a tempo and a meter — with a confidence you can see and gate on. It costs 40 ms, which
-  is what a centred analysis window costs and nothing more. The meter is 4/4 unless you
-  ask for more: a set with waltzes in it needs `"meters": [3, 4]` in the `"preset"` part of
-  `settings.json` — edited with takt4 closed — or a waltz is counted in fours.
-- **Listens in stereo.** The input picker offers pairs of inputs — 1 + 2, 11 + 12 — and
-  takt4 hears the average of the two sides, which is what its network was trained on and
-  which tracks as well as the better side alone and better on downbeats. Tick **mono** for a
-  feed that is on one input. A pair with a leg wired backwards (which cancels the kick and
-  the bass), a side with nothing on it, or two inputs that are not one feed is said under
-  the input meter while it lasts.
-- **Drives everything at once.** Ableton Link (tempo and phase, with the detected meter as
-  the quantum), MIDI beat clock at 24 PPQN, a generic OSC namespace, MIDI notes, CC,
-  program change and pitch bend, and Art-Net DMX to lighting nodes. Any number of named
-  outputs — a MIDI clock to each device that wants one — each with its own enable and its
-  own offset.
-- **Runs the lights.** Patch your fixtures once — an RGB par, a moving head — and rules
-  aim at them by name: fade, flash, pulse, strobe, a color or a hue sweep, a random
-  pan/tilt or a circle, each over a duration you can spell in bars. The movement window is
-  a safety limit, so a random position can never send a head into the audience.
-- **Fires events on the music.** A rule is *when → only if → send*: every 4 bars, only
-  above 0.6 confidence and only in a drop, send a Resolume clip drawn from a shuffle bag.
-  Edited by clicking, not by typing JSON.
-- **Stays hands-on while it plays.** Tap the tempo, snap the downbeat, ÷2, ×2, pin the
-  lock so a breakdown cannot drop it, set the tempo range, trim the latency. None of it
-  stops the tracker, reseeds anything or drops the lock. A ÷2 or ×2 lasts for the record
-  it was pressed on and is dropped when the next one takes over, unless you tick **keep
-  half/double settings for next track**. From the keyboard: **T** taps, **D** snaps the downbeat, **M** fires
-  the manual rules and **Esc** is PANIC (in a text box, Esc just leaves the box).
-- **Rides out the rig failing.** If the interface stops sending — unplugged, power-cycled,
-  reset by its driver, or moved to another sample rate by another program — the readout
-  says **NO AUDIO** and takt4 reopens it as soon as it answers, while Link and the MIDI clock
-  carry the last tempo on. It never changes an interface's sample rate: it opens at whatever
-  the interface is already running at. **RESCAN** finds devices switched on after takt4
-  started, and a MIDI device unplugged mid-set is picked up again when it comes back. The
-  ASIO drivers are asked what they are from a separate process, so a driver that crashes
-  while the devices are listed takes that process with it, not takt4; and every call to an
-  audio driver is made on a thread of its own and waited for only so long, so a driver that
-  stops answering is let go of and said, while the window, PANIC and the outputs carry on.
-  An output that cannot be reached, and a control input whose port another program holds,
-  say why on their own line for as long as it lasts — and a control input is tried again by
-  itself every few seconds.
-- **Takes orders from elsewhere.** An OSC control socket, and MIDI learn — press a pad on
-  your controller and it is bound. Each rule can be enabled, muted or made to fire twice as
-  often from a Stream Deck, mid-set.
-
-## How well it tracks
-
-Beat and downbeat F-measure, scored with `mir_eval` at its 70 ms tolerance, on the weights
-that ship:
-
-| measured on | beat F | downbeat F |
-|---|---|---|
-| **23 electronic tracks**, 91 minutes — the material the app is for, against Beat This! | **0.84**, and **0.92** over the fifteen of them where two independent reference systems agree with each other | 0.66 |
-| **Ballroom** — 698 clips, 6.1 hours, with bars of three and four | **0.95** | 0.93 |
-| **GiantSteps** — 664 Beatport previews, tempo annotations only | tempo right within 4 % on **86 %** of them | — |
-
-Read honestly: Ballroom is a set the underlying model was **trained** on, so that row says
-the engine reproduces what the model can do over six hours of real audio and nothing about
-how it generalises. The fine-tune that made the shipped weights trained on 628 of those
-clips too. On the 70 it never saw, the shipped weights score **0.92** beat and **0.88**
-downbeat F, against 0.95 and 0.93 for the untuned weights on the same clips: the price, on
-ballroom music, of tuning for electronic music. The other two were held out, and they are
-the rows that mean something — though there is no human ground truth for the 23, so on the
-eight where the reference systems disagree with each other a score is agreement with a
-convention. Every
-number, including what was tried and rejected, is in
-[tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md) and
-[tests/data/tracking/evaluation/](tests/data/tracking/evaluation/README.md).
-
-Underneath, the engine is held to the reference implementations it was ported from: the
-feature front end matches madmom to within one float32 ulp and the network matches PyTorch
-to 3.6e-6, on eighteen excerpts that ship with the test suite.
-
-## The model, and what it was trained on
-
-The network is BeatNet+'s architecture — a convolution block, a dense layer, four stacked
-LSTMs and a softmax over beat / downbeat / non-beat — run through RTNeural on a worker
-thread, well inside the 20 ms of audio each step stands for. The weights that ship,
-`electronic`, are BeatNet+'s published `generic` set **fine-tuned on
-the operator's own library** — 1,325 tracks of breakbeat, electro, IDM and house at 85–140,
-with drum and bass labelled at half time because that is how it is counted. The labels come
-from an ensemble of Beat This!'s three seeds, with the tracks its own seeds disagree about
-left out, trained at triple weight beside Raveform, osu2beat2025 and Ballroom so the model
-does not forget what it already knew. Against the stock weights on the same decoder: the
-eight hardest tracks in the harness went **0.62 → 0.69** beat F, GiantSteps tempo **0.77 →
-0.86**, and the tempo readout is right on 19 of the 23 tracks where it was right on 16.
-
-BeatNet+'s three published sets are still there — `--weights generic`, `generic-main` for
-percussion-heavy material, `af-non-percussive` for ambient and classical. The pipeline
-that built the fine-tune is `tools/train/`, and
-[TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md) is the full record of what was measured,
-including everything that was tried and rejected.
-
-## Outputs
-
-Each output is a row with a name, a kind — OSC, MIDI, Art-Net or MIDI clock — a destination,
-an enable and an offset, and rules can be routed to any subset of the OSC and MIDI ones.
-Rename an output — or a fixture — whenever you like: rules follow the output itself, not what
-it is called. An output given as a host name rather than an address is looked up in the
-background, and the status line says so if it cannot be found.
-
-**Link** is always the first row, and there is only ever one: tick it to join the session.
-**SHOW PEERS** lists who else is in it — each peer's address, its tempo, whether it is in
-takt4's session or one of its own, and whether it is playing. A **MIDI clock** is a row like
-any other, one per device, so a DAW and a drum machine each get their own clock and their
-own offset.
-
-The outputs are live from the moment takt4 opens, not from **START**: Link is joined as
-soon as its switch is on, and a fixture can be identified or tested before any music is
-playing. **START** and **STOP** start and stop the listening, and the MIDI clock with it, so
-a DAW following the clock starts and stops with you. The clock ticks from **START**, so a
-receiver can show the tempo, but it is told to play only on the first downbeat after the
-tempo locks: its bar 1 is a bar 1 of the music. If the bar moves after that — **DOWNBEAT**
-pressed, or the bar found again somewhere else after a break — a receiver whose bar no longer
-agrees for two beats running is stopped and started again on the next downbeat (Stop, Song
-Position 0, Start), without a tick added or dropped. **STOP** also puts the lights out, and
-so does quitting: that last dark frame is sent before takt4 goes, so no node is left holding
-the rig lit.
-
-The generic OSC namespace goes to every OSC target, whatever else is configured:
-
-```
-/takt4/bpm         float   the published tempo
-/takt4/beat        int     1, on every beat
-/takt4/beat/bar    int     which beat of the bar it was, 1..N
-/takt4/downbeat    int     1, on downbeats only
-/takt4/confidence  float   0 to 1
-/takt4/locked      int     0 or 1
-/takt4/meter       int     the detected beats per bar
-/takt4/resync      int     1, when the tracker has just re-found itself
-```
-
-The state addresses repeat on every beat, so anything that starts late is right again
-within a beat. `/takt4` is a default you can change, so two instances on one network can
-be told apart.
+- **Tracks the music.** A neural network reads the audio 50 times a second, and a filter
+  turns that into beats, downbeats, tempo and meter, with a confidence you can see and gate
+  on. The status bar spells out your setup's latency, and once the tempo locks takt4 predicts
+  the beats, so you can send things early to make up for it.
+- **Sends everything at once.** Link (tempo and phase), MIDI beat clock (a separate clock per
+  device), a ready-made OSC feed, MIDI notes, CC, program change and pitch bend, and Art-Net
+  DMX. Every output has its own on/off and its own delay.
+- **Fires rules on the music.** For example: every 4 bars, but only when the confidence is
+  high, send Resolume a random clip that doesn't repeat until they've all played.
+- **Runs lights.** Patch your fixtures, then aim fades, flashes, strobes, colour palettes and
+  moving-head paths at them from rules.
+- **Stays hands-on.** Tap, downbeat, ÷2, ×2, **lock** (to stop a breakdown dropping the
+  tempo), and a latency slider. None of it stops the tracker or drops the lock. Keys: **T**
+  taps, **D** is downbeat, **M** fires your manual rules, **Esc** is PANIC.
+- **Takes remote control.** Any of that from OSC, or from a MIDI controller with learn.
+- **Survives a rough night.** If the interface gets unplugged, its driver hangs or something
+  changes its sample rate, takt4 tells you, reopens it when it's back, and keeps Link and the
+  clock going at the last tempo in the meantime. Your setup saves itself a few seconds after
+  every change, and if takt4 ever crashes it writes a crash report and offers to restart.
 
 ## Rules
 
-Open **triggers**. A rule is three columns:
+Open the rule editor with the button in the main window's **triggers** row. A rule has four
+parts, and each one folds away:
 
-- **when** — every beat, every N beats, every bar, every N bars, on the downbeat, on a
-  tempo change, on lock or unlock, when the intensity changes (takt4 tells a breakdown
-  from a drop out of the audio it is already analysing), on a manual press — the **M**
-  key, `/takt4/ctl/manual`, or a pad bound with LEARN — or on a Euclidean pattern: 3-in-8
-  is the tresillo, 5-in-16 the bossa, locked to the tracker's own beat rather than a clock
-  of its own.
-- **only if** — confidence above a threshold, intensity in a set, BPM in a range, a
-  probability, a cooldown.
-- **send** — an OSC message; a MIDI note, note off, CC, program change or pitch bend; or a
-  lighting effect aimed at your fixtures. OSC and MIDI go to whichever outputs you tick.
-  Any number in it can be a generator: shuffle, random, round-robin, weighted (`7:3, 12:1`
-  is 7 three times as often as 12), fixed, a live value (BPM, BPM across a host's range such
-  as Resolume's 20–500, bar, confidence, meter, intensity), or a ramp that sweeps over a
-  whole number of bars, locked to the downbeat. Then a sequence of follow-ups — a release,
-  or something else entirely — each delayed in milliseconds, beats or bars from the moment
-  the rule fired.
+- **A · when**: every N beats or bars, the downbeat, a tempo change, lock or unlock, an
+  intensity change (breakdown vs drop), an onset (a hit), the **M** key, or a euclidean
+  pattern (3 in 8, 5 in 16...). **÷2** and **×2** change how often it fires, live. The fast
+  triggers get an "at most once every ... ms" limit.
+- **B · only if** (off until you tick it): confidence over a level, a probability, intensity,
+  and a BPM range.
+- **C · send**: an OSC address, a MIDI note, note off, CC, program change or pitch bend, or a
+  lighting effect, to whichever outputs you pick. Every `{slot}` in an OSC address gets its
+  own value: **shuffle** (the default, which never repeats until everything has played),
+  random, cycle, weighted, fixed, a live value (BPM, bar, confidence...) or a ramp across bars.
+  The presets fill in Resolume, TouchDesigner and MadMapper addresses for you.
+- **D · then send**: follow-ups, like the release of a Resolume clip or a note off, each
+  delayed in milliseconds, beats or bars.
 
-A rule switched to a MIDI note, CC or program change does nothing until you choose its
-number, and a rule that will not fire for any reason says why on its card and in the list.
-Editing a rule changes what you changed and nothing else: its shuffle carries on where it
-was, its cooldown keeps running, and a switch a control surface flipped stays flipped.
+Click a rule's dot in the list to mute it. It keeps running, so it comes back in time. **test**
+fires it once, **select a preset** adds a ready-made set (Resolume clips on 3 layers, tempo
+and resync, and more), and the event log along the bottom shows everything that went out.
+**PANIC** (or **Esc**) stops every rule and stays on until you press **release**.
 
-Two live controls sit beside each rule and are **not** saved with it, because they are
-performance gestures rather than configuration: **mute**, which leaves the rule running and
-stops it sending — so unmuting rejoins the music in phase instead of restarting its shuffle
-bag — and **÷2 / ×2**, which makes it fire twice as often or half as often. Both are
-reachable from OSC, so a Stream Deck can drop a layer out for eight bars.
+Everything saves by itself, and **export** / **import** move your whole setup (tempo settings,
+rules, outputs and lighting) to another machine.
 
-Rig presets build a working setup in one pick: clips on three Resolume layers, Resolume's
-tempo and resync, a breathing dashboard, Euclidean MIDI stabs. Everything a preset writes
-is ordinary editable data, and **EXPORT** writes the tempo settings, the rules, the outputs and
-the lighting patch to a file that **IMPORT** loads on another machine. **PANIC** — the
-button, or **Esc** — stops every rule instantly and stays engaged, however many times it is
-pressed, until you press **RELEASE** beside it.
+## Delays
 
-## Taking orders
+Nothing downstream is ready the instant a beat is heard: a media server is a frame or two
+behind, and a robot that has to move is a lot more. There's one **latency** slider for the
+whole rig and one delay per output, and they add up. **Positive is later, negative is
+earlier.** Once the tempo is locked takt4 knows when the next beat is due, so a −300 ms output
+really does get its cue 300 ms before the beat. Click any underlined number to type a value.
 
-Switch **OSC in** on and takt4 listens — loopback only unless you tick the box that opens
-it to the network. Every address hangs off the same prefix as the outputs:
+## OSC
+
+Every OSC output gets this feed, whatever your rules do:
+
+```
+/takt4/bpm         float   the tempo
+/takt4/beat        int     1, on every beat
+/takt4/beat/bar    int     which beat of the bar, 1..N
+/takt4/downbeat    int     1, on downbeats
+/takt4/confidence  float   0 to 1
+/takt4/locked      int     0 or 1
+/takt4/meter       int     beats per bar
+/takt4/resync      int     1, when the tracker has just found itself again
+```
+
+To control takt4, tick **listen** on the OSC row under **inputs** (port 7001, this machine
+only unless you tick **allow other machines**):
 
 ```
 /takt4/ctl/tap                      tap the tempo
-/takt4/ctl/downbeat                 snap the downbeat to now
+/takt4/ctl/downbeat                 the one is now
 /takt4/ctl/tempo/halve              ÷2
 /takt4/ctl/tempo/double             ×2
-/takt4/ctl/lock            <0|1>    pin the lock, or release it
-/takt4/ctl/panic                    halt every rule, whatever it is sent
-/takt4/ctl/panic/release            let go of the halt
-/takt4/ctl/manual                   fire the rules whose trigger is a manual press
-/takt4/ctl/rule/<id>/enable <0|1>   arm a rule, or take it out of the show
-/takt4/ctl/rule/<id>/mute   <0|1>   keep it running, stop it sending
-/takt4/ctl/rule/<id>/double         fire half as often — press twice for a quarter
+/takt4/ctl/lock            <0|1>    pin the lock, or let it go
+/takt4/ctl/panic                    PANIC
+/takt4/ctl/panic/release            let go of PANIC
+/takt4/ctl/manual                   fire the manual rules
+/takt4/ctl/rule/<id>/enable <0|1>   switch a rule on or off
+/takt4/ctl/rule/<id>/mute   <0|1>   mute or unmute a rule
+/takt4/ctl/rule/<id>/double         fire half as often
 /takt4/ctl/rule/<id>/halve          fire twice as often
-/takt4/ctl/rule/<id>/rate   <f>     set the multiplier outright, for a fader
-/takt4/ctl/rule/<id>/reset          back to the rate the rule was written with
+/takt4/ctl/rule/<id>/rate   <f>     set the rate outright, for a fader
+/takt4/ctl/rule/<id>/reset          back to the rate it was written with
 ```
 
-`<id>` is the rule's id, and **`all`** means every rule at once. `lock`, `enable` and
-`mute` insist on their `<0|1>` rather than toggling, and `rate` insists on its number: a
-toggle depends on a state the sender cannot see, so a surface that missed one message would
-be inverted for the rest of the set. The rest are buttons and are sent bare.
-
-Every one of these is also bindable to a MIDI note or CC through **LEARN** — except the
-ones that name a rule, because pressing a pad says which button and never which rule. A
-button acts on the press, never again on the release; a pad bound to `lock` pins while it is
-held. PANIC only ever engages, from a pad or a message — a push button's release cannot undo
-it: let go of it with **RELEASE** or `/takt4/ctl/panic/release`.
+`<id>` can be `all`. The switches always take a `0` or `1` rather than toggling, so a control
+surface that misses a message can't end up backwards. For MIDI, pick your controller's port
+and an action on the MIDI row, press **learn**, then hit the pad. A pad bound to lock pins it
+only while held.
 
 ## Lights
 
-takt4 speaks **Art-Net** (the DMX-over-Ethernet protocol, *Art-Net™ Designed by and
-Copyright Artistic Licence*). Add an output of kind **Art-Net**, type your node's IP —
-port 6454 is filled in for you — and open **fixtures**.
+Add an output of kind **Art-Net**, type your node's IP (port 6454 is filled in), and click
+**patch lights**. Give each fixture a name, an optional group, a universe and its start
+address, and pick the closest shape (dimmer, RGB, RGBW, dimmer + RGB, LED par, or an 8- or
+16-bit moving head). **IDENTIFY** flashes a fixture so you can find it, **TEST** holds one
+channel for three seconds, and a bar next to every channel shows what's being sent. A moving
+head gets a movement window, so a random position can never point it at the audience.
 
-DMX is not like the other outputs, and it is worth knowing why before you build a rule.
-OSC and MIDI are *events*: a rule fires, one message leaves, nothing is owed afterwards. A
-DMX universe is *state* — 512 levels that a controller re-sends continuously — so a fade is
-not a message, it is takt4 sending a slightly different frame forty times a second until it
-arrives. takt4 does that for you; what it means in practice is that a rule says **what the
-lights should become and over how long**, not what to transmit.
+Rules aim at fixtures or groups with an effect and a duration: level / fade, color, flash,
+pulse, strobe, hue sweep, position, path (circle, figure-8, sweep, square), home or
+blackout. Every effect ends when its duration does, so nothing gets stuck strobing. Colours
+come from a palette you pick (the picker lights the actual lamps while you drag) or from
+red, green and blue values of their own.
 
-### The patch
+**PANIC** freezes the lights where they are, in case takt4 is one of several sources on the
+rig. **stop** and quitting black them out.
 
-A fixture has a name, an optional **group**, a universe, the start address printed on the
-back of it, and a channel map saying what each of its channels does. Pick the nearest of
-the ready-made shapes — dimmer, RGB, RGBW, dimmer + RGB, LED par, and an 8-bit or 16-bit
-moving head — and edit from there. Those come with sensible parked levels, which matters
-more than it sounds: a moving head with its shutter channel at zero emits nothing however
-hard a rule drives its dimmer. **IDENTIFY** flashes one fixture so you can find it in the
-truss; **TEST** beside a channel holds that one channel at a value of your choice for three
-seconds and then puts it back, which is how you check the map is right without unplugging
-anything; and a bar beside every channel shows what takt4 is sending on it right now.
+## How well it tracks
 
-A moving head also gets a **movement window** — how much of its pan and tilt travel a rule
-may use, in percent. Set it once from the stage. Every random position and every path is a
-fraction of *that* window, so one rule means the same gesture on six differently-rigged
-heads and none of them can be sent into the audience.
+Beat and downbeat F-measure (`mir_eval`, 70 ms), on the weights that ship:
 
-### The effects
+| tested on | beat | downbeat |
+|---|---|---|
+| **23 electronic tracks**, 91 minutes, against Beat This! | **0.84** (0.92 on the 15 where two reference systems agree) | 0.66 |
+| **GiantSteps**, 664 Beatport previews, tempo only | tempo within 4% on **86%** | |
+| **Ballroom**, 698 clips, 6.1 hours | 0.95 | 0.93 |
 
-A rule aims at fixtures or groups by name, picks one effect, and gives it a duration in
-milliseconds, beats or bars:
+The tempo readout is right on 20 of the 23 electronic tracks. Ballroom is part of what the
+model was trained on, so that row is a sanity check. On the 70 clips it never saw, it scores
+0.92 and 0.88. The details, including everything that was tried and didn't work, are in
+[tests/data/tracking/](tests/data/tracking/refeval/README.md) and
+[TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md).
 
-| effect | what it does |
-|---|---|
-| **level** | one channel to a level. With a duration it is a fade, with none a snap — "fade in" and "fade out" are this, at full and at zero. A level aimed at **dimmer** on a par that has no dimmer channel scales its color instead, which is what brightness *is* on an LED par |
-| **color** | the color channels to one color. On an RGBW fixture a neutral white uses the white LED |
-| **flash** | straight to a peak and decay back over the duration — the beat hit |
-| **pulse** | a cosine between two levels, N times over the duration |
-| **strobe** | on and off between two levels, N times over the duration, with a duty cycle |
-| **hue sweep** | round the color wheel from one angle to another |
-| **position** | pan and tilt to one place, over a move time. Random is a `random` generator on pan |
-| **path** | a circle, figure-8, sweep or square around the middle of the movement window |
-| **home** | back to the middle of the window |
-| **blackout** | every light-emitting channel to zero |
+The network is BeatNet+'s architecture, run with RTNeural. The shipped weights are BeatNet+'s
+`generic` set fine-tuned on a 1,325-track library of breakbeat, electro, IDM and house at
+85–140 BPM (drum and bass counted at half time), labelled by Beat This!, and trained alongside
+Raveform, osu2beat and Ballroom so it doesn't forget what it already knew.
 
-Every effect is **bounded by its duration**, deliberately: a strobe that ran until
-something stopped it is a fixture left strobing because the rule that would have stopped it
-was disabled, edited, or never fired. A strobe for two bars, re-fired every two bars, is
-both the natural gesture and the one that cannot get stuck.
+It counts in 4/4. For a set with waltzes in it, close takt4 and add `"meters": [3, 4]` to the
+`"preset"` part of `settings.json`.
 
-The level, the color and the pan/tilt are ordinary generators, so everything the clip
-triggers can do they can do too, and a slow sweep across the room is a ramp on pan over four
-bars.
+## Building it
 
-A color effect asks where its color comes from, and there are two answers:
+You don't need to build anything to use takt4. If you want to:
 
-- **pick colors** — a row of swatches under the rule. Click one to open a hue / saturation /
-  brightness picker, `+` adds another, and the chip above them says how they are drawn:
-  *shuffle* for a palette that never repeats, *cycle* to walk them in order, *fixed* for one
-  color. The picker sends the color to that rule's fixtures **as you drag it**, so you are
-  choosing against the light coming out of the lamp rather than against a square on a screen.
-- **mix red, green, blue** — one generator per component, 0 to 255 each. *Random* over
-  0–255, 0–40 and 200–255 is "a random color, keep the green out of it and the blue up".
-  Every other generator works here too: a ramp on red over four bars, or a green that
-  follows the intensity.
-
-Fade in and fade out is one rule: a level to full over a beat, and a follow-up two bars
-later that fades to zero over a beat. The *delay* is when the follow-up starts; the
-*duration* is how long it takes.
-
-**PANIC** halts every rule and cancels every running effect, and then **keeps sending the
-last frame**. The lights freeze rather than going dark — if takt4 is one source among
-several, or your node is merging it with a desk, a panic button that drove everything to
-zero would black out a stage that was not takt4's to black out. A deliberate blackout is an
-effect a rule can fire — and **STOP** is one: stopping the tracker, or quitting, takes
-takt4's lights to dark.
-
-### Notes on the wire
-
-Art-Net 4 requires **unicast**, so takt4 sends to the address you typed and does not
-discover nodes: a show rig has a fixed address written on the back of it, and broadcasting
-ArtPoll twenty times a minute onto a venue's network is worse manners than asking once. A
-broadcast address works if your rig is built that way. Frames are paced at the
-specification's ceiling of 44 Hz per universe and re-sent every 900 ms when nothing is
-moving, which is what tells a node takt4 is still alive. Every Art-Net output is sent every
-universe your patch uses; a node takes the ones it is set up for and ignores the rest.
-
-## Offsets
-
-Nothing downstream is ready at the instant a beat is detected: a media server is a frame
-or two behind, a robot that has to physically move is far more. Two sliders move things
-around the beat and they add up — one **latency** for the whole rig, and one **per
-output**, because the lag belongs to the thing on the end of each cable and one number
-cannot describe a rig with a media server and a laser on it.
-
-Both are signed, and **positive is later, negative is earlier** — earlier than the beat
-itself. While the tempo is locked takt4 does not wait to hear a beat: it knows when the next
-one is due and sends each output its messages that far ahead, so a clip cue set −300 ms
-arrives 300 ms before the beat it belongs to, carrying that beat's bar position. Link and the
-MIDI clock are steered onto the beat the same way. While takt4 is still finding the tempo
-there is nothing to predict from, and a beat's messages go the moment it is heard.
-
-**It is milliseconds and has nothing to do with the tempo**: measure your device's lag once
-and it stays right as the music changes. The number beside each slider is underlined: click
-it and type a value, then Enter or click away to set it, or Esc to leave it as it was.
-
-Every output's offset works the same way. An Art-Net node is sent the lighting that much
-later — or earlier, in which case the lighting runs that far ahead and the other nodes are
-sent it later again. A MIDI clock's ticks and Link's timeline move by their own offsets too.
-
-## Building
-
-You do not need to build anything to use takt4 — the release is one file. To build it
-anyway:
-
-- CMake 3.28+, a C++20 compiler (Visual Studio 2022 or 2026), and `git clone
-  --recurse-submodules` (PortAudio and Ableton Link are submodules).
-- For the UI: rustup (the Rust version itself is pinned, below), `curl` on `PATH` for Slint,
-  and Python 3, which embeds the built-in weights and notices into the executable.
-  `TAKT4_BUILD_UI=OFF` — the `windows-core` preset — builds the engine, the console and the
-  tests without any of them.
-- Network access on the first configure: the remaining dependencies are fetched from
-  pinned, hash-checked archives. Slint is checked out by tag and checked against the commit
-  the tag named; Skia's prebuilt archive is checked library by library (a test); the Rust
-  toolchain is pinned in `rust-toolchain.toml`, and rustup fetches it if it is missing.
+- CMake 3.28+, Visual Studio 2022 or 2026 (C++20), and `git clone --recurse-submodules`.
+- For the UI: rustup (the Rust version is pinned in `rust-toolchain.toml`), `curl` on `PATH`,
+  and Python 3. The `windows-core` preset builds the engine, the console and the tests
+  without any of those.
+- Network access on the first configure, for the pinned, hash-checked dependencies.
 
 ```sh
 cmake --preset windows-msvc
@@ -379,60 +192,28 @@ cmake --build --preset windows-msvc
 ctest --preset windows-msvc
 ```
 
-The executable lands in `build/windows-msvc/bin/Release/`. `takt4 --version` prints what
-it was built with.
+The default test presets stay off your hardware and your network, since the machine may be a
+live rig. `ctest --preset windows-msvc-all` runs everything, so close Resolume, Live and
+anything else using your interface first. `windows-asan` builds and runs the same suite under
+AddressSanitizer, and `linux-tsan` under ThreadSanitizer.
 
-The test presets leave out what would disturb a show running on the same machine: the tests
-tagged `[network]` join the Ableton Link session and open sockets, and the ones tagged
-`[hardware]` open the audio interface and the MIDI ports. The test binaries also skip loading
-the ASIO drivers. To run everything, close Resolume, Live and anything else on the
-interface, and use the `-all` preset (`ctest --preset windows-msvc-all`).
-
-There is a second set of presets that builds the same tree with the runtime checks turned
-on. `windows-asan` is AddressSanitizer, which is all Windows has; `linux-asan` adds the
-undefined-behaviour checks and `linux-tsan` looks for races between takt4's threads — the
-audio callback, the model, the tracker, the output thread, the UI, the OSC and MIDI
-listeners, and Link's own. The suite is meant to pass clean under each of them, and it
-reports when the tests *run*, so the build alone proves nothing:
-
-```sh
-cmake --preset windows-asan
-cmake --build --preset windows-asan
-ctest --preset windows-asan
-```
-
-## Development console
-
-`takt4-cli` ships beside the app and exercises the engine without the UI — listing
-devices, metering an input, dumping the network's activations, running the whole chain
-over a file or a live input, and tapping a track's beats out by hand. `takt4-cli` with no
-arguments lists everything it takes.
+`takt4-cli` ships next to the app and runs the engine without the UI: listing devices,
+tracking a file or a live input, dumping the network's output. Run it with no arguments for
+the list.
 
 ## License
 
-GPLv3 — see [LICENSE](LICENSE). The licences of everything built into takt4 are in
-[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which is also inside the program:
-**ABOUT**, beside the version at the bottom of the window, opens both.
+GPLv3, see [LICENSE](LICENSE). takt4 is built on PortAudio, Ableton Link, Slint, Skia,
+RtMidi, RTNeural, Eigen, r8brain, KissFFT, nlohmann/json and the Steinberg ASIO SDK (under
+its GPLv3 option), the Rust crates Slint is made of, and the Archivo, DM Mono and Chivo Mono
+fonts. Every licence is in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which is also built into the app: click
+**about**. BeatNet+'s weights, which the shipped model is fine-tuned from, come with no
+licence stated upstream.
 
-The tests read seventeen ten-second excerpts of commercial recordings, in
-[tests/data/features/](tests/data/features/README.md). They are not part of takt4, not
-covered by its licence, and never built into it; they remain their rights holders'. That
-folder's README lists them, and says how a rights holder can have one removed.
+The tests use seventeen ten-second excerpts of commercial recordings. They're not part of
+takt4 and never built into it; [tests/data/features/](tests/data/features/README.md) lists
+them and says how a rights holder can have one removed.
 
-| Component | Used for | License |
-|---|---|---|
-| [PortAudio](https://github.com/PortAudio/portaudio) | Audio input: ASIO, WASAPI, CoreAudio, ALSA, JACK | MIT |
-| [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | Resampling the input | MIT |
-| [KissFFT](https://github.com/mborgerding/kissfft) | The STFT behind the feature front end | BSD-3-Clause |
-| [Ableton Link](https://github.com/Ableton/link) | Tempo sync | GPLv2 or later |
-| [asio](https://github.com/chriskohlhoff/asio) (Kohlhoff, bundled by Link) | Networking for Link | Boost Software License |
-| [Steinberg ASIO SDK](https://www.steinberg.net/asiosdk) | ASIO host API on Windows | GPLv3 (dual-licensed; see [third_party/README.md](third_party/README.md)) |
-| [RTNeural](https://github.com/jatinchowdhury18/RTNeural) | Neural inference | BSD-3-Clause |
-| [BeatNet+](https://github.com/mjhydri/BeatNet-Plus) weights | The model the shipped set is fine-tuned from | **None stated upstream** |
-| [Eigen](https://eigen.tuxfamily.org) (bundled by RTNeural) | RTNeural's math backend | MPL-2.0 |
-| [RtMidi](https://github.com/thestk/rtmidi) | MIDI clock and notes | MIT-style |
-| [madmom](https://github.com/CPJKU/madmom) | Build-time only, never linked or shipped: `tools/` runs it to compute the filterbank table and the state space, and the golden features the C++ is checked against | 2-clause BSD for its source, which is all that is used. Its pretrained data and models are CC BY-NC-SA 4.0 and none of them is loaded here — every table is computed from configuration |
-| [nlohmann/json](https://github.com/nlohmann/json) | Settings and presets | MIT |
-| [Slint](https://slint.dev) | User interface | GPLv3 (triple-licensed) |
-| [Skia](https://skia.org) (prebuilt by [rust-skia](https://github.com/rust-skia/rust-skia)) | UI rendering | BSD-3-Clause, plus the permissive licenses of what its archive bundles |
-| [Catch2](https://github.com/catchorg/Catch2) | Tests only, not shipped | Boost Software License |
+*Art-Net™ Designed by and Copyright Artistic Licence. ASIO is a trademark and software of
+Steinberg Media Technologies GmbH.*
