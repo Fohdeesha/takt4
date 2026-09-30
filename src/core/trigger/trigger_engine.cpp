@@ -183,6 +183,32 @@ void TriggerEngine::flushPending() {
     pending_.clear();
 }
 
+void TriggerEngine::flushFollowUpsTo(std::uint64_t outputs) {
+    if (outputs == 0) {
+        return;
+    }
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        Pending& waiting = pending_[i];
+        if (!isDmx(waiting.message.kind) && (waiting.message.outputs & outputs) != 0) {
+            // Split: the leaving outputs' half now, the rest when it is due. One release routed
+            // to two synths is two releases, and only one of the synths is going.
+            Message now = waiting.message;
+            now.outputs &= outputs;
+            deliver(now, waiting.ruleId, true, {});
+            waiting.message.outputs &= ~outputs;
+            if (waiting.message.outputs == 0) {
+                continue; // all of it has gone
+            }
+        }
+        if (kept != i) {
+            pending_[kept] = std::move(waiting);
+        }
+        ++kept;
+    }
+    pending_.resize(kept);
+}
+
 void TriggerEngine::onBeat(const Context& context) {
     if (panicked_ || !listening_) {
         return;

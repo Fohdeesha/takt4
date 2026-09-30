@@ -11,6 +11,7 @@
 
 #include "support/recording_rules.hpp"
 #include "support/tap_rhythm.hpp"
+#include "support/virtual_midi.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -791,42 +792,7 @@ TEST_CASE("a message already on its way when the control input stops is finished
 
 namespace {
 
-/// teVirtualMIDI's driver API, which rtpMIDI and loopMIDI install: a MIDI port a program can make
-/// for itself, whose input side another program opens like any WinMM input. Loaded when present.
-struct VirtualMidi {
-    using Port = void*;
-    using DataCallback = void(CALLBACK*)(Port, LPBYTE, DWORD, DWORD_PTR);
-    using CreatePort = Port(CALLBACK*)(LPCWSTR, DataCallback, DWORD_PTR, DWORD, DWORD);
-    using SendData = BOOL(CALLBACK*)(Port, LPBYTE, DWORD);
-    using ClosePort = void(CALLBACK*)(Port);
-    static constexpr DWORD kParseRx = 1; // TE_VM_FLAGS_PARSE_RX
-
-    HMODULE library = ::LoadLibraryW(L"teVirtualMIDI64.dll");
-    CreatePort create = nullptr;
-    SendData send = nullptr;
-    ClosePort close = nullptr;
-
-    VirtualMidi() {
-        if (library != nullptr) {
-            create = find<CreatePort>("virtualMIDICreatePortEx2");
-            send = find<SendData>("virtualMIDISendData");
-            close = find<ClosePort>("virtualMIDIClosePort");
-        }
-    }
-    /// An export of the driver's as the type it is. Through `void (*)()`, the one function type a
-    /// cast to or from is not a claim about the signature — `FARPROC` straight to another is, and
-    /// clang says so.
-    template <typename Fn>
-    Fn find(const char* name) const {
-        return reinterpret_cast<Fn>(reinterpret_cast<void (*)()>(::GetProcAddress(library, name)));
-    }
-    ~VirtualMidi() {
-        if (library != nullptr) {
-            ::FreeLibrary(library);
-        }
-    }
-    bool usable() const { return create != nullptr && send != nullptr && close != nullptr; }
-};
+using takt4::testing::VirtualMidi;
 
 void CALLBACK ignoreData(VirtualMidi::Port, LPBYTE, DWORD, DWORD_PTR) {}
 

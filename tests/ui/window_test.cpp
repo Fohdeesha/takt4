@@ -43,6 +43,7 @@
 #include <future>
 #include <initializer_list>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -53,6 +54,8 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+
+#include "support/virtual_midi.hpp"
 #endif
 
 using Catch::Matchers::WithinAbs;
@@ -2311,6 +2314,124 @@ TEST_CASE("the Link row's tick reaches the transports", "[ui][network]") {
     controller.setTargetKind(1, 4);
     CHECK(controller.window().get_outputs_list()->row_data(1)->kind_index == 0);
 }
+
+#if defined(_WIN32)
+namespace {
+
+void clickAt(slint::Window& window, float x, float y); // below, with the other gestures
+
+/// Every message a virtual MIDI port has been sent, whole — teVirtualMIDI's callback, on the
+/// driver's thread.
+struct Heard {
+    std::mutex mutex;
+    std::vector<std::vector<unsigned char>> messages;
+
+    std::vector<std::vector<unsigned char>> copy() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return messages;
+    }
+};
+
+void CALLBACK hearMidi(takt4::testing::VirtualMidi::Port, LPBYTE data, DWORD length,
+                       DWORD_PTR instance) {
+    auto* const heard = reinterpret_cast<Heard*>(instance);
+    if (heard == nullptr || data == nullptr || length == 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(heard->mutex);
+    heard->messages.emplace_back(data, data + length);
+}
+
+} // namespace
+
+TEST_CASE("unticking a MIDI output sends the note off it still owes, on a real port",
+          "[ui][trigger][hardware]") {
+    // The operator, 2026-09-30: "if I uncheck a midi target for instance, it immediately dies, so
+    // it never sends the note off, and the midi device keeps playing that note". End to end on a
+    // real MIDI port: a virtual one this test makes (teVirtualMIDI), picked on a row of the main
+    // window, a rule's note on sent down it by the rule editor's TEST, and the row's "on" box
+    // clicked off with the note off a minute from due. The note off must arrive before RtMidi
+    // closes the port. (The core half, every kind of leaving, is output_runner_test's "an output
+    // switched off or deleted is sent what it is owed first".)
+    takt4::testing::VirtualMidi virtualMidi;
+    if (!virtualMidi.usable()) {
+        SKIP("teVirtualMIDI is not installed here (rtpMIDI and loopMIDI both bring it)");
+    }
+    Heard heard;
+    const takt4::testing::VirtualMidi::Port port =
+        virtualMidi.create(L"takt4 test note off", &hearMidi, reinterpret_cast<DWORD_PTR>(&heard),
+                           65535, takt4::testing::VirtualMidi::kParseRx);
+    REQUIRE(port != nullptr);
+
+    {
+        LiveTracker tracker(kWeights, kStateSpace);
+        WindowController controller(tracker);
+        // The port is on the device list, which is read when the window is made.
+        const auto devices = controller.window().get_output_devices();
+        int device = -1;
+        for (std::size_t i = 0; i < devices->row_count(); ++i) {
+            if (std::string(*devices->row_data(i)).rfind("takt4 test note off", 0) == 0) {
+                device = static_cast<int>(i);
+            }
+        }
+        INFO("MIDI outputs: " << Catch::Detail::stringify(controller.midiPorts()));
+        REQUIRE(device > 0);
+        controller.addTarget();
+        controller.setTargetDevice(1, device);
+        REQUIRE(seen(controller).targets.size() == 2);
+        REQUIRE(seen(controller).targets[1].kind == takt4::output::OutputTarget::Kind::Midi);
+        REQUIRE(seen(controller).targets[1].enabled);
+
+        takt4::trigger::Rule::Config laser;
+        laser.id = "laser";
+        laser.name = "laser";
+        laser.trigger = takt4::trigger::Trigger::Manual;
+        laser.sendKind = takt4::trigger::Message::Kind::MidiNote;
+        laser.number.kind = takt4::trigger::GeneratorKind::Fixed;
+        laser.number.fixed = takt4::trigger::Value::ofInt(60);
+        laser.value.kind = takt4::trigger::GeneratorKind::Fixed;
+        laser.value.fixed = takt4::trigger::Value::ofInt(100);
+        takt4::trigger::FollowUp release;
+        release.unit = takt4::trigger::DelayUnit::Milliseconds;
+        release.delaySeconds = 60.0; // a minute: only the untick can pay it out within the test
+        laser.followUps = {release};
+        controller.setRules({laser});
+        controller.editor().pick(0);
+        controller.editor().test();
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (heard.copy().empty() && std::chrono::steady_clock::now() < until) {
+            controller.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const std::vector<std::vector<unsigned char>> on{{0x90, 60, 100}};
+        REQUIRE(heard.copy() == on);
+
+        // The row's "on" box, clicked: 41 px in, on the row under the Link row — the places the
+        // sweep of every control ("every control in the main window does what it says") uses.
+        constexpr int kWidth = 800;
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, 1200);
+        auto& window = controller.window().window();
+        window.dispatch_window_active_changed_event(true);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        const int linkRow = sheets[5].first + 10 + 28 + 8 + 18 + 8 + 14;
+        const int midiRow = linkRow + 14 + 8 + 17;
+        clickAt(window, 41.0f, static_cast<float>(midiRow));
+        slint::platform::update_timers_and_animations();
+        REQUIRE_FALSE(seen(controller).targets[1].enabled);
+
+        // The note off, on the port, straight away rather than in a minute — and nothing after it.
+        const std::vector<std::vector<unsigned char>> onAndOff{{0x90, 60, 100}, {0x80, 60, 0}};
+        const auto off = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (heard.copy().size() < 2 && std::chrono::steady_clock::now() < off) {
+            controller.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        CHECK(heard.copy() == onAndOff);
+    }
+    virtualMidi.close(port);
+}
+#endif
 
 TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself", "[ui][network]") {
     // The list under the Link row, end to end: Link switched on from its row, SHOW PEERS, and

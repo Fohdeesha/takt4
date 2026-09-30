@@ -87,7 +87,8 @@ public:
     /// its sender while its id and its host and port are the same; one whose address was
     /// edited gets a new sender and keeps what is queued for it; and only what was queued for a
     /// target that is gone — deleted or switched off, which both mean *send it nothing* — is
-    /// dropped.
+    /// dropped. (`OutputRunner` sends it first, with `flushTo`: a release among it is what lets
+    /// go of a clip that target was sent.)
     ///
     /// Returns, for each spec whose sender could not be made at all, its bit and why.
     std::vector<std::pair<std::size_t, std::string>> setTargets(const std::vector<TargetSpec>& specs);
@@ -123,6 +124,10 @@ public:
     /// release held back for a delayed target is still a release, and a rig told to halt must
     /// not be left latched on until the next Start.
     void flushAll();
+    /// Sends now everything waiting for the targets on routing bits `outputs`, and keeps the
+    /// rest waiting. Before those targets go: `setTargets` drops what is queued for a target
+    /// that is gone, and a release is among it.
+    void flushTo(std::uint64_t outputs);
 
     /// Datagrams waiting on a delay, and those dropped because too many were. The queue is
     /// bounded: a target delayed a second while a rule fires on every 32nd note holds tens

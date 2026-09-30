@@ -66,6 +66,9 @@ public:
     /// targets or the patch are replaced, which would change what a held message's output bit
     /// or fixture mask names.
     void flushQueued();
+    /// Sends now every held MIDI message for the outputs in `outputs` (routing bits), and keeps
+    /// the rest. For an output that is going: see `trigger::TriggerEngine::flushFollowUpsTo`.
+    void flushQueuedTo(std::uint64_t outputs);
     /// Moves what is held after the outputs (`outputs`) or the patch (`fixtures`) changed —
     /// see `trigger::remapBits`. A held MIDI message follows its output to where it now sits,
     /// and is dropped with it when it is gone; a held effect's fixtures likewise. Empty leaves
