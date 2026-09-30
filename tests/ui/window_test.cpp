@@ -32,6 +32,7 @@
 #include <slint-platform.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -6369,6 +6370,40 @@ TEST_CASE("a window opens folded as it was left, shorter for it, and opening giv
     // And what the next launch is told is what the window is now.
     CHECK_FALSE(second.currentSettings().machine.inputsFolded);
     CHECK_FALSE(second.currentSettings().machine.outputsFolded);
+}
+
+TEST_CASE("the rule editor opens folded as it was left, with its log as it was",
+          "[ui][settings][trigger]") {
+    // HANDOFF §0.5: the rule editor's folds, A to D and the event log, and the log's height are
+    // the window's and remembered across launches, like the main window's. Saved by one window,
+    // read back as the next launch reads it.
+    takt4::settings::Settings saved;
+    {
+        LiveTracker tracker(kWeights, kStateSpace);
+        WindowController first(tracker);
+        const takt4::settings::MachineSettings before = first.currentSettings().machine;
+        CHECK(before.ruleSectionsFolded == std::array<bool, 4>{false, true, false, false});
+        CHECK_FALSE(before.ruleLogOpen);
+        first.editor().toggleFold(0);
+        first.editor().toggleFold(1);
+        first.editor().toggleFold(4);
+        first.editor().window().set_log_lines_height(144.0f);
+        saved = first.currentSettings();
+    }
+    CHECK(saved.machine.ruleSectionsFolded == std::array<bool, 4>{true, false, false, false});
+    CHECK(saved.machine.ruleLogOpen);
+    CHECK(saved.machine.ruleLogHeight == Catch::Approx(144.0));
+    saved = takt4::settings::fromJson(takt4::settings::toJson(saved));
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController second(tracker, saved);
+    RulesWindow& editor = second.editor().window();
+    CHECK(editor.get_when_folded());
+    CHECK_FALSE(editor.get_only_if_folded());
+    CHECK_FALSE(editor.get_send_folded());
+    CHECK_FALSE(editor.get_then_folded());
+    CHECK(editor.get_log_open());
+    CHECK(editor.get_log_lines_height() == Catch::Approx(144.0f));
 }
 
 TEST_CASE("folding a section while one of its boxes is being typed in keeps the edit", "[ui]") {

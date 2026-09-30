@@ -18,8 +18,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <slint-platform.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -68,8 +71,14 @@ struct Bench {
     int folds = 0;
     int insides = 0;
     std::vector<std::string> rowEvents;
+    std::vector<int> countEdited;
+    std::vector<int> countTyped;
+    std::vector<float> paintedMoves;
 
     Bench() {
+        ui->on_count_edited([this](int n) { countEdited.push_back(n); });
+        ui->on_count_typed([this](int n) { countTyped.push_back(n); });
+        ui->on_painted_moved([this](float v) { paintedMoves.push_back(v); });
         ui->on_button_clicked([this](int i) { clicks.push_back(i); });
         ui->on_toggled([this](int i, bool on) { toggles.emplace_back(i, on); });
         ui->on_picked([this](int i, int index) { picks.emplace_back(i, index); });
@@ -183,6 +192,14 @@ constexpr float kSpanRange = 360.0f - 18.0f;
 float spanX(float bpm) {
     return kSpanLeft + 9.0f + kSpanRange * (bpm - 40.0f) / 180.0f;
 }
+// The rule editor's: the count and the dashed box at y 530, 34 high; the quiet tick beside them;
+// the painted slider at y 580, 0 to 100 over 300 px; the quiet reading at y 620.
+constexpr float kCountY = 547.0f;
+constexpr float kPaintedY = 592.0f;
+float paintedX(float value) {
+    return 20.0f + 9.0f + (300.0f - 18.0f) * value / 100.0f;
+}
+constexpr float kQuietReadingY = 634.0f;
 
 } // namespace
 
@@ -918,4 +935,153 @@ TEST_CASE("a row's slider is dragged across its row being rewritten on every ste
     b.drag(middle, kRow0Y, middle + 80.0f, kRow0Y, 40);
     REQUIRE(b.rowEvents.size() >= 30);
     CHECK(rows->row_data(0)->level > 60.0f);
+}
+
+// --- the rule editor's: the count, the dashed box, and the quiet controls ---------------------
+
+TEST_CASE("a count takes a whole number, clamped to its range, and never sets itself",
+          "[ui][widgets]") {
+    Bench b;
+    // Into the box, emptied, and typed into; Enter hands the keyboard back to the window, so every
+    // edit starts with a click.
+    const auto retype = [&b](const std::string& text) {
+        b.click(70.0f, kCountY);
+        REQUIRE(b.ui->get_count_focused());
+        b.key(kEnd);
+        b.key(kBackspace);
+        b.key(kBackspace);
+        b.type(text);
+    };
+    retype("9");
+    // Every keystroke says what Enter would set — the value it has while the box holds no number.
+    CHECK(b.countTyped == std::vector<int>{4, 9});
+    CHECK(b.countEdited.empty());
+    b.key(kEnter);
+    CHECK(b.countEdited == std::vector<int>{9});
+    CHECK(b.ui->get_count_value() == 9);
+
+    // Past its end, held to it; not a number, nothing, and the box shows the count again.
+    retype("40");
+    b.key(kEnter);
+    CHECK(b.countEdited.back() == 16);
+    retype("x");
+    b.key(kEnter);
+    CHECK(b.countEdited.size() == 2);
+    CHECK(std::string(b.ui->get_count_shown()) == "16");
+
+    // The arrows step it and stop at the ends: up from 16 is nothing, down is 15, said and set.
+    b.click(70.0f, kCountY);
+    b.countTyped.clear();
+    b.key(kUp);
+    CHECK(b.countEdited.size() == 2);
+    b.key(kDown);
+    CHECK(b.countTyped == std::vector<int>{15});
+    CHECK(b.countEdited.back() == 15);
+    CHECK(std::string(b.ui->get_count_shown()) == "15");
+    CHECK(b.ui->get_count_focused()); // a step keeps the keyboard
+
+    // Escape puts it back, says so to whoever kept what was typed, and is never PANIC.
+    retype("3");
+    b.key(kEscape);
+    CHECK(b.countTyped.back() == 15);
+    CHECK(b.countEdited.back() == 15);
+    CHECK(std::string(b.ui->get_count_shown()) == "15");
+    CHECK(b.keysSeen().empty());
+
+    // With no owner writing back, it asks and goes on showing the owner's.
+    b.ui->set_write_back(false);
+    retype("7");
+    b.key(kEnter);
+    CHECK(b.countEdited.back() == 7);
+    CHECK(b.ui->get_count_value() == 15);
+    CHECK(std::string(b.ui->get_count_shown()) == "15");
+}
+
+TEST_CASE("a dashed box is still a box: it takes the keyboard, and draws solid while typed in",
+          "[ui][widgets]") {
+    // B's BPM box while B is off, A's cooldown box and an empty channel: dashed to say the value
+    // is set aside, and still typed into.
+    Bench b;
+    // The top edge, where the dashes are. Dashed, some of it is the box's own fill showing
+    // between them; being typed in, it is one colour end to end — the focus edge, solid.
+    const auto topEdge = [&b] {
+        const takt4::tests::Shot shot = takt4::tests::render(*b.ui, 900, 720);
+        std::vector<slint::Rgb8Pixel> edge;
+        for (int x = 104; x < 196; ++x) {
+            edge.push_back(shot.at(x, 530));
+        }
+        return std::make_pair(edge, shot.at(190, 540));
+    };
+    const auto same = [](slint::Rgb8Pixel a, slint::Rgb8Pixel c) {
+        return a.r == c.r && a.g == c.g && a.b == c.b;
+    };
+    const auto count = [&same](const std::vector<slint::Rgb8Pixel>& edge, slint::Rgb8Pixel like) {
+        return std::count_if(edge.begin(), edge.end(),
+                             [&](slint::Rgb8Pixel p) { return same(p, like); });
+    };
+    const auto dashed = topEdge();
+    CHECK(count(dashed.first, dashed.second) > 20);
+    b.click(180.0f, kCountY);
+    REQUIRE(b.ui->get_dashed_focused());
+    const auto typing = topEdge();
+    CHECK(count(typing.first, typing.first.front()) ==
+          static_cast<std::ptrdiff_t>(typing.first.size()));
+    CHECK_FALSE(same(typing.first.front(), typing.second));
+    b.key(kEnd);
+    for (int i = 0; i < 3; ++i) {
+        b.key(kBackspace);
+    }
+    b.type("120");
+    b.key(kEnter);
+    CHECK(b.committed == std::vector<std::pair<int, std::string>>{{2, "120"}});
+    CHECK(std::string(b.ui->get_dashed_value()) == "120");
+}
+
+TEST_CASE("a quiet tick, slider and reading are drawn off and still answer the hand",
+          "[ui][widgets]") {
+    // B while its switch is off: what it holds is set for later, so the controls look switched
+    // off and still work.
+    Bench b;
+    b.click(290.0f, kCountY); // the tick's word
+    CHECK(b.toggles == std::vector<std::pair<int, bool>>{{4, true}});
+    CHECK(b.ui->get_tick_quiet());
+
+    b.click(paintedX(20.0f), kPaintedY);
+    REQUIRE_FALSE(b.paintedMoves.empty());
+    CHECK(b.ui->get_painted_value() == Catch::Approx(20.0f).margin(1.0f));
+    b.drag(paintedX(20.0f), kPaintedY, paintedX(70.0f), kPaintedY, 10);
+    CHECK(b.ui->get_painted_value() == Catch::Approx(70.0f).margin(1.0f));
+
+    b.click(49.0f, kQuietReadingY);
+    REQUIRE(b.ui->get_quiet_reading_editing());
+    b.type("0.5");
+    b.key(kEnter);
+    CHECK(b.readings == std::vector<std::pair<int, std::string>>{{2, "0.5"}});
+    CHECK(std::string(b.ui->get_quiet_reading_value()) == "0.5");
+}
+
+TEST_CASE("the code face draws f and f, never the font's ff ligature", "[ui][widgets]") {
+    // The rule editor sets colour codes in Chivo Mono, and "#20ff80" has to read f, f: the font's
+    // own `liga` joins them, and Slint cannot switch a feature off, so our copy of the font has no
+    // `liga` (tools/drop_font_feature.py). The bench draws "ff" beside "f" and " f" in the same
+    // face at the same size; the pair has to be those two, one over the other.
+    Bench b;
+    const takt4::tests::Shot shot = takt4::tests::render(*b.ui, 900, 720);
+    const auto ink = [&shot](int x, int y) {
+        const slint::Rgb8Pixel p = shot.at(x, y);
+        return static_cast<int>(std::max({p.r, p.g, p.b}));
+    };
+    int inked = 0;
+    int differ = 0;
+    for (int dy = 0; dy < 60; ++dy) {
+        for (int dx = -8; dx < 72; ++dx) {
+            const int pair = ink(100 + dx, 650 + dy);
+            const int both = std::max(ink(180 + dx, 650 + dy), ink(260 + dx, 650 + dy));
+            inked += pair > 128 || both > 128 ? 1 : 0;
+            differ += std::abs(pair - both) > 64 ? 1 : 0;
+        }
+    }
+    INFO(differ << " of " << inked << " inked pixels differ");
+    CHECK(inked > 200); // something was drawn to compare
+    CHECK(differ * 50 < inked);
 }

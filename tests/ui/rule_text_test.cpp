@@ -1,3 +1,5 @@
+#include "core/dmx/effect.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/output/output_target.hpp"
 #include "core/trigger/rule.hpp"
 #include "core/trigger/value.hpp"
@@ -197,4 +199,106 @@ TEST_CASE("rule presets: the picker follows the address", "[ui][trigger]") {
     }
     CHECK(rule_presets::rigPresetRules(0).empty());
     CHECK(rule_presets::rigPresetRules(rule_presets::kRigPresets.size() + 1).empty());
+}
+
+TEST_CASE("a folded section of the editor reads what it holds in one line", "[ui][trigger]") {
+    // HANDOFF §0.5: each of A to D folds, and folded it still reports, in the words the open
+    // section would be read as.
+    using takt4::trigger::Trigger;
+
+    SECTION("A, when") {
+        Rule::Config rule;
+        rule.trigger = Trigger::Bar;
+        rule.every = 4;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 4 bars, counting from the first");
+        rule.every = 1;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every bar");
+        rule.trigger = Trigger::Beat;
+        rule.every = 2;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 2 beats, counting from the first");
+        // Slowed from a control surface: said where the trigger counts.
+        CHECK(rule_text::describeWhen(rule, 16.0) ==
+              "every 2 beats, counting from the first · 16× slower");
+        // A cooldown is said either way on a trigger that comes in bursts...
+        rule.trigger = Trigger::Onset;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "onset · no limit");
+        rule.cooldownSeconds = 0.25;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "onset · at most once every 250 ms");
+        // ...and not at all on one that counts, which never reads it.
+        rule.trigger = Trigger::Bar;
+        rule.every = 4;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 4 bars, counting from the first");
+    }
+
+    SECTION("B, only if") {
+        Rule::Config rule;
+        CHECK(rule_text::describeOnlyIf(rule) == "off — fires every time A comes round");
+        // Switched off, what it holds is not what it does.
+        rule.conditions.minConfidence = 0.7;
+        CHECK(rule_text::describeOnlyIf(rule) == "off — fires every time A comes round");
+        rule.conditionsOn = true;
+        rule.conditions.minConfidence = 0.0;
+        CHECK(rule_text::describeOnlyIf(rule) ==
+              "on — nothing set yet, so it fires every time A comes round");
+        rule.conditions.minConfidence = 0.7;
+        rule.conditions.probability = 0.9;
+        rule.conditions.intensities = {false, true, true};
+        rule.conditions.minBpm = 120.0;
+        rule.conditions.maxBpm = 140.0;
+        CHECK(rule_text::describeOnlyIf(rule) ==
+              "confidence over 0.7 · 90% · normal, intense · 120 - 140 BPM");
+        rule.conditions = {};
+        rule.conditions.intensities = {false, false, false};
+        CHECK(rule_text::describeOnlyIf(rule) == "no intensity ticked, so never");
+    }
+
+    SECTION("C, send") {
+        const std::vector<OutputTarget> targets = {target("o-1", OutputTarget::Kind::Osc),
+                                                   target("o-2", OutputTarget::Kind::Midi)};
+        Rule::Config rule;
+        rule.sendKind = Message::Kind::Osc;
+        rule.address = "/composition/layers/1/clear";
+        CHECK(rule_text::describeSend(rule, targets, {}) ==
+              "OSC to every output · /composition/layers/1/clear");
+        // By the names the rig has now, and a routing to something gone says so.
+        rule.outputs = {"o-1", "o-9"};
+        CHECK(rule_text::describeSend(rule, targets, {}) ==
+              "OSC to out o-1, an output that is gone · /composition/layers/1/clear");
+        rule.address.clear();
+        CHECK(rule_text::describeSend(rule, targets, {}) ==
+              "OSC to out o-1, an output that is gone · no address yet");
+        rule.sendKind = Message::Kind::MidiNote;
+        rule.channel = 10;
+        rule.outputs = {"o-2"};
+        CHECK(rule_text::describeSend(rule, targets, {}) == "MIDI note ch 10 to out o-2");
+
+        takt4::dmx::Fixture heads;
+        heads.id = "f-00000001";
+        heads.name = "heads";
+        rule.sendKind = Message::Kind::Dmx;
+        rule.dmx.effect = takt4::dmx::EffectKind::Color;
+        CHECK(rule_text::describeSend(rule, targets, {heads}) ==
+              "color on no fixtures — it sends nowhere");
+        rule.dmx.fixtures = {"f-00000001", "f-00000002"};
+        CHECK(rule_text::describeSend(rule, targets, {heads}) ==
+              "color on heads, a fixture that is gone");
+    }
+
+    SECTION("D, then send") {
+        Rule::Config rule;
+        CHECK(rule_text::describeThen(rule) == "nothing — this trigger sends once and is done");
+        takt4::trigger::FollowUp release;
+        release.unit = takt4::trigger::DelayUnit::Beats;
+        release.delayBeats = 1.0;
+        takt4::trigger::FollowUp cc;
+        cc.kind = Message::Kind::MidiCc;
+        cc.number = 21;
+        cc.unit = takt4::trigger::DelayUnit::Bars;
+        cc.delayBeats = 2.0;
+        takt4::trigger::FollowUp quick;
+        quick.delaySeconds = 0.05;
+        rule.followUps = {release, cc, quick};
+        CHECK(rule_text::describeThen(rule) ==
+              "release after 1 beat · MIDI CC 21 after 2 bars · release after 50 ms");
+    }
 }

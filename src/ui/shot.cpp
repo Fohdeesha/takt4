@@ -319,112 +319,101 @@ void fillFixtures(FixturesWindow& window) {
     window.set_channels(channels);
 }
 
-/// §5.9's editor, with a set of rules in it worth looking at.
+/// §5.9's editor, holding exactly what the locked mockup of 2026-09-30 holds (HANDOFF §0.5,
+/// `design/weltformat-dark/rules17.html`), so a render and the approved picture can be laid over
+/// each other — and, with `state`, the other states its pictures show.
 ///
 /// Built here rather than through `RulesController`, because a controller needs an
-/// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout
-/// has any business opening. What is drawn is the real component with the real models; only
-/// where the values came from differs.
-void fillRules(RulesWindow& window, bool dmx) {
+/// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout has any
+/// business opening. What is drawn is the real component with the real models; only where the
+/// values came from differs.
+void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& state) {
+    const auto strings = [](std::initializer_list<const char*> items) {
+        auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        for (const char* item : items) {
+            model->push_back(slint::SharedString(item));
+        }
+        return model;
+    };
     auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::Trigger which : trigger::kTriggers) {
         names->push_back(slint::SharedString(std::string(trigger::labelOf(which))));
     }
     window.set_trigger_names(names);
-
     auto sends = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::Message::Kind kind : trigger::kMessageKinds) {
         sends->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
     }
     window.set_send_kinds(sends);
-
     auto kinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::GeneratorKind kind : trigger::kGeneratorKinds) {
         kinds->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
     }
     window.set_generator_kinds(kinds);
-    // As `RulesController` has them: a color's chip offers only what can make a color. Left
-    // out, a shot drew that chip's dropdown blank — a window the app never shows.
+    // As `RulesController` has them: a color's chip offers only what can make a color.
     auto colorKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::GeneratorKind kind : trigger::kColorGeneratorKinds) {
         colorKinds->push_back(slint::SharedString(std::string(trigger::labelOf(kind))));
     }
     window.set_color_generator_kinds(colorKinds);
-
     auto sources = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::LiveSource source : trigger::kLiveSources) {
         sources->push_back(slint::SharedString(std::string(trigger::labelOf(source))));
     }
     window.set_live_sources(sources);
-
-    auto hosts = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* label : {"custom", "Resolume 7 - clip", "Resolume 7 - resync", "TouchDesigner",
-                              "MadMapper - cue"}) {
-        hosts->push_back(slint::SharedString(label));
-    }
-    window.set_host_presets(hosts);
-    // Which preset the address below is, as `RulesController::presetOf` works it out — the
-    // picker names the rule in front of it rather than the last thing clicked.
+    window.set_host_presets(strings({"custom", "Resolume 7 - clip", "Resolume 7 - resync",
+                                     "TouchDesigner", "MadMapper - cue"}));
     window.set_host_preset_index(1);
-
-    // No "add a preset..." entry at the front: the control is a menu with a fixed label now,
-    // not a dropdown that has to sit on something. See `RulesController`'s `kRigPresets`.
-    auto rigs = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* label : {"Resolume: clips on 3 layers", "Resolume: tempo and resync",
-                              "Resolume: breathing dashboard", "MIDI: euclidean stabs"}) {
-        rigs->push_back(slint::SharedString(label));
-    }
-    window.set_rig_presets(rigs);
-
+    window.set_rig_presets(strings({"Resolume: clips on 3 layers", "Resolume: tempo and resync",
+                                    "Resolume: breathing dashboard", "MIDI: euclidean stabs"}));
     auto units = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::DelayUnit unit : trigger::kDelayUnits) {
         units->push_back(slint::SharedString(std::string(trigger::labelOf(unit))));
     }
     window.set_follow_up_units(units);
+    window.set_ramp_shapes(strings({"saw", "triangle", "sine", "square"}));
 
-    auto shapes = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const char* label : {"saw", "triangle", "sine", "square"}) {
-        shapes->push_back(slint::SharedString(label));
-    }
-    window.set_ramp_shapes(shapes);
-
-    // Three rules, because a list of one says nothing about a list: one firing, one switched
-    // off, and one that will not fire — the state §5.8 insists has to be *visible*.
+    // The list: one picked, one muted, one switched off, two with counts, and one that will not
+    // fire — every state a row has (the mockup's own six, and the lighting half's seventh).
     const auto rule = [](const char* name, bool enabled, const char* problem, int fires,
-                         bool chosen = false) {
+                         bool chosen, bool muted) {
         RuleRow row{};
         row.name = slint::SharedString(name);
         row.enabled = enabled;
         row.problem = slint::SharedString(problem);
         row.fires = fires;
         row.chosen = chosen;
+        row.muted = muted;
         return row;
     };
     auto rules = std::make_shared<slint::VectorModel<RuleRow>>();
-    // Two chosen rather than one, because the selection is a *set* now and a picture of one
-    // selected row says nothing about that — nor about the marks each chosen row carries.
-    rules->push_back(rule("Layer 1 - random clip", true, "", 37, true));
-    rules->push_back(rule("Layer 2 - random clip", true, "", 18, true));
-    rules->push_back(rule("Layer 3 - random clip", false, "", 0));
-    rules->push_back(rule("Dashboard breathes over 4 bars", true, "", 296));
-    rules->push_back(rule("Euclidean stabs - 3 in 8", true, "", 111));
+    rules->push_back(rule("Layer 1 - random clip", true, "", 412, !dmx, false));
+    rules->push_back(rule("Layer 2 - random clip", true, "", 180, false, true));
+    rules->push_back(rule("Layer 3 - random clip", false, "", 0, false, false));
+    rules->push_back(rule("Dashboard breathes over 4 bars", true, "", 296, false, false));
+    rules->push_back(rule("Euclidean stabs - 3 in 8", true, "", 111, false, false));
+    if (dmx) {
+        rules->push_back(rule("Heads change color on the drop", true, "", 37, true, false));
+    }
     rules->push_back(rule("Resync every 8 bars", true,
-                          "the address has 1 templated segment and the rule has 0", 0));
+                          "the address has 1 templated segment and the rule has 0", 0, false, false));
     window.set_rules(rules);
-    window.set_selected(0);
+    window.set_selected(dmx ? 5 : 0);
+    window.set_panicked(panicked);
 
-    // §5.6's rule subset, and what it currently reaches: the rig's own outputs, ticked.
-    auto choices = std::make_shared<slint::VectorModel<OutputChoice>>();
-    const auto choice = [](const char* name, bool chosen, bool missing) {
+    // §5.6's rule subset: the rig's own outputs, one ticked, one it names that is gone.
+    const auto choice = [](const char* key, const char* name, bool chosen, bool missing) {
         OutputChoice row{};
+        row.key = slint::SharedString(key);
         row.name = slint::SharedString(name);
         row.chosen = chosen;
         row.missing = missing;
         return row;
     };
-    choices->push_back(choice("deck", true, false));
-    choices->push_back(choice("wall", false, false));
-    choices->push_back(choice("lights", false, false));
+    auto choices = std::make_shared<slint::VectorModel<OutputChoice>>();
+    choices->push_back(choice("o-1", "deck", true, false));
+    choices->push_back(choice("o-2", "wall", false, false));
+    choices->push_back(choice("o-3", "resolume 2", false, false));
     window.set_output_choices(choices);
     window.set_outputs_all(false);
     window.set_outputs_summary(slint::SharedString("deck"));
@@ -432,22 +421,29 @@ void fillRules(RulesWindow& window, bool dmx) {
 
     window.set_rule_name(slint::SharedString("Layer 1 - random clip"));
     window.set_rule_enabled(true);
-    window.set_trigger_index(1); // every N bars
+    window.set_trigger_index(1); // bars
     window.set_trigger_takes_every(true);
+    window.set_trigger_takes_cooldown(false);
     window.set_every(4);
+    window.set_cooldown_ms(slint::SharedString("250"));
+    window.set_when_summary(slint::SharedString("every 4 bars, counting from the first"));
+
+    // B, switched off and folded, as a new rule's is — and what it holds, set for later.
+    window.set_conditions_on(false);
+    window.set_only_if_folded(true);
     window.set_min_confidence(0.70f);
     window.set_probability(0.9f);
-    // Text, not numbers: both boxes are two-way bound so that they keep following the model
-    // after somebody has typed into one. See `bpm-field` in the markup.
     window.set_bpm_range(slint::SharedString("120 - 140"));
-    window.set_cooldown_ms(slint::SharedString("500"));
     window.set_allow_calm(false);
+    window.set_only_if_summary(slint::SharedString("off — fires every time A comes round"));
+
     window.set_send_index(0);
     window.set_sends_osc(true);
+    window.set_send_value(true);
     window.set_address(slint::SharedString("/composition/layers/{layer}/clips/{clip}/connect"));
+    window.set_send_summary(
+        slint::SharedString("OSC to deck · /composition/layers/{layer}/clips/{clip}/connect"));
 
-    // The lighting dropdowns. Filled whichever half is being drawn, because a window with
-    // empty models draws empty boxes and a picture of those says nothing about either.
     auto effects = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const dmx::EffectKind kind : dmx::kEffectKinds) {
         effects->push_back(slint::SharedString(std::string(dmx::labelOf(kind))));
@@ -474,83 +470,9 @@ void fillRules(RulesWindow& window, bool dmx) {
     }
     window.set_color_modes(colorModes);
 
-    if (dmx) {
-        // A color on the moving heads, drawn from a palette — the effect that shows the half
-        // of the lighting editor a strobe cannot: the color mode, the swatches, and the note
-        // under the channel dropdown that says what an aim really reaches.
-        window.set_rule_name(slint::SharedString("Heads change color on the drop"));
-        window.set_send_index(6); // DMX / Art-Net, last of `kMessageKinds`
-        window.set_sends_osc(false);
-        window.set_sends_midi(false);
-        window.set_sends_dmx(true);
-        window.set_effect_index(1);      // color
-        window.set_effect_role_index(0); // dimmer
-        window.set_effect_takes_role(false);
-        window.set_effect_takes_base(false);
-        window.set_effect_takes_cycles(false);
-        window.set_effect_takes_duty(false);
-        window.set_effect_takes_curve(true);
-        window.set_effect_takes_color(true);
-        window.set_color_mode_index(0); // pick colors
-        window.set_effect_duration(slint::SharedString("2"));
-        window.set_effect_unit(2); // bars
-        window.set_effect_base(0);
-        window.set_effect_cycles(slint::SharedString("16"));
-        window.set_effect_duty(35);
-        window.set_rule_muted(true);
-        window.set_rule_rate(slint::SharedString("2x faster"));
-
-        // The palette itself. Six colors, which is what picking "shuffle" on a color now
-        // seeds — see `trigger::defaultPalette`.
-        auto palette = std::make_shared<slint::VectorModel<PaletteEntry>>();
-        for (const trigger::Value& value : trigger::defaultPalette()) {
-            std::string text;
-            value.appendTo(text);
-            const dmx::Color color = dmx::parseColor(text).value_or(dmx::kWhite);
-            PaletteEntry entry{};
-            entry.swatch = slint::Color::from_rgb_uint8(color.r, color.g, color.b);
-            entry.hex = slint::SharedString(text);
-            double hue = 0.0;
-            double saturation = 1.0;
-            double brightness = 1.0;
-            dmx::toHsv(color, hue, saturation, brightness);
-            entry.hue = static_cast<float>(hue);
-            entry.sat = static_cast<float>(saturation * 100.0);
-            entry.val = static_cast<float>(brightness * 100.0);
-            palette->push_back(entry);
-        }
-        window.set_palette(palette);
-        window.set_palette_shown(true);
-
-        auto lights = std::make_shared<slint::VectorModel<OutputChoice>>();
-        const auto pick = [](const char* name, bool chosen, bool missing) {
-            OutputChoice row{};
-            row.name = slint::SharedString(name);
-            row.chosen = chosen;
-            row.missing = missing;
-            return row;
-        };
-        lights->push_back(pick("heads", true, false));
-        lights->push_back(pick("washes", false, false));
-        lights->push_back(pick("head 1", false, false));
-        lights->push_back(pick("head 2", false, false));
-        lights->push_back(pick("lasers", true, true));
-        window.set_fixture_choices(lights);
-        window.set_fixtures_summary(slint::SharedString("heads, lasers"));
-        window.set_fixtures_available(slint::SharedString("reaches 2 fixtures"));
-    }
-
-    // THEN SEND: two entries, because one would say nothing about it being a list. The first
-    // is §5.6's release — the shape that used to be a tick box — and the second is the thing
-    // the tick box could not say at all.
-    auto followKinds = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    // The first entry names what it inherits — `RulesController::releaseLabelOf`. A picture
-    // that still said the bare "release" would be a picture of the thing that misread.
-    for (const char* label : {"release (same address)", "MIDI note", "MIDI note off", "MIDI CC",
-                              "MIDI program", "MIDI pitch bend"}) {
-        followKinds->push_back(slint::SharedString(label));
-    }
-    window.set_follow_kinds(followKinds);
+    // THEN SEND: §5.6's release, and the thing the old tick box could not say at all.
+    window.set_follow_kinds(strings({"release (same address)", "MIDI note", "MIDI note off",
+                                     "MIDI CC", "MIDI program", "MIDI pitch bend"}));
     const auto owed = [](int kind, const char* numberLabel, int number, const char* valueLabel,
                          const char* value, int unit, const char* delay, const char* summary) {
         FollowRow row{};
@@ -570,13 +492,10 @@ void fillRules(RulesWindow& window, bool dmx) {
     follows->push_back(owed(0, "", 0, "value", "0", 1, "1", "the same address"));
     follows->push_back(owed(3, "cc", 21, "value", "64", 2, "2", ""));
     window.set_follow_ups(follows);
+    window.set_then_summary(slint::SharedString("release after 1 beat · MIDI CC 21 after 2 bars"));
 
-    // The two chips of that address, and the value. The middle one is the sequence the whole
-    // of `trigger::Pool` exists for: four clips the operator picked, shuffled.
-    //
-    // By name, not by position: §6 records that a Slint `export struct` becomes a C++ class
-    // with its fields in declaration order, and that nothing promises that survives a Slint
-    // bump. A thirteen-field aggregate is the last place to rely on it.
+    // The two chips of that address, and the value: the sequence `trigger::Pool` exists for.
+    // By name, not by position: nothing promises a Slint struct's field order survives a bump.
     const auto fixedSlot = [](const char* label, const char* value, const char* last) {
         SlotRow row{};
         row.label = slint::SharedString(label);
@@ -586,10 +505,8 @@ void fillRules(RulesWindow& window, bool dmx) {
         row.last = slint::SharedString(last);
         return row;
     };
-
     auto slots = std::make_shared<slint::VectorModel<SlotRow>>();
     slots->push_back(fixedSlot("{layer}", "3", "3"));
-
     SlotRow clip{};
     clip.label = slint::SharedString("{clip}");
     clip.kind_index = 0; // Shuffle
@@ -601,13 +518,59 @@ void fillRules(RulesWindow& window, bool dmx) {
     clip.no_repeat = 2;
     clip.last = slint::SharedString("7");
     slots->push_back(clip);
-
-    slots->push_back(fixedSlot("value", "1", "1"));
+    SlotRow value = fixedSlot("value", "1", "1");
+    value.is_osc_value = true;
+    slots->push_back(value);
 
     if (dmx) {
-        // A lighting rule's own chips: the level, and a color with its swatch and
-        // picker. The picker is the one control here that cannot be judged from the markup —
-        // a swatch drawn at the wrong height or a popup anchored off the row is silent.
+        // A color on the moving heads, drawn from a palette: the color mode, the swatches, and
+        // the rate a surface has doubled.
+        window.set_rule_name(slint::SharedString("Heads change color on the drop"));
+        window.set_send_index(6); // DMX / Art-Net, last of `kMessageKinds`
+        window.set_sends_osc(false);
+        window.set_sends_midi(false);
+        window.set_sends_dmx(true);
+        window.set_effect_index(1); // color
+        window.set_effect_takes_role(false);
+        window.set_effect_takes_curve(true);
+        window.set_effect_takes_color(true);
+        window.set_color_mode_index(0); // pick colors
+        window.set_effect_duration(slint::SharedString("2"));
+        window.set_effect_unit(2);        // bars
+        window.set_effect_curve_index(0); // linear
+        window.set_rule_muted(true);
+        window.set_rule_rate(slint::SharedString("2× faster"));
+        window.set_send_summary(slint::SharedString("color on heads, lasers"));
+
+        auto palette = std::make_shared<slint::VectorModel<PaletteEntry>>();
+        for (const trigger::Value& entry : trigger::defaultPalette()) {
+            std::string text;
+            entry.appendTo(text);
+            const dmx::Color color = dmx::parseColor(text).value_or(dmx::kWhite);
+            PaletteEntry swatch{};
+            swatch.swatch = slint::Color::from_rgb_uint8(color.r, color.g, color.b);
+            swatch.hex = slint::SharedString(text);
+            double hue = 0.0;
+            double saturation = 1.0;
+            double brightness = 1.0;
+            dmx::toHsv(color, hue, saturation, brightness);
+            swatch.hue = static_cast<float>(hue);
+            swatch.sat = static_cast<float>(saturation * 100.0);
+            swatch.val = static_cast<float>(brightness * 100.0);
+            palette->push_back(swatch);
+        }
+        window.set_palette(palette);
+        window.set_palette_shown(true);
+
+        auto lights = std::make_shared<slint::VectorModel<OutputChoice>>();
+        lights->push_back(choice("heads", "heads", true, false));
+        lights->push_back(choice("washes", "washes", false, false));
+        lights->push_back(choice("lasers", "lasers", true, false));
+        lights->push_back(choice("f-3", "spot 3", false, true));
+        window.set_fixture_choices(lights);
+        window.set_fixtures_summary(slint::SharedString("heads, lasers"));
+        window.set_fixtures_available(slint::SharedString("reaches 2 fixtures"));
+
         slots = std::make_shared<slint::VectorModel<SlotRow>>();
         SlotRow color = fixedSlot("color", "#ff2040", "#20ff80");
         color.is_color = true;
@@ -615,8 +578,6 @@ void fillRules(RulesWindow& window, bool dmx) {
         color.hue = 348;
         color.sat = 87;
         color.val = 100;
-        // Drawn from the palette rather than fixed, which is what the swatches below it are
-        // for: the chip says *how* they are drawn and the palette says what they are.
         color.is_fixed = false;
         color.kind_index = 0; // shuffle
         color.takes_pool = true;
@@ -626,22 +587,74 @@ void fillRules(RulesWindow& window, bool dmx) {
     }
     window.set_slots(slots);
 
-    window.set_last_fired(slint::SharedString("/composition/layers/3/clips/7/connect 1"));
-    window.set_last_fired_ago(slint::SharedString("2s ago"));
-
-    auto log = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    auto log = std::make_shared<slint::VectorModel<LogLine>>();
+    const auto line = [](const char* when, const char* who, const char* message, bool muted) {
+        LogLine row{};
+        row.when = slint::SharedString(when);
+        row.rule = slint::SharedString(who);
+        row.message = slint::SharedString(message);
+        row.muted = muted;
+        return row;
+    };
     // Named as `RulesController::tick` names them: by the rule's name, as the list shows it.
-    for (const char* line :
-         {"184s  Layer 1 - random clip  /composition/layers/3/clips/7/connect 1",
-          "184s  Layer 1 - random clip  /composition/layers/3/clips/7/connect 0",
-          "177s  Layer 1 - random clip  /composition/layers/3/clips/12/connect 1",
-          "177s  Layer 1 - random clip  /composition/layers/3/clips/12/connect 0",
-          "170s  Layer 1 - random clip  /composition/layers/3/clips/1/connect 1",
-          "170s  Layer 1 - random clip  /composition/layers/3/clips/1/connect 0",
-          "163s  Layer 1 - random clip  /composition/layers/3/clips/3/connect 1"}) {
-        log->push_back(slint::SharedString(line));
-    }
+    log->push_back(line("184s", "Layer 1 - random clip", "/composition/layers/3/clips/7/connect 1", false));
+    log->push_back(line("183s", "Layer 1 - random clip", "/composition/layers/3/clips/7/connect 0", false));
+    log->push_back(line("177s", "Layer 2 - random clip", "/composition/layers/2/clips/4/connect 1", true));
+    log->push_back(line("170s", "Dashboard breathes over 4 bars", "/dashboard/breathe 0.5", false));
+    log->push_back(line("170s", "Euclidean stabs - 3 in 8", "/stabs/hit 1", false));
+    log->push_back(line("163s", "Layer 1 - random clip", "/composition/layers/3/clips/12/connect 1", false));
+    log->push_back(line("162s", "Layer 1 - random clip", "/composition/layers/3/clips/12/connect 0", false));
+    log->push_back(line("156s", "Euclidean stabs - 3 in 8", "/stabs/hit 1", false));
     window.set_log(log);
+
+    // --- the other states ---------------------------------------------------------------------
+    if (state == "message") {
+        window.set_status(slint::SharedString("A range is two numbers, like 1 - 12."));
+        window.set_status_is_error(true);
+    } else if (state == "onset") {
+        // A "when" that comes in bursts: no count, so ÷2 and ×2 switched off, and the cooldown live.
+        window.set_trigger_index(6);
+        window.set_trigger_takes_every(false);
+        window.set_trigger_takes_cooldown(true);
+        window.set_when_summary(slint::SharedString("onset · at most once every 250 ms"));
+    } else if (state == "log") {
+        window.set_log_open(true);
+    } else if (state == "folded") {
+        window.set_when_folded(true);
+        window.set_send_folded(true);
+        window.set_then_folded(true);
+        window.set_conditions_on(true);
+        window.set_only_if_summary(
+            slint::SharedString("confidence over 0.7 · 90% · normal, intense · 120 - 140 BPM"));
+    } else if (state == "b-on" || state == "b-off") {
+        window.set_only_if_folded(false);
+        window.set_conditions_on(state == "b-on");
+    } else if (state == "fit") {
+        window.set_only_if_folded(false);
+        window.set_conditions_on(true);
+        window.set_log_open(true);
+    } else if (state == "none") {
+        // As the controller leaves it with no rule picked: no slots, no follow-ups, nothing in the
+        // name box but what to do.
+        window.set_selected(-1);
+        window.set_rule_name(slint::SharedString(""));
+        window.set_rule_enabled(false);
+        window.set_slots(std::make_shared<slint::VectorModel<SlotRow>>());
+        window.set_follow_ups(std::make_shared<slint::VectorModel<FollowRow>>());
+        window.set_address(slint::SharedString(""));
+        window.set_when_summary(slint::SharedString(""));
+        window.set_only_if_summary(slint::SharedString(""));
+        for (std::size_t i = 0; i < rules->row_count(); ++i) {
+            RuleRow row = *rules->row_data(i);
+            row.chosen = false;
+            rules->set_row_data(i, row);
+        }
+    } else if (state == "no-lights") {
+        window.set_fixtures_summary(slint::SharedString("nothing — this rule sends nowhere"));
+        window.set_fixtures_available(
+            slint::SharedString("pick at least one — a DMX rule with no fixtures does nothing"));
+        window.set_fixtures_reaches_nothing(true);
+    }
 }
 
 /// Renders whatever component `build` returns, and writes it out — the half of `renderShot`
@@ -772,7 +785,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     if (options.rules) {
         return renderWindow(out, width, height, [&options] {
             auto window = RulesWindow::create();
-            fillRules(*window, options.dmx);
+            fillRules(*window, options.dmx, options.panicked, options.state);
             return window;
         });
     }

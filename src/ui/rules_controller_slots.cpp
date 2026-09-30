@@ -309,10 +309,8 @@ void RulesController::setSlotColor(int slot, float hue, float saturation, float 
     // And out to the fixtures as it is dragged — see `previewColor`, which is the whole
     // difference between choosing a color and choosing a swatch.
     previewColor(picked);
-    // The publishing `commit` does is the controller echoing a drag back at the element that
-    // caused it, which must not be read as a row the operator has to have rebuilt under them.
-    // See `pickingColor_`: this is the crash.
-    const PickingColor picking(pickingColor_);
+    // Published in place, so the picker this drag is inside — a popup belonging to this very row
+    // — stands: the crash of 2026-09-16 was that row being built again under the slider.
     commit();
 }
 
@@ -447,8 +445,6 @@ void RulesController::addPaletteColor() {
         config->values.push_back(trigger::Value::ofText(dmx::formatColor(dmx::kWhite)));
     }
     commit();
-    rebuildAll_ = true;
-    rowsDirty_ = true;
     publishSelected();
 }
 
@@ -468,8 +464,6 @@ void RulesController::removePaletteColor(int index) {
     // 2026-09-25, M20).
     pickerOpen_ = false;
     commit();
-    rebuildAll_ = true;
-    rowsDirty_ = true;
     publishSelected();
 }
 
@@ -488,9 +482,8 @@ void RulesController::setPaletteColor(int index, float hue, float saturation, fl
     // black has no hue to read back, so re-deriving them would snap the picker to red.
     pickedPalette_[index] = Hsv{hue, saturation, brightness};
     previewColor(picked);
-    // As in `setSlotColor`, and for the same reason: a row a slider is driving is a row whose
-    // element must survive. See `pickingColor_`.
-    const PickingColor picking(pickingColor_);
+    // In place, as in `setSlotColor`: a row a slider is driving is a row whose element must
+    // survive, and a popup inside it with it.
     commit();
     publishSelected();
 }

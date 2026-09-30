@@ -18,7 +18,8 @@ void printUsage(std::ostream& out) {
            "\n"
            "  takt4-shot OUT.bmp [--size WxH] [--scale S] [--stopped | --trouble]\n"
            "                     [--mockup] [--fold inputs,outputs] [--panicked]\n"
-           "                     [--rules [--dmx] | --fixtures | --about | --widgets]\n"
+           "                     [--rules [--dmx] [--state NAME] | --fixtures | --about |\n"
+           "                      --widgets]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
            "  --scale S       the display's scale, 1.25 for 125 %: the size stays\n"
@@ -34,6 +35,8 @@ void printUsage(std::ostream& out) {
            "  --panicked      draw PANIC engaged, with RELEASE beside it\n"
            "  --rules         draw §5.9's rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
+           "  --state NAME    with --rules, another of its states: message, onset, log, fit,\n"
+           "                  folded, b-on, b-off, none, no-lights\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
            "  --widgets       draw one of each of the main window's controls, in each state\n"
@@ -78,6 +81,12 @@ int main(int argc, char** argv) {
             options.mockup = true;
         } else if (arg == "--panicked") {
             options.panicked = true;
+        } else if (arg == "--state") {
+            if (i + 1 >= argc) {
+                std::cerr << "takt4-shot: --state needs a name; see --help\n";
+                return 2;
+            }
+            options.state = argv[++i];
         } else if (arg == "--fold") {
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --fold needs inputs, outputs or inputs,outputs\n";

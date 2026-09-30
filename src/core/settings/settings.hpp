@@ -85,6 +85,14 @@ struct MachineSettings {
     /// in a fresh install and in a file from before there was folding.
     bool inputsFolded = false;
     bool outputsFolded = false;
+
+    /// The rule editor's sections folded — A when, B only if, C send, D then send — its event log
+    /// open, and how tall the log's lines are, in logical pixels: remembered with the main window's
+    /// folds (HANDOFF §0.5, the rule editor locked 2026-09-30). As it opens the first time: B
+    /// folded, as a new rule's B starts, and the log folded to one line; open, five lines of 18.
+    std::array<bool, 4> ruleSectionsFolded{false, true, false, false};
+    bool ruleLogOpen = false;
+    double ruleLogHeight = 90.0;
 };
 
 /// §5.5's tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s

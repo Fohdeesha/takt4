@@ -777,6 +777,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // Folded as it was left. The height that goes with it is `show`'s to work out.
     window_->set_inputs_folded(settings.machine.inputsFolded);
     window_->set_outputs_folded(settings.machine.outputsFolded);
+    // And the rule editor's folds and its log, which are remembered with these.
+    editor_.applyLayout(settings.machine);
 
     // **The outputs from now until the window goes**, not from Start to Stop — the audit's H5
     // and the operator's call of 2026-09-23. Last, after every setting above has been applied
@@ -2742,6 +2744,7 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
     out.machine.inputsFolded = window_->get_inputs_folded();
     out.machine.outputsFolded = window_->get_outputs_folded();
+    editor_.layoutInto(out.machine);
 
     // `settings()`: the engine's own, or a change posted moments ago that it has not taken
     // yet. **Not the engine's alone**, which is what this read until the audit (M27): a

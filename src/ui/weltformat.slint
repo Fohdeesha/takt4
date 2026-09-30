@@ -27,20 +27,25 @@
 // - **Escape inside a box, or inside an open list, is never PANIC.** It finishes the edit, or
 //   closes the list, and goes no further.
 //
-// The rule editor, the patch editor and the About box are still in `theme.slint`'s look: the
-// rule editor's round of this design is to be shown to the operator before it is built.
+// The rule editor is in this look too since 2026-09-30 (its design locked that day, HANDOFF §0.5);
+// the patch editor and the About box are still in `theme.slint`'s.
 
 import { FocusSink } from "theme.slint";
 
-// The two typefaces, embedded in the binary (SLINT_EMBED_RESOURCES). Google Fonts' own static
-// instances — what the mockup was rendered with — under the SIL Open Font License; the notices
+// The typefaces, embedded in the binary (SLINT_EMBED_RESOURCES). Google Fonts' own static
+// instances — what the mockups were rendered with — under the SIL Open Font License; the notices
 // are in THIRD-PARTY-NOTICES.txt. Archivo's figures are not tabular at 500, but they are at the
 // tempo's 800 (every digit 625/1000 em but the 4, at 626: 0.06 px at 62 px, measured), and every
-// other number is set in DM Mono, whose digits are all 600.
+// other number in the main window is set in DM Mono, whose digits are all 600.
 import "../../assets/fonts/archivo/Archivo-Medium.ttf";
 import "../../assets/fonts/archivo/Archivo-Bold.ttf";
 import "../../assets/fonts/archivo/Archivo-ExtraBold.ttf";
 import "../../assets/fonts/dm-mono/DMMono-Medium.ttf";
+// The rule editor's numbers, addresses and codes, and nothing in the main window: DM Mono's only
+// zero is slashed, which the operator found "really unreadable" in a colour code (2026-09-30).
+// Our copy has no `liga` feature, so the "ff" of "#20ff80" is two letters — Slint cannot switch
+// a feature off (tools/drop_font_feature.py).
+import "../../assets/fonts/chivo-mono/ChivoMono-Medium.ttf";
 
 /// The `swissdark` tokens of the approved mockup (`t-swiss.css`), and nothing else. Every text
 /// colour here was measured against the surface it sits on at 4.5:1 or better, and nothing is set
@@ -136,6 +141,17 @@ export global Wf {
     /// DM Mono Medium has no typographic family name, so it is a family of its own. Medium is the
     /// weight the mockup rendered every number in (its body text is 500).
     out property <string> mono: "DM Mono Medium";
+    /// The rule editor's mono face, and only the rule editor's: Chivo Mono Medium, whose zero is
+    /// plain. It carries a typographic family name, so it is "Chivo Mono" at weight 500.
+    out property <string> code: "Chivo Mono";
+
+    // --- the rule editor's own (HANDOFF §0.5, locked 2026-09-30) -----------------------------
+    /// A slot or a follow-up: a darker band inside a sheet.
+    out property <color> band: #141414;
+    /// The name of an address's slot, `{layer}`.
+    out property <color> slot-name: #ff7b6c;
+    /// A switched-off rule's dot in the list.
+    out property <color> dot-off: #8a8983;
 }
 
 /// A dashed outline — what says "locked" or "switched off" on a box, a tick box or a button.
@@ -365,11 +381,13 @@ export component FoldArrow inherits Rectangle {
 ///
 /// **It never ticks itself.** `toggled` says the state being asked for and the owner sets
 /// `checked`. `locked` is the running window's "you cannot change this now": the edge dashed, the
-/// state still shown, and a click ignored.
+/// state still shown, and a click ignored. `quiet` is the rule editor's "set for later": drawn as
+/// switched off — the edge dashed, the words dim — and still ticked by a click.
 export component Tick inherits Rectangle {
     in property <bool> checked;
     in property <bool> enabled: true;
     in property <bool> locked;
+    in property <bool> quiet;
     in property <string> text;
     in property <length> box-size: 20px;
     in property <length> font-size: 15px;
@@ -401,16 +419,16 @@ export component Tick inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: root.box-size;
         height: root.box-size;
-        border-width: root.usable || root.checked ? 2px : 0px;
+        border-width: root.quiet ? 0px : root.usable || root.checked ? 2px : 0px;
         border-color: root.usable || root.locked ? root.ink : Wf.off-edge;
-        background: root.checked ? (root.usable ? root.ink : Wf.ink-off)
+        background: root.checked ? (root.quiet ? Wf.off-edge : root.usable ? root.ink : Wf.ink-off)
             : root.usable && touch.has-hover ? Wf.face-hover : transparent;
 
-        if !root.usable && !root.checked: Dashes {
+        if root.quiet || (!root.usable && !root.checked): Dashes {
             width: 100%;
             height: 100%;
             thickness: 2px;
-            ink: root.locked ? root.ink : Wf.off-edge;
+            ink: !root.quiet && root.locked ? root.ink : Wf.off-edge;
         }
 
         // The mockup's tick: a 45-degree hook, in the page's near-black on the filled square.
@@ -432,7 +450,7 @@ export component Tick inherits Rectangle {
         height: parent.height;
         text: root.text;
         visible: root.text != "";
-        color: root.enabled ? root.ink : Wf.ink-off;
+        color: root.enabled && !root.quiet ? root.ink : Wf.ink-off;
         font-family: Wf.sans;
         font-size: root.font-size;
         vertical-alignment: center;
@@ -738,15 +756,22 @@ export component Pick inherits Rectangle {
 ///
 /// Built on Slint's `TextInput`, which does not scroll itself: the text is moved within the box to
 /// keep the cursor in sight, as std's LineEdit does it.
+///
+/// Switched off (`enabled` false) it is dashed, as every other control switched off is; `dashed`
+/// gives a box that still takes typing the same look — the rule editor's B while it is switched
+/// off, set for later. (Nothing in the main window switches a box off.)
 export component Entry inherits Rectangle {
     in property <string> value;
     in property <string> placeholder;
     in property <bool> enabled: true;
+    in property <bool> dashed;
     in property <length> font-size: 15px;
     in property <string> font-family: Wf.sans;
     in property <length> pad: 10px;
     in property <TextHorizontalAlignment> align: left;
     in property <bool> revert-on-escape;
+    /// Whether Up and Down are the box's (`Count` steps with them) rather than going on up.
+    in property <bool> takes-arrows;
     out property <bool> has-focus: input.has-focus;
     /// What the box holds this moment: what is being typed, or `value` when it is not.
     out property <string> shown: input.text;
@@ -754,6 +779,8 @@ export component Entry inherits Rectangle {
     callback committed(string);
     /// Escape was pressed in it — said before the focus leaves.
     callback escaped();
+    /// Up (+1) or Down (-1), while `takes-arrows`.
+    callback arrowed(int);
 
     // Enter has committed; the focus leaving because of it is not a second edit.
     private property <bool> entered;
@@ -764,9 +791,18 @@ export component Entry inherits Rectangle {
     min-width: 2 * root.pad + 20px;
     horizontal-stretch: 1;
     vertical-stretch: 0;
-    background: root.enabled ? Wf.field : Wf.field-off;
-    border-width: input.has-focus ? 2px : 1px;
+    private property <bool> dash: root.dashed || !root.enabled;
+
+    background: root.dash ? Wf.field-off : Wf.field;
+    border-width: input.has-focus ? 2px : root.dash ? 0px : 1px;
     border-color: input.has-focus ? Wf.edge : hover.has-hover && root.enabled ? Wf.field-edge-hover : Wf.field-edge;
+
+    if root.dash && !input.has-focus: Dashes {
+        width: 100%;
+        height: 100%;
+        thickness: 1px;
+        ink: Wf.field-edge;
+    }
 
     /// Into the box with everything in it selected, so that typing replaces it.
     public function edit-now() {
@@ -778,6 +814,12 @@ export component Entry inherits Rectangle {
     /// window's shortcuts up.
     public function leave() {
         sink.take();
+    }
+
+    /// What the box holds, rewritten while it is being typed in — for an owner that stepped it
+    /// (`Count`), which is the one time what is in the box has to change under the caret.
+    public function put(text: string) {
+        input.text = text;
     }
 
     // What the owner changed it to, into the box — never over what is being typed.
@@ -826,7 +868,7 @@ export component Entry inherits Rectangle {
             single-line: true;
             vertical-alignment: center;
             horizontal-alignment: root.align;
-            color: root.enabled ? Wf.ink : Wf.ink-off;
+            color: root.enabled && (!root.dash || self.has-focus) ? Wf.ink : Wf.ink-off;
             font-family: root.font-family;
             font-size: root.font-size;
             selection-background-color: Wf.ink;
@@ -858,6 +900,14 @@ export component Entry inherits Rectangle {
                     sink.take();
                     return accept;
                 }
+                if (root.takes-arrows && event.text == Key.UpArrow) {
+                    root.arrowed(1);
+                    return accept;
+                }
+                if (root.takes-arrows && event.text == Key.DownArrow) {
+                    root.arrowed(-1);
+                    return accept;
+                }
                 return reject;
             }
             changed has-focus => {
@@ -879,6 +929,91 @@ export component Entry inherits Rectangle {
     sink := FocusSink { }
 }
 
+/// A whole number typed into a box — "every", a MIDI channel, "no repeat" — in this look: theme.slint's
+/// `NumberBox` without the arrows beside it, which the approved rule editor has not got (HANDOFF §0.5).
+/// Everything else `NumberBox` learned stays (the audit of 2026-09-25, H2, M17, M19, M22):
+///
+/// - **Escape puts it back as it was** and goes no further, so it is never PANIC.
+/// - **Nothing is sent per keystroke.** What is typed is sent on Enter, a click away or a step, and
+///   only if it is a number; anything else goes back to what it was. `typed` says, on every
+///   keystroke, what Enter would set — for an owner that keeps what is half-typed and commits it
+///   before an action (`RulesController::typing_`).
+/// - **The wheel never changes it**; the page scrolls.
+/// - **It never writes its own value**: `edited` says what was entered, clamped, when it differs
+///   from `value`, and the box shows whatever `value` then is.
+///
+/// Up and Down in it step by one from what is in the box.
+export component Count inherits Rectangle {
+    in property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    in property <bool> enabled: true;
+    in property <bool> dashed;
+    in property <string> placeholder;
+    in property <length> font-size: 15px;
+    in property <string> font-family: Wf.code;
+    in property <length> pad: 10px;
+    out property <bool> has-focus: box.has-focus;
+    out property <string> shown: box.shown;
+    /// A number entered — clamped to the range — that differs from `value`.
+    callback edited(int);
+    /// What Enter would set, on every keystroke: `value` while the box holds no number.
+    callback typed(int);
+
+    height: 34px;
+    min-width: 2 * root.pad + 20px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    pure function read(text: string) -> int {
+        return text.is-float() ? max(root.minimum, min(root.maximum, round(text.to-float()))) : root.value;
+    }
+
+    function step(by: int) {
+        let from = box.shown.is-float() ? round(box.shown.to-float()) : root.value;
+        let stepped = max(root.minimum, min(root.maximum, from + by));
+        if (stepped != root.value) {
+            // Said as typed first, then entered: a step is a keystroke that commits itself.
+            root.typed(stepped);
+            root.edited(stepped);
+        }
+        box.put(root.value);
+    }
+
+    box := Entry {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        value: root.value;
+        placeholder: root.placeholder;
+        enabled: root.enabled;
+        dashed: root.dashed;
+        font-size: root.font-size;
+        font-family: root.font-family;
+        pad: root.pad;
+        revert-on-escape: true;
+        takes-arrows: true;
+        typed(text) => {
+            root.typed(root.read(text));
+        }
+        committed(text) => {
+            let number = root.read(text);
+            if (number != root.value) {
+                root.edited(number);
+            }
+        }
+        escaped => {
+            // Whoever keeps what was typed is told it is gone, or their next action would commit
+            // the number Escape just threw away.
+            root.typed(root.value);
+        }
+        arrowed(by) => {
+            root.step(by);
+        }
+    }
+}
+
 /// A reading that can be clicked and typed into: the number in red, underlined like a link (the
 /// operator's ask of 2026-09-25, "just a underlined blue number like a URL" — red since the
 /// redesign). Clicked, a box opens in its place holding the number alone, all of it selected;
@@ -896,6 +1031,10 @@ export component Reading inherits Rectangle {
     /// Right-justified in an output row, against its delete button; the latency reading above
     /// the table, which has no delete button, starts at the left of its column (the approved render).
     in property <TextHorizontalAlignment> align: right;
+    in property <string> font-family: Wf.mono;
+    /// Drawn as switched off — dim, no line under it — and still typed into by a click: the rule
+    /// editor's B, set for later while it is off.
+    in property <bool> quiet;
     out property <bool> editing;
     callback committed(string);
 
@@ -905,8 +1044,8 @@ export component Reading inherits Rectangle {
         width: min(self.preferred-width, parent.width);
         visible: !root.editing;
         text: root.text;
-        color: !root.enabled ? Wf.ink-off : touch.has-hover ? Wf.link-hover : Wf.link;
-        font-family: Wf.mono;
+        color: !root.enabled || root.quiet ? Wf.ink-off : touch.has-hover ? Wf.link-hover : Wf.link;
+        font-family: root.font-family;
         font-size: root.font-size;
         horizontal-alignment: right;
         vertical-alignment: center;
@@ -914,7 +1053,7 @@ export component Reading inherits Rectangle {
 
     // The line under it, which is what says it can be clicked — only while it can.
     Rectangle {
-        visible: !root.editing && root.enabled;
+        visible: !root.editing && root.enabled && !root.quiet;
         x: reading.x;
         y: reading.y + reading.height - 1px;
         width: reading.width;
@@ -939,7 +1078,7 @@ export component Reading inherits Rectangle {
         visible: root.editing;
         enabled: root.editing;
         value: root.value-text;
-        font-family: Wf.mono;
+        font-family: root.font-family;
         font-size: root.font-size;
         pad: 5px;
         align: root.align;
@@ -961,12 +1100,20 @@ export component Reading inherits Rectangle {
 /// setting back inside that same callback, so the handle follows the hand; a controller that
 /// clamps it stops the handle at the clamp. A press on the track jumps there and goes on dragging.
 /// With the keyboard: Left and Right step, Home and End go to the ends. Never the wheel.
+///
+/// Two looks of the rule editor's (HANDOFF §0.5, locked 2026-09-30): `quiet` draws it switched off
+/// and it still moves (B's sliders while B is off, set for later); and `painted` draws the track 8 px
+/// tall in `paint` — a colour picker's hue round the wheel, its saturation, its brightness — with the
+/// handle ringed in the field's near-black so it reads over any colour.
 export component Track inherits Rectangle {
     in property <float> value;
     in property <float> minimum: 0;
     in property <float> maximum: 100;
     in property <float> step: 1;
     in property <bool> enabled: true;
+    in property <bool> quiet;
+    in property <bool> painted;
+    in property <brush> paint;
     out property <bool> dragging: touch.pressed;
     /// The handle's centre, from the slider's left edge.
     out property <length> handle-x: root.centre;
@@ -1012,18 +1159,35 @@ export component Track inherits Rectangle {
         }
     }
 
-    Rectangle {
+    if !root.painted: Rectangle {
         y: (parent.height - self.height) / 2;
         height: 3px;
         background: Wf.track;
     }
 
-    Rectangle {
+    if !root.painted: Rectangle {
         x: 0;
         y: (parent.height - self.height) / 2;
         width: root.centre;
         height: 3px;
-        background: root.enabled ? Wf.fill : Wf.off-edge;
+        background: root.enabled && !root.quiet ? Wf.fill : Wf.off-edge;
+    }
+
+    if root.painted: Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 8px;
+        background: root.paint;
+        border-width: 1px;
+        border-color: Wf.line;
+    }
+
+    if root.painted: Rectangle {
+        x: root.centre - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.thumb + 4px;
+        height: root.thumb + 4px;
+        border-radius: self.width / 2;
+        background: Wf.field;
     }
 
     Rectangle {
@@ -1032,7 +1196,7 @@ export component Track inherits Rectangle {
         width: root.thumb;
         height: root.thumb;
         border-radius: root.thumb / 2;
-        background: !root.enabled ? Wf.thumb-off
+        background: !root.enabled || root.quiet ? Wf.thumb-off
             : touch.pressed || touch.has-hover ? Wf.thumb-hover : Wf.thumb;
     }
 

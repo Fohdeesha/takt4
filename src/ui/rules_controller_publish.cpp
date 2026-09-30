@@ -71,16 +71,9 @@ void RulesController::publishPalette() {
         }
         rows.push_back(std::move(row));
     }
-    // **Not while a slider is driving it.** A swatch the operator is dragging is a swatch
-    // whose row moved on every pixel, and rebuilding the repeater would destroy the popup
-    // holding the slider they are still holding. See `pickingColor_` — this is the crash of
-    // 2026-09-16, and taking this condition out makes the test below it fail with ninety
-    // resets for a ninety-pixel drag.
-    if (!pickingColor_ &&
-        paletteRows_.markStale(
-            rows, [](const PaletteEntry& was, const PaletteEntry& now) { return was != now; })) {
-        rowsDirty_ = true;
-    }
+    // **In place, always**: a swatch the operator is dragging is a row that moves on every pixel,
+    // and its picker is a popup inside it — the crash of 2026-09-16 was this repeater built again
+    // under the slider. Nothing here sets its own value, so nothing has to be.
     paletteRows_.write(rows);
 }
 
@@ -88,7 +81,7 @@ void RulesController::publishAll() {
     publishList();
     publishSelected();
     publishSlots();
-    publishFiring();
+    publishLog();
     window_->set_selected(selected_);
 }
 
@@ -113,6 +106,9 @@ void RulesController::publishList() {
         // moves up into its place. See `firesSeen_`.
         row.fires = static_cast<int>(firesOf(config.id));
         row.chosen = rows.size() < chosen_.size() && chosen_[rows.size()];
+        // The dot's ring: the live mute, from this class's own mirror (see `mutedSeen_`).
+        const auto muted = mutedSeen_.find(config.id);
+        row.muted = muted != mutedSeen_.end() && muted->second;
         rows.push_back(std::move(row));
     }
     // And the card's own line for the one being edited, from the same `Rule` — here rather than
@@ -130,10 +126,17 @@ void RulesController::publishSelected() {
     const Rule::Config* rule = current();
     window_->set_selected(selected_);
     if (rule == nullptr) {
+        // No rule picked: every control dashed and switched off, and the name box says what to do
+        // (HANDOFF §0.5) — the markup's `none`.
         window_->set_rule_name(slint::SharedString(""));
         window_->set_rule_enabled(false);
+        window_->set_rule_muted(false);
+        window_->set_rule_rate(slint::SharedString(""));
         window_->set_rule_problem(slint::SharedString(""));
         window_->set_address(slint::SharedString(""));
+        window_->set_conditions_on(false);
+        publishFollowUps();
+        publishSummaries();
         return;
     }
     window_->set_rule_name(shared(rule->name));
@@ -149,6 +152,9 @@ void RulesController::publishSelected() {
     window_->set_trigger_takes_pulses(trigger::takesPulses(rule->trigger));
     window_->set_pulses(static_cast<int>(rule->pulses));
     window_->set_euclid_pattern(shared(spellEuclid(*rule)));
+    // A's cooldown: live for the triggers that come in bursts, switched off for the rest — where
+    // the engine ignores it too (`trigger::takesCooldown`).
+    window_->set_trigger_takes_cooldown(trigger::takesCooldown(rule->trigger));
 
     // §5.6's rule subset, and what it currently reaches. Both are needed: the first is what
     // the rule names and the second is whether this rig has it, which is the one question a
@@ -157,6 +163,7 @@ void RulesController::publishSelected() {
     window_->set_outputs_available(
         shared(describeRouting(rule->sendKind, rule->outputs, targets_)));
 
+    window_->set_conditions_on(rule->conditionsOn);
     window_->set_min_confidence(static_cast<float>(rule->conditions.minConfidence));
     window_->set_allow_calm(rule->conditions.allows(features::Intensity::Calm));
     window_->set_allow_normal(rule->conditions.allows(features::Intensity::Normal));
@@ -205,6 +212,24 @@ void RulesController::publishSelected() {
     window_->set_rule_rate(shared(describeRate(factor)));
 
     publishFollowUps();
+    publishSummaries();
+}
+
+void RulesController::publishSummaries() {
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        window_->set_when_summary(slint::SharedString(""));
+        window_->set_only_if_summary(slint::SharedString(""));
+        window_->set_send_summary(slint::SharedString(""));
+        window_->set_then_summary(slint::SharedString(""));
+        return;
+    }
+    const auto rate = rateSeen_.find(rule->id);
+    window_->set_when_summary(
+        shared(describeWhen(*rule, rate == rateSeen_.end() ? 1.0 : rate->second)));
+    window_->set_only_if_summary(shared(describeOnlyIf(*rule)));
+    window_->set_send_summary(shared(describeSend(*rule, targets_, patch_)));
+    window_->set_then_summary(shared(describeThen(*rule)));
 }
 
 void RulesController::publishFollowUps() {
@@ -309,20 +334,9 @@ void RulesController::publishFollowUps() {
         rows.push_back(std::move(row));
     }
 
-    // Nothing on these rows moves on its own — no live readout — so a change is one the
-    // controller made and has to get back into a widget that may have gone deaf. See
-    // `rowsDirty_`. **Except the three boxes**: a `NumberBox` and a `LiveField` never go deaf,
-    // and a row rebuilt for one of them was the row, and the box the operator had just tabbed
-    // into, destroyed under the next keystroke (the audit of 2026-09-25, M17).
-    if (followRows_.markStale(rows, [](const FollowRow& was, const FollowRow& now) {
-            FollowRow ignoring = was;
-            ignoring.number = now.number;
-            ignoring.value = now.value;
-            ignoring.delay = now.delay;
-            return ignoring != now;
-        })) {
-        rowsDirty_ = true;
-    }
+    // In place: no control on these rows sets its own value, so none goes deaf and no row is built
+    // again — which took the box the operator had just tabbed into down with it (the audit of
+    // 2026-09-25, M17).
     followRows_.write(rows);
 }
 
@@ -374,19 +388,9 @@ void RulesController::publishOutputChoices() {
         }
     }
 
-    // **These are tick boxes, and a tick box drops its binding the moment it is clicked.**
-    //
-    // The same mechanism the generator chips and the THEN SEND rows are rebuilt for, on the
-    // one publisher that did not take part in it. A `CheckBox` bound `checked: choice.chosen`
-    // stops following the model as soon as somebody ticks it — so after routing one rule to
-    // "lights", every rule selected afterwards showed "lights" already ticked, and clicking
-    // it to route *that* rule un-ticked it and did nothing. Nothing on this row moves on its
-    // own, so any change at all is one the controller made and has to get back into a box
-    // that may have gone deaf.
-    if (choiceRows_.markStale(
-            rows, [](const OutputChoice& was, const OutputChoice& now) { return was != now; })) {
-        rowsDirty_ = true;
-    }
+    // In place. These were std tick boxes, which drop their binding the moment they are clicked —
+    // so after routing one rule to "lights", every rule picked afterwards showed it ticked. The
+    // list's ticks are drawn from the rows now and never tick themselves.
     choiceRows_.write(rows);
 
     std::vector<std::string> shown;
@@ -463,12 +467,7 @@ void RulesController::publishFixtureChoices() {
         }
     }
 
-    // Tick boxes, which drop their binding the moment they are clicked — see
-    // `publishOutputChoices`, which found that the hard way.
-    if (fixtureRows_.markStale(
-            rows, [](const OutputChoice& was, const OutputChoice& now) { return was != now; })) {
-        rowsDirty_ = true;
-    }
+    // In place, for the reason `publishOutputChoices` gives.
     fixtureRows_.write(rows);
 
     std::vector<std::string> shown;
@@ -622,29 +621,21 @@ void RulesController::publishSlots() {
         return;
     }
 
-    // **Rebuild from scratch when the rule or its send kind changes, and only then.**
+    // **Built from nothing when the rule or its send kind changes, and only then.**
     //
-    // `writeRows` updates rows in place so that a box being typed into is not destroyed under
-    // the cursor — see its header, which is right about that and did not go far enough. The
-    // consequence it records is that a widget that assigns its own value — a `ComboBox` picked
-    // from, and the `LineEdit`s these boxes were until the audit of 2026-09-25 — loses its
-    // binding the moment it is used, because Slint drops a binding when the property is
-    // assigned. Within one rule that is harmless: what was picked is what is meant.
+    // `writeRows` updates rows in place, so that a box being typed into is not destroyed under
+    // the cursor and a picker being dragged is not taken away (see its header). Across rules
+    // that is not what is wanted: a box that had the keyboard would go on holding what was typed
+    // for the rule before, over this one's value, and commit it into this one when it let go. So
+    // the repeater builds fresh items for another rule. It costs the focus, which is right here —
+    // the operator just clicked another rule — and it never happens on the `tick` path, where
+    // the id and kind are unchanged. (Until 2026-09-30 it was also what brought a std widget's
+    // lost binding back, the "editing one changes them all" bug of 2026-09-12; no control here
+    // sets its own value now.)
     //
-    // Across rules it is not. Selecting a different rule updates the model rows, the dead
-    // widget ignores them, and the operator sees the *previous* rule's range, list and mode
-    // on every rule they click — which reads exactly like one edit having changed them all.
-    // It was reported that way on 2026-09-12, and the giveaway was that toggling the `list`
-    // checkbox "fixed" it: that flips an `if`, so the element is destroyed and the new one
-    // comes up bound.
-    //
-    // Clearing first makes the repeater build fresh items, so every box is bound again. It
-    // costs the focus, which is right here — the operator just clicked another rule — and it
-    // never happens on the `tick` path, where the id and kind are unchanged.
     // The DMX effect counts as a change of kind here, because it decides *which* generators a
     // rule has: switching from a fade to a position takes the level chip away and puts pan and
-    // tilt in its place, and a row reused across that would be a pan box still bound to the
-    // level it used to be.
+    // tilt in its place.
     const bool rebuild = rule->id != slotsBuiltFor_ || rule->sendKind != slotsKind_ ||
                          rule->dmx.effect != slotsEffect_ || rule->dmx.colorMode != slotsColorMode_;
     if (rebuild) {
@@ -782,6 +773,9 @@ void RulesController::publishSlots() {
             break;
         case trigger::SlotRole::Value:
             push(valueLabelOf(rule->sendKind), generator);
+            // An OSC rule's value band carries the "send a value" tick (HANDOFF §0.5): whether the
+            // address takes an argument at all. A MIDI value is the kind's to decide.
+            rows.back().is_osc_value = rule->sendKind == trigger::Message::Kind::Osc;
             break;
         case trigger::SlotRole::Number:
             push(numberLabelOf(rule->sendKind), generator);
@@ -825,90 +819,11 @@ void RulesController::publishSlots() {
     // In place, and this is the one that mattered: these rows are the generator chips, they
     // are full of text boxes, and `tick` republishes them every time a rule fires. See
     // `writeRows`. Nothing here moves between fires *except* the last-produced readout, so
-    // the common case writes no rows at all and the boxes are left entirely alone.
-    //
-    // And when something else moves — a range this clamped back the right way round, a list
-    // seeded from a range, another rule's values — the row has to come back as a new element
-    // or a box that has been typed into will go on showing what was typed. That readout is
-    // the field to exclude: it ticks over on every beat, and rebuilding for it would tear the
-    // boxes down under the operator's hands.
-    //
-    // The other exclusion is not a field but a cause: a color slider being dragged changes
-    // this row's swatch and its hex on every pixel, and the picker holding that slider is a
-    // popup inside this very repeater. See `pickingColor_`.
-    if (!pickingColor_ && slotRows_.markStale(rows, [](const SlotRow& was, const SlotRow& now) {
-            SlotRow ignoring = was;
-            ignoring.last = now.last;
-            // And whatever a `LiveField` or a `NumberBox` shows, since neither goes deaf: a row
-            // rebuilt for one of them took the box beside it — the one the operator had just
-            // tabbed into — down with it (the audit of 2026-09-25, M17). What is left is what the
-            // std widgets hold, which do assign their own values: the dropdowns, the tick boxes
-            // and the picker's sliders.
-            ignoring.low = now.low;
-            ignoring.high = now.high;
-            ignoring.values = now.values;
-            ignoring.fixed = now.fixed;
-            ignoring.normalise = now.normalise;
-            ignoring.weights = now.weights;
-            ignoring.ramp_bars = now.ramp_bars;
-            ignoring.no_repeat = now.no_repeat;
-            return ignoring != now;
-        })) {
-        rowsDirty_ = true;
-    }
+    // the common case writes no rows at all and the boxes are left entirely alone — and a row
+    // that did move is told where it stands, the picker a colour slider is being dragged in
+    // included (the crash of 2026-09-16 was this repeater built again under that slider).
     slotRows_.write(rows);
     publishPalette();
-}
-
-void RulesController::rebuildRows() {
-    // **Never while a picker is open.** A color picker is a `PopupWindow` belonging to one of
-    // the items about to be thrown away, so a rebuild here destroys the popup — and with it
-    // the slider the operator has hold of. The rebuild is not cancelled, only held: the flag
-    // stays set and `tick` takes it on the first redraw after the picker closes, which is
-    // before the operator can have typed into anything. See `setPickerOpen`.
-    if (pickerOpen_) {
-        return;
-    }
-    rowsDirty_ = false;
-    if (!rebuildAll_) {
-        // **Only the rows that moved** — see `renewRows`. A new element is the only way a
-        // `ComboBox` that has been picked from, or a `CheckBox` that has been clicked, starts
-        // following its model again, and the rows around it — the box just clicked into among
-        // them — have no reason to be thrown away with it.
-        eachRepeater([](auto& repeater) { repeater.renew(); });
-        return;
-    }
-    rebuildAll_ = false;
-    // Emptied, so the repeaters throw their items away and build new ones — a palette swatch
-    // added or taken away moves every one after it. Publishing straight afterwards leaves
-    // nothing on screen for a frame.
-    eachRepeater([](auto& repeater) { repeater.clear(); });
-    publishSlots();
-    publishFollowUps();
-    publishOutputChoices();
-    publishFixtureChoices();
-    // Every publisher compares against an empty model, so none can find a surviving row that
-    // moved. Asserting that here rather than trusting it: a rebuild that set the flag again
-    // would spin at thirty frames a second, tearing every box down as fast as it drew.
-    rowsDirty_ = false;
-}
-
-void RulesController::publishFiring() {
-    window_->set_last_fired(shared(lastFired_));
-    if (lastFiredAt_ < 0.0) {
-        window_->set_last_fired_ago(slint::SharedString(""));
-        return;
-    }
-    // **The runner's clock, because that is the clock the timestamp was taken on.** This used
-    // to subtract `Fired::when` from seconds since *this controller* was built, which are two
-    // clocks with no shared origin: the runner's began at Start and this one at launch, so
-    // "just now" read as however long the operator had spent setting up. Both halves of a
-    // subtraction have to come off one clock, and `OutputRunner::elapsed` is it.
-    const double ago = runner_.elapsed() - lastFiredAt_;
-    // Seconds, coarsely. A message that landed a moment ago and one that landed a minute ago
-    // are different facts; a tenth of a second between them is not.
-    window_->set_last_fired_ago(
-        shared(ago < 1.0 ? "just now" : spellNumber(std::floor(ago)) + "s ago"));
 }
 
 } // namespace takt4::ui

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace takt4::ui {
 
@@ -47,8 +48,16 @@ struct ShotOptions {
     /// Draw Inputs, Outputs, or both folded down to their headings.
     bool foldInputs = false;
     bool foldOutputs = false;
-    /// Draw PANIC engaged, with RELEASE beside it.
+    /// Draw PANIC engaged, with RELEASE beside it (the main window) or over the preset menu (the
+    /// rule editor).
     bool panicked = false;
+    /// With `--rules`, one of the rule editor's other states, as the locked design's pictures show
+    /// them (HANDOFF §0.5, `design/weltformat-dark/rules17-states.html`): "message" (the editor's
+    /// own message under the top row), "onset" (a fast "when", its cooldown live), "log" (the log
+    /// open), "fit" (every section open), "folded" (every section folded), "b-on" (B switched on
+    /// and open), "b-off" (B open and switched off), "none" (no rule picked), "no-lights" (a
+    /// lighting rule naming no fixture). Empty is the editor as it opens.
+    std::string state;
     /// The display's scale, as Windows' "Scale" setting gives it: 1.25 is 125 %. `width` and
     /// `height` stay logical, as the window's own sizes are, and the picture is that many times
     /// larger — what a laptop at 125 % shows (the 2026-09-22 audit's M26). The main window only.
@@ -57,7 +66,7 @@ struct ShotOptions {
 
 /// The size the rule editor opens at, kept beside the main window's for the same reason, and
 /// held to `kRulesWindowWidth` and `kRulesWindowHeight` the same way.
-inline constexpr int kRulesShotWidth = 1164;
+inline constexpr int kRulesShotWidth = 1000;
 inline constexpr int kRulesShotHeight = 872;
 
 /// And the patch editor's (`kFixturesWindowWidth`, `kFixturesWindowHeight`).

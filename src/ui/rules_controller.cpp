@@ -38,7 +38,7 @@ RulesController::RulesController(output::OutputRunner& runner,
                                  std::vector<trigger::Rule::Config> rules)
     : runner_(runner), rules_(std::move(rules)), window_(RulesWindow::create()),
       listModel_(std::make_shared<slint::VectorModel<RuleRow>>()),
-      logModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()) {
+      logModel_(std::make_shared<slint::VectorModel<LogLine>>()) {
     window_->set_rules(listModel_);
     window_->set_output_choices(choiceRows_.model());
     window_->set_fixture_choices(fixtureRows_.model());
@@ -169,6 +169,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rig_added(finishing([this](int index) { addRig(index); }));
     window_->on_rule_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
     window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
+    window_->on_rule_muted_at(finishing([this](int index, bool on) { setMutedAt(index, on); }));
+    window_->on_fold_clicked(finishing([this](int which) { toggleFold(which); }));
     window_->on_rule_rate_changed(finishing([this](float factor) { nudgeRate(factor); }));
     // The name commits on every keystroke, so there is never anything of its own to carry.
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
@@ -245,8 +247,13 @@ RulesController::RulesController(output::OutputRunner& runner,
     // as a float and both settings are held as double. GCC and Clang refuse the implicit
     // promotion under -Wdouble-promotion -Werror, and MSVC accepts it silently — which is
     // why these two were still here after the same fix went in for the engine.
+    window_->on_conditions_toggled(finishing([this](bool on) { setConditionsOn(on); }));
     window_->on_min_confidence_changed(
         finishing([this](float v) { setMinConfidence(static_cast<double>(v)); }));
+    window_->on_min_confidence_typed(
+        finishing([this](const slint::SharedString& t) { setConfidenceTyped(std::string(t)); }));
+    window_->on_probability_typed(
+        finishing([this](const slint::SharedString& t) { setProbabilityTyped(std::string(t)); }));
     window_->on_intensity_changed(
         finishing([this](int which, bool on) { setIntensity(which, on); }));
     window_->on_bpm_range_edited([this](const slint::SharedString& t) {
@@ -633,6 +640,8 @@ void RulesController::commit() {
     // With the slots, because these rows describe the same rule and read from the same fields
     // — a release's summary names the channel, so changing the channel has to move it.
     publishFollowUps();
+    // And what each folded heading says, which is all of the above in a line.
+    publishSummaries();
 }
 
 void RulesController::matchSegmentsToAddress(Rule::Config& rule) {
@@ -752,14 +761,9 @@ void RulesController::pickWith(int index, bool control, bool shift) {
             }
         }
     }
-    // A new selection is a new last-fired line: the old one belonged to another rule and
-    // leaving it up would credit this one with what that one sent.
-    lastFired_.clear();
-    lastFiredAt_ = -1.0;
     publishSelected();
     publishSlots();
     publishList(); // the chosen flags, which are what the rows draw themselves from
-    publishFiring();
     window_->set_selected(selected_);
     // Said out loud, because a selection of six looks like a selection of six only if you
     // know to count the highlighted rows — and because what × does next depends on it.
@@ -815,11 +819,13 @@ void RulesController::add() {
     // nothing happened. Reported from a rig: "it's not obvious that they're entirely
     // disabled". The box is labelled now, and a rule an operator asked for is armed.
     rule.enabled = true;
+    // **And its ONLY IF switched off, and folded** (HANDOFF §0.5): nothing optional is on by
+    // default. `conditionsOn` starts off in the struct; the fold is the window's.
     rules_.push_back(rule);
     resettle(static_cast<int>(rules_.size()) - 1);
+    window_->set_only_if_folded(true);
     commit();
     publishSelected();
-    publishFiring();
     window_->set_selected(selected_);
 }
 
@@ -846,7 +852,6 @@ void RulesController::remove() {
     resettle(going.front());
     commit();
     publishSelected();
-    publishFiring();
     window_->set_selected(selected_);
 }
 
@@ -897,7 +902,6 @@ void RulesController::duplicate() {
     anchor_ = after;
     commit();
     publishSelected();
-    publishFiring();
     window_->set_selected(selected_);
 }
 
@@ -962,7 +966,6 @@ void RulesController::addRig(int index) {
     anchor_ = first;
     commit();
     publishSelected();
-    publishFiring();
     window_->set_selected(selected_);
 }
 
@@ -977,6 +980,8 @@ void RulesController::setEnabled(bool on) {
     if (Rule::Config* rule = current()) {
         rule->enabled = on;
         commit();
+        // Back into the tick, which never ticks itself (weltformat.slint's `Tick`).
+        window_->set_rule_enabled(on);
         // **And to the running rule itself**, as MUTE is (the audit of 2026-09-25, M10). A set
         // posted with the switch unchanged keeps the live switch (`Rule::carryFrom`), and after a
         // control surface had switched this rule the editor's copy said what the surface did — so
@@ -999,6 +1004,22 @@ void RulesController::setMuted(bool on) {
     runner_.post(output::OutputCommand::ruleMuted(rule->id, on));
     publishSelected();
     publishList();
+}
+
+void RulesController::setMutedAt(int index, bool on) {
+    if (index < 0 || static_cast<std::size_t>(index) >= rules_.size()) {
+        return;
+    }
+    // The same live mute as MUTE, on whichever rule the dot belongs to — which need not be the one
+    // the editor is showing, and the selection stays where it is: the dot is a switch on its own
+    // row, not a way of picking it (HANDOFF §0.5).
+    const std::string& id = rules_[static_cast<std::size_t>(index)].id;
+    mutedSeen_[id] = on;
+    runner_.post(output::OutputCommand::ruleMuted(id, on));
+    publishList();
+    if (index == selected_) {
+        window_->set_rule_muted(on);
+    }
 }
 
 void RulesController::nudgeRate(double factor) {
@@ -1169,11 +1190,51 @@ void RulesController::chooseNoFixtures() {
     publishSelected();
 }
 
+void RulesController::setConditionsOn(bool on) {
+    if (Rule::Config* rule = current()) {
+        rule->conditionsOn = on;
+        commit();
+        window_->set_conditions_on(on);
+    }
+}
+
 void RulesController::setMinConfidence(double value) {
     if (Rule::Config* rule = current()) {
         rule->conditions.minConfidence = std::clamp(value, 0.0, 1.0);
         commit();
+        // Back into the slider, which never moves itself: this is what makes it follow the hand.
+        window_->set_min_confidence(static_cast<float>(rule->conditions.minConfidence));
     }
+}
+
+void RulesController::setConfidenceTyped(const std::string& text) {
+    std::string_view view = trim(text);
+    const bool percent = !view.empty() && view.back() == '%';
+    if (percent) {
+        view = trim(view.substr(0, view.size() - 1));
+    }
+    const std::optional<double> number = readNumber(view);
+    if (!number) {
+        setStatus("A confidence is a number from 0 to 1, like 0.7.", true);
+        return;
+    }
+    // "70" and "70%" are both read as seventy percent: the meter reads 0 to 1, and a person
+    // typing seventy means that rather than a confidence of seventy.
+    setMinConfidence(percent || *number > 1.0 ? *number / 100.0 : *number);
+}
+
+void RulesController::setProbabilityTyped(const std::string& text) {
+    std::string_view view = trim(text);
+    if (!view.empty() && view.back() == '%') {
+        view = trim(view.substr(0, view.size() - 1));
+    }
+    const std::optional<double> number = readNumber(view);
+    if (!number) {
+        setStatus("A probability is a percentage, like 90.", true);
+        return;
+    }
+    // The reading says "90%", so what is typed into it is a percentage.
+    setProbability(*number / 100.0);
 }
 
 void RulesController::setIntensity(int which, bool allowed) {
@@ -1183,6 +1244,9 @@ void RulesController::setIntensity(int which, bool allowed) {
     }
     rule->conditions.intensities[static_cast<std::size_t>(which)] = allowed;
     commit();
+    window_->set_allow_calm(rule->conditions.allows(features::Intensity::Calm));
+    window_->set_allow_normal(rule->conditions.allows(features::Intensity::Normal));
+    window_->set_allow_intense(rule->conditions.allows(features::Intensity::Intense));
 }
 
 void RulesController::setBpmRange(const std::string& text) {
@@ -1224,6 +1288,7 @@ void RulesController::setProbability(double value) {
     if (Rule::Config* rule = current()) {
         rule->conditions.probability = std::clamp(value, 0.0, 1.0);
         commit();
+        window_->set_probability(static_cast<float>(rule->conditions.probability));
     }
 }
 
@@ -1373,6 +1438,7 @@ void RulesController::pickCurve(int index) {
     }
     rule->dmx.curve = dmx::kCurves[static_cast<std::size_t>(index)];
     commit();
+    window_->set_effect_curve_index(index); // a dropdown never picks for itself
 }
 
 void RulesController::pickPathShape(int index) {
@@ -1383,6 +1449,7 @@ void RulesController::pickPathShape(int index) {
     }
     rule->dmx.shape = dmx::kPathShapes[static_cast<std::size_t>(index)];
     commit();
+    window_->set_effect_shape_index(index);
 }
 
 void RulesController::setDuration(const std::string& text) {
@@ -1450,6 +1517,7 @@ void RulesController::setDuty(float percent) {
     if (Rule::Config* rule = current()) {
         rule->dmx.duty = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
         commit();
+        window_->set_effect_duty(static_cast<float>(rule->dmx.duty * 100.0));
     }
 }
 
@@ -1485,6 +1553,7 @@ void RulesController::setSize(float percent) {
     if (Rule::Config* rule = current()) {
         rule->dmx.size = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
         commit();
+        window_->set_effect_size(static_cast<float>(rule->dmx.size * 100.0));
     }
 }
 
@@ -1538,6 +1607,7 @@ void RulesController::setSendValue(bool on) {
     if (Rule::Config* rule = current()) {
         rule->sendValue = on;
         commit();
+        window_->set_send_value(on);
     }
 }
 
@@ -1686,12 +1756,61 @@ void RulesController::clearLog() {
     logModel_->clear();
 }
 
-void RulesController::tick() {
-    // First, and outside every widget callback: a publisher found a row it could not honestly
-    // update in place, and this is where the repeater is built again. See `rowsDirty_`.
-    if (rowsDirty_) {
-        rebuildRows();
+void RulesController::publishLog() {
+    std::vector<LogLine> lines;
+    lines.reserve(log_.size());
+    // Newest first: the thing that just happened is what an operator is looking for, and a list
+    // that scrolls itself is a list they have to chase.
+    for (auto entry = log_.rbegin(); entry != log_.rend(); ++entry) {
+        LogLine line{};
+        line.when = shared(entry->when);
+        line.rule = shared(entry->who);
+        line.message = shared(entry->message);
+        line.muted = entry->muted;
+        lines.push_back(std::move(line));
     }
+    writeRows(*logModel_, lines);
+}
+
+void RulesController::toggleFold(int which) {
+    switch (which) {
+    case 0:
+        window_->set_when_folded(!window_->get_when_folded());
+        break;
+    case 1:
+        window_->set_only_if_folded(!window_->get_only_if_folded());
+        break;
+    case 2:
+        window_->set_send_folded(!window_->get_send_folded());
+        break;
+    case 3:
+        window_->set_then_folded(!window_->get_then_folded());
+        break;
+    case 4:
+        window_->set_log_open(!window_->get_log_open());
+        break;
+    default:
+        break;
+    }
+}
+
+void RulesController::applyLayout(const settings::MachineSettings& machine) {
+    window_->set_when_folded(machine.ruleSectionsFolded[0]);
+    window_->set_only_if_folded(machine.ruleSectionsFolded[1]);
+    window_->set_send_folded(machine.ruleSectionsFolded[2]);
+    window_->set_then_folded(machine.ruleSectionsFolded[3]);
+    window_->set_log_open(machine.ruleLogOpen);
+    window_->set_log_lines_height(static_cast<float>(machine.ruleLogHeight));
+}
+
+void RulesController::layoutInto(settings::MachineSettings& machine) const {
+    machine.ruleSectionsFolded = {window_->get_when_folded(), window_->get_only_if_folded(),
+                                  window_->get_send_folded(), window_->get_then_folded()};
+    machine.ruleLogOpen = window_->get_log_open();
+    machine.ruleLogHeight = static_cast<double>(window_->get_log_lines_height());
+}
+
+void RulesController::tick() {
     // What a control surface changed behind this editor's back. See `adoptLive`. Only once the
     // output thread has got to the last set posted — this editor's own last edit, most often:
     // before then the switches it reports are the set before, and adopting them undid the edit.
@@ -1706,12 +1825,7 @@ void RulesController::tick() {
     // also the cheapest possible call when nothing has fired.
     const std::vector<output::OutputRunner::Fired> fired = runner_.takeFired();
     if (!fired.empty()) {
-        const Rule::Config* rule = current();
         for (const output::OutputRunner::Fired& entry : fired) {
-            // A muted rule still runs and still "fires" — that is what keeps it in phase — but
-            // nothing left, and the log said it had (the audit's M11).
-            const std::string message =
-                entry.muted ? entry.message + "  (muted, not sent)" : entry.message;
             // **By the name the list shows**, not the id — "rule1-copy2" is a word this window
             // shows nowhere else, so a log line could not be matched to a rule (the audit of
             // 2026-09-25, L38). Named as the rule is called when it fired; the id stays the
@@ -1722,35 +1836,27 @@ void RulesController::tick() {
             const std::string who = named == rules_.end() ? "(a rule since deleted)"
                                     : named->name.empty() ? "(unnamed)"
                                                           : named->name;
-            log_.push_back(spellNumber(entry.when) + "s  " + who + "  " + message);
-            lastFiredAnywhere_ = message;
+            // A muted rule still runs and still "fires" — that is what keeps it in phase — but
+            // nothing left, and the log said it had (the audit's M11): the line says so, drawn
+            // apart from the message.
+            log_.push_back(LogEntry{spellNumber(entry.when) + "s", who, entry.message, entry.muted});
+            lastFiredAnywhere_ =
+                entry.muted ? entry.message + "  (muted, not sent)" : entry.message;
             if (!entry.followUp) {
                 // The press, not the release: see `OutputRunner::Fired::followUp`.
                 ++firesSeen_[entry.ruleId];
                 slotsSeen_[entry.ruleId] = entry.slots;
-            }
-            if (rule != nullptr && entry.ruleId == rule->id) {
-                lastFired_ = message;
-                lastFiredAt_ = entry.when;
             }
         }
         if (log_.size() > kLogLines) {
             log_.erase(log_.begin(),
                        log_.begin() + static_cast<std::ptrdiff_t>(log_.size() - kLogLines));
         }
-        std::vector<slint::SharedString> lines;
-        lines.reserve(log_.size());
-        // Newest first: the thing that just happened is what an operator is looking for, and
-        // a list that scrolls itself is a list they have to chase.
-        for (auto line = log_.rbegin(); line != log_.rend(); ++line) {
-            lines.push_back(shared(*line));
-        }
-        writeRows(*logModel_, lines);
+        publishLog();
         publishList();
         publishSlots();
     }
 
-    publishFiring();
     window_->set_panicked(runner_.panicked());
 }
 

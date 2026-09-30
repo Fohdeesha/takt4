@@ -2,6 +2,7 @@
 
 #include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/settings/settings.hpp"
 #include "core/trigger/rule.hpp"
 #include "ui/delete_guard.hpp"
 #include "ui/model_rows.hpp"
@@ -72,9 +73,20 @@ public:
     void hide();
     bool visible() const noexcept { return visible_; }
 
-    /// One round of refreshing what the window shows — fire counts, the last-fired line,
-    /// the log. Driven by the main window's redraw timer so the app has one timer, and
-    /// cheap enough to call at 30 Hz whether or not the window is up.
+    /// The window's folds — A, B, C, D and the event log — and the log's height, as a settings
+    /// file left them (HANDOFF §0.5: "Folds are the window's and remembered across launches, like
+    /// the main window's"). Machine-local, as those are.
+    void applyLayout(const settings::MachineSettings& machine);
+    /// And as they are now, into `machine`, for saving.
+    void layoutInto(settings::MachineSettings& machine) const;
+    /// A section's fold (0 to 3, A to D) or the log's (4), flipped — the arrows, which commit what
+    /// was being typed first. A folded section's body is clipped, not removed, so a box in it still
+    /// commits when it lets go.
+    void toggleFold(int which);
+
+    /// One round of refreshing what the window shows — fire counts, the log. Driven by the main
+    /// window's redraw timer so the app has one timer, and cheap enough to call at 30 Hz whether
+    /// or not the window is up.
     void tick();
 
     RulesWindow& window() { return *window_; }
@@ -137,6 +149,9 @@ public:
     /// reason `trigger::Rule::muted` gives — a preset that loaded silent would look exactly
     /// like a preset that did not load.
     void setMuted(bool on);
+    /// The same, from row `index`'s dot in the list — whichever rule that is, picked or not
+    /// (HANDOFF §0.5: "the dot is the mute switch"). The selection does not move.
+    void setMutedAt(int index, bool on);
     /// A relative multiplier on the selected rule's interval — the ÷2 and ×2 buttons. Live
     /// like the mute, and mirrored here so the readout can say what the rule is doing without
     /// reading the output thread's rules, which is unsafe while it runs.
@@ -161,10 +176,18 @@ public:
     /// Back to reaching every output, which is what naming none of them means.
     void chooseAllOutputs();
 
+    /// B's tick: whether the ONLY IF stage applies at all (`Rule::Config::conditionsOn`).
+    void setConditionsOn(bool on);
     void setMinConfidence(double value);
     void setIntensity(int which, bool allowed);
     void setBpmRange(const std::string& text);
     void setProbability(double value);
+    /// What was typed into the two sliders' readings: "0.7" for the confidence, "90" or "90%"
+    /// for the probability. Read, clamped, and anything that is not a number said and refused.
+    void setConfidenceTyped(const std::string& text);
+    void setProbabilityTyped(const std::string& text);
+    /// A's "at most once every N ms", in milliseconds as typed. Kept whatever the trigger, and
+    /// read by the engine only where `trigger::takesCooldown` says.
     void setCooldown(const std::string& text);
 
     void pickSend(int index);
@@ -225,18 +248,18 @@ public:
     /// rule is not a lighting rule or names no fixture.
     void previewColor(dmx::Color color);
 
-    /// Told by each picker's `PopupWindow` as it opens and closes, and the whole of it is
-    /// this: **a repeater is not rebuilt while one of its items owns an open popup.**
+    /// Told by each picker's `PopupWindow` as it opens and closes. A swatch's code box lives in
+    /// its picker, and a click outside drops the picker with the box in it before the box can say
+    /// it lost the focus — so a close commits what was typed there.
     ///
-    /// A picker lives inside the repeated item its swatch belongs to, so rebuilding that
-    /// repeater destroys the popup — and the slider the operator is holding goes with it.
-    /// That is the crash of 2026-09-16; `pickingColor_` is the other half. A rebuild asked
-    /// for while one is open is not dropped, it waits: `rowsDirty_` stays set and `tick`
-    /// takes it on the first redraw after the picker closes.
+    /// **And no repeater is ever built again while a picker is open, because none is built again
+    /// at all**: the crash of 2026-09-16 was the palette's repeater rebuilt under the hue slider
+    /// being dragged, because a std widget in it had set its own value and had to come back as a
+    /// new element. Every control in the window is weltformat.slint's now, which never does, so
+    /// every row is updated where it stands (`writeRows`).
     void setPickerOpen(bool open);
-    /// Whether one is open, which is what `rebuildRows` asks. Public so a test can find a
-    /// swatch by clicking until a picker opens rather than by holding a coordinate that would
-    /// rot the first time a row moved.
+    /// Whether one is open. Public so a test can find a swatch by clicking until a picker opens
+    /// rather than by holding a coordinate that would rot the first time a row moved.
     bool pickerOpen() const noexcept { return pickerOpen_; }
 
     /// §5.8's follow-ups, which are now a list — see `trigger::FollowUp`. `index` is a row of
@@ -378,21 +401,11 @@ private:
     std::optional<std::pair<int, int>> slotRange(int slot) noexcept;
     /// The THEN SEND rows, and the list of kinds this rule's send kind allows one to be.
     void publishFollowUps();
-    void publishFiring();
-    /// Builds again, as new elements, the rows a publisher found it could not honestly update
-    /// in place — or, after `rebuildAll_`, every row of every repeater. Called by `tick`; see
-    /// `rowsDirty_`.
-    void rebuildRows();
-    /// Every repeater `rebuildRows` looks after, handed to `fn` in turn. One list, so that a
-    /// repeater added later cannot be renewed there and not emptied, or the other way round.
-    template <typename Fn>
-    void eachRepeater(Fn fn) {
-        fn(slotRows_);
-        fn(paletteRows_);
-        fn(followRows_);
-        fn(choiceRows_);
-        fn(fixtureRows_);
-    }
+    /// The line each section's heading reads while it is folded — what it holds — for the rule
+    /// in front of the operator (`rule_text::describeWhen` and the rest).
+    void publishSummaries();
+    /// The event log, newest first, from `log_`.
+    void publishLog();
     void setStatus(const std::string& text, bool error);
 
     /// Puts the selection back in step with `rules_` after the set has changed shape, keeping
@@ -431,7 +444,7 @@ private:
     /// struct is not a thing Slint models do.
     Repeater<PaletteEntry> paletteRows_;
     Repeater<FollowRow> followRows_;
-    std::shared_ptr<slint::VectorModel<slint::SharedString>> logModel_;
+    std::shared_ptr<slint::VectorModel<LogLine>> logModel_;
     bool visible_ = false;
 
     /// Fires seen per rule, so each card can say how often it has gone off — the number in
@@ -463,9 +476,6 @@ private:
     std::unordered_map<std::string, double> rateSeen_;
     /// `OutputRunner::liveRulesVersion` as `tick` last adopted it. See `adoptLive`.
     std::uint64_t liveSeen_ = 0;
-    /// A palette swatch added or taken away: every swatch after it has moved, so the whole
-    /// palette — and the chips, whose color rows read from it — are built again.
-    bool rebuildAll_ = false;
     /// What is in a box that has not been committed yet — kept from its keystrokes, so that
     /// switching rules commits it to the rule it was typed for (the audit's M16). Switching used
     /// to rebuild the rows at once, which destroyed the box and what was in it; and a box that
@@ -490,9 +500,9 @@ private:
     std::optional<Typing> echo_;
 
     /// Which rule, and which send kind, the generator rows currently on screen were built
-    /// for. When either changes the rows are rebuilt rather than updated in place, so the
-    /// text boxes come back *bound* — see `publishSlots`, which explains why a box that has
-    /// been typed into stops following the model and what that looked like to the operator.
+    /// for. When either changes the rows are built from nothing rather than updated in place,
+    /// so a box that had the keyboard does not go on holding what was typed for the rule
+    /// before — see `publishSlots`.
     std::string slotsBuiltFor_;
     /// And which rule the follow-up rows were built for — see `publishFollowUps`.
     std::string followsBuiltFor_;
@@ -519,38 +529,8 @@ private:
     /// cleared with the rows.
     std::unordered_map<int, Hsv> pickedPalette_;
 
-    /// Set by a publisher that found a row it could not honestly update in place, and
-    /// consumed by `tick`, which rebuilds both repeaters.
-    ///
-    /// **Deferred rather than done there and then**, because a publisher runs *inside* the
-    /// callback of the very widget being replaced: the dropdown just picked from, the box
-    /// Enter was pressed in. One redraw later is 33 ms, which nobody sees, and it means no
-    /// element is ever destroyed from within its own handler.
-    bool rowsDirty_ = false;
-    /// Set while a color picker's own slider is what is changing the row, and read by
-    /// `publishSlots` and `publishPalette` when they decide whether the repeater has to be
-    /// built again.
-    ///
-    /// **This is the 2026-09-16 crash.** *"I moved the hue slider and it completely
-    /// crashed."* The picker is a `PopupWindow` belonging to a repeated item, so rebuilding
-    /// the repeater destroys the popup — and the row the drag changes is, of course, a row
-    /// that changed, so the staleness check said yes on every pixel of the drag and the next
-    /// redraw tore down the popup and the slider inside it while the pointer still had it.
-    /// Measured: ninety resets for a ninety-pixel drag, on both pickers.
-    ///
-    /// A rebuild exists to re-bind a widget that set its own value (see `model_rows.hpp`). A
-    /// slider the operator is holding is the opposite case: the value in the row came *from*
-    /// that element, so the element is already showing it and there is nothing to restore.
-    /// Hence a flag rather than a comparator that ignores the color fields — the picker's
-    /// sliders do need the rebuild when something *else* moves the color, a hex typed into the
-    /// chip's box, say.
-    bool pickingColor_ = false;
-    /// Whether a color picker's popup is on the screen, from `PopupWindow::is-open`.
-    ///
-    /// The second half of the same crash, and the part that holds for causes this controller
-    /// has not thought of: **no repeater is rebuilt while one of its items owns an open
-    /// popup.** `rowsDirty_` stays set, so the rebuild happens on the first redraw after the
-    /// picker closes rather than being lost.
+    /// Whether a color picker's popup is on the screen, from `PopupWindow::is-open`. See
+    /// `setPickerOpen`.
     bool pickerOpen_ = false;
     /// What a follow-up row's kind dropdown offers past "release", in its own order — only
     /// the kinds on the same side of the OSC/MIDI divide as the rule (`trigger::
@@ -562,13 +542,18 @@ private:
     /// note to CC leaves that list identical and would keep a first entry naming the wrong
     /// thing. Held so the labels are rebuilt when either moves.
     std::string followRelease_;
-    std::vector<std::string> log_;
-    /// What the selected rule last sent and when, on this controller's own clock.
-    std::string lastFired_;
-    double lastFiredAt_ = -1.0;
-    /// The same for the rig as a whole, for the main window's TRIGGERS row. Kept apart from
-    /// `lastFired_` because that one is the *selected* rule's and goes blank when a card
-    /// that has never fired is picked, which is right there and wrong on a status row.
+    /// One line of the event log: when (seconds on the runner's clock, as the log shows it), the
+    /// rule by the name the list shows, what went out, and whether it was muted — three columns
+    /// and a suffix drawn apart (HANDOFF §0.5).
+    struct LogEntry {
+        std::string when;
+        std::string who;
+        std::string message;
+        bool muted = false;
+    };
+    std::vector<LogEntry> log_;
+    /// The last message any rule sent, for the main window's TRIGGERS row. The editor's own "last
+    /// sent" bar is gone (HANDOFF §0.5): the log says it.
     std::string lastFiredAnywhere_;
 };
 

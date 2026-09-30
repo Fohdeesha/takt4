@@ -1137,3 +1137,59 @@ TEST_CASE("a file from before the mono tick is heard as the stereo pair its inpu
     CHECK_FALSE(roundTrip(paired).machine.mono);
     CHECK_FALSE(roundTrip(paired).machine.stereoFromMono);
 }
+
+TEST_CASE("the rule editor's folds and its log are remembered on this machine", "[settings]") {
+    // HANDOFF §0.5: which of A to D were folded, whether the event log was open and how tall it was
+    // dragged come back as they were left. The machine's, as the main window's folds are.
+    Settings in;
+    in.machine.ruleSectionsFolded = {true, false, true, false};
+    in.machine.ruleLogOpen = true;
+    in.machine.ruleLogHeight = 162.0;
+    const Settings out = roundTrip(in);
+    CHECK(out.machine.ruleSectionsFolded == std::array<bool, 4>{true, false, true, false});
+    CHECK(out.machine.ruleLogOpen);
+    CHECK_THAT(out.machine.ruleLogHeight, WithinAbs(162.0, 1e-9));
+    // Each fold on its own, so none is read from its neighbour's place.
+    for (std::size_t i = 0; i < 4; ++i) {
+        INFO("section " << i);
+        Settings one;
+        one.machine.ruleSectionsFolded = {false, false, false, false};
+        one.machine.ruleSectionsFolded[i] = true;
+        CHECK(roundTrip(one).machine.ruleSectionsFolded == one.machine.ruleSectionsFolded);
+    }
+    const std::string text = takt4::settings::toJson(in);
+    const std::size_t preset = text.find("\"preset\"");
+    CHECK(text.find("ruleSectionsFolded") < preset);
+    CHECK(text.find("ruleLogOpen") < preset);
+    CHECK(text.find("ruleLogHeight") < preset);
+
+    // A file from before: B folded as a new rule's is, the rest open, the log shut at five lines.
+    const Settings old = takt4::settings::fromJson(R"({"machine": {"channel": 3}})");
+    CHECK(old.machine.ruleSectionsFolded == std::array<bool, 4>{false, true, false, false});
+    CHECK_FALSE(old.machine.ruleLogOpen);
+    CHECK_THAT(old.machine.ruleLogHeight, WithinAbs(90.0, 1e-9));
+
+    // And what a hand could have typed. A list of folds that is not four long is not read; a fold
+    // that is not a yes or a no keeps its own default and the others are read.
+    const auto folds = [](const std::string& value) {
+        return takt4::settings::fromJson(R"({"machine": {"ruleSectionsFolded": )" + value + "}}")
+            .machine.ruleSectionsFolded;
+    };
+    CHECK(folds("[true, true]") == std::array<bool, 4>{false, true, false, false});
+    CHECK(folds("[true, false, true, true, true]") == std::array<bool, 4>{false, true, false, false});
+    CHECK(folds("\"all\"") == std::array<bool, 4>{false, true, false, false});
+    CHECK(folds("[true, 0, true, \"no\"]") == std::array<bool, 4>{true, true, true, false});
+    // A height from a line to half a large screen: none at all, or one that pushes the editor off
+    // the window, is held to the nearest end; one that is not a number, or too big to be one,
+    // is the default.
+    const auto height = [](const std::string& value) {
+        return takt4::settings::fromJson(R"({"machine": {"ruleLogHeight": )" + value + "}}")
+            .machine.ruleLogHeight;
+    };
+    CHECK_THAT(height("0"), WithinAbs(18.0, 1e-9));
+    CHECK_THAT(height("-40"), WithinAbs(18.0, 1e-9));
+    CHECK_THAT(height("1000000"), WithinAbs(800.0, 1e-9));
+    CHECK_THAT(height("1e999"), WithinAbs(90.0, 1e-9));
+    CHECK_THAT(height("\"tall\""), WithinAbs(90.0, 1e-9));
+    CHECK_THAT(height("144"), WithinAbs(144.0, 1e-9));
+}

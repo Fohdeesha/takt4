@@ -23,6 +23,7 @@
 #include <slint-platform.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -78,6 +79,26 @@ int indexOf(Trigger which) {
         }
     }
     return -1;
+}
+
+/// The event log's lines, newest first, each as its three columns joined by two spaces — how the
+/// log read before it had columns, which is what these tests look for words in.
+std::vector<std::string> logLines(RulesController& editor) {
+    std::vector<std::string> out;
+    const auto log = editor.window().get_log();
+    for (std::size_t i = 0; i < log->row_count(); ++i) {
+        const LogLine line = *log->row_data(i);
+        out.push_back(std::string(line.when) + "  " + std::string(line.rule) + "  " +
+                      std::string(line.message) + (line.muted ? "  (muted, not sent)" : ""));
+    }
+    return out;
+}
+
+/// The newest line's message, or empty: what TEST just sent, where the editor's own "last sent"
+/// bar used to say it (HANDOFF §0.5 took the bar out; the log says the same).
+std::string newestSent(RulesController& editor) {
+    const auto log = editor.window().get_log();
+    return log->row_count() == 0 ? std::string() : std::string(log->row_data(0)->message);
 }
 
 } // namespace
@@ -930,9 +951,9 @@ TEST_CASE("PANIC is reachable from the editor and latches", "[ui][trigger]") {
 
 TEST_CASE("the editor's PANIC holds through a double click and answers Escape", "[ui][trigger]") {
     // The same fixes as the main window's (the audit's H18), driven with real clicks and keys:
-    // PANIC only engages, RELEASE appears *above* it so the second click of a double-click
-    // still lands on PANIC, Escape is PANIC from anywhere in this window — and Escape in a text
-    // box only leaves the box.
+    // PANIC only engages, RELEASE appears *above* the preset menu so PANIC does not move and the
+    // second click of a double-click still lands on it, Escape is PANIC from anywhere in this
+    // window — and Escape in a text box only leaves the box.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -980,12 +1001,13 @@ TEST_CASE("the editor's PANIC holds through a double click and answers Escape", 
     CHECK(rig.runner.panicked());
     editor.releasePanic();
 
-    // The rule's name box in the title bar, found by typing into candidates until the name
+    // The rule's name box in the top row, found by typing into candidates until the name
     // changes. Only the hit is asserted on: it is the round in which Escape was inside a box.
+    // Right of the "enabled" tick and MUTE, which a click would switch.
     bool found = false;
     bool panickedInBox = true;
     for (float y = 12.0f; y < 58.0f && !found; y += 4.0f) {
-        for (float x = 320.0f; x < 760.0f && !found; x += 20.0f) {
+        for (float x = 480.0f; x < 880.0f && !found; x += 20.0f) {
             click(x, y);
             press("q");
             press(escape);
@@ -1004,24 +1026,33 @@ TEST_CASE("the editor's PANIC holds through a double click and answers Escape", 
     CHECK(editor.rules().front().name.find('q') != std::string::npos);
 }
 
-TEST_CASE("what fired reaches the editor's log and its last-fired line", "[ui][trigger]") {
-    // §5.9: "the last-fired line on each rule card, showing the actually-sent message with a
-    // timestamp ... That single line turns a config screen into an instrument."
+TEST_CASE("what fired reaches the editor's log, in columns", "[ui][trigger]") {
+    // §5.9: "the last-fired line ... showing the actually-sent message with a timestamp". The
+    // editor's own bar for it is gone (HANDOFF §0.5, 2026-09-30): the log says it, in three columns
+    // — when, which rule, what went out — and its folded heading reads the newest.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
+    editor.rename("Clip seven");
     editor.setAddress("/composition/layers/3/clips/{clip}/connect");
     editor.setSlotValues(0, "7");
 
     editor.test();
     editor.tick();
 
-    const std::string fired(editor.window().get_last_fired());
-    INFO(fired);
+    REQUIRE(editor.window().get_log()->row_count() > 0);
+    const LogLine newest = *editor.window().get_log()->row_data(0);
+    INFO(std::string(newest.when) << " | " << std::string(newest.rule) << " | "
+                                  << std::string(newest.message));
     // The message as it went out, with the placeholder filled in — not the template.
-    CHECK(fired.find("/composition/layers/3/clips/7/connect") != std::string::npos);
-    CHECK_FALSE(std::string(editor.window().get_last_fired_ago()).empty());
-    CHECK(editor.window().get_log()->row_count() > 0);
+    CHECK(std::string(newest.message).find("/composition/layers/3/clips/7/connect") !=
+          std::string::npos);
+    CHECK(std::string(newest.rule) == "Clip seven");
+    CHECK(std::string(newest.when).back() == 's');
+    CHECK_FALSE(newest.muted);
+    // And the main window's triggers row says it too.
+    CHECK(editor.lastFiredAnywhere().find("/composition/layers/3/clips/7/connect") !=
+          std::string::npos);
 
     SECTION("and the log can be cleared without touching the rules") {
         editor.clearLog();
@@ -1044,14 +1075,7 @@ TEST_CASE("the event log names a rule as the list does, not by its id", "[ui][tr
     const std::string namedId = editor.rules().front().id;
     const std::string unnamedId = editor.rules().back().id;
 
-    const auto lines = [&editor] {
-        std::vector<std::string> out;
-        const auto log = editor.window().get_log();
-        for (std::size_t i = 0; i < log->row_count(); ++i) {
-            out.emplace_back(*log->row_data(i));
-        }
-        return out;
-    };
+    const auto lines = [&editor] { return logLines(editor); };
     editor.pick(0);
     editor.test();
     editor.pick(1);
@@ -1255,69 +1279,77 @@ TEST_CASE("a preset load replaces what the editor is showing", "[ui][trigger]") 
     CHECK(std::string(editor.window().get_rule_name()) == "Later");
 }
 
-TEST_CASE("the panes either side of the editor are dragged to size", "[ui]") {
-    // The one thing about a splitter worth testing is whether it moves, and that cannot be
-    // asked of the markup — only of a drag. So this is a real press, a real move and a real
-    // release, dispatched into the window; nothing here calls the handler directly.
+TEST_CASE("the list and the log are dragged to size", "[ui]") {
+    // The one thing about a divider worth testing is whether it moves, and that cannot be asked
+    // of the markup — only of a drag. So this is a real press, a real move and a real release,
+    // dispatched into the window; nothing here calls the handler directly.
     //
-    // No controller: the splitters are markup, and a `RulesController` wants an output
-    // runner — a Link session and three sockets — which a question about a pane's width has
-    // no business opening.
+    // HANDOFF §0.5: the gap between the list and the editor drags the list (260 to start, not
+    // drawn); the divider over the event log drags the log taller or shorter — only while it is
+    // open, and folded it has nothing to drag.
+    //
+    // No controller: the dividers are markup, and a `RulesController` wants an output runner — a
+    // Link session and three sockets — which a question about a pane's size has no business
+    // opening.
     auto window = RulesWindow::create();
     window->show();
     window->window().dispatch_scale_factor_change_event(1.0f);
-    // The size `takt4_ui_tests`' headless platform reports; the layout is that size whatever
-    // is dispatched, so asking for it is only saying so out loud.
-    window->window().dispatch_resize_event(slint::LogicalSize({900.0f, 520.0f}));
+    const float w = takt4::ui::kRulesWindowWidth;
+    const float h = takt4::ui::kRulesWindowHeight;
+    window->window().dispatch_resize_event(slint::LogicalSize({w, h}));
 
-    const auto drag = [&window](float from, float to) {
-        window->window().dispatch_pointer_press_event(slint::LogicalPosition({from, 300.0f}),
+    const auto drag = [&window](float x0, float y0, float x1, float y1) {
+        window->window().dispatch_pointer_move_event(slint::LogicalPosition({x0, y0}));
+        window->window().dispatch_pointer_press_event(slint::LogicalPosition({x0, y0}),
                                                       slint::PointerEventButton::Left);
-        window->window().dispatch_pointer_move_event(slint::LogicalPosition({to, 300.0f}));
-        window->window().dispatch_pointer_release_event(slint::LogicalPosition({to, 300.0f}),
+        window->window().dispatch_pointer_move_event(slint::LogicalPosition({x1, y1}));
+        window->window().dispatch_pointer_release_event(slint::LogicalPosition({x1, y1}),
                                                         slint::PointerEventButton::Left);
     };
+    REQUIRE(window->get_list_width() == Approx(260.0f));
+    // The gap between the list and the editor: from the page's 10 px margin, past the list.
+    const float gap = 10.0f + window->get_list_width() + 5.0f;
 
-    SECTION("the rule list narrows when its divider is pulled left") {
-        const float was = window->get_list_width();
-        drag(was + 2.0f, was - 58.0f);
-        CHECK(window->get_list_width() == Approx(was - 60.0f).margin(2.0f));
+    SECTION("the rule list narrows when the gap beside it is pulled left") {
+        drag(gap, 400.0f, gap - 40.0f, 400.0f);
+        CHECK(window->get_list_width() == Approx(220.0f).margin(1.0f));
+        // And widens again, by the same gap, which moved with it.
+        const float moved = 10.0f + window->get_list_width() + 5.0f;
+        drag(moved, 400.0f, moved + 70.0f, 400.0f);
+        CHECK(window->get_list_width() == Approx(290.0f).margin(1.0f));
     }
 
-    SECTION("and the log widens when the divider on its left is") {
-        const float was = window->get_log_width();
-        const float divider = 900.0f - was - 3.0f;
-        drag(divider, divider - 60.0f);
-        CHECK(window->get_log_width() == Approx(was + 60.0f).margin(2.0f));
+    SECTION("it cannot be dragged away entirely — the gap is what drags it back") {
+        drag(gap, 400.0f, 0.0f, 400.0f);
+        CHECK(window->get_list_width() >= 200.0f);
     }
 
-    SECTION("neither can be dragged away entirely — the divider is what drags it back") {
-        const float was = window->get_list_width();
-        drag(was + 2.0f, 0.0f);
-        CHECK(window->get_list_width() >= 100.0f);
+    SECTION("the log's divider drags it taller while it is open, and does nothing folded") {
+        const float lines = window->get_log_lines_height();
+        REQUIRE_FALSE(window->get_log_open());
+        // Folded, the log is 40 px along the bottom and the divider the 10 px over it.
+        const float foldedDivider = h - 10.0f - 40.0f - 5.0f;
+        drag(500.0f, foldedDivider, 500.0f, foldedDivider - 60.0f);
+        CHECK(window->get_log_lines_height() == Approx(lines));
+
+        window->set_log_open(true);
+        // Open: its heading, its lines and 10 px under them.
+        const float divider = h - 10.0f - (42.0f + lines + 10.0f) - 5.0f;
+        drag(500.0f, divider, 500.0f, divider - 60.0f);
+        CHECK(window->get_log_lines_height() == Approx(lines + 60.0f).margin(1.0f));
     }
 }
 
-TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
+TEST_CASE("a row the controller changes is told where it stands", "[ui][trigger]") {
     // The other half of "a rule firing does not rebuild the boxes being typed into".
     //
-    // Updating a row in place keeps the element — and keeps its *dead* binding with it,
-    // because Slint drops a `text:` binding the moment somebody types into the box. Within
-    // one edit that is right: what was typed is what is meant. Across an edit the controller
-    // made *itself* — a range swapped back the right way round, a guard cut to what can be
-    // satisfied, another rule's values — the box would go on showing the last thing anybody
-    // typed anywhere, which is what a rig met as "when I edit the value range on trigger 1,
-    // it changes all the triggers".
-    //
-    // So a surviving row whose content moved is rebuilt, and the rebuild is deferred to the
-    // next `tick`: a publisher runs inside the callback of the very widget it would destroy.
-    // **That row and no other** (the audit's M16): throwing the whole list away took the box
-    // the operator had just clicked into along with it.
-    //
-    // **And only for a widget that sets itself** (the audit of 2026-09-25, M17). The boxes are
-    // `LiveField`s and `NumberBox`es now, which never go deaf, so what they hold is told to them
-    // in place; a row rebuilt for one of them took the box beside it down too. What is left is
-    // the std dropdowns and tick boxes, which assign their own values when they are used.
+    // Until 2026-09-30 a row whose dropdown or tick box the controller changed was built again
+    // as a new element, a redraw later: a std `ComboBox` or `CheckBox` that had been used had
+    // set its own value, dropped its binding, and would go on showing the last thing anybody
+    // picked anywhere ("when I edit the value range on trigger 1, it changes all the triggers").
+    // Every control in the window is weltformat.slint's now, and none of those sets its own value
+    // (see `Pick`), so a row is told what changed where it stands — which is what keeps a box
+    // just clicked into, and a picker being dragged, on the screen.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -1331,14 +1363,16 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
     const auto watch = std::make_shared<ModelWatch>();
     slots->attach_peer(watch);
 
-    // The dropdown: a pick the controller then answers with a different kind of row entirely.
+    // The dropdown: a pick the controller answers with a different kind of row entirely.
     editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Random));
-    CHECK(watch->resets == 0); // not from inside the callback that caused it
-    CHECK(watch->removed == 0);
     editor.tick();
-    // That one row as a new element, and the list itself never reset.
-    CHECK(watch->removed == 1);
-    CHECK(watch->added == 1);
+    CHECK(slots->row_data(0)->kind_index ==
+          static_cast<int>(std::find(takt4::trigger::kGeneratorKinds.begin(),
+                                     takt4::trigger::kGeneratorKinds.end(), GeneratorKind::Random) -
+                           takt4::trigger::kGeneratorKinds.begin()));
+    CHECK(watch->changes > 0);
+    CHECK(watch->removed == 0);
+    CHECK(watch->added == 0);
     CHECK(watch->resets == 0);
 
     SECTION("a text box is told without being rebuilt") {
@@ -1347,7 +1381,7 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
         CHECK(slots->row_data(0)->low == 1);
         CHECK(slots->row_data(0)->high == 8);
         editor.tick();
-        CHECK(watch->removed == 1); // the dropdown's rebuild above, and no other
+        CHECK(watch->removed == 0);
         CHECK(watch->resets == 0);
     }
 
@@ -1357,7 +1391,7 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
         editor.setSlotNoRepeat(0, 40);
         CHECK(slots->row_data(0)->no_repeat == 7); // one less than the eight distinct values
         editor.tick();
-        CHECK(watch->removed == 1);
+        CHECK(watch->removed == 0);
         CHECK(watch->resets == 0);
     }
 
@@ -1373,14 +1407,14 @@ TEST_CASE("a box the controller rewrote comes back bound", "[ui][trigger]") {
     }
 }
 
-TEST_CASE("picking another rule forgets the rows the last one had waiting to be rebuilt",
+TEST_CASE("picking another rule builds its chips once, and the redraw after it builds nothing",
           "[ui][trigger]") {
-    // A row to be rebuilt is remembered by its index until the next `tick`. Picking another
-    // rule empties the chips and builds that rule's from nothing — and an index left over from
-    // the rule before then named a row of the *new* rule's, which the redraw rebuilt: a fresh
-    // element for a box nothing had changed, taking the keyboard from whoever had just clicked
-    // into it. Found splitting `rules_controller.cpp` (2026-09-28): the model and its indices
-    // were two members, emptied together in one place and not in the others.
+    // Picking another rule empties the chips and builds that rule's from nothing, so a box that
+    // had the keyboard does not carry what was typed for one rule into the next. The redraw after
+    // it must then leave them alone: an element built again for a box nothing had changed takes
+    // the keyboard from whoever had just clicked into it (found 2026-09-28, when a row marked for
+    // rebuilding in one rule was rebuilt in the next; nothing is marked for that any more, and
+    // this holds that nothing is built on the redraw either).
     Rig rig;
     RulesController editor(rig.runner, {});
     for (int i = 0; i < 2; ++i) {
@@ -1641,11 +1675,7 @@ TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     while (std::chrono::steady_clock::now() < until && lines.size() < 2) {
         editor.tick();
-        const auto log = editor.window().get_log();
-        lines.clear();
-        for (std::size_t i = 0; i < log->row_count(); ++i) {
-            lines.push_back(std::string(*log->row_data(i)));
-        }
+        lines = logLines(editor);
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     rig.runner.stop();
@@ -1735,11 +1765,7 @@ TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigg
         while (std::chrono::steady_clock::now() < until &&
                lines.size() < static_cast<std::size_t>(i + 1) * 2) {
             editor.tick();
-            const auto log = editor.window().get_log();
-            lines.clear();
-            for (std::size_t j = 0; j < log->row_count(); ++j) {
-                lines.push_back(std::string(*log->row_data(j)));
-            }
+            lines = logLines(editor);
             std::this_thread::sleep_for(std::chrono::milliseconds{2});
         }
     }
@@ -1780,54 +1806,65 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     //
     // The cooldown box, because it holds one number: a digit typed at whatever position the
     // click leaves the caret in still makes a number, so the test does not depend on where
-    // inside the box it landed.
+    // inside the box it landed. On an onset rule, where the cooldown is live (HANDOFF §0.5).
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
+    editor.pickTrigger(indexOf(Trigger::Onset));
     auto& window = editor.window();
     window.show();
     window.window().dispatch_scale_factor_change_event(1.0f);
-    // The size `takt4_ui_tests`' headless platform reports, said out loud so the sweep below
-    // is over the layout an operator would get.
-    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 520.0f}));
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
     window.window().dispatch_window_active_changed_event(true);
     REQUIRE(std::string(window.get_cooldown_ms()) == "0");
+    const auto click = [&window](float x, float y) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
+        slint::platform::update_timers_and_animations();
+    };
+    const auto type = [&window](const char* key) {
+        window.window().dispatch_key_press_event(slint::SharedString(key));
+        window.window().dispatch_key_release_event(slint::SharedString(key));
+        slint::platform::update_timers_and_animations();
+    };
 
     // **Found rather than written down.** A coordinate in this file would be a number that
     // rots the first time a row moves, and a test that then clicked on nothing would go on
-    // passing for ever. This sweeps the conditions block until a typed digit lands in the
-    // cooldown box, which is proof that box has the keyboard.
-    std::string typed;
-    for (float y = 250.0f; y < 430.0f && typed.empty(); y += 2.0f) {
-        for (float x = 540.0f; x < 660.0f && typed.empty(); x += 20.0f) {
-            const slint::LogicalPosition at({x, y});
-            window.window().dispatch_pointer_move_event(at);
-            window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Left);
-            window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
-            window.window().dispatch_key_press_event(slint::SharedString("5"));
-            window.window().dispatch_key_release_event(slint::SharedString("5"));
-            if (std::string(window.get_cooldown_ms()) != "0") {
-                typed = std::string(window.get_cooldown_ms());
+    // passing for ever. This sweeps A's second row until a digit typed and entered lands in the
+    // cooldown box, which is proof that box takes the keyboard; the rule is put back each time.
+    // Below the trigger's dropdown, which a stray click would open and Enter pick from.
+    float boxX = -1.0f;
+    float boxY = -1.0f;
+    for (float y = 158.0f; y < 220.0f && boxX < 0.0f; y += 2.0f) {
+        for (float x = 420.0f; x < 540.0f && boxX < 0.0f; x += 20.0f) {
+            click(x, y);
+            type("5");
+            type("\n");
+            if (editor.rules().front().cooldownSeconds > 0.0) {
+                boxX = x;
+                boxY = y;
             }
+            editor.setCooldown("0");
         }
     }
     INFO("the cooldown box never took a keystroke — the sweep found no text field");
-    REQUIRE_FALSE(typed.empty());
+    REQUIRE(boxX >= 0.0f);
+    REQUIRE(editor.rules().front().cooldownSeconds == Approx(0.0));
 
+    click(boxX, boxY);
+    type("5");
     // The box has it and the **rule has not**: a box commits when the edit is finished, not
     // on every keystroke.
     CHECK(editor.rules().front().cooldownSeconds == Approx(0.0));
 
-    // A click away — on the WHEN heading, which is nothing but the window behind it — which is
-    // finishing rather than cancelling. It pressed Tab, under a name that says a click (the
-    // audit of 2026-09-25, T13); a click on nothing is the case `FocusSink` exists for.
-    const slint::LogicalPosition heading({250.0f, 84.0f});
-    window.window().dispatch_pointer_move_event(heading);
-    window.window().dispatch_pointer_press_event(heading, slint::PointerEventButton::Left);
-    window.window().dispatch_pointer_release_event(heading, slint::PointerEventButton::Left);
-    slint::platform::update_timers_and_animations(); // the box's commit runs a loop late
+    // A click away — on A's heading, beside its title, which is nothing but the sheet behind it —
+    // which is finishing rather than cancelling. A click on nothing is the case `FocusSink`
+    // exists for.
+    click(600.0f, 98.0f); // and the box's commit, a loop late, run by `click`
 
-    INFO("box held \"" << typed << "\"");
     CHECK(editor.rules().front().cooldownSeconds > 0.0);
     CHECK_FALSE(window.get_status_is_error());
 }
@@ -1892,15 +1929,15 @@ TEST_CASE("the send-to ticks follow the rule that is selected", "[ui][trigger]")
     float openX = -1.0f;
     float openY = -1.0f;
     float everyOutputY = -1.0f;
-    // Inside the editor's pane: a probe in the rule list beside it selects the other rule, which
-    // the next probes then route — and the second rule has to be left unrouted for the question
-    // at the end.
-    const float paneLeft = window.get_list_width() + 8.0f;
+    // Inside the editor's pane, in the column C's boxes share (HANDOFF §0.5: every box 240 wide
+    // from the label column's end): a probe in the rule list beside it selects the other rule,
+    // which the next probes then route — and the second rule has to be left unrouted for the
+    // question at the end.
     for (float y = 250.0f; y < 760.0f && everyOutputY < 0.0f; y += 4.0f) {
-        for (float x = paneLeft; x < 420.0f && everyOutputY < 0.0f; x += 10.0f) {
+        for (float x = 440.0f; x < 660.0f && everyOutputY < 0.0f; x += 40.0f) {
             editor.pickSend(oscKind);
             editor.setOutputs("wall"); // something for "every output" to clear
-            click(700.0f, 40.0f);      // close whatever is open; outside every popup
+            click(4.0f, 4.0f);         // close whatever is open: the page's margin, outside everything
             click(x, y);
             slint::platform::update_timers_and_animations(); // `changed is-open` runs a loop late
             // The opener is what opens the list — `routing-open` says so — and only then is the
@@ -1916,7 +1953,7 @@ TEST_CASE("the send-to ticks follow the rule that is selected", "[ui][trigger]")
             // height the test dispatched. Opened again for each probe, since a probe that misses
             // it is a click outside it, which closes it.
             for (float row = y - 130.0f; row < y + 80.0f && everyOutputY < 0.0f; row += 8.0f) {
-                click(700.0f, 40.0f);
+                click(4.0f, 4.0f);
                 click(x, y);
                 click(x + 30.0f, row);
                 if (editor.rules().front().outputs.empty() && stillOsc()) {
@@ -2038,10 +2075,12 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
+    editor.pickTrigger(indexOf(Trigger::Onset)); // where the cooldown is live (HANDOFF §0.5)
     auto& window = editor.window();
     window.show();
     window.window().dispatch_scale_factor_change_event(1.0f);
-    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 520.0f}));
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, takt4::ui::kRulesWindowHeight}));
     window.window().dispatch_window_active_changed_event(true);
     REQUIRE(std::string(window.get_cooldown_ms()) == "0");
 
@@ -2056,22 +2095,29 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
     const auto type = [&window](const char* key) {
         window.window().dispatch_key_press_event(slint::SharedString(key));
         window.window().dispatch_key_release_event(slint::SharedString(key));
+        slint::platform::update_timers_and_animations();
     };
 
+    // Below the trigger's dropdown, which a stray click would open and Enter pick from. A digit
+    // and Enter that reach the rule are the box; the rule is put back after every probe.
     float boxX = -1.0f;
     float boxY = -1.0f;
-    for (float y = 250.0f; y < 430.0f && boxX < 0.0f; y += 2.0f) {
-        for (float x = 540.0f; x < 660.0f && boxX < 0.0f; x += 20.0f) {
+    for (float y = 158.0f; y < 220.0f && boxX < 0.0f; y += 2.0f) {
+        for (float x = 420.0f; x < 540.0f && boxX < 0.0f; x += 20.0f) {
             click(x, y);
             type("5");
-            if (std::string(window.get_cooldown_ms()) != "0") {
+            type("\n");
+            if (editor.rules().front().cooldownSeconds > 0.0) {
                 boxX = x;
                 boxY = y;
             }
+            editor.setCooldown("0");
         }
     }
     INFO("the cooldown box never took a keystroke — the sweep found no text field");
     REQUIRE(boxX >= 0.0f);
+    click(boxX, boxY);
+    type("5");
     // Typed, not committed: that is the contract, and it is what makes the rest of this test
     // mean something.
     REQUIRE(editor.rules().front().cooldownSeconds == Approx(0.0));
@@ -2090,12 +2136,13 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
                    now.minBpm == Approx(before.minBpm) && now.maxBpm == Approx(before.maxBpm) &&
                    now.intensities == before.intensities;
         };
-        // The event-log pane on the right, below its lines: no rule control is there at all,
-        // so nothing in this region can commit the box except the background itself.
+        // A's sheet right of its rows — past the note beside the cooldown box, where the sheet has
+        // nothing on it — and the empty part of the rule list under its one row: nothing in
+        // either region can commit the box except the background itself.
         const slint::SharedString rate = window.get_rule_rate();
         bool committed = false;
-        for (float y = 220.0f; y < 400.0f && !committed; y += 10.0f) {
-            for (float x = 760.0f; x < 890.0f && !committed; x += 20.0f) {
+        for (float y = 124.0f; y < 150.0f && !committed; y += 6.0f) {
+            for (float x = 900.0f; x < 970.0f && !committed; x += 20.0f) {
                 click(x, y);
                 committed = editor.rules().front().cooldownSeconds > 0.0 && inert() &&
                             window.get_rule_rate() == rate;
@@ -2116,7 +2163,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         // then the commit can only have come from the button.
         float panicX = -1.0f;
         float panicY = -1.0f;
-        for (float y = 470.0f; y < 515.0f && panicX < 0.0f; y += 4.0f) {
+        for (float y = 750.0f; y < 812.0f && panicX < 0.0f; y += 4.0f) {
             for (float x = 40.0f; x < 190.0f && panicX < 0.0f; x += 20.0f) {
                 click(x, y);
                 slint::platform::update_timers_and_animations();
@@ -2133,21 +2180,21 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         editor.releasePanic();
         REQUIRE_FALSE(rig.runner.panicked());
 
+        // Emptied and typed into, so what it holds is known: End, then Backspace until it is
+        // empty, then 7.
         click(boxX, boxY);
+        type("\xEF\x9C\xAB"); // Key.End, U+F72B
+        for (int i = 0; i < 12; ++i) {
+            type("\b");
+        }
         type("7");
-        slint::platform::update_timers_and_animations();
-        const double committed = editor.rules().front().cooldownSeconds;
-        const std::string typed(window.get_cooldown_ms());
-        REQUIRE(typed.find('7') != std::string::npos);
         // Typed, not committed, as before.
-        REQUIRE(std::to_string(static_cast<int>(committed * 1000.0 + 0.5)) != typed);
+        REQUIRE(editor.rules().front().cooldownSeconds * 1000.0 != Approx(7.0).margin(0.5));
 
         click(panicX, panicY);
         slint::platform::update_timers_and_animations();
         CHECK(rig.runner.panicked()); // it was PANIC that was pressed
-        INFO("cooldown box held \"" << std::string(window.get_cooldown_ms()) << "\"");
-        CHECK(editor.rules().front().cooldownSeconds * 1000.0 ==
-              Approx(std::stod(typed)).margin(0.5));
+        CHECK(editor.rules().front().cooldownSeconds * 1000.0 == Approx(7.0).margin(0.5));
         editor.releasePanic();
     }
 }
@@ -2405,7 +2452,8 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
     // that the pane does not scroll: a color rule's rows are taller than 1000px since each
     // setting got a named row of its own (the audit of 2026-09-25, L37), and a pane that
     // scrolled between the sweep and the drag put the drag on something else.
-    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 1400.0f}));
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, 1400.0f}));
     window.window().dispatch_window_active_changed_event(true);
 
     const auto dmx =
@@ -2454,8 +2502,10 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
     float swatchX = 0.0f;
     float swatchY = 0.0f;
     bool opened = false;
+    // Right of C's label column, where the palette's swatches start (HANDOFF §0.5: the slot's
+    // name column, then the swatches).
     for (float y = 300.0f; y < 900.0f && !opened; y += 8.0f) {
-        for (float x = 240.0f; x < 620.0f && !opened; x += 16.0f) {
+        for (float x = 380.0f; x < 700.0f && !opened; x += 16.0f) {
             click(x, y);
             if (editor.pickerOpen()) {
                 opened = true;
@@ -2633,12 +2683,15 @@ TEST_CASE("a muted rule's fire is logged as not sent", "[ui][trigger]") {
 
     const auto log = editor.window().get_log();
     REQUIRE(log->row_count() == 1);
-    const std::string line(*log->row_data(0));
-    INFO(line);
-    CHECK(line.find("/go") != std::string::npos);
-    CHECK(line.find("muted, not sent") != std::string::npos);
-    CHECK(std::string(editor.window().get_last_fired()).find("muted, not sent") !=
-          std::string::npos);
+    // Marked on its own rather than written into the message, so the log draws it apart
+    // (HANDOFF §0.5).
+    const LogLine line = *log->row_data(0);
+    INFO(std::string(line.message));
+    CHECK(std::string(line.message).find("/go") != std::string::npos);
+    CHECK(std::string(line.message).find("muted") == std::string::npos);
+    CHECK(line.muted);
+    // And the main window's triggers row, which has one line to say it in.
+    CHECK(editor.lastFiredAnywhere().find("muted, not sent") != std::string::npos);
 }
 
 TEST_CASE("a switch flipped from a control surface shows in the editor and survives its edits",
@@ -2889,13 +2942,13 @@ TEST_CASE("the rate buttons are greyed out on a trigger with no count", "[ui][tr
         window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
     };
 
-    // The ÷2 button, found by what pressing it does on a counted trigger. On the line under the
-    // trigger's since 2026-09-26 (the audit of 2026-09-25, L35), so the sweep starts below the
-    // trigger dropdown — a stray pick there would change the trigger it is checked against.
+    // The ÷2 button, found by what pressing it does on a counted trigger. On A's first line, after
+    // the count and its note (HANDOFF §0.5), so the sweep starts right of the trigger dropdown —
+    // a stray pick there would change the trigger it is checked against — and of the count's box.
     float foundX = -1.0f;
     float foundY = -1.0f;
-    for (float y = 140.0f; y < 300.0f && foundX < 0.0f; y += 6.0f) {
-        for (float x = 200.0f; x < 1000.0f && foundX < 0.0f; x += 8.0f) {
+    for (float y = 112.0f; y < 170.0f && foundX < 0.0f; y += 6.0f) {
+        for (float x = 600.0f; x < 1000.0f && foundX < 0.0f; x += 8.0f) {
             click(x, y);
             if (std::string(window.get_rule_rate()) == "2× faster" &&
                 editor.rules().front().trigger == Trigger::Bar) {
@@ -3016,11 +3069,14 @@ TEST_CASE("clicking from one chip's box into the next keeps the second one", "[u
     const Shown shown(editor);
     editor.tick();
 
-    // The {layer} box: the first spot where a digit and Enter change the layer.
+    // The {layer} box: the first spot where a digit and Enter change the layer. Right of the
+    // slot's kind dropdown, which a stray click would open and Enter pick from.
     float layerX = -1.0f;
     float layerY = -1.0f;
+    // Clear of the "1" at the box's left too, so the caret lands after it, as a person's click
+    // on a box's empty part leaves it.
     for (float y = 480.0f; y < 740.0f && layerX < 0.0f; y += 4.0f) {
-        for (float x = 430.0f; x < 820.0f && layerX < 0.0f; x += 40.0f) {
+        for (float x = 580.0f; x < 860.0f && layerX < 0.0f; x += 40.0f) {
             shown.click(x, y);
             shown.type("9");
             shown.enter();
@@ -3042,7 +3098,7 @@ TEST_CASE("clicking from one chip's box into the next keeps the second one", "[u
     float clipX = -1.0f;
     float clipY = -1.0f;
     for (float y = layerY + 20.0f; y < layerY + 140.0f && clipX < 0.0f; y += 4.0f) {
-        for (float x = 430.0f; x < 820.0f && clipX < 0.0f; x += 40.0f) {
+        for (float x = 580.0f; x < 860.0f && clipX < 0.0f; x += 40.0f) {
             shown.click(x, y);
             shown.type("9");
             shown.enter();
@@ -3100,7 +3156,7 @@ TEST_CASE("a box typed into and then another rule clicked keeps the edit on its 
     float boxX = -1.0f;
     float boxY = -1.0f;
     for (float y = 400.0f; y < 740.0f && boxX < 0.0f; y += 4.0f) {
-        for (float x = 430.0f; x < 820.0f && boxX < 0.0f; x += 40.0f) {
+        for (float x = 530.0f; x < 820.0f && boxX < 0.0f; x += 40.0f) {
             shown.click(x, y);
             shown.type("9");
             shown.enter();
@@ -3172,8 +3228,8 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
     const std::size_t before = swatches->row_count();
 
     // A swatch: the first click that opens a picker. Down to the window's foot: a color rule's
-    // palette sits lower since each lighting setting got a named row (the audit of 2026-09-25,
-    // L37).
+    // palette sits low, under each lighting setting's named row. Each miss is followed by a click
+    // in the page's margin, outside everything, which closes whatever it opened.
     float swatchX = -1.0f;
     float swatchY = -1.0f;
     for (float y = 300.0f; y < 860.0f && swatchX < 0.0f; y += 4.0f) {
@@ -3183,7 +3239,7 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
                 swatchX = x;
                 swatchY = y;
             } else {
-                shown.click(1050.0f, 740.0f); // close anything a miss opened
+                shown.click(4.0f, 4.0f); // close anything a miss opened
             }
         }
     }
@@ -3201,7 +3257,7 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
         if (editor.pickerOpen()) {
             rowLeft = x;
         }
-        shown.click(1050.0f, 740.0f); // close it
+        shown.click(4.0f, 4.0f); // close it
     }
     swatchX = rowLeft + 20.0f + (last ? 48.0f * static_cast<float>(before - 1) : 0.0f);
     shown.click(swatchX, swatchY);
@@ -3209,7 +3265,7 @@ TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",
         INFO("the row starts at " << rowLeft << "; aimed at " << swatchX << ", " << swatchY);
         REQUIRE(editor.pickerOpen());
     }
-    shown.click(1050.0f, 740.0f);
+    shown.click(4.0f, 4.0f);
     REQUIRE(swatches->row_count() == before);
     std::vector<takt4::trigger::Value> kept = editor.rules().front().dmx.color.values;
     REQUIRE(kept.size() == before);
@@ -3287,15 +3343,15 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     REQUIRE(editor.rules().front().segments.size() == 1);
     const GeneratorKind initial = kind();
 
-    // The dropdown, found by what one step of it does: a click on it, one arrow key, and the
-    // slot is on the next kind.
+    // The dropdown, found by what one step of it does: a click on it opens its list, one arrow
+    // key lights the next entry, Enter picks it, and the slot is on the next kind.
     float comboX = -1.0f;
     float comboY = -1.0f;
     for (float y = 440.0f; y < 720.0f && comboX < 0.0f; y += 8.0f) {
         for (float x = 300.0f; x < 620.0f && comboX < 0.0f; x += 16.0f) {
             click(x, y);
             key(u8"\uF701"); // Key.DownArrow
-            key(u8"\u001b"); // Key.Escape
+            key(u8"\n");     // Key.Return
             settle();
             if (kind() != initial) {
                 comboX = x;
@@ -3339,8 +3395,7 @@ TEST_CASE("a slot's dropdown survives the redraws while it is open, and its pick
     // open. Ten redraws with nothing moving could not have seen a rebuild, since nothing was
     // stale (the audit of 2026-09-25, T13) — a readout counted as a change that needs a new
     // element would take the list away on the first fire, and pass that test.
-    // Every probe above ended with Escape, which in this window is PANIC; a rule fires nothing
-    // while it is engaged.
+    // A rule fires nothing while PANIC is engaged, and a probe that missed could have landed on it.
     editor.releasePanic();
     build();
     const auto slots = window.get_slots();
@@ -3734,14 +3789,15 @@ TEST_CASE("a color's generator offers only the kinds that can make a color", "[u
 namespace {
 
 /// TEST, found by what it does: the first click near the top right after which the rule has
-/// fired. The rule has to be one that can.
+/// fired — a line more in the log. The rule has to be one that can.
 Spot findTest(RulesController& editor, const Shown& shown) {
     return sweep(
-        860.0f, 1010.0f, 10.0f, 8.0f, 58.0f, 6.0f,
+        900.0f, 1000.0f, 10.0f, 8.0f, 58.0f, 6.0f,
         [&](float x, float y) {
+            const std::size_t before = editor.window().get_log()->row_count();
             shown.click(x, y);
             editor.tick();
-            return !std::string(editor.window().get_last_fired()).empty();
+            return editor.window().get_log()->row_count() > before;
         },
         [] {});
 }
@@ -3869,14 +3925,14 @@ TEST_CASE("TEST sends on the MIDI channel still being typed", "[ui][trigger]") {
     REQUIRE(box.found());
     const Spot test = findTest(editor, shown);
     REQUIRE(test.found());
-    REQUIRE(std::string(editor.window().get_last_fired()).find(" ch 3") != std::string::npos);
+    REQUIRE(newestSent(editor).find(" ch 3") != std::string::npos);
 
     shown.click(box.x, box.y);
     shown.clearBox();
     shown.type("5"); // no Enter
     shown.click(test.x, test.y);
     editor.tick();
-    const std::string fired(editor.window().get_last_fired());
+    const std::string fired = newestSent(editor);
     INFO("fired: " << fired);
     CHECK(fired.find(" ch 5") != std::string::npos);
     CHECK(channel() == 5);
@@ -3918,9 +3974,10 @@ FollowBoxes findFollowBoxes(RulesController& editor, const Shown& shown) {
     };
     const auto rebuild = [&] { buildNoteOff(editor); };
     FollowBoxes boxes;
-    // The number first, down the column it sits in: past the kind dropdown and its label.
+    // The number first, down the column it sits in: past the 210 px kind dropdown and its label
+    // (HANDOFF §0.5).
     boxes.number = sweep(
-        460.0f, 540.0f, 20.0f, 560.0f, 1460.0f, 6.0f,
+        560.0f, 640.0f, 20.0f, 560.0f, 1460.0f, 6.0f,
         [&](float x, float y) {
             nine(x, y);
             return owed().number == 9;
@@ -3938,10 +3995,10 @@ FollowBoxes findFollowBoxes(RulesController& editor, const Shown& shown) {
             return owed().value.asInt() == 9;
         },
         rebuild);
-    // And the delay on the row's second line, under the kind and after "after", since the row
-    // was cut in two to fit the pane (the audit of 2026-09-25, L35).
+    // And the delay on the row's second line, under the kind and after "after" (the band is two
+    // lines, HANDOFF §0.5).
     boxes.delay = sweep(
-        200.0f, 1000.0f, 8.0f, row + 20.0f, row + 56.0f, 4.0f,
+        300.0f, 1000.0f, 8.0f, row + 20.0f, row + 56.0f, 4.0f,
         [&](float x, float y) {
             nine(x, y);
             return owed().delayBeats == Approx(9.0);
@@ -4147,8 +4204,9 @@ TEST_CASE("a chip's box typed into still shows what the controller sets afterwar
         return std::make_pair(chip.low, chip.high);
     };
 
+    // Right of the slot's kind dropdown and its "list" tick, which a stray click would switch.
     const Spot box = sweep(
-        430.0f, 820.0f, 30.0f, 440.0f, 760.0f, 4.0f,
+        590.0f, 820.0f, 30.0f, 440.0f, 760.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             shown.clearBox();
@@ -4223,7 +4281,7 @@ TEST_CASE("+ ADD after typing into every leaves the new rule's count alone", "[u
             }
         });
     const Spot plus = sweep(
-        150.0f, 210.0f, 6.0f, 8.0f, 44.0f, 4.0f,
+        220.0f, 270.0f, 6.0f, 14.0f, 54.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             return editor.rules().size() == 2;
@@ -4296,7 +4354,7 @@ TEST_CASE("TEST fires the address being typed, not the one before it", "[ui][tri
     shown.type("/after");
     shown.click(test.x, test.y); // no Enter: the click is what finishes the edit
     editor.tick();
-    const std::string fired(editor.window().get_last_fired());
+    const std::string fired = newestSent(editor);
     INFO("fired: " << fired);
     CHECK(fired.find("/after") != std::string::npos);
     CHECK(editor.rules().front().address == "/after");
@@ -4329,6 +4387,7 @@ TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][tri
         editor.setRules({});
         editor.add();
         editor.setBpmRange("any");
+        editor.window().set_only_if_folded(false); // a new rule's ONLY IF opens folded
         editor.tick();
         Shown::settle();
     };
@@ -4342,7 +4401,7 @@ TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][tri
     const auto anyBpm = bpm();
 
     const Spot box = sweep(
-        330.0f, 520.0f, 20.0f, 250.0f, 400.0f, 4.0f,
+        330.0f, 620.0f, 20.0f, 300.0f, 500.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             shown.clearBox();
@@ -4358,7 +4417,7 @@ TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][tri
     INFO("BPM box at " << box.x << ", " << box.y);
     REQUIRE(box.found());
     const Spot plus = sweep(
-        150.0f, 210.0f, 6.0f, 8.0f, 44.0f, 4.0f,
+        220.0f, 270.0f, 6.0f, 14.0f, 54.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             return editor.rules().size() == 2;
@@ -4384,30 +4443,38 @@ TEST_CASE("+ ADD keeps what was typed into the rule it was typed for", "[ui][tri
 
 TEST_CASE("a palette's + is still there to click after a dozen colors at the window's narrowest",
           "[ui][trigger][dmx]") {
-    // The audit of 2026-09-25, L36: the swatches never wrapped, and at 900px the "+" left the
-    // pane after about eight colors — cut off by the pane, so no click could reach it and the
-    // palette could not be added to. The swatches are placed on a grid of their own, which adds
-    // nothing to a row's least width, so this asks the pointer rather than the layout.
+    // The audit of 2026-09-25, L36: the swatches never wrapped, and at 900 px (then the least
+    // width; 960 since 2026-09-30) the "+" left the pane after about eight colors — cut off by the
+    // pane, so no click could reach it and the palette could not be added to. The swatches are
+    // placed on a grid of their own, which adds nothing to a row's least width, so this asks the
+    // pointer rather than the layout.
     Rig rig;
     RulesController editor(rig.runner, {});
-    editor.add();
-    editor.pickSend(static_cast<int>(
-        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
-                  takt4::trigger::Message::Kind::Dmx) -
-        takt4::trigger::kMessageKinds.begin()));
-    editor.pickEffect(static_cast<int>(
-        std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
-                  takt4::dmx::EffectKind::Color) -
-        takt4::dmx::kEffectKinds.begin()));
-    for (int i = 0; i < 12; ++i) {
-        editor.addPaletteColor();
-    }
-    editor.tick();
-    editor.tick();
+    using takt4::dmx::EffectKind;
+    using takt4::trigger::Message;
+    const auto build = [&editor] {
+        editor.setRules({});
+        editor.add();
+        editor.window().set_send_folded(false);
+        editor.pickSend(static_cast<int>(std::find(takt4::trigger::kMessageKinds.begin(),
+                                                   takt4::trigger::kMessageKinds.end(),
+                                                   Message::Kind::Dmx) -
+                                         takt4::trigger::kMessageKinds.begin()));
+        editor.pickEffect(static_cast<int>(
+            std::find(takt4::dmx::kEffectKinds.begin(), takt4::dmx::kEffectKinds.end(),
+                      EffectKind::Color) -
+            takt4::dmx::kEffectKinds.begin()));
+        for (int i = 0; i < 12; ++i) {
+            editor.addPaletteColor();
+        }
+        editor.tick();
+        editor.tick();
+    };
+    build();
     auto& window = editor.window();
     window.show();
     window.window().dispatch_scale_factor_change_event(1.0f);
-    window.window().dispatch_resize_event(slint::LogicalSize({900.0f, 1400.0f}));
+    window.window().dispatch_resize_event(slint::LogicalSize({960.0f, 1400.0f}));
     window.window().dispatch_window_active_changed_event(true);
     const auto click = [&window](float x, float y) {
         const slint::LogicalPosition at({x, y});
@@ -4418,26 +4485,39 @@ TEST_CASE("a palette's + is still there to click after a dozen colors at the win
     };
     const std::size_t colors = editor.rules().front().dmx.color.values.size();
     REQUIRE(colors >= 12);
+    // What a probe may have changed: the rule, and C's fold — its arrow is above the palette.
+    const auto built = [&editor, colors] {
+        const Rule::Config& rule = editor.rules().front();
+        return editor.rules().size() == 1 && rule.sendKind == Message::Kind::Dmx &&
+               rule.dmx.effect == EffectKind::Color &&
+               rule.dmx.colorMode == takt4::trigger::ColorMode::Palette &&
+               rule.dmx.color.values.size() == colors && rule.followUps.empty() &&
+               !editor.window().get_send_folded();
+    };
 
-    // Found by what it does. Each probe is preceded by a click on the WHEN heading — nothing
-    // but the window behind it — which closes whatever popup the last probe opened without
-    // choosing anything in it.
+    // Found by what it does. Each probe is followed by a click in the page's corner, below the
+    // event log — outside the test platform's 900 x 520 window, which every popup is placed
+    // inside, so it is outside whatever popup the probe opened and closes it without choosing
+    // anything in it — and by the rule built again if the probe changed it: a swatch's picker
+    // has a "remove", and a palette one short is never one more.
     float plusX = -1.0f;
     float plusY = -1.0f;
-    const float paneRight = 900.0f - window.get_log_width();
+    const float left = 10.0f + window.get_list_width() + 10.0f;
     for (float y = 300.0f; y < 1350.0f && plusX < 0.0f; y += 6.0f) {
-        for (float x = window.get_list_width() + 8.0f; x < paneRight && plusX < 0.0f; x += 8.0f) {
-            click(250.0f, 84.0f);
+        for (float x = left + 8.0f; x < 960.0f && plusX < 0.0f; x += 8.0f) {
             click(x, y);
             if (editor.rules().front().dmx.color.values.size() == colors + 1) {
                 plusX = x;
                 plusY = y;
             }
+            click(955.0f, 1396.0f);
+            if (!built()) {
+                build();
+            }
         }
     }
     INFO("+ at " << plusX << ", " << plusY);
     CHECK(plusX >= 0.0f);
-    CHECK(editor.rules().front().dmx.effect == takt4::dmx::EffectKind::Color);
 }
 
 TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowest",
@@ -4445,7 +4525,8 @@ TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowes
     // The audit of 2026-09-25, L35 and L36, and what rendering at 900px found beside them. At
     // the window's minimum width a THEN SEND row lost its unit, its summary and its ×, a
     // palette's "+" left the pane after eight colors, and a pulse's numbers, a list chip's
-    // no-repeat and a ramp's "whole numbers" did the same. Each is laid out here at 900px wide,
+    // no-repeat and a ramp's "whole numbers" did the same. Each is laid out here at 960px wide
+    // (the minimum since the Weltformat editor, 2026-09-30), with every section open and
     // tall enough that nothing scrolls, and the least width the editor's rows ask for is held
     // against the width the pane gives them. **Not by pixels**: the pane's scroll view holds
     // its content to its own width, so a row too wide for it is cut off at the edge and draws
@@ -4596,12 +4677,646 @@ TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowes
     for (const Case& c : cases) {
         INFO(c.what);
         c.build();
+        window.set_only_if_folded(false); // a new rule's opens folded, and it has rows too
         editor.tick();
         editor.tick();
-        (void)takt4::tests::render(window, 900, 1900);
+        // Drawn, then drawn again once the list has given way: it is fitted to the window and to
+        // the rows a loop after either changes.
+        (void)takt4::tests::render(window, 960, 1900);
+        slint::platform::update_timers_and_animations();
+        (void)takt4::tests::render(window, 960, 1900);
         INFO("the rows ask for " << window.get_body_least_width() << "px and the pane has "
                                  << window.get_body_width() << "px");
-        CHECK(window.get_body_width() > 400.0f); // laid out at 900, not at nothing
+        CHECK(window.get_body_width() > 400.0f); // laid out at 960, not at nothing
+        // Measuring something: every rule has rows wider than the headings alone (245 px), which
+        // is all a first build of this window passed up, so that this passed for every rule.
+        CHECK(window.get_body_least_width() > 400.0f);
         CHECK(window.get_body_least_width() <= window.get_body_width() + 0.5f);
     }
+
+    // And the list dragged as wide as it goes, at the window's opening width, with the widest row
+    // measured: it stops where the editor's rows would start to run off, not at two-fifths of the
+    // window, where they were 112 px short.
+    const auto widest = std::find_if(cases.begin(), cases.end(), [](const Case& c) {
+        return std::string(c.what) == "a Euclidean pattern, sped up";
+    });
+    REQUIRE(widest != cases.end());
+    widest->build();
+    window.set_only_if_folded(false);
+    editor.tick();
+    editor.tick();
+    (void)takt4::tests::render(window, 1000, 1900);
+    slint::platform::update_timers_and_animations();
+    (void)takt4::tests::render(window, 1000, 1900);
+    const float least = window.get_body_least_width();
+    const float before = window.get_body_width();
+    REQUIRE(before >= least);
+    // The gap between the list and the editor, from the page's 10 px margin past the list.
+    const float gap = 10.0f + window.get_list_width() + 5.0f;
+    const auto at = [](float x) { return slint::LogicalPosition({x, 400.0f}); };
+    window.window().dispatch_pointer_move_event(at(gap));
+    window.window().dispatch_pointer_press_event(at(gap), slint::PointerEventButton::Left);
+    for (float x = gap; x <= gap + 300.0f; x += 10.0f) {
+        window.window().dispatch_pointer_move_event(at(x));
+        slint::platform::update_timers_and_animations();
+    }
+    window.window().dispatch_pointer_release_event(at(gap + 300.0f), slint::PointerEventButton::Left);
+    slint::platform::update_timers_and_animations();
+    (void)takt4::tests::render(window, 1000, 1900);
+    INFO("the rows ask for " << least << "px; the pane had " << before << "px and has "
+                             << window.get_body_width() << "px");
+    CHECK(window.get_body_width() < before); // the drag widened the list
+    CHECK(window.get_body_least_width() <= window.get_body_width() + 0.5f);
+
+    // At the narrowest, where the list has given way to 248 px from the 260 it was left at, a drag
+    // left moves it from where it is drawn: from 260, the first 12 px would move nothing. The last
+    // drag is one quick move of 10 px — in 2 px moves a drag counted from 260 lands within a pixel
+    // of the right place by another road (measured: it passed with that broken).
+    const auto drag = [&window](float from, float to, float by = 2.0f) {
+        const auto point = [](float x) { return slint::LogicalPosition({x, 400.0f}); };
+        window.window().dispatch_pointer_move_event(point(from));
+        window.window().dispatch_pointer_press_event(point(from), slint::PointerEventButton::Left);
+        const float step = to < from ? -by : by;
+        for (float x = from + step; (step < 0.0f) ? x >= to : x <= to; x += step) {
+            window.window().dispatch_pointer_move_event(point(x));
+            slint::platform::update_timers_and_animations();
+        }
+        window.window().dispatch_pointer_release_event(point(to), slint::PointerEventButton::Left);
+        slint::platform::update_timers_and_animations();
+    };
+    drag(10.0f + window.get_list_width() + 5.0f, 10.0f); // back to its narrowest, 200
+    drag(10.0f + window.get_list_width() + 5.0f, 10.0f + window.get_list_width() + 5.0f + 60.0f);
+    REQUIRE(window.get_list_width() == Approx(260.0f).margin(1.0f)); // left at 260
+    (void)takt4::tests::render(window, 960, 1900);
+    slint::platform::update_timers_and_animations();
+    (void)takt4::tests::render(window, 960, 1900);
+    REQUIRE(window.get_list_width() == Approx(248.0f).margin(1.0f)); // given way
+    const float drawn = 10.0f + window.get_list_width() + 5.0f;
+    drag(drawn, drawn - 10.0f, 10.0f);
+    CHECK(window.get_list_width() == Approx(238.0f).margin(1.0f));
+}
+
+TEST_CASE("a click on a rule's dot mutes that rule and leaves the one being edited alone",
+          "[ui][trigger]") {
+    // HANDOFF §0.5: the dot beside each rule in the list is its mute switch — filled while it
+    // sends, a ring while it is muted — and not a way of choosing the row. The same live mute as
+    // MUTE, straight to the output thread.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    // Two rules with addresses, so neither row carries a line saying it will not fire; both
+    // sending, since the output thread keeps a mute by the rule's id and "rule1" comes round again.
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/one");
+        editor.add();
+        editor.setAddress("/two");
+        editor.setMutedAt(0, false);
+        editor.setMutedAt(1, false);
+        editor.pick(0);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto muted = [&editor](std::size_t row) {
+        return editor.window().get_rules()->row_data(row)->muted;
+    };
+    const auto liveMuted = [&rig, &editor](std::size_t row) {
+        for (const auto& live : rig.runner.liveRules()) {
+            if (live.id == editor.rules()[row].id) {
+                return live.muted;
+            }
+        }
+        return false;
+    };
+
+    // Each row's dot, found by what a click on it does. A click on the row beside a dot picks
+    // that row instead, which is put back.
+    const auto findDot = [&](std::size_t row, float y0, float y1) {
+        return sweep(
+            12.0f, 80.0f, 4.0f, y0, y1, 4.0f,
+            [&](float x, float y) {
+                shown.click(x, y);
+                return muted(row);
+            },
+            [&] {
+                if (muted(0) || muted(1) || editor.selected() != 0 ||
+                    editor.rules().size() != 2) {
+                    build();
+                }
+            });
+    };
+    const Spot first = findDot(0, 76.0f, 130.0f);
+    const Spot second = findDot(1, first.y + 30.0f, first.y + 90.0f);
+    INFO("dots at " << first.x << ", " << first.y << " and " << second.x << ", " << second.y);
+    REQUIRE(first.found());
+    REQUIRE(second.found());
+    // Into each dot's middle: the sweep found its top left corner.
+    const float x = second.x + 6.0f;
+    const float y = second.y + 6.0f;
+
+    shown.click(x, y);
+    editor.tick();
+    CHECK(muted(1));
+    CHECK(liveMuted(1)); // the rule on the output thread, which is what stops sending
+    CHECK_FALSE(muted(0));
+    CHECK_FALSE(liveMuted(0));
+    // And the rule being edited is still the one being edited, alone in the selection; MUTE
+    // speaks for it, and it is not muted.
+    CHECK(editor.selected() == 0);
+    CHECK(editor.chosen() == std::vector<int>{0});
+    CHECK_FALSE(editor.window().get_rule_muted());
+
+    // Again, and it sends.
+    shown.click(x, y);
+    editor.tick();
+    CHECK_FALSE(muted(1));
+    CHECK_FALSE(liveMuted(1));
+
+    // The first row's dot is the rule being edited's: MUTE says so as well.
+    shown.click(first.x + 6.0f, first.y + 6.0f);
+    editor.tick();
+    CHECK(muted(0));
+    CHECK(liveMuted(0));
+    CHECK(editor.window().get_rule_muted());
+    CHECK(editor.selected() == 0);
+}
+
+TEST_CASE("B's tick switches ONLY IF on and off, folded or open", "[ui][trigger]") {
+    // HANDOFF §0.5: B has a switch in its heading. A new rule has it off and folded, and fires
+    // every time A comes round; ticked, the conditions below it apply.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    auto& window = editor.window();
+    const auto on = [&editor] { return editor.rules().front().conditionsOn; };
+    CHECK_FALSE(on());
+    CHECK(window.get_only_if_folded());
+    CHECK_FALSE(window.get_conditions_on());
+    CHECK(std::string(window.get_only_if_summary()) == "off — fires every time A comes round");
+
+    // Beside B's letter, under A.
+    const Spot tick = sweep(
+        290.0f, 380.0f, 4.0f, 200.0f, 290.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return on();
+        },
+        [&] {
+            if (on() || !window.get_only_if_folded() || editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("tick at " << tick.x << ", " << tick.y);
+    REQUIRE(tick.found());
+    // Its middle: the sweep found its top left corner, and opened, B's heading sits 4 px lower.
+    const float tx = tick.x + 8.0f;
+    const float ty = tick.y + 8.0f;
+
+    shown.click(tx, ty);
+    CHECK(on());
+    CHECK(window.get_conditions_on());
+    CHECK(window.get_only_if_folded()); // the switch is not the fold
+    CHECK(std::string(window.get_only_if_summary()) ==
+          "on — nothing set yet, so it fires every time A comes round");
+    shown.click(tx, ty);
+    CHECK_FALSE(on());
+    CHECK_FALSE(window.get_conditions_on());
+
+    // Open, the tick is where it was.
+    window.set_only_if_folded(false);
+    Shown::settle();
+    shown.click(tx, ty);
+    CHECK(on());
+
+    // What it switches: a condition that excludes a beat holds the rule only while it is on.
+    editor.setMinConfidence(0.9);
+    editor.setConditionsOn(false);
+    CHECK_FALSE(editor.rules().front().conditionsOn);
+    CHECK(editor.rules().front().conditions.minConfidence == Approx(0.9)); // kept, for later
+    CHECK(std::string(window.get_only_if_summary()) == "off — fires every time A comes round");
+}
+
+TEST_CASE("the readings beside B's sliders are typed into", "[ui][trigger]") {
+    // The two sliders each have a reading at the end — "0.7", "90%" — which a click opens as a
+    // box. The confidence is typed as the meter reads it, 0 to 1, or as a percentage; the
+    // probability as the percentage it reads.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setConditionsOn(true);
+        editor.window().set_only_if_folded(false);
+        editor.window().set_send_folded(false);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto conditions = [&editor] { return editor.rules().front().conditions; };
+
+    // At the right end of B's first two rows, clear of the scroll bar. The rule has no address,
+    // so the line under the name says it will not fire, and everything is a line lower. The fold
+    // arrows are in the same column, and a probe that folds a section is put back.
+    const Spot confidence = sweep(
+        880.0f, 984.0f, 8.0f, 250.0f, 350.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("0.4");
+            shown.enter();
+            return conditions().minConfidence == Approx(0.4);
+        },
+        [&] {
+            if (conditions().minConfidence != 0.0 || conditions().probability != 1.0 ||
+                editor.window().get_only_if_folded() || editor.window().get_send_folded()) {
+                build();
+            }
+        });
+    INFO("confidence reading at " << confidence.x << ", " << confidence.y);
+    REQUIRE(confidence.found());
+    const Spot probability = sweep(
+        880.0f, 984.0f, 8.0f, confidence.y + 20.0f, confidence.y + 70.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("25");
+            shown.enter();
+            return conditions().probability == Approx(0.25);
+        },
+        [&] {
+            if (conditions().minConfidence != 0.0 || conditions().probability != 1.0 ||
+                editor.window().get_only_if_folded() || editor.window().get_send_folded()) {
+                build();
+            }
+        });
+    INFO("probability reading at " << probability.x << ", " << probability.y);
+    REQUIRE(probability.found());
+
+    const auto typeInto = [&](const Spot& at, const std::string& text) {
+        shown.click(at.x, at.y);
+        shown.clearBox();
+        shown.type(text);
+        shown.enter();
+    };
+    typeInto(confidence, "70%");
+    CHECK(conditions().minConfidence == Approx(0.7));
+    typeInto(confidence, "85");
+    CHECK(conditions().minConfidence == Approx(0.85)); // eighty-five means a percentage
+    typeInto(confidence, "0.3");
+    CHECK(conditions().minConfidence == Approx(0.3));
+    // And the slider follows: the reading is what the rule holds.
+    CHECK(editor.window().get_min_confidence() == Approx(0.3f));
+
+    typeInto(probability, "90%");
+    CHECK(conditions().probability == Approx(0.9));
+    typeInto(probability, "250");
+    CHECK(conditions().probability == Approx(1.0)); // clamped to always
+    CHECK(editor.window().get_probability() == Approx(1.0f));
+
+    // Refused, said, and the rule left as it was. Last: the message is a line of its own under
+    // the name, and everything below it moves down while it is there (HANDOFF §0.5).
+    typeInto(confidence, "lots");
+    CHECK(conditions().minConfidence == Approx(0.3));
+    CHECK(editor.window().get_status_is_error());
+}
+
+TEST_CASE("the cooldown box takes a number only where the trigger reads one", "[ui][trigger]") {
+    // HANDOFF §0.5: "at most once every N ms" belongs to A, and only a trigger that comes in
+    // bursts reads it (`trigger::takesCooldown`). On a bar it is drawn dashed and empty and
+    // cannot be typed into; the number a rule already has is kept for when it comes back.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickTrigger(indexOf(Trigger::Onset));
+        editor.setCooldown("0");
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    auto& window = editor.window();
+    const auto cooldown = [&editor] { return editor.rules().front().cooldownSeconds; };
+    CHECK(window.get_trigger_takes_cooldown());
+
+    // Below the trigger's dropdown, which a stray click would open and Enter pick from.
+    const Spot box = sweep(
+        420.0f, 540.0f, 20.0f, 158.0f, 220.0f, 2.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("250");
+            shown.enter();
+            return cooldown() == Approx(0.25);
+        },
+        [&] {
+            if (cooldown() != 0.0 || editor.rules().front().trigger != Trigger::Onset) {
+                build();
+            }
+        });
+    INFO("cooldown box at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("250");
+    shown.enter();
+    REQUIRE(cooldown() == Approx(0.25));
+    CHECK(std::string(window.get_when_summary()) == "onset · at most once every 250 ms");
+
+    // The operator's way there: away from the box, then another trigger.
+    shown.click(600.0f, 98.0f);
+    editor.pickTrigger(indexOf(Trigger::Bar));
+    editor.tick();
+    Shown::settle();
+    CHECK_FALSE(window.get_trigger_takes_cooldown());
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("900");
+    shown.enter();
+    CHECK(cooldown() == Approx(0.25)); // nothing reached it
+    CHECK(std::string(window.get_when_summary()).find("ms") == std::string::npos);
+
+    editor.pickTrigger(indexOf(Trigger::Onset));
+    editor.tick();
+    CHECK(window.get_trigger_takes_cooldown());
+    CHECK(std::string(window.get_cooldown_ms()) == "250");
+}
+
+TEST_CASE("a fold arrow folds its section and keeps what was being typed in it", "[ui][trigger]") {
+    // HANDOFF §0.5: A to D and the event log each fold to their heading, and folded a section
+    // says what it holds. The arrow is a click like any other: what was being typed commits
+    // first, and a folded section's body is clipped rather than removed, so the box's own late
+    // commit has somewhere to land.
+    const std::uint32_t fresh = 4;
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickTrigger(indexOf(Trigger::Bar));
+        editor.setEvery(static_cast<int>(fresh));
+        window.set_when_folded(false);
+        window.set_log_open(false);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const Spot box = sweep(
+        470.0f, 700.0f, 10.0f, 96.0f, 160.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("7");
+            shown.enter();
+            return editor.rules().front().every == 7;
+        },
+        [&] {
+            if (editor.rules().size() != 1 || editor.rules().front().every != fresh ||
+                editor.rules().front().trigger != Trigger::Bar) {
+                build();
+            }
+        });
+    // A's arrow, at the right of its heading and clear of the scroll bar.
+    const Spot arrow = sweep(
+        920.0f, 984.0f, 4.0f, 78.0f, 118.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return window.get_when_folded();
+        },
+        [&] {
+            if (window.get_when_folded() || editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("every at " << box.x << ", " << box.y << "; A's arrow at " << arrow.x << ", " << arrow.y);
+    REQUIRE(box.found());
+    REQUIRE(arrow.found());
+    build();
+
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("9"); // no Enter
+    shown.click(arrow.x, arrow.y);
+    editor.tick();
+    CHECK(window.get_when_folded());
+    CHECK(editor.rules().front().every == 9);
+    CHECK(std::string(window.get_when_summary()) == "every 9 bars, counting from the first");
+    // And the summary follows the rule while it is folded.
+    editor.setEvery(2);
+    CHECK(std::string(window.get_when_summary()) == "every 2 bars, counting from the first");
+    shown.click(arrow.x, arrow.y);
+    CHECK_FALSE(window.get_when_folded());
+
+    SECTION("the log's arrow opens it, and the window says so to be saved") {
+        const Spot logArrow = sweep(
+            920.0f, 984.0f, 4.0f, 820.0f, 868.0f, 4.0f,
+            [&](float x, float y) {
+                shown.click(x, y);
+                return window.get_log_open();
+            },
+            [&] {
+                if (window.get_log_open()) {
+                    window.set_log_open(false);
+                    Shown::settle();
+                }
+            });
+        INFO("the log's arrow at " << logArrow.x << ", " << logArrow.y);
+        REQUIRE(logArrow.found());
+        shown.click(logArrow.x, logArrow.y);
+        CHECK(window.get_log_open());
+        takt4::settings::MachineSettings machine;
+        editor.layoutInto(machine);
+        CHECK(machine.ruleLogOpen);
+        CHECK_FALSE(machine.ruleSectionsFolded[0]);
+        CHECK(machine.ruleSectionsFolded[1]); // B, folded on a new rule
+    }
+}
+
+TEST_CASE("the rule editor's folds are the window's, and come back as they were left",
+          "[ui][trigger]") {
+    // HANDOFF §0.5: "Folds are the window's and remembered across launches, like the main
+    // window's." `applyLayout` and `layoutInto` are the two ends; WindowController calls them
+    // with the machine's settings (see the window test for the launch).
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    takt4::settings::MachineSettings machine;
+    machine.ruleSectionsFolded = {true, false, true, true};
+    machine.ruleLogOpen = true;
+    machine.ruleLogHeight = 144.0;
+    editor.applyLayout(machine);
+    auto& window = editor.window();
+    CHECK(window.get_when_folded());
+    CHECK_FALSE(window.get_only_if_folded());
+    CHECK(window.get_send_folded());
+    CHECK(window.get_then_folded());
+    CHECK(window.get_log_open());
+    CHECK(window.get_log_lines_height() == Approx(144.0f));
+
+    // Each arrow flips its own.
+    editor.toggleFold(2);
+    editor.toggleFold(4);
+    takt4::settings::MachineSettings out;
+    editor.layoutInto(out);
+    CHECK(out.ruleSectionsFolded == std::array<bool, 4>{true, false, false, true});
+    CHECK_FALSE(out.ruleLogOpen);
+    CHECK(out.ruleLogHeight == Approx(144.0)); // the height kept for when it opens again
+
+    // A new rule's B starts folded — whatever B was left as, since a new rule has nothing in it.
+    editor.add();
+    CHECK(window.get_only_if_folded());
+    CHECK_FALSE(editor.rules().back().conditionsOn);
+}
+
+TEST_CASE("the preset menu adds the rig picked, and Escape closes it without adding or panicking",
+          "[ui][trigger]") {
+    // The foot of the list (HANDOFF §0.5): "select a preset", a menu whose words never change,
+    // whose list adds the rig picked. A popup opens where there is room, so its list is hunted.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    // Escape only while the list is open: anywhere else in this window it is PANIC.
+    const auto closeList = [&window] {
+        if (window.get_presets_open()) {
+            window.window().dispatch_key_press_event(slint::SharedString("\x1b"));
+            window.window().dispatch_key_release_event(slint::SharedString("\x1b"));
+            Shown::settle();
+        }
+    };
+    const auto build = [&] {
+        closeList();
+        editor.setRules({});
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+
+    // The menu, at the foot of the list, found by a click that opens its list.
+    const Spot menu = sweep(
+        40.0f, 240.0f, 40.0f, 690.0f, 760.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return window.get_presets_open();
+        },
+        [&] {
+            if (window.get_presets_open() || !editor.rules().empty()) {
+                build();
+            }
+        });
+    INFO("menu at " << menu.x << ", " << menu.y);
+    REQUIRE(menu.found());
+    REQUIRE_FALSE(window.get_presets_open());
+
+    // Escape closes the list: nothing added, and not PANIC.
+    shown.click(menu.x, menu.y);
+    REQUIRE(window.get_presets_open());
+    shown.escape();
+    CHECK_FALSE(window.get_presets_open());
+    CHECK(editor.rules().empty());
+    CHECK_FALSE(rig.runner.panicked());
+
+    // Its first entry: hunted from the top of the window down, the list opened before each probe.
+    float entryY = -1.0f;
+    for (float y = 20.0f; y < 860.0f && entryY < 0.0f; y += 6.0f) {
+        if (y > menu.y - 20.0f && y < menu.y + 20.0f) {
+            continue; // the menu itself
+        }
+        shown.click(menu.x, menu.y);
+        shown.click(menu.x, y);
+        if (!editor.rules().empty()) {
+            entryY = y;
+        }
+        build();
+    }
+    INFO("first entry at " << entryY);
+    REQUIRE(entryY >= 0.0f);
+
+    shown.click(menu.x, menu.y);
+    shown.click(menu.x, entryY);
+    editor.tick();
+    CHECK_FALSE(window.get_presets_open());
+    // The first entry is `addRig(1)`, three Resolume layers.
+    Rig otherRig;
+    RulesController other(otherRig.runner, {});
+    other.addRig(1);
+    CHECK(editor.rules().size() == other.rules().size());
+    CHECK(editor.rules().front().address == other.rules().front().address);
+}
+
+TEST_CASE("D's + add adds a follow-up, and the log's clear empties the log", "[ui][trigger]") {
+    // Two buttons in headings that no other test presses: "+ add" beside D's fold arrow, "clear"
+    // beside the log's.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/probe");
+        window.set_then_folded(false);
+        window.set_log_open(false);
+        editor.test();
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    REQUIRE(window.get_log()->row_count() > 0);
+
+    // Left of the fold arrows' column, from C's rows down to the log.
+    const Spot add = sweep(
+        860.0f, 940.0f, 10.0f, 520.0f, 810.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return editor.rules().front().followUps.size() == 1;
+        },
+        [&] {
+            if (!editor.rules().front().followUps.empty() || window.get_then_folded() ||
+                editor.rules().size() != 1) {
+                build();
+            }
+        });
+    INFO("+ add at " << add.x << ", " << add.y);
+    REQUIRE(add.found());
+    shown.click(add.x, add.y);
+    CHECK(editor.rules().front().followUps.size() == 1);
+    shown.click(add.x, add.y);
+    CHECK(editor.rules().front().followUps.size() == 2);
+
+    const Spot clear = sweep(
+        840.0f, 940.0f, 8.0f, 818.0f, 868.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return window.get_log()->row_count() == 0;
+        },
+        [&] {
+            if (window.get_log()->row_count() == 0 || window.get_log_open()) {
+                build();
+            }
+        });
+    INFO("clear at " << clear.x << ", " << clear.y);
+    REQUIRE(clear.found());
+    shown.click(clear.x, clear.y);
+    CHECK(window.get_log()->row_count() == 0);
+    CHECK_FALSE(window.get_log_open()); // clearing is not opening
 }

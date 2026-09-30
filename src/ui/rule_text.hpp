@@ -179,4 +179,30 @@ std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config&
 /// the playing.
 std::string spellEuclid(const Rule::Config& rule);
 
+// --- what a folded section says ------------------------------------------------------------
+//
+// HANDOFF §0.5: every section of the rule editor folds, and **folded it reads what it holds in one
+// line** — so a folded section still reports, as the main window's do. Each is the words the open
+// section would be read as, in the order it lays them out.
+
+/// A — when: "every 4 bars, counting from the first", "onset · at most once every 250 ms",
+/// "manual (M key) · no limit"; and the rate a surface has moved it to, `rate` being the live
+/// interval multiplier (`describeRate`), where the trigger counts.
+std::string describeWhen(const Rule::Config& rule, double rate);
+
+/// B — only if: "off — fires every time A comes round" while its tick is off; otherwise what
+/// each condition that excludes anything asks: "confidence over 0.7 · 90% · normal, intense ·
+/// 120 - 140 BPM".
+std::string describeOnlyIf(const Rule::Config& rule);
+
+/// C — send: "OSC to deck · /composition/layers/{layer}/clips/{clip}/connect", "MIDI note ch 10
+/// to every output", "color on heads, lasers". Names as the rig has them now; a routing to
+/// something gone says so.
+std::string describeSend(const Rule::Config& rule, const std::vector<output::OutputTarget>& targets,
+                         const std::vector<dmx::Fixture>& patch);
+
+/// D — then send: "release after 1 beat · MIDI CC 21 after 2 bars", or "nothing — this trigger
+/// sends once and is done".
+std::string describeThen(const Rule::Config& rule);
+
 } // namespace takt4::ui::rule_text

@@ -34,8 +34,10 @@ inline constexpr float kMainWindowWidth = 800.0f;
 inline constexpr float kMainWindowHeight = 934.0f;
 /// The markup's `min-height` — what folding a section never shrinks the window below.
 inline constexpr float kMainWindowMinHeight = 420.0f;
-/// Measured on a rig: what the editor was dragged to and asked to open at.
-inline constexpr float kRulesWindowWidth = 1164.0f;
+/// The rule editor as the operator locked it on 2026-09-30 (HANDOFF §0.5): 1000 wide — the log
+/// left its column for a sheet along the bottom, and the list took 46 px of that room — and the
+/// 872 a rig measured and asked to open at.
+inline constexpr float kRulesWindowWidth = 1000.0f;
 inline constexpr float kRulesWindowHeight = 872.0f;
 /// And the patch editor, which had no size of its own at all and so opened at its markup
 /// minimum — 820x520, which is too short to see a twelve-channel head's map and the movement
