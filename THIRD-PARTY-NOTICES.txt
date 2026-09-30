@@ -259,6 +259,7 @@ r8brain-free-src
 https://github.com/avaneev/r8brain-free-src
 Licence: MIT
 Used for: resampling
+Includes the FFT package by Takuya Ooura (fft4g), Copyright (C) 1996-2001 Takuya OOURA, http://www.kurims.kyoto-u.ac.jp/~ooura/fft.html, modified by r8brain's author as that package's licence permits: wrapped in a class, its tables made once.
 
 --- LICENSE ---
 

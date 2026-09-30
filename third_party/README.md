@@ -30,9 +30,15 @@ Omitted from the package, deliberately:
   where PortAudio reports it as a host API, which the SDK README permits.
 - `Steinberg ASIO Licensing Agreement.pdf` — the proprietary alternative, not chosen
 
-`host/pc/asiolist.cpp` frees an array with `delete` instead of `delete[]`. PortAudio's
-own `FindASIO.cmake` patches this at configure time; `cmake/asiosdk.cmake` applies the
-same patch into the build directory so the vendored tree stays pristine.
+The vendored SDK is never edited. `cmake/asiosdk.cmake` writes a patched copy of
+`host/pc/asiolist.cpp` into the build directory, each edit an exact-text replacement that stops
+the configure if upstream's text has changed: an array freed with `delete` instead of
+`delete[]` (which PortAudio's own `FindASIO.cmake` also fixes), two unbounded `strcpy`s of a
+driver's registry name into a 128-byte field, and the check that a driver's DLL exists, which
+could never fail and is asked of Windows instead. PortAudio's ASIO host is patched the same way,
+by `cmake/pa_asio_patch.cmake`: it reports the rate an interface is running at, never re-clocks
+one, keeps the driver's reset and rate-change requests for takt4 to answer, and can be handed
+the answers of a driver scan made in a separate process — that file's header says why each.
 
 ## Two unrelated things called ASIO
 

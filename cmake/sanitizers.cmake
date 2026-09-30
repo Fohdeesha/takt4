@@ -54,8 +54,8 @@ if(MSVC)
   #
   # `/fsanitize=address` makes the MSVC STL annotate the unused capacity of `std::string` and
   # `std::vector` so ASan can catch a read past `size()` inside the allocation. It is a
-  # per-object setting and the linker refuses to mix: Slint ships Skia, ICU, harfbuzz and
-  # spirv-cross as C++ built inside its cargo build, with no ASan and so no annotations, and
+  # per-object setting and the linker refuses to mix: Slint ships Skia and spirv-cross (and, before
+  # 1.18, ICU and harfbuzz) as C++ built inside its cargo build, with no ASan and so no annotations, and
   # linking `takt4_ui_tests` against them gave 1600 x `LNK2038 mismatch detected for
   # 'annotate_string'` (measured 2026-09-16). Nothing here can instrument those.
   #

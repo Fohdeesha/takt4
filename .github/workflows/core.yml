@@ -88,8 +88,8 @@ jobs:
 
       # The Windows and Linux runners have no audio devices; the macOS runner exposes
       # virtual CoreAudio ones, which the [hardware] test above opens. This proves the
-      # console tool starts, brings PortAudio up with the expected host APIs, and copes
-      # with an empty device list.
+      # console tool starts, brings PortAudio up and copes with an empty device list; the
+      # host APIs it lists are printed for a reader, not checked.
       - name: Console tool
         run: |
           ${{ matrix.cli }} --version
