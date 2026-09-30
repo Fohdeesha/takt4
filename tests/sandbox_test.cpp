@@ -99,6 +99,9 @@ TEST_CASE("the sandbox lets a datagram reach a test's own receiver and nothing e
     SECTION("a network that is down still fails the way a real one does") {
         // 0.0.0.0/8 is let through for the tests of a send that fails, because no system sends
         // there: the failure is the operating system's own.
+        if constexpr (!takt4::testing::kUnsendableFails) {
+            SKIP(takt4::testing::kUnsendableSkip);
+        }
         takt4::output::OscSender sender(takt4::testing::kUnsendableHost, 9000);
         CHECK_FALSE(sender.send(bytes));
         CHECK_FALSE(sender.problem().empty());
@@ -159,6 +162,9 @@ TEST_CASE("the sandbox opens no MIDI port, and still says when one is not there"
         takt4::output::MidiOutput missing("takt4 test - no such MIDI port exists");
         FAIL("a port that is not there opened");
     } catch (const std::runtime_error& error) {
+        if (std::string(error.what()).find("no usable MIDI API") != std::string::npos) {
+            SKIP("no MIDI system on this machine: " << error.what());
+        }
         CHECK(std::string(error.what()).find("no port matching") != std::string::npos);
     }
 

@@ -676,6 +676,15 @@ public:
             std::free(value);
         }
         _wputenv_s(L"TAKT4_SETTINGS_DIR", L"");
+#else
+        // Linux too: it did nothing here, so the process's own test folder stayed named and the
+        // test below asked after a folder nobody had made (the first linux-tsan run to reach it,
+        // 2026-09-30).
+        if (const char* value = std::getenv("TAKT4_SETTINGS_DIR"); value != nullptr) {
+            saved_ = value;
+            had_ = true;
+        }
+        ::unsetenv("TAKT4_SETTINGS_DIR");
 #endif
     }
     ~NoSettingsFolder() {
@@ -683,13 +692,22 @@ public:
         if (!saved_.empty()) {
             _wputenv_s(L"TAKT4_SETTINGS_DIR", saved_.c_str());
         }
+#else
+        if (had_) {
+            ::setenv("TAKT4_SETTINGS_DIR", saved_.c_str(), 1);
+        }
 #endif
     }
     NoSettingsFolder(const NoSettingsFolder&) = delete;
     NoSettingsFolder& operator=(const NoSettingsFolder&) = delete;
 
 private:
+#if defined(_WIN32)
     std::wstring saved_;
+#else
+    std::string saved_;
+    bool had_ = false;
+#endif
 };
 
 } // namespace

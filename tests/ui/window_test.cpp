@@ -1645,6 +1645,10 @@ TEST_CASE("a MIDI control input that is not here says so on its own line until i
     CHECK(controller.window().get_control_error());
     const std::string reading(controller.window().get_control_reading());
     INFO(reading);
+    if (reading.find("no usable MIDI API") != std::string::npos) {
+        // A machine with no MIDI system at all — a Linux runner has no ALSA sequencer.
+        SKIP("no MIDI system on this machine: " << reading);
+    }
     CHECK(reading.rfind("NOT OPEN", 0) == 0);
     CHECK(reading.find("\"takt4 test - a controller left at home\" is not on this machine") !=
           std::string::npos);
@@ -1704,6 +1708,9 @@ TEST_CASE("an output that reaches nothing says why on its own row, for as long a
     REQUIRE(row);
     const std::string problem(row->problem);
     INFO(problem);
+    if (problem.find("no usable MIDI API") != std::string::npos) {
+        SKIP("no MIDI system on this machine: " << problem); // a Linux runner has no ALSA
+    }
     CHECK(problem.find("no MIDI device called \"takt4 test - a desk left at home\"") !=
           std::string::npos);
 
@@ -5458,6 +5465,9 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     // The socket refuses every send to `kUnsendableHost`, the stand-in here, since no test can
     // pull a cable. Nothing is started: the outputs run from launch (H5), and the status has
     // to say so before anybody presses anything.
+    if constexpr (!takt4::testing::kUnsendableFails) {
+        SKIP(takt4::testing::kUnsendableSkip);
+    }
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;
@@ -5507,6 +5517,9 @@ TEST_CASE("the settings notice and what the first redraws find are said together
     // the first redraw that found an output it could not reach wrote over it, before anybody
     // could have read it. For its first seconds, what the window finds out on its own joins what
     // it met starting; what the operator does still says what it did.
+    if constexpr (!takt4::testing::kUnsendableFails) {
+        SKIP(takt4::testing::kUnsendableSkip);
+    }
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;

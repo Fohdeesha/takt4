@@ -273,6 +273,9 @@ TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][art
     // The audit's T3 and M12: a network that is down, or a cable that is out, fails every
     // send — and nothing said so; the node simply went dark. See `kUnsendableHost` for what
     // stands in for that here.
+    if constexpr (!takt4::testing::kUnsendableFails) {
+        SKIP(takt4::testing::kUnsendableSkip);
+    }
     ArtNetSender node(takt4::testing::kUnsendableHost, 6454);
     CHECK(node.problem().empty()); // nothing has been tried yet
     const std::array<std::uint8_t, 3> levels{255, 0, 0};
