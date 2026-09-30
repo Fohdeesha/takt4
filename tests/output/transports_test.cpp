@@ -976,7 +976,9 @@ struct Wires {
         }
         std::size_t n = 0;
         for (const TimedWire::Message& message : found->second->messages) {
-            n += !message.bytes.empty() && message.bytes[0] == status ? 1 : 0;
+            if (!message.bytes.empty() && message.bytes[0] == status) {
+                ++n;
+            }
         }
         return n;
     }

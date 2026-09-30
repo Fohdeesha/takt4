@@ -472,7 +472,9 @@ TEST_CASE("IDENTIFY puts a lit fixture back as it found it", "[ui][dmx]") {
     patch.setUniverse("5");
     patch.setAddress(70); // red, green, blue on DMX 70-72
     takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
-    const auto at = [&engine](int channel) { return int{engine.levels(5)[channel - 1]}; };
+    const auto at = [&engine](int channel) {
+        return int{engine.levels(5)[static_cast<std::size_t>(channel - 1)]};
+    };
     const auto settle = [&](double seconds) {
         const double start = rig.runner.elapsed();
         engine.tick(start + seconds);
@@ -916,7 +918,8 @@ namespace {
 /// The patch editor on the headless platform at a size that shows a twelve-channel map, with
 /// the gestures the tests below are made of. Every gesture lets what Slint runs a loop late run.
 struct Patching {
-    explicit Patching(FixturesController& patch) : patch(patch), window(patch.window().window()) {
+    explicit Patching(FixturesController& controller)
+        : patch(controller), window(controller.window().window()) {
         patch.show();
         window.dispatch_scale_factor_change_event(1.0f);
         window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
