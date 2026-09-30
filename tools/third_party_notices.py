@@ -79,14 +79,21 @@ def components(build):
                   "The upstream project states no licence for its code or its trained models."),
         component("Slint", "https://slint.dev", "GPL-3.0-only (Slint's triple licence; takt4 takes the GPL option)",
                   "the user interface", [deps / "slint-src/LICENSE.md"]),
-        # The two typefaces the main window is set in (HANDOFF §0.5), embedded in the binary from
-        # assets/fonts. The files are Google Fonts' own instances, fetched 2026-09-29.
+        # The typefaces the windows are set in (HANDOFF §0.5), embedded in the binary from
+        # assets/fonts. The files are Google Fonts' own instances, fetched 2026-09-29 and — Chivo
+        # Mono — 2026-09-30.
         component("Archivo", "https://github.com/Omnibus-Type/Archivo", "OFL-1.1",
-                  "the main window's typeface (Medium, Bold and ExtraBold)",
+                  "the windows' typeface (Medium, Bold and ExtraBold)",
                   [ROOT / "assets/fonts/archivo/OFL.txt"]),
         component("DM Mono", "https://github.com/googlefonts/dm-mono", "OFL-1.1",
                   "the main window's numbers and addresses (Medium)",
                   [ROOT / "assets/fonts/dm-mono/OFL.txt"]),
+        component("Chivo Mono", "https://github.com/Omnibus-Type/Chivo", "OFL-1.1",
+                  "the rule editor's numbers, addresses and codes (Medium)",
+                  [ROOT / "assets/fonts/chivo-mono/OFL.txt"],
+                  "Modified: takt4's copy has no 'liga' feature, so that \"ff\" in a colour code is "
+                  "two letters; nothing else in the font is changed. Made by "
+                  "tools/drop_font_feature.py from Google Fonts' static Medium instance."),
         component("Skia, prebuilt by rust-skia", "https://skia.org", "BSD-3-Clause", "drawing the user interface",
                   [skia / "skia-LICENSE.txt"]),
         component("expat, in Skia", "https://libexpat.github.io", "MIT", "", [skia / "expat-COPYING.txt"]),
