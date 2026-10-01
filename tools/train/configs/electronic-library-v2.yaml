@@ -1,4 +1,4 @@
-# The library fine-tune, second recipe (TRACKING-PROPOSAL.md §7.13): the library is the
+# The library fine-tune, second recipe: the library is the
 # objective and Ballroom is no longer a gate.
 #
 # What changed from electronic-library.yaml, and why:
@@ -15,8 +15,8 @@
 #     application ships with it off, settings.hpp) and a bar of four alone (val_meters), the
 #     shipped default since the same day. With the window off the octave the model publishes
 #     is the octave the operator sees, so the selection holds it to the labels' convention.
-#   - The learning rate is 2e-4, twice v2-v4's: the 1e-4 was chosen to slow Ballroom's slide
-#     (§7.9), and Ballroom no longer decides anything here. Still under BeatNet+'s own 5e-4.
+#   - The learning rate is 2e-4, twice v2-v4's: the 1e-4 was chosen to slow Ballroom's slide,
+#     and Ballroom no longer decides anything here. Still under BeatNet+'s own 5e-4.
 name: electronic-library-v2
 pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt
 sets:

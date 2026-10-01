@@ -40,11 +40,11 @@ CONFIGS = {
     "gmain": ["--bpm", "off", "--weights", "generic-main"],
     "afnp": ["--bpm", "off", "--weights", "af-non-percussive"],
     # The particle filter on a 100 fps state space (tools/dump_statespace.py --fps 100
-    # --name fps100), the activations interpolated by the engine: option B of
-    # TRACKING-PROPOSAL.md §4 applied to the particle filter. Measured worse than at 50.
+    # --name fps100), the activations interpolated by the engine: the finer grid applied
+    # to the particle filter. Measured worse than at 50.
     "pf100": ["--bpm", "off", "--decoder", "pf", "--statespace", "fps100"],
     "pf100fold70": ["--bpm", "70-140", "--decoder", "pf", "--statespace", "fps100"],
-    # The exact forward filter (option C) as it ships — the peak emission rule — window
+    # The exact forward filter as it ships — the peak emission rule — window
     # off and on, and the two other emission rules it was measured against.
     "fwd": ["--bpm", "off", "--decoder", "forward"],
     "fwd70": ["--bpm", "70-140", "--decoder", "forward"],

@@ -6,7 +6,7 @@
     python tools/train/distil.py ... --limit 20                      # a taste first
     python tools/train/distil.py ... --device cpu
 
-TRACKING-PROPOSAL.md §3.2 and §7.10: the data the fine-tune is missing is the rig's own
+The data the fine-tune is missing is the rig's own
 music — its tempo band and its feel — and nobody has annotated it. Beat This! (CPJKU,
 ISMIR 2024; the `final0` checkpoint at references/beat-this/final0.ckpt, the same system
 the harness uses as its reference) reads each whole track non-causally and writes its

@@ -1,6 +1,6 @@
 """Paths, set definitions and readers shared by the fine-tune pipeline in this directory.
 
-TRACKING-PROPOSAL.md §7.5, steps 2 to 4: lay the annotated sets out for BeatNet+'s
+The pipeline: lay the annotated sets out for BeatNet+'s
 training code, extract the features it trains on, check every annotation against its
 audio, fine-tune from `generic_weights.pt` with Ballroom in the mix, convert. Each stage
 is a script that hands the next one files:
@@ -68,7 +68,7 @@ SETS = {
 #: layout.py takes them by name only.
 OWN_SETS = ("library", "operator")
 
-#: Tracks of `references/audio` (the proposal's 23, and the operator's own material) that
+#: Tracks of `references/audio` (the harness's 23, and the operator's own material) that
 #: turn up in a training set. Held out, so the gate measures generalisation.
 HELD_OUT = {
     "raveform": {"LiJrhQC8oqU": "808 State - In Yer Face (Bicep Remix): references/audio"},
@@ -121,7 +121,7 @@ def label_mismatches(tracks, jobs=8):
 
     finetune.py trains from the `.gt.npy` and validates against the beats, so where the
     two disagree a run learns one labelling and is selected on another. That is how v4 and
-    v5 were run (TRACKING-PROPOSAL.md §7.16): 254 library tracks trained at half time and
+    v5 were run: 254 library tracks trained at half time and
     scored against their annotations at full time."""
     from concurrent.futures import ThreadPoolExecutor
 

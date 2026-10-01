@@ -34,7 +34,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import DATASETS  # noqa: E402
 
-BEATS_PER_BAR = [4]     # the decoder the rig runs since 0.9.1; §7.13.3
+BEATS_PER_BAR = [4]     # the decoder the rig runs since 0.9.1
 TRIM = 5.0              # off both ends, as tools/refeval/score.py trims; mir_eval's
                         # trim_beats, and so evaluate.py, take only the first five seconds
 HEADER = "stem\tmadmom_bpm\tteacher_bpm\tbeatF\tdownbeatF\tbpm_ratio\tinput\n"
@@ -146,9 +146,8 @@ def main():
     # madmom is given the original file where the set records one (distil.py's
     # sources.tsv), not the 22.05 kHz WAV every other tool reads: its filterbank reaches
     # 17 kHz and its networks were trained on 44.1 kHz audio, and a WAV at 22.05 kHz leaves
-    # everything above 11 kHz empty (the 2026-09-25 audit's P12; measured on 2026-09-26 in
-    # tests/data/tracking/refeval/README.md). The rows written before then were all made
-    # from the WAVs; their `input` column is empty.
+    # everything above 11 kHz empty (measured on 2026-09-26). The rows written before then
+    # were all made from the WAVs; their `input` column is empty.
     sources = {}
     if (root / "sources.tsv").exists():
         for line in (root / "sources.tsv").read_text(encoding="utf-8").splitlines():

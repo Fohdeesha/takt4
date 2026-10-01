@@ -7,8 +7,8 @@ off, bars of four or of three and four — through takt4-cli.
     python tools/train/valset_eval.py --set library --weights ... --run electronic-library-v2   # that run's own tracks
 
 finetune.py validates with `--bpm off` (the way the published trackers are measured), but
-the application runs with the operator's 70-140 window on, and TRACKING-PROPOSAL.md
-§7.7 measured bars of four alone as the better decoder on electronic material. A weight
+the application runs with the operator's 70-140 window on, and bars of four alone
+measured as the better decoder on electronic material. A weight
 set's number for *the rig* is the one measured the rig's way, and the difference between
 the two is the octave: a track the teacher annotated at 170 and the labels halve to 85 is
 scored 0.67 with the window off if the model publishes 170 — every other beat matches —

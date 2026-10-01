@@ -41,11 +41,11 @@ struct Command {
         ///
         /// On a decoder that can hold a tempo (`BeatDecoder::canHoldTempo`) the pin also
         /// holds the tempo being published, so the decoder tracks phase and nothing else,
-        /// and the release lets it go — TRACKING-PROPOSAL.md §3.4's *tempo hold*, behind
+        /// and the release lets it go — the *tempo hold*, behind
         /// the control the window already has. On one that cannot, the pin is the
         /// tracker's alone, as it always was.
         SetLockPinned,
-        /// §3.4's tempo hold, named directly: pin the decoder to `bpm` and track phase
+        /// The tempo hold, named directly: pin the decoder to `bpm` and track phase
         /// only, or release it with zero. Ignored by a decoder that cannot.
         HoldTempo,
     };

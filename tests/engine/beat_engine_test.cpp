@@ -691,7 +691,7 @@ TEST_CASE("a tapped tempo reaches the tracker and moves the window", "[engine]")
 
 TEST_CASE("under the forward filter a tap is a prior, and the number stays with the beats",
           "[engine][forward]") {
-    // TRACKING-PROPOSAL.md §2.6: with the window inside the decoder, a tap moves the window
+    // With the window inside the decoder, a tap moves the window
     // and the decoder weighs it as evidence — an octave outside it has to keep out-arguing
     // a per-frame penalty. On a track whose octave is ambiguous that decides it; on a drum
     // machine playing plain quarter notes at 128 the evidence for 128 outweighs a window
@@ -867,7 +867,7 @@ TEST_CASE("a command crosses from another thread into the inference thread", "[e
 
 TEST_CASE("the forward decoder runs at twice the network's rate and tracks the excerpt",
           "[engine][forward]") {
-    // TRACKING-PROPOSAL.md §2.4 and §2.5 through the whole engine: the forward filter at
+    // The forward decoder through the whole engine: the forward filter at
     // 100 fps, fed the network's activations with the frames between them interpolated,
     // and the tempo state machine at that rate. Everything a consumer sees is in seconds
     // or flagged, so nothing above the engine has to know.

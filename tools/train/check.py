@@ -7,7 +7,7 @@
 A fetched audio file is not necessarily the one that was annotated: Harmonix's YouTube
 versions are different edits of most tracks (durations differ by a median of ten
 seconds), any set can hold a re-upload, and an encoder can move the whole file by a
-fraction of a beat. Two witnesses are heard, both TRACKING-PROPOSAL.md §2.1's on/off
+fraction of a beat. Two witnesses are heard, both by an on/off
 ratio — the mean of a signal on the annotated beats (best of ±2 frames) over its mean
 halfway between them — for every time shift within half a beat, in 20 ms steps, over the
 whole track and per 60 s window:

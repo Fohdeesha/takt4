@@ -10,7 +10,7 @@ two have to be one labelling, and finetune.py refuses to start when they are not
 stopped being one on 2026-09-11: `layout.py --sets library` wrote the library's entries
 again from the annotations and dropped octave.py's fields, and the `.gt.npy` that octave.py
 had halved stayed halved. 254 tracks trained at half time and were scored at full time,
-and v4 and v5 were selected that way (TRACKING-PROPOSAL.md §7.16).
+and v4 and v5 were selected that way.
 
 Which side to repair is a decision about the labels, not about the files:
 

@@ -1,4 +1,4 @@
-"""Lay the annotated sets out for BeatNet+'s training code (TRACKING-PROPOSAL.md §7.5, step 2).
+"""Lay the annotated sets out for BeatNet+'s training code.
 
     python tools/train/layout.py               # all four sets
     python tools/train/layout.py --seed 42     # the split's seed (42 is the default)
@@ -39,7 +39,7 @@ train/validation split per set that a track keeps across re-layouts (`assign_spl
     teacher_disagree        Beat This!'s own three seeds agree below 0.7 beat F
     teacher_disagree_cross  a second teacher of another lineage (madmom, teacher_agree.py)
                             agrees with the label below 0.7 beat F
-    teacher_octave_cross    ...and reads a whole octave from it, which is §7.13.2's central
+    teacher_octave_cross    ...and reads a whole octave from it, which is the central
                             failure mode and the one the seed filter is blindest to
 
 check.py adds the activation-based flags later. A flag only records what was measured:
@@ -283,7 +283,7 @@ MIN_TEACHER_AGREEMENT = 0.7
 #:
 #: madmom is *weaker* than Beat This! on electronic music, so a disagreement does not mean
 #: the label is wrong — it means the label has no independent confirmation. These flags are
-#: for **excluding or downweighting, never for relabelling** (TRACKING-PROPOSAL.md §7.15).
+#: for **excluding or downweighting, never for relabelling**.
 MIN_TEACHER_AGREEMENT_CROSS = 0.7
 
 
@@ -321,7 +321,7 @@ def read_teacher_cross(path):
 
 def is_octave(ratio):
     """madmom a whole octave from the teacher — teacher_agree.py's own test. These are the
-    labels worth dropping first: the octave is §7.13.2's central failure mode, and the seed
+    labels worth dropping first: the octave is the central failure mode, and the seed
     filter is at its blindest exactly here."""
     return abs(ratio - 2.0) < 0.1 or abs(ratio - 0.5) < 0.05
 

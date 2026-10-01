@@ -24,7 +24,7 @@ namespace takt4::assets {
 /// them: they point at the files, and want no three megabytes of literal in every link.
 
 /// The BeatNet+ weights — `assets/weights/electronic.bin` since 0.9.1 (`generic` fine-tuned
-/// on the operator's library, TRACKING-PROPOSAL.md §7.13), in `ModelWeights::fromBytes` form.
+/// on the operator's library), in `ModelWeights::fromBytes` form.
 std::span<const std::byte> weights();
 
 /// The bar-pointer state space — `assets/statespace/default.bin`, for

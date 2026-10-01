@@ -1,4 +1,4 @@
-# The electronic fine-tune, second recipe (TRACKING-PROPOSAL.md §7.9).
+# The electronic fine-tune, second recipe.
 #
 # What the first evening's runs established: the offline DBN that validated them is
 # not the decoder that ships. The genre-repeat run's epoch-30 checkpoint scored +0.07

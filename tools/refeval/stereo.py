@@ -1,5 +1,5 @@
 """What listening to one side of a stereo feed costs the tracker, against the average of both
-sides the model was trained and every gate was measured on — TRACKING-PROPOSAL.md §7.18.
+sides the model was trained and every gate was measured on.
 
     python tools/refeval/stereo.py harness      # the 23 tracks, window off and on
     python tools/refeval/stereo.py giantsteps   # GiantSteps' 664 previews, tempo only

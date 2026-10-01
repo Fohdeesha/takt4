@@ -1,4 +1,4 @@
-"""Fine-tune BeatNet+ from `generic_weights.pt` on the laid-out sets (TRACKING-PROPOSAL.md §7.5, step 3).
+"""Fine-tune BeatNet+ from `generic_weights.pt` on the laid-out sets.
 
     python tools/train/finetune.py --config tools/train/configs/electronic.yaml
     python tools/train/finetune.py --config ... learning_rate=0.0001 name=electronic-lr1e-4
@@ -25,7 +25,7 @@ What is not, and why:
     identical crops. Here the crop starts are drawn in the main process by a sampler
     seeded by (seed, epoch) and handed to the workers with the index; every epoch is a
     different, reproducible draw, whatever the worker count.
-  * **Validation per set, on fixed windows.** The proposal's gate is per set: Ballroom
+  * **Validation per set, on fixed windows.** The gate is per set: Ballroom
     may lose at most 0.01 beat F (it is what the model already knows), the electronic
     sets have to gain. So every validation decodes each set's validation split with
     madmom's DBN (beats 3 or 4 to the bar, 55–215 BPM, as the C++ forward filter has it)
@@ -68,8 +68,8 @@ DEFAULTS = {
     "exclude_flags_per_set": {"harmonix": ["unverified"]},
     # {flag: repeats}: a track carrying the flag is trained on this many times instead of its
     # set's weight, rather than being dropped. For a label a second teacher will not confirm,
-    # where dropping it also removes what it had to teach — see §7.16, where excluding the
-    # octave disagreements outright cost the harness 0.03 beat F and broke three octaves.
+    # where dropping it also removes what it had to teach — excluding the octave
+    # disagreements outright (v4) cost the harness 0.03 beat F and broke three octaves.
     # Carrying several such flags takes the lowest. It never *raises* a weight, and a flag
     # named in exclude_flags is excluded, not downweighted.
     "downweight_flags": {},
@@ -213,7 +213,7 @@ def check_labels(train, val_sets):
 
     Training reads the `.gt.npy`; validation, and so selection, reads the beats. v4 and v5
     were run with 254 library tracks halved in one and not the other, and their selection
-    read the difference as the model improving (TRACKING-PROPOSAL.md §7.16)."""
+    read the difference as the model improving."""
     tracks = sorted({(e.set, e.id, e.beats) for e in train} |
                     {(e.set, e.id, e.beats) for entries in val_sets.values() for e in entries})
     t = time.time()

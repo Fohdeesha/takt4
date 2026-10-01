@@ -75,7 +75,7 @@ Run track(ForwardFilter& filter, const std::vector<std::pair<float, float>>& act
 
 TEST_CASE("the forward filter's state space is madmom's bar-pointer model at 100 fps",
           "[tracking][forward]") {
-    // The numbers TRACKING-PROPOSAL.md §2.4 quotes for the prototype: at 55-215 BPM and
+    // The numbers measured for the prototype: at 55-215 BPM and
     // 100 fps madmom's BeatStateSpace holds every whole-frame interval from 28 to 109, 82
     // of them, 5617 states to a beat; meters 3 and 4 make 7 beats, 39319 states.
     ForwardFilter::Options both;
@@ -193,7 +193,7 @@ TEST_CASE("the forward filter tracks the synthetic excerpt at twice the network'
     const std::vector<std::pair<float, float>> activations = upsampled("synthetic", 2);
     REQUIRE(activations.size() == 999);
 
-    // The prototype's rule first, since it is the one TRACKING-PROPOSAL.md's numbers were
+    // The prototype's rule first, since it is the one the first numbers were
     // measured with; the two others follow in their own sections.
     ForwardFilter::Options mapRule;
     mapRule.emission = ForwardFilter::Emission::MapCrossing;
@@ -331,7 +331,7 @@ TEST_CASE("the forward filter is deterministic and resettable", "[tracking][forw
 }
 
 TEST_CASE("a held tempo is tracked in phase only", "[tracking][forward]") {
-    // TRACKING-PROPOSAL.md §3.4's tempo hold: the operator pins a tempo and the filter
+    // The tempo hold: the operator pins a tempo and the filter
     // keeps it, whatever the network says. The drum machine plays 128; held at 100 the
     // filter reports 100 — 60 frames at 100 fps — for as long as it is held.
     const std::vector<std::pair<float, float>> activations = upsampled("synthetic", 2);
@@ -390,7 +390,7 @@ TEST_CASE("a held tempo is tracked in phase only", "[tracking][forward]") {
 }
 
 TEST_CASE("the operator's window is evidence inside the filter", "[tracking][forward]") {
-    // §2.6: the window as a per-frame weight on every tempo outside it. The drum machine's
+    // The window as a per-frame weight on every tempo outside it. The drum machine's
     // quarter notes at 128 are clear enough that the prototype's gentle 0.97 loses the
     // argument to them — that is the window as a preference, and it is right to lose. A
     // heavier weight wins it, which is what shows the plumbing rather than the tuning:

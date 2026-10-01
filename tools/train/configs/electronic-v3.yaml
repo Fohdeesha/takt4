@@ -1,4 +1,4 @@
-# The electronic fine-tune, third recipe (TRACKING-PROPOSAL.md §7.9).
+# The electronic fine-tune, third recipe.
 #
 # v2 (halved labels, genre repeats, CLI validation) gained 0.06 on Raveform's and
 # osu2beat's validation tracks through the shipped decoder, but on the operator's 23

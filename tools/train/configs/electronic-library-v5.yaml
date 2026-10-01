@@ -1,7 +1,7 @@
 # The library fine-tune, fifth recipe: v2 with the labels a second teacher will not confirm
 # at the octave *downweighted* rather than dropped.
 #
-# CORRECTED 2026-09-26 (TRACKING-PROPOSAL.md §7.16's correction). This run and v4 trained the
+# CORRECTED 2026-09-26. This run and v4 trained the
 # library's 254 half-time tracks from their halved .gt.npy, while the manifest, which
 # validation reads, had lost octave.py's halving on 2026-09-11 — so selection scored that kind
 # of track at full time. They did not differ from v2 in one thing each, and the validation
@@ -15,7 +15,7 @@
 # shipped set, with three octaves broken (808 State 125 -> 62, Alias 90 -> 179, Moonlake
 # 100 -> 200) and none fixed; the soup of epochs 48-96 was closer, -0.012, and still broke two.
 # Meanwhile the library's own validation went *up*, 0.8133 -> 0.9084 on the tracks v2 and v4
-# both scored. The selection metric pointed the wrong way, which is §7.15's warning arriving:
+# both scored. The selection metric pointed the wrong way:
 # fitting one teacher is not becoming correct.
 #
 # The reading that fits: an octave-ambiguous track is the only thing that teaches octave

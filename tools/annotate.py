@@ -1,4 +1,4 @@
-"""Annotate a track by tapping along to it — TRACKING-PROPOSAL.md §3.4, from any audio format.
+"""Annotate a track by tapping along to it, from any audio format.
 
     python tools/annotate.py "D:/Music/Artist/Album/03 Track.flac"      # <track>.beats beside it
     python tools/annotate.py track.flac --dataset                        # ...and into references/datasets/operator/
@@ -20,8 +20,8 @@ and the raw .taps beside it — goes where asked:
   * --harness NAME: for one of references/audio's 23 tracks (NAME a substring of its stem in
     tests/data/tracking/refeval/ref_beatthis/), into ref_operator/<stem>.beats beside the two
     machine references, so `tools/refeval/score.py --ref ref_operator ...` scores the trackers
-    against the operator's own beats — §6's missing ground truth. The WAV is the harness's
-    own decode (tools/refeval/decode_all.py).
+    against the operator's own beats — the ground truth the project otherwise lacks. The
+    WAV is the harness's own decode (tools/refeval/decode_all.py).
 
 The decode is ffmpeg's, to the mono 22050 Hz WAV every tool reads, kept under
 references/refeval-work/annotate/ so a second pass over the same track does not decode again.

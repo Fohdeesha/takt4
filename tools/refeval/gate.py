@@ -1,4 +1,4 @@
-"""The electronic-material gate: TRACKING-PROPOSAL.md's Appendix A, held to a committed
+"""The electronic-material gate: every score on the 23 tracks, held to a committed
 baseline the way tools/diff_eval.py holds Ballroom to tests/data/tracking/evaluation/.
 
     python tools/refeval/run_takt4.py nofold fold70     # the traces, from the build under test
@@ -163,7 +163,7 @@ def main(argv):
             "cli": build["cli"],
             "cli_sha256": build["sha256"],
             "cli_version": build["version"],
-            "note": "tools/refeval/gate.py --write; see tests/data/tracking/refeval/README.md",
+            "note": "tools/refeval/gate.py --write",
         }
         with open(BASELINE, "w", encoding="utf-8", newline="\n") as f:
             json.dump(fresh, f, indent=2, sort_keys=True)

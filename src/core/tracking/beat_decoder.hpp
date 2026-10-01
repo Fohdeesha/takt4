@@ -12,10 +12,10 @@ enum class Decoder : std::uint8_t {
     /// shipped until 2026-09-08, and what the Phase 4 parity gate still holds to upstream.
     ParticleFilter,
     /// An exact forward filter over madmom's joint bar-pointer state space
-    /// (`ForwardFilter`): TRACKING-PROPOSAL.md §2.4. **The default** since 2026-09-08,
-    /// when it met every one of §5's exit criteria — Ballroom beat F 0.956 against the
-    /// particle filter's 0.894 and downbeat F 0.943 against 0.850; on the electronic
-    /// material `tests/data/tracking/refeval/README.md` records, beat F 0.895 against
+    /// (`ForwardFilter`). **The default** since 2026-09-08, when it met every criterion set
+    /// for replacing the particle filter — Ballroom beat F 0.956 against the particle
+    /// filter's 0.894 and downbeat F 0.943 against 0.850; on the electronic material
+    /// `tools/refeval/gate.py` measures, beat F 0.895 against
     /// 0.864 and downbeat F 0.708 against 0.602 over the tracks the references agree on,
     /// timing no worse, and half the tempo jumps and a third fewer unlocks over 91
     /// minutes.
@@ -28,15 +28,15 @@ enum class Decoder : std::uint8_t {
 /// Two of them exist and the engine holds one through this. The particle filter is
 /// upstream's algorithm and runs on the network's 50 Hz frames; the forward filter is an
 /// exact Bayesian filter over the same kind of state space and runs at 100 Hz on
-/// activations the engine interpolates — TRACKING-PROPOSAL.md §2.5 measures the finer grid
+/// activations the engine interpolates — the finer grid measured
 /// as the largest cheap gain there is. `secondsPerFrame()` is how a decoder says which,
 /// and everything downstream — `TempoTracker`'s frame counts, the trace, a beat's time —
 /// is derived from it rather than assumed.
 ///
-/// The two optional abilities are the ones the proposal puts *inside* the decoder because
+/// The two optional abilities are the ones that belong *inside* the decoder because
 /// they cannot be done well outside it: the operator's tempo window as evidence rather
-/// than as a relabelling afterwards (§2.6), and a tempo hold that tracks phase only
-/// (§3.4). A decoder that lacks one says so, and the engine leaves the corresponding
+/// than as a relabelling afterwards, and a tempo hold that tracks phase only. A decoder
+/// that lacks one says so, and the engine leaves the corresponding
 /// `TempoTracker` mechanism in place instead.
 ///
 /// `process` and `reset` run on the inference thread and allocate nothing; construction

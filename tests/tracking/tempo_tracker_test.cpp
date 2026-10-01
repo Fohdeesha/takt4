@@ -202,7 +202,7 @@ TEST_CASE("the published tempo is the one the beats are on", "[tracking][tempo]"
 
 TEST_CASE("the fold and the beat-octave rule do not correct the same octave twice",
           "[tracking][tempo]") {
-    // TRACKING-PROPOSAL.md §2.10, measured on 2026-09-08 with the 70-140 window on: "02 -
+    // Measured on 2026-09-08 with the 70-140 window on: "02 -
     // Jamie Lidell - Your Sweet Boom" is a 107 BPM track whose cloud sits at 214 and whose
     // beats arrive at 107. The fold halved the cloud's 214 to 107, and then the beat-octave
     // rule halved *that* to 53.5 — for the whole track, at Link, MIDI clock and OSC. With

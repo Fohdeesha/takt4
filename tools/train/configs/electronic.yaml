@@ -1,6 +1,6 @@
 # The "electronic" weight set: BeatNet+'s generic weights fine-tuned on Raveform,
 # osu2beat2025 and Harmonix's Dance/Electronic share, with Ballroom in the mix so the
-# model does not forget what it knows (TRACKING-PROPOSAL.md §3.1, §7.5).
+# model does not forget what it knows.
 #
 #   python tools/train/finetune.py --config tools/train/configs/electronic.yaml
 #
@@ -14,7 +14,7 @@ sets:
   osu2beat: 1
   harmonix: 1
   ballroom: 1
-harmonix_genres: ["Dance/Electronic"]     # metadata.csv's genre column: the EDM share (§7.4)
+harmonix_genres: ["Dance/Electronic"]     # metadata.csv's genre column: the EDM share
 exclude_flags: [held_out, duration_mismatch, few_beats, misaligned, drifting]
 exclude_flags_per_set:
   harmonix: [unverified]                  # check.py: its audio is a different edit unless shown otherwise

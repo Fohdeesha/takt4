@@ -4,12 +4,12 @@ where the others do.
     python tools/train/shift_labels.py osu2beat 1        # one frame (20 ms) later
     python tools/train/shift_labels.py osu2beat 0        # back to the annotation
 
-Measured against the pretrained model's activation peaks (TRACKING-PROPOSAL.md §7.8),
+Measured against the pretrained model's activation peaks,
 Raveform's and Ballroom's labels sit on the same frame (per-track median offset 0 ms,
 means +6 and +9), osu2beat2025's one frame earlier (+20 ms median, +24 mean): rhythm-game
 timing points mark the onset itself, the other sets' annotators a frame after. A model
 fine-tuned on that mix learns to fire earlier, and on material with soft onsets — slow
-Waltzes — the shipped decoder's beats came out 50–70 ms before the annotation (§7.9).
+Waltzes — the shipped decoder's beats came out 50–70 ms before the annotation.
 
 Writes `<id>.shifted.beats` beside the annotation, points the manifest's `beats` and
 `beats_original` at it (`beats_annotated` keeps the true original, so octave.py, which

@@ -6,7 +6,7 @@ Two kinds of data, kept apart on purpose:
   * **Committed**: the two offline reference systems' beat files, under
     `tests/data/tracking/refeval/{ref_beatthis,ref_madmom}/`, one `<stem>.beats` per
     track in the Ballroom layout (`<seconds> TAB <beat in bar>`, downbeat = 1). Forty-six
-    text files, a quarter of a megabyte. Every score in TRACKING-PROPOSAL.md is measured
+    text files, a quarter of a megabyte. Every score on these tracks is measured
     against them, and `gate.py` needs them to be the same files on every machine — so
     they are annotations in the repository, like `tests/data/tracking/evaluation/`, and
     not audio.
@@ -33,8 +33,8 @@ WORK.mkdir(parents=True, exist_ok=True)
 FPS = 50.0
 
 #: The tracks where the two references disagree (beat F < 0.8 against each other), by
-#: stem. A score on these measures agreement with a convention rather than correctness —
-#: TRACKING-PROPOSAL.md §1 — so `score.py --min-agree 0.8` reports the other fifteen
+#: stem. A score on these measures agreement with a convention rather than correctness,
+#: so `score.py --min-agree 0.8` reports the other fifteen
 #: separately and `gate.py` gates on both sets.
 HARD_EIGHT = (
     "03_Trigger_Finger",

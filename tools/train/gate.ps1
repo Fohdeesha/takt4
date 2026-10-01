@@ -1,4 +1,4 @@
-# The three gates of TRACKING-PROPOSAL.md §7.11 for one checkpoint, in order, with the frozen CLI
+# The three gates for one checkpoint, in order, with the frozen CLI
 # (the decoder that ships: the forward filter, bars of four alone since 2026-09-09).
 #
 #   powershell -File tools/train/gate.ps1 -Checkpoint build/training/runs/<run>/epoch_024.pt -Name <name> [-Jobs 2]

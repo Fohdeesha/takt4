@@ -4,7 +4,7 @@ tracker that is 40 ms late on every beat; a lighting rig does not.
 
     python tools/refeval/jitter.py takt4:nofold dec:fwd100 dec:viterbi_down100 ref_madmom
 
-TRACKING-PROPOSAL.md §5 makes this an exit criterion for any decoder replacing the
+This is an exit criterion for any decoder replacing the
 particle filter: its 10-90 % spread and its fraction of beats more than 40 ms out may be
 no worse than the PF's. `--json FILE` writes the per-system totals for gate.py.
 """

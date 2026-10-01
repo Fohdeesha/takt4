@@ -1,11 +1,11 @@
 # The library fine-tune, fourth recipe: v2 with the labels a second teacher will not confirm
-# at the octave taken out. v2 epoch 76 is what ships in 0.9.1 (§7.13.6) and v3 lost, so this
+# at the octave taken out. v2 epoch 76 is what ships in 0.9.1 and v3 lost, so this
 # starts from v2 and changes one thing.
 #
 # CORRECTED 2026-09-26: it changed two. The run trained the library's half-time tracks from
 # their halved .gt.npy and selected its epoch against them at full time, because a re-layout
-# minutes before it started had dropped octave.py's fields from the manifest (TRACKING-PROPOSAL.md §7.16's
-# correction; see electronic-library-v5.yaml). finetune.py now refuses that state.
+# minutes before it started had dropped octave.py's fields from the manifest (see
+# electronic-library-v5.yaml). finetune.py now refuses that state.
 #
 # What changed from electronic-library-v2.yaml, and why:
 #   - `teacher_octave_cross` joins exclude_flags. Every library label came from Beat This!,
@@ -15,19 +15,19 @@
 #     references/datasets/library/teacher_cross.tsv): **157 tracks sit a whole octave from
 #     the label, the seed filter catches 13 of them, and 126 are training data today**. The
 #     three seeds agree with each other at a mean of 0.856 on exactly those tracks — they are
-#     confidently wrong together. The octave is §7.13.2's central failure mode, so these are
+#     confidently wrong together. The octave is the central failure mode, so these are
 #     the labels worth dropping first.
 #   - Nothing else moves. `teacher_disagree_cross` (the second teacher below 0.7 beat F,
 #     220 tracks, 126 of them trained) is measured and recorded by layout.py but **not**
 #     excluded here: madmom is weaker than Beat This! on electronic music by the Raveform
 #     paper's own numbers, so a low score is as likely to be madmom failing as the label
 #     being wrong, while an octave is a disagreement about a fact. One variable at a time,
-#     for §7.13.5's reason — v2 and v3 differed in one thing and the harness could say which.
+#     because v2 and v3 differed in one thing and the harness could say which.
 #
 # The two flags overlap by 81 of 171; if this wins, the cross-disagree half is the next
 # thing to try, not a second change to fold in here.
 #
-# Use it to exclude or downweight, **never to relabel** (§7.15): a disagreement means the
+# Use it to exclude or downweight, **never to relabel**: a disagreement means the
 # label has no independent confirmation, not that the second teacher is right.
 name: electronic-library-v4
 pretrained: references/beatnet-plus/src/BeatNetPlus/models/generic_weights.pt

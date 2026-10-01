@@ -43,7 +43,7 @@ struct MachineSettings {
     /// One input rather than the pair `channel` is in — the operator's "mono" tick (2026-09-28).
     /// **Off unless asked for**: a stereo feed is heard as the average of its two sides, which is
     /// what the model was trained on, and which measured as well as the better side alone and
-    /// better on downbeats (TRACKING-PROPOSAL.md §7.18).
+    /// better on downbeats (`tools/refeval/stereo.py`).
     bool mono = false;
     /// Read from a file written before there was a choice — a `channel` and no `mono` — which is
     /// taken as the stereo pair that input is in, and said so once by the window. Never written.
@@ -130,16 +130,16 @@ inline constexpr double kMaxLatencyOffsetSeconds = 0.25;
 struct Preset {
     /// §5.5's tuning — the tempo window, the confidence gate, the latency offset.
     tracking::TempoTracker::Options tempo = freshTempoOptions();
-    /// Which decoder turns the network's activations into beats: the exact forward filter
-    /// of TRACKING-PROPOSAL.md §2.4, which is the default since it met §5's exit criteria
+    /// Which decoder turns the network's activations into beats: the exact forward filter,
+    /// the default since it met every criterion set for replacing the particle filter
     /// (see `tracking::Decoder`), or the particle filter that shipped before it. Tracker
     /// tuning, so it travels with a preset; written as `"forward"` or `"particle"`, and
     /// anything else is the default. No control in the window yet — a settings file is
     /// the way to switch it.
     tracking::Decoder decoder = tracking::Decoder::Forward;
     /// The bar lengths the forward filter models — `ForwardFilter::Options::meters`, and
-    /// its default: four alone, which TRACKING-PROPOSAL.md §7.7 measured as the better
-    /// decoder on electronic material and the operator chose for the rig on 2026-09-09.
+    /// its default: four alone, measured as the better decoder on electronic material and
+    /// chosen by the operator for the rig on 2026-09-09.
     /// Written as `"meters": [4]`; `[3, 4]` puts the waltz back for a set that has one. Up
     /// to four bar lengths of 1 to 16, zero-filled; a file that names none keeps the
     /// default. No control in the window yet, like `decoder`.

@@ -3,7 +3,7 @@
     python tools/train/giantsteps_eval.py generic electronic
     python tools/train/giantsteps_eval.py generic C:/path/to/some.bin --jobs 8 --limit 50
 
-GiantSteps (TRACKING-PROPOSAL.md §3.1) is 664 two-minute Beatport previews of electronic
+GiantSteps is 664 two-minute Beatport previews of electronic
 dance music with tempo annotations only — no beats, so it cannot train the model or
 score beat F, but it is the one public EDM set whose tempi were annotated by people
 twice (2015, and the 2018 crowd re-annotation in `annotations_v2/`, which is the one

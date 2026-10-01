@@ -1,16 +1,16 @@
-"""Decide the octave of every fast annotation from the kick (TRACKING-PROPOSAL.md §3.1's data decision).
+"""Decide the octave of every fast annotation from the kick.
 
     python tools/train/octave.py                # every electronic-set track at >= 150 BPM
     python tools/train/octave.py --dry-run      # report only
     python tools/train/octave.py --min-bpm 140
 
-§3.1 left it open whether drum-and-bass-style material, annotated at the fast octave
-(Raveform's 160–180 BPM, osu's 180–200), should be relabelled at half tempo before
-training; §7.7 argued for the fast octave as the genre's convention. Measured on
-2026-09-08 (§7.9), a model fine-tuned on those labels doubles the tempo of half-time
+Whether drum-and-bass-style material, annotated at the fast octave (Raveform's 160–180
+BPM, osu's 180–200), should be relabelled at half tempo before training or kept at the
+fast octave as the genre's convention was an open question. Measured on 2026-09-08, a
+model fine-tuned on those labels doubles the tempo of half-time
 material under the shipped causal decoder — Jensen Interceptor from 85 to 170, Defang
 from 106 to 188 — because it has learned that a kick on alternate beats is still the
-fast grid. The operator's convention is the opposite (Clutch Pearlers ~92, §1), and it
+fast grid. The operator's convention is the opposite (Clutch Pearlers ~92), and it
 is the kick's: a track whose kick falls on every beat is at the tempo its annotation
 says; one whose kick falls on every other beat is at half of it.
 

@@ -38,7 +38,7 @@ std::vector<float> resampleForPlayback(const std::vector<float>& samples, double
                                        double outputRate);
 
 /// A mono buffer played to an output device, with the track's own clock readable from
-/// any thread — what TRACKING-PROPOSAL.md §3.4's annotate-by-tapping times its taps by.
+/// any thread — what `takt4-cli annotate` times its taps by.
 ///
 /// The callback copies from a buffer resampled to the device's rate at construction and
 /// stamps each buffer it hands over with the DAC time PortAudio gives it, so

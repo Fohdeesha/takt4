@@ -235,8 +235,8 @@ if(TAKT4_BUILD_UI)
   # change, so an incremental build does not recompile a multi-megabyte translation unit
   # every time something else moves.
   # `electronic` is the built-in set since 0.9.1: BeatNet+'s `generic` fine-tuned on the
-  # operator's own library (TRACKING-PROPOSAL.md §7.13). The three published sets stay in
-  # assets/weights/ for the console and the tests.
+  # operator's own library. The three published sets stay in assets/weights/ for the
+  # console and the tests.
   #
   # The licence and the third-party notices go in too: takt4 is one file, and the notices of
   # what is built into it have to travel with it (GPLv3 §5(d), and the BSD, MIT, Apache, MPL

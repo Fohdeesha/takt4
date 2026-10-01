@@ -119,7 +119,7 @@ Beat and downbeat F-measure (`mir_eval`, 70 ms) with the weights that ship:
 | GiantSteps, 664 Beatport previews | tempo within 4% on 86% | |
 | Ballroom, 698 clips, counted in 3 and 4 | 0.95 | 0.93 |
 
-Ballroom was in the training set; on its 70 held-out clips it scores 0.92 / 0.88. Details: [tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md).
+Ballroom was in the training set; on its 70 held-out clips it scores 0.92 / 0.88.
 
 ## Building it
 

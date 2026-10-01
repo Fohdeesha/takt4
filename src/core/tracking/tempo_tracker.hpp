@@ -133,8 +133,7 @@ struct BeatEvent {
 /// those 457, **316 are inside the first 5.5 seconds of a track**, which is the acquisition
 /// the tracker is openly hunting through and says so. Past acquisition it is 141 against
 /// 2737: one every 29 seconds where it had been one every 1.5. Unlocks, 221 to 122.
-/// `tools/trace_stability.py` is the harness and
-/// `tests/data/tracking/evaluation/README.md` has the working.
+/// `tools/trace_stability.py` is the harness.
 ///
 /// Confidence is how much of the beat particle cloud agrees with the tempo its own
 /// median reports, smoothed over about a second. Upstream publishes no confidence at
@@ -157,8 +156,8 @@ public:
         /// The window and `octaveFold` are still the operator's settings and still travel
         /// through these options — the engine reads them out and hands them on. Set by
         /// `BeatEngine` for a decoder that `honoursTempoWindow()`, never by an operator;
-        /// TRACKING-PROPOSAL.md §2.6 is why the window belongs in the decoder when the
-        /// decoder can take it.
+        /// The window belongs in the decoder when the decoder can take it: there it is
+        /// evidence, not a relabelling afterwards.
         bool foldInDecoder = false;
         /// How far outside the window an estimate may stray before the fold picks a
         /// different octave, as a fraction of the window's edges.
@@ -341,8 +340,7 @@ public:
         /// it went unseen. And having folded, the latch above then had every reason to
         /// fire — the beats *were* on the folded tempo — and divided a grid that was
         /// already the music's, dropping every other beat of Jamie Lidell in three windows
-        /// of the track. Folding the rate the beats are on, there is nothing to divide:
-        /// TRACKING-PROPOSAL.md §2.10.
+        /// of the track. Folding the rate the beats are on, there is nothing to divide.
         std::size_t beatOctaveBeats = 8;
         double beatOctaveTolerance = 0.12;
 

@@ -94,7 +94,7 @@ struct EngineIntensity {
 /// **The decoder is one of two** (`tracking::Decoder`): the particle filter, which is
 /// upstream's algorithm and runs on the network's 50 Hz frames, or the exact forward
 /// filter, which runs at 100 Hz on activations this class interpolates between the
-/// network's — TRACKING-PROPOSAL.md §2.4 and §2.5. Whichever it is, `TempoTracker` runs at
+/// network's. Whichever it is, `TempoTracker` runs at
 /// the decoder's frame rate and every time this class hands out is in seconds, so nothing
 /// outside knows the difference except through `secondsPerFrame()` and
 /// `EngineFrame::interpolated`.

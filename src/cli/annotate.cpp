@@ -1,7 +1,7 @@
-// takt4-cli annotate — TRACKING-PROPOSAL.md §3.4's *annotate by tapping*.
+// takt4-cli annotate — annotate a track by tapping along to it.
 //
-// The project has no human ground truth for the music it is for (§6): every score in the
-// proposal is agreement with Beat This!, and on eight of the 23 tracks the reference systems
+// The project has no human ground truth for the music it is for: every score on the 23
+// tracks is agreement with Beat This!, and on eight of them the reference systems
 // disagree with each other. This is how the operator supplies it. The track plays, the
 // operator taps space on the beats and d on the downbeats, and the taps become a `.beats`
 // file beside the audio in the layout every other annotated set uses — so it feeds
@@ -12,7 +12,7 @@
 // which is where every other set's labels sit and sharper than any tap; the taps that find
 // no peak are moved by the median of how far the others moved, the operator's own lateness.
 // And h / x set the octave the *file* is written at, so a half-time tap on drum and bass
-// records the operator's octave as the label rather than the genre's (§7.10).
+// records the operator's octave as the label rather than the genre's.
 //
 // The taps are timed against the audio at the speakers, not against the moment a sample was
 // handed to the driver: `PlaybackStream` stamps each buffer with its DAC time and the tap

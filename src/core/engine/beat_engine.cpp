@@ -257,8 +257,8 @@ void BeatEngine::track(const model::FrameActivation& activation) noexcept {
     const Clock::time_point started = Clock::now();
 
     // A decoder running faster than the network is fed the frames in between, made by
-    // linear interpolation from the previous activation to this one — TRACKING-PROPOSAL.md
-    // §2.5, which measured the finer grid with exactly that interpolation. Nothing is
+    // linear interpolation from the previous activation to this one, which is how the finer
+    // grid was measured. Nothing is
     // interpolated before there is a previous activation, so the first hop yields one
     // frame and every later hop `stepsPerActivation_`; decoder frame k is at k times the
     // decoder's period, the network's activation i at decoder frame i * steps.

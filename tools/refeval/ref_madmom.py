@@ -6,7 +6,7 @@ madmom reads the original file in references/audio (decode_all.py's mapping.json
 for each WAV), not the 22.05 kHz decode the other tools read: its networks were trained on
 44.1 kHz audio and its filterbank reaches 17 kHz, which a 22.05 kHz file leaves empty above
 11 kHz. The committed references were made from the decodes, before this was noticed; what
-that changes is measured in tests/data/tracking/refeval/README.md (the 2026-09-25 audit's P12).
+that changes was measured on 2026-09-26.
 
 madmom's own activations (100 fps, two columns) go to the work tree as
 <stem>.madmom_act.npy — they are large and reproducible, so they are not committed.
