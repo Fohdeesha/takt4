@@ -1,4 +1,4 @@
-"""Lay the annotated sets out for BeatNet+'s training code (the design the design, step 2).
+"""Lay the annotated sets out for BeatNet+'s training code.
 
     python tools/train/layout.py               # all four sets
     python tools/train/layout.py --seed 42     # the split's seed (42 is the default)
@@ -283,7 +283,7 @@ MIN_TEACHER_AGREEMENT = 0.7
 #:
 #: madmom is *weaker* than Beat This! on electronic music, so a disagreement does not mean
 #: the label is wrong — it means the label has no independent confirmation. These flags are
-#: for **excluding or downweighting, never for relabelling** (the design the design).
+#: for **excluding or downweighting, never for relabelling**.
 MIN_TEACHER_AGREEMENT_CROSS = 0.7
 
 

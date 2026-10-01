@@ -10,7 +10,7 @@ namespace takt4::cli {
 void printAnnotateUsage(std::ostream& out);
 
 /// `takt4-cli annotate IN.wav [...]`: play the track and tap along to it, and write the
-/// taps as a beat annotation in the Ballroom layout — the design the design.
+/// taps as a beat annotation in the Ballroom layout.
 int runAnnotate(const std::vector<std::string_view>& args);
 
 } // namespace takt4::cli

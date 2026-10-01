@@ -11,8 +11,7 @@
 
 namespace takt4::tracking {
 
-/// An exact forward filter over madmom's joint bar-pointer state space: the decoder
-/// the design the design measures against the particle filter, in C++.
+/// An exact forward filter over madmom's joint bar-pointer state space, in C++.
 ///
 /// The state is (position in the bar, tempo, meter), discretised the way madmom's
 /// `BarStateSpace` does it: for each meter a bar of that many identical beats, each beat
@@ -59,7 +58,7 @@ namespace takt4::tracking {
 ///     does not fire a rig.
 ///
 /// Where the beats are read off the posterior is `Options::emission`, and it is the part
-/// the design measured as unfinished: the MAP state crossing a beat boundary is a frame early as
+/// first measured as unfinished: the MAP state crossing a beat boundary is a frame early as
 /// the posterior sharpens. Three rules are here so that the choice was measured rather
 /// than assumed (`tools/refeval/jitter.py`), and the one that won — the activation's peak
 /// inside the beat range, where the offline references put their beats — is the default;
@@ -94,7 +93,7 @@ public:
 
     struct Options {
         /// The decoder's own frame rate. The network runs at 50; the engine interpolates
-        /// its activations up to this, and the design measures the doubling as worth more than
+        /// its activations up to this, and the doubling measured as worth more than
         /// any change of decoder.
         std::uint32_t fps = 100;
         /// The tempo range the state space holds, as BeatNet+'s particle filter has it.
@@ -108,7 +107,7 @@ public:
         /// **Four alone is the default since 2026-09-09.** With bars of three and four the
         /// meter chains explain electronic material about equally and the three-beat chain
         /// wins whole passages at three quarters of the tempo (daOooooh at 78 for a 103
-        /// track, the design); four alone was measured +0.02 beat F over the 23 tracks and the
+        /// track); four alone was measured +0.02 beat F over the 23 tracks and the
         /// operator, whose material is 4/4, chose it for the rig. Ballroom's waltzes lose
         /// under it, which is the trade the operator made; `settings::Preset::meters` puts
         /// three back for anyone whose set has them.
@@ -154,8 +153,7 @@ public:
         double meterFloor = 1e-30;
         /// Where the beats are read off the posterior. `Peak` — the activation's peak while
         /// the MAP state is in a beat range — is the rule that scored best on every measure,
-        /// on the 23 electronic tracks and on Ballroom alike (the design the exit
-        /// criteria, `tests/data/tracking/refeval/README.md`):
+        /// on the 23 electronic tracks and on Ballroom alike (`tools/refeval/`):
         ///
         /// | agreed 15, fold off | beat F | CMLt | downbeat F | timing: spread, beyond 40 ms |
         /// |---|---|---|---|---|

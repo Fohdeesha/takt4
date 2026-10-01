@@ -4,7 +4,7 @@ where the others do.
     python tools/train/shift_labels.py osu2beat 1        # one frame (20 ms) later
     python tools/train/shift_labels.py osu2beat 0        # back to the annotation
 
-Measured against the pretrained model's activation peaks (the design the design),
+Measured against the pretrained model's activation peaks,
 Raveform's and Ballroom's labels sit on the same frame (per-track median offset 0 ms,
 means +6 and +9), osu2beat2025's one frame earlier (+20 ms median, +24 mean): rhythm-game
 timing points mark the onset itself, the other sets' annotators a frame after. A model

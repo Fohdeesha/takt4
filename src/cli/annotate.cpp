@@ -1,7 +1,7 @@
-// takt4-cli annotate — the design the *annotate by tapping*.
+// takt4-cli annotate — annotate a track by tapping along to it.
 //
-// The project has no human ground truth for the music it is for: every score in the
-// design is agreement with Beat This!, and on eight of the 23 tracks the reference systems
+// The project has no human ground truth for the music it is for: every score on the 23
+// tracks is agreement with Beat This!, and on eight of them the reference systems
 // disagree with each other. This is how the operator supplies it. The track plays, the
 // operator taps space on the beats and d on the downbeats, and the taps become a `.beats`
 // file beside the audio in the layout every other annotated set uses — so it feeds

@@ -1,5 +1,5 @@
-# The fine-tune with the operator's own library in the mix (the design the design,
-# step 2), pseudo-labelled by Beat This! through tools/train/distil.py.
+# The fine-tune with the operator's own library in the mix, pseudo-labelled by Beat This!
+# through tools/train/distil.py.
 #
 # The library is the target domain — its tempo band and its feel are what every run of
 # 2026-09-08 lacked — so it carries weight 2, its validation split is what selection

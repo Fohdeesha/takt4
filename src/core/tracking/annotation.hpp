@@ -6,8 +6,8 @@
 
 namespace takt4::tracking {
 
-/// One press of the operator's, on the track's own clock — the design the design's
-/// *annotate by tapping*, the ground truth the project otherwise lacks.
+/// One press of the operator's, on the track's own clock — *annotate by tapping*, the
+/// ground truth the project otherwise lacks.
 struct Tap {
     double seconds = 0.0;
     /// The press that marks a downbeat: a beat, and the first of its bar.
@@ -17,7 +17,7 @@ struct Tap {
 struct AnnotationOptions {
     /// How far a tap may be moved onto the nearest peak of the network's activation. The
     /// network's timing is sharper than a thumb's, and the peak is where every other set's
-    /// labels sit (the design: Raveform's and Ballroom's at the model's peak to the frame), so
+    /// labels sit (Raveform's and Ballroom's at the model's peak to the frame), so
     /// a tap within reach of one is taken to have meant it. Zero leaves every tap where it
     /// landed.
     double snapWindowSeconds = 0.06;

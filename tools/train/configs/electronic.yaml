@@ -1,6 +1,6 @@
 # The "electronic" weight set: BeatNet+'s generic weights fine-tuned on Raveform,
 # osu2beat2025 and Harmonix's Dance/Electronic share, with Ballroom in the mix so the
-# model does not forget what it knows (the design the design, the design).
+# model does not forget what it knows.
 #
 #   python tools/train/finetune.py --config tools/train/configs/electronic.yaml
 #
