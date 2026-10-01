@@ -187,7 +187,9 @@ TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt]") 
     writer.join();
     INFO(loads << " loads; the slowest took " << worst * 1000.0 << " ms");
     CHECK(loads >= 50);
-    CHECK(worst < 0.1);
+    // Half a second, not a tenth: hosted runners took 107 and 147 ms on 2026-10-01, and the
+    // case this catches waits seconds for the starvation boost, so it is still told apart.
+    CHECK(worst < 0.5);
 }
 
 #endif
