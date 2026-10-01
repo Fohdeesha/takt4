@@ -1482,8 +1482,10 @@ TEST_CASE("deleting the fixture being typed for, or the last one, keeps the next
         shown.click(at::kNameX, at::kTopY);
         shown.type("x");
         // Past the DeleteGuard's window for a double-click, which a quick second × on the row that
-        // moved up is not meant to reach.
-        std::this_thread::sleep_for(std::chrono::milliseconds(450));
+        // moved up is not meant to reach. The system's window, not a guess at it: 450 ms passed on
+        // the rig (410) and failed on every CI runner (500).
+        std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() +
+                                    std::chrono::milliseconds(60));
         const std::size_t before = patch.fixtures().size();
         shown.click(at::kKillX, at::rowY(at));
         shown.settle();
