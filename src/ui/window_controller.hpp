@@ -754,6 +754,12 @@ private:
     /// `targetDrafts_` as they are typed, and applied on Enter, on a click away, or at the start
     /// of anything that reads or reshapes the list (`applyDrafts`).
     bool draftsPending_ = false;
+    /// Which list of outputs a box was typed into: an IMPORT replaces the rows under the boxes, and
+    /// a box that had the keyboard commits a turn of the event loop later — onto row i of the
+    /// imported rig, when that row held what the box was shown (found reviewing, 2026-10-01). A
+    /// box's own commit counts only if it was typed into this list (`typedOutputs_`).
+    std::uint64_t outputsGeneration_ = 0;
+    std::uint64_t typedOutputs_ = 0;
     /// Applies them, when there are any: before SAVE, EXPORT and IMPORT, which read the
     /// runner's list, and before a row is removed (the audit of 2026-09-25, M15).
     void applyDrafts();

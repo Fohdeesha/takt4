@@ -247,22 +247,37 @@ void fillPickers(MainWindow& window) {
     window.set_channel_index(0);
 }
 
-/// The lighting patch editor, with a rig in it worth looking at: two washes and a moving
-/// head, which between them exercise every branch the window has — a grouped fixture, a
-/// 16-bit channel map, and the movement limits that only appear on something that can move.
-void fillFixtures(FixturesWindow& window) {
+/// The lighting patch editor, with the rig the approved mockup of 2026-09-30 holds
+/// (`design/weltformat-dark/patch1.html`): two washes, two heads — one left out of the show — and a
+/// blinder that runs off the end of its universe, which between them exercise every branch the
+/// list has. `state` is "" or "fit" (the 16-bit head picked), "par" (the LED par picked, which
+/// cannot move, so no C), "none" (nothing patched) or "message" (the head, with a line under the
+/// top row).
+void fillFixtures(FixturesWindow& window, const std::string& state) {
     auto roles = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const dmx::Role role : dmx::kRoles) {
         roles->push_back(slint::SharedString(std::string(dmx::labelOf(role))));
     }
     window.set_roles(roles);
 
+    // As `FixturesController` words them.
     auto modes = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    modes->push_back(slint::SharedString("custom"));
+    modes->push_back(slint::SharedString("custom (the channels below)"));
     for (const dmx::FixtureMode& mode : dmx::builtinModes()) {
         modes->push_back(slint::SharedString(std::string(mode.name)));
     }
     window.set_modes(modes);
+    window.set_test_level(255);
+    window.set_test_seconds(3);
+
+    if (state == "none") {
+        window.set_fixtures(std::make_shared<slint::VectorModel<FixtureRow>>());
+        window.set_selected(-1);
+        window.set_channels(std::make_shared<slint::VectorModel<ChannelRow>>());
+        window.set_moves(false);
+        window.set_summary(slint::SharedString("Nothing patched yet."));
+        return;
+    }
 
     const auto row = [](const char* name, const char* where, const char* group, bool enabled,
                         const char* problem) {
@@ -276,44 +291,52 @@ void fillFixtures(FixturesWindow& window) {
     };
     auto fixtures = std::make_shared<slint::VectorModel<FixtureRow>>();
     fixtures->push_back(row("wash L", "0 · 1-4", "washes", true, ""));
-    fixtures->push_back(row("wash R", "0 · 5-8", "washes", true, ""));
+    fixtures->push_back(row("wash R", "0 · 5-10", "washes", true, ""));
     fixtures->push_back(row("head 1", "0 · 11-22", "heads", true, ""));
-    fixtures->push_back(row("head 2", "0 · 23-34", "heads", true, ""));
+    fixtures->push_back(row("head 2", "0 · 23-34", "heads", false, ""));
     // One that cannot be driven, because that is the state the list has to be able to show.
     fixtures->push_back(
         row("blinder", "0 · 505-516", "", true, "runs off the end of the universe"));
     window.set_fixtures(fixtures);
-    window.set_selected(2);
-
-    window.set_name(slint::SharedString("head 1"));
-    window.set_group(slint::SharedString("heads"));
-    window.set_universe(slint::SharedString("0"));
-    window.set_address(11);
-    window.set_enabled(true);
-    window.set_mode_index(7); // "moving head 16-bit", after the "custom" entry
-    window.set_moves(true);
-    window.set_pan_min(20);
-    window.set_pan_max(80);
-    window.set_tilt_min(45);
-    window.set_tilt_max(70);
     window.set_summary(slint::SharedString("5 fixtures on 1 universe, going to 1 node"));
+    window.set_universe(slint::SharedString("0"));
+    window.set_enabled(true);
 
-    const dmx::Fixture head = dmx::fixtureFromMode("head 1", 6, 0, 11);
+    const bool par = state == "par";
+    const std::size_t mode = par ? 4 : 6; // "LED par (6ch)", "moving head 16-bit (12ch)"
+    const dmx::Fixture fixture =
+        dmx::fixtureFromMode(par ? "wash R" : "head 1", mode, 0, par ? 5 : 11);
+    window.set_selected(par ? 1 : 2);
+    window.set_name(slint::SharedString(fixture.name));
+    window.set_group(slint::SharedString(par ? "washes" : "heads"));
+    window.set_address(static_cast<int>(fixture.address));
+    window.set_mode_index(static_cast<int>(mode) + 1); // after the "custom" entry
+    window.set_moves(!par);
+    window.set_pan_min(10);
+    window.set_pan_max(90);
+    window.set_tilt_min(20);
+    window.set_tilt_max(70);
+    if (state == "message") {
+        window.set_status(slint::SharedString("Channel 18 at 255 for 3 s."));
+        window.set_status_error(false);
+    }
+
     auto channels = std::make_shared<slint::VectorModel<ChannelRow>>();
-    // Levels that look like a head part way through a move, so the live bars have something
+    // Levels that look like a fixture part way through a move, so the live bars have something
     // to draw — which is the one thing in this window a static picture cannot otherwise show.
-    const std::array<int, 12> live{164, 32, 96, 200, 0, 190, 255, 255, 64, 0, 0, 0};
-    for (std::size_t i = 0; i < head.channels.size(); ++i) {
+    const std::array<int, 12> headLive{164, 32, 96, 200, 0, 190, 255, 255, 64, 0, 0, 0};
+    const std::array<int, 6> parLive{204, 255, 32, 64, 0, 0};
+    for (std::size_t i = 0; i < fixture.channels.size(); ++i) {
         ChannelRow one{};
-        one.number = static_cast<int>(head.address) + static_cast<int>(i);
+        one.number = static_cast<int>(fixture.address) + static_cast<int>(i);
         for (std::size_t r = 0; r < dmx::kRoles.size(); ++r) {
-            if (dmx::kRoles[r] == head.channels[i]) {
+            if (dmx::kRoles[r] == fixture.channels[i]) {
                 one.role_index = static_cast<int>(r);
                 break;
             }
         }
-        one.parked = static_cast<int>(head.parked[i]);
-        one.live = i < live.size() ? live[i] : 0;
+        one.parked = static_cast<int>(fixture.parked[i]);
+        one.live = par ? (i < parLive.size() ? parLive[i] : 0) : (i < headLive.size() ? headLive[i] : 0);
         channels->push_back(one);
     }
     window.set_channels(channels);
@@ -420,6 +443,7 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_outputs_available(slint::SharedString("reaches 1 output"));
 
     window.set_rule_name(slint::SharedString("Layer 1 - random clip"));
+    window.set_rule_id(slint::SharedString("layer1"));
     window.set_rule_enabled(true);
     window.set_trigger_index(1); // bars
     window.set_trigger_takes_every(true);
@@ -526,6 +550,7 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
         // A color on the moving heads, drawn from a palette: the color mode, the swatches, and
         // the rate a surface has doubled.
         window.set_rule_name(slint::SharedString("Heads change color on the drop"));
+        window.set_rule_id(slint::SharedString("heads-drop"));
         window.set_send_index(6); // DMX / Art-Net, last of `kMessageKinds`
         window.set_sends_osc(false);
         window.set_sends_midi(false);
@@ -793,9 +818,9 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     }
 
     if (options.fixtures) {
-        return renderWindow(out, width, height, [] {
+        return renderWindow(out, width, height, [&options] {
             auto window = FixturesWindow::create();
-            fillFixtures(*window);
+            fillFixtures(*window, options.state);
             return window;
         });
     }

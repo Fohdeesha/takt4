@@ -1,5 +1,6 @@
 // The lighting patch — what fixtures there are, where they are addressed, and what each of
-// their channels does.
+// their channels does — in the Weltformat-dark look of the rule editor, as the operator approved it
+// on 2026-09-30 (the mockup is design/weltformat-dark/patch1.html and png/p1-*.png).
 //
 // **A window of its own, for the reason the rule editor is one.** A patch is set up once and
 // then not touched for the rest of the night, while the rules are edited during the set; one
@@ -7,16 +8,20 @@
 // that changes monthly. It also means the patch can sit on a second monitor while a fixture
 // is being addressed from the truss.
 //
-// **Master-detail, like the rule editor**, and for the same reason: a list of fixtures down
-// the left scales to a rig, and one editor on the right can afford to be a channel map rather
-// than a summary.
+// **Master-detail, like the rule editor**, and built from its parts (editor_parts.slint): the list
+// of fixtures down the left, whose dot is each fixture's "in the show" switch as a rule's dot is its
+// mute; and on the right a top row and three sheets that fold — A where it is, B what its channels
+// do, C how far a head may move.
 //
 // Nothing here talks to the lighting engine. `ui::FixturesController` owns the patch, edits
 // its own copy and posts it whole — see its header, and `RulesController`'s, for why the
-// output thread's copy cannot be the one being edited.
+// output thread's copy cannot be the one being edited. **And nothing here sets its own value**:
+// every control is weltformat.slint's, which says what was asked for and shows what the controller
+// then holds — so no row is ever built again to catch up with its model.
 
-import { Button, CheckBox, ComboBox, ListView, Palette, ScrollView, Slider } from "std-widgets.slint";
-import { Field, FocusSink, NumberBox, Press, Splitter, Theme } from "theme.slint";
+import { Btn, Count, Entry, Meter, Pick, Scroller, SpanTrack, Tick, Wf } from "weltformat.slint";
+import { FocusSink } from "theme.slint";
+import { Band, Mark, Note, RowLabel, Section, Word } from "editor_parts.slint";
 
 /// One row of the fixture list — everything it shows without the editor being open.
 export struct FixtureRow {
@@ -49,20 +54,193 @@ export struct ChannelRow {
   live: int,
 }
 
+/// One fixture in the list: its dot — which is its "in the show" switch — its name, and under it
+/// where it sits and its group, or in amber why it cannot be driven. On the picked row and the row
+/// under the pointer, copy and delete at the right; at rest, "left out" for a fixture out of the show.
+component FixtureLine inherits Rectangle {
+  in property <FixtureRow> entry;
+  /// The one the editor is showing: lit and edged.
+  in property <bool> shown;
+  callback pressed();
+  callback dot-clicked(bool);
+  callback copy-clicked();
+  callback kill-clicked();
+
+  // All four hovers, or moving onto a mark would take the hover off the row and the mark with it.
+  private property <bool> showing: root.shown || pick.has-hover || dot-touch.has-hover
+    || copy-mark.has-hover || kill-mark.has-hover;
+  private property <color> dot-color: root.entry.problem != "" ? Wf.holding : Wf.locked;
+
+  // 59, so the rows sit 61 apart as the approved picture has them.
+  height: 59px;
+  background: root.shown ? Wf.row-picked : transparent;
+  border-width: root.shown ? 2px : 0px;
+  border-color: Wf.edge;
+
+  // **First, so it is underneath the dot and the marks** (see `RuleLine`).
+  pick := TouchArea {
+    pointer-event(event) => {
+      if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+        root.pressed();
+      }
+    }
+  }
+
+  // The dot: 14 px in a 28 px target that lights under the pointer. Filled while the fixture is in
+  // the show, a 2.5 px ring while it is left out; amber when it cannot be driven.
+  Rectangle {
+    x: 3px;
+    y: 7px;
+    width: 28px;
+    height: 28px;
+    background: dot-touch.has-hover ? Wf.face-hover : transparent;
+    accessible-role: checkbox;
+    accessible-label: "in the show: " + root.entry.name;
+    accessible-checked: root.entry.enabled;
+    accessible-checkable: true;
+    accessible-action-default => {
+      root.dot-clicked(!root.entry.enabled);
+    }
+
+    Rectangle {
+      x: 7px;
+      y: 7px;
+      width: 14px;
+      height: 14px;
+      border-radius: 7px;
+      background: root.entry.enabled ? root.dot-color : transparent;
+      border-width: root.entry.enabled ? 0px : 2.5px;
+      border-color: root.dot-color;
+    }
+
+    dot-touch := TouchArea {
+      clicked => {
+        root.dot-clicked(!root.entry.enabled);
+      }
+    }
+  }
+
+  Text {
+    x: 35px;
+    y: 7px;
+    width: parent.width - self.x - 9px - (root.showing ? 48px : right.preferred-width + (right.text == "" ? 0px : 4px));
+    height: 28px;
+    text: root.entry.name == "" ? "(unnamed)" : root.entry.name;
+    color: root.entry.enabled ? Wf.ink : Wf.ink-off;
+    font-size: 14px;
+    vertical-alignment: center;
+    overflow: elide;
+  }
+
+  right := Text {
+    x: parent.width - 9px - self.width;
+    y: 7px;
+    width: self.preferred-width;
+    height: 28px;
+    visible: !root.showing;
+    text: root.entry.enabled ? "" : "left out";
+    color: Wf.ink2;
+    font-size: 13px;
+    vertical-alignment: center;
+  }
+
+  copy-mark := Mark {
+    x: parent.width - 9px - 44px;
+    y: 11px;
+    copy: true;
+    what: "fixture " + root.entry.name;
+    visible: root.showing;
+    clicked => {
+      root.copy-clicked();
+    }
+  }
+  kill-mark := Mark {
+    x: parent.width - 9px - 20px;
+    y: 11px;
+    what: "fixture " + root.entry.name;
+    visible: root.showing;
+    clicked => {
+      root.kill-clicked();
+    }
+  }
+
+  // Where it sits, in Chivo Mono, and its group in words — or why it cannot be driven, where the
+  // address would be, because the address is usually what is wrong with it.
+  HorizontalLayout {
+    x: 35px;
+    y: 36px;
+    width: parent.width - self.x - 9px;
+    height: 16px;
+    spacing: 0px;
+
+    if root.entry.problem == "": Text {
+      text: root.entry.where;
+      color: Wf.ink2;
+      font-family: Wf.code;
+      font-size: 13px;
+      vertical-alignment: center;
+      horizontal-stretch: 0;
+    }
+    if root.entry.problem == "" && root.entry.group != "": Text {
+      text: " · " + root.entry.group;
+      color: Wf.ink2;
+      font-size: 13px;
+      vertical-alignment: center;
+      horizontal-stretch: 1;
+      min-width: 0px;
+      overflow: elide;
+    }
+    if root.entry.problem != "": Text {
+      text: root.entry.problem;
+      color: Wf.holding;
+      font-size: 13px;
+      vertical-alignment: center;
+      horizontal-stretch: 1;
+      min-width: 0px;
+      overflow: elide;
+    }
+    Rectangle { horizontal-stretch: 1; }
+  }
+}
+
 export component FixturesWindow inherits Window {
   title: "takt4 — fixtures";
   // See `RulesWindow`: these do not decide what the window opens at. `ui::kFixturesWindowWidth`
-  // is the size actually used, set before the first show.
+  // is the size actually used, set before the first show: 1000 x 800, the mockup's.
   preferred-width: 1000px;
-  preferred-height: 760px;
-  min-width: 820px;
+  preferred-height: 800px;
+  min-width: 880px;
   min-height: 520px;
-  background: Theme.background;
-  init => {
-    Palette.color-scheme = ColorScheme.dark;
-  }
+  background: Wf.page;
+  default-font-family: Wf.sans;
+  default-font-size: 15px;
+  default-font-weight: 500;
 
-  in-out property <length> list-width: 300px;
+  // --- the shape of the window -----------------------------------------------------------------
+  /// How wide the list is: 260 to start, as the rule editor's, dragged at the gap between it and
+  /// the editor — and given way to the editor's rows, as the rule editor's list is (`list-max`).
+  in-out property <length> list-width: 260px;
+  private property <length> list-wanted: 260px;
+  private property <length> list-min: 200px;
+  function list-max() -> length {
+    return max(root.list-min, min(root.width * 0.4, root.width - 20px - root.body-least-width));
+  }
+  function fit-list() {
+    root.list-width = clamp(root.list-wanted, root.list-min, root.list-max());
+  }
+  changed width => {
+    root.fit-list();
+  }
+  changed body-least-width => {
+    root.fit-list();
+  }
+  /// The three sheets' folds — A where, B channels, C how far it moves. The window's, not the
+  /// fixture's, and remembered across launches with the rule editor's (machine settings).
+  in-out property <bool> where-folded;
+  in-out property <bool> channels-folded;
+  in-out property <bool> moves-folded;
+  /// 0 to 2: the controller folds it, having committed what was typed.
+  callback fold-clicked(int);
 
   in-out property <[FixtureRow]> fixtures;
   /// Which fixture the editor is on, or -1 when the patch is empty.
@@ -82,8 +260,7 @@ export component FixturesWindow inherits Window {
   in-out property <int> mode-index;
   in-out property <[ChannelRow]> channels;
 
-  /// What a channel's TEST holds it at, and for how long. Two-way on the level, because the
-  /// number box is the thing that sets it.
+  /// What a channel's TEST holds it at, and for how long.
   in-out property <int> test-level: 255;
   in-out property <int> test-seconds: 3;
 
@@ -99,27 +276,33 @@ export component FixturesWindow inherits Window {
   /// targets are doing with them. What tells "nothing is patched" from "nothing is plugged
   /// in", which look the same from the truss.
   in-out property <string> summary;
+  /// The editor's own message — "Channel 72 at 255 for 3 s." — under the top row, amber when it
+  /// says something could not be done.
   in-out property <string> status;
   in-out property <bool> status-error;
 
   // One selection, not a set — unlike the rule list, which gained ctrl- and shift-click
   // because a preset's worth of rules is something somebody prunes in one gesture. A patch is
-  // built once, fixture by fixture, and is short: a rig with more fixtures than rules is not
-  // a rig anybody has described.
+  // built once, fixture by fixture, and is short.
   callback picked(int);
   callback added();
-  callback duplicated();
-  callback removed();
+  /// Row N's own marks, which appear on the picked row and the row under the pointer.
+  callback duplicated-at(int);
   callback removed-at(int);
+  /// Row N's dot: in the show, or left out.
   callback enabled-changed(int, bool);
 
+  /// The three text boxes: `edited` is the edit finished (Enter, a click away), `typed` every
+  /// keystroke — kept by the controller and committed before any other action, and the only
+  /// thing that makes a finished edit count (`FixturesController::draft_`).
   callback name-edited(string);
+  callback name-typed(string);
   callback group-edited(string);
+  callback group-typed(string);
   callback universe-edited(string);
+  callback universe-typed(string);
+  /// The number boxes, the same way round: `typed` is what Enter would set.
   callback address-changed(int);
-  /// A keystroke in the address box: what Enter would set. Kept by the controller and
-  /// committed before any other action — see `FixturesController::typed_`. The same for the
-  /// TEST level and a channel's "parked at".
   callback address-typed(int);
   callback fixture-enabled-changed(bool);
   callback mode-picked(int);
@@ -133,22 +316,25 @@ export component FixturesWindow inherits Window {
   callback channel-tested(int);
   callback test-level-changed(int);
   callback test-level-typed(int);
+  /// Said once a handle is let go, not on every pixel of the drag: each is a re-patch (H8).
   callback pan-range-changed(float, float);
   callback tilt-range-changed(float, float);
-  /// Drives every channel of the selected fixture to full for a moment, so an operator in
-  /// the truss can see which lamp they are patching. The one control in this window that
-  /// sends anything.
+  /// Flashes every light-emitting channel of the selected fixture, so an operator in the truss
+  /// can see which lamp they are patching.
   callback identify();
+
+  /// For the tests: the least width the editor's column of sheets asks for, and the width it is
+  /// given — a row wider than the pane is cut off at its edge (see `RulesWindow`).
+  out property <length> body-least-width: sheets.min-width;
+  out property <length> body-width: sheets.width;
+
+  private property <bool> none: root.selected < 0;
+  private property <int> last-channel: root.address + max(1, root.channels.length) - 1;
 
   // **Somewhere for a click on nothing to go.** See `FocusSink`: a text box in this window
   // commits when it loses the keyboard, and a click on a heading, a panel or the space
-  // between two rows used to move the focus nowhere — so the box stayed lit and what was
-  // typed in it stayed uncommitted until something else happened to take the focus.
-  //
-  // First in the window, so it is *behind* everything: a click that any real control wants
-  // is taken by that control and never reaches here, and what does reach here is a click on
-  // nothing. `Press` does the same thing for itself, since a button's own touch area would
-  // otherwise swallow the click before this saw it.
+  // between two rows used to move the focus nowhere. First in the window, so it is *behind*
+  // everything: what reaches it is a click on nothing.
   defocus := FocusSink { }
   TouchArea {
     clicked => {
@@ -156,630 +342,742 @@ export component FixturesWindow inherits Window {
     }
   }
 
-  HorizontalLayout {
-    padding: 0px;
+  VerticalLayout {
+    padding-top: 10px;
+    padding-bottom: 10px;
     spacing: 0px;
 
-    // --- the list ------------------------------------------------------------------
-    VerticalLayout {
-      width: root.list-width;
-      padding: 14px;
-      spacing: 10px;
+    HorizontalLayout {
+      vertical-stretch: 1;
+      padding-left: 10px;
+      spacing: 0px;
 
-      HorizontalLayout {
-        spacing: 8px;
+      // --- the list ------------------------------------------------------------------
+      Rectangle {
+        width: root.list-width;
+        horizontal-stretch: 0;
+        background: Wf.sheet;
+        clip: true;
 
-        Text {
-          text: "FIXTURES";
-          color: Theme.dim;
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 1px;
-          vertical-alignment: center;
-        }
+        VerticalLayout {
+          spacing: 0px;
 
-        // What the tick on each row is, which nothing said — it is the list's one control, and
-        // the same switch as "in the show" beside the selected fixture's address (the audit
-        // of 2026-09-25, L37).
-        Text {
-          text: "ticked: in the show";
-          color: Theme.dim;
-          font-size: 10px;
-          horizontal-alignment: right;
-          vertical-alignment: center;
-          horizontal-stretch: 1;
-          overflow: elide;
-        }
-      }
-
-      ListView {
-        vertical-stretch: 1;
-        for fixture[index] in root.fixtures: Rectangle {
-          height: 52px;
-          background: index == root.selected ? Theme.control : transparent;
-          border-radius: 4px;
-
-          TouchArea {
-            clicked => {
-              // The keyboard back to the window first, as a button takes it (see `FocusSink`).
-              // A row took nothing, so a box being typed in stayed lit over the next fixture,
-              // holding what was typed for this one (the audit of 2026-09-25, M18).
-              defocus.take();
-              root.picked(index);
-            }
-          }
-
+          // "fixtures" and its +.
           HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            // Vertical padding, and it is not decoration: without it the × below stretches to
-            // the row's full 52px, because `Press` carries a `min-height` for the performance
-            // controls it was written for and a layout with nothing to push against gives it
-            // everything. Measured in a shot, where it read as a second panel over the row.
-            padding-top: 9px;
-            padding-bottom: 9px;
-            spacing: 8px;
-
-            CheckBox {
-              checked: fixture.enabled;
-              width: 28px;
-              toggled => {
-                root.enabled-changed(index, self.checked);
-              }
-            }
-
-            VerticalLayout {
-              horizontal-stretch: 1;
-
-              Text {
-                text: fixture.name == "" ? "(unnamed)" : fixture.name;
-                color: fixture.enabled ? Theme.text : Theme.dim;
-                font-size: 14px;
-                overflow: elide;
-              }
-              Text {
-                // The problem takes the line when there is one: a fixture that cannot be
-                // driven should say so where its address would be, because the address is
-                // usually what is wrong with it.
-                text: fixture.problem != "" ? fixture.problem
-                  : fixture.group != "" ? fixture.where + "  ·  " + fixture.group
-                  : fixture.where;
-                color: fixture.problem != "" ? Theme.holding : Theme.dim;
-                font-size: 11px;
-                overflow: elide;
-              }
-            }
-
-            Press {
-              text: "×";
-              font: 13px;
-              pad: 8px;
-              width: 30px;
-              // Explicit, for the reason the padding above gives: `Press` has a `min-height`
-              // and would otherwise take the row.
-              height: 30px;
-              y: 2px;
-              clicked => {
-                root.removed-at(index);
-              }
-            }
-          }
-        }
-      }
-
-      Text {
-        text: root.summary;
-        color: Theme.dim;
-        font-size: 11px;
-        wrap: word-wrap;
-      }
-
-      HorizontalLayout {
-        spacing: 8px;
-        Press {
-          text: "ADD";
-          primary: true;
-          font: 14px;
-          pad: 12px;
-          clicked => { root.added(); }
-        }
-        Press {
-          text: "COPY";
-          font: 14px;
-          pad: 12px;
-          enabled: root.selected >= 0;
-          clicked => { root.duplicated(); }
-        }
-        Press {
-          text: "DELETE";
-          font: 14px;
-          pad: 12px;
-          enabled: root.selected >= 0;
-          clicked => { root.removed(); }
-        }
-        Rectangle { horizontal-stretch: 1; }
-      }
-    }
-
-    Splitter {
-      dragged(by) => {
-        root.list-width = clamp(root.list-width + by, 220px, 460px);
-      }
-    }
-
-    // --- the editor ----------------------------------------------------------------
-    ScrollView {
-      horizontal-stretch: 1;
-      // Scrolls vertically only. Without this a ScrollView sizes its viewport to whatever its
-      // content asks for, and a column of rows full of fixed widths asks for more than the
-      // pane has — so the editor scrolls sideways and the right-hand end of every row is
-      // simply not on screen. The rule editor's own scroller carries the same line and the
-      // same note; this one was measured in a shot with IDENTIFY hanging off the edge.
-      viewport-width: self.visible-width;
-
-      VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
-        alignment: start;
-
-        if root.selected < 0 : Text {
-          text: "No fixtures patched. ADD one, pick the shape it is — an RGB par, a moving head — and set the start address to whatever is on the back of the fixture.";
-          color: Theme.dim;
-          font-size: 13px;
-          wrap: word-wrap;
-        }
-
-        if root.selected >= 0 : VerticalLayout {
-          spacing: 12px;
-          // **`start`, and it is not decoration.** Without it this column stretches its rows
-          // to fill whatever height the pane has, and a fixture with three channels — the
-          // ordinary RGB par — drew its universe, address and mode boxes eighty pixels tall
-          // with canyons of grey between the headings. The outer column says `start` and that
-          // settles the outer column; a nested one distributes its own share all over again.
-          // Reported from a rig on 2026-09-16 and reproduced in a shot at 1067x1500.
-          alignment: start;
-
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-
-            // **Two-way, and committed on Enter or on leaving the box — never per keystroke.**
-            // The audit's H10 and H8: a one-way `text:` binding dies on the first keystroke, so
-            // after typing a name, clicking another fixture left this box showing the first
-            // one's name and the next focus-out renamed the second to it; and a commit per
-            // keystroke re-patched the rig, freezing every running effect, on every letter.
-            // Switching fixture commits what is in the boxes first — see `FixturesController::
-            // pick` — because Slint runs `changed has-focus` a loop late, after the switch.
-            //
-            // Labelled, and in the same column as "universe" below: a placeholder only shows
-            // while the box is empty, and a patched fixture's name and group are two boxes
-            // reading "head 1" and "heads" with nothing saying which is which.
+            height: 46px;
+            padding-left: 14px;
+            padding-right: 10px;
+            padding-top: 10px;
+            padding-bottom: 8px;
             Text {
-              text: "name";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 72px;
-              vertical-alignment: center;
-            }
-            Field {
-              text <=> root.name;
-              placeholder-text: "name — what a rule aims at";
-              font-size: 13px;
-              horizontal-stretch: 1;
-              min-width: 120px;
-              // A name is a name. Left to stretch it took half a wide window, which makes the
-              // row read as one enormous box and two afterthoughts.
-              max-width: 420px;
-              accepted(t) => { self.leave(); root.name-edited(t); }
-              changed has-focus => {
-                if (!self.has-focus) { root.name-edited(self.text); }
-              }
-            }
-
-            Text {
-              text: "group";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 64px;
-              horizontal-alignment: right;
-              vertical-alignment: center;
-            }
-            Field {
-              // A second name any number of fixtures share, so a rule can say "heads" and a
-              // re-rig is an edit to the patch rather than to every rule.
-              text <=> root.group;
-              placeholder-text: "group (optional)";
-              font-size: 13px;
-              // Gives way in a narrow window rather than pushing the row off its edge.
-              horizontal-stretch: 1;
-              min-width: 100px;
-              max-width: 180px;
-              accepted(t) => { self.leave(); root.group-edited(t); }
-              changed has-focus => {
-                if (!self.has-focus) { root.group-edited(self.text); }
-              }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-
-            Text {
-              text: "universe";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 72px;
-              vertical-alignment: center;
-            }
-            Field {
-              // A flat number, which is how every desk and node front panel spells it. The
-              // three-part "net:sub:uni" form is accepted too, for a rig that has left the
-              // first Net — see `dmx::parsePortAddress`.
-              text <=> root.universe;
-              placeholder-text: "0";
-              font-size: 13px;
-              width: 90px;
-              accepted(t) => { self.leave(); root.universe-edited(t); }
-              changed has-focus => {
-                if (!self.has-focus) { root.universe-edited(self.text); }
-              }
-            }
-
-            Text {
-              text: "address";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 64px;
-              horizontal-alignment: right;
-              vertical-alignment: center;
-            }
-            NumberBox {
-              // 1-based, because that is the number printed on the back of the fixture and
-              // set on its display. Everything inside a universe buffer counts from zero and
-              // exactly one function knows it.
-              value <=> root.address;
-              minimum: 1;
-              maximum: 512;
-              width: 104px;
-              // Entered, never per keystroke: typing 101 re-patched the fixture at 1, then 10,
-              // then 101, parking every channel it passed over (the audit of 2026-09-25, M22).
-              typed(v) => { root.address-typed(v); }
-              edited(v) => { root.address-changed(v); }
-            }
-
-            CheckBox {
-              // What the switch does rather than "on", which read as the lamp being lit.
-              text: "in the show";
-              checked <=> root.enabled;
-              toggled => { root.fixture-enabled-changed(self.checked); }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // The mode and IDENTIFY on a row of their own. On the row above they needed half as
-          // much again as the pane has at the window's narrowest, and IDENTIFY went off its edge.
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-
-            Text {
-              text: "mode";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 72px;
-              vertical-alignment: center;
-            }
-            ComboBox {
-              // Not a fixture library — there are thousands of fixtures and takt4 does not
-              // ship a database of them. These are the shapes nearly every LED fixture takes,
-              // so patching an RGB par is one pick and patching something unusual is picking
-              // the nearest and editing the map below.
-              model: root.modes;
-              // Two-way, for the reason the boxes above are: a pick breaks a one-way binding,
-              // and the next fixture chosen went on showing this one's mode.
-              current-index <=> root.mode-index;
-              horizontal-stretch: 1;
-              // The longest entry is "moving head 16-bit (12ch)"; past that the box is only
-              // wider, and a wide window should not spend all of itself on one dropdown.
-              max-width: 240px;
-              selected => { root.mode-picked(self.current-index); }
-            }
-
-            Press {
-              // Wide enough for its own label. Left to the layout it was elided to
-              // "IDENTI…" — measured in a shot, and a button whose label is cut is a button
-              // an operator has to guess at.
-              text: "IDENTIFY";
-              font: 13px;
-              pad: 10px;
-              min-width: 104px;
-              horizontal-stretch: 0;
-              clicked => { root.identify(); }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          Rectangle { height: 1px; background: Theme.line; }
-
-          Text {
-            text: "CHANNELS";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-          }
-
-          Text {
-            text: "What each channel does, from the fixture's start address. A channel nothing aims at is \"unused\" — leave it there so the ones after it stay where the manual says.";
-            color: Theme.dim;
-            font-size: 11px;
-            wrap: word-wrap;
-          }
-
-          // What TEST holds a channel at, and for how long. **One box for the column rather
-          // than one per row**: an operator poking channels to find out which is which pokes
-          // them all at the same level, and a value box on every row would double the width
-          // of a map that is meant to be read top to bottom.
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-
-            Text {
-              text: "TEST sends";
-              color: Theme.dim;
-              font-size: 11px;
-              width: 72px;
-              vertical-alignment: center;
-            }
-            NumberBox {
-              value <=> root.test-level;
-              minimum: 0;
-              maximum: 255;
-              width: 104px;
-              typed(v) => { root.test-level-typed(v); }
-              edited(v) => { root.test-level-changed(v); }
-            }
-            Text {
-              text: "to one channel for " + root.test-seconds + " s, then puts it back. Nothing else on the fixture moves.";
-              color: Theme.dim;
-              font-size: 11px;
+              text: "fixtures";
+              color: Wf.ink;
+              font-size: 18px;
+              font-weight: 800;
+              letter-spacing: -0.36px;
               vertical-alignment: center;
               horizontal-stretch: 1;
               overflow: elide;
             }
-          }
-
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-            Text { text: "ch"; color: Theme.dim; font-size: 11px; width: 40px; }
-            Text { text: "does"; color: Theme.dim; font-size: 11px; width: 144px; }
-            Text { text: "parked at"; color: Theme.dim; font-size: 11px; width: 104px; }
-            Text { text: "sending"; color: Theme.dim; font-size: 11px; width: 64px; }
-            Text { text: "test"; color: Theme.dim; font-size: 11px; width: 60px; }
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // A row per channel, and they are **tight on purpose**: a twelve-channel head is
-          // twelve of these, and at the widget set's own spacing only nine fit the window.
-          // The one thing an operator does here is read the map top to bottom against the
-          // fixture's manual, which wants all of it on screen at once.
-          for channel[index] in root.channels: HorizontalLayout {
-            spacing: 8px;
-            height: 36px;
-            vertical-stretch: 0;
-
-            Text {
-              text: channel.number;
-              color: Theme.text;
-              font-size: 12px;
-              font-family: "Consolas";
-              width: 40px;
-              vertical-alignment: center;
-            }
-
-            ComboBox {
-              model: root.roles;
-              current-index: channel.role-index;
-              // Room for "color wheel", the longest role, and no more: at 168 the row was 20px
-              // wider than the pane at the window's narrowest, and cut the delete button in half.
-              width: 144px;
-              height: 32px;
-              y: 2px;
-              selected => { root.channel-role-picked(index, self.current-index); }
-            }
-
-            NumberBox {
-              value: channel.parked;
-              minimum: 0;
-              maximum: 255;
-              width: 104px;
-              height: 32px;
-              y: 2px;
-              typed(v) => { root.channel-parked-typed(index, v); }
-              edited(v) => { root.channel-parked-changed(index, v); }
-            }
-
-            // The live level. A bar as well as a number, because what an operator is
-            // checking here is *movement* — that a fade is happening — and a number changing
-            // forty times a second is harder to read than a bar doing the same.
-            Rectangle {
-              width: 64px;
-              height: 22px;
-              y: 7px;
-              background: Theme.panel;
-              border-radius: 3px;
-              border-width: 1px;
-              border-color: Theme.line;
-
-              Rectangle {
-                x: 1px;
-                y: 1px;
-                width: (parent.width - 2px) * channel.live / 255;
-                height: parent.height - 2px;
-                background: Theme.accent;
-                border-radius: 2px;
-              }
-
-              Text {
-                text: channel.live;
-                // Dark on the filled part of the bar and light on the empty part would need
-                // two texts and a clip. One color that reads on both is the accent's own
-                // dark counterpart, which is what the bar is drawn over.
-                color: channel.live > 140 ? Theme.background : Theme.text;
-                font-size: 10px;
-                font-family: "Consolas";
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%;
-                height: 100%;
-              }
-            }
-
-            // **One channel, on its own, for a moment.** The bar to the left says what takt4
-            // is sending; this is what says *which lamp that is*. IDENTIFY flashes the whole
-            // fixture, which answers "where is it on the truss" and not "is channel 72 really
-            // the blue one" — and the second question is the one a channel map is wrong
-            // about. It puts the channel back by itself, so it is safe to press during a set.
-            Press {
-              text: "TEST";
-              font: 11px;
-              pad: 6px;
-              width: 60px;
-              height: 28px;
-              y: 4px;
-              clicked => { root.channel-tested(index); }
-            }
-
-            Press {
-              text: "×";
-              font: 12px;
-              pad: 8px;
+            Btn {
               width: 28px;
               height: 28px;
-              y: 4px;
-              clicked => { root.channel-removed(index); }
+              text: "+";
+              accessible-text: "add a fixture";
+              font-size: 15px;
+              pad: 0px;
+              clicked => {
+                root.added();
+              }
             }
-
-            Rectangle { horizontal-stretch: 1; }
           }
 
-          HorizontalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-            Press {
-              text: "ADD CHANNEL";
-              font: 13px;
-              pad: 10px;
-              clicked => { root.channel-added(); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-          }
-
-          // --- the movement window ---------------------------------------------------
-          //
-          // Only for a fixture that can move. It is a *safety* limit rather than a
-          // preference: a head told to pan at random across its whole travel will at some
-          // point point straight at the audience, and at a small venue that is a beam in
-          // somebody's eyes. Set once from the stage, and every random position and every
-          // path stays inside it.
-          if root.moves : Rectangle { height: 1px; background: Theme.line; }
-
-          if root.moves : Text {
-            text: "MOVEMENT LIMITS";
-            color: Theme.dim;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-          }
-
-          if root.moves : Text {
-            text: "How much of this head's travel a rule may use. Every random position and every path is a fraction of this window, so one rule means the same gesture on six differently-rigged heads — and none of them can be sent into the audience.";
-            color: Theme.dim;
-            font-size: 11px;
-            wrap: word-wrap;
-          }
-
-          if root.moves : HorizontalLayout {
-            spacing: 8px;
-            Text {
-              text: "pan";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 44px;
-              vertical-alignment: center;
-            }
-            Slider {
-              minimum: 0;
-              maximum: 100;
-              // Two-way, so the readout follows the thumb and a pick of another head moves it
-              // (the audit's H10); committed when it is let go, not on every pixel of the drag,
-              // each of which re-patched the rig (H8).
-              value <=> root.pan-min;
-              horizontal-stretch: 1;
-              released(v) => { root.pan-range-changed(v, root.pan-max); }
-            }
-            Slider {
-              minimum: 0;
-              maximum: 100;
-              value <=> root.pan-max;
-              horizontal-stretch: 1;
-              released(v) => { root.pan-range-changed(root.pan-min, v); }
+          // What the dots mean, since each is a switch — once there is a dot to mean anything. An
+          // explicit height: an `if` in a vertical layout takes a share of the spare height otherwise.
+          if root.fixtures.length > 0: HorizontalLayout {
+            height: 24px;
+            padding-left: 14px;
+            padding-bottom: 8px;
+            spacing: 6px;
+            alignment: start;
+            VerticalLayout {
+              alignment: center;
+              Rectangle {
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: Wf.locked;
+              }
             }
             Text {
-              text: round(root.pan-min) + "% – " + round(root.pan-max) + "%";
-              color: Theme.text;
-              font-size: 12px;
-              width: 108px;
+              text: "in the show";
+              color: Wf.ink2;
+              font-size: 13px;
               vertical-alignment: center;
+            }
+            Rectangle { width: 2px; }
+            VerticalLayout {
+              alignment: center;
+              Rectangle {
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                border-width: 2px;
+                border-color: Wf.locked;
+              }
+            }
+            Text {
+              text: "left out — click a dot";
+              color: Wf.ink2;
+              font-size: 13px;
+              vertical-alignment: center;
+              overflow: elide;
             }
           }
 
-          if root.moves : HorizontalLayout {
-            spacing: 8px;
+          Scroller {
+            vertical-stretch: 1;
+            VerticalLayout {
+              padding-left: 8px;
+              padding-right: 8px;
+              spacing: 2px;
+              alignment: start;
+
+              for row[index] in root.fixtures: FixtureLine {
+                entry: row;
+                shown: index == root.selected;
+                pressed => {
+                  // The keyboard back to the window first: a row took nothing, so a box being
+                  // typed in stayed lit over the next fixture, holding what was typed for this one
+                  // (the audit of 2026-09-25, M18).
+                  defocus.take();
+                  root.picked(index);
+                }
+                dot-clicked(on) => {
+                  defocus.take();
+                  root.enabled-changed(index, on);
+                }
+                copy-clicked => {
+                  defocus.take();
+                  root.duplicated-at(index);
+                }
+                kill-clicked => {
+                  defocus.take();
+                  root.removed-at(index);
+                }
+              }
+            }
+          }
+
+          // The foot: how many, on how many universes, going where.
+          VerticalLayout {
+            padding-left: 14px;
+            padding-right: 10px;
+            padding-top: 10px;
+            padding-bottom: 12px;
             Text {
-              text: "tilt";
-              color: Theme.dim;
-              font-size: 12px;
-              width: 44px;
-              vertical-alignment: center;
+              text: root.summary;
+              color: Wf.ink2;
+              font-size: 14px;
+              wrap: word-wrap;
             }
-            Slider {
-              minimum: 0;
-              maximum: 100;
-              value <=> root.tilt-min;
-              horizontal-stretch: 1;
-              released(v) => { root.tilt-range-changed(v, root.tilt-max); }
+          }
+        }
+      }
+
+      // The gap between the list and the editor, which drags the list wider or narrower. Not
+      // drawn; the pointer says what it is.
+      Rectangle {
+        width: 10px;
+        horizontal-stretch: 0;
+        TouchArea {
+          mouse-cursor: ew-resize;
+          moved => {
+            if (self.pressed) {
+              root.list-wanted = clamp(root.list-width + (self.mouse-x - self.pressed-x),
+                root.list-min, root.list-max());
+              root.fit-list();
             }
-            Slider {
-              minimum: 0;
-              maximum: 100;
-              value <=> root.tilt-max;
-              horizontal-stretch: 1;
-              released(v) => { root.tilt-range-changed(root.tilt-min, v); }
-            }
-            Text {
-              text: round(root.tilt-min) + "% – " + round(root.tilt-max) + "%";
-              color: Theme.text;
-              font-size: 12px;
-              width: 108px;
-              vertical-alignment: center;
+          }
+        }
+      }
+
+      // --- the editor ----------------------------------------------------------------
+      VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 10px;
+
+        // The top row: in the show, its name and group, IDENTIFY — or, with nothing patched, what to
+        // do — and under them, only while there is something to say, the editor's own message.
+        HorizontalLayout {
+          padding-right: 10px;
+          vertical-stretch: 0;
+          Rectangle {
+            background: Wf.sheet;
+
+            VerticalLayout {
+              padding-left: 16px;
+              padding-right: 16px;
+              padding-top: 10px;
+              padding-bottom: 10px;
+              spacing: 6px;
+
+              // **One place, two contents**: the row of controls, or the note. Both are kept and one
+              // is hidden, rather than built and destroyed — a box being typed in commits a turn of the
+              // event loop after it loses the keyboard, and the last fixture's × would otherwise have
+              // destroyed it first.
+              Rectangle {
+                height: root.none ? 44px : 34px;
+                // The row's least width, which a layout inside a plain rectangle does not pass up on
+                // its own — without it the list would not give way and the row would be cut off.
+                min-width: top-row.min-width;
+
+                top-row := HorizontalLayout {
+                  x: 0;
+                  y: 0;
+                  width: parent.width;
+                  height: 34px;
+                  visible: !root.none;
+                  spacing: 10px;
+
+                  // What the switch does rather than "on", which read as the lamp being lit.
+                  Tick {
+                    text: "in the show";
+                    horizontal-stretch: 0;
+                    checked: root.enabled;
+                    toggled(on) => {
+                      root.fixture-enabled-changed(on);
+                    }
+                  }
+
+                  // **Labelled**: a placeholder only shows while the box is empty, and a patched
+                  // fixture's name and group are two boxes reading "head 1" and "heads".
+                  Word {
+                    text: "name";
+                  }
+                  name-box := Entry {
+                    value: root.name;
+                    placeholder: "what a rule aims at";
+                    min-width: 120px;
+                    preferred-width: 204px;
+                    max-width: 300px;
+                    typed(text) => {
+                      root.name-typed(text);
+                    }
+                    committed(text) => {
+                      root.name-edited(text);
+                    }
+                  }
+
+                  Word {
+                    text: "group";
+                  }
+                  // A second name any number of fixtures share, so a rule can say "heads" and a
+                  // re-rig is an edit to the patch rather than to every rule.
+                  group-box := Entry {
+                    value: root.group;
+                    placeholder: "optional";
+                    min-width: 90px;
+                    preferred-width: 150px;
+                    max-width: 150px;
+                    typed(text) => {
+                      root.group-typed(text);
+                    }
+                    committed(text) => {
+                      root.group-edited(text);
+                    }
+                  }
+
+                  Rectangle {
+                    horizontal-stretch: 1;
+                  }
+
+                  // The one control in this window, besides TEST, that sends anything.
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Btn {
+                      text: "identify";
+                      primary: true;
+                      clicked => {
+                        root.identify();
+                      }
+                    }
+                  }
+                }
+
+                // Nothing patched: what to press, and what to set.
+                Text {
+                  x: 0;
+                  y: 0;
+                  width: parent.width;
+                  height: parent.height;
+                  visible: root.none;
+                  text: "Nothing patched. Press + to add a fixture, pick its mode, and set the start address to the one on the back of the fixture.";
+                  color: Wf.ink2;
+                  font-size: 15px;
+                  wrap: word-wrap;
+                  vertical-alignment: center;
+                }
+              }
+
+              // **Always there, empty or not** — unlike the rule editor's, which comes and goes. Here
+              // the buttons an operator clicks one after another are in the rows below, and a message
+              // that appeared pushed every row 22 px down under the pointer: TEST on one channel said
+              // "Channel 18 at 255 for 3 s." and the next click, on the next channel's TEST, landed on
+              // the gap between two rows (found testing the build, 2026-09-30).
+              Text {
+                height: 16px;
+                text: root.status;
+                color: root.status-error ? Wf.holding : Wf.ink2;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+              }
             }
           }
         }
 
-        Rectangle { vertical-stretch: 1; }
+        Scroller {
+          vertical-stretch: 1;
 
-        if root.status != "" : Text {
-          text: root.status;
-          color: root.status-error ? Theme.holding : Theme.dim;
-          font-size: 12px;
-          wrap: word-wrap;
+          sheets := VerticalLayout {
+            padding-right: 10px;
+            spacing: 10px;
+            alignment: start;
+
+            // **Clipped away with nothing patched, not removed** — for the reason the top row is, and
+            // so that no conditional sheet takes a share of the pane's spare height.
+            Rectangle {
+              height: root.none ? 0px : fixture-sheets.preferred-height;
+              min-width: fixture-sheets.min-width;
+              clip: true;
+
+              fixture-sheets := VerticalLayout {
+                y: 0;
+                width: parent.width;
+                spacing: 10px;
+
+                // --- A · where ---------------------------------------------------------------
+                Section {
+                  letter: "A";
+                  title: "where";
+                  folded: root.where-folded;
+                  summary: "universe " + root.universe + " · " + root.address
+                    + (root.channels.length > 1 ? "-" + root.last-channel : "")
+                    + " · " + (root.mode-index > 0 && root.mode-index < root.modes.length
+                      ? root.modes[root.mode-index] : "custom map");
+                  fold-clicked => {
+                    root.fold-clicked(0);
+                  }
+
+                  HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+
+                    RowLabel {
+                      text: "universe";
+                    }
+                    // A flat number, which is how every desk and node front panel spells it. The
+                    // three-part "net:sub:uni" form is accepted too — see `dmx::parsePortAddress`.
+                    universe-box := Entry {
+                      width: 72px;
+                      horizontal-stretch: 0;
+                      value: root.universe;
+                      placeholder: "0";
+                      font-family: Wf.code;
+                      typed(text) => {
+                        root.universe-typed(text);
+                      }
+                      committed(text) => {
+                        root.universe-edited(text);
+                      }
+                    }
+                    Rectangle {
+                      width: 4px;
+                    }
+                    Word {
+                      text: "start address";
+                    }
+                    // 1-based, because that is the number printed on the back of the fixture. Entered,
+                    // never per keystroke: typing 101 re-patched the fixture at 1, then 10, then 101
+                    // (the audit of 2026-09-25, M22).
+                    address-box := Count {
+                      width: 72px;
+                      value: root.address;
+                      minimum: 1;
+                      maximum: 512;
+                      typed(value) => {
+                        root.address-typed(value);
+                      }
+                      edited(value) => {
+                        root.address-changed(value);
+                      }
+                    }
+                    Note {
+                      text: root.channels.length == 0 ? "takes no channels yet"
+                        : root.channels.length == 1 ? "takes channel " + root.address
+                        : "takes channels " + root.address + " to " + root.last-channel;
+                    }
+                  }
+
+                  HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+
+                    RowLabel {
+                      text: "mode";
+                    }
+                    // Not a fixture library — there are thousands of fixtures and takt4 ships no
+                    // database of them. These are the shapes nearly every LED fixture takes, so an RGB
+                    // par is one pick and anything unusual is the nearest, edited below.
+                    Pick {
+                      width: 240px;
+                      horizontal-stretch: 0;
+                      model: root.modes;
+                      current-index: root.mode-index;
+                      selected(index) => {
+                        root.mode-picked(index);
+                        // And lets go of the keyboard: left with it, the next Up or Down picked the
+                        // neighbouring mode, which replaces the channel map — a custom map gone with
+                        // no undo (found reviewing, 2026-10-01).
+                        defocus.take();
+                      }
+                    }
+                    Note {
+                      text: "fills in the channels below";
+                    }
+                  }
+                }
+
+                // --- B · channels ------------------------------------------------------------
+                Section {
+                  letter: "B";
+                  title: "channels";
+                  has-add: true;
+                  add-enabled: root.address + root.channels.length <= 512;
+                  folded: root.channels-folded;
+                  summary: root.channels.length == 1 ? "1 channel" : root.channels.length + " channels";
+                  fold-clicked => {
+                    root.fold-clicked(1);
+                  }
+                  add-clicked => {
+                    root.channel-added();
+                  }
+
+                  // What TEST holds a channel at. **One box for the column rather than one per row**:
+                  // an operator poking channels to find out which is which pokes them all at the same
+                  // level, and a box on every row would make a map meant to be read top to bottom wider.
+                  HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+
+                    RowLabel {
+                      text: "test sends";
+                    }
+                    Count {
+                      width: 72px;
+                      value: root.test-level;
+                      minimum: 0;
+                      maximum: 255;
+                      typed(value) => {
+                        root.test-level-typed(value);
+                      }
+                      edited(value) => {
+                        root.test-level-changed(value);
+                      }
+                    }
+                    Note {
+                      text: "to one channel for " + root.test-seconds + " s, then puts it back";
+                    }
+                  }
+
+                  // The columns' headings, centred over them.
+                  HorizontalLayout {
+                    height: 18px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 10px;
+
+                    Text {
+                      width: 44px;
+                      text: "ch";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      vertical-alignment: center;
+                    }
+                    Text {
+                      width: 180px;
+                      text: "does";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                      vertical-alignment: center;
+                    }
+                    Text {
+                      width: 72px;
+                      text: "parked at";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                      vertical-alignment: center;
+                    }
+                    Text {
+                      horizontal-stretch: 1;
+                      min-width: 80px;
+                      text: "sending now";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                      vertical-alignment: center;
+                    }
+                    Rectangle {
+                      width: 58px;
+                    }
+                    Rectangle {
+                      width: 24px;
+                    }
+                  }
+
+                  // A band per channel: its DMX number, what it does, where it is parked, what is being
+                  // sent on it now, TEST, and ×. **Tight on purpose**: a twelve-channel head is twelve
+                  // of these, read top to bottom against the fixture's manual — 6 px apart, where the
+                  // sheet's rows are 8.
+                  VerticalLayout {
+                    spacing: 6px;
+                    for channel[index] in root.channels: Band {
+                      height: 44px;
+
+                      HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+
+                        Text {
+                          width: 44px;
+                          text: channel.number;
+                          color: Wf.ink;
+                          font-family: Wf.code;
+                          font-size: 15px;
+                          vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                          alignment: center;
+                          horizontal-stretch: 0;
+                          Pick {
+                            width: 180px;
+                            model: root.roles;
+                            current-index: channel.role-index;
+                            selected(role) => {
+                              root.channel-role-picked(index, role);
+                            }
+                          }
+                        }
+                        VerticalLayout {
+                          alignment: center;
+                          horizontal-stretch: 0;
+                          Count {
+                            width: 72px;
+                            value: channel.parked;
+                            minimum: 0;
+                            maximum: 255;
+                            typed(value) => {
+                              root.channel-parked-typed(index, value);
+                            }
+                            edited(value) => {
+                              root.channel-parked-changed(index, value);
+                            }
+                          }
+                        }
+                        // The live level, as a bar as well as a number: what an operator is checking
+                        // here is *movement* — that a fade is happening.
+                        HorizontalLayout {
+                          horizontal-stretch: 1;
+                          min-width: 80px;
+                          spacing: 8px;
+                          VerticalLayout {
+                            alignment: center;
+                            Meter {
+                              value: channel.live / 255;
+                            }
+                          }
+                          Text {
+                            width: 28px;
+                            text: channel.live;
+                            color: Wf.ink;
+                            font-family: Wf.code;
+                            font-size: 14px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                          }
+                        }
+                        // **One channel, on its own, for a moment** — what IDENTIFY cannot say: whether
+                        // channel 72 really is the blue one. It puts the channel back by itself.
+                        VerticalLayout {
+                          alignment: center;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 58px;
+                            height: 28px;
+                            text: "test";
+                            accessible-text: "test channel " + channel.number;
+                            font-size: 14px;
+                            pad: 0px;
+                            clicked => {
+                              root.channel-tested(index);
+                            }
+                          }
+                        }
+                        VerticalLayout {
+                          alignment: center;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 24px;
+                            height: 24px;
+                            text: "×";
+                            accessible-text: "delete channel " + channel.number;
+                            font-size: 14px;
+                            pad: 0px;
+                            clicked => {
+                              root.channel-removed(index);
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                  }
+
+                  if root.channels.length == 0: Note {
+                    height: 34px;
+                    text: "no channels — use + add";
+                  }
+
+                  // Why a channel nothing uses stays in the map — the old window said it, and the
+                  // redrawn one first left it out.
+                  Note {
+                    height: 20px;
+                    text: "a channel nothing uses is \"unused\": keep it, so the ones after it stay where the manual says";
+                  }
+                }
+
+                // --- C · how far it moves -----------------------------------------------------
+                // Only for a fixture that can move. A *safety* limit rather than a preference: a head
+                // told to pan at random across its whole travel will at some point point straight at
+                // the audience. Clipped away for one that cannot move, for the reason the sheets are.
+                Rectangle {
+                  height: root.moves ? moves-sheet.preferred-height : 0px;
+                  min-width: moves-sheet.min-width;
+                  clip: true;
+
+                  moves-sheet := Section {
+                    y: 0;
+                    width: parent.width;
+                    letter: "C";
+                    title: "how far it moves";
+                    folded: root.moves-folded;
+                    summary: "pan " + round(root.pan-min) + " to " + round(root.pan-max) + " % · tilt "
+                      + round(root.tilt-min) + " to " + round(root.tilt-max) + " %";
+                    fold-clicked => {
+                      root.fold-clicked(2);
+                    }
+
+                    HorizontalLayout {
+                      height: 34px;
+                      spacing: 10px;
+
+                      RowLabel {
+                        text: "pan";
+                      }
+                      VerticalLayout {
+                        alignment: center;
+                        max-width: 360px;
+                        // Followed by the window as the hand moves it, committed once it is let go.
+                        SpanTrack {
+                          low: root.pan-min;
+                          high: root.pan-max;
+                          minimum: 0;
+                          maximum: 100;
+                          step: 1;
+                          low-moved(value) => {
+                            root.pan-min = value;
+                          }
+                          high-moved(value) => {
+                            root.pan-max = value;
+                          }
+                          settled(low, high) => {
+                            root.pan-range-changed(low, high);
+                          }
+                        }
+                      }
+                      Text {
+                        width: 100px;
+                        text: round(root.pan-min) + " to " + round(root.pan-max) + " %";
+                        color: Wf.ink;
+                        font-family: Wf.code;
+                        font-size: 14px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                      }
+                      Rectangle {
+                        horizontal-stretch: 1;
+                      }
+                    }
+
+                    HorizontalLayout {
+                      height: 34px;
+                      spacing: 10px;
+
+                      RowLabel {
+                        text: "tilt";
+                      }
+                      VerticalLayout {
+                        alignment: center;
+                        max-width: 360px;
+                        SpanTrack {
+                          low: root.tilt-min;
+                          high: root.tilt-max;
+                          minimum: 0;
+                          maximum: 100;
+                          step: 1;
+                          low-moved(value) => {
+                            root.tilt-min = value;
+                          }
+                          high-moved(value) => {
+                            root.tilt-max = value;
+                          }
+                          settled(low, high) => {
+                            root.tilt-range-changed(low, high);
+                          }
+                        }
+                      }
+                      Text {
+                        width: 100px;
+                        text: round(root.tilt-min) + " to " + round(root.tilt-max) + " %";
+                        color: Wf.ink;
+                        font-family: Wf.code;
+                        font-size: 14px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                      }
+                      Rectangle {
+                        horizontal-stretch: 1;
+                      }
+                    }
+
+                    Note {
+                      height: 20px;
+                      text: "every random position and path stays inside this, so no head points at the audience";
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

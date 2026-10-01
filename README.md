@@ -84,7 +84,7 @@ To control takt4, tick **listen** on the OSC row under **inputs** (port 7001; th
 /takt4/ctl/rule/<id>/reset          back to the count it was written with
 ```
 
-- `<id>` is the rule's `"id"` in `settings.json`, or `all`.
+- `<id>` is the rule's id, shown beside its name in the rule editor, or `all`.
 - Switches take `0` or `1`, never a toggle, so a missed message can't leave one backwards.
 
 **MIDI control**: on the MIDI row under **inputs**, pick the controller's **port** and an **action**, click **learn**, hit the pad. Actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held.
@@ -92,13 +92,14 @@ To control takt4, tick **listen** on the OSC row under **inputs** (port 7001; th
 ## Lights
 
 1. **+ add output**, set its **protocol** to Art-Net and type the node's IP (port 6454).
-2. Click **patch lights** in the triggers row, then **ADD** a fixture: name, group (optional), universe, **address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head).
-3. **IDENTIFY** flashes the fixture; **TEST** holds one channel for 3 s.
+2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head).
+3. **identify** flashes the fixture; a channel's **test** holds it at the **test sends** level for 3 s.
 4. In a rule, set **send as** to DMX / Art-Net and pick an effect: level / fade, color, flash, pulse, strobe, hue sweep, position, path, home, blackout.
 
+- Click a fixture's dot to leave it out of the show; copy and × are on its row.
 - Every effect ends with its duration, so nothing is left strobing.
 - Colors come from a palette (the picker lights the real lamps as you drag) or from red, green and blue values.
-- A moving head's **MOVEMENT LIMITS** keep random positions and paths inside the range you set.
+- A moving head's **how far it moves** keeps random positions and paths inside the range you set.
 - **panic** freezes the lights where they are; **stop** and quitting black them out.
 
 ## Saving
@@ -118,7 +119,7 @@ Beat and downbeat F-measure (`mir_eval`, 70 ms) with the weights that ship:
 | GiantSteps, 664 Beatport previews | tempo within 4% on 86% | |
 | Ballroom, 698 clips, counted in 3 and 4 | 0.95 | 0.93 |
 
-Ballroom was in the training set; on its 70 held-out clips it scores 0.92 / 0.88. Details: [tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md) and [TRACKING-PROPOSAL.md](TRACKING-PROPOSAL.md).
+Ballroom was in the training set; on its 70 held-out clips it scores 0.92 / 0.88. Details: [tests/data/tracking/refeval/](tests/data/tracking/refeval/README.md).
 
 ## Building it
 

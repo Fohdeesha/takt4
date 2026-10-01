@@ -93,6 +93,9 @@ struct MachineSettings {
     std::array<bool, 4> ruleSectionsFolded{false, true, false, false};
     bool ruleLogOpen = false;
     double ruleLogHeight = 90.0;
+    /// The patch editor's sheets folded — A where, B channels, C how far it moves — remembered the
+    /// same way (its redesign, 2026-09-30). All open the first time.
+    std::array<bool, 3> patchSectionsFolded{false, false, false};
 };
 
 /// §5.5's tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s

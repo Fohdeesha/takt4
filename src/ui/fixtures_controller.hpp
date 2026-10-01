@@ -2,6 +2,7 @@
 
 #include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/settings/settings.hpp"
 #include "ui/delete_guard.hpp"
 
 #include "main_window.h" // generated; holds FixturesWindow too — see src/ui/CMakeLists.txt
@@ -25,10 +26,16 @@ namespace takt4::ui {
 /// `OutputCommand::Patch`.
 ///
 /// Replacing the patch is cheap and, more to the point, *safe*: levels survive a re-patch where
-/// they can (`DmxEngine::setPatch`). And an address is not re-patched per keystroke at all —
-/// typing 101 used to patch the fixture at 1, then 10, then 101, parking each channel it passed
-/// over at the fixture's levels (the audit of 2026-09-25, M22). The number boxes commit on Enter,
-/// on a click away, or before any other action (`commitDrafts`).
+/// they can (`DmxEngine::setPatch`). And nothing is re-patched per keystroke: typing 101 into the
+/// address used to patch the fixture at 1, then 10, then 101, parking each channel it passed over
+/// (the audit of 2026-09-25, M22), and a name re-patched the rig on every letter (H8). Every box
+/// commits on Enter, on a click away, or before any other action (`commitDrafts`) — and a number
+/// box's Up and Down, which are a step each and commit it, as a spin box's arrows would. Nothing is
+/// re-patched that has not changed: a re-patch ends a channel's TEST.
+///
+/// **Every row is written in place** (`writeRows`): the window's controls are weltformat.slint's,
+/// none of which sets its own value, so no row has to be built again to show what the model
+/// holds — and no element is destroyed under the hand that is using it.
 ///
 /// Nothing here touches a Slint property outside `tick()` and the callbacks, both of which run
 /// on the UI thread — §7.5's rule.
@@ -50,7 +57,7 @@ public:
     void hide();
     bool visible() const noexcept { return visible_; }
 
-    /// One round of refreshing what the window shows — the live levels, and the summary line.
+    /// One round of refreshing what the window shows — the live levels.
     /// Driven by the main window's redraw timer so the app has one timer.
     ///
     /// **The live levels are the reason this ticks at all.** Everything else in this window is
@@ -70,6 +77,12 @@ public:
 
     int selected() const noexcept { return selected_; }
 
+    /// The sheets' folds, as the machine settings remember them (with the rule editor's).
+    void applyLayout(const settings::MachineSettings& machine);
+    void layoutInto(settings::MachineSettings& machine) const;
+    /// 0 A where, 1 B channels, 2 C how far it moves.
+    void fold(int section);
+
     // What the window's callbacks do, reachable directly as well as through a click — which is
     // how `takt4_ui_tests` drives them, Slint's element-finding API being behind
     // SLINT_FEATURE_EXPERIMENTAL (§6).
@@ -78,6 +91,8 @@ public:
     void remove();
     void removeAt(int index);
     void duplicate();
+    /// The copy mark on row `index`: that fixture, copied, the copy placed after it and picked.
+    void duplicateAt(int index);
     void setEnabledAt(int index, bool on);
 
     void rename(const std::string& name);
@@ -125,33 +140,33 @@ private:
 
     /// Hands the patch to the output thread and tells the owner. Every edit ends here.
     void commit();
-    /// Applies what the name, group and universe boxes hold to the fixture they belong to, and
-    /// a number still being typed (`typed_`). Called before **every** action — see the
-    /// constructor, where each callback is wired.
+    /// Applies what is being typed — in a text box or a number box — to the fixture it was typed
+    /// for. Called before **every** action — see the constructor, where each callback is wired.
     void commitDrafts();
 
     /// The three number boxes, whose keystrokes are kept until they are entered — see `typed_`.
     enum class Numbered : std::uint8_t { Address, TestLevel, Parked };
-    /// A keystroke in one of them: what Enter would set there now.
+    /// And the three text boxes — see `draft_`.
+    enum class Field : std::uint8_t { Name, Group, Universe };
+    /// A keystroke in a number box: what Enter would set there now.
     void noteTyped(Numbered box, int index, int value);
-    /// That box entered its number itself, so there is nothing left to carry.
-    void entered(Numbered box, int index) noexcept;
-    /// Whether a box's own late commit only repeats what `commitDrafts` already committed for
-    /// it. See `echo_`.
-    bool echoes(Numbered box, int value) noexcept;
+    /// A number box's own commit, which counts only if it was typed in for the fixture showing —
+    /// see `typed_`. Returns whether it did, having cleared it.
+    bool takeTyped(Numbered box, int index);
+    /// A keystroke in a text box, and that box's own commit — the same rule.
+    void noteDraft(Field field, const std::string& text);
+    void finishDraft(Field field, const std::string& text);
+    void applyField(Field field, const std::string& text);
     /// True, having said why in the status line, when PANIC is engaged — IDENTIFY and TEST
     /// send nothing then (the audit's M17).
     bool refusedForPanic();
     void publishAll();
     void publishList();
     void publishSelected();
-    /// Updates the channel rows in place, or marks them for rebuilding when the shape has
-    /// changed. See its definition for why a rebuild cannot happen here.
+    /// The channel rows, written in place — see `writeRows`.
     void publishChannels();
-    /// Builds the channel rows from nothing, so every box in them comes back *bound*. Called
-    /// by `tick` when `publishChannels` found a shape it could not honestly update in place.
-    void rebuildChannels();
-    ChannelRow rowFor(const dmx::Fixture& fixture, std::size_t index) const;
+    ChannelRow rowFor(const dmx::Fixture& fixture, std::size_t index,
+                      const std::vector<std::uint8_t>& levels) const;
     /// Just the live levels, which is all `tick` needs to touch on a settled window.
     void publishLevels();
     void setStatus(const std::string& text, bool error);
@@ -167,29 +182,29 @@ private:
 
     slint::ComponentHandle<FixturesWindow> window_;
     std::shared_ptr<slint::VectorModel<FixtureRow>> listModel_;
-    /// A fixture row's ×, and a channel row's: a double-click on either is one deletion.
+    /// A fixture row's ×, and a channel row's: a double-click on either is one deletion. And a
+    /// row's copy mark, where a double-click made two copies on the same channels.
     DeleteGuard fixtureMarks_;
     DeleteGuard channelMarks_;
+    DeleteGuard copyMarks_;
+    /// Redraws since the summary line was last worked out — see `tick`.
+    int summaryTicks_ = 0;
     std::shared_ptr<slint::VectorModel<ChannelRow>> channelModel_;
     bool visible_ = false;
-    /// Which fixture the channel rows currently on screen were built for, and how many. When
-    /// either changes the rows are rebuilt rather than updated in place, so every box comes
-    /// back *bound* — the same trap `RulesController::publishSlots` documents, where a box
-    /// that has been typed into stops following the model.
-    ///
-    /// **By id, not by position** (the audit of 2026-09-25, M21). Deleting the selected fixture
-    /// puts the next one at the same index, and in a rig of identical pars it has the same
-    /// number of channels too — so its map was written into the rows in place, and the rows'
-    /// dropdowns, dead from a hand-picked role, went on showing the deleted fixture's.
-    std::string channelsBuiltFor_;
-    std::size_t channelsShown_ = 0;
     /// A number typed into the address, the TEST level or a channel's "parked at", not yet
     /// entered — for the fixture it was typed for (`fixtureId`, empty for the TEST level, which
-    /// is the window's). A number box commits on Enter or on losing the keyboard, and the second
-    /// runs a turn of the event loop after the click that took it: ADD CHANNEL, a channel's ×,
-    /// or another fixture's tick had already run, and the box's commit then went to whatever
-    /// that action had put under it (the audit of 2026-09-25, M18). So every action commits it
-    /// first. One is enough: only one box has the keyboard.
+    /// is the window's).
+    ///
+    /// **A box's own commit counts only against this.** A box commits on Enter or on losing the
+    /// keyboard, and the second runs a turn of the event loop after the click that took it — by
+    /// when that click may have put another fixture in the editor. If that fixture holds what the
+    /// first one did there — two pars at universe 0, two channels parked at 0 — nothing changes
+    /// the box, which goes on holding what was typed, and its late commit lands it on the second
+    /// fixture (the audit of 2026-09-25, H10, M18; measured 2026-10-01: with this check taken
+    /// out, "what is typed in the patch editor goes to the fixture it was typed for" fails on the
+    /// universe and the parked level). So every action commits what was typed first
+    /// (`commitDrafts`), and a commit nothing was typed for — or typed for a fixture no longer
+    /// showing — is dropped.
     struct Typed {
         std::string fixtureId;
         Numbered box = Numbered::Address;
@@ -197,14 +212,13 @@ private:
         int value = 0;
     };
     std::optional<Typed> typed_;
-    /// What `commitDrafts` last committed for a box, until that box's own late commit arrives —
-    /// by when a channel's × may have moved the box onto the next channel. Cleared by the next
-    /// keystroke, since only typing can put a different number in a box.
-    std::optional<Typed> echo_;
-    /// Set by `publishChannels` when it found a shape it could not update in place, and
-    /// consumed by `tick`. **Deferred rather than done there and then**, because a publisher
-    /// runs inside the callback of the very widget being replaced.
-    bool channelsDirty_ = false;
+    /// The same for the name, the group and the universe.
+    struct Draft {
+        std::string fixtureId;
+        Field field = Field::Name;
+        std::string text;
+    };
+    std::optional<Draft> draft_;
     /// What TEST sends. Full by default: an operator poking a channel to find out what it
     /// does wants the answer to be unmistakable.
     int testLevel_ = 255;

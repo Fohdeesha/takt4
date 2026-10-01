@@ -42,9 +42,14 @@ inline constexpr float kRulesWindowHeight = 872.0f;
 /// And the patch editor, which had no size of its own at all and so opened at its markup
 /// minimum — 820x520, which is too short to see a twelve-channel head's map and the movement
 /// limits under it without scrolling. Measured from the shot a rig sent on 2026-09-16 asking
-/// for "at least as big as the attached screenshot".
-inline constexpr float kFixturesWindowWidth = 1080.0f;
+/// for "at least as big as the attached screenshot". 1000 wide since the redesign of 2026-09-30,
+/// the rule editor's width, as the approved mockup has it.
+inline constexpr float kFixturesWindowWidth = 1000.0f;
 inline constexpr float kFixturesWindowHeight = 800.0f;
+/// The About box, as its approved mockup of 2026-09-30 (`design/weltformat-dark/about1.html`):
+/// three sheets and CLOSE, whole at this size.
+inline constexpr float kAboutWindowWidth = 580.0f;
+inline constexpr float kAboutWindowHeight = 640.0f;
 
 /// Frames of activation the trace holds: four seconds at the 50 Hz frame rate, which is
 /// two bars at 120 BPM — long enough to see the pattern the network is responding to.

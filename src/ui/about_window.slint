@@ -1,5 +1,6 @@
 // About takt4: what it is, the licence it is under, where its source is, and the notices of
-// everything built into it.
+// everything built into it — in the Weltformat-dark look, as the operator approved it on
+// 2026-09-30 (design/weltformat-dark/about1.html): three sheets, and CLOSE at the bottom right.
 //
 // **GPLv3 §5(d) asks a program with an interactive interface to show "Appropriate Legal
 // Notices"** — a copyright notice, that there is no warranty, that it may be passed on under
@@ -9,17 +10,55 @@
 // built into it and opened from here rather than left in a folder that may not have come
 // along. `WindowController` writes the text out and opens it in the machine's text viewer.
 
-import { FocusSink, Press, Theme } from "theme.slint";
+import { Btn, Scroller, Wf } from "weltformat.slint";
+import { FocusSink } from "theme.slint";
+
+/// A sheet of this window: charcoal on the page, 16 px in from its edges.
+component Sheet inherits Rectangle {
+  background: Wf.sheet;
+  vertical-stretch: 0;
+
+  VerticalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: 14px;
+    padding-bottom: 16px;
+    spacing: 8px;
+    @children
+  }
+}
+
+/// Running text in a sheet, wrapping.
+component Words inherits Text {
+  color: Wf.ink;
+  font-size: 15px;
+  wrap: word-wrap;
+  // A little more open than the face's own, nearer the mockup's lines.
+  line-height-factor: 1.13;
+}
+
+/// A sheet's heading.
+component Head inherits Text {
+  color: Wf.ink;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.36px;
+}
 
 export component AboutWindow inherits Window {
   title: "About takt4";
-  background: Theme.background;
+  background: Wf.page;
+  default-font-family: Wf.sans;
+  default-font-size: 15px;
+  default-font-weight: 500;
+  // The size it is drawn for is `ui::kAboutWindowWidth` x `kAboutWindowHeight`, set from C++
+  // before the first show, no larger than the screen (`fitToScreen`). Shorter than that the sheets
+  // scroll and CLOSE stays put: on a small laptop at 125 % the window used to be taller than the
+  // screen (found reviewing, 2026-10-01).
   preferred-width: 580px;
-  // Measured, not guessed: at 440 x 420 both OPEN buttons elided and CLOSE fell off the
-  // bottom. At 520 x 480 everything is whole.
+  preferred-height: 640px;
   min-width: 520px;
-  preferred-height: 520px;
-  min-height: 480px;
+  min-height: 320px;
 
   /// `versionLabel`: the version, and the commit after it for anything but a clean release.
   in property <string> version;
@@ -33,100 +72,134 @@ export component AboutWindow inherits Window {
   // does in every other window.
   sink := FocusSink { }
   TouchArea {
-    clicked => { sink.take(); }
+    clicked => {
+      sink.take();
+    }
   }
 
   VerticalLayout {
-    padding: 24px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    padding-left: 10px;
+    spacing: 10px;
+
+    Scroller {
+      vertical-stretch: 1;
+    VerticalLayout {
+    padding-right: 10px;
     spacing: 10px;
     alignment: start;
 
-    Text {
-      text: "takt4";
-      color: Theme.text;
-      font-size: 28px;
-      font-weight: 700;
-    }
-    Text {
-      text: root.version;
-      color: Theme.dim;
-      font-size: 13px;
-      overflow: elide;
-    }
-    Text {
-      text: "Beat, downbeat, tempo and meter from the audio coming in — a stereo pair of inputs, or one — sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
-      color: Theme.text;
-      font-size: 13px;
-      wrap: word-wrap;
-    }
-
-    Rectangle { height: 1px; background: Theme.line; }
-
-    Text {
-      text: "Copyright © 2026 Jon Sands";
-      color: Theme.text;
-      font-size: 13px;
-    }
-    Text {
-      text: "takt4 is free software: you can pass it on and change it under the terms of the GNU General Public License, version 3. It comes with ABSOLUTELY NO WARRANTY. You are entitled to its complete source code under that licence.";
-      color: Theme.text;
-      font-size: 13px;
-      wrap: word-wrap;
-    }
-    Text {
-      // Not a link — nothing here opens a browser — so not in the colour this window's
-      // clickable things are drawn in.
-      text: "Source: https://github.com/Fohdeesha/takt4";
-      color: Theme.text;
-      font-size: 13px;
-      overflow: elide;
-    }
-    Text {
-      text: "ASIO is a trademark and software of Steinberg Media Technologies GmbH.";
-      color: Theme.dim;
-      font-size: 12px;
-      wrap: word-wrap;
-    }
-
-    Rectangle { height: 1px; background: Theme.line; }
-
-    Text {
-      text: "takt4 is built with software from other projects, each under its own licence — PortAudio, Ableton Link, Slint, Skia and more. The licence and all of their notices are inside this program; these open them:";
-      color: Theme.text;
-      font-size: 13px;
-      wrap: word-wrap;
-    }
-    HorizontalLayout {
-      spacing: 8px;
-      alignment: start;
-      Press {
-        text: "OPEN THE LICENCE";
-        font: 14px;
-        pad: 12px;
-        clicked => { root.licence-opened(); }
+    Sheet {
+      HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        Text {
+          text: "takt4";
+          color: Wf.ink;
+          font-size: 34px;
+          font-weight: 800;
+          letter-spacing: -1px;
+          vertical-alignment: bottom;
+        }
+        Text {
+          text: root.version;
+          color: Wf.ink2;
+          font-family: Wf.code;
+          font-size: 15px;
+          vertical-alignment: bottom;
+          horizontal-stretch: 1;
+          overflow: elide;
+        }
       }
-      Press {
-        text: "OPEN THIRD-PARTY NOTICES";
-        font: 14px;
-        pad: 12px;
-        clicked => { root.notices-opened(); }
+      Words {
+        text: "Beat, downbeat, tempo and meter from the audio coming in, sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
       }
     }
-    Text {
-      text: root.opened;
-      color: Theme.dim;
-      font-size: 12px;
-      wrap: word-wrap;
+
+    Sheet {
+      Head {
+        text: "licence";
+      }
+      Words {
+        text: "Copyright © 2026 Jon Sands";
+      }
+      Words {
+        text: "takt4 is free software: you can pass it on and change it under the terms of the GNU General Public License, version 3. It comes with ABSOLUTELY NO WARRANTY. You are entitled to its complete source code under that licence.";
+      }
+      // Not a link — nothing here opens a browser — so not drawn as one.
+      HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Text {
+          text: "source";
+          color: Wf.ink;
+          font-size: 15px;
+        }
+        Text {
+          text: "github.com/Fohdeesha/takt4";
+          color: Wf.ink;
+          font-family: Wf.code;
+          font-size: 14px;
+          vertical-alignment: center;
+          horizontal-stretch: 1;
+          overflow: elide;
+        }
+      }
+      Words {
+        text: "ASIO is a trademark and software of Steinberg Media Technologies GmbH.";
+        color: Wf.ink2;
+        font-size: 14px;
+      }
+    }
+
+    Sheet {
+      Head {
+        text: "built with";
+      }
+      Words {
+        text: "PortAudio, Ableton Link, Slint, Skia and more, each under its own licence. The licence and every notice are inside takt4:";
+      }
+      HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        Btn {
+          text: "open the licence";
+          clicked => {
+            root.licence-opened();
+          }
+        }
+        Btn {
+          text: "open third-party notices";
+          clicked => {
+            root.notices-opened();
+          }
+        }
+      }
+      // Where the file went, which is the one place to look if no viewer opened. Broken at any
+      // character, so a path fills its lines evenly. (Word-wrapped it stays on the sheet too:
+      // Slint 1.18 breaks a word too long for its line — measured 2026-10-01 against a review
+      // that said otherwise.)
+      if root.opened != "": Text {
+        text: root.opened;
+        color: Wf.ink2;
+        font-family: Wf.code;
+        font-size: 13px;
+        wrap: char-wrap;
+      }
+    }
+    }
     }
 
     HorizontalLayout {
+      padding-right: 10px;
       alignment: end;
-      Press {
-        text: "CLOSE";
+      Btn {
+        text: "close";
         primary: true;
-        font: 14px;
-        pad: 16px;
-        clicked => { root.closed(); }
+        clicked => {
+          root.closed();
+        }
       }
     }
   }

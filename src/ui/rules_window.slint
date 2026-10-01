@@ -22,6 +22,7 @@
 
 import { Btn, Count, Dashes, Entry, FoldArrow, Keycap, Pick, Reading, Scroller, Tick, Track, Wf } from "weltformat.slint";
 import { FocusSink } from "theme.slint";
+import { Band, Heading, Mark, Note, RowLabel, Section, Word } from "editor_parts.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -158,44 +159,6 @@ export struct LogLine {
   muted: bool,
 }
 
-// --- the vocabulary of this window ------------------------------------------------------------
-// Sizes and colours from the locked design: a row's label 15 px in the ink, a word inside a row 14
-// px secondary, a note after a control 14 px secondary, nothing under 13 px.
-
-/// A row's label, in its 118 px column: "send as", "confidence over".
-component RowLabel inherits Text {
-  width: 118px;
-  horizontal-stretch: 0;
-  color: Wf.ink;
-  font-size: 15px;
-  vertical-alignment: center;
-  overflow: elide;
-}
-
-/// A word inside a row: "every", "ms", "no repeat".
-component Word inherits Text {
-  horizontal-stretch: 0;
-  color: Wf.ink2;
-  font-size: 14px;
-  vertical-alignment: center;
-}
-
-/// A note after a control, which gives way first when a row is short of room: prose elides, and
-/// the controls keep their size.
-component Note inherits Text {
-  horizontal-stretch: 1;
-  min-width: 20px;
-  color: Wf.ink2;
-  font-size: 14px;
-  vertical-alignment: center;
-  overflow: elide;
-}
-
-/// A slot's or a follow-up's darker band inside a sheet.
-component Band inherits Rectangle {
-  background: Wf.band;
-}
-
 /// What a slot last produced, in green at the end of its band: "→ 7". **With an arrow**, because a
 /// bare value at the end of a row of settings reads as another setting — and the arrow is drawn,
 /// 8 px long as the approved picture has it: Chivo Mono has no "→", and the one a fallback face
@@ -224,60 +187,6 @@ component Produced inherits HorizontalLayout {
     font-family: Wf.code;
     font-size: 14px;
     vertical-alignment: center;
-  }
-}
-
-/// The small square buttons on a rule's row: copy and delete, 20 px with a 2 px edge. Drawn here
-/// rather than with `Btn` because the copy mark is two drawn squares, not a glyph — neither face
-/// has one. A click takes the keyboard first, as a button does (`FocusSink`).
-component Mark inherits Rectangle {
-  in property <bool> copy;
-  out property <bool> has-hover: touch.has-hover;
-  callback clicked;
-
-  width: 20px;
-  height: 20px;
-  background: touch.pressed ? Wf.face-pressed : touch.has-hover ? Wf.face-hover : Wf.sheet;
-  border-width: 2px;
-  border-color: Wf.edge;
-  accessible-role: button;
-  accessible-label: root.copy ? "copy this rule" : "delete this rule";
-  accessible-action-default => {
-    root.clicked();
-  }
-
-  if root.copy: Rectangle {
-    x: 5px;
-    y: 5px;
-    width: 7px;
-    height: 7px;
-    border-width: 1.3px;
-    border-color: Wf.edge;
-  }
-  if root.copy: Rectangle {
-    x: 8px;
-    y: 8px;
-    width: 7px;
-    height: 7px;
-    background: parent.background;
-    border-width: 1.3px;
-    border-color: Wf.edge;
-  }
-  if !root.copy: Text {
-    text: "×";
-    color: Wf.ink;
-    font-size: 14px;
-    font-weight: 700;
-    horizontal-alignment: center;
-    vertical-alignment: center;
-  }
-
-  sink := FocusSink { }
-  touch := TouchArea {
-    clicked => {
-      sink.take();
-      root.clicked();
-    }
   }
 }
 
@@ -398,171 +307,6 @@ component RuleLine inherits Rectangle {
     wrap: word-wrap;
     // 17 px a line, as the approved picture sets it (CSS 1.3); Slint's own is 14.5 at 13 px.
     line-height-factor: 1.17;
-  }
-}
-
-/// A section's heading (HANDOFF §0.5): the letter in red, for B its on/off tick, the title, the fold
-/// arrow at the far right — and while folded, one line saying what the section holds. D has its
-/// "+ add" left of the arrow.
-component Heading inherits Rectangle {
-  in property <string> letter;
-  in property <string> title;
-  in property <bool> folded;
-  in property <string> summary;
-  /// B switched off: the title and the summary dim.
-  in property <bool> off;
-  in property <bool> has-tick;
-  in property <bool> ticked;
-  in property <bool> has-add;
-  in property <bool> enabled: true;
-  in property <bool> add-enabled: true;
-  callback fold-clicked;
-  callback tick-toggled(bool);
-  callback add-clicked;
-
-  height: 28px;
-  vertical-stretch: 0;
-
-  HorizontalLayout {
-    spacing: 10px;
-
-    Text {
-      text: root.letter;
-      color: Wf.red;
-      font-size: 14px;
-      font-weight: 800;
-      vertical-alignment: center;
-      horizontal-stretch: 0;
-    }
-    if root.has-tick: VerticalLayout {
-      alignment: center;
-      horizontal-stretch: 0;
-      Tick {
-        checked: root.ticked;
-        enabled: root.enabled;
-        toggled(on) => {
-          root.tick-toggled(on);
-        }
-      }
-    }
-    Text {
-      text: root.title;
-      color: root.off ? Wf.ink-off : Wf.ink;
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.36px;
-      vertical-alignment: center;
-      horizontal-stretch: 0;
-    }
-    Text {
-      text: root.folded ? root.summary : "";
-      color: root.off ? Wf.ink-off : Wf.ink2;
-      font-size: 14px;
-      vertical-alignment: center;
-      horizontal-stretch: 1;
-      min-width: 0px;
-      overflow: elide;
-    }
-    if root.has-add: VerticalLayout {
-      alignment: center;
-      horizontal-stretch: 0;
-      Btn {
-        text: "+ add";
-        height: 28px;
-        font-size: 14px;
-        pad: 10px;
-        enabled: root.enabled && root.add-enabled;
-        clicked => {
-          root.add-clicked();
-        }
-      }
-    }
-    FoldArrow {
-      folded: root.folded;
-      clicked => {
-        root.fold-clicked();
-      }
-    }
-  }
-}
-
-/// A sheet that folds: its heading, and under it the body — **clipped away when folded, not
-/// removed**. A box being typed in commits a turn of the event loop after the arrow takes the
-/// keyboard, and an `if` would have destroyed it before then, and its edit with it (the main
-/// window's folds, 2026-09-29). Folded it is 40 px: the heading and 6 px either side.
-component Section inherits Rectangle {
-  in property <bool> folded;
-  in property <string> letter;
-  in property <string> title;
-  in property <string> summary;
-  in property <bool> off;
-  in property <bool> has-tick;
-  in property <bool> ticked;
-  in property <bool> has-add;
-  in property <bool> enabled: true;
-  in property <bool> add-enabled: true;
-  callback fold-clicked;
-  callback tick-toggled(bool);
-  callback add-clicked;
-
-  background: Wf.sheet;
-  vertical-stretch: 0;
-
-  // **A click on the sheet's own empty space finishes what was being typed** (`FocusSink`): it is
-  // inside the editor's scroller, whose flickable is between it and the window's background.
-  // First, so it is behind everything the sheet holds.
-  sink := FocusSink { }
-  TouchArea {
-    clicked => {
-      sink.take();
-    }
-  }
-
-  VerticalLayout {
-    padding-left: 16px;
-    padding-right: 16px;
-    padding-top: root.folded ? 6px : 10px;
-    padding-bottom: root.folded ? 6px : 12px;
-    spacing: 0px;
-
-    Heading {
-      letter: root.letter;
-      title: root.title;
-      folded: root.folded;
-      summary: root.summary;
-      off: root.off;
-      has-tick: root.has-tick;
-      ticked: root.ticked;
-      has-add: root.has-add;
-      enabled: root.enabled;
-      add-enabled: root.add-enabled;
-      fold-clicked => {
-        root.fold-clicked();
-      }
-      tick-toggled(on) => {
-        root.tick-toggled(on);
-      }
-      add-clicked => {
-        root.add-clicked();
-      }
-    }
-
-    Rectangle {
-      height: root.folded ? 0px : body.preferred-height;
-      // The rows' least width, which a layout placed by hand inside this clip does not pass up on
-      // its own — without it the column of sheets asked for its headings' width alone, and a row
-      // too wide for the pane was cut off with nothing to say so ("nothing in the rule editor runs
-      // off its pane" measured 245 px for every rule, 2026-09-30).
-      min-width: body.min-width;
-      clip: true;
-      body := VerticalLayout {
-        y: 0;
-        width: parent.width;
-        padding-top: 8px;
-        spacing: 8px;
-        @children
-      }
-    }
   }
 }
 
@@ -1331,7 +1075,8 @@ export component RulesWindow inherits Window {
   callback follow-typed(int, int, string);
   /// And for the rule's own boxes: 0 the address, 1 the BPM range, 2 the cooldown, 3 the effect's
   /// duration, 4 its cycles, 5 its hue sweep, 6 "every", 7 the pulses, 8 the MIDI channel, 9 the
-  /// effect's "down to". `RulesController::RuleBox` is this list.
+  /// effect's "down to", 10 and 11 B's confidence and probability readings.
+  /// `RulesController::RuleBox` is this list.
   callback rule-typed(int, string);
   callback slot-normalise-edited(int, string);
   callback slot-weights-edited(int, string);
@@ -1356,6 +1101,11 @@ export component RulesWindow inherits Window {
 
   // The name and enabled state of the selected rule, and what else the top row shows.
   in-out property <string> rule-name;
+  /// The rule's id — what `/takt4/ctl/rule/<id>/...` names it by. Shown beside the name, because a
+  /// control surface cannot be pointed at a rule whose id nobody can see (the operator, 2026-09-30:
+  /// the README sent them to settings.json for it). Generated, and not edited here: a rule is
+  /// aimed at by its id, never by a name anybody can change.
+  in property <string> rule-id;
   in-out property <bool> rule-enabled;
   /// Why the selected rule will not fire — `Rule::problem()` — or empty.
   in property <string> rule-problem;
@@ -1676,6 +1426,21 @@ export component RulesWindow inherits Window {
                     }
                   }
 
+                  // Its id, a reading and not a box: "id layer3", for `/takt4/ctl/rule/layer3/mute`.
+                  if !root.none: Word {
+                    text: "id";
+                  }
+                  if !root.none: Text {
+                    text: root.rule-id;
+                    color: Wf.ink;
+                    font-family: Wf.code;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                    max-width: 160px;
+                    overflow: elide;
+                  }
+
                   VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 0;
@@ -1922,6 +1687,9 @@ export component RulesWindow inherits Window {
                     enabled: !root.none;
                     quiet: !root.conditions-on;
                     font-family: Wf.code;
+                    typed(text) => {
+                      root.rule-typed(10, text);
+                    }
                     committed(text) => {
                       root.min-confidence-typed(text);
                     }
@@ -1952,6 +1720,9 @@ export component RulesWindow inherits Window {
                     enabled: !root.none;
                     quiet: !root.conditions-on;
                     font-family: Wf.code;
+                    typed(text) => {
+                      root.rule-typed(11, text);
+                    }
                     committed(text) => {
                       root.probability-typed(text);
                     }

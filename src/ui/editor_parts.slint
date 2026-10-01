@@ -1,0 +1,267 @@
+// The parts the two editors are built from — the rule editor's, since the patch editor was
+// drawn in its look (2026-09-30): a row's label, a word inside a row, a note after a control, the
+// darker band a slot or a channel sits in, the small copy and delete marks on a list's row, and a
+// sheet that folds under its lettered heading. Moved here unchanged from rules_window.slint, where
+// they were measured off the locked rule editor (HANDOFF §0.5).
+
+import { Btn, FoldArrow, Tick, Wf } from "weltformat.slint";
+import { FocusSink } from "theme.slint";
+
+// --- the vocabulary of the editors ------------------------------------------------------------
+// Sizes and colours from the locked design: a row's label 15 px in the ink, a word inside a row 14
+// px secondary, a note after a control 14 px secondary, nothing under 13 px.
+
+/// A row's label, in its 118 px column: "send as", "confidence over".
+export component RowLabel inherits Text {
+  width: 118px;
+  horizontal-stretch: 0;
+  color: Wf.ink;
+  font-size: 15px;
+  vertical-alignment: center;
+  overflow: elide;
+}
+
+/// A word inside a row: "every", "ms", "no repeat".
+export component Word inherits Text {
+  horizontal-stretch: 0;
+  color: Wf.ink2;
+  font-size: 14px;
+  vertical-alignment: center;
+}
+
+/// A note after a control, which gives way first when a row is short of room: prose elides, and
+/// the controls keep their size.
+export component Note inherits Text {
+  horizontal-stretch: 1;
+  min-width: 20px;
+  color: Wf.ink2;
+  font-size: 14px;
+  vertical-alignment: center;
+  overflow: elide;
+}
+
+/// A slot's or a follow-up's darker band inside a sheet.
+export component Band inherits Rectangle {
+  background: Wf.band;
+}
+
+/// The small square buttons on a list's row — a rule's, a fixture's: copy and delete, 20 px with a 2 px edge. Drawn here
+/// rather than with `Btn` because the copy mark is two drawn squares, not a glyph — neither face
+/// has one. A click takes the keyboard first, as a button does (`FocusSink`).
+export component Mark inherits Rectangle {
+  in property <bool> copy;
+  /// What the row is, for the accessible name: "copy this rule", "delete this fixture".
+  in property <string> what: "rule";
+  out property <bool> has-hover: touch.has-hover;
+  callback clicked;
+
+  width: 20px;
+  height: 20px;
+  background: touch.pressed ? Wf.face-pressed : touch.has-hover ? Wf.face-hover : Wf.sheet;
+  border-width: 2px;
+  border-color: Wf.edge;
+  accessible-role: button;
+  accessible-label: (root.copy ? "copy this " : "delete this ") + root.what;
+  accessible-action-default => {
+    root.clicked();
+  }
+
+  if root.copy: Rectangle {
+    x: 5px;
+    y: 5px;
+    width: 7px;
+    height: 7px;
+    border-width: 1.3px;
+    border-color: Wf.edge;
+  }
+  if root.copy: Rectangle {
+    x: 8px;
+    y: 8px;
+    width: 7px;
+    height: 7px;
+    background: parent.background;
+    border-width: 1.3px;
+    border-color: Wf.edge;
+  }
+  if !root.copy: Text {
+    text: "×";
+    color: Wf.ink;
+    font-size: 14px;
+    font-weight: 700;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+  }
+
+  sink := FocusSink { }
+  touch := TouchArea {
+    clicked => {
+      sink.take();
+      root.clicked();
+    }
+  }
+}
+
+/// A section's heading (HANDOFF §0.5): the letter in red, for B its on/off tick, the title, the fold
+/// arrow at the far right — and while folded, one line saying what the section holds. D has its
+/// "+ add" left of the arrow.
+export component Heading inherits Rectangle {
+  in property <string> letter;
+  in property <string> title;
+  in property <bool> folded;
+  in property <string> summary;
+  /// B switched off: the title and the summary dim.
+  in property <bool> off;
+  in property <bool> has-tick;
+  in property <bool> ticked;
+  in property <bool> has-add;
+  in property <bool> enabled: true;
+  in property <bool> add-enabled: true;
+  callback fold-clicked;
+  callback tick-toggled(bool);
+  callback add-clicked;
+
+  height: 28px;
+  vertical-stretch: 0;
+
+  HorizontalLayout {
+    spacing: 10px;
+
+    Text {
+      text: root.letter;
+      color: Wf.red;
+      font-size: 14px;
+      font-weight: 800;
+      vertical-alignment: center;
+      horizontal-stretch: 0;
+    }
+    if root.has-tick: VerticalLayout {
+      alignment: center;
+      horizontal-stretch: 0;
+      Tick {
+        checked: root.ticked;
+        enabled: root.enabled;
+        toggled(on) => {
+          root.tick-toggled(on);
+        }
+      }
+    }
+    Text {
+      text: root.title;
+      color: root.off ? Wf.ink-off : Wf.ink;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.36px;
+      vertical-alignment: center;
+      horizontal-stretch: 0;
+    }
+    Text {
+      text: root.folded ? root.summary : "";
+      color: root.off ? Wf.ink-off : Wf.ink2;
+      font-size: 14px;
+      vertical-alignment: center;
+      horizontal-stretch: 1;
+      min-width: 0px;
+      overflow: elide;
+    }
+    if root.has-add: VerticalLayout {
+      alignment: center;
+      horizontal-stretch: 0;
+      Btn {
+        text: "+ add";
+        height: 28px;
+        font-size: 14px;
+        pad: 10px;
+        enabled: root.enabled && root.add-enabled;
+        clicked => {
+          root.add-clicked();
+        }
+      }
+    }
+    FoldArrow {
+      folded: root.folded;
+      clicked => {
+        root.fold-clicked();
+      }
+    }
+  }
+}
+
+/// A sheet that folds: its heading, and under it the body — **clipped away when folded, not
+/// removed**. A box being typed in commits a turn of the event loop after the arrow takes the
+/// keyboard, and an `if` would have destroyed it before then, and its edit with it (the main
+/// window's folds, 2026-09-29). Folded it is 40 px: the heading and 6 px either side.
+export component Section inherits Rectangle {
+  in property <bool> folded;
+  in property <string> letter;
+  in property <string> title;
+  in property <string> summary;
+  in property <bool> off;
+  in property <bool> has-tick;
+  in property <bool> ticked;
+  in property <bool> has-add;
+  in property <bool> enabled: true;
+  in property <bool> add-enabled: true;
+  callback fold-clicked;
+  callback tick-toggled(bool);
+  callback add-clicked;
+
+  background: Wf.sheet;
+  vertical-stretch: 0;
+
+  // **A click on the sheet's own empty space finishes what was being typed** (`FocusSink`): it is
+  // inside the editor's scroller, whose flickable is between it and the window's background.
+  // First, so it is behind everything the sheet holds.
+  sink := FocusSink { }
+  TouchArea {
+    clicked => {
+      sink.take();
+    }
+  }
+
+  VerticalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: root.folded ? 6px : 10px;
+    padding-bottom: root.folded ? 6px : 12px;
+    spacing: 0px;
+
+    Heading {
+      letter: root.letter;
+      title: root.title;
+      folded: root.folded;
+      summary: root.summary;
+      off: root.off;
+      has-tick: root.has-tick;
+      ticked: root.ticked;
+      has-add: root.has-add;
+      enabled: root.enabled;
+      add-enabled: root.add-enabled;
+      fold-clicked => {
+        root.fold-clicked();
+      }
+      tick-toggled(on) => {
+        root.tick-toggled(on);
+      }
+      add-clicked => {
+        root.add-clicked();
+      }
+    }
+
+    Rectangle {
+      height: root.folded ? 0px : body.preferred-height;
+      // The rows' least width, which a layout placed by hand inside this clip does not pass up on
+      // its own — without it the column of sheets asked for its headings' width alone, and a row
+      // too wide for the pane was cut off with nothing to say so ("nothing in the rule editor runs
+      // off its pane" measured 245 px for every rule, 2026-09-30).
+      min-width: body.min-width;
+      clip: true;
+      body := VerticalLayout {
+        y: 0;
+        width: parent.width;
+        padding-top: 8px;
+        spacing: 8px;
+        @children
+      }
+    }
+  }
+}

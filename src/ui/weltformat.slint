@@ -27,8 +27,8 @@
 // - **Escape inside a box, or inside an open list, is never PANIC.** It finishes the edit, or
 //   closes the list, and goes no further.
 //
-// The rule editor is in this look too since 2026-09-30 (its design locked that day, HANDOFF §0.5);
-// the patch editor and the About box are still in `theme.slint`'s.
+// The rule editor is in this look too since 2026-09-30 (its design locked that day, HANDOFF §0.5),
+// and the patch editor and the About box since 2026-10-01: every window.
 
 import { FocusSink } from "theme.slint";
 
@@ -241,6 +241,9 @@ export component Btn inherits Rectangle {
     in property <bool> danger;
     /// The key that does the same thing, drawn as a keycap after the label.
     in property <string> hint;
+    /// What a screen reader says it is, where the label is a mark: "add a fixture" for "+",
+    /// "delete channel 12" for "×". The label when empty.
+    in property <string> accessible-text;
     /// A state that is on and must be seen to be — PANIC engaged: a ring inside the edge, in the
     /// label's colour.
     in property <bool> engaged;
@@ -266,7 +269,7 @@ export component Btn inherits Rectangle {
     vertical-stretch: 0;
     background: root.face;
     accessible-role: button;
-    accessible-label: root.text;
+    accessible-label: root.accessible-text != "" ? root.accessible-text : root.text;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if (root.enabled) {
@@ -748,7 +751,13 @@ export component Pick inherits Rectangle {
 /// `value` is shown whenever the box is not being typed in, and put back the moment an edit is
 /// finished, so what the controller made of it — a port clamped, a name trimmed — is what the box
 /// then says. `typed` is every keystroke, for an owner keeping drafts; `committed` is the edit
-/// finished — Enter, a click away, or Escape — **once**.
+/// finished — Enter, a click away, or Escape — **once, and only if it changed what the box was
+/// shown**. A box clicked into and let go of is not an edit: its commit used to send what it showed
+/// back, and what it showed is not always what it was told — an empty "choose one" MIDI number box
+/// committed "" and armed the rule on 0, a cooldown box shown empty for a rule on bars wiped that
+/// rule's cooldown, and 1.0 shown as "1" came back an integer (found reviewing, 2026-10-01).
+/// `finished` is every edit's end, changed or not, for an owner that has to know the box was let go
+/// of (`Reading` closes its box).
 ///
 /// Escape finishes the edit, as clicking away does, unless `revert-on-escape` is set, which a
 /// reading typed into wants (`Reading`): there Escape leaves the number as it was. Either way it
@@ -777,6 +786,7 @@ export component Entry inherits Rectangle {
     out property <string> shown: input.text;
     callback typed(string);
     callback committed(string);
+    callback finished();
     /// Escape was pressed in it — said before the focus leaves.
     callback escaped();
     /// Up (+1) or Down (-1), while `takes-arrows`.
@@ -890,7 +900,10 @@ export component Entry inherits Rectangle {
                 // Focus first, callback second: the callback may publish, and the keyboard has to
                 // be somewhere that passes the window's shortcuts up before it does.
                 sink.take();
-                root.committed(self.text);
+                if (self.text != root.value) {
+                    root.committed(self.text);
+                }
+                root.finished();
                 self.text = root.value;
             }
             key-pressed(event) => {
@@ -916,8 +929,12 @@ export component Entry inherits Rectangle {
                         root.entered = false;
                     } else if (root.reverting) {
                         root.reverting = false;
+                        root.finished();
                     } else {
-                        root.committed(self.text);
+                        if (self.text != root.value) {
+                            root.committed(self.text);
+                        }
+                        root.finished();
                     }
                     self.text = root.value;
                     self.computed-x = 0px;
@@ -1037,6 +1054,8 @@ export component Reading inherits Rectangle {
     in property <bool> quiet;
     out property <bool> editing;
     callback committed(string);
+    /// Every keystroke in its box, for an owner keeping drafts (`RulesController::typing_`).
+    callback typed(string);
 
     reading := Text {
         x: root.align == TextHorizontalAlignment.right ? parent.width - self.width : 0px;
@@ -1086,9 +1105,15 @@ export component Reading inherits Rectangle {
         escaped => {
             root.editing = false;
         }
+        typed(text) => {
+            root.typed(text);
+        }
         committed(text) => {
-            root.editing = false;
             root.committed(text);
+        }
+        // Closed however the edit ended: a number entered unchanged commits nothing.
+        finished => {
+            root.editing = false;
         }
     }
 }
@@ -1271,6 +1296,14 @@ export component SpanTrack inherits Rectangle {
     in property <bool> enabled: true;
     callback low-moved(float);
     callback high-moved(float);
+    /// A drag let go, or a step from the keyboard made, **that moved something**: the two ends it
+    /// moved them to. For an owner whose every move would cost something — the patch editor's
+    /// movement limits re-patch the rig — and which follows the hand meanwhile by writing `low` and
+    /// `high`. Carried here rather than read back from `low` and `high`, which the owner may have
+    /// put back in between: a press takes the keyboard, a box being typed in commits, and its
+    /// owner republishes what it holds (found reviewing, 2026-10-01). A press that moved nothing,
+    /// or an arrow at the end, says nothing — each would be a re-patch, which ends a running TEST.
+    callback settled(float, float);
 
     private property <length> thumb: 18px;
     private property <length> span: root.width - root.thumb;
@@ -1286,6 +1319,10 @@ export component SpanTrack inherits Rectangle {
     private property <int> last: 1;
     private property <float> grabbed;
     private property <length> grabbed-at;
+    // What this gesture asked for, and whether it asked for anything: see `settled`.
+    private property <float> asked-low;
+    private property <float> asked-high;
+    private property <bool> shifted;
 
     height: 24px;
     min-width: 110px;
@@ -1297,16 +1334,34 @@ export component SpanTrack inherits Rectangle {
             : root.minimum
     }
 
+    // A gesture starts from what the handles show, and ends by saying where it took them, if
+    // anywhere.
+    function begin() {
+        root.asked-low = root.low;
+        root.asked-high = root.high;
+        root.shifted = false;
+    }
+    function finish() {
+        if (root.shifted) {
+            root.shifted = false;
+            root.settled(root.asked-low, root.asked-high);
+        }
+    }
+
     function send(end: int, v: float) {
         let stepped = root.step > 0 ? round((v - root.minimum) / root.step) * root.step + root.minimum : v;
         if (end == 1) {
-            let clamped = clamp(stepped, root.minimum, root.high - root.least-span);
-            if (clamped != root.low) {
+            let clamped = clamp(stepped, root.minimum, root.asked-high - root.least-span);
+            if (clamped != root.asked-low) {
+                root.asked-low = clamped;
+                root.shifted = true;
                 root.low-moved(clamped);
             }
         } else {
-            let clamped = clamp(stepped, root.low + root.least-span, root.maximum);
-            if (clamped != root.high) {
+            let clamped = clamp(stepped, root.asked-low + root.least-span, root.maximum);
+            if (clamped != root.asked-high) {
+                root.asked-high = clamped;
+                root.shifted = true;
                 root.high-moved(clamped);
             }
         }
@@ -1350,12 +1405,10 @@ export component SpanTrack inherits Rectangle {
                 return reject;
             }
             let now = root.last == 1 ? root.low : root.high;
-            if (event.text == Key.RightArrow) {
-                root.send(root.last, now + max(root.step, 0.01));
-                return accept;
-            }
-            if (event.text == Key.LeftArrow) {
-                root.send(root.last, now - max(root.step, 0.01));
+            if (event.text == Key.RightArrow || event.text == Key.LeftArrow) {
+                root.begin();
+                root.send(root.last, now + (event.text == Key.RightArrow ? 1 : -1) * max(root.step, 0.01));
+                root.finish();
                 return accept;
             }
             return reject;
@@ -1369,6 +1422,7 @@ export component SpanTrack inherits Rectangle {
                 return;
             }
             if (event.kind == PointerEventKind.down) {
+                root.begin();
                 keyboard.focus();
                 // The nearer end; on a tie — the two handles drawn over each other — the side of
                 // the pair the press is on.
@@ -1387,7 +1441,10 @@ export component SpanTrack inherits Rectangle {
                 }
                 root.grabbed-at = self.mouse-x;
             } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
-                root.holding = 0;
+                if (root.holding != 0) {
+                    root.holding = 0;
+                    root.finish();
+                }
             }
         }
         moved => {

@@ -5484,3 +5484,212 @@ TEST_CASE("D's + add adds a follow-up, and the log's clear empties the log", "[u
     CHECK(window.get_log()->row_count() == 0);
     CHECK_FALSE(window.get_log_open()); // clearing is not opening
 }
+
+// --- found reviewing the redesigned patch editor's fix, 2026-10-01 ----------------------------
+//
+// A box that had the keyboard commits a turn of the event loop after the click that took it, and
+// commits what it shows. Three ways that went wrong in this window, each driven with real clicks.
+
+TEST_CASE("an empty MIDI number box clicked into and away chooses nothing", "[ui][trigger]") {
+    // The audit's C7 through another door: a new MIDI CC rule waits for its number with the box
+    // empty, and a click into it and away — or Enter, or the window losing the keyboard — committed
+    // "", which read as 0, marked the number chosen, and the rule fired CC 0 (bank select) at 100 to
+    // every MIDI output. A box commits nothing it was not changed from (weltformat's `Entry`).
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto cc = static_cast<int>(
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::MidiCc) -
+        takt4::trigger::kMessageKinds.begin());
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickSend(cc);
+        // Open, as the sweep's clicks on a fold arrow may have left a sheet folded.
+        editor.applyLayout(takt4::settings::MachineSettings{});
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor, 1200.0f);
+    build();
+    const auto chosen = [&editor] { return editor.rules().front().numberChosen; };
+    REQUIRE_FALSE(chosen());
+
+    // The box: where a 7 typed and entered chooses CC 7. Judged by the box's own number, not by the
+    // rule being armed: picking "live value" from the kind's list arms it too (the number is then
+    // the source's), and in this window that list can open over the pointer.
+    const Spot box = sweep(
+        300.0f, 990.0f, 30.0f, 300.0f, 900.0f, 8.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.type("7");
+            shown.enter();
+            return chosen() && std::string(editor.window().get_slots()->row_data(0)->fixed) == "7";
+        },
+        [&] {
+            shown.click(4.0f, 4.0f);
+            build();
+        });
+    INFO("the number box at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+
+    build();
+    shown.click(box.x, box.y); // the keyboard, nothing typed
+    shown.click(4.0f, 4.0f);   // and the page's margin
+    Shown::settle();
+    CHECK_FALSE(chosen());
+    CHECK_FALSE(rig.runner.triggers().rule(0).valid());
+    CHECK(std::string(editor.window().get_rule_problem()) == "choose a controller number");
+
+    shown.click(box.x, box.y);
+    shown.enter(); // Enter, nothing typed
+    CHECK_FALSE(chosen());
+
+    shown.click(box.x, box.y);
+    shown.window.window().dispatch_window_active_changed_event(false); // another program
+    Shown::settle();
+    shown.window.window().dispatch_window_active_changed_event(true);
+    Shown::settle();
+    CHECK_FALSE(chosen());
+    editor.test();
+    CHECK(rig.runner.takeFired().empty());
+}
+
+TEST_CASE("leaving the cooldown box for another rule keeps that rule's cooldown", "[ui][trigger]") {
+    // A rule on bars keeps the cooldown it had on onset, for when it comes back (HANDOFF §0.5),
+    // and its box is shown empty. Clicking from one rule's cooldown box to that rule in the list
+    // committed the empty box onto it, and wiped the cooldown it was keeping — typed into or not.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add(); // A: onset, at most once every 250 ms
+        editor.setAddress("/a");
+        editor.pickTrigger(indexOf(Trigger::Onset));
+        editor.setCooldown("250");
+        editor.add(); // B: onset at 500, then bars — the 500 kept
+        editor.setAddress("/b");
+        editor.pickTrigger(indexOf(Trigger::Onset));
+        editor.setCooldown("500");
+        editor.pickTrigger(indexOf(Trigger::Bar));
+        editor.pick(0);
+        editor.applyLayout(takt4::settings::MachineSettings{}); // a sweep may have folded a sheet
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor, 1200.0f);
+    build();
+    REQUIRE(editor.rules()[1].cooldownSeconds == Approx(0.5));
+    const auto a = [&editor] { return editor.rules()[0].cooldownSeconds; };
+    const auto b = [&editor] { return editor.rules()[1].cooldownSeconds; };
+
+    // A's cooldown box: where 321 typed and entered sets it.
+    const Spot box = sweep(
+        300.0f, 990.0f, 20.0f, 60.0f, 300.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("321");
+            shown.enter();
+            return a() == Approx(0.321);
+        },
+        [&] {
+            shown.click(4.0f, 4.0f);
+            build();
+        });
+    INFO("A's cooldown at " << box.x << ", " << box.y);
+    REQUIRE(box.found());
+    // B in the list: its row, the second, under the list's heading and key.
+    constexpr float kRowB = 145.0f;
+
+    build();
+    shown.click(box.x, box.y); // nothing typed
+    shown.click(120.0f, kRowB);
+    Shown::settle();
+    REQUIRE(editor.selected() == 1);
+    CHECK(b() == Approx(0.5));
+    CHECK(a() == Approx(0.25));
+
+    build();
+    shown.click(box.x, box.y);
+    shown.clearBox();
+    shown.type("300"); // typed, not entered
+    shown.click(120.0f, kRowB);
+    Shown::settle();
+    REQUIRE(editor.selected() == 1);
+    CHECK(a() == Approx(0.3));
+    CHECK(b() == Approx(0.5));
+}
+
+TEST_CASE("a number typed into B's reading goes to its own rule when another is clicked",
+          "[ui][trigger]") {
+    // B's readings kept no keystrokes, so a value typed and not entered was lost on a click to
+    // another rule — or, when that rule's reading said the same, landed on it. Both rules at 100 %
+    // and then the second at 80 %; 50 typed into the first's, and the second clicked.
+    for (const double second : {1.0, 0.8}) {
+        INFO("the second rule at " << second);
+        Rig rig;
+        RulesController editor(rig.runner, {});
+        const auto build = [&] {
+            editor.setRules({});
+            for (const char* address : {"/a", "/b"}) {
+                editor.add();
+                editor.setAddress(address);
+                editor.setConditionsOn(true);
+            }
+            editor.setProbability(second);
+            editor.pick(0);
+            editor.setProbability(1.0);
+            editor.applyLayout(takt4::settings::MachineSettings{}); // a sweep may have folded one
+            editor.window().set_only_if_folded(false);
+            editor.tick();
+            Shown::settle();
+        };
+        build();
+        const Shown shown(editor, 1200.0f);
+        build();
+        const auto probability = [&editor](std::size_t i) {
+            return editor.rules()[i].conditions.probability;
+        };
+
+        // A's probability reading: where 33 typed and entered sets it.
+        const Spot reading = sweep(
+            700.0f, 990.0f, 10.0f, 100.0f, 400.0f, 4.0f,
+            [&](float x, float y) {
+                shown.click(x, y);
+                shown.type("33");
+                shown.enter();
+                return probability(0) == Approx(0.33);
+            },
+            [&] {
+                shown.click(4.0f, 4.0f);
+                build();
+            });
+        INFO("the probability reading at " << reading.x << ", " << reading.y);
+        REQUIRE(reading.found());
+
+        build();
+        shown.click(reading.x, reading.y);
+        shown.type("50"); // typed, not entered
+        shown.click(120.0f, 145.0f);
+        Shown::settle();
+        REQUIRE(editor.selected() == 1);
+        CHECK(probability(0) == Approx(0.5));
+        CHECK(probability(1) == Approx(second));
+    }
+}
+
+TEST_CASE("a double-click on a rule's copy mark makes one copy", "[ui][trigger]") {
+    // As × is guarded against the second click of a double-click: copy made two copies.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.window().invoke_rule_duplicated_at(0);
+    editor.window().invoke_rule_duplicated_at(0);
+    CHECK(editor.rules().size() == 2);
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds(60));
+    editor.window().invoke_rule_duplicated_at(0);
+    CHECK(editor.rules().size() == 3);
+}

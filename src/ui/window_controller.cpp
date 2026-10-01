@@ -572,23 +572,34 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
 
     window_->on_link_peers_toggled([this] { toggleLinkPeers(); });
     window_->on_fold_clicked([this](int section) { toggleFold(section); });
+    // A box's own commit counts only if it was typed into the list of outputs it now lands on —
+    // see `outputsGeneration_`.
     window_->on_output_name_edited([this](int index, const slint::SharedString& name) {
+        typedOutputs_ = outputsGeneration_;
         setTargetName(index, std::string(name), false);
     });
     window_->on_output_name_accepted([this](int index, const slint::SharedString& name) {
-        setTargetName(index, std::string(name), true);
+        if (typedOutputs_ == outputsGeneration_) {
+            setTargetName(index, std::string(name), true);
+        }
     });
     window_->on_output_host_edited([this](int index, const slint::SharedString& host) {
+        typedOutputs_ = outputsGeneration_;
         setTargetHost(index, std::string(host), false);
     });
     window_->on_output_host_accepted([this](int index, const slint::SharedString& host) {
-        setTargetHost(index, std::string(host), true);
+        if (typedOutputs_ == outputsGeneration_) {
+            setTargetHost(index, std::string(host), true);
+        }
     });
     window_->on_output_port_edited([this](int index, const slint::SharedString& port) {
+        typedOutputs_ = outputsGeneration_;
         setTargetPort(index, std::string(port), false);
     });
     window_->on_output_port_accepted([this](int index, const slint::SharedString& port) {
-        setTargetPort(index, std::string(port), true);
+        if (typedOutputs_ == outputsGeneration_) {
+            setTargetPort(index, std::string(port), true);
+        }
     });
     window_->on_output_kind_changed([this](int index, int kind) { setTargetKind(index, kind); });
     window_->on_output_device_picked(
@@ -610,8 +621,11 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
+    window_->on_output_delay_keyed([this](int) { typedOutputs_ = outputsGeneration_; });
     window_->on_output_delay_typed([this](int index, const slint::SharedString& text) {
-        setTargetDelayTyped(index, std::string(text));
+        if (typedOutputs_ == outputsGeneration_) {
+            setTargetDelayTyped(index, std::string(text));
+        }
     });
 
     window_->on_midi_in_picked([this](int index) { pickMidiControlPort(index); });
@@ -784,8 +798,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // Folded as it was left. The height that goes with it is `show`'s to work out.
     window_->set_inputs_folded(settings.machine.inputsFolded);
     window_->set_outputs_folded(settings.machine.outputsFolded);
-    // And the rule editor's folds and its log, which are remembered with these.
+    // And the rule editor's folds and its log, and the patch editor's folds, which are remembered
+    // with these.
     editor_.applyLayout(settings.machine);
+    patch_.applyLayout(settings.machine);
 
     // **The outputs from now until the window goes**, not from Start to Stop — the audit's H5
     // and the operator's call of 2026-09-23. Last, after every setting above has been applied
@@ -2184,7 +2200,8 @@ void WindowController::openAbout() {
         about.on_closed([this] { (*about_)->hide(); });
         // The size it was drawn for, before the first show — Slint opens a window at its
         // content's minimum otherwise.
-        about.window().set_size(slint::LogicalSize({580.0f, 520.0f}));
+        const LogicalExtent opening = fitToScreen({kAboutWindowWidth, kAboutWindowHeight});
+        about.window().set_size(slint::LogicalSize({opening.width, opening.height}));
     }
     (*about_)->show();
     // Forward, if it was already open behind this one — see `RulesController::show`.
@@ -2760,6 +2777,7 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.inputsFolded = window_->get_inputs_folded();
     out.machine.outputsFolded = window_->get_outputs_folded();
     editor_.layoutInto(out.machine);
+    patch_.layoutInto(out.machine);
 
     // `settings()`: the engine's own, or a change posted moments ago that it has not taken
     // yet. **Not the engine's alone**, which is what this read until the audit (M27): a
@@ -2992,6 +3010,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // construction onwards (see the constructor), so an import that changed only the
     // transports would leave the boxes showing the old rig.
     targetDrafts_.clear();
+    ++outputsGeneration_; // another rig under the boxes: see `outputsGeneration_`
     const bool listed = listDevicesFor(loaded.preset.outputs);
     for (const output::OutputTarget& target : loaded.preset.outputs) {
         targetDrafts_.push_back(rowOf(target, deviceNames_));

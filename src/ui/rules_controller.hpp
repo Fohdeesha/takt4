@@ -339,6 +339,11 @@ private:
         kPulsesBox,
         kChannelBox,
         kBaseBox,
+        /// B's two readings, typed into: "0.7", "70%", "90". They kept no keystrokes until
+        /// 2026-10-01, so a value typed and not entered was lost on a switch to another rule — or,
+        /// with that rule at the same value, landed on it (found reviewing the patch editor's fix).
+        kConfidenceBox,
+        kProbabilityBox,
     };
     /// A keystroke in a box; `index` is the row and `field` which box of it — the numbering is
     /// the markup's (`slot-typed`, `follow-typed`, `palette-typed`, `rule-typed`). See `typing_`.
@@ -438,6 +443,7 @@ private:
     Repeater<SlotRow> slotRows_;
     /// A rule row's ×, and a follow-up row's: a double-click on either is one deletion.
     DeleteGuard ruleMarks_;
+    DeleteGuard copyMarks_;
     DeleteGuard followMarks_;
     /// The palette swatches. A model of its own rather than a field of `SlotRow`, because a
     /// rule has at most one color generator and a repeater nested inside a repeater's own

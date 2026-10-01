@@ -19,16 +19,24 @@
 #include "core/output/transports.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/rule.hpp"
+#include "ui/delete_guard.hpp"
 #include "ui/fixtures_controller.hpp"
 #include "ui/model_watch.hpp"
+#include "ui/nothing_real.hpp"
+#include "ui/shot.hpp"
 #include "ui/rules_controller.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <slint-platform.h>
 
 #include <algorithm>
+#include <array>
+#include <functional>
+#include <map>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -101,6 +109,35 @@ int effectIndexOf(takt4::dmx::EffectKind kind) {
     return 0;
 }
 
+/// A text box's edit as the window sends it: the keystrokes, then the edit finished. A finished
+/// edit with nothing typed is dropped — it is only a box letting go of what it was shown, which may
+/// be another fixture's by then (`FixturesController::typed_`).
+void enterName(FixturesWindow& window, const char* text) {
+    window.invoke_name_typed(text);
+    window.invoke_name_edited(text);
+}
+void enterGroup(FixturesWindow& window, const char* text) {
+    window.invoke_group_typed(text);
+    window.invoke_group_edited(text);
+}
+void enterUniverse(FixturesWindow& window, const char* text) {
+    window.invoke_universe_typed(text);
+    window.invoke_universe_edited(text);
+}
+/// And a number box's.
+void enterAddress(FixturesWindow& window, int address) {
+    window.invoke_address_typed(address);
+    window.invoke_address_changed(address);
+}
+void enterParked(FixturesWindow& window, int index, int level) {
+    window.invoke_channel_parked_typed(index, level);
+    window.invoke_channel_parked_changed(index, level);
+}
+void enterTestLevel(FixturesWindow& window, int level) {
+    window.invoke_test_level_typed(level);
+    window.invoke_test_level_changed(level);
+}
+
 } // namespace
 
 TEST_CASE("picking custom as a fixture's mode says how a custom map is made", "[ui][dmx]") {
@@ -122,7 +159,7 @@ TEST_CASE("picking custom as a fixture's mode says how a custom map is made", "[
     CHECK(patch.fixtures()[0].channels == before);     // and nothing was changed
     const std::string said(window.get_status());
     INFO(said);
-    CHECK(said.find("editing the channels below") != std::string::npos);
+    CHECK(said.find("Edit the channels below") != std::string::npos);
     CHECK_FALSE(window.get_status_error());
     // And the entry says what it is where it is offered.
     CHECK(std::string(*window.get_modes()->row_data(0)).find("the channels below") !=
@@ -143,9 +180,9 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     CHECK(takt4::dmx::problemWith(patch.fixtures()[0]).empty());
 
     // 2. Named, grouped, and told where it is.
-    window.invoke_name_edited("wash L");
-    window.invoke_group_edited("washes");
-    window.invoke_address_changed(1);
+    enterName(window, "wash L");
+    enterGroup(window, "washes");
+    enterAddress(window, 1);
     CHECK(patch.fixtures()[0].name == "wash L");
     CHECK(patch.fixtures()[0].group == "washes");
 
@@ -154,15 +191,15 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     window.invoke_added();
     REQUIRE(patch.fixtures().size() == 2);
     CHECK(patch.fixtures()[1].address == 4); // the par occupies 1-3
-    window.invoke_name_edited("wash R");
-    window.invoke_group_edited("washes");
+    enterName(window, "wash R");
+    enterGroup(window, "washes");
 
     // 4. And a moving head, which is a different shape — picked from the mode list rather
     //    than assembled a channel at a time.
     window.invoke_added();
-    window.invoke_name_edited("head 1");
-    window.invoke_group_edited("heads");
-    window.invoke_address_changed(11);
+    enterName(window, "head 1");
+    enterGroup(window, "heads");
+    enterAddress(window, 11);
     window.invoke_mode_picked(modeIndexOf("moving head 16-bit (12ch)"));
 
     const Fixture& head = patch.fixtures()[2];
@@ -196,7 +233,7 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     SECTION("a channel map can be edited one channel at a time") {
         window.invoke_channel_role_picked(4, roleIndexOf(Role::Unused)); // the speed channel
         CHECK(patch.fixtures()[2].channels[4] == Role::Unused);
-        window.invoke_channel_parked_changed(4, 200);
+        enterParked(window, 4, 200);
         CHECK(patch.fixtures()[2].parked[4] == 200);
         window.invoke_channel_removed(11);
         CHECK(patch.fixtures()[2].channels.size() == 11);
@@ -206,17 +243,17 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     }
 
     SECTION("a universe that is not one is refused rather than written half-typed") {
-        window.invoke_universe_edited("4");
+        enterUniverse(window, "4");
         CHECK(patch.fixtures()[2].universe == 4);
-        window.invoke_universe_edited("not a universe");
+        enterUniverse(window, "not a universe");
         CHECK(patch.fixtures()[2].universe == 4); // unchanged, not zeroed on the way past
-        window.invoke_universe_edited("1:2:3");
+        enterUniverse(window, "1:2:3");
         CHECK(patch.fixtures()[2].universe == 0x123);
     }
 
     SECTION("a duplicate lands after the fixture it came from, with a name of its own") {
         window.invoke_picked(0);
-        window.invoke_duplicated();
+        window.invoke_duplicated_at(0);
         REQUIRE(patch.fixtures().size() == 4);
         CHECK(patch.fixtures()[1].name != "wash L");
         CHECK(patch.fixtures()[1].address == 4); // straight after the par at 1-3
@@ -232,7 +269,7 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
         const std::string id = patch.fixtures()[0].id;
         REQUIRE_FALSE(id.empty());
         window.invoke_picked(0);
-        window.invoke_name_edited("front wash");
+        enterName(window, "front wash");
         CHECK(patch.fixtures()[0].id == id);
         CHECK(takt4::dmx::resolveFixtures(patch.fixtures(), {id}) == 0b001);
     }
@@ -415,7 +452,7 @@ TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
     REQUIRE(engine.levels(5)[71] == 0); // channel 72: the blue one
 
     // Not full, so the check cannot pass on a value something else would have written.
-    patch.window().invoke_test_level_changed(180);
+    enterTestLevel(patch.window(), 180);
     patch.window().invoke_channel_tested(2); // the third channel of the map, which is DMX 72
     CHECK(engine.levels(5)[71] == 180);
     // And only that one.
@@ -600,11 +637,11 @@ TEST_CASE("the patch says when two fixtures share channels, and what no rule can
         // the 512th, which the old limit could not.
         full.pick(static_cast<int>(limit));
         full.identify();
-        CHECK(std::string(full.window().get_status()).find("IDENTIFY reaches the first 512") !=
+        CHECK(std::string(full.window().get_status()).find("identify reaches the first 512") !=
               std::string::npos);
         full.pick(static_cast<int>(limit) - 1);
         full.identify();
-        CHECK(std::string(full.window().get_status()).find("IDENTIFY reaches") == std::string::npos);
+        CHECK(std::string(full.window().get_status()).find("identify reaches") == std::string::npos);
 
         // And a rule is offered the 512 it can reach, not the 513th.
         RulesController editor(rig.runner, {});
@@ -619,52 +656,6 @@ TEST_CASE("the patch says when two fixtures share channels, and what no rule can
     }
 }
 
-TEST_CASE("a name typed for one fixture stays with it when another is clicked", "[ui][dmx]") {
-    // The audit's H10, with the gestures an operator makes. The name box was bound one way, and
-    // a one-way binding dies on the first keystroke: after typing a name and clicking another
-    // fixture in the list, the box went on showing the first one's text, and the focus-out that
-    // Slint runs a loop late renamed the *second* fixture to it.
-    Rig rig;
-    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("left", 1, 0, 1),
-                                          takt4::dmx::fixtureFromMode("right", 1, 0, 10)});
-    patch.show();
-    auto& window = patch.window().window();
-    window.dispatch_scale_factor_change_event(1.0f);
-    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
-    window.dispatch_window_active_changed_event(true);
-    REQUIRE(patch.selected() == 0);
-
-    // The name box: the first spot in the editor pane where a typed letter lands in the name.
-    bool inBox = false;
-    for (float y = 20.0f; y < 200.0f && !inBox; y += 6.0f) {
-        for (float x = 340.0f; x < 700.0f && !inBox; x += 40.0f) {
-            clickAt(window, x, y);
-            typeText(window, "Q");
-            inBox = std::string(patch.window().get_name()).find('Q') != std::string::npos;
-        }
-    }
-    INFO("no click landed in the name box");
-    REQUIRE(inBox);
-    typeText(window, "X");
-    const std::string typed(patch.window().get_name());
-    REQUIRE(typed.find("QX") != std::string::npos);
-
-    // The second fixture in the list, found by clicking down the list column.
-    bool switched = false;
-    for (float y = 30.0f; y < 400.0f && !switched; y += 6.0f) {
-        clickAt(window, 120.0f, y);
-        slint::platform::update_timers_and_animations();
-        switched = patch.selected() == 1;
-    }
-    REQUIRE(switched);
-    // Whatever Slint runs a loop late has run.
-    slint::platform::update_timers_and_animations();
-
-    CHECK(patch.fixtures()[0].name == typed);   // the name went to the fixture it was typed for
-    CHECK(patch.fixtures()[1].name == "right"); // and not to the one clicked
-    CHECK(std::string(patch.window().get_name()) == "right"); // and the box shows the new one
-}
-
 namespace {
 
 void pressKey(slint::Window& window, const slint::SharedString& key) {
@@ -672,13 +663,16 @@ void pressKey(slint::Window& window, const slint::SharedString& key) {
     window.dispatch_key_release_event(key);
 }
 
-/// Opens the dropdown under (x, y), moves it one entry down and closes it: what an operator
-/// does with the arrow keys, and a gesture that starts from whatever the dropdown is *showing*.
+/// Clicks the dropdown under (x, y), shuts the list it opened with Escape, and steps it one entry
+/// down with the arrow on the closed box — what an operator does with the arrow keys, and a gesture
+/// that starts from whatever the dropdown is *showing*. Not Down and Enter in the open list: the list
+/// can open over the pointer, whose hover lights the entry under it, and Down then moves from that.
 void stepDropdown(slint::Window& window, float x, float y) {
     clickAt(window, x, y);
     slint::platform::update_timers_and_animations();
+    pressKey(window, slint::SharedString("\x1b")); // Key.Escape: the list shut, the box focused
+    slint::platform::update_timers_and_animations();
     pressKey(window, slint::SharedString(u8"")); // Key.DownArrow
-    pressKey(window, slint::SharedString(u8"\u001b")); // Key.Escape
     slint::platform::update_timers_and_animations();
 }
 
@@ -826,103 +820,16 @@ TEST_CASE("a channel's dropdown survives the redraws while it is open, and its p
     CHECK(patch.fixtures()[0].channels[0] == picked);
 }
 
-TEST_CASE("the list's ADD, COPY and DELETE buttons do what they say when clicked", "[ui][dmx]") {
-    // The audit's T1: the patching test above said "by clicking" and called the controller.
-    // These are the three buttons under the list, pressed with the pointer.
-    //
-    // Every click is judged by what it did to the patch, with the selection put back on the
-    // moving head before the next one, so the three cannot be mistaken for each other or for a
-    // miss: ADD puts a three-channel par at the end, COPY puts a second head straight after the
-    // first, and DELETE takes the head away.
-    Rig rig;
-    const auto headMode = static_cast<std::size_t>(modeIndexOf("moving head 16-bit (12ch)") - 1);
-    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("head", headMode, 0, 1)});
-    REQUIRE(patch.fixtures()[0].channels.size() == 12);
-    const std::string headId = patch.fixtures()[0].id;
-    REQUIRE_FALSE(headId.empty());
-    patch.show();
-    auto& window = patch.window().window();
-    window.dispatch_scale_factor_change_event(1.0f);
-    window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
-    window.dispatch_window_active_changed_event(true);
-    patch.tick();
-    slint::platform::update_timers_and_animations();
-
-    const auto headAt = [&patch, &headId] {
-        const std::vector<Fixture>& now = patch.fixtures();
-        for (std::size_t i = 0; i < now.size(); ++i) {
-            if (now[i].id == headId) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    };
-
-    bool added = false;
-    bool copied = false;
-    bool deleted = false;
-    std::string misread;
-    // The buttons are the bottom row of the list column; swept from the bottom up, so the row
-    // is met before anything the clicks have added to the list above it.
-    for (float y = 790.0f; y > 400.0f && !deleted; y -= 6.0f) {
-        for (float x = 16.0f; x < 330.0f && !deleted; x += 12.0f) {
-            const int head = headAt();
-            patch.pick(head);
-            patch.tick();
-            slint::platform::update_timers_and_animations();
-            const std::vector<Fixture> before = patch.fixtures();
-
-            clickAt(window, x, y);
-            patch.tick();
-            slint::platform::update_timers_and_animations();
-
-            const std::vector<Fixture>& now = patch.fixtures();
-            if (now.size() == before.size() + 1) {
-                // The new one is the fixture whose id was not there before.
-                std::size_t fresh = now.size();
-                for (std::size_t i = 0; i < now.size() && fresh == now.size(); ++i) {
-                    const bool known = std::any_of(before.begin(), before.end(), [&](const Fixture& f) {
-                        return f.id == now[i].id;
-                    });
-                    if (!known) {
-                        fresh = i;
-                    }
-                }
-                const bool headStayed = headAt() == head;
-                if (headStayed && fresh + 1 == now.size() && now[fresh].channels.size() == 3) {
-                    added = true;
-                } else if (headStayed && fresh == static_cast<std::size_t>(head) + 1 &&
-                           now[fresh].channels.size() == 12) {
-                    copied = true;
-                } else {
-                    misread = "a click added a fixture that was neither a par nor a copy";
-                }
-            } else if (now.size() + 1 == before.size()) {
-                if (headAt() < 0) {
-                    deleted = true;
-                } else {
-                    misread = "a click removed a fixture other than the selected one";
-                }
-            }
-        }
-    }
-    INFO(misread);
-    CHECK(misread.empty());
-    CHECK(added);
-    CHECK(copied);
-    CHECK(deleted);
-}
-
 namespace {
 
 /// The patch editor on the headless platform at a size that shows a twelve-channel map, with
 /// the gestures the tests below are made of. Every gesture lets what Slint runs a loop late run.
 struct Patching {
-    explicit Patching(FixturesController& controller)
+    explicit Patching(FixturesController& controller, float width = 1100.0f, float height = 800.0f)
         : patch(controller), window(controller.window().window()) {
         patch.show();
         window.dispatch_scale_factor_change_event(1.0f);
-        window.dispatch_resize_event(slint::LogicalSize({1100.0f, 800.0f}));
+        window.dispatch_resize_event(slint::LogicalSize({width, height}));
         window.dispatch_window_active_changed_event(true);
         settle();
     }
@@ -977,7 +884,7 @@ TEST_CASE("a fixture's address is patched once, when it is entered", "[ui][dmx]"
     const auto address = [&patch] { return static_cast<int>(patch.fixtures()[0].address); };
 
     const auto box = sweepFor(
-        340.0f, 800.0f, 20.0f, 40.0f, 140.0f, 4.0f,
+        340.0f, 800.0f, 20.0f, 40.0f, 200.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             shown.clearBox();
@@ -1008,119 +915,15 @@ TEST_CASE("a fixture's address is patched once, when it is entered", "[ui][dmx]"
     CHECK(patch.window().get_address() == 101);
 }
 
-TEST_CASE("what is typed in the patch editor is kept by whatever is clicked next",
+TEST_CASE("a channel's dropdown shows the next fixture's role after a delete or an import",
           "[ui][dmx]") {
-    // The audit of 2026-09-25, M18. The boxes commit when they lose the keyboard, a turn of the
-    // event loop after the click that took it, and `commitDrafts` ran only when the selection
-    // moved. So a name typed and not entered reverted on another fixture's tick — the tick
-    // republished this fixture into the box, which is bound both ways — and an address typed
-    // and not entered went, on a click to another fixture, to *that* fixture.
-    //
-    // **Both at address 1**, overlapping as a half-built patch does. With the second somewhere
-    // else, the box is told the second's address when it is clicked and lets go holding that;
-    // at the same address it is told of no change and still holds what was typed, which is
-    // what `echo_` is for (measured: at 1 and 10 this passed with the echo taken out).
-    Rig rig;
-    FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("left", 1, 0, 1),
-                                          takt4::dmx::fixtureFromMode("right", 1, 0, 1)});
-    const Patching shown(patch);
-    const auto restore = [&] {
-        patch.pick(0);
-        patch.rename("left");
-        patch.setGroup("");
-        patch.setAddress(1);
-        patch.setEnabledAt(0, true);
-        patch.setEnabledAt(1, true);
-        patch.pick(1);
-        patch.rename("right");
-        patch.setGroup("");
-        patch.setAddress(1);
-        patch.pick(0);
-        shown.settle();
-    };
-
-    const auto name = sweepFor(
-        340.0f, 700.0f, 40.0f, 20.0f, 200.0f, 6.0f,
-        [&](float x, float y) {
-            shown.click(x, y);
-            shown.clearBox();
-            shown.type("Q");
-            shown.enter();
-            return patch.fixtures()[0].name == "Q";
-        },
-        restore);
-    const auto address = sweepFor(
-        340.0f, 800.0f, 20.0f, 40.0f, 140.0f, 4.0f,
-        [&](float x, float y) {
-            shown.click(x, y);
-            shown.clearBox();
-            shown.type("9");
-            shown.enter();
-            return patch.fixtures()[0].address == 9;
-        },
-        restore);
-    // The second fixture's "in the show" tick, down the list's left edge.
-    const auto tick = sweepFor(
-        14.0f, 60.0f, 6.0f, 30.0f, 300.0f, 4.0f,
-        [&](float x, float y) {
-            shown.click(x, y);
-            return !patch.fixtures()[1].enabled;
-        },
-        restore);
-    // And the second fixture's row itself, clicked to the right of its tick.
-    const auto second = sweepFor(
-        100.0f, 200.0f, 20.0f, 30.0f, 300.0f, 4.0f,
-        [&](float x, float y) {
-            shown.click(x, y);
-            return patch.selected() == 1 && patch.fixtures()[1].enabled;
-        },
-        restore);
-    INFO("name " << name.first << "," << name.second << "; address " << address.first << ","
-                 << address.second << "; tick " << tick.first << "," << tick.second
-                 << "; second " << second.first << "," << second.second);
-    REQUIRE(name.first >= 0.0f);
-    REQUIRE(address.first >= 0.0f);
-    REQUIRE(tick.first >= 0.0f);
-    REQUIRE(second.first >= 0.0f);
-
-    SECTION("a name, and another fixture's tick") {
-        shown.click(name.first, name.second);
-        shown.clearBox();
-        shown.type("wash L");
-        shown.click(tick.first, tick.second); // no Enter
-        CHECK_FALSE(patch.fixtures()[1].enabled);
-        CHECK(patch.fixtures()[0].name == "wash L");
-        CHECK(std::string(patch.window().get_name()) == "wash L");
-    }
-
-    SECTION("an address, and another fixture") {
-        shown.click(address.first, address.second);
-        shown.clearBox();
-        shown.type("200");
-        shown.click(second.first, second.second); // no Enter
-        REQUIRE(patch.selected() == 1);
-        CHECK(patch.fixtures()[0].address == 200); // the fixture it was typed for
-        CHECK(patch.fixtures()[1].address == 1);  // and not the one clicked
-        CHECK(patch.window().get_address() == 1); // which the box now shows
-
-        // And the row took the keyboard, as a button does. It took nothing, so the box stayed
-        // lit over the second fixture still holding the 200, and the next keys went into it.
-        shown.type("7");
-        shown.enter();
-        CHECK(patch.fixtures()[1].address == 1);
-        CHECK(patch.fixtures()[0].address == 200);
-    }
-}
-
-TEST_CASE("the channel rows are built afresh for another fixture with the same shape",
-          "[ui][dmx]") {
-    // The audit of 2026-09-25, M21. The rows were updated in place while the *index* and the
-    // channel count stayed the same — and deleting the selected fixture puts the next one at the
-    // same index, and in a rig of identical pars at the same count too. A row's dropdown whose
-    // role was picked by hand is bound to nothing any more, so it went on showing the deleted
-    // fixture's pick over the next one's map. The same for an IMPORT that brings in a patch of
-    // the same shape. Judged the way the operator would meet it: one arrow step from what the
-    // dropdown shows.
+    // The audit of 2026-09-25, M21. Deleting the selected fixture puts the next one at the same
+    // index, and in a rig of identical pars at the same channel count too — and a std dropdown
+    // whose role was picked by hand was bound to nothing any more, so it went on showing the
+    // deleted fixture's pick over the next one's map. The same for an IMPORT of a patch of the
+    // same shape. The rows are written in place since the redesign of 2026-09-30, and the
+    // dropdown never sets itself, so it shows the model's role. Judged the way the operator would
+    // meet it: one arrow step from what the dropdown shows.
     const bool importing = GENERATE(false, true);
     INFO((importing ? "after an import" : "after deleting the selected fixture"));
     Rig rig;
@@ -1160,7 +963,7 @@ TEST_CASE("the channel rows are built afresh for another fixture with the same s
         REQUIRE(patch.fixtures()[1].id == saved[1].id);
         patch.pick(1);
     } else {
-        patch.window().invoke_removed(); // par 2 goes; par 3 takes its place in the list
+        patch.window().invoke_removed_at(1); // par 2 goes; par 3 takes its place in the list
         REQUIRE(patch.fixtures().size() == 2);
         REQUIRE(patch.selected() == 1);
         REQUIRE(patch.fixtures()[1].name == "par 3");
@@ -1172,4 +975,1126 @@ TEST_CASE("the channel rows are built afresh for another fixture with the same s
     stepDropdown(shown.window, kDoesColumn, found);
     shown.settle();
     CHECK(patch.fixtures()[1].channels[0] == stepped); // one step from red, not from the pick
+}
+
+// --- the redesign of 2026-09-30: every control, clicked, typed into, wheeled over -------------
+//
+// The operator asked for the rebuilt patch editor to be tested "adversarially to find whats broken
+// and hidden". Each of these drives real pointer and key events into the window, on the rig the
+// approved mockup holds, and judges by what reached the patch.
+
+namespace {
+
+/// The approved mockup's rig: two washes, two heads — the second left out of the show — and a
+/// blinder that runs off the end of its universe.
+std::vector<Fixture> rigOfFive() {
+    std::vector<Fixture> rig = {
+        takt4::dmx::fixtureFromMode("wash L", 3, 0, 1),     // dimmer + RGB, 1-4
+        takt4::dmx::fixtureFromMode("wash R", 4, 0, 5),     // LED par, 5-10
+        takt4::dmx::fixtureFromMode("head 1", 6, 0, 11),    // 16-bit head, 11-22
+        takt4::dmx::fixtureFromMode("head 2", 6, 0, 23),    // 23-34
+        takt4::dmx::fixtureFromMode("blinder", 6, 0, 505)}; // runs off the end
+    rig[0].group = "washes";
+    rig[1].group = "washes";
+    rig[2].group = "heads";
+    rig[3].group = "heads";
+    rig[3].enabled = false;
+    rig[2].panMin = 0.1;
+    rig[2].panMax = 0.9;
+    rig[2].tiltMin = 0.2;
+    rig[2].tiltMax = 0.7;
+    takt4::dmx::ensureFixtureIds(rig);
+    return rig;
+}
+
+/// Where the patch editor's controls are at 1000 x 1180 — the width it opens at, and tall enough
+/// to show a twelve-channel head's map and C under it with nothing scrolled — with head 1 picked.
+/// Measured off its render; every test REQUIREs what a click at one of these did, so a moved
+/// control fails loudly rather than quietly testing something else.
+namespace at {
+constexpr float kWidth = 1000.0f;
+constexpr float kHeight = 1180.0f;
+/// The page's margin: nothing there but the window's own background.
+constexpr float kNothingX = 4.0f;
+constexpr float kNothingY = 4.0f;
+// The list: row i's name line, its dot and its marks, and the + in its heading.
+constexpr float rowY(int i) { return 101.0f + 61.0f * static_cast<float>(i); }
+constexpr float kRowX = 120.0f;
+constexpr float kDotX = 35.0f;
+constexpr float kCopyX = 219.0f;
+constexpr float kKillX = 243.0f;
+constexpr float kAddX = 246.0f;
+constexpr float kAddY = 34.0f;
+// The top row.
+constexpr float kTopY = 37.0f;
+constexpr float kTickX = 306.0f;
+constexpr float kNameX = 559.0f;
+constexpr float kGroupX = 794.0f;
+constexpr float kIdentifyX = 931.0f;
+// The sheets' fold arrows, at the far right of their headings.
+constexpr float kFoldX = 960.0f;
+constexpr float kWhereY = 120.0f;
+constexpr float kChannelsY = 264.0f;
+constexpr float kMovesY = 1022.0f;
+// A.
+constexpr float kWhereRowY = 159.0f;
+constexpr float kUniverseX = 460.0f;
+constexpr float kAddressX = 649.0f;
+constexpr float kModeX = 544.0f;
+constexpr float kModeY = 201.0f;
+// B.
+constexpr float kAddChannelX = 905.0f;
+constexpr float kTestLevelX = 460.0f;
+constexpr float kTestLevelY = 303.0f;
+constexpr float bandY(int i) { return 376.0f + 50.0f * static_cast<float>(i); }
+constexpr float kRoleX = 450.0f;
+constexpr float kParkedX = 586.0f;
+constexpr float kTestX = 901.0f;
+constexpr float kKillChannelX = 952.0f;
+// C: the pan and tilt rows.
+constexpr float kPanY = 1061.0f;
+constexpr float kTiltY = 1103.0f;
+} // namespace at
+
+const Fixture* byId(const std::vector<Fixture>& patch, const std::string& id) {
+    for (const Fixture& fixture : patch) {
+        if (fixture.id == id) {
+            return &fixture;
+        }
+    }
+    return nullptr;
+}
+
+/// A bare patch window holding what a controller publishes for the five-fixture rig with head 1
+/// picked, and every callback it fires written down — so a click sweep can be held to what each
+/// control is for without a controller acting on it and moving everything under the next click.
+struct Recorder {
+    Rig rig;
+    FixturesController source{rig.runner, rigOfFive()};
+    slint::ComponentHandle<FixturesWindow> window = FixturesWindow::create();
+    std::vector<std::string> fired;
+
+    Recorder() {
+        source.pick(2);
+        auto& from = source.window();
+        auto& to = *window;
+        to.set_fixtures(from.get_fixtures());
+        to.set_selected(from.get_selected());
+        to.set_name(from.get_name());
+        to.set_group(from.get_group());
+        to.set_universe(from.get_universe());
+        to.set_address(from.get_address());
+        to.set_enabled(from.get_enabled());
+        to.set_roles(from.get_roles());
+        to.set_modes(from.get_modes());
+        to.set_mode_index(from.get_mode_index());
+        to.set_channels(from.get_channels());
+        to.set_test_level(from.get_test_level());
+        to.set_test_seconds(from.get_test_seconds());
+        to.set_moves(from.get_moves());
+        to.set_summary(from.get_summary());
+        resetMoves();
+        const auto note = [this](std::string what) { fired.push_back(std::move(what)); };
+        const auto n = [](int i) { return " " + std::to_string(i); };
+        to.on_picked([=](int i) { note("picked" + n(i)); });
+        to.on_added([=] { note("added"); });
+        to.on_duplicated_at([=](int i) { note("copy" + n(i)); });
+        to.on_removed_at([=](int i) { note("kill" + n(i)); });
+        to.on_enabled_changed([=](int i, bool) { note("dot" + n(i)); });
+        to.on_name_edited([=](const slint::SharedString&) { note("name-edited"); });
+        to.on_name_typed([=](const slint::SharedString&) { note("name-typed"); });
+        to.on_group_edited([=](const slint::SharedString&) { note("group-edited"); });
+        to.on_group_typed([=](const slint::SharedString&) { note("group-typed"); });
+        to.on_universe_edited([=](const slint::SharedString&) { note("universe-edited"); });
+        to.on_universe_typed([=](const slint::SharedString&) { note("universe-typed"); });
+        to.on_address_changed([=](int) { note("address"); });
+        to.on_address_typed([=](int) { note("address-typed"); });
+        to.on_fixture_enabled_changed([=](bool) { note("in-the-show"); });
+        to.on_mode_picked([=](int) { note("mode"); });
+        to.on_channel_added([=] { note("add-channel"); });
+        to.on_channel_removed([=](int i) { note("kill-channel" + n(i)); });
+        to.on_channel_role_picked([=](int i, int) { note("role" + n(i)); });
+        to.on_channel_parked_changed([=](int i, int) { note("parked" + n(i)); });
+        to.on_channel_parked_typed([=](int i, int) { note("parked-typed" + n(i)); });
+        to.on_channel_tested([=](int i) { note("test" + n(i)); });
+        to.on_test_level_changed([=](int) { note("test-level"); });
+        to.on_test_level_typed([=](int) { note("test-level-typed"); });
+        to.on_pan_range_changed([=](float, float) { note("pan"); });
+        to.on_tilt_range_changed([=](float, float) { note("tilt"); });
+        to.on_identify([=] { note("identify"); });
+        to.on_fold_clicked([=](int i) { note("fold" + n(i)); });
+
+        to.show();
+        handle().dispatch_scale_factor_change_event(1.0f);
+        handle().dispatch_resize_event(slint::LogicalSize({at::kWidth, at::kHeight}));
+        handle().dispatch_window_active_changed_event(true);
+        slint::platform::update_timers_and_animations();
+    }
+    slint::Window& handle() { return window->window(); }
+    /// The sliders write the window's own pan and tilt as they are dragged (the window follows
+    /// the hand and the controller hears of it once let go), so a probe that hit one is undone.
+    void resetMoves() {
+        window->set_pan_min(10.0f);
+        window->set_pan_max(90.0f);
+        window->set_tilt_min(20.0f);
+        window->set_tilt_max(70.0f);
+    }
+};
+
+} // namespace
+
+TEST_CASE("every spot in the patch editor fires what is under it, once, and nothing else",
+          "[ui][dmx]") {
+    // A click every 10 px over the whole window, each followed by a click on the page's margin that
+    // lets go of whatever the first one took — a box's late commit, an open list — and what the
+    // first click fired is written down against where it was. Held to: one thing per click at
+    // most; only the things a click is for (a click never picks from a list, types or edits);
+    // every control reached somewhere; and each row's or band's own controls only on that row.
+    Recorder recorder;
+    const takt4::tests::NothingReal nothingReal;
+    std::map<std::string, std::vector<std::pair<float, float>>> where;
+    std::vector<std::string> doubles;
+    for (float y = 6.0f; y < at::kHeight; y += 10.0f) {
+        for (float x = 6.0f; x < at::kWidth; x += 10.0f) {
+            recorder.fired.clear();
+            clickAt(recorder.handle(), x, y);
+            slint::platform::update_timers_and_animations();
+            const std::vector<std::string> fired = recorder.fired;
+            if (fired.size() > 1) {
+                std::string all;
+                for (const std::string& one : fired) {
+                    all += one + "; ";
+                }
+                doubles.push_back(std::to_string(static_cast<int>(x)) + "," +
+                                  std::to_string(static_cast<int>(y)) + ": " + all);
+            }
+            for (const std::string& one : fired) {
+                where[one].emplace_back(x, y);
+            }
+            clickAt(recorder.handle(), at::kNothingX, at::kNothingY);
+            slint::platform::update_timers_and_animations();
+            slint::platform::update_timers_and_animations();
+            recorder.resetMoves();
+        }
+    }
+    {
+        std::string seen;
+        for (const auto& [what, spots] : where) {
+            seen += what + " (" + std::to_string(spots.size()) + "), ";
+        }
+        INFO("fired: " << seen);
+        std::string twice;
+        for (const std::string& one : doubles) {
+            twice += one + "\n";
+        }
+        INFO("clicks that fired more than one thing:\n" << twice);
+        CHECK(doubles.empty());
+
+        // What a click is for, and nothing else: a box is typed into, not clicked into a change,
+        // and a list is picked from by a second click, which this sweep never makes.
+        std::set<std::string> expected = {"added",       "in-the-show", "identify", "fold 0",
+                                          "fold 1",      "fold 2",      "add-channel", "pan",
+                                          "tilt"};
+        for (int i = 0; i < 5; ++i) {
+            for (const char* what : {"picked ", "dot ", "copy ", "kill "}) {
+                expected.insert(what + std::to_string(i));
+            }
+        }
+        for (int i = 0; i < 12; ++i) {
+            expected.insert("test " + std::to_string(i));
+            expected.insert("kill-channel " + std::to_string(i));
+        }
+        for (const auto& [what, spots] : where) {
+            INFO(what << " at " << spots.front().first << ", " << spots.front().second);
+            CHECK(expected.count(what) == 1);
+        }
+        for (const std::string& what : expected) {
+            INFO(what << " was reached by no click");
+            CHECK(where.count(what) == 1);
+        }
+    }
+    // Each row's and band's controls on that row and no other.
+    for (int i = 0; i < 5; ++i) {
+        for (const char* what : {"picked ", "dot ", "copy ", "kill "}) {
+            const std::string key = what + std::to_string(i);
+            for (const auto& [x, y] : where[key]) {
+                INFO(key << " at " << x << ", " << y);
+                CHECK(y >= at::rowY(i) - 22.0f);
+                CHECK(y <= at::rowY(i) + 38.0f);
+                CHECK(x < 270.0f); // in the list
+            }
+        }
+    }
+    for (int i = 0; i < 12; ++i) {
+        for (const char* what : {"test ", "kill-channel "}) {
+            const std::string key = what + std::to_string(i);
+            for (const auto& [x, y] : where[key]) {
+                INFO(key << " at " << x << ", " << y);
+                CHECK(std::abs(y - at::bandY(i)) <= 22.0f);
+            }
+        }
+    }
+    nothingReal.check();
+}
+
+namespace {
+
+/// What a box is, where it is, what is typed into it, and whether the patch got it.
+struct TypedBox {
+    const char* name;
+    float x;
+    float y;
+    const char* text;
+    /// Whether `fixture` — the one it was typed for — holds what was typed, given where its
+    /// channels went (`firstChannelGone`: channel 0 was deleted by the next click).
+    std::function<bool(const Fixture&, const FixturesController&, bool firstChannelGone)> holds;
+    /// Whether another fixture holds it — which it must not.
+    std::function<bool(const Fixture& other, const Fixture& before)> leaked;
+};
+
+std::vector<TypedBox> typedBoxes() {
+    return {
+        {"the name", at::kNameX, at::kTopY, "QQ",
+         [](const Fixture& f, const FixturesController&, bool) { return f.name == "QQ"; },
+         [](const Fixture& o, const Fixture& b) { return o.name != b.name; }},
+        {"the group", at::kGroupX, at::kTopY, "GG",
+         [](const Fixture& f, const FixturesController&, bool) { return f.group == "GG"; },
+         [](const Fixture& o, const Fixture& b) { return o.group != b.group; }},
+        {"the universe", at::kUniverseX, at::kWhereRowY, "7",
+         [](const Fixture& f, const FixturesController&, bool) { return f.universe == 7; },
+         [](const Fixture& o, const Fixture& b) { return o.universe != b.universe; }},
+        {"the start address", at::kAddressX, at::kWhereRowY, "77",
+         [](const Fixture& f, const FixturesController&, bool) { return f.address == 77; },
+         [](const Fixture& o, const Fixture& b) { return o.address != b.address; }},
+        {"a channel's parked level", at::kParkedX, at::bandY(1), "99",
+         [](const Fixture& f, const FixturesController&, bool gone) {
+             const std::size_t at = gone ? 0 : 1;
+             return f.parked.size() > at && f.parked[at] == 99;
+         },
+         [](const Fixture& o, const Fixture& b) { return o.parked != b.parked; }},
+        {"the TEST level", at::kTestLevelX, at::kTestLevelY, "44",
+         [](const Fixture&, const FixturesController& p, bool) { return p.testLevel() == 44; },
+         [](const Fixture&, const Fixture&) { return false; }},
+    };
+}
+
+} // namespace
+
+TEST_CASE("what is typed in the patch editor goes to the fixture it was typed for, whatever is "
+          "clicked next",
+          "[ui][dmx]") {
+    // The audit of 2026-09-25's H10 and M18 for every box against every kind of next click: a
+    // box commits a turn of the event loop after the click that takes its keyboard, by when that
+    // click may have put another fixture in the editor, deleted one, added a channel or folded the
+    // box's sheet away. Typed and not entered; then the click; then the patch is read. The typed
+    // value is on the fixture it was typed for and on no other — a copy of it aside, which is
+    // made from it after the edit.
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    const std::string head = original[2].id;
+    FixturesController patch(rig.runner, original);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    const takt4::tests::NothingReal nothingReal;
+    const auto escape = [&shown] { shown.type("\x1b"); };
+
+    struct Next {
+        const char* name;
+        std::function<void()> go;
+        /// That the click did what it is for — or the case tests nothing.
+        std::function<bool()> happened;
+        bool firstChannelGone = false;
+    };
+    // A × is pressed past the double-click time since the last press on it: a quicker one is taken
+    // for the second click of a double-click and ignored (`DeleteGuard`), and the cases run a few
+    // milliseconds apart.
+    const auto pastDoubleClick = [] {
+        std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() +
+                                    std::chrono::milliseconds(60));
+    };
+    const auto headNow = [&]() -> const Fixture& { return *byId(patch.fixtures(), head); };
+    const auto said = [&](const char* what) {
+        return std::string(patch.window().get_status()).find(what) != std::string::npos;
+    };
+    const std::vector<Next> nexts = {
+        {"Enter", [&] { shown.enter(); }, [&] { return patch.selected() == 2; }},
+        {"the page's margin", [&] { shown.click(at::kNothingX, at::kNothingY); },
+         [&] { return patch.selected() == 2; }},
+        {"another fixture's row", [&] { shown.click(at::kRowX, at::rowY(0)); },
+         [&] { return patch.selected() == 0; }},
+        {"another fixture's dot", [&] { shown.click(at::kDotX, at::rowY(0)); },
+         [&] { return !patch.fixtures()[0].enabled; }},
+        {"the list's +", [&] { shown.click(at::kAddX, at::kAddY); },
+         [&] { return patch.fixtures().size() == original.size() + 1; }},
+        {"this fixture's copy mark", [&] { shown.click(at::kCopyX, at::rowY(2)); },
+         [&] { return patch.fixtures().size() == original.size() + 1 && patch.selected() == 3; }},
+        {"another fixture's x",
+         [&] {
+             pastDoubleClick();
+             shown.click(at::kKillX, at::rowY(0));
+         },
+         [&] { return byId(patch.fixtures(), original[0].id) == nullptr; }},
+        {"in the show", [&] { shown.click(at::kTickX, at::kTopY); },
+         [&] { return !headNow().enabled; }},
+        {"identify", [&] { shown.click(at::kIdentifyX, at::kTopY); },
+         [&] { return said("Identifying"); }},
+        {"A's fold arrow", [&] { shown.click(at::kFoldX, at::kWhereY); },
+         [&] { return patch.window().get_where_folded(); }},
+        {"B's fold arrow", [&] { shown.click(at::kFoldX, at::kChannelsY); },
+         [&] { return patch.window().get_channels_folded(); }},
+        {"B's + add", [&] { shown.click(at::kAddChannelX, at::kChannelsY); },
+         [&] { return headNow().channels.size() == 13; }},
+        {"a channel's test", [&] { shown.click(at::kTestX, at::bandY(3)); },
+         [&] { return said("Channel ") && said(" for 3 s"); }},
+        {"the first channel's x",
+         [&] {
+             pastDoubleClick();
+             shown.click(at::kKillChannelX, at::bandY(0));
+         },
+         [&] { return headNow().channels.size() == 11; }, true},
+        {"the mode list, opened and shut",
+         [&] {
+             shown.click(at::kModeX, at::kModeY);
+             escape();
+         },
+         [&] { return headNow().channels == original[2].channels; }},
+        {"a channel's dropdown, opened and shut",
+         [&] {
+             shown.click(at::kRoleX, at::bandY(5));
+             escape();
+         },
+         [&] { return headNow().channels == original[2].channels; }},
+    };
+
+    const auto reset = [&] {
+        shown.click(at::kNothingX, at::kNothingY);
+        patch.setFixtures(original);
+        patch.applyLayout(takt4::settings::MachineSettings{});
+        patch.setTestLevel(255);
+        patch.pick(2);
+        shown.settle();
+        shown.settle();
+    };
+
+    for (const TypedBox& box : typedBoxes()) {
+        for (const Next& next : nexts) {
+            INFO(box.name << ", typed, then " << next.name);
+            reset();
+            shown.click(box.x, box.y);
+            shown.clearBox();
+            shown.type(box.text);
+            // Nothing yet: what is typed is kept until it is finished with.
+            {
+                const Fixture* now = byId(patch.fixtures(), head);
+                REQUIRE(now != nullptr);
+                CHECK_FALSE(box.holds(*now, patch, false));
+            }
+            next.go();
+            shown.settle();
+            shown.settle();
+            REQUIRE(byId(patch.fixtures(), head) != nullptr);
+            CHECK(next.happened());
+
+            const Fixture* typedFor = byId(patch.fixtures(), head);
+            REQUIRE(typedFor != nullptr);
+            CHECK(box.holds(*typedFor, patch, next.firstChannelGone));
+            for (const Fixture& other : patch.fixtures()) {
+                const Fixture* before = byId(original, other.id);
+                if (other.id == head || before == nullptr) {
+                    continue; // the one it was for, and a fixture the next click made
+                }
+                INFO("on " << other.name);
+                CHECK_FALSE(box.leaked(other, *before));
+            }
+        }
+    }
+    nothingReal.check();
+}
+
+TEST_CASE("a box clicked into and left without typing changes nothing on the fixture clicked next",
+          "[ui][dmx]") {
+    // Nothing typed at all, every box, and another fixture clicked. Held because it could go wrong
+    // two ways: a box let go of commits what it shows, and the controller acts on whatever is in
+    // the editor by then. Measured 2026-10-01: it holds even without the patch editor's draft rule
+    // — Slint runs the box's new value before its lost focus, so it commits wash L's own — and
+    // since then a box commits nothing it was not changed from (weltformat's `Entry`). This keeps
+    // it that way.
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    FixturesController patch(rig.runner, original);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    for (const TypedBox& box : typedBoxes()) {
+        INFO(box.name);
+        shown.click(at::kNothingX, at::kNothingY);
+        patch.setFixtures(original);
+        patch.pick(2);
+        shown.settle();
+        shown.click(box.x, box.y); // the keyboard, and nothing typed
+        shown.click(at::kRowX, at::rowY(0));
+        shown.settle();
+        shown.settle();
+        REQUIRE(patch.selected() == 0);
+        for (std::size_t i = 0; i < original.size(); ++i) {
+            const Fixture& now = patch.fixtures()[i];
+            INFO("fixture " << now.name);
+            CHECK(now.name == original[i].name);
+            CHECK(now.group == original[i].group);
+            CHECK(now.universe == original[i].universe);
+            CHECK(now.address == original[i].address);
+            CHECK(now.parked == original[i].parked);
+        }
+        // And what the boxes show is wash L's.
+        CHECK(std::string(patch.window().get_name()) == "wash L");
+        CHECK(patch.window().get_address() == 1);
+    }
+}
+
+TEST_CASE("deleting the fixture being typed for, or the last one, keeps the next one as it was",
+          "[ui][dmx]") {
+    // A name typed for head 1, and head 1's own × clicked: the typed name goes with head 1 and not
+    // onto head 2, which takes its place in the list and in the editor. Then every fixture deleted
+    // the same way, each with something typed, down to an empty patch — which says what to do —
+    // and + gives a fixture whose boxes hold its own name, not the last one's typing.
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    FixturesController patch(rig.runner, original);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    shown.click(at::kNameX, at::kTopY);
+    shown.clearBox();
+    shown.type("doomed");
+    shown.click(at::kKillX, at::rowY(2));
+    shown.settle();
+    shown.settle();
+    REQUIRE(patch.fixtures().size() == 4);
+    CHECK(byId(patch.fixtures(), original[2].id) == nullptr);
+    CHECK(patch.fixtures()[2].name == "head 2");
+    CHECK(patch.selected() == 2);
+    CHECK(std::string(patch.window().get_name()) == "head 2");
+    for (const Fixture& fixture : patch.fixtures()) {
+        CHECK(fixture.name != "doomed");
+    }
+
+    // Down to nothing, typing into whatever is showing before each ×.
+    while (!patch.fixtures().empty()) {
+        const int at = patch.selected();
+        REQUIRE(at >= 0);
+        shown.click(at::kNameX, at::kTopY);
+        shown.type("x");
+        // Past the DeleteGuard's window for a double-click, which a quick second × on the row that
+        // moved up is not meant to reach.
+        std::this_thread::sleep_for(std::chrono::milliseconds(450));
+        const std::size_t before = patch.fixtures().size();
+        shown.click(at::kKillX, at::rowY(at));
+        shown.settle();
+        REQUIRE(patch.fixtures().size() + 1 == before);
+    }
+    CHECK(patch.selected() == -1);
+    CHECK(patch.window().get_selected() == -1);
+    CHECK(std::string(patch.window().get_summary()) == "Nothing patched yet.");
+
+    shown.click(at::kAddX, at::kAddY);
+    shown.settle();
+    REQUIRE(patch.fixtures().size() == 1);
+    CHECK(patch.fixtures()[0].name == "fixture 1");
+    CHECK(std::string(patch.window().get_name()) == "fixture 1");
+    // And its name box takes typing for it.
+    shown.click(at::kNameX, at::kTopY);
+    shown.clearBox();
+    shown.type("par");
+    shown.enter();
+    CHECK(patch.fixtures()[0].name == "par");
+}
+
+TEST_CASE("the wheel over every box and dropdown in the patch editor changes nothing",
+          "[ui][dmx]") {
+    // The audit's H2 and M19: a std SpinBox and ComboBox changed under the wheel as a pane scrolled
+    // past them, which is how a parked level moved on the rig. Wheeled over every box and dropdown
+    // in both directions, focused and not.
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    FixturesController patch(rig.runner, original);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    const std::vector<std::pair<float, float>> spots = {
+        {at::kNameX, at::kTopY},           {at::kGroupX, at::kTopY},
+        {at::kUniverseX, at::kWhereRowY},  {at::kAddressX, at::kWhereRowY},
+        {at::kModeX, at::kModeY},          {at::kTestLevelX, at::kTestLevelY},
+        {at::kRoleX, at::bandY(0)},        {at::kParkedX, at::bandY(0)},
+        {at::kRoleX, at::bandY(4)},        {at::kParkedX, at::bandY(6)}};
+    for (const bool focused : {false, true}) {
+        for (const auto& [x, y] : spots) {
+            INFO((focused ? "focused, " : "") << "at " << x << ", " << y);
+            if (focused) {
+                shown.click(x, y);
+                shown.type("\x1b"); // a list opened by the click, shut; a box left as it was
+            }
+            for (const float dy : {120.0f, -120.0f, 360.0f, -360.0f}) {
+                shown.window.dispatch_pointer_scroll_event(slint::LogicalPosition({x, y}), 0.0f, dy);
+                shown.settle();
+            }
+            shown.click(at::kNothingX, at::kNothingY);
+            const Fixture& now = patch.fixtures()[2];
+            CHECK(now.channels == original[2].channels);
+            CHECK(now.parked == original[2].parked);
+            CHECK(now.address == original[2].address);
+            CHECK(now.universe == original[2].universe);
+            CHECK(now.name == original[2].name);
+            CHECK(patch.testLevel() == 255);
+            CHECK(patch.selected() == 2);
+        }
+    }
+}
+
+TEST_CASE("Escape in a patch editor box puts a number back and finishes a name, and nothing more",
+          "[ui][dmx]") {
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    FixturesController patch(rig.runner, original);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+
+    // A number: what was typed thrown away, and not committed by the click after either.
+    shown.click(at::kAddressX, at::kWhereRowY);
+    shown.clearBox();
+    shown.type("300");
+    shown.type("\x1b");
+    shown.click(at::kRowX, at::rowY(0));
+    shown.settle();
+    CHECK(patch.fixtures()[2].address == 11);
+    CHECK(patch.fixtures()[0].address == 1);
+    patch.pick(2);
+    shown.settle();
+    shown.click(at::kParkedX, at::bandY(2));
+    shown.clearBox();
+    shown.type("17");
+    shown.type("\x1b");
+    shown.click(at::kNothingX, at::kNothingY);
+    CHECK(patch.fixtures()[2].parked == original[2].parked);
+
+    // A name: Escape finishes it, as a click away does.
+    shown.click(at::kNameX, at::kTopY);
+    shown.clearBox();
+    shown.type("spot");
+    shown.type("\x1b");
+    shown.settle();
+    CHECK(patch.fixtures()[2].name == "spot");
+    CHECK(patch.selected() == 2);
+    CHECK(patch.fixtures().size() == original.size());
+}
+
+TEST_CASE("pan and tilt follow the hand, and are patched once, when let go", "[ui][dmx]") {
+    // H8: each pixel of a movement-limit drag re-patched the rig. The window follows the hand, and
+    // the patch hears of it once — on the release, or on each arrow key's step.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    int patched = 0;
+    patch.setPatchChanged([&patched](const std::vector<Fixture>&) { ++patched; });
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    REQUIRE(patch.window().get_moves());
+
+    // The pan slider's low handle, at 10 %: found along its row as the spot where a press moves
+    // nothing — a press off a handle jumps that end there — and a drag from it does. And the press
+    // that moved nothing is no patch: a re-patch for nothing ends a running TEST.
+    float handle = -1.0f;
+    int pressesThatPatched = 0;
+    for (float x = 400.0f; x < 560.0f && handle < 0.0f; x += 2.0f) {
+        const slint::LogicalPosition atPoint({x, at::kPanY});
+        shown.window.dispatch_pointer_move_event(atPoint);
+        shown.window.dispatch_pointer_press_event(atPoint, slint::PointerEventButton::Left);
+        shown.settle();
+        const bool still = patch.window().get_pan_min() == 10.0f;
+        if (still) {
+            shown.window.dispatch_pointer_release_event(atPoint, slint::PointerEventButton::Left);
+            shown.settle();
+            pressesThatPatched += patched;
+            const slint::LogicalPosition dragged({x + 20.0f, at::kPanY});
+            shown.window.dispatch_pointer_move_event(atPoint);
+            shown.window.dispatch_pointer_press_event(atPoint, slint::PointerEventButton::Left);
+            shown.window.dispatch_pointer_move_event(dragged);
+            shown.settle();
+            if (patch.window().get_pan_min() > 10.0f) {
+                handle = x; // a press here moved nothing, and a drag from here does
+            }
+            shown.window.dispatch_pointer_release_event(dragged, slint::PointerEventButton::Left);
+        } else {
+            shown.window.dispatch_pointer_release_event(atPoint, slint::PointerEventButton::Left);
+        }
+        shown.settle();
+        // Put back for the next probe.
+        patch.setPanRange(10.0f, 90.0f);
+        shown.settle();
+        patched = 0;
+    }
+    INFO("pan's low handle at " << handle);
+    REQUIRE(handle > 0.0f);
+    CHECK(pressesThatPatched == 0);
+
+    patched = 0;
+    const slint::LogicalPosition start({handle, at::kPanY});
+    shown.window.dispatch_pointer_move_event(start);
+    shown.window.dispatch_pointer_press_event(start, slint::PointerEventButton::Left);
+    shown.settle();
+    float last = patch.window().get_pan_min();
+    int followed = 0;
+    for (int step = 1; step <= 30; ++step) {
+        shown.window.dispatch_pointer_move_event(
+            slint::LogicalPosition({handle + 3.0f * static_cast<float>(step), at::kPanY}));
+        shown.settle();
+        if (patch.window().get_pan_min() != last) {
+            ++followed;
+            last = patch.window().get_pan_min();
+        }
+    }
+    CHECK(followed > 10);    // the handle went with the hand
+    CHECK(patched == 0);     // and nothing was patched on the way
+    CHECK(patch.fixtures()[2].panMin == 0.1);
+    shown.window.dispatch_pointer_release_event(
+        slint::LogicalPosition({handle + 90.0f, at::kPanY}), slint::PointerEventButton::Left);
+    shown.settle();
+    CHECK(patched == 1);
+    CHECK(patch.fixtures()[2].panMin == Catch::Approx(last / 100.0f).margin(1e-6));
+    CHECK(patch.fixtures()[2].panMin > 0.1);
+    CHECK(patch.fixtures()[2].panMax == 0.9); // the other end left where it was
+
+    // And from the keyboard: each arrow a step, and a patch.
+    patched = 0;
+    const double before = patch.fixtures()[2].panMin;
+    pressKey(shown.window, slint::SharedString(u8"")); // Key.RightArrow
+    shown.settle();
+    CHECK(patched == 1);
+    CHECK(patch.fixtures()[2].panMin > before);
+}
+
+TEST_CASE("the patch editor's sheets fold from their arrows, say what they hold, and are kept",
+          "[ui][dmx]") {
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    shown.click(at::kFoldX, at::kWhereY);
+    CHECK(patch.window().get_where_folded());
+    // A folded, B's heading is 94 px higher (A open is 134 tall, folded 40).
+    shown.click(at::kFoldX, at::kChannelsY - 94.0f);
+    CHECK(patch.window().get_channels_folded());
+    // And C's, under two folded sheets: 50 px below B's heading.
+    shown.click(at::kFoldX, at::kChannelsY - 94.0f + 50.0f);
+    CHECK(patch.window().get_moves_folded());
+    takt4::settings::MachineSettings machine;
+    patch.layoutInto(machine);
+    CHECK(machine.patchSectionsFolded == std::array<bool, 3>{true, true, true});
+
+    // A second editor opened from those settings opens folded.
+    FixturesController again(rig.runner, rigOfFive());
+    again.applyLayout(machine);
+    CHECK(again.window().get_where_folded());
+    CHECK(again.window().get_channels_folded());
+    CHECK(again.window().get_moves_folded());
+
+    // Opened again by the same arrows, and the boxes in them still take typing.
+    shown.click(at::kFoldX, at::kWhereY);
+    CHECK_FALSE(patch.window().get_where_folded());
+    patch.applyLayout(takt4::settings::MachineSettings{});
+    shown.settle();
+    shown.click(at::kAddressX, at::kWhereRowY);
+    shown.clearBox();
+    shown.type("40");
+    shown.enter();
+    CHECK(patch.fixtures()[2].address == 40);
+}
+
+TEST_CASE("the patch editor lays out the same at any height, and fits its narrowest", "[ui][dmx]") {
+    // In a tall window a conditional row takes a share of whatever height is spare. Every sheet
+    // here that comes and goes is clipped rather than conditional, which this measures: the sheets'
+    // edges down the editor's left margin are where they are at 800 and at 1.6 times that. And
+    // "Narrow": at the window's least width every row of the editor fits its pane.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    patch.pick(2);
+    const auto edges = [&patch](int height) {
+        const takt4::tests::Shot shot = takt4::tests::render(patch.window(), 1000, height);
+        // x = 285 is inside the editor's sheets, left of everything drawn on them.
+        std::vector<int> found;
+        bool sheet = false;
+        for (int y = 0; y < 790; ++y) {
+            const slint::Rgb8Pixel p = shot.at(285, y);
+            const bool now = !(p.r == 0x0e && p.g == 0x0e && p.b == 0x0e);
+            if (now != sheet) {
+                found.push_back(y);
+                sheet = now;
+            }
+        }
+        return found;
+    };
+    const std::vector<int> at800 = edges(800);
+    const std::vector<int> at1280 = edges(1280);
+    INFO("edges at 800: " << at800.size() << ", at 1280: " << at1280.size());
+    REQUIRE(at800.size() >= 4); // the top row's sheet and A's, at least
+    CHECK(at800 == at1280);
+
+    // With nothing patched, and with a fixture that cannot move (no C), the same.
+    patch.pick(1);
+    CHECK(edges(800) == edges(1280));
+
+    // The narrowest: the editor's column of sheets gets at least what its rows need, the list
+    // having given way first.
+    takt4::tests::render(patch.window(), 880, 520);
+    slint::platform::update_timers_and_animations();
+    takt4::tests::render(patch.window(), 880, 520);
+    patch.pick(2);
+    takt4::tests::render(patch.window(), 880, 520);
+    CHECK(patch.window().get_body_width() >= patch.window().get_body_least_width());
+    CHECK(patch.window().get_list_width() >= 200.0f);
+}
+
+TEST_CASE("every spot in the About box fires what is under it, once", "[ui]") {
+    auto about = AboutWindow::create();
+    std::vector<std::string> fired;
+    about->on_licence_opened([&] { fired.emplace_back("licence"); });
+    about->on_notices_opened([&] { fired.emplace_back("notices"); });
+    about->on_closed([&] { fired.emplace_back("close"); });
+    about->set_version(slint::SharedString("1.0.0"));
+    about->set_opened(slint::SharedString("Opened C:\\somewhere\\takt4-LICENSE.txt"));
+    about->show();
+    auto& window = about->window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({580.0f, 640.0f}));
+    window.dispatch_window_active_changed_event(true);
+    std::map<std::string, int> hits;
+    int doubles = 0;
+    for (float y = 4.0f; y < 640.0f; y += 6.0f) {
+        for (float x = 4.0f; x < 580.0f; x += 6.0f) {
+            fired.clear();
+            clickAt(window, x, y);
+            slint::platform::update_timers_and_animations();
+            doubles += fired.size() > 1 ? 1 : 0;
+            for (const std::string& one : fired) {
+                ++hits[one];
+            }
+        }
+    }
+    CHECK(doubles == 0);
+    CHECK(hits.size() == 3);
+    CHECK(hits["licence"] > 0);
+    CHECK(hits["notices"] > 0);
+    CHECK(hits["close"] > 0);
+    // And the whole of it fits: CLOSE is drawn, inside the window, at the size it opens at.
+    const takt4::tests::Shot shot = takt4::tests::render(*about, 580, 640);
+    bool closeDrawn = false;
+    for (int x = 400; x < 576 && !closeDrawn; ++x) {
+        const slint::Rgb8Pixel p = shot.at(x, 612);
+        closeDrawn = p.r == 0xef && p.g == 0xee && p.b == 0xe9; // the primary button's face
+    }
+    CHECK(closeDrawn);
+}
+
+TEST_CASE("test pressed on one channel after another reaches each of them", "[ui][dmx]") {
+    // What an operator does finding which channel is which: TEST down the column, a click on each.
+    // The editor's message line under the top row came and went, and the first TEST's "Channel 11
+    // at 255 for 3 s." pushed every row 22 px down under the pointer — the next click landed in the
+    // gap between two rows and tested nothing (found testing the build, 2026-09-30). The line is
+    // always there now. Each click judged by what the window then says it held.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    for (int i = 0; i < 12; ++i) {
+        INFO("channel row " << i);
+        shown.click(at::kTestX, at::bandY(i));
+        const std::string said(patch.window().get_status());
+        CHECK(said.find("Channel " + std::to_string(11 + i) + " at 255") != std::string::npos);
+    }
+    // And the line's going again does not move them back: a fixture picked clears it.
+    patch.pick(1);
+    shown.settle();
+    CHECK(std::string(patch.window().get_status()).empty());
+    patch.pick(2);
+    shown.settle();
+    shown.click(at::kTestX, at::bandY(4));
+    CHECK(std::string(patch.window().get_status()).find("Channel 15 at") != std::string::npos);
+}
+
+TEST_CASE("nothing the patch editor does builds its rows again", "[ui][dmx]") {
+    // Never destroy the element somebody is holding: a model reset throws every row's
+    // elements away and builds new ones — a dropdown's list and a box being typed in with them.
+    // The rows are written in place since the redesign; this counts resets on both repeaters
+    // through every kind of edit, a fixture switch and an import of a patch of the same shape.
+    Rig rig;
+    const std::vector<Fixture> original = rigOfFive();
+    FixturesController patch(rig.runner, original);
+    patch.show();
+    const auto channels = std::make_shared<ModelWatch>();
+    const auto list = std::make_shared<ModelWatch>();
+    patch.window().get_channels()->attach_peer(channels);
+    patch.window().get_fixtures()->attach_peer(list);
+    auto& window = patch.window();
+    patch.pick(2);
+    enterParked(window, 1, 50);
+    window.invoke_channel_role_picked(3, roleIndexOf(Role::Dimmer));
+    window.invoke_channel_added();
+    window.invoke_channel_removed(0);
+    window.invoke_mode_picked(modeIndexOf("RGB (3ch)"));
+    window.invoke_mode_picked(modeIndexOf("moving head 16-bit (12ch)"));
+    patch.pick(0);
+    patch.pick(3);
+    window.invoke_enabled_changed(3, true);
+    enterName(window, "head two");
+    window.invoke_added();
+    window.invoke_duplicated_at(1);
+    window.invoke_removed_at(0);
+    patch.setFixtures(original);
+    patch.pick(4);
+    patch.tick();
+    CHECK(channels->resets == 0);
+    CHECK(list->resets == 0);
+    CHECK(channels->changes + channels->added + channels->removed > 0); // it was watching
+    CHECK(list->changes + list->added + list->removed > 0);
+}
+
+TEST_CASE("the rule editor shows the id a control surface names the rule by", "[ui][trigger]") {
+    // `/takt4/ctl/rule/<id>/mute` and the rest name a rule by its id, which the window never showed
+    // — the README sent the operator to settings.json for it (the operator, 2026-09-30: "yes you
+    // should show rule IDs"). Beside the name, following the rule picked, and gone with none.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.add();
+    REQUIRE(editor.rules().size() == 2);
+    REQUIRE(editor.rules()[0].id != editor.rules()[1].id);
+    editor.pick(0);
+    CHECK(std::string(editor.window().get_rule_id()) == editor.rules()[0].id);
+    editor.pick(1);
+    CHECK(std::string(editor.window().get_rule_id()) == editor.rules()[1].id);
+    // A rename does not touch it: nothing points at a rule by a name anybody can change.
+    editor.rename("renamed");
+    CHECK(std::string(editor.window().get_rule_id()) == editor.rules()[1].id);
+    editor.setRules({});
+    CHECK(std::string(editor.window().get_rule_id()).empty());
+}
+
+// --- found reviewing the redesign, 2026-10-01 ---------------------------------------------------
+
+TEST_CASE("nothing that leaves the patch as it was ends a channel's TEST", "[ui][dmx]") {
+    // Every re-patch lets go of a TEST hold, and pan, tilt and a parked level re-patched even when
+    // they had not changed: a press on a pan handle that moved nothing, or an arrow at the end of
+    // its travel, cut a running TEST short.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    int patched = 0;
+    patch.setPatchChanged([&patched](const std::vector<Fixture>&) { ++patched; });
+    auto& window = patch.window();
+    patch.pick(2);
+    takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
+    // The patch to the output thread, as an edit would post it: the controller does not post the
+    // patch it was made with (the owner has it already).
+    rig.runner.post(takt4::output::OutputCommand::patch(patch.fixtures()));
+    REQUIRE(engine.levels(0).size() >= 16);
+    patch.setTestLevel(200);
+    patch.testChannel(5); // the dimmer, DMX 16
+    REQUIRE(engine.levels(0)[15] == 200);
+
+    window.invoke_pan_range_changed(10.0f, 90.0f);
+    window.invoke_tilt_range_changed(20.0f, 70.0f);
+    enterParked(window, 1, static_cast<int>(patch.fixtures()[2].parked[1]));
+    CHECK(patched == 0);
+    CHECK(engine.levels(0)[15] == 200);
+
+    // And a real change does re-patch, and lets go of it — which is why nothing else may.
+    window.invoke_pan_range_changed(15.0f, 90.0f);
+    CHECK(patched == 1);
+    CHECK(engine.levels(0)[15] != 200);
+}
+
+TEST_CASE("a click on the pan track with a name being typed moves the handle and keeps the name",
+          "[ui][dmx]") {
+    // The press takes the keyboard, the name box commits — a turn of the event loop later, between
+    // the press and the release — and the controller republished the fixture's stored pan over the
+    // handle the press had just jumped, so the release sent the old value back.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+
+    // The low handle at 10 %, found as the pan test finds it.
+    float handle = -1.0f;
+    for (float x = 400.0f; x < 560.0f && handle < 0.0f; x += 2.0f) {
+        const slint::LogicalPosition atPoint({x, at::kPanY});
+        shown.window.dispatch_pointer_move_event(atPoint);
+        shown.window.dispatch_pointer_press_event(atPoint, slint::PointerEventButton::Left);
+        shown.settle();
+        if (patch.window().get_pan_min() == 10.0f) {
+            const slint::LogicalPosition dragged({x + 20.0f, at::kPanY});
+            shown.window.dispatch_pointer_move_event(dragged);
+            shown.settle();
+            if (patch.window().get_pan_min() > 10.0f) {
+                handle = x;
+            }
+            shown.window.dispatch_pointer_release_event(dragged, slint::PointerEventButton::Left);
+        } else {
+            shown.window.dispatch_pointer_release_event(atPoint, slint::PointerEventButton::Left);
+        }
+        shown.settle();
+        patch.setPanRange(10.0f, 90.0f);
+        shown.settle();
+    }
+    REQUIRE(handle > 0.0f);
+
+    shown.click(at::kNameX, at::kTopY);
+    shown.clearBox();
+    shown.type("spot left");
+    // Left of the low handle, on the track: the low end jumps there.
+    const slint::LogicalPosition left({handle - 14.0f, at::kPanY});
+    shown.window.dispatch_pointer_move_event(left);
+    shown.window.dispatch_pointer_press_event(left, slint::PointerEventButton::Left);
+    shown.settle();
+    shown.settle();
+    shown.window.dispatch_pointer_release_event(left, slint::PointerEventButton::Left);
+    shown.settle();
+    CHECK(patch.fixtures()[2].name == "spot left");
+    CHECK(patch.fixtures()[2].panMin < 0.1);
+    CHECK(patch.fixtures()[2].panMax == 0.9);
+    CHECK(patch.window().get_pan_min() == Catch::Approx(patch.fixtures()[2].panMin * 100.0));
+}
+
+TEST_CASE("+ add on the channels adds exactly when the universe has room, and says when not",
+          "[ui][dmx]") {
+    // It was offered, or not, by a rule that disagreed with the controller at the end of the
+    // universe: a fixture at 512 with no channels could not take channel 512, and a start address
+    // typed and not entered left it offered for a click that then added nothing, silently.
+    Rig rig;
+    Fixture end = takt4::dmx::fixtureFromMode("end", 0, 0, 512); // a dimmer at 512
+    end.channels.clear();
+    end.parked.clear();
+    std::vector<Fixture> six = rigOfFive();
+    six.push_back(end);
+    takt4::dmx::ensureFixtureIds(six);
+    FixturesController patch(rig.runner, six);
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(5);
+    shown.settle();
+    REQUIRE(patch.fixtures()[5].channels.empty());
+    shown.click(at::kAddChannelX, at::kChannelsY);
+    CHECK(patch.fixtures()[5].channels.size() == 1); // channel 512
+    shown.click(at::kAddChannelX, at::kChannelsY);
+    CHECK(patch.fixtures()[5].channels.size() == 1); // switched off now: 513 is not a channel
+
+    patch.pick(2); // the 16-bit head at 11
+    shown.settle();
+    shown.click(at::kAddressX, at::kWhereRowY);
+    shown.clearBox();
+    shown.type("505"); // 505 to 516: past the end
+    shown.click(at::kAddChannelX, at::kChannelsY);
+    CHECK(patch.fixtures()[2].address == 505);
+    CHECK(patch.fixtures()[2].channels.size() == 12);
+    const std::string said(patch.window().get_status());
+    INFO(said);
+    CHECK(said.find("past the end of the universe") != std::string::npos);
+    CHECK(patch.window().get_status_error());
+}
+
+TEST_CASE("the patch editor's message goes with the fixture it was about", "[ui][dmx]") {
+    // "Identifying head 1..." stayed over head 2 after head 1's x, and "Channel 18 at 255 for 3 s."
+    // over a fixture just added.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    auto& window = patch.window();
+    patch.pick(2);
+    window.invoke_identify();
+    REQUIRE(std::string(window.get_status()).find("Identifying head 1") != std::string::npos);
+    window.invoke_removed_at(2);
+    CHECK(std::string(window.get_status()).empty());
+    window.invoke_channel_tested(0);
+    REQUIRE_FALSE(std::string(window.get_status()).empty());
+    window.invoke_added();
+    CHECK(std::string(window.get_status()).empty());
+    window.invoke_channel_tested(0);
+    REQUIRE_FALSE(std::string(window.get_status()).empty());
+    window.invoke_duplicated_at(0);
+    CHECK(std::string(window.get_status()).empty());
+    // A fixture taken away from under another one leaves what was said about the one showing.
+    int washR = -1;
+    for (std::size_t i = 0; i < patch.fixtures().size(); ++i) {
+        if (patch.fixtures()[i].name == "wash R") {
+            washR = static_cast<int>(i);
+        }
+    }
+    REQUIRE(washR >= 0);
+    patch.pick(washR);
+    window.invoke_identify();
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds(60));
+    window.invoke_removed_at(washR == 0 ? 1 : 0);
+    CHECK(std::string(window.get_status()).find("Identifying wash R") != std::string::npos);
+}
+
+TEST_CASE("a double-click on a fixture's copy mark makes one copy", "[ui][dmx]") {
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    auto& window = patch.window();
+    window.invoke_duplicated_at(1);
+    window.invoke_duplicated_at(1); // the second click of the double-click
+    CHECK(patch.fixtures().size() == 6);
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds(60));
+    window.invoke_duplicated_at(1);
+    CHECK(patch.fixtures().size() == 7);
+}
+
+TEST_CASE("the mode list lets go of the keyboard once it has picked", "[ui][dmx]") {
+    // Left with the keyboard, the next Up or Down picked the neighbouring mode — which replaces the
+    // channel map and the parked levels, a custom map gone with no undo.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(1); // the LED par
+    shown.settle();
+    const std::size_t par = patch.fixtures()[1].channels.size();
+    REQUIRE(par == 6);
+    shown.click(at::kModeX, at::kModeY); // opened
+    shown.type("\x1b");                  // shut, the box focused
+    pressKey(shown.window, slint::SharedString(u8"\uF701")); // Down: the next mode, picked
+    shown.settle();
+    const std::vector<Role> picked = patch.fixtures()[1].channels;
+    REQUIRE(picked.size() != par); // the 8-bit head
+    pressKey(shown.window, slint::SharedString(u8"\uF701")); // and a second: nothing now
+    shown.settle();
+    CHECK(patch.fixtures()[1].channels == picked);
+}
+
+TEST_CASE("the About box fits its least size and the notices' path stays on its sheet", "[ui]") {
+    // A guard, not a bug found: a review said a long path would run off the sheet, and measured on
+    // 2026-10-01 it did not — Slint breaks a word too long for its line, word-wrapped or not (this
+    // passed with word-wrap too). What did need fixing: the redrawn box's least height was taller
+    // than a small laptop's screen at 125 %, so the sheets scroll now and CLOSE stays put.
+    auto about = AboutWindow::create();
+    about->set_version(slint::SharedString("1.0.0"));
+    about->set_opened(slint::SharedString(
+        // A user name with nothing a line may break at: everything up to "takt4-" is one word,
+        // 72 characters, wider than the sheet at its least width.
+        "Opened C:\\Users\\JonathanSandsWorkstationAccount\\AppData\\Local\\Temp\\takt4\\takt4-"
+        "THIRD-PARTY-NOTICES.txt"));
+    // At its least width: the page's own colour just past the sheets' right edge (x 510) — a sheet
+    // pushed wider by an unbreakable line, or the line itself, would be drawn there.
+    const takt4::tests::Shot narrow = takt4::tests::render(*about, 520, 640);
+    int pastSheet = 0;
+    for (int y = 0; y < 600; ++y) {
+        for (int x = 512; x < 519; ++x) {
+            const slint::Rgb8Pixel p = narrow.at(x, y);
+            pastSheet += (p.r == 0x0e && p.g == 0x0e && p.b == 0x0e) ? 0 : 1;
+        }
+    }
+    CHECK(pastSheet == 0);
+    // At its least height: CLOSE still drawn, at the bottom, inside the window.
+    const takt4::tests::Shot shortest = takt4::tests::render(*about, 520, 320);
+    bool closeDrawn = false;
+    for (int x = 380; x < 516 && !closeDrawn; ++x) {
+        const slint::Rgb8Pixel p = shortest.at(x, 320 - 26);
+        closeDrawn = p.r == 0xef && p.g == 0xee && p.b == 0xe9;
+    }
+    CHECK(closeDrawn);
 }

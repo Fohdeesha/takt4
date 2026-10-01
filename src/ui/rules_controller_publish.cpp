@@ -129,6 +129,7 @@ void RulesController::publishSelected() {
         // No rule picked: every control dashed and switched off, and the name box says what to do
         // (HANDOFF §0.5) — the markup's `none`.
         window_->set_rule_name(slint::SharedString(""));
+        window_->set_rule_id(slint::SharedString(""));
         window_->set_rule_enabled(false);
         window_->set_rule_muted(false);
         window_->set_rule_rate(slint::SharedString(""));
@@ -140,6 +141,7 @@ void RulesController::publishSelected() {
         return;
     }
     window_->set_rule_name(shared(rule->name));
+    window_->set_rule_id(shared(rule->id));
     window_->set_rule_enabled(rule->enabled);
     window_->set_rule_problem(shared(Rule(*rule).problem()));
 

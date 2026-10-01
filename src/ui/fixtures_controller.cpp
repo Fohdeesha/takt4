@@ -3,6 +3,7 @@
 #include "core/dmx/artnet_packet.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/io/utf8.hpp"
+#include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
 #include "ui/window_state.hpp"
 
@@ -79,9 +80,9 @@ FixturesController::FixturesController(output::OutputRunner& runner,
 
     // **Every action commits what the boxes hold before it runs** (the audit of 2026-09-25, M18).
     // `commitDrafts` used to run only when the selection moved, so a name, a group or a universe
-    // typed and not entered reverted on ADD CHANNEL, a channel's ×, a number box's arrow or
-    // another fixture's tick — each republishes the fixture, and the three boxes are bound both
-    // ways. A box's own commit is not wrapped; it is the one box with the keyboard.
+    // typed and not entered reverted on ADD CHANNEL, a channel's ×, or another fixture's dot. A
+    // box's own commit is not wrapped; it is the one box with the keyboard, and it counts only if
+    // it was typed in (`typed_`, `draft_`).
     const auto finishing = [this](auto action) {
         return [this, action](auto... args) {
             commitDrafts();
@@ -91,8 +92,12 @@ FixturesController::FixturesController(output::OutputRunner& runner,
 
     window_->on_picked([this](int index) { pick(index); }); // `pick` commits them itself
     window_->on_added(finishing([this] { add(); }));
-    window_->on_duplicated(finishing([this] { duplicate(); }));
-    window_->on_removed(finishing([this] { remove(); }));
+    // Guarded as × is: a double-click on copy made two copies, on the same channels.
+    window_->on_duplicated_at(finishing([this](int index) {
+        if (copyMarks_.press(index)) {
+            duplicateAt(index);
+        }
+    }));
     // Through `DeleteGuard`, which drops the second click of a double-click on ×: the row
     // below moves up under the pointer and would take it (the audit of 2026-09-25, L10).
     window_->on_removed_at(finishing([this](int index) {
@@ -102,13 +107,22 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     }));
     window_->on_enabled_changed(
         finishing([this](int index, bool on) { setEnabledAt(index, on); }));
-    window_->on_name_edited([this](const slint::SharedString& text) { rename(std::string(text)); });
+    window_->on_name_typed(
+        [this](const slint::SharedString& text) { noteDraft(Field::Name, std::string(text)); });
+    window_->on_name_edited(
+        [this](const slint::SharedString& text) { finishDraft(Field::Name, std::string(text)); });
+    window_->on_group_typed(
+        [this](const slint::SharedString& text) { noteDraft(Field::Group, std::string(text)); });
     window_->on_group_edited(
-        [this](const slint::SharedString& text) { setGroup(std::string(text)); });
-    window_->on_universe_edited(
-        [this](const slint::SharedString& text) { setUniverse(std::string(text)); });
+        [this](const slint::SharedString& text) { finishDraft(Field::Group, std::string(text)); });
+    window_->on_universe_typed([this](const slint::SharedString& text) {
+        noteDraft(Field::Universe, std::string(text));
+    });
+    window_->on_universe_edited([this](const slint::SharedString& text) {
+        finishDraft(Field::Universe, std::string(text));
+    });
     window_->on_address_changed([this](int address) {
-        if (!echoes(Numbered::Address, address)) {
+        if (takeTyped(Numbered::Address, 0)) {
             setAddress(address);
         }
     });
@@ -125,7 +139,7 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     window_->on_channel_role_picked(
         finishing([this](int index, int role) { pickChannelRole(index, role); }));
     window_->on_channel_parked_changed([this](int index, int level) {
-        if (!echoes(Numbered::Parked, level)) {
+        if (takeTyped(Numbered::Parked, index)) {
             setChannelParked(index, level);
         }
     });
@@ -138,12 +152,13 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     window_->on_identify(finishing([this] { identify(); }));
     window_->on_channel_tested(finishing([this](int index) { testChannel(index); }));
     window_->on_test_level_changed([this](int level) {
-        if (!echoes(Numbered::TestLevel, level)) {
+        if (takeTyped(Numbered::TestLevel, 0)) {
             setTestLevel(level);
         }
     });
     window_->on_test_level_typed(
         [this](int level) { noteTyped(Numbered::TestLevel, 0, level); });
+    window_->on_fold_clicked(finishing([this](int section) { fold(section); }));
 
     window_->set_test_level(testLevel_);
     window_->set_test_seconds(static_cast<int>(kTestSeconds));
@@ -168,16 +183,12 @@ FixturesController::FixturesController(output::OutputRunner& runner,
 
     resettle(fixtures_.empty() ? -1 : 0);
     publishAll();
-    rebuildChannels();
 }
 
 void FixturesController::show() {
     visible_ = true;
     window_->show();
     publishAll();
-    // Directly rather than through `tick`, because nothing is being destroyed from inside its
-    // own handler here and a window that opened a frame empty would flicker.
-    rebuildChannels();
     // And brought forward, as the rule editor is (`RulesController::show`): `show()` leaves a
     // window that is already up where it is in the Z order, so the button looked dead with the
     // patch behind the main window. "fixtures" is in this window's title and no other of ours.
@@ -224,13 +235,11 @@ void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures) {
     fixtures_ = std::move(fixtures);
     dmx::ensureFixtureIds(fixtures_);
     resettle(selected_);
-    // A new patch, so nothing half-typed is carried into it, and the channel rows are built
-    // afresh even if a fixture in it happens to carry the id of the one showing — ids are only
-    // unique within a patch, and an imported show is another patch (the audit of 2026-09-25,
-    // M21).
+    // A new patch, so nothing half-typed is carried into it — not even into a fixture that happens
+    // to carry the id of the one showing: ids are only unique within a patch, and an imported show
+    // is another patch (the audit of 2026-09-25, M21).
     typed_.reset();
-    echo_.reset();
-    channelsBuiltFor_.clear();
+    draft_.reset();
     publishAll();
 }
 
@@ -253,19 +262,28 @@ void FixturesController::publishAll() {
     window_->set_summary(shared(summary()));
 }
 
+namespace {
+
+FixtureRow rowOf(const dmx::Fixture& fixture) {
+    FixtureRow row{};
+    row.name = shared(fixture.name);
+    row.where = shared(whereOf(fixture));
+    row.group = shared(fixture.group);
+    row.enabled = fixture.enabled;
+    row.problem = shared(dmx::problemWith(fixture));
+    return row;
+}
+
+} // namespace
+
 void FixturesController::publishList() {
     std::vector<FixtureRow> rows;
     rows.reserve(fixtures_.size());
     for (const dmx::Fixture& fixture : fixtures_) {
-        FixtureRow row{};
-        row.name = shared(fixture.name);
-        row.where = shared(whereOf(fixture));
-        row.group = shared(fixture.group);
-        row.enabled = fixture.enabled;
-        row.problem = shared(dmx::problemWith(fixture));
-        rows.push_back(std::move(row));
+        rows.push_back(rowOf(fixture));
     }
-    listModel_->set_vector(std::move(rows));
+    // In place: a row's dot, a row's marks and the box being typed in survive an edit elsewhere.
+    writeRows(*listModel_, rows);
     window_->set_selected(selected_);
 }
 
@@ -297,7 +315,8 @@ void FixturesController::publishSelected() {
     window_->set_tilt_max(static_cast<float>(fixture->tiltMax * 100.0));
 }
 
-ChannelRow FixturesController::rowFor(const dmx::Fixture& fixture, std::size_t index) const {
+ChannelRow FixturesController::rowFor(const dmx::Fixture& fixture, std::size_t index,
+                                     const std::vector<std::uint8_t>& levels) const {
     ChannelRow row{};
     row.number = static_cast<int>(fixture.address) + static_cast<int>(index);
     row.role_index = 0;
@@ -308,63 +327,29 @@ ChannelRow FixturesController::rowFor(const dmx::Fixture& fixture, std::size_t i
         }
     }
     row.parked = index < fixture.parked.size() ? static_cast<int>(fixture.parked[index]) : 0;
-    row.live = 0;
+    const std::size_t channel = std::size_t{fixture.address} + index;
+    row.live = channel >= 1 && channel <= levels.size() ? static_cast<int>(levels[channel - 1]) : 0;
     return row;
 }
 
 void FixturesController::publishChannels() {
     const dmx::Fixture* const fixture = current();
-    if (fixture == nullptr) {
-        if (channelModel_->row_count() != 0) {
-            channelModel_->set_vector({});
-        }
-        channelsBuiltFor_.clear();
-        channelsShown_ = 0;
-        return;
-    }
-
-    // **Updated in place while the shape is the same, and rebuilt only when it is not.**
-    //
-    // Rebuilding destroys every box in the repeater and makes new ones — and this runs
-    // *inside* the callback of the very box being typed in, so a rebuild on every keystroke
-    // would destroy an element from within its own handler and leave what was typed in a box
-    // that no longer exists. `RulesController::publishSlots` documents the same trap and the
-    // same answer; the deferral is what keeps it out of the handler.
-    if (!channelsBuiltFor_.empty() && channelsBuiltFor_ == fixture->id &&
-        channelsShown_ == fixture->channels.size()) {
-        for (std::size_t i = 0; i < fixture->channels.size(); ++i) {
-            ChannelRow row = rowFor(*fixture, i);
-            const ChannelRow current = *channelModel_->row_data(i);
-            row.live = current.live; // the mirror's, not this function's
-            if (row.number != current.number || row.role_index != current.role_index ||
-                row.parked != current.parked) {
-                channelModel_->set_row_data(i, row);
-            }
-        }
-        publishLevels();
-        return;
-    }
-    channelsDirty_ = true;
-}
-
-void FixturesController::rebuildChannels() {
-    const dmx::Fixture* const fixture = current();
-    channelsDirty_ = false;
-    if (fixture == nullptr) {
-        channelModel_->set_vector({});
-        channelsBuiltFor_.clear();
-        channelsShown_ = 0;
-        return;
-    }
     std::vector<ChannelRow> rows;
-    rows.reserve(fixture->channels.size());
-    for (std::size_t i = 0; i < fixture->channels.size(); ++i) {
-        rows.push_back(rowFor(*fixture, i));
+    if (fixture != nullptr) {
+        // Through the runner's mirror — see `publishLevels`.
+        const std::vector<std::uint8_t> levels = runner_.levelsOf(fixture->universe);
+        rows.reserve(fixture->channels.size());
+        for (std::size_t i = 0; i < fixture->channels.size(); ++i) {
+            rows.push_back(rowFor(*fixture, i, levels));
+        }
     }
-    channelModel_->set_vector(std::move(rows));
-    channelsBuiltFor_ = fixture->id;
-    channelsShown_ = fixture->channels.size();
-    publishLevels();
+    // **In place, always** — another fixture, a new mode, a channel added or taken away. Each row
+    // shows what its model says and nothing of its own (weltformat.slint), so updating it is
+    // enough, and rebuilding was what took a dropdown away under the pointer and left a box
+    // showing the last fixture's pick (the audit of 2026-09-25, M21, T3). The rows a fixture with
+    // fewer channels has not got are erased from the end; a box being typed in commits first
+    // (`commitDrafts`), whatever row it is on.
+    writeRows(*channelModel_, rows);
 }
 
 void FixturesController::publishLevels() {
@@ -393,12 +378,13 @@ void FixturesController::tick() {
     if (!visible_) {
         return;
     }
-    if (channelsDirty_) {
-        // One redraw later, which nobody sees, and it means no element is ever destroyed from
-        // within its own handler. See `publishChannels`.
-        rebuildChannels();
-    }
     publishLevels();
+    // And the line under the list about once a second: it says whether an Art-Net output is
+    // carrying the patch, which the main window can change with this window open.
+    if (++summaryTicks_ >= 30) {
+        summaryTicks_ = 0;
+        window_->set_summary(shared(summary()));
+    }
 }
 
 std::string FixturesController::summary() const {
@@ -449,12 +435,12 @@ void FixturesController::setStatus(const std::string& text, bool error) {
 }
 
 void FixturesController::commitDrafts() {
-    // A number still being typed, first: it is for the fixture it was typed on, and the text
-    // boxes' commits below republish that fixture into its box.
+    // A number still being typed, then a text: each for the fixture it was typed on, and only
+    // one of them can be live — only one box has the keyboard. Taken before applied, so the
+    // box's own late commit finds nothing left to count (see `typed_`).
     if (typed_) {
         const Typed pending = *typed_;
         typed_.reset();
-        echo_ = pending;
         const dmx::Fixture* const fixture = current();
         if (pending.box == Numbered::TestLevel) {
             setTestLevel(pending.value);
@@ -466,19 +452,13 @@ void FixturesController::commitDrafts() {
             }
         }
     }
-    // What the three text boxes hold, for the fixture they belong to — before anything moves the
-    // selection. The boxes commit on Enter and on losing the keyboard, and Slint runs the second
-    // a loop late: after a click on another fixture has already switched them to it. Committed
-    // then, a name typed for one fixture went to the next (the audit's H10). Each setter does
-    // nothing when its value has not moved.
-    if (current() == nullptr) {
-        return;
-    }
-    rename(std::string(window_->get_name()));
-    setGroup(std::string(window_->get_group()));
-    const std::string universe(window_->get_universe());
-    if (universe != dmx::describePortAddress(current()->universe)) {
-        setUniverse(universe);
+    if (draft_) {
+        const Draft pending = *draft_;
+        draft_.reset();
+        const dmx::Fixture* const fixture = current();
+        if (fixture != nullptr && fixture->id == pending.fixtureId) {
+            applyField(pending.field, pending.text);
+        }
     }
 }
 
@@ -487,28 +467,75 @@ void FixturesController::noteTyped(Numbered box, int index, int value) {
     if (box != Numbered::TestLevel && fixture == nullptr) {
         return;
     }
-    typed_ = Typed{box == Numbered::TestLevel ? std::string() : fixture->id, box, index, value};
-    echo_.reset();
-}
-
-void FixturesController::entered(Numbered box, int index) noexcept {
-    if (typed_ && typed_->box == box && typed_->index == index) {
-        typed_.reset();
+    const std::string id = box == Numbered::TestLevel ? std::string() : fixture->id;
+    // Another box's draft still standing means its own commit has not come yet — the keyboard
+    // moved straight from it to this one. Committed now, before this one replaces it.
+    const bool another = (typed_ && (typed_->box != box || typed_->index != index ||
+                                     typed_->fixtureId != id)) ||
+                         draft_.has_value();
+    if (another) {
+        commitDrafts();
     }
+    typed_ = Typed{id, box, index, value};
 }
 
-bool FixturesController::echoes(Numbered box, int value) noexcept {
-    // Not by row: the row is what a channel's × may have moved. See `RulesController::echoes`.
-    if (!echo_ || echo_->box != box || echo_->value != value) {
+bool FixturesController::takeTyped(Numbered box, int index) {
+    const dmx::Fixture* const fixture = current();
+    const std::string id =
+        box == Numbered::TestLevel || fixture == nullptr ? std::string() : fixture->id;
+    if (!typed_ || typed_->box != box || typed_->index != index || typed_->fixtureId != id ||
+        (box != Numbered::TestLevel && fixture == nullptr)) {
         return false;
     }
-    echo_.reset();
+    typed_.reset();
     return true;
+}
+
+void FixturesController::noteDraft(Field field, const std::string& text) {
+    const dmx::Fixture* const fixture = current();
+    if (fixture == nullptr) {
+        return;
+    }
+    if ((draft_ && (draft_->field != field || draft_->fixtureId != fixture->id)) || typed_) {
+        commitDrafts();
+    }
+    draft_ = Draft{fixture->id, field, text};
+}
+
+void FixturesController::finishDraft(Field field, const std::string& text) {
+    const dmx::Fixture* const fixture = current();
+    // Only an edit that was typed, for the fixture showing — see `typed_`. With nothing typed the
+    // box is only letting go of what it was shown, which may be another fixture's by now.
+    if (fixture == nullptr || !draft_ || draft_->field != field ||
+        draft_->fixtureId != fixture->id) {
+        return;
+    }
+    draft_.reset();
+    applyField(field, text);
+}
+
+void FixturesController::applyField(Field field, const std::string& text) {
+    switch (field) {
+    case Field::Name:
+        rename(text);
+        break;
+    case Field::Group:
+        setGroup(text);
+        break;
+    case Field::Universe:
+        setUniverse(text);
+        break;
+    }
 }
 
 void FixturesController::pick(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= fixtures_.size()) {
         return;
+    }
+    if (index != selected_) {
+        // What the line said was about the fixture before — "Identifying head 1…" over head 2.
+        // Before the drafts are committed, so a universe refused on the way out is still said.
+        setStatus({}, false);
     }
     commitDrafts();
     selected_ = index;
@@ -517,16 +544,46 @@ void FixturesController::pick(int index) {
     publishChannels();
 }
 
+void FixturesController::applyLayout(const settings::MachineSettings& machine) {
+    window_->set_where_folded(machine.patchSectionsFolded[0]);
+    window_->set_channels_folded(machine.patchSectionsFolded[1]);
+    window_->set_moves_folded(machine.patchSectionsFolded[2]);
+}
+
+void FixturesController::layoutInto(settings::MachineSettings& machine) const {
+    machine.patchSectionsFolded = {window_->get_where_folded(), window_->get_channels_folded(),
+                                   window_->get_moves_folded()};
+}
+
+void FixturesController::fold(int section) {
+    commitDrafts();
+    switch (section) {
+    case 0:
+        window_->set_where_folded(!window_->get_where_folded());
+        break;
+    case 1:
+        window_->set_channels_folded(!window_->get_channels_folded());
+        break;
+    case 2:
+        window_->set_moves_folded(!window_->get_moves_folded());
+        break;
+    default:
+        break;
+    }
+}
+
 void FixturesController::add() {
     commitDrafts();
+    // What the line said was about the fixture showing, which this replaces.
+    setStatus({}, false);
     if (fixtures_.size() >= dmx::kMaxRoutableFixtures) {
         // Past this a fixture can still be patched, parked and tested from here; what it
         // cannot be is reached by a rule, by name or by group, because a rule carries its
         // fixtures as a bit each (`dmx::resolveFixtures` stops at the last it can name). Said
-        // out loud rather than discovered — see `dmx::kMaxRoutableFixtures`.
-        setStatus("Rules can aim at the first " + std::to_string(dmx::kMaxRoutableFixtures) +
-                      " fixtures only. This one and any after it can be patched and tested here, "
-                      "but no rule will reach them.",
+        // out loud rather than discovered — see `dmx::kMaxRoutableFixtures`. Short enough for the
+        // one line under the top row.
+        setStatus("Rules reach the first " + std::to_string(dmx::kMaxRoutableFixtures) +
+                      " fixtures only; no rule will reach this one.",
                   true);
     }
     // Patched after the last one on its universe rather than at 1, because that is what an
@@ -560,9 +617,21 @@ void FixturesController::duplicate() {
     const std::uint16_t after = dmx::lastChannelOf(*fixture);
     copy.address = static_cast<std::uint16_t>(
         std::min<int>(after + 1, static_cast<int>(dmx::kChannelsPerUniverse)));
+    setStatus({}, false);
+    // Into the list's model at its own place, so the rows below keep their own elements.
+    listModel_->insert(static_cast<std::size_t>(selected_) + 1, rowOf(copy));
     fixtures_.insert(fixtures_.begin() + selected_ + 1, std::move(copy));
     resettle(selected_ + 1);
     commit();
+}
+
+void FixturesController::duplicateAt(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= fixtures_.size()) {
+        return;
+    }
+    commitDrafts();
+    selected_ = index;
+    duplicate();
 }
 
 void FixturesController::remove() {
@@ -570,6 +639,9 @@ void FixturesController::remove() {
     if (current() == nullptr) {
         return;
     }
+    setStatus({}, false);
+    // Out of the list's model at its own place: no element is handed its neighbour's data.
+    listModel_->erase(static_cast<std::size_t>(selected_));
     fixtures_.erase(fixtures_.begin() + selected_);
     resettle(selected_);
     commit();
@@ -580,6 +652,10 @@ void FixturesController::removeAt(int index) {
         return;
     }
     commitDrafts();
+    if (index == selected_) {
+        setStatus({}, false); // it was about the fixture going
+    }
+    listModel_->erase(static_cast<std::size_t>(index));
     fixtures_.erase(fixtures_.begin() + index);
     resettle(selected_ > index ? selected_ - 1 : selected_);
     commit();
@@ -635,7 +711,6 @@ void FixturesController::setUniverse(const std::string& text) {
 }
 
 void FixturesController::setAddress(int address) {
-    entered(Numbered::Address, 0);
     dmx::Fixture* const fixture = current();
     if (fixture == nullptr) {
         return;
@@ -670,8 +745,7 @@ void FixturesController::pickMode(int mode) {
         // is made.
         window_->set_mode_index(modeOf(*fixture));
         if (modeOf(*fixture) != 0) {
-            setStatus("A custom map is made by editing the channels below; the mode then says "
-                      "custom by itself.",
+            setStatus("Edit the channels below for a custom map; the mode then says custom.",
                       false);
         }
         return;
@@ -686,18 +760,21 @@ void FixturesController::pickMode(int mode) {
     // shaped like that", not "start again".
     fixture->channels.assign(modes[index].channels.begin(), modes[index].channels.end());
     fixture->parked.assign(modes[index].parked.begin(), modes[index].parked.end());
-    // Every channel row built again rather than updated in place, even when the count is the
-    // same. A row's dropdown is bound to its role one way, and a role picked from it by hand has
-    // broken that binding: updated in place, it went on showing the pick, over a map that now
-    // said something else. Safe to rebuild — the mode dropdown is not one of the rows.
-    channelsBuiltFor_.clear();
     commit();
 }
 
 void FixturesController::addChannel() {
     dmx::Fixture* const fixture = current();
-    if (fixture == nullptr ||
-        std::size_t{fixture->address} + fixture->channels.size() > dmx::kChannelsPerUniverse) {
+    if (fixture == nullptr) {
+        return;
+    }
+    if (std::size_t{fixture->address} + fixture->channels.size() > dmx::kChannelsPerUniverse) {
+        // Said, rather than a button that does nothing: the start address may have been typed
+        // just now, and committed by this very click.
+        setStatus("Channel " +
+                      std::to_string(std::size_t{fixture->address} + fixture->channels.size()) +
+                      " would be past the end of the universe.",
+                  true);
         return;
     }
     fixture->channels.push_back(dmx::Role::Unused);
@@ -715,6 +792,10 @@ void FixturesController::removeChannel(int index) {
     if (static_cast<std::size_t>(index) < fixture->parked.size()) {
         fixture->parked.erase(fixture->parked.begin() + index);
     }
+    // Out of the rows' model at its own place, as a fixture is out of the list's.
+    if (static_cast<std::size_t>(index) < channelModel_->row_count()) {
+        channelModel_->erase(static_cast<std::size_t>(index));
+    }
     commit();
 }
 
@@ -731,15 +812,17 @@ void FixturesController::pickChannelRole(int index, int role) {
 }
 
 void FixturesController::setChannelParked(int index, int level) {
-    entered(Numbered::Parked, index);
     dmx::Fixture* const fixture = current();
     if (fixture == nullptr || index < 0 ||
         static_cast<std::size_t>(index) >= fixture->channels.size()) {
         return;
     }
     fixture->parked.resize(fixture->channels.size(), 0);
-    fixture->parked[static_cast<std::size_t>(index)] =
-        static_cast<std::uint8_t>(std::clamp(level, 0, 255));
+    const auto clamped = static_cast<std::uint8_t>(std::clamp(level, 0, 255));
+    if (fixture->parked[static_cast<std::size_t>(index)] == clamped) {
+        return; // a re-patch for nothing ends a running TEST
+    }
+    fixture->parked[static_cast<std::size_t>(index)] = clamped;
     commit();
 }
 
@@ -748,10 +831,14 @@ void FixturesController::setPanRange(float low, float high) {
     if (fixture == nullptr) {
         return;
     }
-    // Sorted rather than refused: the two sliders are independent and dragging one past the
-    // other is an ordinary gesture, not an error to report.
-    fixture->panMin = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
-    fixture->panMax = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
+    // Sorted rather than refused: an ordinary gesture, not an error to report.
+    const double from = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
+    const double to = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
+    if (from == fixture->panMin && to == fixture->panMax) {
+        return; // a re-patch for nothing ends a running TEST
+    }
+    fixture->panMin = from;
+    fixture->panMax = to;
     commit();
 }
 
@@ -760,8 +847,13 @@ void FixturesController::setTiltRange(float low, float high) {
     if (fixture == nullptr) {
         return;
     }
-    fixture->tiltMin = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
-    fixture->tiltMax = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
+    const double from = std::clamp(static_cast<double>(std::min(low, high)) / 100.0, 0.0, 1.0);
+    const double to = std::clamp(static_cast<double>(std::max(low, high)) / 100.0, 0.0, 1.0);
+    if (from == fixture->tiltMin && to == fixture->tiltMax) {
+        return;
+    }
+    fixture->tiltMin = from;
+    fixture->tiltMax = to;
     commit();
 }
 
@@ -773,8 +865,8 @@ void FixturesController::identify() {
     if (static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures) {
         // An effect is aimed by a bit per fixture, like a rule's, so this one cannot be flashed;
         // said, rather than a button that does nothing (the audit's M21). TEST reaches it.
-        setStatus("IDENTIFY reaches the first " + std::to_string(dmx::kMaxRoutableFixtures) +
-                      " fixtures only. Use a channel's TEST for this one.",
+        setStatus("identify reaches the first " + std::to_string(dmx::kMaxRoutableFixtures) +
+                      " fixtures only; use a channel's test for this one.",
                   true);
         return;
     }
@@ -818,14 +910,11 @@ bool FixturesController::refusedForPanic() {
     if (!runner_.panicked()) {
         return false;
     }
-    setStatus("PANIC is engaged, so nothing is sent to the lights. Press RELEASE on the main "
-              "window first.",
-              true);
+    setStatus("PANIC is engaged, so nothing goes to the lights until it is released.", true);
     return true;
 }
 
 void FixturesController::setTestLevel(int level) {
-    entered(Numbered::TestLevel, 0);
     testLevel_ = std::clamp(level, 0, 255);
     window_->set_test_level(testLevel_);
 }

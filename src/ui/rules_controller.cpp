@@ -165,7 +165,13 @@ RulesController::RulesController(output::OutputRunner& runner,
             removeAt(index);
         }
     }));
-    window_->on_rule_duplicated_at(finishing([this](int index) { duplicateAt(index); }));
+    // And copy, where a double-click made two copies (found reviewing the patch editor's list,
+    // 2026-10-01, which has the same marks).
+    window_->on_rule_duplicated_at(finishing([this](int index) {
+        if (copyMarks_.press(index)) {
+            duplicateAt(index);
+        }
+    }));
     window_->on_rig_added(finishing([this](int index) { addRig(index); }));
     window_->on_rule_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
     window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
@@ -252,10 +258,18 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_conditions_toggled(finishing([this](bool on) { setConditionsOn(on); }));
     window_->on_min_confidence_changed(
         finishing([this](float v) { setMinConfidence(static_cast<double>(v)); }));
-    window_->on_min_confidence_typed(
-        finishing([this](const slint::SharedString& t) { setConfidenceTyped(std::string(t)); }));
-    window_->on_probability_typed(
-        finishing([this](const slint::SharedString& t) { setProbabilityTyped(std::string(t)); }));
+    // B's readings: their keystrokes are kept (`rule-typed`, `kConfidenceBox`), so their own late
+    // commit is dropped when it only repeats what `commitTyping` already did, as every other box's.
+    window_->on_min_confidence_typed([this](const slint::SharedString& t) {
+        if (!echoes(TypedIn::Rule, kConfidenceBox, t)) {
+            setConfidenceTyped(std::string(t));
+        }
+    });
+    window_->on_probability_typed([this](const slint::SharedString& t) {
+        if (!echoes(TypedIn::Rule, kProbabilityBox, t)) {
+            setProbabilityTyped(std::string(t));
+        }
+    });
     window_->on_intensity_changed(
         finishing([this](int which, bool on) { setIntensity(which, on); }));
     window_->on_bpm_range_edited([this](const slint::SharedString& t) {
@@ -563,6 +577,12 @@ void RulesController::commitTyping() {
             if (number) {
                 setBase(*number);
             }
+            break;
+        case kConfidenceBox:
+            setConfidenceTyped(pending.text);
+            break;
+        case kProbabilityBox:
+            setProbabilityTyped(pending.text);
             break;
         default:
             break;
@@ -1210,6 +1230,7 @@ void RulesController::setMinConfidence(double value) {
 }
 
 void RulesController::setConfidenceTyped(const std::string& text) {
+    typed(TypedIn::Rule, 0, kConfidenceBox);
     std::string_view view = trim(text);
     const bool percent = !view.empty() && view.back() == '%';
     if (percent) {
@@ -1226,6 +1247,7 @@ void RulesController::setConfidenceTyped(const std::string& text) {
 }
 
 void RulesController::setProbabilityTyped(const std::string& text) {
+    typed(TypedIn::Rule, 0, kProbabilityBox);
     std::string_view view = trim(text);
     if (!view.empty() && view.back() == '%') {
         view = trim(view.substr(0, view.size() - 1));

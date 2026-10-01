@@ -1211,3 +1211,30 @@ TEST_CASE("the rule editor's folds and its log are remembered on this machine", 
     CHECK_THAT(height("\"tall\""), WithinAbs(90.0, 1e-9));
     CHECK_THAT(height("144"), WithinAbs(144.0, 1e-9));
 }
+
+TEST_CASE("the patch editor's folds are remembered on this machine", "[settings]") {
+    // The same for the patch editor's A, B and C since its redesign (2026-09-30): each on its own,
+    // in the machine half, all open in a file from before, and what a hand could have typed.
+    for (std::size_t i = 0; i < 3; ++i) {
+        INFO("section " << i);
+        Settings one;
+        one.machine.patchSectionsFolded[i] = true;
+        CHECK(roundTrip(one).machine.patchSectionsFolded == one.machine.patchSectionsFolded);
+    }
+    Settings in;
+    in.machine.patchSectionsFolded = {true, false, true};
+    const std::string text = takt4::settings::toJson(in);
+    CHECK(text.find("patchSectionsFolded") < text.find("\"preset\""));
+    CHECK(roundTrip(in).machine.patchSectionsFolded == std::array<bool, 3>{true, false, true});
+
+    const Settings old = takt4::settings::fromJson(R"({"machine": {"channel": 3}})");
+    CHECK(old.machine.patchSectionsFolded == std::array<bool, 3>{false, false, false});
+    const auto folds = [](const std::string& value) {
+        return takt4::settings::fromJson(R"({"machine": {"patchSectionsFolded": )" + value + "}}")
+            .machine.patchSectionsFolded;
+    };
+    CHECK(folds("[true, true]") == std::array<bool, 3>{false, false, false});
+    CHECK(folds("[true, true, true, true]") == std::array<bool, 3>{false, false, false});
+    CHECK(folds("{\"a\": true}") == std::array<bool, 3>{false, false, false});
+    CHECK(folds("[true, \"no\", true]") == std::array<bool, 3>{true, false, true});
+}

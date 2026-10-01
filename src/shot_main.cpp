@@ -3,6 +3,7 @@
 
 #include "core/build_info.hpp"
 #include "ui/app.hpp"
+#include "ui/window_state.hpp"
 
 #include <exception>
 #include <filesystem>
@@ -36,7 +37,8 @@ void printUsage(std::ostream& out) {
            "  --rules         draw §5.9's rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
            "  --state NAME    with --rules, another of its states: message, onset, log, fit,\n"
-           "                  folded, b-on, b-off, none, no-lights\n"
+           "                  folded, b-on, b-off, none, no-lights; with --fixtures: par,\n"
+           "                  none, message\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
            "  --widgets       draw one of each of the main window's controls, in each state\n"
@@ -162,6 +164,10 @@ int main(int argc, char** argv) {
     if (options.fixtures && !sized) {
         width = takt4::ui::kFixturesShotWidth;
         height = takt4::ui::kFixturesShotHeight;
+    }
+    if (options.about && !sized) {
+        width = static_cast<int>(takt4::ui::kAboutWindowWidth);
+        height = static_cast<int>(takt4::ui::kAboutWindowHeight);
     }
     options.width = width;
     options.height = height;
