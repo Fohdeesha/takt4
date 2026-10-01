@@ -96,6 +96,12 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
         target.id = spec.id;
         target.delaySeconds =
             std::clamp(spec.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+        target.sendsNamespace = spec.sendsNamespace;
+        // A target that has just started taking the namespace has never been told the state
+        // either, any more than a new one.
+        if (was != kGone && spec.sendsNamespace && !targets_[was].sendsNamespace) {
+            added = true;
+        }
         if (was != kGone && targets_[was].sender->host() == spec.host &&
             targets_[was].sender->port() == spec.port) {
             target.sender = std::move(targets_[was].sender);
@@ -114,11 +120,14 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
         next.push_back(std::move(target));
     }
     // What is queued follows its target to where it went; what was queued for a target that
-    // is gone goes nowhere, which is what deleting or switching one off asks for.
+    // is gone goes nowhere, which is what deleting or switching one off asks for — and the
+    // namespace's own messages go nowhere once their target has stopped taking it, or a robot
+    // told to hear only its rules would still hear the last second of beats.
     std::size_t kept = 0;
     for (std::size_t i = 0; i < pending_.size(); ++i) {
         Pending& item = pending_[i];
-        if (item.target >= moved.size() || moved[item.target] == kGone) {
+        if (item.target >= moved.size() || moved[item.target] == kGone ||
+            (item.own && !next[moved[item.target]].sendsNamespace)) {
             ++dropped_;
             continue;
         }
@@ -132,7 +141,7 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
     targets_ = std::move(next);
     if (added) {
         // A target that is new has never been told the state, and only a change is sent
-        // between beats — see `clearTargets`.
+        // between beats — see `clearTargets`. The others are told it again, which is harmless.
         lastBpm_ = -1.0;
         lastConfidence_ = -1.0;
         lastLocked_ = -1;
@@ -251,24 +260,24 @@ void OscPublisher::sendAddress(std::string_view address, std::string_view value)
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
                                  std::optional<double> moment) {
     OscMessage message(address);
-    sendPacket(message, outputs, moment.value_or(now_));
+    sendPacket(message, outputs, moment.value_or(now_), false);
 }
 
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
                                  std::int32_t value, std::optional<double> moment) {
-    sendInt(address, value, outputs, moment.value_or(now_));
+    sendInt(address, value, outputs, moment.value_or(now_), false);
 }
 
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address, float value,
                                  std::optional<double> moment) {
-    sendFloat(address, value, outputs, moment.value_or(now_));
+    sendFloat(address, value, outputs, moment.value_or(now_), false);
 }
 
 void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address,
                                  std::string_view value, std::optional<double> moment) {
     OscMessage message(address);
     message.addString(value);
-    sendPacket(message, outputs, moment.value_or(now_));
+    sendPacket(message, outputs, moment.value_or(now_), false);
 }
 
 bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
@@ -280,12 +289,15 @@ bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
     return false;
 }
 
-void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double moment) {
+void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double moment, bool own) {
     const auto packet = message.packet();
     for (std::size_t i = 0; i < targets_.size(); ++i) {
         const Target& target = targets_[i];
         if ((target.bit & outputs) == 0) {
             continue; // routed away from this one
+        }
+        if (own && !target.sendsNamespace) {
+            continue; // this one takes only the rules aimed at it
         }
         // The moment the message is about, moved by the rig's offset and then by this target's
         // own. Already gone is sent now: earlier than now is not a time anything can be sent at,
@@ -307,32 +319,33 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double
             ++dropped_;
             continue;
         }
-        pending_.push_back(Pending{due, i, std::vector<std::byte>(packet.begin(), packet.end())});
+        pending_.push_back(
+            Pending{due, i, std::vector<std::byte>(packet.begin(), packet.end()), own});
     }
 }
 
 void OscPublisher::sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs,
-                           double moment) {
+                           double moment, bool own) {
     OscMessage message(address);
     message.addInt(value);
-    sendPacket(message, outputs, moment);
+    sendPacket(message, outputs, moment, own);
 }
 
 void OscPublisher::sendFloat(std::string_view address, float value, std::uint64_t outputs,
-                             double moment) {
+                             double moment, bool own) {
     OscMessage message(address);
     message.addFloat(value);
-    sendPacket(message, outputs, moment);
+    sendPacket(message, outputs, moment, own);
 }
 
 void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
                                     bool force, double moment) {
     if (force || std::abs(bpm - lastBpm_) > kBpmEpsilon) {
-        sendFloat(bpmAddress_, static_cast<float>(bpm), kAllOutputs, moment);
+        sendFloat(bpmAddress_, static_cast<float>(bpm), kAllOutputs, moment, true);
         lastBpm_ = bpm;
     }
     if (force || std::abs(confidence - lastConfidence_) > kConfidenceEpsilon) {
-        sendFloat(confidenceAddress_, static_cast<float>(confidence), kAllOutputs, moment);
+        sendFloat(confidenceAddress_, static_cast<float>(confidence), kAllOutputs, moment, true);
         lastConfidence_ = confidence;
     }
     const int lockedNow = locked ? 1 : 0;
@@ -342,14 +355,14 @@ void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, 
     // starts this memory again at "never said".
     const bool refound = lockedNow == 1 && lastLocked_ == 0;
     if (force || lockedNow != lastLocked_) {
-        sendInt(lockedAddress_, lockedNow, kAllOutputs, moment);
+        sendInt(lockedAddress_, lockedNow, kAllOutputs, moment, true);
         lastLocked_ = lockedNow;
     }
     if (refound) {
-        sendInt(resyncAddress_, 1, kAllOutputs, moment);
+        sendInt(resyncAddress_, 1, kAllOutputs, moment, true);
     }
     if (force || meter != lastMeter_) {
-        sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs, moment);
+        sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs, moment, true);
         lastMeter_ = meter;
     }
 }
@@ -360,12 +373,12 @@ void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<d
     // the tempo of the beat it just got, not the one before it. Both at the beat's own moment,
     // so a target delayed or brought forward keeps them in that order.
     sendChangedState(event.bpm, event.confidence, event.locked, event.beatsPerBar, true, at);
-    sendInt(beatAddress_, 1, kAllOutputs, at);
+    sendInt(beatAddress_, 1, kAllOutputs, at, true);
     if (event.beatInBar > 0) {
-        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs, at);
+        sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs, at, true);
     }
     if (event.downbeat) {
-        sendInt(downbeatAddress_, 1, kAllOutputs, at);
+        sendInt(downbeatAddress_, 1, kAllOutputs, at, true);
     }
 }
 
@@ -374,7 +387,7 @@ void OscPublisher::publishState(const tracking::TempoState& state) {
 }
 
 void OscPublisher::publishResync() {
-    sendInt(resyncAddress_, 1, kAllOutputs, now_);
+    sendInt(resyncAddress_, 1, kAllOutputs, now_, true);
 }
 
 } // namespace takt4::output

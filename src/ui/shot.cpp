@@ -785,6 +785,7 @@ void fillAsMockup(MainWindow& window) {
         row.host = slint::SharedString(host);
         row.port = slint::SharedString("7000");
         row.enabled = true;
+        row.sends_namespace = true;
         row.delay_ms = delayMs;
         return row;
     };
@@ -949,7 +950,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         drums.delay_ms = 25.0f;
         targets->push_back(drums);
         const auto target = [](const char* name, const char* host, const char* port, bool enabled,
-                               float delayMs = 0.0f) {
+                               float delayMs = 0.0f, bool own = true) {
             OutputRow row{};
             row.name = slint::SharedString(name);
             row.kind_index = 0;
@@ -957,6 +958,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
             row.port = slint::SharedString(port);
             row.address = slint::SharedString(std::string(host) + ":" + port);
             row.enabled = enabled;
+            row.sends_namespace = own;
             row.delay_ms = delayMs;
             return row;
         };
@@ -965,9 +967,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // that never needed §5.6's per-target offset — and because the two directions do
         // different things underneath. The media server is nudged *early*, which for a
         // message about a beat already heard means "just before the next one"; the robot,
-        // which has to physically move, is pushed late.
+        // which has to physically move, is pushed late — and takes only its rules, which is
+        // the reason an output can be told not to send takt4's own messages.
         targets->push_back(target("wall", "192.168.1.41", "7000", true, -80.0f));
-        targets->push_back(target("robot", "192.168.1.42", "7000", true, 352.0f));
+        targets->push_back(target("robot", "192.168.1.42", "7000", true, 352.0f, false));
         // The other kind of destination, so the picture shows both shapes of the row: a MIDI
         // target picks its device from a list rather than holding a typed name.
         OutputRow lights{};
@@ -1076,6 +1079,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
                 row.kind_index = static_cast<int>(target.kind);
                 row.address = slint::SharedString(output::formatOutputAddress(target));
                 row.enabled = target.enabled;
+                row.sends_namespace = target.sendsNamespace;
                 rows->push_back(row);
             }
             window->set_outputs_list(rows);

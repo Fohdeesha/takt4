@@ -634,8 +634,9 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
 
     constexpr int kWidth = 800;
     // Tall enough that the first rows are on screen before anything scrolls, and short enough
-    // that the body still has to: the inputs sit above the outputs.
-    constexpr int kHeight = 900;
+    // that the body still has to: the inputs sit above the outputs. An OSC row is 68 px from the
+    // next with its own-messages line: at 900 only one was in view, at 960 two are.
+    constexpr int kHeight = 960;
     // The middle of the "×" at the end of each target row.
     constexpr int kRemoveX = kWidth - 26 - 12;
     // The pinned footer: 10 px of page, the 66 px triggers row, the 51 px status bar.
@@ -4315,7 +4316,8 @@ TEST_CASE("clicking from a row's name box into its host box keeps what is typed 
 namespace {
 
 /// The middle of each output row: found from the bottom of the body up by typing a letter and
-/// Enter into whatever is at x = 110 and seeing which row it named — put back straight away —
+/// Enter into whatever is at x = 110 and seeing which row it named — put back straight away, as
+/// is an OSC row's own-messages tick, whose words a click there meets —
 /// and taking the middle of the span of clicks that named each. The row's ×, and its other
 /// boxes, sit on that line; the edge of a name box is outside the smaller × beside it. A click
 /// on ADD OUTPUT on the way adds a row, which is taken away again. Row 0 is Link, which has no
@@ -4332,8 +4334,10 @@ std::vector<float> outputRowsAt(WindowController& controller, float height) {
     std::vector<float> top(count, -1.0f);
     for (float y = height - 128.0f; y > 380.0f; y -= 2.0f) {
         std::vector<std::string> names;
+        std::vector<bool> own;
         for (std::size_t i = 0; i < count; ++i) {
             names.emplace_back(rows->row_data(i)->name);
+            own.push_back(rows->row_data(i)->sends_namespace);
         }
         clickAt(window, 110.0f, y);
         press(window, "n");
@@ -4352,6 +4356,12 @@ std::vector<float> outputRowsAt(WindowController& controller, float height) {
                 }
                 top[i] = y;
                 controller.setTargetName(static_cast<int>(i), names[i], true);
+                settle();
+            }
+            // The words of an OSC row's tick for takt4's own messages are at x = 110 too, on the
+            // line under the row: a click there ticks it, and it is put back.
+            if (rows->row_data(i)->sends_namespace != own[i]) {
+                controller.setTargetNamespace(static_cast<int>(i), own[i]);
                 settle();
             }
         }
@@ -4492,6 +4502,130 @@ TEST_CASE("an output's on tick follows its row when the rows change under it", "
     clickAt(window, 41.0f, tickY);
     settle();
     CHECK_FALSE(rows->row_data(2)->enabled);
+    nothingReal.check();
+}
+
+TEST_CASE("an OSC output unticked from takt4's own messages gets its rules and nothing under the "
+          "prefix",
+          "[ui]") {
+    // The operator, 2026-10-01: "my robot egm bridge does not like the random osc spam" — it logs
+    // every /takt4 address it is sent as unhandled. Each OSC row has a tick for takt4's own
+    // messages (`OutputTarget::sendsNamespace`). This unticks the robot's with a click, as an
+    // operator would, and reads what reaches its port as the tempo moves: none of the namespace,
+    // while the deck beside it hears every change, and the robot's own cue. (The state addresses,
+    // not the beats: they go out whenever they change, stopped or not, and only START — a
+    // device — lets the window's runner send beats. `/takt4/bpm` is what the bridge logged; the
+    // beats take the same road through `OscPublisher`, and its tests hold them back too.)
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::testing::LoopbackReceiver deck;
+    takt4::testing::LoopbackReceiver robot;
+    const auto oscOutput = [](const char* id, const char* name, std::uint16_t port) {
+        takt4::output::OutputTarget out;
+        out.id = id;
+        out.name = name;
+        out.kind = takt4::output::OutputTarget::Kind::Osc;
+        out.host = "127.0.0.1";
+        out.port = port;
+        return out;
+    };
+    takt4::settings::Settings saved;
+    saved.preset.outputs = {oscOutput("o-00000dec", "deck", deck.port()),
+                            oscOutput("o-0000e9b0", "robot", robot.port())};
+    takt4::trigger::Rule::Config cue;
+    cue.id = "cue";
+    cue.trigger = takt4::trigger::Trigger::Manual;
+    cue.address = "/robot/cue";
+    cue.outputs = {"o-0000e9b0"};
+    saved.preset.rules = {cue};
+    WindowController controller(tracker, saved);
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1400; // everything in view, nothing to scroll
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, kHeight);
+    auto& window = controller.window().window();
+    window.dispatch_window_active_changed_event(true);
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(rows->row_count() == 3); // Link, the deck, the robot
+    REQUIRE(std::string(rows->row_data(2)->name) == "robot");
+    REQUIRE(rows->row_data(2)->sends_namespace);
+
+    const auto heard = [](takt4::testing::LoopbackReceiver& receiver) {
+        std::vector<std::string> got;
+        for (std::string datagram = receiver.receive(); !datagram.empty();
+             datagram = receiver.receive()) {
+            got.push_back(datagram.substr(0, datagram.find('\0')));
+        }
+        return got;
+    };
+    const auto count = [](const std::vector<std::string>& got, std::string_view prefix) {
+        return std::count_if(got.begin(), got.end(),
+                             [prefix](const std::string& a) { return a.starts_with(prefix); });
+    };
+
+    // The committed excerpt, until the tracker locks: a tempo, a confidence and a lock, each sent
+    // as it changes.
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+    REQUIRE(controller.settleOutputs());
+    CHECK(count(heard(deck), "/takt4/bpm") > 0);
+    CHECK(count(heard(robot), "/takt4/bpm") > 0); // on, as every output starts
+
+    // The robot's tick: on the line under its row, which ends with the row's × button — the last
+    // one down the window (a 21 px edge in the top bar is in that column too, far above). Looked
+    // for from under the row — the × is centred in a 34 px row, 5 px off its foot — so no click
+    // lands in the row's name box, where the M pressed below would be typed, not fire the cue.
+    const std::vector<std::pair<int, int>> removes = removeButtonsDown(shot, 0, kHeight);
+    INFO("x buttons at " << spans(removes));
+    REQUIRE(removes.size() >= 2);
+    const int robotRow = removes.back().second;
+    const takt4::tests::NothingReal nothingReal;
+    float tickY = -1.0f;
+    for (int y = robotRow + 7; y < robotRow + 40 && tickY < 0.0f; y += 2) {
+        clickAt(window, 70.0f, static_cast<float>(y)); // the box is 16 px from x 62
+        settle();
+        while (rows->row_count() > 3) { // a miss on "+ add output"
+            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
+            settle();
+        }
+        if (!rows->row_data(2)->sends_namespace) {
+            tickY = static_cast<float>(y);
+        }
+    }
+    INFO("tick at " << tickY);
+    REQUIRE(tickY > 0.0f);
+    CHECK(rows->row_data(1)->sends_namespace); // the deck's is its own
+    CHECK_FALSE(seen(controller).targets[2].sendsNamespace);
+    CHECK(takt4::settings::toJson(controller.currentSettings()).find("rules-only") !=
+          std::string::npos);
+
+    // The tempo moves: ÷2, then on with the excerpt.
+    (void)heard(deck);
+    controller.window().invoke_halve();
+    run.applyPosted();
+    (void)run.until([] { return false; }); // the rest of the excerpt
+    REQUIRE(controller.settleOutputs());
+    const std::vector<std::string> atDeck = heard(deck);
+    const std::vector<std::string> atRobot = heard(robot);
+    INFO("deck heard " << atDeck.size() << ", the robot " << atRobot.size());
+    CHECK(count(atDeck, "/takt4/bpm") > 0); // the tempo went on being said
+    CHECK(count(atRobot, "/takt4") == 0);
+
+    // Its rule still reaches it: the M key fires the manual cue.
+    press(window, "m");
+    REQUIRE(controller.settleOutputs());
+    const std::vector<std::string> cued = heard(robot);
+    CHECK(cued == std::vector<std::string>{"/robot/cue"});
+
+    // And the same tick gives it back — told the state at once, though nothing has moved since,
+    // as a new output is.
+    clickAt(window, 70.0f, tickY);
+    settle();
+    CHECK(rows->row_data(2)->sends_namespace);
+    REQUIRE(controller.settleOutputs());
+    CHECK(count(heard(robot), "/takt4/bpm") > 0);
     nothingReal.check();
 }
 
@@ -5230,10 +5364,15 @@ TEST_CASE("a kind picked again on an output row still follows the row when it ch
     settle();
     settle();
     REQUIRE(kindOf() == 2);
+    // Found again: an Art-Net row has no line for takt4's own messages under it, and in a window
+    // taller than what it holds the plot takes up the 26 px, so the row moves down by them.
+    const std::vector<float> now = outputRowsAt(controller, kHeight);
+    REQUIRE(now.size() == 2);
+    REQUIRE(now[1] > 0.0f);
 
     // Down one from what the dropdown shows. Showing Art-Net, that is the MIDI clock; still
     // showing OSC, it is MIDI.
-    clickAt(window, kKindColumn, at[1]);
+    clickAt(window, kKindColumn, now[1]);
     slint::platform::update_timers_and_animations();
     press(window, kDown);
     press(window, "\n");
@@ -5970,6 +6109,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     window->on_link_peers_toggled([&] { note("peers"); });
     window->on_output_enabled_changed(
         [&](int i, bool on) { note("on " + std::to_string(i) + (on ? " 1" : " 0")); });
+    window->on_output_namespace_changed(
+        [&](int i, bool on) { note("namespace " + std::to_string(i) + (on ? " 1" : " 0")); });
     window->on_output_name_edited([&](int, const slint::SharedString&) { note("name-key"); });
     window->on_output_name_accepted([&](int i, const slint::SharedString& t) {
         note("name " + std::to_string(i) + " " + std::string(t));
@@ -6035,6 +6176,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     deck.host = slint::SharedString("10.0.0.40");
     deck.port = slint::SharedString("7000");
     deck.enabled = true;
+    deck.sends_namespace = true;
     rows->push_back(deck);
     OutputRow clock{};
     clock.name = slint::SharedString("clock");
@@ -6253,10 +6395,12 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     expect({"network 1"}, "the allow-other-machines box");
 
     // --- outputs -------------------------------------------------------------------------------
-    // The Link row, 28 px, then the rows, 34 px, 8 px apart.
+    // The Link row, 28 px, then the rows, 34 px, 8 px apart — an OSC row with its 26 px line for
+    // takt4's own messages under it.
     const int linkRow = sheets[5].first + 10 + 28 + 8 + 18 + 8 + 14;
     const int deckRow = linkRow + 14 + 8 + 17;
-    const int clockRow = deckRow + 17 + 8 + 17;
+    const int deckOwnRow = deckRow + 17 + 13;
+    const int clockRow = deckRow + 17 + 26 + 8 + 17;
     click(41.0f, linkRow);
     expect({"on 0 0"}, "Link's on box");
     const auto linkInk = occupied(shot, linkRow - 14, linkRow + 13, 150, 500, kSheet, 5);
@@ -6321,6 +6465,17 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     // Link has no ×: the same column on its row is nothing.
     click(762.0f, linkRow);
     expect({}, "the empty cell at the end of Link's row");
+
+    // The deck's tick for takt4's own messages, its words, and the note after them. The bare
+    // window writes nothing back, so the tick stays ticked and both clicks ask for it off.
+    const auto own = occupied(shot, deckOwnRow - 8, deckOwnRow + 8, 20, kWidth - 20, kSheet, 5);
+    INFO("the deck's own-messages line: " << spans(own));
+    REQUIRE(own.size() == 3);
+    click(middleOf(own[0]), deckOwnRow);
+    click(middleOf(own[1]), deckOwnRow);
+    expect({"namespace 1 0", "namespace 1 0"}, "the deck's own-messages tick, then its words");
+    click(middleOf(own[2]), deckOwnRow);
+    expect({}, "the note after it, which is words");
 
     // [+ add output], under the rows.
     const int addRow = clockRow + 17 + 8 + 4 + 14;

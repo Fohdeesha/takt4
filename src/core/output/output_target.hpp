@@ -70,6 +70,16 @@ struct OutputTarget {
     /// it back afterwards with its addresses intact.
     bool enabled = true;
 
+    /// `Osc`: whether takt4's own messages go here as well as the rules aimed at it — §5.6's
+    /// generic namespace, `/takt4/bpm`, `/beat`, `/beat/bar`, `/downbeat`, `/confidence`,
+    /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat. On unless
+    /// switched off, as §5.6 has it, so anything can consume them with no setup. Off is for a
+    /// receiver that takes only what a rule sends it and complains about the rest (the operator,
+    /// 2026-10-01: *"my robot egm bridge does not like the random osc spam"*); a rule aimed here
+    /// still goes. Written as "rules-only" in the line (`formatOutputTarget`). Ignored for the
+    /// other kinds.
+    bool sendsNamespace = true;
+
     /// Where this target's messages sit relative to the beat, in seconds — §5.5's latency
     /// offset, but per target rather than one number for the whole rig.
     ///
@@ -179,8 +189,9 @@ const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::st
 
 /// "main = 127.0.0.1:7000", "lights = midi MOTU Pro Audio Midi Out 1", "drums = midiclock
 /// TR-8S" and "Link = link", which is how a settings file stores one. A switched-off target
-/// leads with "off ", one with a delay ends with " +120ms", and the id, where there is one,
-/// comes last as " #o-1a2b3c4d". A name that would read back as something else — "off stage",
+/// leads with "off ", an OSC target that takes only the rules has " rules-only" after its
+/// address, one with a delay ends with " +120ms", and the id, where there is one, comes last as
+/// " #o-1a2b3c4d". A name that would read back as something else — "off stage",
 /// "a=b", one with a comma or a quote in it, or spaces at its ends — is written in double
 /// quotes: "\"off stage\" = 127.0.0.1:7000". Round-trips through `parseOutputTarget`, whatever
 /// the name.

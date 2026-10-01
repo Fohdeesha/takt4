@@ -106,6 +106,24 @@ std::string_view takeId(std::string_view body, std::string& id) {
     return trim(body.substr(0, hash));
 }
 
+/// What an OSC target's line says when takt4's own messages are not sent to it — see
+/// `OutputTarget::sendsNamespace`.
+constexpr std::string_view kRulesOnly = "rules-only";
+
+/// Takes a trailing " rules-only" off `body`, and hands back what is left. A whole last word
+/// after whitespace, so a host that happens to end in it is left alone.
+std::string_view takeRulesOnly(std::string_view body, bool& found) noexcept {
+    if (!body.ends_with(kRulesOnly) || body.size() == kRulesOnly.size()) {
+        return body;
+    }
+    const char before = body[body.size() - kRulesOnly.size() - 1];
+    if (before != ' ' && before != '\t') {
+        return body;
+    }
+    found = true;
+    return trim(body.substr(0, body.size() - kRulesOnly.size()));
+}
+
 } // namespace
 
 bool ensureLinkOutput(std::vector<OutputTarget>& targets, bool enabledIfAdded) {
@@ -273,6 +291,11 @@ std::string formatOutputTarget(const OutputTarget& target) {
     text += misreadUnquoted(target.name) ? quoted(target.name) : target.name;
     text += " = ";
     text += formatOutputAddress(target);
+    // Only when off, so every line a file held before reads as it did.
+    if (target.kind == OutputTarget::Kind::Osc && !target.sendsNamespace) {
+        text += " ";
+        text += kRulesOnly;
+    }
     // Whole milliseconds: the slider moves in them, the output thread's round is one, and a
     // settings file full of 0.12000000000000001 helps nobody read it.
     const long long ms = std::lround(target.delaySeconds * 1000.0);
@@ -443,6 +466,12 @@ bool parseOutputTarget(std::string_view text, OutputTarget& out) noexcept try {
         out = std::move(target);
         return true;
     }
+
+    // An OSC target that takes only the rules says so after its address, before the delay and
+    // the id that have already come off.
+    bool rulesOnly = false;
+    body = takeRulesOnly(body, rulesOnly);
+    target.sendsNamespace = !rulesOnly;
 
     // `host:port`. rfind, so an IPv6 literal's own colons do not take the split — the port
     // is always what follows the last one.

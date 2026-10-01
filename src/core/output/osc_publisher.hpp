@@ -37,6 +37,9 @@ namespace takt4::output {
 /// operator to touch something. Nothing is sent faster than the beats themselves except
 /// a tempo or lock change, which is a handful of datagrams a minute.
 ///
+/// To every target that wants them — `OutputTarget::sendsNamespace`, on unless switched off. A
+/// target with it off is sent the rules aimed at it and nothing of this.
+///
 /// Host presets (§5.6: Resolume, TouchDesigner, MadMapper, QLC+) fill in address
 /// templates and belong to Phase 6's trigger engine; this is the layer underneath them,
 /// and is never a hardcoded code path for any one host.
@@ -71,13 +74,15 @@ public:
                    double delaySeconds = 0.0);
 
     /// One target as `setTargets` wants it: which output it is (`OutputTarget::id`), where it
-    /// sends, its routing bit and its delay.
+    /// sends, its routing bit, its delay and whether it is sent the namespace
+    /// (`OutputTarget::sendsNamespace`).
     struct TargetSpec {
         std::string id;
         std::string host;
         std::uint16_t port = 0;
         std::size_t bit = 0;
         double delaySeconds = 0.0;
+        bool sendsNamespace = true;
     };
     /// Replaces the targets with `specs`, **keeping what did not change** (the audit's H12).
     ///
@@ -89,6 +94,9 @@ public:
     /// target that is gone — deleted or switched off, which both mean *send it nothing* — is
     /// dropped. (`OutputRunner` sends it first, with `flushTo`: a release among it is what lets
     /// go of a clip that target was sent.)
+    ///
+    /// A target whose namespace is switched off loses what of the namespace is queued for it, and
+    /// one switched on is told the state at the next round, as a new target is.
     ///
     /// Returns, for each spec whose sender could not be made at all, its bit and why.
     std::vector<std::pair<std::size_t, std::string>> setTargets(const std::vector<TargetSpec>& specs);
@@ -170,10 +178,7 @@ public:
     /// A malformed address sends nothing and counts a failure, because `OscMessage` refuses
     /// it. Rules validate their templates and check the filled result, so reaching here with
     /// one should not happen; counting it is what makes it visible if it does.
-    /// To every target. §5.6's generic namespace goes this way: *"Always publish a generic
-    /// namespace regardless of which host preset is active, so anything can consume it with
-    /// zero configuration"* — a routing decision belongs to a rule, not to the app's own
-    /// description of what the tempo is.
+    /// To every target, whether or not it takes the namespace: this is an address of a rule's.
     void sendAddress(std::string_view address);
     void sendAddress(std::string_view address, std::int32_t value);
     void sendAddress(std::string_view address, float value);
@@ -211,10 +216,13 @@ private:
     /// to every message, so a bar-1 clip cue landed just before beat 2 and a manual cue nearly
     /// a beat late. A message about a beat the output thread is firing ahead of time now carries
     /// that beat's own moment, and "earlier" means earlier than it; a message about now goes now.
-    void sendPacket(OscMessage& message, std::uint64_t outputs, double moment);
-    void sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs,
-                 double moment);
-    void sendFloat(std::string_view address, float value, std::uint64_t outputs, double moment);
+    ///
+    /// `own` is a message of the namespace's, which skips a target that does not take it.
+    void sendPacket(OscMessage& message, std::uint64_t outputs, double moment, bool own);
+    void sendInt(std::string_view address, std::int32_t value, std::uint64_t outputs, double moment,
+                 bool own);
+    void sendFloat(std::string_view address, float value, std::uint64_t outputs, double moment,
+                   bool own);
     /// Sends the four state addresses whose value has moved, and remembers them.
     void sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
                           bool force, double moment);
@@ -240,6 +248,8 @@ private:
         /// `OutputTarget::id`, which is what `setTargets` recognises a target by. Empty for one
         /// added with `addTarget`.
         std::string id;
+        /// `OutputTarget::sendsNamespace`.
+        bool sendsNamespace = true;
     };
     std::vector<Target> targets_;
 
@@ -250,6 +260,8 @@ private:
         double due = 0.0;
         std::size_t target = 0;
         std::vector<std::byte> packet;
+        /// One of the namespace's, dropped if its target stops taking the namespace first.
+        bool own = false;
     };
     /// Kept in the order queued, and sent in that order among whatever has come due. Two
     /// messages about the same moment to one target — a beat's state and then the beat —

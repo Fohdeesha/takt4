@@ -333,6 +333,7 @@ OutputRow rowOf(const output::OutputTarget& target, const std::vector<std::strin
     row.port = shared(std::to_string(target.port));
     row.device_index = device ? deviceIndexOf(midiPorts, target.device) : 0;
     row.enabled = target.enabled;
+    row.sends_namespace = target.sendsNamespace;
     row.delay_ms = static_cast<float>(target.delaySeconds * 1000.0);
     return row;
 }
@@ -527,6 +528,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->set_version(slint::SharedString(versionLabel(buildInfo())));
     window_->set_version_short(
         slint::SharedString(shortVersionLabel(buildInfo().version, buildInfo().commit)));
+    // The prefix an OSC row's tick names. Once: a new one takes a restart (`pendingPrefix_`).
+    window_->set_osc_prefix(shared(usablePrefix(settings)));
 
     // §5.6's targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
@@ -620,6 +623,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         }
     });
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
+    window_->on_output_namespace_changed(
+        [this](int index, bool on) { setTargetNamespace(index, on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
     window_->on_output_delay_keyed([this](int) { typedOutputs_ = outputsGeneration_; });
     window_->on_output_delay_typed([this](int index, const slint::SharedString& text) {
@@ -1830,6 +1835,7 @@ void WindowController::setTargetDevice(int index, int device) {
 void WindowController::addTarget() {
     OutputRow row{};
     row.enabled = true;
+    row.sends_namespace = true;
     // A destination on this machine at the conventional port, rather than the blank row this
     // used to add. A blank row applies nothing, so the target did not exist until the whole
     // address had been typed — and a rule cannot be routed to a target that is not there
@@ -1879,6 +1885,14 @@ void WindowController::setTargetEnabled(int index, bool on) {
         return;
     }
     targetDrafts_[static_cast<std::size_t>(index)].enabled = on;
+    applyTargets();
+}
+
+void WindowController::setTargetNamespace(int index, bool on) {
+    if (index < 0 || static_cast<std::size_t>(index) >= targetDrafts_.size()) {
+        return;
+    }
+    targetDrafts_[static_cast<std::size_t>(index)].sends_namespace = on;
     applyTargets();
 }
 
@@ -1948,6 +1962,7 @@ void WindowController::setOscTargets(const std::string& text) {
     OutputRow row{};
     row.address = shared(text);
     row.enabled = true;
+    row.sends_namespace = true; // a line that says "rules-only" says so itself
     targetDrafts_ = std::move(kept);
     targetDrafts_.push_back(row);
     applyTargets();
@@ -2009,6 +2024,12 @@ void WindowController::applyTargets() {
             // Both have to agree: the switch is the row's, and "off " in front of a pasted
             // address is that line saying the same thing.
             target.enabled = target.enabled && draft.enabled;
+            // The same for an OSC row's tick and "rules-only" in a pasted line. The box never
+            // holds the word — `formatOutputAddress` does not write it — so the tick is what
+            // decides a row that was typed.
+            if (target.kind == output::OutputTarget::Kind::Osc) {
+                target.sendsNamespace = target.sendsNamespace && draft.sends_namespace;
+            }
             // The slider owns the row's offset, because `formatOutputAddress` never writes one
             // into the address box — so an offset coming back from the parse can only be one a
             // person just typed or pasted, and that is them saying it outright.

@@ -72,6 +72,9 @@ export struct OutputRow {
   address: string,
   /// §5.6's per-target enabled state. Off sends nothing and keeps the address.
   enabled: bool,
+  /// OSC: whether takt4's own messages go here too — `output::OutputTarget::sendsNamespace`.
+  /// Off, only the rules aimed at it do. Meaningless for the other kinds, which show no tick.
+  sends-namespace: bool,
   /// Why this output is reaching nothing, while that is so — a host that will not resolve, a
   /// MIDI device that is not here or that another program holds, sends that are failing — or
   /// empty. Shown under the row in the alarm colour, for as long as it is true: the status
@@ -238,6 +241,9 @@ export component MainWindow inherits Window {
 
   /// §5.6's targets, one row each, Link's first.
   in-out property <[OutputRow]> outputs-list;
+  /// The prefix takt4's own OSC messages are sent under — the running one, which is what an OSC
+  /// row's "send …" tick names.
+  in property <string> osc-prefix: "/takt4";
   /// How many of them are switched on, and how many are reaching nothing — for the line the
   /// Outputs heading reads while the section is folded, which cannot count a model itself.
   in-out property <int> outputs-on;
@@ -396,6 +402,8 @@ export component MainWindow inherits Window {
   callback import-settings();
   callback output-removed(int);
   callback output-enabled-changed(int, bool);
+  /// OSC row N's tick for takt4's own messages (`OutputRow::sends-namespace`). Applied at once.
+  callback output-namespace-changed(int, bool);
   /// Row N is an OSC target or a MIDI one. Applied at once, like the tick and unlike the
   /// text boxes: it changes which question the row is asking, so nothing is half-typed yet.
   callback output-kind-changed(int, int);
@@ -1746,6 +1754,36 @@ export component MainWindow inherits Window {
                           root.output-removed(index);
                         }
                       }
+                    }
+                  }
+
+                  // **Whether an OSC output is sent takt4's own messages**, on a line of its own:
+                  // the row has no width left for a column, and the host box would be what gave
+                  // it up. Under the name column, as the problem line is. Off, only the rules
+                  // aimed at it go — for a receiver that takes only its own addresses and
+                  // complains about the rest (2026-10-01, a robot's bridge). Live while the output
+                  // is off, so it can be set before anything is sent. An explicit height, as below.
+                  if target.kind-index == 0: HorizontalLayout {
+                    height: 26px;
+                    padding-left: 36px;
+                    spacing: 12px;
+                    Tick {
+                      horizontal-stretch: 0;
+                      text: "send takt4's own " + root.osc-prefix + " messages here (tempo, beats, lock)";
+                      box-size: 16px;
+                      font-size: 14px;
+                      checked: target.sends-namespace;
+                      toggled(on) => {
+                        root.output-namespace-changed(index, on);
+                      }
+                    }
+                    Text {
+                      horizontal-stretch: 1;
+                      text: "rules aimed at it go either way";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      vertical-alignment: center;
+                      overflow: elide;
                     }
                   }
 

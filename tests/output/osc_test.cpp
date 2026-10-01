@@ -590,6 +590,90 @@ TEST_CASE("an edit to the targets keeps what is queued for the ones that stay", 
     }
 }
 
+TEST_CASE("a target that takes only its rules is sent nothing of the namespace", "[output][osc]") {
+    // The operator, 2026-10-01: a robot's EGM bridge logs "Unhandled OSC address: /takt4/bpm" for
+    // what takt4 sends of its own accord. `OutputTarget::sendsNamespace` off keeps the namespace
+    // from that target, and keeps nothing else from it.
+    LoopbackReceiver deck;
+    LoopbackReceiver robot;
+    OscPublisher publisher;
+    constexpr std::size_t kRobotBit = 1;
+    const auto targets = [&](bool robotTakesNamespace, double robotDelay) {
+        return std::vector<OscPublisher::TargetSpec>{
+            {"o-000000a1", "127.0.0.1", deck.port(), 0, 0.0},
+            {"o-000000b2", "127.0.0.1", robot.port(), kRobotBit, robotDelay, robotTakesNamespace}};
+    };
+    const auto addresses = [](LoopbackReceiver& receiver) {
+        std::vector<std::string> got;
+        for (std::string datagram = receiver.receive(); !datagram.empty();
+             datagram = receiver.receive()) {
+            got.push_back(datagram.substr(0, datagram.find('\0')));
+        }
+        return got;
+    };
+    const auto namespaced = [](const std::vector<std::string>& got) {
+        return std::count_if(got.begin(), got.end(),
+                             [](const std::string& a) { return a.starts_with("/takt4"); });
+    };
+    REQUIRE(publisher.setTargets(targets(false, 0.0)).empty());
+
+    takt4::tracking::BeatEvent event;
+    event.bpm = 128.0;
+    event.confidence = 0.75;
+    event.locked = true;
+    event.beatsPerBar = 4;
+    event.beatInBar = 1;
+    event.downbeat = true;
+    takt4::tracking::TempoState state; // what the beat said, as the next round has it
+    state.bpm = event.bpm;
+    state.confidence = event.confidence;
+    state.locked = event.locked;
+    state.beatsPerBar = event.beatsPerBar;
+
+    publisher.setNow(1.0);
+    publisher.publishBeat(event);
+    publisher.publishResync();
+    state.bpm = 131.0;
+    publisher.publishState(state); // and `state` is what was last said from here on
+    // A rule sent everywhere, and one aimed at the robot alone.
+    publisher.sendAddress("/everywhere");
+    publisher.sendAddressTo(std::uint64_t{1} << kRobotBit, "/robot/cue", std::int32_t{1});
+
+    const std::vector<std::string> atDeck = addresses(deck);
+    const std::vector<std::string> atRobot = addresses(robot);
+    INFO("deck: " << atDeck.size() << " datagrams, robot: " << atRobot.size());
+    CHECK(namespaced(atDeck) == 9); // the beat's seven, the resync, the tempo that moved
+    CHECK(std::find(atDeck.begin(), atDeck.end(), "/everywhere") != atDeck.end());
+    CHECK(std::find(atDeck.begin(), atDeck.end(), "/robot/cue") == atDeck.end());
+    CHECK(atRobot == std::vector<std::string>{"/everywhere", "/robot/cue"});
+
+    SECTION("switched off with a beat held for its delay: the beat is dropped, its cue is not") {
+        REQUIRE(publisher.setTargets(targets(true, 0.3)).empty());
+        publisher.setNow(2.0);
+        publisher.publishBeat(event);
+        publisher.sendAddressTo(std::uint64_t{1} << kRobotBit, "/robot/cue", std::int32_t{1});
+        REQUIRE(publisher.pending() == 8); // the beat's seven and the cue, all the robot's
+        REQUIRE(publisher.setTargets(targets(false, 0.3)).empty());
+        CHECK(publisher.pending() == 1);
+        publisher.setNow(2.4);
+        publisher.flushDue();
+        CHECK(addresses(robot) == std::vector<std::string>{"/robot/cue"});
+    }
+
+    SECTION("switched back on, it is told the state at once, as a new target is") {
+        // Nothing has moved since the state last said, so the deck is sent nothing — and the robot
+        // has never been told any of it, so it is.
+        publisher.setNow(3.0);
+        publisher.publishState(state);
+        CHECK(addresses(deck).empty());
+        REQUIRE(publisher.setTargets(targets(true, 0.0)).empty());
+        publisher.publishState(state);
+        const std::vector<std::string> told = addresses(robot);
+        CHECK(std::find(told.begin(), told.end(), "/takt4/bpm") != told.end());
+        CHECK(std::find(told.begin(), told.end(), "/takt4/locked") != told.end());
+    }
+}
+
 TEST_CASE("the tracker finding the beat again sends a resync", "[output][osc]") {
     // The audit's M8: `/takt4/resync` was documented and never sent. It means "the tracker has
     // just re-found itself", which is the published lock going from off back to on.

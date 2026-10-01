@@ -129,6 +129,35 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
     off.enabled = false;
     CHECK(roundTrip(off) == off);
 
+    SECTION("an OSC target that takes only its rules says so, and keeps saying so") {
+        OutputTarget robot = osc("robot", 9000);
+        robot.sendsNamespace = false;
+        robot.delaySeconds = 0.150;
+        CHECK(takt4::output::formatOutputTarget(robot) ==
+              "robot = 127.0.0.1:9000 rules-only +150ms #" + robot.id);
+        CHECK(roundTrip(robot) == robot);
+        robot.enabled = false;
+        CHECK(roundTrip(robot) == robot);
+        // On is said by saying nothing, so every line written before reads as it did.
+        CHECK(takt4::output::formatOutputTarget(wall).find("rules-only") == std::string::npos);
+        OutputTarget old;
+        REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:7000 +40ms #o-1a2b", old));
+        CHECK(old.sendsNamespace);
+        // Unnamed, the address is the name, without the word.
+        REQUIRE(takt4::output::parseOutputTarget("127.0.0.1:9000 rules-only", old));
+        CHECK_FALSE(old.sendsNamespace);
+        CHECK(old.name == "127.0.0.1:9000");
+        CHECK(old.port == 9000);
+        // Only OSC has the namespace: nothing else writes the word, and a MIDI device whose name
+        // ends in it keeps it.
+        OutputTarget node = lights;
+        node.sendsNamespace = false;
+        CHECK(takt4::output::formatOutputTarget(node).find("rules-only") == std::string::npos);
+        REQUIRE(takt4::output::parseOutputTarget("pads = midi Pad rules-only", old));
+        CHECK(old.device == "Pad rules-only");
+        CHECK(old.sendsNamespace);
+    }
+
     SECTION("and the format an operator already knew still works") {
         // The outputs field took one `host:port` per line before targets had names. A line
         // like that is still a target, named after its own address — which is what it was
@@ -305,9 +334,13 @@ TEST_CASE("the generic namespace goes to every target, routed or not", "[output]
     // the app's own description of what the tempo is does not.
     LoopbackReceiver deck;
     LoopbackReceiver wall;
+    // ...except one told to take only its rules (`OutputTarget::sendsNamespace`).
+    LoopbackReceiver robot;
 
     Transports::Config config;
-    config.outputs = {osc("deck", deck.port()), osc("wall", wall.port())};
+    config.outputs = {osc("deck", deck.port()), osc("wall", wall.port()),
+                      osc("robot", robot.port())};
+    config.outputs[2].sendsNamespace = false;
     Transports transports(config);
 
     takt4::tracking::BeatEvent event;
@@ -319,6 +352,7 @@ TEST_CASE("the generic namespace goes to every target, routed or not", "[output]
 
     CHECK(sawAddress(drain(deck), "/takt4/bpm"));
     CHECK(sawAddress(drain(wall), "/takt4/bpm"));
+    CHECK(drain(robot).empty());
 }
 
 TEST_CASE("a MIDI clock and the Link output survive their text line too", "[output][routing]") {

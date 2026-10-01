@@ -253,7 +253,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
             std::clamp(target.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
         switch (target.kind) {
         case OutputTarget::Kind::Osc:
-            osc.push_back({target.id, target.host, target.port, i, delay});
+            osc.push_back({target.id, target.host, target.port, i, delay, target.sendsNamespace});
             break;
         case OutputTarget::Kind::ArtNet: {
             dmx::ArtNetPublisher::TargetConfig node;
