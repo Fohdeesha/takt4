@@ -270,6 +270,11 @@ export component MainWindow inherits Window {
   /// what tells an operator their controller is on a channel nothing is listening to,
   /// which otherwise looks exactly like a broken cable.
   in-out property <string> control-reading;
+  /// The reading is a state in words — "not bound", "off — pick a port" — rather than a control
+  /// ("note 36 ch 10"), so it is set in Archivo, as every other state in the window is, and not in
+  /// DM Mono, which is for numbers and addresses (the operator, 2026-09-30: "off" in DM Mono
+  /// "looks weird").
+  in-out property <bool> control-reading-words;
   /// The reading is saying why the port picked is not open — not on the machine, or another
   /// program has it — rather than what arrived. Drawn in the alarm colour on a line of its own.
   in-out property <bool> control-error;
@@ -294,6 +299,8 @@ export component MainWindow inherits Window {
   /// to aim at, or why it is not listening. What tells an operator their surface is aimed at
   /// the wrong prefix, which otherwise looks like a dead cable.
   in-out property <string> osc-control-reading;
+  /// The reading is "off", a word and not an address: set in Archivo (see `control-reading-words`).
+  in-out property <bool> osc-control-reading-words;
   /// Where the last one came from ("from 192.168.1.40"), and under both how many were acted on
   /// and how many ignored — a wrong prefix and a dead cable need different fixes. Empty until
   /// something has arrived.
@@ -1306,7 +1313,7 @@ export component MainWindow inherits Window {
                   Text {
                     text: root.control-error ? "" : root.control-reading;
                     color: Wf.ink;
-                    font-family: Wf.mono;
+                    font-family: root.control-reading-words ? Wf.sans : Wf.mono;
                     font-size: 14px;
                     horizontal-stretch: 0;
                     min-width: 40px;
@@ -1384,7 +1391,7 @@ export component MainWindow inherits Window {
                       Text {
                         text: root.osc-control-error ? "" : root.osc-control-reading;
                         color: Wf.ink;
-                        font-family: Wf.mono;
+                        font-family: root.osc-control-reading-words ? Wf.sans : Wf.mono;
                         font-size: 14px;
                         vertical-alignment: center;
                         overflow: elide;
@@ -1881,12 +1888,16 @@ export component MainWindow inherits Window {
                 }
               }
 
+              // **A button says what it does; the count beside it is a reading** (a
+              // readout is not a setting). These were the counts themselves, "2 of 3 active" and
+              // "5 fixtures", so nothing on screen said where the rule editor or the patch was —
+              // the README's "click add a rule" matched no button an operator with rules could
+              // see (2026-09-30). "add a rule" while there are none, because then it adds one.
               VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 0;
-                Btn {
-                  text: root.rules-total == 0 ? "add a rule"
-                    : root.rules-active + " of " + root.rules-total + " active";
+                rules-button := Btn {
+                  text: root.rules-total == 0 ? "add a rule" : "edit rules";
                   font-size: 14px;
                   pad: 12px;
                   clicked => {
@@ -1894,21 +1905,34 @@ export component MainWindow inherits Window {
                   }
                 }
               }
+              if root.rules-total > 0: Text {
+                text: root.rules-active + " of " + root.rules-total + " active";
+                color: Wf.ink2;
+                font-size: 14px;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+              }
 
               // The lighting patch, beside the rules because a DMX rule is meaningless without one.
               // It says how many fixtures there are, so "no patch" and "patch not open" differ.
               VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 0;
-                Btn {
-                  text: root.fixtures-total == 0 ? "patch lights"
-                    : root.fixtures-total + (root.fixtures-total == 1 ? " fixture" : " fixtures");
+                fixtures-button := Btn {
+                  text: "patch lights";
                   font-size: 14px;
                   pad: 12px;
                   clicked => {
                     root.fixtures-clicked();
                   }
                 }
+              }
+              if root.fixtures-total > 0: Text {
+                text: root.fixtures-total + (root.fixtures-total == 1 ? " fixture" : " fixtures");
+                color: Wf.ink2;
+                font-size: 14px;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
               }
 
               // What just went out, so the main window says whether the rig is being driven

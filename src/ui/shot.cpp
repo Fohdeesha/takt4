@@ -1061,6 +1061,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // what they are turning on.
         window->set_osc_control_port(slint::SharedString("7001"));
         window->set_osc_control_reading(slint::SharedString("off"));
+        window->set_osc_control_reading_words(true);
         window->set_status(slint::SharedString("pick an input and press Start."));
     }
     window->set_status_is_error(false);

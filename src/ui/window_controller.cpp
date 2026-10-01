@@ -2426,6 +2426,7 @@ void WindowController::publishMidiControl() {
         // lasts; the status line said it once.
         const bool failing = !control_.config().port.empty() && !midiControlProblem_.empty();
         window_->set_control_error(failing);
+        window_->set_control_reading_words(true);
         window_->set_control_reading(shared(
             failing ? "NOT OPEN \xE2\x80\x94 " + midiControlProblem_ + ". Trying again every " +
                           fixed(controlRetrySeconds_, 0) + " s."
@@ -2435,6 +2436,7 @@ void WindowController::publishMidiControl() {
     }
     window_->set_control_error(false);
     if (control_.learning()) {
+        window_->set_control_reading_words(true);
         window_->set_control_reading(shared("waiting for a control..."));
         return;
     }
@@ -2452,6 +2454,8 @@ void WindowController::publishMidiControl() {
         }
         text += describeControl(binding);
     }
+    // A binding is a control, in DM Mono; "not bound" is a state, in words.
+    window_->set_control_reading_words(text.empty());
     if (text.empty()) {
         // Nothing bound. Say what did arrive instead, if anything has: a controller on a
         // channel nothing is listening to looks exactly like a broken cable otherwise.
@@ -2504,6 +2508,7 @@ void WindowController::publishOscControl(bool force) {
     if (!listening) {
         const bool failing = oscControlWanted_ && !oscControlProblem_.empty();
         window_->set_osc_control_error(failing);
+        window_->set_osc_control_reading_words(true);
         window_->set_osc_control_reading(shared(
             failing ? "NOT LISTENING \xE2\x80\x94 " + oscControlProblem_ + ". Trying again every " +
                           fixed(controlRetrySeconds_, 0) + " s."
@@ -2513,6 +2518,7 @@ void WindowController::publishOscControl(bool force) {
         return;
     }
     window_->set_osc_control_error(false);
+    window_->set_osc_control_reading_words(false);
     // Two different questions, and only one of them is live at a time. Before anything has
     // arrived the operator needs the address to aim at; once packets are landing they need
     // to know what landed, and the address has answered itself.
