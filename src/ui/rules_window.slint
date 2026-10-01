@@ -1546,24 +1546,14 @@ export component RulesWindow inherits Window {
             }
 
             // The foot: the preset menu and PANIC, the same place every time and never scrolled
-            // away. **PANIC never moves.** RELEASE appears above the menu while PANIC is held,
-            // so the second click of a double-click lands on PANIC again, which is already
-            // engaged — the audit's H18. An explicit height: an `if` in a vertical layout takes a
-            // share of the spare height otherwise.
+            // away. **PANIC never moves.** RELEASE appears between the menu and PANIC while PANIC
+            // is held, and the menu moves up to make room (the operator, 2026-09-30) — the foot
+            // grows upwards, so the second click of a double-click lands on PANIC again, which is
+            // already engaged (the audit's H18). An explicit height: an `if` in a vertical layout
+            // takes a share of the spare height otherwise.
             VerticalLayout {
               padding: 10px;
               spacing: 10px;
-
-              if root.panicked: Btn {
-                height: 32px;
-                text: "release";
-                clicked => {
-                  // The keyboard back to the window first: this button goes the moment it works,
-                  // and the focus with it, and the next Escape would reach nothing.
-                  keys.focus();
-                  root.panic-released();
-                }
-              }
 
               PresetMenu {
                 presets: root.rig-presets;
@@ -1573,6 +1563,17 @@ export component RulesWindow inherits Window {
                 // From out here: a `changed` inside the popup never fires (measured).
                 changed open => {
                   root.presets-open = self.open;
+                }
+              }
+
+              if root.panicked: Btn {
+                height: 32px;
+                text: "release";
+                clicked => {
+                  // The keyboard back to the window first: this button goes the moment it works,
+                  // and the focus with it, and the next Escape would reach nothing.
+                  keys.focus();
+                  root.panic-released();
                 }
               }
 

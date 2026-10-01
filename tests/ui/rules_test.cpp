@@ -951,8 +951,8 @@ TEST_CASE("PANIC is reachable from the editor and latches", "[ui][trigger]") {
 
 TEST_CASE("the editor's PANIC holds through a double click and answers Escape", "[ui][trigger]") {
     // The same fixes as the main window's (the audit's H18), driven with real clicks and keys:
-    // PANIC only engages, RELEASE appears *above* the preset menu so PANIC does not move and the
-    // second click of a double-click still lands on it, Escape is PANIC from anywhere in this
+    // PANIC only engages, RELEASE appears above it (below the preset menu) so PANIC does not move
+    // and the second click of a double-click still lands on it, Escape is PANIC from anywhere in this
     // window — and Escape in a text box only leaves the box.
     Rig rig;
     RulesController editor(rig.runner, {});
@@ -5330,6 +5330,100 @@ TEST_CASE("the preset menu adds the rig picked, and Escape closes it without add
     other.addRig(1);
     CHECK(editor.rules().size() == other.rules().size());
     CHECK(editor.rules().front().address == other.rules().front().address);
+}
+
+TEST_CASE("RELEASE appears between the preset menu and PANIC, and the menu moves up for it",
+          "[ui][trigger]") {
+    // The operator, 2026-09-30: RELEASE "should pop up above panic but below the select a preset
+    // dropdown, so move the preset dropdown up when panic is hit". PANIC itself never moves, so the
+    // second click of a double-click still lands on it (the audit's H18). Real clicks: where the
+    // menu was before PANIC, a click releases; the menu is found again higher up.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    auto& window = editor.window();
+    const Shown shown(editor);
+    const auto closeList = [&] {
+        if (window.get_presets_open()) {
+            shown.escape();
+        }
+    };
+    constexpr float kX = 60.0f;
+    const float bottom = takt4::ui::kRulesWindowHeight;
+
+    // PANIC: climbing from the window's bottom edge until a click engages it.
+    float panicY = -1.0f;
+    for (float y = bottom - 14.0f; y > bottom - 140.0f && panicY < 0.0f; y -= 4.0f) {
+        shown.click(kX, y);
+        if (rig.runner.panicked()) {
+            panicY = y;
+        }
+        closeList();
+    }
+    INFO("PANIC at " << panicY);
+    REQUIRE(panicY > 0.0f);
+    editor.releasePanic();
+    editor.tick();
+    Shown::settle();
+
+    // The menu with PANIC let go of: the first click above PANIC that opens its list.
+    float menuBefore = -1.0f;
+    for (float y = panicY - 4.0f; y > panicY - 160.0f && menuBefore < 0.0f; y -= 4.0f) {
+        shown.click(kX, y);
+        if (window.get_presets_open()) {
+            menuBefore = y;
+        }
+        closeList();
+        if (rig.runner.panicked()) {
+            // Still inside PANIC, which is 46 px tall: let go and keep climbing.
+            editor.releasePanic();
+            editor.tick();
+            Shown::settle();
+        }
+    }
+    INFO("menu before PANIC at " << menuBefore);
+    REQUIRE(menuBefore > 0.0f);
+    REQUIRE(editor.rules().size() == 1); // no probe picked a preset
+
+    // PANIC, by a click where it was found: it has not moved.
+    shown.click(kX, panicY);
+    editor.tick();
+    Shown::settle();
+    REQUIRE(rig.runner.panicked());
+    REQUIRE(window.get_panicked());
+
+    // Where the menu was is RELEASE now — not the menu, whose list would open.
+    shown.click(kX, menuBefore);
+    editor.tick();
+    Shown::settle();
+    CHECK_FALSE(window.get_presets_open());
+    CHECK_FALSE(rig.runner.panicked());
+    closeList();
+
+    // And the menu moved up by RELEASE's height and the gap, found again with PANIC held.
+    shown.click(kX, panicY);
+    editor.tick();
+    Shown::settle();
+    REQUIRE(rig.runner.panicked());
+    float menuAfter = -1.0f;
+    for (float y = menuBefore - 4.0f; y > menuBefore - 160.0f && menuAfter < 0.0f; y -= 4.0f) {
+        shown.click(kX, y);
+        if (window.get_presets_open()) {
+            menuAfter = y;
+        }
+        closeList();
+        if (!rig.runner.panicked()) {
+            // A probe landed on RELEASE: engage again and keep climbing.
+            shown.click(kX, panicY);
+            editor.tick();
+            Shown::settle();
+        }
+    }
+    INFO("menu with PANIC held at " << menuAfter);
+    REQUIRE(menuAfter > 0.0f);
+    CHECK(menuAfter < menuBefore - 30.0f);
+    CHECK(rig.runner.panicked());
+    CHECK(editor.rules().size() == 1);
 }
 
 TEST_CASE("D's + add adds a follow-up, and the log's clear empties the log", "[ui][trigger]") {

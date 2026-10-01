@@ -1621,6 +1621,8 @@ TEST_CASE("an OSC control port another program holds stays asked for, says why, 
         controller.window().invoke_osc_control_toggled(false);
         CHECK_FALSE(controller.window().get_osc_control_error());
         CHECK(std::string(controller.window().get_osc_control_reading()) == "off");
+        // A word, so set in Archivo with the window's other states, not in DM Mono.
+        CHECK(controller.window().get_osc_control_reading_words());
         CHECK_FALSE(controller.currentSettings().machine.oscControlEnabled);
         holder.reset(); // free now, and not asked for
         for (int i = 0; i < 10; ++i) {
@@ -1685,6 +1687,7 @@ TEST_CASE("a MIDI control input that is not here says so on its own line until i
     CHECK_FALSE(controller.window().get_control_error());
     const std::string off(controller.window().get_control_reading());
     CHECK((off == "off \xE2\x80\x94 pick a port" || off == "no MIDI inputs on this machine"));
+    CHECK(controller.window().get_control_reading_words());
 }
 
 TEST_CASE("an output that reaches nothing says why on its own row, for as long as it does",
@@ -4721,7 +4724,7 @@ TEST_CASE("the add a rule button adds one when there are none, and only opens th
     constexpr int kWidth = 800;
     constexpr int kHeight = 1200;
     auto& window = controller.window().window();
-    const auto trigButton = [&] {
+    const auto trigButton = [&](std::size_t drawn) {
         const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, kHeight);
         window.dispatch_window_active_changed_event(true);
         const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
@@ -4729,11 +4732,12 @@ TEST_CASE("the add a rule button adds one when there are none, and only opens th
         const int row = sheets[6].first + 33;
         const auto trig = occupied(shot, row - 23, row + 22, 20, kWidth - 20, kSheet, 5);
         INFO("triggers: " << spans(trig));
-        // 04, triggers, the rules button, the fixtures button, PANIC.
-        REQUIRE(trig.size() == 5);
+        // 04, triggers, the rules button, its count once there are rules ("1 of 1 active"), the
+        // fixtures button, PANIC.
+        REQUIRE(trig.size() == drawn);
         return std::pair<float, float>{middleOf(trig[2]), static_cast<float>(row)};
     };
-    const auto [x, y] = trigButton();
+    const auto [x, y] = trigButton(5);
     clickAt(window, x, y);
     slint::platform::update_timers_and_animations();
     controller.tick();
@@ -4742,9 +4746,10 @@ TEST_CASE("the add a rule button adds one when there are none, and only opens th
     CHECK(controller.editor().window().get_selected() == 0);
     CHECK(controller.window().get_rules_total() == 1);
 
-    // With a rule, the button says how many are active and only opens the editor.
+    // With a rule, the button reads "edit rules" and only opens the editor; how many are active
+    // is said beside it, not on it.
     controller.editor().hide();
-    const auto [again, row] = trigButton();
+    const auto [again, row] = trigButton(6);
     clickAt(window, again, row);
     slint::platform::update_timers_and_animations();
     CHECK(controller.editor().visible());
@@ -6331,20 +6336,23 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     const int trigRow = sheets[6].first + 33;
     const auto trig = occupied(shot, trigRow - 23, trigRow + 22, 20, kWidth - 20, kSheet, 5);
     INFO("triggers: " << spans(trig));
-    // 04, triggers, the rules button, the fixtures button, PANIC.
-    REQUIRE(trig.size() == 5);
-    // 04, triggers, the rules button, the fixtures button, ..., PANIC.
+    // 04, triggers, the rules button and its count ("1 of 2 active"), the fixtures button and
+    // its count, PANIC. A button says what it does; the count beside it is a reading.
+    REQUIRE(trig.size() == 7);
     click(middleOf(trig[2]), trigRow);
-    click(middleOf(trig[3]), trigRow);
+    click(middleOf(trig[4]), trigRow);
     click(middleOf(trig.back()), trigRow);
     expect({"rules", "fixtures", "panic"}, "the rules, the fixtures, PANIC");
+    click(middleOf(trig[3]), trigRow);
+    click(middleOf(trig[5]), trigRow);
+    expect({}, "the two counts, which are readings");
     // Engaged, RELEASE appears to PANIC's left, and PANIC does not move.
     window->set_panicked(true);
     shot = takt4::tests::render(*window, kWidth, kHeight);
     handle.dispatch_window_active_changed_event(true);
     const auto engaged = occupied(shot, trigRow - 23, trigRow + 22, 20, kWidth - 20, kSheet, 5);
     INFO("triggers, panicked: " << spans(engaged));
-    REQUIRE(engaged.size() == 6);
+    REQUIRE(engaged.size() == 8);
     CHECK(engaged.back().second == trig.back().second);
     click(middleOf(engaged[engaged.size() - 2]), trigRow);
     click(middleOf(engaged.back()), trigRow);
