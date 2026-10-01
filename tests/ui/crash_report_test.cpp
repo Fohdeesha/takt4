@@ -256,11 +256,18 @@ std::vector<DWORD> childrenOf(DWORD parent) {
     return children;
 }
 
-/// What the message says.
+/// What the message says, once it says it.
 std::wstring noticeText(HWND box) {
-    // A message box's text is the static control it gives the id 0xFFFF.
+    // A message box's text is the static control it gives the id 0xFFFF. The box has its title,
+    // which is how it is found, before it has that text: read the moment the title appears, the
+    // text was empty 200 times in 200 (measured 2026-10-01), and a busy CI runner read it there.
+    // So wait for the text and for the box to be shown, which comes after it.
     wchar_t text[4096] = {};
-    GetDlgItemTextW(box, 0xFFFF, text, 4096);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while ((GetDlgItemTextW(box, 0xFFFF, text, 4096) == 0 || !IsWindowVisible(box)) &&
+           std::chrono::steady_clock::now() < until) {
+        Sleep(10);
+    }
     return text;
 }
 
