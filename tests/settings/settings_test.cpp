@@ -1023,6 +1023,28 @@ TEST_CASE("an Art-Net output survives the round trip through its own text line",
     }
 }
 
+TEST_CASE(
+    "an OSC output that takes only its rules is saved so, and an older file's take everything",
+    "[settings]") {
+    // `OutputTarget::sendsNamespace`, the operator's switch of 2026-10-01: in the output's own
+    // line, and on unless that line says otherwise — the dev rig's own file, as it was written.
+    const Settings old = takt4::settings::fromJson(
+        R"({"version":1,"preset":{"outputs":["off Link = link #o-57f1d0a7",
+            "127.0.0.1:6454 = 127.0.0.1:9000 #o-45c7d6b9"]}})");
+    REQUIRE(old.preset.outputs.size() == 2);
+    CHECK(old.preset.outputs[1].kind == takt4::output::OutputTarget::Kind::Osc);
+    CHECK(old.preset.outputs[1].sendsNamespace);
+    CHECK(takt4::settings::toJson(old).find("rules-only") == std::string::npos);
+
+    Settings in = old;
+    in.preset.outputs[1].sendsNamespace = false;
+    CHECK(takt4::settings::toJson(in).find(
+              "127.0.0.1:6454 = 127.0.0.1:9000 rules-only #o-45c7d6b9") != std::string::npos);
+    const Settings out = roundTrip(in);
+    REQUIRE(out.preset.outputs.size() == 2);
+    CHECK(out.preset.outputs[1] == in.preset.outputs[1]);
+}
+
 TEST_CASE("a preset written with the British spelling still loads", "[settings][dmx]") {
     // takt4 said "colour" everywhere until a rig asked for the other spelling on 2026-09-16.
     // Three things in a saved preset carried that word — the effect name, a channel's role,
