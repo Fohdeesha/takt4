@@ -489,6 +489,7 @@ std::string toJson(const Settings& settings) {
              {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
              {"ruleLogOpen", settings.machine.ruleLogOpen},
              {"ruleLogHeight", settings.machine.ruleLogHeight},
+             {"patchSectionsFolded", settings.machine.patchSectionsFolded},
          }},
         {"preset",
          json{
@@ -547,6 +548,17 @@ Settings fromDocument(const json& document) {
             for (std::size_t i = 0; i < settings.machine.ruleSectionsFolded.size(); ++i) {
                 if (folds.at(i).is_boolean()) {
                     settings.machine.ruleSectionsFolded[i] = folds.at(i).get<bool>();
+                }
+            }
+        }
+        // The patch editor's, three in A-to-C order, read the same way.
+        if (machine.is_object() && machine.contains("patchSectionsFolded") &&
+            machine.at("patchSectionsFolded").is_array() &&
+            machine.at("patchSectionsFolded").size() == settings.machine.patchSectionsFolded.size()) {
+            const json& folds = machine.at("patchSectionsFolded");
+            for (std::size_t i = 0; i < settings.machine.patchSectionsFolded.size(); ++i) {
+                if (folds.at(i).is_boolean()) {
+                    settings.machine.patchSectionsFolded[i] = folds.at(i).get<bool>();
                 }
             }
         }

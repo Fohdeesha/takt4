@@ -70,7 +70,7 @@ inline constexpr int kRulesShotWidth = 1000;
 inline constexpr int kRulesShotHeight = 872;
 
 /// And the patch editor's (`kFixturesWindowWidth`, `kFixturesWindowHeight`).
-inline constexpr int kFixturesShotWidth = 1080;
+inline constexpr int kFixturesShotWidth = 1000;
 inline constexpr int kFixturesShotHeight = 800;
 
 /// Renders the main window to a 24-bit BMP at `out`, with no window system involved.

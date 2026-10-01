@@ -407,6 +407,9 @@ export component MainWindow inherits Window {
   callback output-delay-changed(int, float);
   /// A number typed into row N's delay reading, as typed — the same as `latency-typed`.
   callback output-delay-typed(int, string);
+  /// A keystroke in an output's delay reading, before it is entered: see
+  /// `WindowController::outputsGeneration_`.
+  callback output-delay-keyed(int);
 
   /// PANIC let go of — the RELEASE button beside PANIC, which is the only way back. See
   /// `panic-clicked`, which only ever engages.
@@ -1714,6 +1717,9 @@ export component MainWindow inherits Window {
                         text: (target.delay-ms > 0 ? "+" : "") + round(target.delay-ms) + " ms";
                         value-text: round(target.delay-ms);
                         enabled: target.enabled;
+                        typed(text) => {
+                          root.output-delay-keyed(index);
+                        }
                         committed(text) => {
                           root.output-delay-typed(index, text);
                         }

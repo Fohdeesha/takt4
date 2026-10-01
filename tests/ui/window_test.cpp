@@ -6629,6 +6629,90 @@ TEST_CASE("the rule editor opens folded as it was left, with its log as it was",
     CHECK(editor.get_log_lines_height() == Catch::Approx(144.0f));
 }
 
+TEST_CASE("an output edit typed and not entered stays off the outputs an import brings in",
+          "[ui][settings]") {
+    // Found reviewing, 2026-10-01: a box that had the keyboard commits a turn of the event loop
+    // after the click that took it — IMPORT's — and IMPORT replaces the rows under the boxes. When
+    // row i of the imported rig held what the box was shown, nothing changed the box, and its late
+    // commit put what was typed onto the imported output. Driven as the markup sends it: the
+    // keystroke, the import, then the box's own commit.
+    takt4::settings::Settings show;
+    takt4::output::OutputTarget deck;
+    deck.name = "deck";
+    deck.kind = takt4::output::OutputTarget::Kind::Osc;
+    deck.host = "10.0.0.40";
+    deck.port = 7000;
+    show.preset.outputs = {deck};
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "show.json";
+    REQUIRE(takt4::settings::save(show, file));
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, show); // the same show on screen, as a re-import has it
+    auto& window = controller.window();
+    // A copy: `currentSettings` is built afresh on every call.
+    const auto deckNow = [&controller]() -> takt4::output::OutputTarget {
+        const std::vector<takt4::output::OutputTarget> outputs =
+            controller.currentSettings().preset.outputs;
+        const auto found = std::find_if(outputs.begin(), outputs.end(),
+                                        [](const auto& target) { return target.name == "deck"; });
+        REQUIRE(found != outputs.end());
+        return *found;
+    };
+    const auto rows = window.get_outputs_list();
+    int row = -1;
+    for (std::size_t i = 0; i < rows->row_count(); ++i) {
+        if (std::string(rows->row_data(i)->name) == "deck") {
+            row = static_cast<int>(i);
+        }
+    }
+    REQUIRE(row >= 0);
+
+    window.invoke_output_host_edited(row, "10.0.0.99"); // typed, not entered
+    REQUIRE(controller.importFrom(file));
+    window.invoke_output_host_accepted(row, "10.0.0.99"); // the box's own commit, late
+    CHECK(deckNow().host == "10.0.0.40");
+
+    window.invoke_output_delay_keyed(row);
+    REQUIRE(controller.importFrom(file));
+    window.invoke_output_delay_typed(row, "33");
+    REQUIRE(controller.settleOutputs());
+    CHECK(deckNow().delaySeconds == 0.0);
+
+    // With no import in between, what is typed lands.
+    window.invoke_output_host_edited(row, "10.0.0.77");
+    window.invoke_output_host_accepted(row, "10.0.0.77");
+    CHECK(deckNow().host == "10.0.0.77");
+    window.invoke_output_delay_keyed(row);
+    window.invoke_output_delay_typed(row, "33");
+    REQUIRE(controller.settleOutputs());
+    CHECK(deckNow().delaySeconds == Catch::Approx(0.033));
+}
+
+TEST_CASE("the patch editor opens folded as it was left", "[ui][settings][dmx]") {
+    // The patch editor's A, B and C since its redesign (2026-09-30), remembered as the rule
+    // editor's are: saved by one window, read back as the next launch reads it.
+    takt4::settings::Settings saved;
+    {
+        LiveTracker tracker(kWeights, kStateSpace);
+        WindowController first(tracker);
+        CHECK(first.currentSettings().machine.patchSectionsFolded ==
+              std::array<bool, 3>{false, false, false});
+        first.patchEditor().fold(0);
+        first.patchEditor().fold(2);
+        saved = first.currentSettings();
+    }
+    CHECK(saved.machine.patchSectionsFolded == std::array<bool, 3>{true, false, true});
+    saved = takt4::settings::fromJson(takt4::settings::toJson(saved));
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController second(tracker, saved);
+    FixturesWindow& patch = second.patchEditor().window();
+    CHECK(patch.get_where_folded());
+    CHECK_FALSE(patch.get_channels_folded());
+    CHECK(patch.get_moves_folded());
+}
+
 TEST_CASE("folding a section while one of its boxes is being typed in keeps the edit", "[ui]") {
     // A box commits a turn of the event loop after it loses the keyboard — which the click on
     // the fold arrow takes. A section removed by the fold took the box, and the edit, with it;
