@@ -20,9 +20,9 @@ two, on a track of a few hundred). Every difference is printed either way, inclu
 ones that improved, because a change that moves a number it had no business moving is
 worth a look even when the number went up. A missing track or system is a failure too.
 
-The particle filter is deterministic for a given seed, so on one machine two runs of the
-same build agree to the last bit and the tolerances exist for other compilers, not for
-noise. If they ever have to be widened, that is a finding.
+The forward filter that `nofold` and `fold70` run (the default decoder) is deterministic, so on
+one machine two runs of the same build agree to the last bit and the tolerances exist for other
+compilers, not for noise. If they ever have to be widened, that is a finding.
 
 The baseline lives beside the reference beats it is measured against:
 `tests/data/tracking/refeval/baseline.json`. It was written from the build described in
