@@ -37,8 +37,8 @@ namespace takt4::output {
 /// operator to touch something. Nothing is sent faster than the beats themselves except
 /// a tempo or lock change, which is a handful of datagrams a minute.
 ///
-/// To every target that wants them — `OutputTarget::sendsNamespace`, on unless switched off. A
-/// target with it off is sent the rules aimed at it and nothing of this.
+/// To every target that wants them — `OutputTarget::sendsNamespace`, which an output has off
+/// until it is asked for. A target with it off is sent the rules aimed at it and nothing of this.
 ///
 /// Host presets (§5.6: Resolume, TouchDesigner, MadMapper, QLC+) fill in address
 /// templates and belong to Phase 6's trigger engine; this is the layer underneath them,
@@ -75,7 +75,8 @@ public:
 
     /// One target as `setTargets` wants it: which output it is (`OutputTarget::id`), where it
     /// sends, its routing bit, its delay and whether it is sent the namespace
-    /// (`OutputTarget::sendsNamespace`).
+    /// (`OutputTarget::sendsNamespace`). On here, as for `addTarget`: this class sends what it is
+    /// told to whoever it is given, and `Transports` says for each output whether it wants it.
     struct TargetSpec {
         std::string id;
         std::string host;

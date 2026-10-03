@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace takt4::ui {
 
@@ -101,6 +102,11 @@ void publishIdleReadouts(MainWindow& window);
 
 /// The input meter, from one hop's linear RMS and a peak that the caller decays.
 void publishInput(MainWindow& window, float rms, float peak);
+
+/// The outputs heading's "/takt4 global messages to", from the rows: how many are OSC, how many of
+/// those are ticked, and what the closed box says — "nothing", the names ticked, or "every OSC
+/// output" when two or more are and that is all of them.
+void publishGlobalMessages(MainWindow& window, const std::vector<OutputRow>& rows);
 
 /// What the device picker shows. The host API leads, because on Windows one interface
 /// appears under both ASIO and WASAPI and the two are not interchangeable (§5.1): only

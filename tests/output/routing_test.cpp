@@ -129,33 +129,46 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
     off.enabled = false;
     CHECK(roundTrip(off) == off);
 
-    SECTION("an OSC target that takes only its rules says so, and keeps saying so") {
-        OutputTarget robot = osc("robot", 9000);
-        robot.sendsNamespace = false;
-        robot.delaySeconds = 0.150;
-        CHECK(takt4::output::formatOutputTarget(robot) ==
-              "robot = 127.0.0.1:9000 rules-only +150ms #" + robot.id);
-        CHECK(roundTrip(robot) == robot);
-        robot.enabled = false;
-        CHECK(roundTrip(robot) == robot);
-        // On is said by saying nothing, so every line written before reads as it did.
-        CHECK(takt4::output::formatOutputTarget(wall).find("rules-only") == std::string::npos);
+    SECTION("an OSC target sent takt4's own messages says so, and keeps saying so") {
+        OutputTarget deck = osc("deck", 9000);
+        deck.sendsNamespace = true;
+        deck.delaySeconds = 0.150;
+        CHECK(takt4::output::formatOutputTarget(deck) ==
+              "deck = 127.0.0.1:9000 global +150ms #" + deck.id);
+        CHECK(roundTrip(deck) == deck);
+        deck.enabled = false;
+        CHECK(roundTrip(deck) == deck);
+        // Off is said by saying nothing, which is how every line written before reads: off.
+        CHECK_FALSE(wall.sendsNamespace);
+        CHECK(takt4::output::formatOutputTarget(wall).find("global") == std::string::npos);
         OutputTarget old;
         REQUIRE(takt4::output::parseOutputTarget("deck = 127.0.0.1:7000 +40ms #o-1a2b", old));
-        CHECK(old.sendsNamespace);
-        // Unnamed, the address is the name, without the word.
-        REQUIRE(takt4::output::parseOutputTarget("127.0.0.1:9000 rules-only", old));
         CHECK_FALSE(old.sendsNamespace);
+        // Unnamed, the address is the name, without the word.
+        REQUIRE(takt4::output::parseOutputTarget("127.0.0.1:9000 global", old));
+        CHECK(old.sendsNamespace);
         CHECK(old.name == "127.0.0.1:9000");
         CHECK(old.port == 9000);
+        // The word a line had for a day the other way round reads as off, and loses nothing.
+        REQUIRE(takt4::output::parseOutputTarget("robot = 127.0.0.1:9000 rules-only +150ms #o-1a2b",
+                                                 old));
+        CHECK_FALSE(old.sendsNamespace);
+        CHECK(old.port == 9000);
+        CHECK(old.delaySeconds == 0.150);
         // Only OSC has the namespace: nothing else writes the word, and a MIDI device whose name
         // ends in it keeps it.
-        OutputTarget node = lights;
-        node.sendsNamespace = false;
-        CHECK(takt4::output::formatOutputTarget(node).find("rules-only") == std::string::npos);
-        REQUIRE(takt4::output::parseOutputTarget("pads = midi Pad rules-only", old));
-        CHECK(old.device == "Pad rules-only");
-        CHECK(old.sendsNamespace);
+        OutputTarget pads = lights;
+        pads.sendsNamespace = true;
+        CHECK(takt4::output::formatOutputTarget(pads).find("global") == std::string::npos);
+        REQUIRE(takt4::output::parseOutputTarget("pads = midi Pad global", old));
+        CHECK(old.device == "Pad global");
+        CHECK_FALSE(old.sendsNamespace);
+    }
+
+    SECTION("an address given alone, as the console's --osc gives it, is sent the namespace") {
+        const std::vector<OutputTarget> given = takt4::output::oscOutputs({{"127.0.0.1", 9000}});
+        REQUIRE(given.size() == 1);
+        CHECK(given.front().sendsNamespace);
     }
 
     SECTION("and the format an operator already knew still works") {
@@ -328,19 +341,21 @@ TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][r
     }
 }
 
-TEST_CASE("the generic namespace goes to every target, routed or not", "[output][routing]") {
-    // §5.6: "Always publish a generic namespace regardless of which host preset is active,
-    // so anything can consume it with zero configuration." A *rule* chooses where it goes;
-    // the app's own description of what the tempo is does not.
+TEST_CASE("the generic namespace goes to every output that asks for it, routed or not",
+          "[output][routing]") {
+    // §5.6 had it go everywhere, "so anything can consume it with zero configuration"; since
+    // 2026-10-02 it goes to the outputs ticked for it (`OutputTarget::sendsNamespace`) and no
+    // others, the operator's call after a robot's bridge complained of it. Which of those a *rule*
+    // reaches has nothing to do with it.
     LoopbackReceiver deck;
     LoopbackReceiver wall;
-    // ...except one told to take only its rules (`OutputTarget::sendsNamespace`).
-    LoopbackReceiver robot;
+    LoopbackReceiver robot; // not ticked, as no output is until it is
 
     Transports::Config config;
     config.outputs = {osc("deck", deck.port()), osc("wall", wall.port()),
                       osc("robot", robot.port())};
-    config.outputs[2].sendsNamespace = false;
+    config.outputs[0].sendsNamespace = true;
+    config.outputs[1].sendsNamespace = true;
     Transports transports(config);
 
     takt4::tracking::BeatEvent event;

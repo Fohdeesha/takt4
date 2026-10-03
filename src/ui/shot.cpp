@@ -785,7 +785,6 @@ void fillAsMockup(MainWindow& window) {
         row.host = slint::SharedString(host);
         row.port = slint::SharedString("7000");
         row.enabled = true;
-        row.sends_namespace = true;
         row.delay_ms = delayMs;
         return row;
     };
@@ -950,7 +949,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         drums.delay_ms = 25.0f;
         targets->push_back(drums);
         const auto target = [](const char* name, const char* host, const char* port, bool enabled,
-                               float delayMs = 0.0f, bool own = true) {
+                               float delayMs = 0.0f, bool own = false) {
             OutputRow row{};
             row.name = slint::SharedString(name);
             row.kind_index = 0;
@@ -962,15 +961,15 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
             row.delay_ms = delayMs;
             return row;
         };
-        targets->push_back(target("deck", "192.168.1.40", "7000", true));
+        targets->push_back(target("deck", "192.168.1.40", "7000", true, 0.0f, true));
         // One of each sign, because a rig where every destination shares a lag is the case
         // that never needed §5.6's per-target offset — and because the two directions do
         // different things underneath. The media server is nudged *early*, which for a
         // message about a beat already heard means "just before the next one"; the robot,
-        // which has to physically move, is pushed late — and takes only its rules, which is
-        // the reason an output can be told not to send takt4's own messages.
-        targets->push_back(target("wall", "192.168.1.41", "7000", true, -80.0f));
-        targets->push_back(target("robot", "192.168.1.42", "7000", true, 352.0f, false));
+        // which has to physically move, is pushed late — and is left out of takt4's own
+        // messages, which its bridge does not want, as the other two are not.
+        targets->push_back(target("wall", "192.168.1.41", "7000", true, -80.0f, true));
+        targets->push_back(target("robot", "192.168.1.42", "7000", true, 352.0f));
         // The other kind of destination, so the picture shows both shapes of the row: a MIDI
         // target picks its device from a list rather than holding a typed name.
         OutputRow lights{};
@@ -1101,13 +1100,16 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     if (const auto rows = window->get_outputs_list()) {
         int on = 0;
         int failing = 0;
+        std::vector<OutputRow> all;
         for (std::size_t i = 0; i < rows->row_count(); ++i) {
             const OutputRow row = *rows->row_data(i);
             on += row.enabled ? 1 : 0;
             failing += row.problem.empty() ? 0 : 1;
+            all.push_back(row);
         }
         window->set_outputs_on(on);
         window->set_outputs_failing(failing);
+        publishGlobalMessages(*window, all);
     }
     window->set_inputs_folded(options.foldInputs);
     window->set_outputs_folded(options.foldOutputs);

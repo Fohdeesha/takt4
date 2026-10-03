@@ -282,8 +282,10 @@ public:
     void removeTarget(int index);
     void setTargetEnabled(int index, bool on);
     /// Whether OSC row `index` is sent takt4's own messages — `output::OutputTarget::
-    /// sendsNamespace`. Off, only the rules aimed at it are.
+    /// sendsNamespace`, off until asked for. Off, only the rules aimed at it are.
     void setTargetNamespace(int index, bool on);
+    /// The same for every OSC row: the "every OSC output" row of the heading's list.
+    void setAllNamespace(bool on);
     /// Row `index`'s per-output delay, in milliseconds — §5.6's answer to a rig whose
     /// destinations do not all have the same lag. See `output::OutputTarget::delaySeconds`.
     void setTargetDelay(int index, float ms);

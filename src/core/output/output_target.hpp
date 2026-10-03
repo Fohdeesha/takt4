@@ -72,13 +72,15 @@ struct OutputTarget {
 
     /// `Osc`: whether takt4's own messages go here as well as the rules aimed at it — §5.6's
     /// generic namespace, `/takt4/bpm`, `/beat`, `/beat/bar`, `/downbeat`, `/confidence`,
-    /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat. On unless
-    /// switched off, as §5.6 has it, so anything can consume them with no setup. Off is for a
-    /// receiver that takes only what a rule sends it and complains about the rest (the operator,
-    /// 2026-10-01: *"my robot egm bridge does not like the random osc spam"*); a rule aimed here
-    /// still goes. Written as "rules-only" in the line (`formatOutputTarget`). Ignored for the
-    /// other kinds.
-    bool sendsNamespace = true;
+    /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat.
+    ///
+    /// **Off unless asked for** (the operator, 2026-10-02), which §5.6's "always publish" was not:
+    /// a receiver that takes only what a rule sends it complains about the rest (2026-10-01: *"my
+    /// robot egm bridge does not like the random osc spam"*), and every output a rig had got them
+    /// whether it wanted them or not. The main window's "/takt4 global messages to" picks the
+    /// outputs that do. A rule aimed here goes either way. Written as "global" in the line
+    /// (`formatOutputTarget`); an older line has no word, and is off. Ignored for the other kinds.
+    bool sendsNamespace = false;
 
     /// Where this target's messages sit relative to the beat, in seconds — §5.5's latency
     /// offset, but per target rather than one number for the whole rig.
@@ -180,7 +182,8 @@ void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarge
 /// What a caller holding nothing but host/port pairs means — `takt4-cli`'s `--osc`, and a
 /// settings file written before targets had names. Naming a target after its address is what
 /// the outputs field always showed anyway, and is unique as often as two identical addresses
-/// are not a mistake.
+/// are not a mistake. Each is sent takt4's own messages (`sendsNamespace`): a destination given
+/// by nothing but its address has no rule aimed at it, and `--osc` is "send the namespace there".
 std::vector<OutputTarget>
 oscOutputs(const std::vector<std::pair<std::string, std::uint16_t>>& targets);
 
@@ -189,8 +192,8 @@ const OutputTarget* findTarget(const std::vector<OutputTarget>& targets, std::st
 
 /// "main = 127.0.0.1:7000", "lights = midi MOTU Pro Audio Midi Out 1", "drums = midiclock
 /// TR-8S" and "Link = link", which is how a settings file stores one. A switched-off target
-/// leads with "off ", an OSC target that takes only the rules has " rules-only" after its
-/// address, one with a delay ends with " +120ms", and the id, where there is one, comes last as
+/// leads with "off ", an OSC target sent takt4's own messages has " global" after its address,
+/// one with a delay ends with " +120ms", and the id, where there is one, comes last as
 /// " #o-1a2b3c4d". A name that would read back as something else — "off stage",
 /// "a=b", one with a comma or a quote in it, or spaces at its ends — is written in double
 /// quotes: "\"off stage\" = 127.0.0.1:7000". Round-trips through `parseOutputTarget`, whatever

@@ -634,9 +634,8 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
 
     constexpr int kWidth = 800;
     // Tall enough that the first rows are on screen before anything scrolls, and short enough
-    // that the body still has to: the inputs sit above the outputs. An OSC row is 68 px from the
-    // next with its own-messages line: at 900 only one was in view, at 960 two are.
-    constexpr int kHeight = 960;
+    // that the body still has to: the inputs sit above the outputs.
+    constexpr int kHeight = 900;
     // The middle of the "×" at the end of each target row.
     constexpr int kRemoveX = kWidth - 26 - 12;
     // The pinned footer: 10 px of page, the 66 px triggers row, the 51 px status bar.
@@ -4316,8 +4315,7 @@ TEST_CASE("clicking from a row's name box into its host box keeps what is typed 
 namespace {
 
 /// The middle of each output row: found from the bottom of the body up by typing a letter and
-/// Enter into whatever is at x = 110 and seeing which row it named — put back straight away, as
-/// is an OSC row's own-messages tick, whose words a click there meets —
+/// Enter into whatever is at x = 110 and seeing which row it named — put back straight away —
 /// and taking the middle of the span of clicks that named each. The row's ×, and its other
 /// boxes, sit on that line; the edge of a name box is outside the smaller × beside it. A click
 /// on ADD OUTPUT on the way adds a row, which is taken away again. Row 0 is Link, which has no
@@ -4334,10 +4332,8 @@ std::vector<float> outputRowsAt(WindowController& controller, float height) {
     std::vector<float> top(count, -1.0f);
     for (float y = height - 128.0f; y > 380.0f; y -= 2.0f) {
         std::vector<std::string> names;
-        std::vector<bool> own;
         for (std::size_t i = 0; i < count; ++i) {
             names.emplace_back(rows->row_data(i)->name);
-            own.push_back(rows->row_data(i)->sends_namespace);
         }
         clickAt(window, 110.0f, y);
         press(window, "n");
@@ -4356,12 +4352,6 @@ std::vector<float> outputRowsAt(WindowController& controller, float height) {
                 }
                 top[i] = y;
                 controller.setTargetName(static_cast<int>(i), names[i], true);
-                settle();
-            }
-            // The words of an OSC row's tick for takt4's own messages are at x = 110 too, on the
-            // line under the row: a click there ticks it, and it is put back.
-            if (rows->row_data(i)->sends_namespace != own[i]) {
-                controller.setTargetNamespace(static_cast<int>(i), own[i]);
                 settle();
             }
         }
@@ -4505,17 +4495,17 @@ TEST_CASE("an output's on tick follows its row when the rows change under it", "
     nothingReal.check();
 }
 
-TEST_CASE("an OSC output unticked from takt4's own messages gets its rules and nothing under the "
-          "prefix",
+TEST_CASE("takt4's own messages go to no OSC output until one is ticked in the outputs heading",
           "[ui]") {
     // The operator, 2026-10-01: "my robot egm bridge does not like the random osc spam" — it logs
-    // every /takt4 address it is sent as unhandled. Each OSC row has a tick for takt4's own
-    // messages (`OutputTarget::sendsNamespace`). This unticks the robot's with a click, as an
-    // operator would, and reads what reaches its port as the tempo moves: none of the namespace,
-    // while the deck beside it hears every change, and the robot's own cue. (The state addresses,
-    // not the beats: they go out whenever they change, stopped or not, and only START — a
-    // device — lets the window's runner send beats. `/takt4/bpm` is what the bridge logged; the
-    // beats take the same road through `OscPublisher`, and its tests hold them back too.)
+    // every /takt4 address it is sent as unhandled — and 2026-10-02: they go nowhere until asked
+    // for, in the outputs heading's "/takt4 global messages to" (`OutputTarget::sendsNamespace`).
+    // This reads what reaches two outputs as the tempo moves, before and after the deck is ticked
+    // there with clicks, as an operator would: nothing at first, then the deck and never the robot,
+    // whose own cue still reaches it. (The state addresses, not the beats: they go out whenever
+    // they change, stopped or not, and only START — a device — lets the window's runner send
+    // beats. `/takt4/bpm` is what the bridge logged; the beats take the same road through
+    // `OscPublisher`, and its tests hold them back too.)
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::testing::LoopbackReceiver deck;
     takt4::testing::LoopbackReceiver robot;
@@ -4549,8 +4539,11 @@ TEST_CASE("an OSC output unticked from takt4's own messages gets its rules and n
     };
     const auto rows = controller.window().get_outputs_list();
     REQUIRE(rows->row_count() == 3); // Link, the deck, the robot
+    REQUIRE(std::string(rows->row_data(1)->name) == "deck");
     REQUIRE(std::string(rows->row_data(2)->name) == "robot");
-    REQUIRE(rows->row_data(2)->sends_namespace);
+    CHECK_FALSE(rows->row_data(1)->sends_namespace);
+    CHECK_FALSE(rows->row_data(2)->sends_namespace);
+    CHECK(std::string(controller.window().get_global_summary()) == "nothing");
 
     const auto heard = [](takt4::testing::LoopbackReceiver& receiver) {
         std::vector<std::string> got;
@@ -4565,44 +4558,79 @@ TEST_CASE("an OSC output unticked from takt4's own messages gets its rules and n
                              [prefix](const std::string& a) { return a.starts_with(prefix); });
     };
 
-    // The committed excerpt, until the tracker locks: a tempo, a confidence and a lock, each sent
-    // as it changes.
+    // The committed excerpt, until the tracker locks: a tempo, a confidence and a lock, each of
+    // which would be sent as it changes — to nobody, since nobody has asked.
     SyntheticRun run(tracker);
     REQUIRE(run.untilLocked());
     REQUIRE(controller.settleOutputs());
-    CHECK(count(heard(deck), "/takt4/bpm") > 0);
-    CHECK(count(heard(robot), "/takt4/bpm") > 0); // on, as every output starts
+    CHECK(count(heard(deck), "/takt4") == 0);
+    CHECK(count(heard(robot), "/takt4") == 0);
 
-    // The robot's tick: on the line under its row, which ends with the row's × button — the last
-    // one down the window (a 21 px edge in the top bar is in that column too, far above). Looked
-    // for from under the row — the × is centred in a 34 px row, 5 px off its foot — so no click
-    // lands in the row's name box, where the M pressed below would be typed, not fire the cue.
-    const std::vector<std::pair<int, int>> removes = removeButtonsDown(shot, 0, kHeight);
-    INFO("x buttons at " << spans(removes));
-    REQUIRE(removes.size() >= 2);
-    const int robotRow = removes.back().second;
+    // The box, at the right of the outputs heading after its label, opens the list; its lines are
+    // found by probing, since where a popup opens is Slint's to say. A probe that misses the list
+    // closes it — and sets off nothing under it, which the click sweep of every control holds — so
+    // it is opened again for each one. Hunted outward from the box, clear of the top bar and the
+    // pinned footer; any change a probe makes that is not the one looked for is put back.
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const int headRow = sheets[5].first + 10 + 14;
+    const auto head = occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
+    INFO("the outputs heading: " << spans(head));
+    REQUIRE(head.size() == 2);
+    const float boxX = middleOf(head[1]);
+    const auto flags = [&rows] {
+        return std::pair{rows->row_data(1)->sends_namespace, rows->row_data(2)->sends_namespace};
+    };
+    const auto find = [&](std::pair<bool, bool> wanted) {
+        for (int d = 0; d < 900; d += 3) {
+            for (const int y : {headRow + d, headRow - d}) {
+                if (y < 100 || y >= kHeight - 130) {
+                    continue;
+                }
+                if (!controller.window().get_global_open()) {
+                    clickAt(window, boxX, static_cast<float>(headRow));
+                    settle();
+                }
+                const auto before = flags();
+                clickAt(window, 600.0f, static_cast<float>(y));
+                settle();
+                const auto after = flags();
+                if (after != before && after == wanted) {
+                    return static_cast<float>(y);
+                }
+                if (after != before) {
+                    controller.setTargetNamespace(1, before.first);
+                    controller.setTargetNamespace(2, before.second);
+                    settle();
+                }
+            }
+        }
+        return -1.0f;
+    };
     const takt4::tests::NothingReal nothingReal;
-    float tickY = -1.0f;
-    for (int y = robotRow + 7; y < robotRow + 40 && tickY < 0.0f; y += 2) {
-        clickAt(window, 70.0f, static_cast<float>(y)); // the box is 16 px from x 62
-        settle();
-        while (rows->row_count() > 3) { // a miss on "+ add output"
-            controller.removeTarget(static_cast<int>(rows->row_count()) - 1);
-            settle();
-        }
-        if (!rows->row_data(2)->sends_namespace) {
-            tickY = static_cast<float>(y);
-        }
-    }
-    INFO("tick at " << tickY);
-    REQUIRE(tickY > 0.0f);
-    CHECK(rows->row_data(1)->sends_namespace); // the deck's is its own
+    const float deckLine = find({true, false});
+    INFO("the deck's line at " << deckLine);
+    REQUIRE(deckLine > 0.0f);
+    CHECK(std::string(controller.window().get_global_summary()) == "deck");
+    CHECK(seen(controller).targets[1].sendsNamespace);
     CHECK_FALSE(seen(controller).targets[2].sendsNamespace);
-    CHECK(takt4::settings::toJson(controller.currentSettings()).find("rules-only") !=
+    const std::string file = takt4::settings::toJson(controller.currentSettings());
+    CHECK(file.find("deck = 127.0.0.1:" + std::to_string(deck.port()) + " global") !=
           std::string::npos);
+    CHECK(file.find("robot = 127.0.0.1:" + std::to_string(robot.port()) + " #") !=
+          std::string::npos);
+    // Escape closes the list and goes no further: in this window it is PANIC.
+    REQUIRE(controller.window().get_global_open());
+    press(window, kEscape);
+    settle();
+    CHECK_FALSE(controller.window().get_global_open());
+    CHECK_FALSE(panickedNow(controller));
 
-    // The tempo moves: ÷2, then on with the excerpt.
+    // The tempo moves: ÷2, then on with the excerpt. The deck hears it; the robot does not. Both
+    // ports emptied first: a probe on the way to the deck's line may have ticked "every OSC
+    // output" and been put back, and the robot was told the state in that moment.
     (void)heard(deck);
+    (void)heard(robot);
     controller.window().invoke_halve();
     run.applyPosted();
     (void)run.until([] { return false; }); // the rest of the excerpt
@@ -4610,22 +4638,27 @@ TEST_CASE("an OSC output unticked from takt4's own messages gets its rules and n
     const std::vector<std::string> atDeck = heard(deck);
     const std::vector<std::string> atRobot = heard(robot);
     INFO("deck heard " << atDeck.size() << ", the robot " << atRobot.size());
-    CHECK(count(atDeck, "/takt4/bpm") > 0); // the tempo went on being said
+    CHECK(count(atDeck, "/takt4/bpm") > 0);
     CHECK(count(atRobot, "/takt4") == 0);
 
-    // Its rule still reaches it: the M key fires the manual cue.
+    // Its rule reaches it all the same: the M key fires the manual cue.
     press(window, "m");
     REQUIRE(controller.settleOutputs());
-    const std::vector<std::string> cued = heard(robot);
-    CHECK(cued == std::vector<std::string>{"/robot/cue"});
+    CHECK(heard(robot) == std::vector<std::string>{"/robot/cue"});
 
-    // And the same tick gives it back — told the state at once, though nothing has moved since,
-    // as a new output is.
-    clickAt(window, 70.0f, tickY);
-    settle();
-    CHECK(rows->row_data(2)->sends_namespace);
+    // "every OSC output" ticks the robot too — and it is told the state at once, though nothing
+    // has moved since, as a new output is.
+    const float everyLine = find({true, true});
+    INFO("the every-OSC-output line at " << everyLine);
+    REQUIRE(everyLine > 0.0f);
+    CHECK(std::string(controller.window().get_global_summary()) == "every OSC output");
     REQUIRE(controller.settleOutputs());
     CHECK(count(heard(robot), "/takt4/bpm") > 0);
+    // And again, all of them off.
+    clickAt(window, 600.0f, everyLine);
+    settle();
+    CHECK(flags() == std::pair{false, false});
+    CHECK(std::string(controller.window().get_global_summary()) == "nothing");
     nothingReal.check();
 }
 
@@ -5364,15 +5397,10 @@ TEST_CASE("a kind picked again on an output row still follows the row when it ch
     settle();
     settle();
     REQUIRE(kindOf() == 2);
-    // Found again: an Art-Net row has no line for takt4's own messages under it, and in a window
-    // taller than what it holds the plot takes up the 26 px, so the row moves down by them.
-    const std::vector<float> now = outputRowsAt(controller, kHeight);
-    REQUIRE(now.size() == 2);
-    REQUIRE(now[1] > 0.0f);
 
     // Down one from what the dropdown shows. Showing Art-Net, that is the MIDI clock; still
     // showing OSC, it is MIDI.
-    clickAt(window, kKindColumn, now[1]);
+    clickAt(window, kKindColumn, at[1]);
     slint::platform::update_timers_and_animations();
     press(window, kDown);
     press(window, "\n");
@@ -5608,7 +5636,8 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     // out, fails every send, and the window said nothing — the output just went quiet (M12).
     // The socket refuses every send to `kUnsendableHost`, the stand-in here, since no test can
     // pull a cable. Nothing is started: the outputs run from launch (H5), and the status has
-    // to say so before anybody presses anything.
+    // to say so before anybody presses anything — for an output sent takt4's own messages,
+    // which are what a stopped window sends; one sent nothing has nothing to fail.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
@@ -5616,7 +5645,7 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;
     REQUIRE(takt4::output::parseOutputTarget(
-        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000", deck));
+        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000 global", deck));
     saved.preset.outputs = {deck};
     WindowController controller(tracker, saved);
 
@@ -5667,8 +5696,9 @@ TEST_CASE("the settings notice and what the first redraws find are said together
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget deck;
+    // Sent takt4's own messages, which are what fails — see the test above.
     REQUIRE(takt4::output::parseOutputTarget(
-        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000", deck));
+        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000 global", deck));
     saved.preset.outputs = {deck};
     WindowController controller(tracker, saved);
     const std::string notice = "settings.json could not be read, so the copy from the last good "
@@ -5694,7 +5724,8 @@ TEST_CASE("the settings notice and what the first redraws find are said together
     INFO(after);
     CHECK(after.find(notice) == std::string::npos);
     controller.setOscTargets(std::string("deck = ") + takt4::testing::kUnsendableHost +
-                             ":57000, desk = " + takt4::testing::kUnsendableHost + ":57001");
+                             ":57000 global, desk = " + takt4::testing::kUnsendableHost +
+                             ":57001 global");
     std::string later;
     const auto until2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (later.find("desk") == std::string::npos && std::chrono::steady_clock::now() < until2) {
@@ -6067,6 +6098,53 @@ TEST_CASE("SAVE in a test process writes to a folder of its own, not over the ri
 }
 #endif
 
+TEST_CASE("the global messages box is in the outputs heading only with an OSC output to pick",
+          "[ui]") {
+    // Never offer a choice that cannot do anything. With no OSC output there is
+    // nothing to send takt4's own messages to, and folded, the heading reads what the section
+    // holds in that place instead.
+    auto window = MainWindow::create();
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1200;
+    auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+    OutputRow link{};
+    link.name = slint::SharedString("Link");
+    link.kind_index = 4;
+    rows->push_back(link);
+    OutputRow clock{};
+    clock.name = slint::SharedString("clock");
+    clock.kind_index = 3;
+    rows->push_back(clock);
+    window->set_outputs_list(rows);
+    takt4::ui::publishGlobalMessages(*window, {link, clock});
+    // What is drawn between the heading's title and its fold arrow.
+    const auto middle = [&] {
+        const takt4::tests::Shot shot = takt4::tests::render(*window, kWidth, kHeight);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        const int headRow = sheets[5].first + (window->get_outputs_folded() ? 6 : 10) + 14;
+        return occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
+    };
+    INFO("no OSC output");
+    CHECK(middle().empty());
+
+    OutputRow deck{};
+    deck.name = slint::SharedString("deck");
+    deck.host = slint::SharedString("10.0.0.40");
+    deck.port = slint::SharedString("7000");
+    rows->push_back(deck);
+    takt4::ui::publishGlobalMessages(*window, {link, clock, deck});
+    CHECK(std::string(window->get_global_summary()) == "nothing");
+    INFO("one OSC output: its label and its box");
+    CHECK(middle().size() == 2);
+
+    window->set_outputs_folded(true);
+    window->set_outputs_on(3);
+    INFO("folded, the heading's summary and nothing else, which ends before the box would begin");
+    const auto folded = middle();
+    CHECK((folded.empty() || folded.back().second < 540));
+}
+
 TEST_CASE("every control in the main window does what it says, once, and a switched-off one "
           "nothing",
           "[ui]") {
@@ -6111,6 +6189,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
         [&](int i, bool on) { note("on " + std::to_string(i) + (on ? " 1" : " 0")); });
     window->on_output_namespace_changed(
         [&](int i, bool on) { note("namespace " + std::to_string(i) + (on ? " 1" : " 0")); });
+    window->on_outputs_namespace_all(
+        [&](bool on) { note(std::string("namespace-all ") + (on ? "1" : "0")); });
     window->on_output_name_edited([&](int, const slint::SharedString&) { note("name-key"); });
     window->on_output_name_accepted([&](int i, const slint::SharedString& t) {
         note("name " + std::to_string(i) + " " + std::string(t));
@@ -6176,7 +6256,6 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     deck.host = slint::SharedString("10.0.0.40");
     deck.port = slint::SharedString("7000");
     deck.enabled = true;
-    deck.sends_namespace = true;
     rows->push_back(deck);
     OutputRow clock{};
     clock.name = slint::SharedString("clock");
@@ -6185,6 +6264,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     clock.enabled = true;
     rows->push_back(clock);
     window->set_outputs_list(rows);
+    takt4::ui::publishGlobalMessages(*window, {link, deck, clock});
 
     constexpr int kWidth = 800;
     constexpr int kHeight = 1200; // nothing scrolls
@@ -6395,12 +6475,10 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     expect({"network 1"}, "the allow-other-machines box");
 
     // --- outputs -------------------------------------------------------------------------------
-    // The Link row, 28 px, then the rows, 34 px, 8 px apart — an OSC row with its 26 px line for
-    // takt4's own messages under it.
+    // The Link row, 28 px, then the rows, 34 px, 8 px apart.
     const int linkRow = sheets[5].first + 10 + 28 + 8 + 18 + 8 + 14;
     const int deckRow = linkRow + 14 + 8 + 17;
-    const int deckOwnRow = deckRow + 17 + 13;
-    const int clockRow = deckRow + 17 + 26 + 8 + 17;
+    const int clockRow = deckRow + 17 + 8 + 17;
     click(41.0f, linkRow);
     expect({"on 0 0"}, "Link's on box");
     const auto linkInk = occupied(shot, linkRow - 14, linkRow + 13, 150, 500, kSheet, 5);
@@ -6466,16 +6544,49 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     click(762.0f, linkRow);
     expect({}, "the empty cell at the end of Link's row");
 
-    // The deck's tick for takt4's own messages, its words, and the note after them. The bare
-    // window writes nothing back, so the tick stays ticked and both clicks ask for it off.
-    const auto own = occupied(shot, deckOwnRow - 8, deckOwnRow + 8, 20, kWidth - 20, kSheet, 5);
-    INFO("the deck's own-messages line: " << spans(own));
-    REQUIRE(own.size() == 3);
-    click(middleOf(own[0]), deckOwnRow);
-    click(middleOf(own[1]), deckOwnRow);
-    expect({"namespace 1 0", "namespace 1 0"}, "the deck's own-messages tick, then its words");
-    click(middleOf(own[2]), deckOwnRow);
-    expect({}, "the note after it, which is words");
+    // "/takt4 global messages to", at the right of the outputs heading: its label, then the box,
+    // which opens a list of the one OSC output. The deck's line there asks for the deck to be sent
+    // them — once, and the bare window writes nothing back, so it stays unticked.
+    const int headRow = sheets[5].first + 10 + 14;
+    const auto head = occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
+    INFO("the outputs heading: " << spans(head));
+    REQUIRE(head.size() == 2);
+    CHECK(std::string(window->get_global_summary()) == "nothing");
+    click(middleOf(head[0]), headRow);
+    expect({}, "the label, which is words");
+    CHECK_FALSE(window->get_global_open());
+    click(middleOf(head[1]), headRow);
+    CHECK(window->get_global_open());
+    expect({}, "opening the list");
+    // The deck's line, found by probing: where a popup opens is Slint's to say. A probe that misses
+    // the list closes it, so it is opened again for each one — and a miss must set off nothing
+    // under it, which this window would hear.
+    float deckLine = -1.0f;
+    for (int d = 0; d < 900 && deckLine < 0.0f; d += 3) {
+        for (const int y : {headRow + d, headRow - d}) {
+            if (y < 100 || y >= kHeight - 130 || deckLine >= 0.0f) {
+                continue;
+            }
+            if (!window->get_global_open()) {
+                click(middleOf(head[1]), headRow);
+            }
+            click(600.0f, y);
+            if (fired == std::vector<std::string>{"namespace 1 1"}) {
+                deckLine = static_cast<float>(y);
+            } else {
+                INFO("a probe at 600," << y);
+                expect({}, "a probe that missed the deck's line");
+            }
+        }
+    }
+    INFO("the deck's line in the list at " << deckLine);
+    REQUIRE(deckLine >= 0.0f);
+    fired.clear();
+    // Escape closes the list, and does not reach PANIC behind it.
+    CHECK(window->get_global_open());
+    key(kEscape);
+    CHECK_FALSE(window->get_global_open());
+    expect({}, "Escape in the open list");
 
     // [+ add output], under the rows.
     const int addRow = clockRow + 17 + 8 + 4 + 14;

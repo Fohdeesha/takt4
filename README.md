@@ -52,7 +52,7 @@ Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have
 
 ## OSC
 
-Every OSC output gets this feed while **send takt4's own /takt4 messages here** is ticked under its row. Untick it for a receiver that wants only the rules aimed at it.
+takt4 sends this feed to the OSC outputs you tick under **/takt4 global messages to**, at the right of the **outputs** heading. None get it until you do; the rules aimed at an output go either way.
 
 ```
 /takt4/bpm         float   the tempo

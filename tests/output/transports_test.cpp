@@ -254,7 +254,8 @@ TEST_CASE("an output the network will not send to says so, and the others carry 
     // The audit's T3 — sends failing because the network is down had no test — and the part
     // of M12 that goes with it: nothing said so, and the target just went quiet. The socket
     // refuses every send to `kUnsendableHost`, which is what a network that is down does to
-    // all of them.
+    // all of them. Both are sent takt4's own messages, which are what the state below sends —
+    // an output sent nothing has nothing to fail.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
@@ -264,11 +265,13 @@ TEST_CASE("an output the network will not send to says so, and the others carry 
     deck.name = "deck";
     deck.host = takt4::testing::kUnsendableHost;
     deck.port = 57000;
+    deck.sendsNamespace = true;
     takt4::output::OutputTarget lights;
     lights.id = "o-0000e1e1";
     lights.name = "lights";
     lights.host = "127.0.0.1";
     lights.port = receiver.port();
+    lights.sendsNamespace = true;
     Transports transports{Transports::Config{}};
     transports.setOutputs({deck, lights});
     transports.startOutputs(0.0);
