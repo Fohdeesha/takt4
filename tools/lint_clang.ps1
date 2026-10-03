@@ -17,10 +17,10 @@
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1 src/core/control
 #
-# `src/core`, `src/cli` and `tests` by default — what core.yml compiles with -Werror, plus the
-# console, which it builds too. `src/ui` and `tests/ui` are left out, by name: they need
-# Slint's headers and the generated `main_window.h`, which the core tree does not have.
-# full.yml builds them on every push, with GCC as well since the linux-tsan job.
+# `src/core`, `src/cli` and `tests` by default — the engine, the console and their tests, which
+# CI compiles with -Werror. `src/ui` and `tests/ui` are left out, by name: they need Slint's
+# headers and the generated `main_window.h`, which this script does not reconstruct. full.yml
+# builds them on every push, with GCC as well since the linux-tsan job.
 #
 # **A file clang could not parse is not a clean file.** It stops at the first header it cannot
 # find and then says nothing — which this script used to count as clean, for four tests/ui

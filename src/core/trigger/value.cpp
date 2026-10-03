@@ -48,7 +48,7 @@ std::size_t utf8Fit(std::string_view text, std::size_t capacity) noexcept {
 ///
 /// `snprintf` rather than `std::to_chars`, which for *floating point* is the one part of
 /// <charconv> that is not reliably present everywhere this has to build — libc++ was years
-/// behind the others on it, and `core.yml` compiles this file on macOS. The integer
+/// behind the others on it, and macOS is a platform this is meant to build on again. The integer
 /// overloads are universal and are used directly.
 std::size_t formatFloat(char (&out)[32], float value) noexcept {
     // %g so a whole number comes out "4" rather than "4.000000", which is what an operator

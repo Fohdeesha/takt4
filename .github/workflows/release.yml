@@ -2,11 +2,15 @@ name: release
 
 # A release is built here, from its tag — by the user's choice on 2026-09-23 (the audit found
 # releases built by hand from a working tree, with a different compiler than CI, and v0.9.7
-# published before CI had finished). Pushing an annotated tag `vX.Y.Z` builds that commit on a
-# clean runner, runs every test, checks the binary names the tag as its commit, and attaches
-# the executables and their symbols to the GitHub Release for the tag, with the tag's message
-# as the notes. The PDBs go with them because a crash report without them cannot be read
+# published before CI had finished). Pushing an annotated tag `vX.Y.Z` checks full.yml passed on
+# that commit, builds it on a clean runner, checks the binary names the tag as its commit, and
+# attaches the executables and their symbols to the GitHub Release for the tag, with the tag's
+# message as the notes. The PDBs go with them because a crash report without them cannot be read
 # (the audit noted 0.9.4-0.9.6 shipped none).
+#
+# **No tests of its own since 2026-10-03**, the user's call: they were full.yml's windows-msvc
+# job over again, on the same commit with the same preset — twenty minutes of every release spent
+# repeating an answer already given. The check below is what stands in for them.
 
 on:
   push:
@@ -14,6 +18,8 @@ on:
 
 permissions:
   contents: write
+  # To read whether full.yml passed on the commit being released.
+  actions: read
 
 defaults:
   run:
@@ -44,6 +50,23 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
+      # Every test — windows-msvc's `-all` suite, which is what this workflow used to run again,
+      # and AddressSanitizer and ThreadSanitizer besides — has to have passed on this very commit
+      # in full.yml. Refused before anything is built when it has not: push to main, let full go
+      # green, then tag. The commit is the tag's, peeled, not GITHUB_SHA, so an annotated tag is
+      # never mistaken for the commit it names.
+      - name: full passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse "$GITHUB_REF_NAME^{commit}")
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/full.yml/runs?head_sha=$sha&status=success" --jq '.total_count')
+          echo "full.yml runs that passed on $sha: $passed"
+          if [ "$passed" -lt 1 ]; then
+            echo "::error::full.yml has not passed on $sha. Let it go green on main, then rerun this."
+            exit 1
+          fi
+
       - name: Toolchain versions
         run: |
           cmake --version
@@ -55,9 +78,6 @@ jobs:
 
       - name: Build
         run: cmake --build --preset windows-msvc --parallel
-
-      - name: Test
-        run: ctest --preset windows-msvc-all
 
       # What the release will say about itself: the tag exactly — not "-dirty", not a commit
       # after it. `--version` prints "commit: <git describe>".

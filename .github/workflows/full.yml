@@ -1,19 +1,22 @@
 name: full
 
-# The whole application, Slint included. Every job builds Slint from scratch through cargo
-# (7–25 minutes), so this runs only when something that can affect the UI build changes,
-# once a week to catch drift, and on demand. core.yml covers the engine on every push.
+# The whole application, Slint included — **the only CI on a push** since 2026-10-03, when the
+# user had core.yml deleted along with every test that ran twice: core's were a subset of this
+# workflow's windows-msvc job, run again on every push. What went with it: the quicker first
+# answer, and its check that the engine builds without Slint ever being fetched. Every job here
+# builds Slint from scratch through cargo (7–25 minutes), so this runs only when something that
+# can affect the build changes, once a week to catch drift, and on demand. release.yml builds
+# only a commit this has passed on, and runs no test of its own.
 #
 # This workflow is ENABLED, by the user on 2026-09-14. It had been `disabled_manually` since
-# 2026-09-04, which meant a UI change was covered by nothing: core.yml builds with the UI off
-# and does not compile a line of src/ui/. That was noticed while releasing 0.9.6 — a release
-# whose every changed file was under src/ui/ — and the answer was to turn this back on rather
-# than to keep dispatching it by hand and forgetting to.
+# 2026-09-04, which left a UI change covered by nothing. That was noticed while releasing 0.9.6
+# — a release whose every changed file was under src/ui/ — and the answer was to turn this back
+# on rather than to keep dispatching it by hand and forgetting to.
 #
-# WINDOWS ONLY, by the user, 2026-09-06 — the same ruling core.yml carries: it used to cost
-# ≈150 billable minutes because macOS is billed at 10× and Slint takes 7–25 minutes to
-# build. The macOS and Linux app entries are commented out rather than deleted so bringing
-# them back is uncommenting — but bring them back knowing what they used to cost.
+# WINDOWS ONLY, by the user, 2026-09-06: it used to cost ≈150 billable minutes because macOS is
+# billed at 10× and Slint takes 7–25 minutes to build. The macOS and Linux app entries are
+# commented out rather than deleted so bringing them back is uncommenting — but bring them back
+# knowing what they used to cost.
 #
 # **Plus the sanitizers, on every push the path filter below lets through (every push that
 # touches the code), by the user on 2026-09-23** (the audit's T4, which
