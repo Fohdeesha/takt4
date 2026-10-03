@@ -3130,6 +3130,33 @@ TEST_CASE("a remembered interface that is missing at launch is still the one sav
           controller.devices()[static_cast<std::size_t>(controller.deviceIndex())].name);
 }
 
+TEST_CASE("a remembered interface is still the one saved on a machine with no input at all",
+          "[ui]") {
+    // The same, with nothing to fall back to: the empty list returned before the fallback was
+    // noted, so the next save wrote no input. Found on the Linux runner, which has no audio.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (!tracker.devices().empty()) {
+        SKIP("this machine has an input device");
+    }
+    takt4::settings::Settings saved;
+    saved.machine.deviceName = "An interface that is switched off";
+    saved.machine.hostApiName = "ASIO";
+    saved.machine.channel = 10;
+    saved.machine.mono = true;
+
+    WindowController controller(tracker, saved);
+    CHECK(controller.deviceIndex() == -1);
+    const takt4::settings::Settings out = controller.currentSettings();
+    CHECK(out.machine.deviceName == "An interface that is switched off");
+    CHECK(out.machine.hostApiName == "ASIO");
+    CHECK(out.machine.channel == 10);
+    CHECK(out.machine.mono);
+
+    // And RESCAN looks for it, not for nothing.
+    controller.window().invoke_rescan_clicked();
+    CHECK(controller.currentSettings().machine.deviceName == "An interface that is switched off");
+}
+
 TEST_CASE("a remembered MIDI clock whose device is missing at launch is still the one saved",
           "[ui]") {
     // The audit's H11, for the clock as an output: one whose drum machine was left at home is
