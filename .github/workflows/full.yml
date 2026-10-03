@@ -1,12 +1,23 @@
 name: full
 
-# The whole application, Slint included — **the only CI on a push** since 2026-10-03, when the
-# user had core.yml deleted along with every test that ran twice: core's were a subset of this
-# workflow's windows-msvc job, run again on every push. What went with it: the quicker first
-# answer, and its check that the engine builds without Slint ever being fetched. Every job here
-# builds Slint from scratch through cargo (7–25 minutes), so this runs only when something that
-# can affect the build changes, once a week to catch drift, and on demand. release.yml builds
-# only a commit this has passed on, and runs no test of its own.
+# The whole application, Slint included — **the only CI**, and **where a release is built** since
+# 2026-10-03, when the user had every build and test that ran twice taken out: core.yml (its tests
+# were a subset of this workflow's windows-msvc job, run again on every push) and release.yml
+# (the windows-msvc build over again on the same commit, ~40 minutes, only so the exe could name
+# a tag that did not exist yet when this ran). What went with core.yml: the quicker first answer,
+# and its check that the engine builds without Slint ever being fetched.
+#
+# **A release:** push the bump commit and its annotated tag together —
+# `git push --atomic origin main vX.Y.Z` — so the tag is there when this checks out, and every
+# binary built here names it. When all three jobs pass on a commit a `v*` tag points at, the
+# windows-msvc job's files are attached to that tag's GitHub Release (the `publish` job below),
+# with the tag's message as the notes. A tag pushed after its commit's run: rerun that run
+# (`gh run rerun <id>`); its checkout then has the tag. A push to main while a release run is
+# building cancels it (the concurrency group below): rerun it the same way.
+#
+# **Slint is cached** (2026-10-03, the same request): it was 26 of the windows-msvc job's 42
+# minutes of building, every run, and it changes only when the pins below do. See "Slint, from
+# the cache".
 #
 # This workflow is ENABLED, by the user on 2026-09-14. It had been `disabled_manually` since
 # 2026-09-04, which left a UI change covered by nothing. That was noticed while releasing 0.9.6
@@ -97,18 +108,23 @@ jobs:
             preset: windows-msvc
             app: build/windows-msvc/bin/Release/takt4.exe
             cli: build/windows-msvc/bin/Release/takt4-cli.exe
+            # Where Corrosion has cargo build Slint: `<build>/<platform>/<config>/cargo` under
+            # Visual Studio, `<build>/cargo` under Ninja (Corrosion.cmake, `cargo_target_dir`).
+            cargo: build/windows-msvc/x64/Release/cargo
           # AddressSanitizer over everything, UI included. cmake/sanitizers.cmake copies the
           # ASan runtime DLL beside the binaries, so they start without Visual Studio's PATH.
           - os: windows-latest
             preset: windows-asan
             app: build/windows-asan/bin/Release/takt4.exe
             cli: build/windows-asan/bin/Release/takt4-cli.exe
+            cargo: build/windows-asan/x64/Release/cargo
           # ThreadSanitizer: Linux is where it exists. TSAN_OPTIONS makes a report fail the
           # test that produced it rather than scroll past in a passing run.
           - os: ubuntu-24.04
             preset: linux-tsan
             app: build/linux-tsan/bin/takt4
             cli: build/linux-tsan/bin/takt4-cli
+            cargo: build/linux-tsan/cargo
           # Windows only for now; see the note at the top of this file.
           # - os: macos-latest
           #   preset: macos
@@ -123,6 +139,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          # Every commit and tag, so `git describe` — what `--version` prints — names a release's
+          # tag rather than a hash. The whole history is ~33 MB.
+          fetch-depth: 0
 
       - name: Install Linux packages
         if: runner.os == 'Linux'
@@ -140,14 +159,71 @@ jobs:
           rustc --version || true
           cargo --version || true
 
+      # **Slint, from the cache**: its source and everything cargo built from it, so a run builds
+      # only takt4 itself. Both are needed — cargo judges Slint's own crates stale by their
+      # sources' file times, and a fresh clone is newer than anything it built — so the source
+      # lives at one fixed place, handed to CMake (FETCHCONTENT_SOURCE_DIR_SLINT, below) and
+      # cached with its times, and is never cloned over.
+      #
+      # The key is everything that decides what was built: the build type, the runner image
+      # (the C++ inside Slint's cargo build — Skia's bindings, ICU, harfbuzz — is compiled with
+      # the image's compiler), the Rust pin, and cmake/deps.cmake, which holds Slint's tag, its
+      # commit and its features. No fallback key: a near miss would mix two compilers' objects.
+      # The image is read in a step: ImageOS and ImageVersion are the runner's environment, which
+      # the `env` context of an expression does not see.
+      - name: The runner image
+        id: image
+        run: echo "image=${ImageOS:?}-${ImageVersion:?}" >> "$GITHUB_OUTPUT"
+
+      - name: Slint, from the cache
+        id: slint
+        uses: actions/cache/restore@v6
+        with:
+          key: slint-${{ matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
+          path: |
+            build/slint-src
+            ${{ matrix.cargo }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+
+      # The tag cmake/deps.cmake fetches, cloned as FetchContent would; deps.cmake still checks
+      # the commit it checked out against the one it records.
+      - name: Slint source
+        if: steps.slint.outputs.cache-hit != 'true'
+        run: |
+          tag=$(grep -A1 'GIT_REPOSITORY https://github.com/slint-ui/slint.git' cmake/deps.cmake \
+                | sed -n 's/^ *GIT_TAG \(v[0-9.]*\)$/\1/p')
+          test -n "$tag"
+          rm -rf build/slint-src
+          git clone --depth 1 --branch "$tag" https://github.com/slint-ui/slint.git build/slint-src
+
+      # A path CMake reads on both systems: Git Bash's `pwd -W` is D:/a/..., Linux has no -W.
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: |
+          src="$(pwd -W 2>/dev/null || pwd)/build/slint-src"
+          cmake --preset ${{ matrix.preset }} -DFETCHCONTENT_SOURCE_DIR_SLINT="$src"
 
       # Linux goes on past the first error (Ninja's -k 0), so a run reports every file GCC
       # refuses rather than one per run: GCC warns about things MSVC does not, and this tree
       # builds with warnings as errors.
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os == 'Linux' && '-- -k 0' || '' }}
+
+      # Saved as soon as Slint is built, not at the end: a test that fails must not cost the next
+      # run the build. Two runs missing at once both try; the second is refused, harmlessly.
+      - name: Slint, into the cache
+        if: steps.slint.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.slint.outputs.cache-primary-key }}
+          path: |
+            build/slint-src
+            ${{ matrix.cargo }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
@@ -163,3 +239,84 @@ jobs:
         run: |
           ${{ matrix.cli }} --version
           ${{ matrix.cli }} devices
+
+      # **A release's files**, on a commit a `v*` tag points at, pushed or dispatched — never a
+      # pull request or the Monday run. The tag must be the version in CMakeLists.txt, and both
+      # binaries must say they are exactly that tag: not "-dirty", not a commit after it. The PDBs
+      # go with them because a crash report without them cannot be read (0.9.4-0.9.6 shipped
+      # none). Handed to `publish`, which attaches them once every job here has passed.
+      - name: Release files
+        id: release
+        if: matrix.preset == 'windows-msvc' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          tag=$(git tag --points-at HEAD 'v*' | head -1)
+          if [ -z "$tag" ]; then
+            echo "No v* tag on $GITHUB_SHA: not a release."
+            exit 0
+          fi
+          version=$(sed -n 's/^  VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)
+          echo "CMakeLists.txt says $version; the tag is $tag"
+          test "v$version" = "$tag"
+          bin=build/windows-msvc/bin/Release
+          "$bin/takt4.exe" --version | tee app.txt
+          "$bin/takt4-cli.exe" --version | tee cli.txt
+          grep -qx "  commit:        $tag" app.txt
+          grep -qx "  commit:        $tag" cli.txt
+          mkdir dist
+          cp "$bin/takt4.exe" "$bin/takt4.pdb" "$bin/takt4-cli.exe" "$bin/takt4-cli.pdb" dist/
+          cp LICENSE dist/
+          if [ -f THIRD-PARTY-NOTICES.txt ]; then cp THIRD-PARTY-NOTICES.txt dist/; fi
+          ls -l dist
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the release files
+        if: steps.release.outputs.tag != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: dist/
+          retention-days: 3
+
+  # Attaches the windows-msvc job's files to the tag's Release — created from the tag's message if
+  # there is none yet, the files replaced if one was made by hand — once all three jobs passed.
+  # Nothing to do on a commit no `v*` tag points at.
+  publish:
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # This token can write releases; it is handed to `gh` below and not left in .git.
+          persist-credentials: false
+
+      - name: Which release
+        id: tag
+        run: |
+          tag=$(git tag --points-at HEAD 'v*' | head -1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then echo "No v* tag on $GITHUB_SHA: nothing to publish."; fi
+
+      - name: The release files
+        if: steps.tag.outputs.tag != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+
+      - name: Attach to the release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          ls -l dist
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --notes-from-tag --title "takt4 ${TAG#v}"
+          fi
