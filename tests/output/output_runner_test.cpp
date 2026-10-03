@@ -1688,6 +1688,7 @@ TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of wha
     server.name = "media";
     server.host = "127.0.0.1";
     server.port = media.port();
+    server.sendsNamespace = true; // its /takt4/beat is what says the beats went on to the stop
     config.outputs.push_back(server);
 
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());

@@ -625,6 +625,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_output_enabled_changed([this](int index, bool on) { setTargetEnabled(index, on); });
     window_->on_output_namespace_changed(
         [this](int index, bool on) { setTargetNamespace(index, on); });
+    window_->on_outputs_namespace_all([this](bool on) { setAllNamespace(on); });
     window_->on_output_delay_changed([this](int index, float ms) { setTargetDelay(index, ms); });
     window_->on_output_delay_keyed([this](int) { typedOutputs_ = outputsGeneration_; });
     window_->on_output_delay_typed([this](int index, const slint::SharedString& text) {
@@ -1835,7 +1836,6 @@ void WindowController::setTargetDevice(int index, int device) {
 void WindowController::addTarget() {
     OutputRow row{};
     row.enabled = true;
-    row.sends_namespace = true;
     // A destination on this machine at the conventional port, rather than the blank row this
     // used to add. A blank row applies nothing, so the target did not exist until the whole
     // address had been typed — and a rule cannot be routed to a target that is not there
@@ -1893,6 +1893,15 @@ void WindowController::setTargetNamespace(int index, bool on) {
         return;
     }
     targetDrafts_[static_cast<std::size_t>(index)].sends_namespace = on;
+    applyTargets();
+}
+
+void WindowController::setAllNamespace(bool on) {
+    for (OutputRow& row : targetDrafts_) {
+        if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Osc)) {
+            row.sends_namespace = on;
+        }
+    }
     applyTargets();
 }
 
@@ -1962,7 +1971,6 @@ void WindowController::setOscTargets(const std::string& text) {
     OutputRow row{};
     row.address = shared(text);
     row.enabled = true;
-    row.sends_namespace = true; // a line that says "rules-only" says so itself
     targetDrafts_ = std::move(kept);
     targetDrafts_.push_back(row);
     applyTargets();
@@ -2024,11 +2032,11 @@ void WindowController::applyTargets() {
             // Both have to agree: the switch is the row's, and "off " in front of a pasted
             // address is that line saying the same thing.
             target.enabled = target.enabled && draft.enabled;
-            // The same for an OSC row's tick and "rules-only" in a pasted line. The box never
-            // holds the word — `formatOutputAddress` does not write it — so the tick is what
-            // decides a row that was typed.
+            // Takt4's own messages: the row's, or "global" in a pasted line. The box never holds
+            // the word — `formatOutputAddress` does not write it — so a row that was typed keeps
+            // what the heading's list gave it.
             if (target.kind == output::OutputTarget::Kind::Osc) {
-                target.sendsNamespace = target.sendsNamespace && draft.sends_namespace;
+                target.sendsNamespace = target.sendsNamespace || draft.sends_namespace;
             }
             // The slider owns the row's offset, because `formatOutputAddress` never writes one
             // into the address box — so an offset coming back from the parse can only be one a
@@ -2147,6 +2155,8 @@ void WindowController::publishTargetRows() {
     // leave saying all is well while a row below it is reaching nothing.
     window_->set_outputs_on(on);
     window_->set_outputs_failing(failing);
+    // And what its "/takt4 global messages to" box says.
+    publishGlobalMessages(*window_, targetDrafts_);
 }
 
 void WindowController::pickMidiControlPort(int index) {

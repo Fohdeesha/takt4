@@ -8,7 +8,9 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <string>
 #include <system_error>
+#include <vector>
 
 namespace takt4::ui {
 
@@ -112,6 +114,31 @@ void publishInput(MainWindow& window, float rms, float peak) {
     window.set_input_peak(peak);
     window.set_input_reading(slint::SharedString(
         db <= kMeterFloorDb ? "-inf dB" : fixed(static_cast<double>(db), 1) + " dB"));
+}
+
+void publishGlobalMessages(MainWindow& window, const std::vector<OutputRow>& rows) {
+    int osc = 0;
+    int ticked = 0;
+    std::string names;
+    for (const OutputRow& row : rows) {
+        if (row.kind_index != static_cast<int>(output::OutputTarget::Kind::Osc)) {
+            continue;
+        }
+        ++osc;
+        if (row.sends_namespace) {
+            ++ticked;
+            // As the list names it: the row's name, or its address where it has none.
+            const std::string name = !row.name.empty()
+                                         ? std::string(row.name)
+                                         : std::string(row.host) + ":" + std::string(row.port);
+            names += (names.empty() ? "" : ", ") + name;
+        }
+    }
+    window.set_global_osc_count(osc);
+    window.set_global_ticked(ticked);
+    window.set_global_summary(slint::SharedString(ticked == 0 ? std::string("nothing")
+                                                  : ticked == osc && osc > 1 ? "every OSC output"
+                                                                             : names));
 }
 
 std::string describeDevice(const audio::InputDevice& device) {
