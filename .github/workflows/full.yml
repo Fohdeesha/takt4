@@ -163,12 +163,17 @@ jobs:
       # only takt4 itself. Both are needed — cargo judges Slint's own crates stale by their
       # sources' file times, and a fresh clone is newer than anything it built — so the source
       # lives at one fixed place, handed to CMake (FETCHCONTENT_SOURCE_DIR_SLINT, below) and
-      # cached with its times, and is never cloned over.
+      # cached with its times, and is never cloned over. **And Slint's CMake build directory**
+      # (`_deps/slint-build`, ~1 MB): its build script writes the C++ headers there
+      # (`generated_include/private/slint_internal.h` …), outside cargo's own output, and a cargo
+      # that finds its output fresh does not run the script again — the first cached run, on
+      # 2026-10-03, restored everything else and failed on that header.
       #
       # The key is everything that decides what was built: the build type, the runner image
       # (the C++ inside Slint's cargo build — Skia's bindings, ICU, harfbuzz — is compiled with
       # the image's compiler), the Rust pin, and cmake/deps.cmake, which holds Slint's tag, its
       # commit and its features. No fallback key: a near miss would mix two compilers' objects.
+      # `v2`: what is cached changed (the build directory above); a v1 cache lacks the headers.
       # The image is read in a step: ImageOS and ImageVersion are the runner's environment, which
       # the `env` context of an expression does not see.
       - name: The runner image
@@ -179,9 +184,10 @@ jobs:
         id: slint
         uses: actions/cache/restore@v6
         with:
-          key: slint-${{ matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
+          key: slint-v2-${{ matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
           path: |
             build/slint-src
+            build/${{ matrix.preset }}/_deps/slint-build
             ${{ matrix.cargo }}
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -220,6 +226,7 @@ jobs:
           key: ${{ steps.slint.outputs.cache-primary-key }}
           path: |
             build/slint-src
+            build/${{ matrix.preset }}/_deps/slint-build
             ${{ matrix.cargo }}
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
