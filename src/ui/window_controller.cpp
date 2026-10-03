@@ -940,6 +940,10 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     const std::string asioProblem = audio::asioScanProblem();
 
     if (devices_.empty()) {
+        // No input at all, so nothing is selected, and the remembered one is still the one
+        // wanted: saved, and looked for by RESCAN. Left unset, the next save wrote no input and
+        // forgot the interface that had only been switched off.
+        deviceFallback_ = !remembered.deviceName.empty();
         device_ = -1;
         window_->set_channels(std::make_shared<slint::VectorModel<slint::SharedString>>());
         setStatus(asioProblem.empty()
