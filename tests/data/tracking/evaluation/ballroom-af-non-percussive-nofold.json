@@ -48,7 +48,7 @@
     },
     "Tango": {
       "Downbeat F-measure": 0.8917855413023819,
-      "F-measure": 0.9440486772790232,
+      "F-measure": 0.9442581891164419,
       "files": 86
     },
     "VienneseWaltz": {
@@ -72,17 +72,17 @@
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.883088800260925,
+      "mean": 0.8831390691997477,
       "median": 0.9316625155666252
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8291016763033727,
+      "mean": 0.8291251188838683,
       "median": 0.8907516946511285
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8487997800318161,
+      "mean": 0.8488232226123116,
       "median": 0.8915946639669665
     },
     "Correct Metric Level Continuous": {
@@ -92,7 +92,7 @@
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.8505870490637838,
+      "mean": 0.8506373180026067,
       "median": 0.9310344827586207
     },
     "Downbeat F-measure": {
@@ -102,7 +102,7 @@
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9059932489410079,
+      "mean": 0.9060190627204032,
       "median": 0.9636363636363636
     },
     "Goto": {
@@ -112,22 +112,22 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.5582582878372555,
+      "mean": 0.5582596465431826,
       "median": 0.5650697334833199
     },
     "P-score": {
       "files": 698,
-      "mean": 0.888250334640583,
+      "mean": 0.8882754691099944,
       "median": 0.9333333333333333
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.9326647564469914,
+      "mean": 0.9255014326647565,
       "median": 1.0
     },
     "Tempo accuracy 2": {
       "files": 698,
-      "mean": 0.9699140401146131,
+      "mean": 0.9641833810888252,
       "median": 1.0
     }
   },

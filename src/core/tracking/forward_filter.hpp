@@ -27,10 +27,9 @@ namespace takt4::tracking {
 /// `process` is one step of the forward algorithm — a sparse transition, a multiply by the
 /// observation densities, a normalisation — over about 39 k states at the default 100 fps
 /// with meters 3 and 4, and fewer with a bar of four alone, the default since 0.9.1. That is
-/// deterministic, needs no seed, no injection, no information
-/// gate and no gather window, and its confidence is the posterior mass on the tempo it
-/// reports. Everything the state space needs is built here from the options; nothing is
-/// read from a blob.
+/// deterministic, needs no seed, no injection and no gather window, and its confidence is the
+/// posterior mass on the tempo it reports. Everything the state space needs is built here from the
+/// options; nothing is read from a blob.
 ///
 /// What it does that the particle filter cannot, and why each is here rather than in
 /// `TempoTracker`:
@@ -53,9 +52,15 @@ namespace takt4::tracking {
 ///     `TempoTracker`'s confidence gate flags them `holding` (`Options::coastAfterFrames`).
 ///     The window weighs nothing while it coasts — it is argued against the music, and there
 ///     is none — and a hold still does.
-///     The one exception is before the first beat of a run: nothing is emitted until the
-///     network has once read a beat at `Options::armThreshold` or above, so a silent start
-///     does not fire a rig.
+///   * **Nothing is evidence until a beat has been heard.** Before the first beat of a run,
+///     and again after `silence`, the posterior is left as it is and the frame reports no
+///     tempo and no agreement. A flat activation is not "no beat" to madmom's observation
+///     model: any constant level other than exactly 1/λ_obs favours the tempo whose beat
+///     zone, rounded to whole frames, is the largest share of its interval — 3 of 33 frames,
+///     181.8 BPM. Digital silence, which the network reads as P(beat) 0.21 and P(downbeat)
+///     0.25, was decoded as evidence for it: locked in 3.5 s at a confidence of 0.95, with no
+///     beat ever called (2026-10-03). The particle filter's information gate never let that
+///     happen there. What counts as heard is coasting's test: a peak, not a level.
 ///
 /// Where the beats are read off the posterior is `Options::emission`, and it is the part
 /// first measured as unfinished: the MAP state crossing a beat boundary is a frame early as
@@ -234,6 +239,9 @@ public:
     void setTempoWindow(double minBpm, double maxBpm, bool enabled) noexcept override;
     bool canHoldTempo() const noexcept override { return true; }
     void holdTempo(double bpm) noexcept override;
+    /// Back to nothing heard: the posterior uniform, no beat called until one is heard again,
+    /// the flywheel stopped. The frame count, the window and a hold carry on.
+    void silence() noexcept override;
 
     const Options& options() const noexcept { return options_; }
 

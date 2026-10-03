@@ -371,6 +371,10 @@ export component MainWindow inherits Window {
   /// C4. While this is true the readouts are the last ones before the audio stopped, and the
   /// lock readout says "no audio" rather than "locked" at a tempo nothing is producing any more.
   in-out property <bool> input-lost;
+  /// The input is delivering audio, and the audio has been silent for a few seconds — a deck
+  /// that stopped, not a breakdown (`TempoState::noSignal`). The lock readout says "no signal",
+  /// and the tempo is the last one, held.
+  in-out property <bool> no-signal;
   /// What went missing between the input and the beats — "3 input overflows", "12 hops
   /// dropped — the model fell behind the audio" — or empty. Shown under the meter, because a
   /// device dropping input, or a machine too busy to keep up, is otherwise visible nowhere.
@@ -904,6 +908,7 @@ export component MainWindow inherits Window {
             // stopped hearing the music.
             property <color> state-color: !root.running ? Wf.tempo-ink2
               : root.input-lost ? Wf.alarm
+              : root.no-signal ? Wf.tempo-ink2
               : root.holding ? Wf.holding
               : root.locked ? Wf.locked
               : Wf.tempo-ink2;
@@ -1025,6 +1030,7 @@ export component MainWindow inherits Window {
               y: 27px - self.font-metrics.ascent;
               text: !root.running ? "stopped"
                 : root.input-lost ? "no audio"
+                : root.no-signal ? "no signal"
                 : root.holding ? "holding"
                 : root.locked ? "locked"
                 : "hunting";

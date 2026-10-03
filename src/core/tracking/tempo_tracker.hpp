@@ -29,6 +29,14 @@ struct TempoState {
     /// when nothing on screen says why.
     bool pinned = false;
     bool holding = false;          ///< confidence is below the gate; bpm is the last good one
+    /// A lock has been earned since the run started or the input last had no signal. **Until
+    /// then nothing fires the rig**: the output thread sends no beat to OSC, the rules or the
+    /// clocks before it (the operator, 2026-10-03). A lock lost later does not clear it — an
+    /// unlock in the middle of a track is the tracker being unsure, not the rig going dark.
+    bool acquired = false;
+    /// The input has had no signal for a while (`BeatEngine::Options::noSignalSeconds`). The
+    /// lock is dropped with it and `acquired` cleared; the tempo shown is the last one, held.
+    bool noSignal = false;
     double confidence = 0.0;       ///< 0 to 1; see TempoTracker's header for what it measures
     std::uint32_t beatsPerBar = 0; ///< from the filter's downbeat stage, never assumed
     std::uint32_t beatInBar = 0;   ///< 1 on the downbeat, counting up; 0 before the first beat
@@ -65,6 +73,8 @@ struct BeatEvent {
     std::uint32_t beatsPerBar = 0;
     double bpm = 0.0;
     bool locked = false;
+    /// `TempoState::acquired` at this beat: whether it may fire the rig.
+    bool acquired = false;
     double confidence = 0.0;
     /// True on the first beat published under a snap's new bar phase. §5.6 reserves Link's
     /// `forceBeatAtTime` for exactly this beat — a `requestBeatAtTime` would be moved to
@@ -357,6 +367,23 @@ public:
         /// was set, and a round trip through `setOptions` scales nothing twice.
         std::size_t lockAfter = 25;
         std::size_t unlockAfter = 75;
+        /// **A lock needs beats at the tempo being locked**: this many beats called by the
+        /// decoder, the gaps between them each one period of that tempo, or an octave either
+        /// side of one (a beat let pass, or the beats on the octave above the cloud's), and the
+        /// last no more than two periods ago.
+        ///
+        /// Agreement alone is a statement about the decoder's posterior, and a posterior can
+        /// agree with itself about nothing: on digital silence the forward filter put 0.95 of
+        /// its mass on 181.8 BPM, and the tracker locked there in 3.5 s with not one beat called
+        /// (2026-10-03). A tempo the decoder is not calling beats at is not one the rig can be
+        /// locked to.
+        ///
+        /// Three, measured against four over the 23 tracks with the 70–140 window on, against
+        /// the build before either: median first lock 2.40 s and 3.24 s (2.26 before), the
+        /// first lock at the right tempo 4.43 s and 4.57 s (4.79), seconds locked at a wrong
+        /// tempo 389 and 369 (429). Nothing reaches the rig before a lock (`TempoState::
+        /// acquired`), so three: most of four's cut in wrong locks, at nearly the old wait.
+        std::size_t lockBeats = 3;
         /// The *most* agreement a tempo can ever be asked for before it replaces the one
         /// being published. 150 is three seconds.
         ///
@@ -612,6 +639,14 @@ public:
     void setLockPinned(bool pinned) noexcept;
     bool lockPinned() const noexcept { return lockPinned_; }
 
+    /// The input has had no signal for a while, or has it again (`BeatEngine` decides, from
+    /// the level; see `TempoState::noSignal`). Going quiet drops the lock — pinned or not — and
+    /// clears `acquired`, so nothing fires until a lock is earned again; the tempo shown is the
+    /// last one, held. What comes back is a new acquisition at the ordinary price, whatever the
+    /// old lock had earned: a deck that stopped is not a challenger to out-argue. The pin is the
+    /// operator's and stays.
+    void setNoSignal(bool noSignal) noexcept;
+
     /// The published tempo **in the decoder's own terms**: with the operator's ÷2 or ×2, the
     /// fold's octave and the octave the beats sit at against the cloud all taken back out.
     /// What a tempo hold on the decoder is given when the lock is pinned (`BeatEngine`).
@@ -664,6 +699,8 @@ private:
     bool onPublishedGrid(const TrackedFrame& frame) noexcept;
 
     void updateLock(double folded) noexcept;
+    /// Whether the decoder is calling beats at the tempo it reports: `Options::lockBeats`.
+    bool beatsAtTempo() const noexcept;
     void rememberBeat(std::uint64_t frameIndex) noexcept;
     /// Advances the filter's own bar position and turns it into the published one,
     /// applying whatever a snap has rotated the bar by. Called once per emitted beat.

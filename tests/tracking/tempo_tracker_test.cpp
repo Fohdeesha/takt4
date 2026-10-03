@@ -50,18 +50,35 @@ TrackedFrame frameAt(std::uint64_t index, std::uint32_t intervalFrames, double a
     return frame;
 }
 
-/// Runs `count` frames at one tempo.
+/// Runs `count` frames at one tempo, the filter calling a beat every period as it does on a
+/// steady track: a lock needs beats at the tempo being locked (`Options::lockBeats`).
 void settle(TempoTracker& tracker, std::uint64_t& index, std::uint32_t intervalFrames,
             double agreement, std::size_t count) {
     for (std::size_t i = 0; i < count; ++i) {
-        (void)tracker.process(frameAt(index++, intervalFrames, agreement));
+        TrackedFrame frame = frameAt(index, intervalFrames, agreement);
+        if (index % intervalFrames == 0) {
+            frame.emitted = TrackedFrame::Emitted::Beat;
+            frame.beatActivation = 0.7f;
+        }
+        ++index;
+        (void)tracker.process(frame);
     }
+}
+
+/// The options the tests below run under: the defaults, except that a lock asks for the fewest
+/// beats it can — two, a period apart — so that `lockAfter` and not a bar of beats sets when it
+/// arrives, which is what these tests count in frames. `settle` calls the beats. The tests of
+/// `lockBeats` itself use the default.
+TempoTracker::Options testOptions() {
+    TempoTracker::Options options;
+    options.lockBeats = 2;
+    return options;
 }
 
 } // namespace
 
 TEST_CASE("the octave fold pulls an estimate into the operator's range", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     TempoTracker tracker(kFramePeriod, options);
@@ -173,7 +190,7 @@ TEST_CASE("the published tempo is the one the beats are on", "[tracking][tempo]"
     // said 200bpm". Both numbers were true of what they described — the readout is the cloud's
     // tempo and the dots move on the beats — and the filter was reporting one while emitting
     // the other. Measured over the track: 216 of 402 gaps are 30 frames, the cloud says 15.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
@@ -212,7 +229,7 @@ TEST_CASE("the fold and the beat-octave rule do not correct the same octave twic
     //
     // The fix is that the fold and the lock are given the tempo the beats are *on*, so
     // there is one correction and nothing left to divide.
-    TempoTracker::Options options; // the default 70-140 window, on
+    TempoTracker::Options options = testOptions(); // the default 70-140 window, on
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
@@ -257,7 +274,7 @@ TEST_CASE("the fold and the beat-octave rule do not correct the same octave twic
         // — "03 - Fake Sweat" — must still be folded, and its beats still divided once the
         // cloud has argued for it. This is the test above "the octave fold divides the
         // beats", in short, to show the fix took nothing from it.
-        TempoTracker fake(kFramePeriod);
+        TempoTracker fake(kFramePeriod, testOptions());
         std::uint64_t at = 0;
         (void)feed(fake, at, 32, 400);
         REQUIRE(fake.state().bpm == Approx(bpmOf(32)).margin(1.0));
@@ -275,7 +292,7 @@ TEST_CASE("a tap names the octave the beats are on, not the cloud's", "[tracking
     // 100, readout already 100 — has confirmed what is showing; measured against the cloud
     // it would have halved the readout to 50, which is the double correction of
     // Options::beatOctaveBeats wearing a different hat.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
@@ -305,7 +322,7 @@ TEST_CASE("the octave fold divides the beats, not only the number", "[tracking][
     // The fold was folding — the *number* read 92. What went past it untouched were the
     // beats, so OSC, MIDI clock, Link's phase and every trigger rule ran at 186 under a
     // readout that said 92. See Options::foldBeats.
-    TempoTracker tracker(kFramePeriod); // the default 70-140 window
+    TempoTracker tracker(kFramePeriod, testOptions()); // the default 70-140 window
     std::uint64_t index = 0;
 
     // Interval 32 is 93.75 BPM, inside the window. The cloud sitting there is the evidence
@@ -329,7 +346,7 @@ TEST_CASE("the octave fold divides the beats, not only the number", "[tracking][
     CHECK(fast.downbeats == called / 8);
 
     SECTION("switched off, the fold moves the number and nothing else — as it used to") {
-        TempoTracker::Options options;
+        TempoTracker::Options options = testOptions();
         options.foldBeats = false;
         TempoTracker unfolded(kFramePeriod, options);
         std::uint64_t at = 0;
@@ -352,7 +369,7 @@ TEST_CASE("a record the cloud never reads slowly keeps every beat", "[tracking][
     // 0.62, Viennese Waltz 0.96 to 0.65 and Jive 0.90 to 0.66. Nothing in the activations
     // separates the two cases; the cloud never settling on the slower octave does. See
     // Options::foldSupportFrames.
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
 
     // Straight in at 187.5 BPM and never anywhere else, which is what a genuinely fast
@@ -368,7 +385,7 @@ TEST_CASE("a manual halving divides the beats without waiting to be convinced",
           "[tracking][tempo]") {
     // Evidence is wanted in place of an instruction, not in spite of one: the operator
     // pressing ÷2 has said which grid they mean. See Options::foldSupportFrames.
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
     std::uint64_t before = 0;
     const Published kept = feed(tracker, index, 16, 320, 4, &before);
@@ -401,7 +418,7 @@ TEST_CASE("an estimate wandering across the window's edge does not take the octa
     // in 213 seconds, because the cloud reports interval 21 or interval 22 — 142.9 BPM or
     // 136.4, the state space holding nothing in between — and a memoryless fold folds one
     // and not the other. See TempoTracker::Options::foldHysteresis.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.lockAfter = 5;
@@ -410,7 +427,7 @@ TEST_CASE("an estimate wandering across the window's edge does not take the octa
     std::uint64_t index = 0;
 
     // Interval 22 is 136.4, inside the window; interval 21 is 142.9, just outside it.
-    settle(tracker, index, 22, 0.9, 20);
+    settle(tracker, index, 22, 0.9, 30); // two beats: a lock needs them
     REQUIRE(tracker.state().locked);
     REQUIRE(tracker.state().bpm == Approx(bpmOf(22)));
 
@@ -436,7 +453,7 @@ TEST_CASE("an estimate wandering across the window's edge does not take the octa
 
 TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same way",
           "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 25;
     options.unlockAfter = 75;
     options.confidenceThreshold = 0.15;
@@ -529,7 +546,7 @@ TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same 
 }
 
 TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 25;
     options.unlockAfter = 75;
     options.confidenceThreshold = 0.15;
@@ -582,7 +599,9 @@ TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
         // frame: an operator letting go is saying "look again", not "look again slowly".
         settle(tracker, index, 31, 0.8, 1);
         CHECK(tracker.state().bpm == Approx(bpmOf(31)));
-        settle(tracker, index, 31, 0.8, options.lockAfter - 1);
+        // And the lock as soon as it is earned again: `lockAfter` frames and two beats, the
+        // beat spacing having gone with the release.
+        settle(tracker, index, 31, 0.8, 2 * 31);
         CHECK(tracker.state().locked);
     }
 
@@ -618,8 +637,8 @@ TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
         mid.setLockPinned(true);
         CHECK(mid.state().pinned);
         CHECK_FALSE(mid.state().locked);
-        // The lock comes when it is earned, and is then held.
-        settle(mid, at, 31, 0.8, options.lockAfter);
+        // The lock comes when it is earned — `lockAfter` frames and two beats — and is then held.
+        settle(mid, at, 31, 0.8, 31);
         CHECK(mid.state().locked);
         settle(mid, at, 23, 0.8, options.unlockAfter * 2);
         CHECK(mid.state().locked);
@@ -664,7 +683,7 @@ TEST_CASE("a pinned lock goes on refining the tempo from the beats", "[tracking]
     // the state space's whole-frame intervals, which here offer 130.43 and 125.00 and
     // nothing between. A pin that kept the word lit and quietly stopped the refinement
     // would have held on to the wrong half of it.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 5;
     options.unlockAfter = 75;
     options.confidenceSmoothing = 2.0;
@@ -720,7 +739,7 @@ TEST_CASE("a pinned lock goes on refining the tempo from the beats", "[tracking]
 }
 
 TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.confidenceThreshold = 0.4;
     options.confidenceSmoothing = 5.0;
     options.lockAfter = 10;
@@ -759,7 +778,7 @@ TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][t
 }
 
 TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][tempo]") {
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
     const auto beat = [&](TrackedFrame::Emitted kind, std::uint32_t beatsPerBar) {
         TrackedFrame frame = frameAt(index++, 23, 0.9, beatsPerBar);
@@ -803,7 +822,7 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
         // The filter always reports one — it reads a meter straight out of the downbeat
         // state space, whose intervals are 2, 3 and 4 — but the bar arithmetic must not
         // depend on that being true, because it divides by it.
-        TempoTracker bare(kFramePeriod);
+        TempoTracker bare(kFramePeriod, testOptions());
         std::uint64_t at = 0;
         const auto unmetered = [&](TrackedFrame::Emitted kind) {
             TrackedFrame frame = frameAt(at++, 23, 0.9, 0);
@@ -826,7 +845,7 @@ TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking]
     //
     // The beats are 23 frames apart here rather than one per frame, because *where inside
     // that gap* the press lands is now the whole question — see TempoTracker::snapDownbeat.
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
     // Frames carrying no beat: the gap between two of them, run a piece at a time so a
     // press can be put anywhere in it.
@@ -951,7 +970,7 @@ TEST_CASE("a manual downbeat before the filter has found one still starts the ba
     // The operator hits the button as the track drops, seconds before the downbeat stage
     // has settled on anything. There is no filter bar phase to rotate yet, so the bar
     // runs from the tap — and joins up with the filter's when it finally calls one.
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
     const auto gap = [&](std::uint32_t frames) {
         for (std::uint32_t i = 0; i < frames; ++i) {
@@ -1002,7 +1021,7 @@ TEST_CASE("a manual downbeat on a beat the filter has no bar for still starts on
     // nothing has an opinion on the bar. A press in there names the beat just gone like any
     // other, but there is no filter position to rotate against, so the count runs from the
     // press and joins the filter's when it finally has one.
-    TempoTracker tracker(kFramePeriod);
+    TempoTracker tracker(kFramePeriod, testOptions());
     std::uint64_t index = 0;
     const auto beat = [&](TrackedFrame::Emitted kind) {
         for (std::uint32_t i = 0; i + 1 < kInterval; ++i) {
@@ -1050,7 +1069,7 @@ TEST_CASE("a manual downbeat on a beat the filter has no bar for still starts on
 }
 
 TEST_CASE("the published tempo comes from the beat spacing once locked", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
@@ -1088,7 +1107,9 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
         // gaps in `beatFrames_` go stale and stop being counted; before, that fell straight
         // back to `lockedBpm_` — 130.43 here — and alternating between two values 2.4 BPM
         // apart is exactly the jump the operator was reporting.
-        settle(tracker, next, 23, 0.9, 400);
+        for (int i = 0; i < 400; ++i) {
+            (void)tracker.process(frameAt(next++, 23, 0.9));
+        }
         CHECK(tracker.state().refined);
         CHECK(tracker.state().bpm == Approx(refined));
     }
@@ -1135,7 +1156,7 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
 }
 
 TEST_CASE("the latency offset moves the timestamp and nothing else", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.latencyOffsetSeconds = -0.030; // fire 30 ms early
     TempoTracker tracker(kFramePeriod, options);
 
@@ -1149,13 +1170,13 @@ TEST_CASE("the latency offset moves the timestamp and nothing else", "[tracking]
 
 TEST_CASE("the manual octave shift moves the published tempo and keeps the lock",
           "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
 
-    settle(tracker, index, 23, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 30);
     REQUIRE(tracker.state().locked);
     tracker.halve();
     CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
@@ -1200,7 +1221,7 @@ TEST_CASE("a tap that agrees, halve and double move what is showing, not the fil
     // a forced snap at the rough tempo, and the MIDI clock on the rough tempo for nine beats.
     const bool fold = GENERATE(false, true);
     INFO((fold ? "fold on" : "fold off"));
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = fold;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
@@ -1244,7 +1265,7 @@ TEST_CASE("a halving is dropped at the next track even when a pin was let go in 
     // replacing lock dropped the ÷2. So: ÷2 on a drum-and-bass record, pinned through the mix,
     // released on the house record, and the house record came out at half its tempo with its
     // beats divided.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false; // as a fresh install ships
     options.lockAfter = 5;
     options.unlockAfter = 10;
@@ -1293,7 +1314,7 @@ TEST_CASE("a manual halving publishes the bar's downbeat, not whichever beat cam
     // the two halves of a bar score within a few per cent of each other. About half the time the
     // published beats were 2 and 4: the lights on the backbeat, bar rules on beat 2. Pressed here
     // with the second beat of a bar the next one due, which is the unlucky half.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
@@ -1356,12 +1377,12 @@ TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking]
     // The audit's H1: ÷2 and ×2 were unbounded, and so was the shift a tap turned into with the
     // fold off, so a few presses sent Link and the MIDI clock a tempo of eight BPM or a
     // thousand. Past two octaves it is not an octave preference but a tempo nothing plays.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 23, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 30);
     REQUIRE(tracker.state().locked);
 
     for (int press = 0; press < 5; ++press) {
@@ -1395,7 +1416,7 @@ TEST_CASE("a halving is dropped at the next track unless the operator asked to k
     // and a ÷2 that suited a drum-and-bass record turned the house record after it into half
     // time with the beats divided, until somebody noticed. Dropped at the next track by
     // default; kept when the operator ticks "keep for the next track".
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false; // as a fresh install ships
     options.lockAfter = 5;
     options.unlockAfter = 10;
@@ -1453,7 +1474,7 @@ TEST_CASE("a halving is dropped at the next track unless the operator asked to k
         settle(tracker, index, 23, 0.9, 30);
         settle(tracker, index, 31, 0.9, 10); // long enough to unlock, not to relock
         REQUIRE_FALSE(tracker.state().locked);
-        settle(tracker, index, 23, 0.9, 30);
+        settle(tracker, index, 23, 0.9, 50); // two beats 23 frames apart, then the lock
         REQUIRE(tracker.state().locked);
         CHECK(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
     }
@@ -1465,7 +1486,7 @@ TEST_CASE("a tapped tempo moves the fold window onto the octave the operator mea
     // is folded to 102 and the operator has no way to say otherwise. Quickstep's
     // octave-tolerant tempo accuracy on Ballroom is 1.000 and its exact accuracy 0.000
     // for exactly this reason. Tapping it is the way out.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.lockAfter = 5;
@@ -1522,7 +1543,7 @@ TEST_CASE("a tap does not switch the fold on behind the operator", "[tracking][t
     // ... the tool will always be streamed several tracks in a row". `seedTempo` used to set
     // `octaveFold = true`, so one tap left a window behind that halved or doubled every
     // record after it.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
@@ -1553,14 +1574,14 @@ TEST_CASE("a tap does not switch the fold on behind the operator", "[tracking][t
 }
 
 TEST_CASE("changing the fold window only drops the lock when it has to", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 23, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 30);
     REQUIRE(tracker.state().locked);
 
     options.maxBpm = 160.0; // 130.43 still fits
@@ -1605,14 +1626,14 @@ TEST_CASE("a settings change that leaves the window alone never costs the lock",
     // ÷2 pressed — 65 BPM under a 70-140 window, exactly where the operator put it — moving
     // the latency slider dropped the lock and the hunt started again. The same for a tempo
     // the hysteresis holds just past the window's edge.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 23, 0.9, 20);
+    settle(tracker, index, 23, 0.9, 30);
     REQUIRE(tracker.state().locked);
     tracker.halve();
     REQUIRE(tracker.state().bpm == Approx(bpmOf(23) / 2.0));
@@ -1651,14 +1672,14 @@ TEST_CASE("a tempo the hysteresis holds past the window's edge survives a settin
     // window's top — 150 under 70-140 — stays in the folded octave, because the hysteresis
     // remembers the octave in force. A settings change that forgot that octave would flip the
     // published tempo up to 150 and drop the lock, on a nudge of the latency slider.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 19, 0.9, 20); // 157.9: past the widened window, so folded
+    settle(tracker, index, 19, 0.9, 25); // 157.9: past the widened window, so folded
     REQUIRE(tracker.state().bpm == Approx(bpmOf(19) / 2.0));
     settle(tracker, index, 20, 0.9, 30); // 150: inside the hysteresis, the octave kept
     REQUIRE(tracker.state().locked);
@@ -1680,7 +1701,7 @@ TEST_CASE("with the fold in the decoder a tempo outside the window keeps its loc
     // nothing chooses an octave here, so the octave "before" an edit read as 0, and a tempo the
     // beats or a hold kept outside the window was unlocked by any edit of the window at all —
     // while the tempo published, which the tracker does not fold, did not change.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
     options.foldInDecoder = true;
@@ -1688,7 +1709,7 @@ TEST_CASE("with the fold in the decoder a tempo outside the window keeps its loc
     options.confidenceSmoothing = 2.0;
     TempoTracker tracker(kFramePeriod, options);
     std::uint64_t index = 0;
-    settle(tracker, index, 19, 0.9, 20); // 157.9: past the window and its hysteresis
+    settle(tracker, index, 19, 0.9, 25); // 157.9: past the window and its hysteresis
     REQUIRE(tracker.state().locked);
     REQUIRE(tracker.state().bpm == Approx(bpmOf(19))); // not folded here: the decoder's job
 
@@ -1719,7 +1740,7 @@ TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate
           "[tracking][tempo]") {
     // A decoder running at 100 fps hands the tracker twice the frames for the same half
     // second, so `lockAfter = 25` has to mean fifty of them there. See Options::lockAfter.
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 25;
     options.confidenceSmoothing = 5.0;
@@ -1737,6 +1758,9 @@ TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate
         f.bpm = 60.0 / (46.0 * 0.01);
         f.tempoAgreement = 0.9;
         f.beatsPerBar = 4;
+        if (f.frameIndex % 46 == 0) {
+            f.emitted = TrackedFrame::Emitted::Beat; // two by frame 50, as a lock needs
+        }
         return f;
     };
     for (int i = 0; i < 49; ++i) {
@@ -1763,7 +1787,7 @@ TEST_CASE("frame counts are stated at 50 Hz and scaled to the tracker's own rate
 }
 
 TEST_CASE("nonsensical options are refused rather than tracked with", "[tracking][tempo]") {
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     CHECK_THROWS_AS(TempoTracker(0.0, options), std::invalid_argument);
     CHECK_THROWS_AS(TempoTracker(-0.02, options), std::invalid_argument);
 
@@ -1800,7 +1824,7 @@ TEST_CASE("the chain tracks the synthetic excerpt's tempo and locks", "[tracking
         std::filesystem::path(TAKT4_TEST_DATA_DIR) / "model" / "generic" / "synthetic.npy");
 
     takt4::tracking::ParticleFilter filter(model);
-    TempoTracker::Options options;
+    TempoTracker::Options options = testOptions();
     options.minBpm = 90.0;
     options.maxBpm = 180.0;
     TempoTracker tracker(model.secondsPerFrame(), options);
@@ -1832,4 +1856,102 @@ TEST_CASE("the chain tracks the synthetic excerpt's tempo and locks", "[tracking
     }
     CHECK(downbeats > 2);
     CHECK(downbeats < beats.size());
+}
+
+TEST_CASE("a lock needs beats at the tempo being locked", "[tracking][tempo]") {
+    // Agreement is a statement about the decoder's posterior, and a posterior can agree with
+    // itself about nothing: over digital silence the forward filter put 0.95 of its mass on one
+    // tempo and the tracker locked there with no beat ever called (2026-10-03). See
+    // Options::lockBeats; these use its default, three.
+    TempoTracker tracker(kFramePeriod);
+    std::uint64_t index = 0;
+    for (int f = 0; f < 600; ++f) {
+        (void)tracker.process(frameAt(index++, 23, 0.95));
+    }
+    REQUIRE(tracker.state().confidence > 0.9);
+    CHECK_FALSE(tracker.state().locked); // twelve seconds of agreement and not one beat
+
+    SECTION("three beats a period apart earn it") {
+        settle(tracker, index, 23, 0.95, 3 * 23 + 1); // beats on 621, 644 and 667
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().acquired);
+    }
+
+    SECTION("so do beats an octave above the tempo the decoder reports") {
+        // Early in a track the decoder often calls its beats at twice the tempo its cloud
+        // reports; `beatOctaveBeats` moves the octave later. Refusing the lock until then put
+        // two of the 23 tracks' first lock at 13 and 21 seconds.
+        for (int f = 0; f < 3 * 23 + 1; ++f) {
+            TrackedFrame frame = frameAt(index, 46, 0.95);
+            if (index % 23 == 0) {
+                frame.emitted = TrackedFrame::Emitted::Beat;
+            }
+            ++index;
+            (void)tracker.process(frame);
+        }
+        CHECK(tracker.state().locked);
+    }
+
+    SECTION("beats on no grid do not") {
+        // Gaps of 0.7 and 1.35 periods: beats, but at no tempo, and none an octave of this one.
+        std::uint64_t nextBeat = index;
+        bool shortGap = true;
+        for (int f = 0; f < 600; ++f) {
+            TrackedFrame frame = frameAt(index, 23, 0.95);
+            if (index == nextBeat) {
+                frame.emitted = TrackedFrame::Emitted::Beat;
+                nextBeat += shortGap ? 16 : 31;
+                shortGap = !shortGap;
+            }
+            ++index;
+            (void)tracker.process(frame);
+        }
+        CHECK_FALSE(tracker.state().locked);
+    }
+}
+
+TEST_CASE("no signal drops the lock, and what comes back is acquired afresh", "[tracking][tempo]") {
+    // `BeatEngine` says when the input has had no signal for a few seconds: a deck that stopped,
+    // not a breakdown. The lock goes, nothing may fire until one is earned again, and the next
+    // record is not a challenger that has to out-argue half a minute of the last one.
+    TempoTracker::Options options = testOptions();
+    options.confidenceSmoothing = 5.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 23, 0.9, 1500); // thirty seconds: a lock at its full defence
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().acquired);
+    const double held = tracker.state().bpm;
+
+    tracker.setNoSignal(true);
+    CHECK(tracker.state().noSignal);
+    CHECK_FALSE(tracker.state().locked);
+    CHECK_FALSE(tracker.state().acquired);
+    CHECK(tracker.state().bpm == held); // the last tempo, held
+
+    SECTION("a pin pressed now holds up nothing: the lock was on a deck that stopped") {
+        tracker.setLockPinned(true);
+        CHECK_FALSE(tracker.state().locked);
+    }
+
+    SECTION("what comes back is a new acquisition at the ordinary price") {
+        // While there is none the decoder hears nothing and says no tempo.
+        for (int f = 0; f < 200; ++f) {
+            TrackedFrame frame;
+            frame.frameIndex = index++;
+            (void)tracker.process(frame);
+        }
+        CHECK_FALSE(tracker.state().locked);
+        CHECK(tracker.state().holding);
+        CHECK(tracker.state().bpm == held);
+
+        tracker.setNoSignal(false);
+        CHECK_FALSE(tracker.state().noSignal);
+        // Another record, at the ordinary price — `lockAfter` and its beats — and not the three
+        // seconds (`relockAfter`) a challenger to a thirty-second lock would owe.
+        settle(tracker, index, 31, 0.9, 100);
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().acquired);
+        CHECK(tracker.state().bpm == Approx(bpmOf(31)));
+    }
 }

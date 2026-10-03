@@ -343,6 +343,12 @@ public:
     /// the rest of the round with it: see `guarded`, and `Snapshot::Trouble` for what is said.
     std::uint64_t errors() const noexcept { return errors_.load(std::memory_order_relaxed); }
 
+    /// Beats taken from the engine and sent nowhere, because no lock had been earned yet
+    /// (`TempoState::acquired`). With what the transports counted, every beat the tracker called.
+    std::uint64_t beatsUnsent() const noexcept {
+        return beatsUnsent_.load(std::memory_order_relaxed);
+    }
+
     /// Seconds since this runner was **constructed**, on the steady clock the transports are
     /// driven from — and the clock `trigger::Context::now` is, so §5.8's cooldowns and
     /// follow-up delays are measured on it.
@@ -744,6 +750,7 @@ private:
     std::atomic<bool> tracking_{false};
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> errors_{0};
+    std::atomic<std::uint64_t> beatsUnsent_{0};
     std::atomic<bool> threadRaised_{false};
     /// The last stage that threw, as "stage: what". Whichever thread owns the transports; a
     /// reader has it from the snapshot.

@@ -44,6 +44,11 @@ struct FrameActivation {
     /// The raw spectral flux, unsmoothed. For a diagnostic trace; nothing should threshold
     /// it directly, because its scale is a fact about the master rather than about the music.
     float flux = 0.0f;
+    /// The RMS of the hop that completed this frame, as a fraction of full scale. Unlike the
+    /// flux this *is* an absolute level, and it is thresholded on purpose: it is how the engine
+    /// knows the input has no signal at all (`BeatEngine::Options::noSignalBelowDb`), which the
+    /// network cannot say — it reads P(beat) 0.46 to digital zeros.
+    float rms = 0.0f;
 };
 
 /// The live half of Phase 3 (HANDOFF §8): hops in from the audio callback, class

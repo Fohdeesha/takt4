@@ -70,6 +70,12 @@ const std::vector<float>& excerpt() {
 
 constexpr std::uint64_t kExpectedBeats = 21;
 constexpr std::uint64_t kExpectedDownbeats = 5;
+/// Of those, what reaches the rig. Nothing does before the tracker has earned a lock
+/// (`TempoState::acquired`, the operator's call of 2026-10-03), and a lock needs a bar of beats
+/// (`TempoTracker::Options::lockBeats`), so the first three beats, none of them a downbeat, are
+/// called and not sent. "the observer sees every beat" checks the split rather than assuming it.
+constexpr std::uint64_t kSentBeats = 18;
+constexpr std::uint64_t kSentDownbeats = 5;
 
 /// Every engine here runs the particle filter. These tests are about the output thread
 /// — draining, counting, routing — and want a beat stream that never moves; the particle
@@ -205,16 +211,16 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
     // not the code's — what the code owes is that the beats arrive, which they did there
     // too (every other assertion passed).
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
-    while (std::chrono::steady_clock::now() < until && transports.beats() < kExpectedBeats) {
+    while (std::chrono::steady_clock::now() < until && transports.beats() < kSentBeats) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     INFO(runner.rounds() << " rounds, " << transports.beats() << " beats before the stop");
-    CHECK(transports.beats() == kExpectedBeats);
-    CHECK(transports.downbeats() == kExpectedDownbeats);
+    CHECK(transports.beats() == kSentBeats);
+    CHECK(transports.downbeats() == kSentDownbeats);
 
     runner.stop();
     CHECK_FALSE(runner.running());
-    CHECK(transports.beats() == kExpectedBeats); // and the final sweep found nothing left
+    CHECK(transports.beats() == kSentBeats); // and the final sweep found nothing left
     CHECK(engine->beatsDropped() == 0);
     CHECK(runner.errors() == 0);
 }
@@ -232,7 +238,7 @@ TEST_CASE("stopping drains the beats that were still waiting", "[output]") {
 
     runner.start();
     runner.stop();
-    CHECK(transports.beats() == kExpectedBeats);
+    CHECK(transports.beats() == kSentBeats);
     CHECK(engine->beatsDropped() == 0);
 }
 
@@ -254,17 +260,27 @@ TEST_CASE("the observer sees every beat, in the order they were called", "[outpu
     const std::lock_guard<std::mutex> lock(mutex);
     REQUIRE(seen.size() == kExpectedBeats);
     std::uint64_t downbeats = 0;
+    std::uint64_t sent = 0;
+    std::uint64_t sentDownbeats = 0;
     for (std::size_t i = 0; i < seen.size(); ++i) {
         if (i > 0) {
             // A console prints these and a rule engine will fire on them; out of order
             // would be worse than late.
             CHECK(seen[i].event.frameIndex > seen[i - 1].event.frameIndex);
+            // And once a lock has been earned the rig hears every beat after it.
+            CHECK((seen[i].event.acquired || !seen[i - 1].event.acquired));
         }
         if (seen[i].event.downbeat) {
             ++downbeats;
         }
+        if (seen[i].event.acquired) {
+            ++sent;
+            sentDownbeats += seen[i].event.downbeat ? 1U : 0U;
+        }
     }
     CHECK(downbeats == kExpectedDownbeats);
+    CHECK(sent == kSentBeats);
+    CHECK(sentDownbeats == kSentDownbeats);
 }
 
 TEST_CASE("the output thread runs on its own clock", "[output]") {
@@ -460,12 +476,12 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
 
     runner.start();
     feedExcerpt(*engine);
-    waitForBeats(runner, kExpectedBeats);
+    waitForBeats(runner, kSentBeats);
     runner.stop();
 
-    // The excerpt has five downbeats, and the rule is on downbeats.
-    CHECK(runner.triggers().rule(0).fires() == kExpectedDownbeats);
-    CHECK(runner.ruleSink().delivered() == kExpectedDownbeats);
+    // The excerpt has five downbeats, all of them after the lock, and the rule is on downbeats.
+    CHECK(runner.triggers().rule(0).fires() == kSentDownbeats);
+    CHECK(runner.ruleSink().delivered() == kSentDownbeats);
     CHECK(runner.ruleSink().undeliverable() == 0);
     CHECK(runner.triggers().dropped() == 0);
 
@@ -486,7 +502,7 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
         }
     }
     INFO(seen << " datagrams arrived in all");
-    CHECK(matched == kExpectedDownbeats);
+    CHECK(matched == kSentDownbeats);
 }
 
 TEST_CASE("a stage of a round that throws is counted and named, and the round carries on",
@@ -508,7 +524,7 @@ TEST_CASE("a stage of a round that throws is counted and named, and the round ca
 
     runner.start();
     feedExcerpt(*engine);
-    waitForBeats(runner, kExpectedBeats);
+    waitForBeats(runner, kSentBeats);
     // While it runs, with no command to take a snapshot: the window's copy catches up on its
     // own, a refresh or two later.
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{3};
@@ -520,15 +536,15 @@ TEST_CASE("a stage of a round that throws is counted and named, and the round ca
     runner.stop();
     REQUIRE(runner.sync()); // a command applied is a snapshot taken
 
-    CHECK(runner.transports().beats() == kExpectedBeats);
-    CHECK(runner.triggers().rule(0).fires() == kExpectedDownbeats);
-    CHECK(runner.errors() == kExpectedBeats);
+    CHECK(runner.transports().beats() == kSentBeats);
+    CHECK(runner.triggers().rule(0).fires() == kSentDownbeats);
+    CHECK(runner.errors() == kExpectedBeats); // the observer sees every beat, sent or not
     const OutputRunner::Snapshot::Trouble trouble = runner.snapshot().trouble;
     CHECK(trouble.roundErrors == kExpectedBeats);
     CHECK(trouble.lastRoundError == "the beat observer: the observer broke");
     // And the rule's messages, which had no OSC target to go to, are counted where the window
     // reads them.
-    CHECK(trouble.undeliverable == kExpectedDownbeats);
+    CHECK(trouble.undeliverable == kSentDownbeats);
 }
 
 TEST_CASE("the fired log keeps the newest messages, in order, when nobody drains it",
@@ -590,7 +606,7 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
             REQUIRE(engine->post(takt4::engine::Command::halve()));
         }
         feedExcerpt(*engine);
-        waitForBeats(runner, halve ? kExpectedBeats / 2 : kExpectedBeats);
+        waitForBeats(runner, halve ? kSentBeats / 2 : kSentBeats);
         runner.stop();
 
         std::uint64_t flashes = 0;
@@ -609,13 +625,13 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
     };
 
     const std::uint64_t whole = beatsOnTheWire(false);
-    CHECK(whole == kExpectedBeats);
+    CHECK(whole == kSentBeats);
 
     const std::uint64_t halved = beatsOnTheWire(true);
     // Half the beats, on the wire, for a control that halves the tempo. Before
-    // `Options::foldBeats` this was 21 either way.
-    CHECK(halved >= kExpectedBeats / 2 - 1);
-    CHECK(halved <= kExpectedBeats / 2 + 1);
+    // `Options::foldBeats` this was every beat either way.
+    CHECK(halved >= kSentBeats / 2 - 1);
+    CHECK(halved <= kSentBeats / 2 + 1);
 }
 
 TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
@@ -674,7 +690,7 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     std::uint64_t publishedDownbeats = 0;
     runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
         const std::lock_guard<std::mutex> lock(mutex);
-        publishedDownbeats += beat.event.beatInBar == 1 ? 1 : 0;
+        publishedDownbeats += beat.event.acquired && beat.event.beatInBar == 1 ? 1 : 0;
     });
     Rule::Config rule;
     rule.id = "lasers";
@@ -695,7 +711,9 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
         const takt4::tracking::TempoState state = engine->state();
         if (!pressed && state.beats > beatsSeen) {
             beatsSeen = state.beats;
-            if (state.bars >= 1 && state.beatInBar > 1) {
+            // Once a lock has been earned: before one, nothing fires the rig, a declared bar
+            // included.
+            if (state.acquired && state.bars >= 1 && state.beatInBar > 1) {
                 REQUIRE(engine->post(takt4::engine::Command::snapDownbeat()));
                 pressed = true;
             }
@@ -703,7 +721,7 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     }
     REQUIRE(pressed);
     REQUIRE(engine->state().barsDeclared == 1);
-    waitForBeats(runner, kExpectedBeats);
+    waitForBeats(runner, kSentBeats);
     // **Never `firesOf` under `mutex`** (the audit of 2026-09-25, T14): the observer takes
     // `mutex` inside the runner's own lock, and `firesOf` takes the runner's lock — so holding
     // this one while asking was the other order, and a beat arriving between them hung the test.
@@ -725,6 +743,59 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     INFO(downbeats << " downbeats published");
     // Every downbeat that went out, and the one the press declared.
     CHECK(runner.triggers().rule(0).fires() == downbeats + 1);
+}
+
+TEST_CASE("a DOWNBEAT pressed before the first lock fires nothing until there is one",
+          "[output][trigger]") {
+    // Nothing reaches the rig until the tracker has earned a lock (`TempoState::acquired`, the
+    // operator's call of 2026-10-03), and a bar a press declares is no exception: a downbeat rule
+    // fired for it would be the one flash in seconds of a hunt. "The Galaxist" has a downbeat at
+    // 0.6 s and other beats after it, under this configuration, long before its first lock at 3.8.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    std::mutex mutex;
+    std::uint64_t sentDownbeats = 0;
+    runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        sentDownbeats += beat.event.acquired && beat.event.beatInBar == 1 ? 1 : 0;
+    });
+    Rule::Config rule;
+    rule.id = "lasers";
+    rule.trigger = takt4::trigger::Trigger::Downbeat;
+    rule.address = "/lasers";
+    runner.post(OutputCommand::rules({rule}));
+    runner.start();
+
+    const std::vector<float> samples =
+        takt4::io::readWavFile(kTestData / "features" / "the-galaxist.wav").samples;
+    const std::size_t hops = samples.size() / kHopSize;
+    std::uint64_t beatsSeen = 0;
+    bool pressed = false;
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+        (void)engine->step();
+        const takt4::tracking::TempoState state = engine->state();
+        if (!pressed && state.beats > beatsSeen) {
+            beatsSeen = state.beats;
+            if (!state.acquired && state.bars >= 1 && state.beatInBar > 1) {
+                REQUIRE(engine->post(takt4::engine::Command::snapDownbeat()));
+                pressed = true;
+            }
+        }
+    }
+    REQUIRE(pressed);
+    REQUIRE(engine->state().barsDeclared == 1);
+    REQUIRE(engine->state().acquired); // the lock came later in the excerpt
+    // Every round after the press has read the declared bar — none fires it, and nothing after
+    // the lock may fire it late either.
+    waitForRounds(runner, 5);
+    runner.stop();
+    const std::uint64_t sent = [&] {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return sentDownbeats;
+    }();
+    INFO(sent << " downbeats sent after the lock");
+    CHECK(runner.triggers().rule(0).fires() == sent);
 }
 
 TEST_CASE("starting the tracker again does not fire the onset rules", "[output][trigger]") {

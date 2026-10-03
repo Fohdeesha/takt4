@@ -1,5 +1,5 @@
 # frame downbeat — the shipped chain's beats over tests/data/features/in-yer-face.wav
-5 1
+5 0
 77 0
 141 0
 185 1

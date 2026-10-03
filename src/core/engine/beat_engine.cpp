@@ -59,7 +59,10 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
     : model_(&model), activations_(std::make_unique<model::ActivationEngine>(weights)),
       decoderKind_(options.decoder), decoder_(makeDecoder(model, options)),
       tempo_(decoder_->secondsPerFrame(), forDecoder(options.tempo, *decoder_)),
-      stepsPerActivation_(stepsFor(*decoder_)) {
+      stepsPerActivation_(stepsFor(*decoder_)),
+      noSignalRms_(static_cast<float>(std::pow(10.0, options.noSignalBelowDb / 20.0))),
+      noSignalFrames_(static_cast<std::uint64_t>(
+          std::max(1.0, std::ceil(options.noSignalSeconds / decoder_->secondsPerFrame())))) {
     // Sized now, so the first drain allocates nothing: `drain` swaps this buffer into the queue
     // and sizes whatever it gets back, which for a buffer that had never held anything was an
     // allocation on the inference thread (the audit of 2026-09-25's stale-comment list).
@@ -103,6 +106,8 @@ void BeatEngine::start() {
     }
     pinHoldPending_ = false;
     havePrevious_ = false;
+    quietFrames_ = 0;
+    noSignal_ = false;
     // Anything posted while the engine was stopped applies to the run about to start, not
     // to the one that ended: a latency offset set on a settings screen has to survive the
     // operator then pressing start. The reset above clears tracking state, never options.
@@ -302,7 +307,21 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     EngineFrame frame;
     frame.activation = activation;
     frame.interpolated = interpolated;
-    frame.tracked = decoder_->process(activation.beat, activation.downbeat);
+    // No signal, before the decoder sees this frame: see `Options::noSignalSeconds`.
+    quietFrames_ = activation.rms < noSignalRms_ ? quietFrames_ + 1 : 0;
+    if (const bool noSignal = quietFrames_ >= noSignalFrames_; noSignal != noSignal_) {
+        noSignal_ = noSignal;
+        if (noSignal) {
+            decoder_->silence();
+        }
+        tempo_.setNoSignal(noSignal);
+    }
+    // And while there is none, what the network says is its own memory ringing on, not the
+    // input: after "01 - Pirates" stopped dead its downbeat swelled to 0.55 every second or two
+    // for as long as the silence lasted, and the decoder heard those swells as beats and set off
+    // again. So the decoder hears nothing; the trace and the window still show the network.
+    frame.tracked = noSignal_ ? decoder_->process(0.0f, 0.0f)
+                              : decoder_->process(activation.beat, activation.downbeat);
     const std::optional<tracking::BeatEvent> event = tempo_.process(frame.tracked);
     frame.state = tempo_.state();
     frame.beat = event.has_value();

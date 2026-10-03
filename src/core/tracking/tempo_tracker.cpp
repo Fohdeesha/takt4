@@ -92,6 +92,10 @@ TempoTracker::TempoTracker(double secondsPerFrame, Options options)
         throw std::invalid_argument(
             "TempoTracker: believing an octave takes at least one frame of evidence");
     }
+    if (options.lockBeats < 2 || options.lockBeats > options.refineOverBeats + 1) {
+        throw std::invalid_argument(
+            "TempoTracker: a lock needs at least two beats, and no more than are kept");
+    }
     if (!(options.refineSmoothing > 0.0) || !(options.refineSmoothing <= 1.0)) {
         throw std::invalid_argument(
             "TempoTracker: the refinement smoother must move some of the way to a new "
@@ -282,6 +286,37 @@ void TempoTracker::rememberBeat(std::uint64_t frameIndex) noexcept {
         beatFrames_.erase(beatFrames_.begin());
     }
     beatFrames_.push_back(frameIndex);
+}
+
+bool TempoTracker::beatsAtTempo() const noexcept {
+    // The period of the tempo the beats are reported at, in frames: `calledBpm` is the cloud's
+    // tempo moved onto the octave the beats are on, so this is the one to measure them against.
+    if (!(state_.calledBpm > 0.0) || beatFrames_.size() < options_.lockBeats) {
+        return false;
+    }
+    const double period = 60.0 / (state_.calledBpm * secondsPerFrame_);
+    const double tolerance = options_.refineGapTolerance;
+    // Still coming: a tempo the beats stopped at a while ago is not the one being heard.
+    if (static_cast<double>(framesSinceCalled_) > 2.0 * (1.0 + tolerance) * period) {
+        return false;
+    }
+    // A period, or an octave either side of one. Which octave the beats are on is
+    // `Options::beatOctaveBeats`'s question, and early in a track the decoder often calls its
+    // beats at twice the tempo its cloud reports until that rule has seen eight of them:
+    // measured on the 23, refusing the half-period gaps put "01 - 808 State" first lock at 13 s
+    // rather than 2.4, and "13 - Winter Now" at 21 rather than 2.9. What this rule asks is only
+    // that there are beats, regular ones, still coming; the 0.7 or 1.4 of a gap that belongs to
+    // no grid is what it refuses.
+    for (std::size_t i = beatFrames_.size() - options_.lockBeats + 1; i < beatFrames_.size(); ++i) {
+        const double ratio = static_cast<double>(beatFrames_[i] - beatFrames_[i - 1]) / period;
+        const bool onGrid = std::abs(ratio - 1.0) <= tolerance ||
+                            std::abs(ratio - 2.0) <= 2.0 * tolerance || // a beat let pass
+                            std::abs(ratio - 0.5) <= 0.5 * tolerance;   // the beats an octave up
+        if (!onGrid) {
+            return false;
+        }
+    }
+    return true;
 }
 
 double TempoTracker::refinedIntervalFrames(double cloudIntervalFrames) const noexcept {
@@ -675,7 +710,9 @@ void TempoTracker::setLockPinned(bool pinned) noexcept {
         // candidate of the moment, and raising the flag on it held the decoder to it and fed it
         // to Link as locked: pinning noise. A pin pressed while hunting is kept, and acquisition
         // — which the pin does not touch — raises the flag in its own time.
-        if (everLocked_ && lockedBpm_ > 0.0) {
+        // And not after the input has gone quiet (`setNoSignal`): the lock that was earned was
+        // on a deck that has since stopped.
+        if (everLocked_ && state_.acquired && lockedBpm_ > 0.0) {
             state_.locked = true;
             disagreeing_ = 0;
         }
@@ -830,7 +867,8 @@ void TempoTracker::updateLock(double folded) noexcept {
         // full price from birth is what made a bad first lock permanent — see relockAfter.
         needed = std::clamp(lockHeld_ / kDefenceShare, lockAfter_, relockAfter_);
     }
-    if (agreeing_ >= needed) {
+    // And whatever the agreement, only a tempo the decoder is calling beats at: Options::lockBeats.
+    if (agreeing_ >= needed && beatsAtTempo()) {
         // The operator's octave shift goes with the record it was for, unless they asked for
         // it to stay — the audit's H2, and the operator's call on 2026-09-23. A different tempo
         // taking the lock is the next record of the set, and a ÷2 that fitted the last one
@@ -862,10 +900,33 @@ void TempoTracker::updateLock(double folded) noexcept {
             // measurement: that track's cloud sits on interval 15 throughout.)
         }
         state_.locked = true;
+        state_.acquired = true;
         everLocked_ = true;
         lockedBpm_ = candidate_;
         disagreeing_ = 0;
     }
+}
+
+void TempoTracker::setNoSignal(bool noSignal) noexcept {
+    if (noSignal == state_.noSignal) {
+        return;
+    }
+    state_.noSignal = noSignal;
+    if (!noSignal) {
+        return; // the next lock is earned in the ordinary way
+    }
+    state_.locked = false;
+    state_.acquired = false;
+    candidate_ = 0.0;
+    agreeing_ = 0;
+    disagreeing_ = 0;
+    // A new acquisition, not a challenge to the old lock: see the declaration.
+    lockHeld_ = 0;
+    smoothedConfidence_ = 0.0;
+    state_.confidence = 0.0;
+    // A gap across the silence is not a beat period, and the beats before it are not this
+    // tempo's evidence.
+    beatFrames_.clear();
 }
 
 std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexcept {
@@ -1071,6 +1132,7 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
     event.beatsPerBar = state_.beatsPerBar;
     event.bpm = state_.bpm;
     event.locked = state_.locked;
+    event.acquired = state_.acquired;
     event.confidence = state_.confidence;
     return event;
 }

@@ -8,6 +8,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -569,6 +570,80 @@ TEST_CASE("a plateau at the threshold is not a beat", "[tracking][forward]") {
     // stopped looking like a beat: a small part of a BPM.
     INFO("the filter's tempo went from " << bpmBefore << " to " << last.bpm);
     CHECK(last.bpm == Approx(bpmBefore).margin(0.5));
+}
+
+TEST_CASE("a flat activation is not evidence, so there is no tempo until a beat is heard",
+          "[tracking][forward]") {
+    // Reported from the rig on 2026-10-03: 178.66 BPM, locked, confidence 0.95, with the input
+    // at -inf dB. Over digital zeros the network settles at P(beat) 0.21 and P(downbeat) 0.25,
+    // and madmom's observation model reads any flat level other than 1/16 as evidence: the tempo
+    // whose beat zone is the largest share of its interval — 3 of 33 frames, 181.8 BPM —
+    // out-grows the rest, and the posterior put 0.95 of its mass there within three seconds.
+    ForwardFilter filter;
+    TempoTracker tracker(filter.secondsPerFrame());
+    double mostAgreement = 0.0;
+    double mostBpm = 0.0;
+    std::size_t called = 0;
+    for (int f = 0; f < 6000; ++f) { // a minute at 100 fps
+        const TrackedFrame frame = filter.process(0.21f, 0.25f);
+        (void)tracker.process(frame);
+        mostAgreement = std::max(mostAgreement, frame.tempoAgreement);
+        mostBpm = std::max(mostBpm, frame.bpm);
+        called += frame.emitted != TrackedFrame::Emitted::None ? 1U : 0U;
+    }
+    CHECK(mostAgreement == 0.0);
+    CHECK(mostBpm == 0.0);
+    CHECK(called == 0);
+    CHECK_FALSE(tracker.state().locked);
+    CHECK(tracker.state().bpm == 0.0); // a dash on screen
+
+    // And music after it is tracked from its first beat, as from a standing start.
+    for (const auto& [beat, down] : upsampled("synthetic", 2)) {
+        (void)tracker.process(filter.process(beat, down));
+    }
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(128.0).margin(3.0));
+}
+
+TEST_CASE("silence stops the flywheel and the next music is heard afresh", "[tracking][forward]") {
+    // A deck that has stopped rather than a breakdown, which `BeatEngine` tells from the input's
+    // level (`Options::noSignalSeconds`): the beat the music left carries on through a pause and
+    // stops when the engine says there is no signal.
+    const std::vector<std::pair<float, float>> music = upsampled("synthetic", 2);
+    ForwardFilter filter;
+    std::uint64_t frames = 0;
+    for (const auto& [beat, down] : music) {
+        (void)filter.process(beat, down);
+        ++frames;
+    }
+    std::size_t carried = 0;
+    for (int f = 0; f < 300; ++f, ++frames) { // three seconds of nothing: coasting
+        carried += filter.process(0.0f, 0.0f).emitted != TrackedFrame::Emitted::None ? 1U : 0U;
+    }
+    REQUIRE(carried >= 5); // six beats in three seconds at 128
+
+    filter.silence();
+    std::size_t after = 0;
+    double mostBpm = 0.0;
+    for (int f = 0; f < 1000; ++f, ++frames) {
+        const TrackedFrame frame = filter.process(0.0f, 0.0f);
+        after += frame.emitted != TrackedFrame::Emitted::None ? 1U : 0U;
+        mostBpm = std::max(mostBpm, frame.bpm);
+    }
+    CHECK(after == 0);
+    CHECK(mostBpm == 0.0);
+
+    std::size_t again = 0;
+    TrackedFrame last;
+    for (const auto& [beat, down] : music) {
+        last = filter.process(beat, down);
+        again += last.emitted != TrackedFrame::Emitted::None ? 1U : 0U;
+        ++frames;
+    }
+    CHECK(again >= 15);
+    CHECK(last.bpm == Approx(128.0).margin(3.0));
+    // The frame count carried on through it: every time downstream is measured in it.
+    CHECK(last.frameIndex + 1 == frames);
 }
 
 TEST_CASE("a frame of the forward filter touches no heap", "[tracking][forward][rt]") {

@@ -899,17 +899,25 @@ void OutputRunner::drainOnce(double now) {
         if (beat.hostMicros != 0) {
             moment = now - static_cast<double>(linkNow - beat.hostMicros) / 1e6;
         }
-        // The two clocks, on every beat heard: they are grids running on from the last beat
-        // and want every one, fired already or not.
-        guarded("the clocks", [&] {
-            transports_.publishClocks(beat.event, beat.hostMicros, moment.value_or(now));
-        });
-        guarded("a beat's rules", [&] {
-            if (const std::optional<ScheduledBeat> late =
-                    scheduler_.heard(beat, moment, now, staleAfter)) {
-                fireBeat(*late, now);
-            }
-        });
+        // **Nothing reaches the rig until a lock has been earned** (`TempoState::acquired`; the
+        // operator, 2026-10-03). Before one, a beat is the hunt's: a tempo that flips octaves, or
+        // one read off beatless sound. Link already waited for a lock; the MIDI clock's Start did
+        // and its tempo did not, and OSC and the rules fired from the first beat called.
+        if (!beat.event.acquired) {
+            beatsUnsent_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            // The two clocks, on every beat heard: they are grids running on from the last beat
+            // and want every one, fired already or not.
+            guarded("the clocks", [&] {
+                transports_.publishClocks(beat.event, beat.hostMicros, moment.value_or(now));
+            });
+            guarded("a beat's rules", [&] {
+                if (const std::optional<ScheduledBeat> late =
+                        scheduler_.heard(beat, moment, now, staleAfter)) {
+                    fireBeat(*late, now);
+                }
+            });
+        }
         if (observer_) {
             guarded("the beat observer", [&] { observer_(beat); });
         }
@@ -941,7 +949,8 @@ void OutputRunner::drainOnce(double now) {
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
     // (the audit's M4): its bar and downbeat rules fire now, as that bar's.
     const tracking::TempoState state = engine_.state();
-    if (countMoved(state.barsDeclared, barsDeclaredSeen_)) {
+    // Seen whether or not it fires, and fired only once a lock has been earned, as a beat is.
+    if (countMoved(state.barsDeclared, barsDeclaredSeen_) && state.acquired) {
         guarded("a declared bar's rules", [&] {
             trigger::Context declared = context;
             declared.beatInBar = 1;

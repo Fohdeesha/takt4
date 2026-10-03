@@ -75,6 +75,7 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_locked(state.locked);
     window.set_pinned(state.pinned);
     window.set_holding(state.holding);
+    window.set_no_signal(state.noSignal);
     window.set_refined(state.refined);
     window.set_confidence(static_cast<float>(state.confidence));
     window.set_beats_per_bar(static_cast<int>(state.beatsPerBar));
