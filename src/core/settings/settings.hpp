@@ -48,6 +48,10 @@ struct MachineSettings {
     /// Read from a file written before there was a choice — a `channel` and no `mono` — which is
     /// taken as the stereo pair that input is in, and said so once by the window. Never written.
     bool stereoFromMono = false;
+    /// Whether the file had a machine section at all. Never written. IMPORT restores this half
+    /// only from a file that has one: a preset written by hand, or shared without it, must not
+    /// reset this desk's input, controls and layout to a fresh install's.
+    bool inFile = false;
     /// The MIDI output port the clock went to, by name, in a file written before 2026-09-25 —
     /// read so that file keeps its clock, which `load` turns into a MIDI clock output in
     /// `Preset::outputs`, and empty after that. Still written, as the first clock output's

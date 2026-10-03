@@ -521,6 +521,7 @@ namespace {
 Settings fromDocument(const json& document) {
     Settings settings;
     if (document.contains("machine")) {
+        settings.machine.inFile = true;
         const json& machine = document.at("machine");
         read(machine, "deviceName", settings.machine.deviceName);
         read(machine, "hostApiName", settings.machine.hostApiName);
