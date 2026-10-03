@@ -353,10 +353,19 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     CHECK(window->get_beats_per_bar() == 3);
     CHECK(window->get_beat_in_bar() == 2);
     CHECK(window->get_bars() == 17);
+    CHECK_FALSE(window->get_no_signal());
+
+    // A deck that stopped: the lock readout says "no signal" over the tempo it holds.
+    state.noSignal = true;
+    state.locked = false;
+    takt4::ui::publishTempoState(*window, state);
+    CHECK(window->get_no_signal());
+    CHECK_FALSE(window->get_locked());
 
     // Stopping must not leave the last set's tempo sitting there looking live.
     takt4::ui::publishIdleReadouts(*window);
     CHECK(window->get_bpm() == 0.0f);
+    CHECK_FALSE(window->get_no_signal());
     CHECK_FALSE(window->get_locked());
     CHECK_FALSE(window->get_pinned()); // and the LOCK button is not still lit
     CHECK(window->get_beats_per_bar() == 0);
@@ -3017,14 +3026,18 @@ TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware
     CHECK_FALSE(controller.outputs().tracking());
     CHECK(tracker.engine().beatsDropped() == 0);
     CHECK(controller.outputs().errors() == 0);
-    // Whatever the tracker called on silence, the transports were given all of it — by the
-    // output thread, a round or two after the stop, since nothing drains the ring for it now.
+    // Whatever the tracker called, the output thread took all of it — a round or two after the
+    // stop, since nothing drains the ring for it now — and sent every beat but those called
+    // before a lock, which nothing sends (`TempoState::acquired`): four hundred milliseconds is
+    // short of one, so what it called went unsent.
+    const auto taken = [&] {
+        return controller.outputs().transports().beats() + controller.outputs().beatsUnsent();
+    };
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (controller.outputs().transports().beats() != tracker.engine().beatsCalled() &&
-           std::chrono::steady_clock::now() < until) {
+    while (taken() != tracker.engine().beatsCalled() && std::chrono::steady_clock::now() < until) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
-    CHECK(controller.outputs().transports().beats() == tracker.engine().beatsCalled());
+    CHECK(taken() == tracker.engine().beatsCalled());
 }
 
 // ---------------------------------------------------------------------------------------

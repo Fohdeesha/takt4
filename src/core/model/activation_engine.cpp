@@ -167,6 +167,11 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         out.intensity = intensity_.intensity();
         out.onset = onset;
         out.flux = static_cast<float>(intensity_.flux());
+        double power = 0.0;
+        for (const float sample : samples) {
+            power += static_cast<double>(sample) * static_cast<double>(sample);
+        }
+        out.rms = static_cast<float>(std::sqrt(power / static_cast<double>(audio::kHopSize)));
         if (activations_.tryPush(out)) {
             framesEmitted_.fetch_add(1, std::memory_order_relaxed);
         } else {

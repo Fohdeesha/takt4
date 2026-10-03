@@ -127,6 +127,22 @@ public:
         tracking::ParticleFilter::Options filter;
         tracking::ForwardFilter::Options forward;
         tracking::TempoTracker::Options tempo;
+
+        /// **No signal**: the input's level below `noSignalBelowDb` (the RMS of each hop, dBFS)
+        /// for `noSignalSeconds` on end. Then the deck has stopped rather than paused: the
+        /// decoder forgets the beat and calls no more (`BeatDecoder::silence`), the tracker drops
+        /// the lock and says so (`TempoTracker::setNoSignal`), and the next sound is listened to
+        /// afresh. The operator's call of 2026-10-03: beats go on through any breakdown that
+        /// has sound, and stop after a few seconds of none.
+        ///
+        /// -60 dBFS because digital zero is -inf, and white noise at -70 dBFS — about where a
+        /// mixer channel with nothing playing sits (not measured on the rig) — locked exactly
+        /// as zeros did, while music, a breakdown's pad included, sits tens of dB higher. Four
+        /// seconds because a track's own dead stop before a drop is a bar or two of silence —
+        /// 1.9 s a bar at 128 BPM — and the flywheel should carry the beat through that as it
+        /// does through a breakdown.
+        double noSignalBelowDb = -60.0;
+        double noSignalSeconds = 4.0;
     };
 
     /// The weights are copied in; the state space is not, and must outlive the engine.
@@ -257,6 +273,13 @@ private:
     std::unique_ptr<tracking::BeatDecoder> decoder_;
     tracking::TempoTracker tempo_;
     std::size_t stepsPerActivation_ = 1;
+    /// `Options::noSignalBelowDb` as an RMS, and `noSignalSeconds` in decoder frames.
+    float noSignalRms_ = 0.0f;
+    std::uint64_t noSignalFrames_ = 1;
+    /// Decoder frames in a row below that level, and whether they have reached the count.
+    /// Only the inference thread touches these.
+    std::uint64_t quietFrames_ = 0;
+    bool noSignal_ = false;
     /// The activation before this one, to interpolate from. Only the inference thread
     /// touches these.
     model::FrameActivation previous_;

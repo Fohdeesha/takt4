@@ -143,7 +143,7 @@ if(TARGET takt4_assets)
   # A script, which holds the exit code and what was tracked as well as the header — see it.
   add_test(NAME "the console that ships tracks with what is built into it"
            COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:takt4-cli>"
-                   "-DWAV=${PROJECT_SOURCE_DIR}/tests/data/features/synthetic.wav"
+                   "-DWAV=${PROJECT_SOURCE_DIR}/tests/data/features/pirates.wav"
                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cli_track_file.cmake")
   set_tests_properties(
     "the console that ships tracks with what is built into it"

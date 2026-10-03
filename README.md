@@ -15,7 +15,7 @@ cues, notes and light looks on the music. No click track, no tapping along.
 ## Quick start
 
 1. Pick your interface under **audio in** and the inputs under **channels** (a stereo pair; tick **mono** for one input). Click **start**.
-2. Give it a few bars. It says **locked** when it's sure.
+2. Give it a few bars. It says **locked** when it's sure, and nothing goes out to the rig until then. The beat carries on through a breakdown; four seconds of silence stops it, and it says **no signal**.
 3. Under **outputs**, tick **Link**, or click **+ add output** and pick its **protocol**: OSC, MIDI, MIDI clock or Art-Net.
 4. In the **triggers** row, click **add a rule** (it says **edit rules** once you have some). Pick a ready-made set from **select a preset**, or build your own.
 

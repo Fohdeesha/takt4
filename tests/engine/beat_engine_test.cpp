@@ -1304,3 +1304,89 @@ TEST_CASE("the configuration that ships calls the beats it called when this was 
     CHECK(matched + 1 >= larger);
     CHECK(downbeatsAgree == matched);
 }
+
+namespace {
+
+/// `seconds` of input at the engine's own rate: exact zeros, or white noise at `dbfs` RMS —
+/// uniform, so its peak is the square root of three over its RMS. Deterministic, from a fixed
+/// seed, the same on every compiler.
+std::vector<float> quietInput(double seconds, std::optional<double> dbfs) {
+    std::vector<float> out(static_cast<std::size_t>(seconds * takt4::audio::kInternalSampleRate));
+    if (dbfs) {
+        const double peak = std::sqrt(3.0) * std::pow(10.0, *dbfs / 20.0);
+        std::uint32_t state = 2463534242U;
+        for (float& sample : out) {
+            state ^= state << 13U;
+            state ^= state >> 17U;
+            state ^= state << 5U;
+            const double uniform = static_cast<double>(state) / 4294967295.0 * 2.0 - 1.0;
+            sample = static_cast<float>(uniform * peak);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("digital silence and a noise floor call no beat and earn no lock", "[engine][shipped]") {
+    // Reported from the rig on 2026-10-03: 178.66 BPM, locked, confidence 0.95, with the input
+    // at -inf dB. The network reads P(beat) 0.46 to digital zeros, the decoder took that as
+    // evidence for the one tempo whose beat zone is the largest share of its interval, and the
+    // tracker locked on it with no beat ever called. The same at -70 dBFS. Now nothing is
+    // evidence until a beat is heard, a lock needs beats, and four seconds below -60 dBFS say
+    // there is no signal at all.
+    const bool noise = GENERATE(false, true);
+    INFO((noise ? "white noise at -70 dBFS" : "exact zeros"));
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    const std::vector<EngineBeat> beats = trackShipped(
+        *engine, quietInput(12.0, noise ? std::optional<double>(-70.0) : std::nullopt));
+    const takt4::tracking::TempoState state = engine->state();
+    CHECK(beats.empty());
+    CHECK_FALSE(state.locked);
+    CHECK_FALSE(state.acquired);
+    CHECK(state.confidence == 0.0);
+    CHECK(state.bpm == 0.0); // a dash on screen, and nothing on the wire
+    CHECK(state.noSignal);   // twelve seconds is past the four that say so
+}
+
+TEST_CASE("when the music stops the beat carries on, then stops, and the lock goes",
+          "[engine][shipped]") {
+    // The operator's call of 2026-10-03: beats go on through any breakdown that has sound, and
+    // stop after a few seconds of none. Before, they went on for as long as the silence lasted,
+    // locked, at the tempo of a deck that had stopped.
+    const std::vector<float> music = excerpt("pirates.wav");
+    std::vector<float> signal = music;
+    const std::vector<float> silence = quietInput(10.0, std::nullopt);
+    signal.insert(signal.end(), silence.begin(), silence.end());
+    const double stops = static_cast<double>(music.size()) / takt4::audio::kInternalSampleRate;
+
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    const std::vector<EngineBeat> beats = trackShipped(*engine, signal);
+    std::size_t carried = 0;
+    std::size_t after = 0;
+    bool lockedWhenItStopped = false;
+    for (const EngineBeat& beat : beats) {
+        if (beat.event.time < stops) {
+            lockedWhenItStopped = beat.event.locked;
+        } else if (beat.event.time < stops + 3.5) {
+            ++carried;
+        } else {
+            ++after;
+        }
+    }
+    REQUIRE(lockedWhenItStopped);
+    INFO(carried << " beats in the 3.5 s after the music, " << after << " after that");
+    CHECK(carried >= 6); // the flywheel, at 136: eight in three and a half seconds
+    // The last carried beat is at most a beat past the four seconds, so none from half a second
+    // after them.
+    std::size_t late = 0;
+    for (const EngineBeat& beat : beats) {
+        late += beat.event.time > stops + 4.5 ? 1U : 0U;
+    }
+    CHECK(late == 0);
+    const takt4::tracking::TempoState state = engine->state();
+    CHECK(state.noSignal);
+    CHECK_FALSE(state.locked);
+    CHECK_FALSE(state.acquired);
+    CHECK(state.bpm == Approx(136.36).epsilon(0.025)); // the music's, held
+}

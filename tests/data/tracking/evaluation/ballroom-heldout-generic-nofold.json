@@ -124,12 +124,12 @@
     },
     "Tempo accuracy 1": {
       "files": 70,
-      "mean": 0.9714285714285714,
+      "mean": 1.0,
       "median": 1.0
     },
     "Tempo accuracy 2": {
       "files": 70,
-      "mean": 0.9714285714285714,
+      "mean": 1.0,
       "median": 1.0
     }
   },

@@ -37,8 +37,8 @@
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8590158015278322,
-      "F-measure": 0.9137017353745115,
+      "Downbeat F-measure": 0.8579128603513615,
+      "F-measure": 0.9134614224087887,
       "files": 40
     },
     "Samba": {
@@ -57,8 +57,8 @@
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.9063775096178514,
-      "F-measure": 0.9157469238508132,
+      "Downbeat F-measure": 0.906069817310159,
+      "F-measure": 0.9155206209929315,
       "files": 110
     }
   },
@@ -67,42 +67,42 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9064618853211359,
+      "mean": 0.9062563811117107,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.9307249084112093,
+      "mean": 0.9304402306231382,
       "median": 0.9367088607594937
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8867362912224332,
+      "mean": 0.8866878268170972,
       "median": 0.9107132487149439
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8879142568822405,
+      "mean": 0.8878657924769044,
       "median": 0.9107845845055611
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9037475351255971,
+      "mean": 0.903542030916172,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.9276949601474315,
-      "median": 0.9367088607594937
+      "mean": 0.9274102823593606,
+      "median": 0.9364395367627256
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.9421639934666822,
+      "mean": 0.9420522974768469,
       "median": 0.962962962962963
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9555420673106301,
+      "mean": 0.955492632019805,
       "median": 0.9662921348314606
     },
     "Goto": {
@@ -112,22 +112,22 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6077200194542077,
+      "mean": 0.6076909596222032,
       "median": 0.6116568578541406
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9397405863463848,
+      "mean": 0.9396302639788614,
       "median": 0.9375
     },
     "Tempo accuracy 1": {
       "files": 698,
-      "mean": 0.9813753581661891,
+      "mean": 0.9871060171919771,
       "median": 1.0
     },
     "Tempo accuracy 2": {
       "files": 698,
-      "mean": 0.9871060171919771,
+      "mean": 0.9928366762177651,
       "median": 1.0
     }
   },

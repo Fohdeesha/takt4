@@ -71,6 +71,14 @@ public:
     /// Pin the tempo and track phase only, which is what a DJ's beat grid is and the only
     /// thing that holds a track whose periodicities are in non-octave ratios. Zero releases.
     virtual void holdTempo(double /*bpm*/) noexcept {}
+
+    /// **The input has had no signal for a while** (`BeatEngine::Options::noSignalSeconds`):
+    /// the deck has stopped, not paused for a breakdown. Stop calling beats and forget the beat
+    /// that was being followed, as if nothing had been heard yet, so that whatever plays next
+    /// is listened to afresh. The window and a hold are settings and survive, and the frame
+    /// count goes on. A decoder that never calls beats through silence need do nothing: the
+    /// particle filter's information gate already takes nothing from it.
+    virtual void silence() noexcept {}
 };
 
 } // namespace takt4::tracking

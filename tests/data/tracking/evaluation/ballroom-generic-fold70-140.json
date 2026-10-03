@@ -57,8 +57,8 @@
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.9074925298330487,
-      "F-measure": 0.9174271167151422,
+      "Downbeat F-measure": 0.9072835434171658,
+      "F-measure": 0.917343666029282,
       "files": 110
     }
   },
@@ -67,42 +67,42 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9062114986472454,
+      "mean": 0.9061644499896563,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.9301834337936103,
+      "mean": 0.9301357224788721,
       "median": 0.9358974358974359
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8862733247388291,
-      "median": 0.9107845845055611
+      "mean": 0.8862707959526634,
+      "median": 0.9109771069743771
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8874079178599522,
-      "median": 0.9107845845055611
+      "mean": 0.8874053890737865,
+      "median": 0.9109771069743771
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9043085055281312,
+      "mean": 0.9042614568705422,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.928133500699476,
+      "mean": 0.9280857893847378,
       "median": 0.9358974358974359
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.941789679289231,
+      "mean": 0.9417567444672437,
       "median": 0.9615384615384615
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.9550127928500843,
+      "mean": 0.9549996415958656,
       "median": 0.9662921348314606
     },
     "Goto": {
@@ -112,12 +112,12 @@
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6084195654135978,
+      "mean": 0.6084061540852869,
       "median": 0.6126879384311066
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9396579731516396,
+      "mean": 0.9396354428085688,
       "median": 0.9375
     },
     "Tempo accuracy 1": {

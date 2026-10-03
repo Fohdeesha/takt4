@@ -230,6 +230,31 @@ void ForwardFilter::reset() noexcept {
     // `TempoTracker`'s options survive its own.
 }
 
+void ForwardFilter::silence() noexcept {
+    // `reset`, less three things that carry on: the frame count, which every frame index and
+    // beat time downstream is measured in; the recent levels, which the next beat's contrast is
+    // judged against; and when the last beat went out, so the spacing rule holds across the gap.
+    const double uniform = 1.0 / static_cast<double>(numStates_);
+    std::fill(posterior_.begin(), posterior_.end(), uniform);
+    std::fill(patternMass_.begin(), patternMass_.end(), 0.0);
+    std::fill(intervalMass_.begin(), intervalMass_.end(), 0.0);
+    armed_ = false;
+    lastEvidence_ = 0;
+    evidenceFrame_ = 0;
+    evidenceInterval_ = 0;
+    everHeard_ = false;
+    coasting_ = false;
+    lastBeatIndex_ = -1;
+    lastPosition_ = 0.0;
+    lastMeanPhase_ = 0.0;
+    haveMeanPhase_ = false;
+    inRange_ = false;
+    rangeEmitted_ = false;
+    rangeBeatIndex_ = 0;
+    rangeBestActivation_ = -1.0;
+    rangeBestFrame_ = 0;
+}
+
 void ForwardFilter::combineWeights() noexcept {
     anyWeight_ = false;
     anyHold_ = false;
@@ -429,6 +454,16 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
         armed_ = true;
     }
     const bool heard = level >= options_.armThreshold && level - trough >= options_.coastContrast;
+    // **Nothing is evidence until a beat has been heard** — see the class note. The posterior is
+    // left as it is, which before the first beat is the uniform prior, and the frame says no
+    // tempo and no agreement: there is no beat yet to have a tempo of.
+    if (!everHeard_ && !heard) {
+        frame.beatsPerBar = meterNow_;
+        lastActivation2_ = lastActivation_;
+        lastActivation_ = beat + down;
+        ++counter_;
+        return frame;
+    }
     // A beat that was due and never came: the music, or at least its beat, has stopped, and
     // nothing is taken from it until it comes back — see Options::coastAfterFrames.
     const std::uint64_t coastAfter =
