@@ -986,6 +986,50 @@ TEST_CASE("the run callback opens a device and closes it again", "[ui][hardware]
     CHECK(controller.window().get_beats_per_bar() == 0);
 }
 
+TEST_CASE("an import while listening leaves the same input running and moves to another one",
+          "[ui][hardware][settings]") {
+    // IMPORT restores the input since 2026-10-03. A file naming the input already open must not
+    // interrupt it — importing a rig's own export mid-set — and one naming another must end up
+    // listening to that one, as STOP, a pick and START would. The engine counts its runs, which
+    // is what says whether the stream was opened again.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device || device->maxInputChannels < 2) {
+        SKIP("no input device with two inputs on this machine");
+    }
+    WindowController controller(tracker);
+    controller.window().invoke_toggle_run();
+    waitUntil(controller, [&tracker] { return tracker.running(); });
+    REQUIRE(tracker.running());
+    waitUntil(controller, [&controller] { return !controller.window().get_run_busy(); });
+    const auto runs = [&tracker] { return tracker.engine().runNumber(); };
+    const auto run = runs();
+    const takt4::test::TempDir dir;
+
+    takt4::settings::Settings same = controller.currentSettings();
+    const std::filesystem::path sameFile = dir.path() / "same.json";
+    REQUIRE(takt4::settings::save(same, sameFile));
+    REQUIRE(controller.importFrom(sameFile));
+    CHECK(tracker.running());
+    CHECK(runs() == run);
+
+    takt4::settings::Settings other = same;
+    other.machine.mono = !same.machine.mono;
+    const std::filesystem::path otherFile = dir.path() / "other.json";
+    REQUIRE(takt4::settings::save(other, otherFile));
+    REQUIRE(controller.importFrom(otherFile));
+    waitUntil(controller, [&tracker, &controller] {
+        return tracker.running() && !controller.window().get_run_busy();
+    });
+    CHECK(tracker.running());
+    CHECK(runs() == run + 1);
+    CHECK(controller.window().get_input_mono() == other.machine.mono);
+    CHECK(controller.currentSettings().machine.mono == other.machine.mono);
+
+    controller.window().invoke_toggle_run();
+    waitUntil(controller, [&tracker] { return !tracker.running(); });
+}
+
 TEST_CASE("a window closed with the tracker running stops it first", "[ui][hardware]") {
     // The window hands the tracker Link's clock, and that clock belongs to the window's output
     // thread. A tracker still running once the window has gone stamps every hop through it —
@@ -5629,6 +5673,89 @@ TEST_CASE("each import decides what the next launch uses, not the one before", "
     importing(running, prefix, "second");
     CHECK(controller.currentSettings().preset.decoder == running);
     CHECK(controller.currentSettings().preset.oscPrefix == prefix);
+}
+
+TEST_CASE("an import restores this machine's half too, and a file without one leaves it alone",
+          "[ui][settings]") {
+    // The operator, 2026-10-03: export and import "should carry/restore EVERYTHING". Import
+    // applied the preset and left the input, the MIDI and OSC control and the layout as they were,
+    // by Q7's design, so a rig restored from its own export came back without them. Every part of
+    // the machine half that can differ from a fresh window without hardware, from a file, back out
+    // of what the window would save.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::settings::Settings before = controller.currentSettings();
+    REQUIRE_FALSE(before.machine.oscControlEnabled);
+    REQUIRE(before.machine.midiBindings.empty());
+
+    takt4::settings::Settings show;
+    show.machine.deviceName = "takt4 test - an interface from another machine";
+    show.machine.hostApiName = "ASIO";
+    show.machine.channel = 6;
+    show.machine.mono = true;
+    show.machine.midiControlPort = "takt4 test - a controller from another machine";
+    show.machine.midiBindings = {"note 36 ch 10 -> tap"};
+    show.machine.oscControlEnabled = true;
+    show.machine.oscControlPort = 0; // any free one: what the sandbox lets a test bind
+    show.machine.oscControlLocalOnly = true;
+    show.machine.inputsFolded = true;
+    show.machine.outputsFolded = true;
+    show.machine.ruleSectionsFolded = {true, true, true, true};
+    show.machine.ruleLogOpen = true;
+    show.machine.patchSectionsFolded = {true, true, true};
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "rig.json";
+    REQUIRE(takt4::settings::save(show, file));
+    REQUIRE(controller.importFrom(file));
+
+    const takt4::settings::MachineSettings after = controller.currentSettings().machine;
+    // The input is not on this machine: still the one wanted, as at a launch that cannot find it.
+    CHECK(after.deviceName == show.machine.deviceName);
+    CHECK(after.hostApiName == "ASIO");
+    CHECK(after.channel == 6);
+    CHECK(after.mono);
+    CHECK(after.midiControlPort == show.machine.midiControlPort);
+    CHECK(after.midiBindings == show.machine.midiBindings);
+    CHECK(controller.control().bindings().size() == 1);
+    CHECK(after.oscControlEnabled);
+    CHECK(controller.oscControl().running());
+    CHECK(after.inputsFolded);
+    CHECK(after.outputsFolded);
+    CHECK(controller.window().get_inputs_folded());
+    CHECK(after.ruleSectionsFolded == show.machine.ruleSectionsFolded);
+    CHECK(after.ruleLogOpen);
+    CHECK(after.patchSectionsFolded == show.machine.patchSectionsFolded);
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("the input, MIDI and OSC control and the layout") != std::string::npos);
+
+    SECTION("a file with no machine section changes none of it") {
+        // A preset written by hand, or shared without this half: a fresh install's would switch
+        // OSC control off and forget the pads.
+        const std::filesystem::path preset = dir.path() / "preset-only.json";
+        std::ofstream(preset)
+            << R"({"version": 1, "preset": {"rules": [{"id": "go", "address": "/go"}]}})";
+        REQUIRE(controller.importFrom(preset));
+        REQUIRE(controller.rules().size() == 1);
+        const takt4::settings::MachineSettings kept = controller.currentSettings().machine;
+        CHECK(kept.deviceName == show.machine.deviceName);
+        CHECK(kept.midiBindings == show.machine.midiBindings);
+        CHECK(kept.oscControlEnabled);
+        CHECK(controller.oscControl().running());
+        CHECK(kept.inputsFolded);
+        CHECK(kept.ruleSectionsFolded == show.machine.ruleSectionsFolded);
+    }
+
+    SECTION("and the export it came from carries all of it") {
+        const std::filesystem::path out = dir.path() / "exported.json";
+        REQUIRE(controller.exportTo(out));
+        const takt4::settings::Settings read = takt4::settings::load(out);
+        CHECK(read.machine.deviceName == show.machine.deviceName);
+        CHECK(read.machine.midiBindings == show.machine.midiBindings);
+        CHECK(read.machine.oscControlEnabled);
+        CHECK(read.machine.inputsFolded);
+        CHECK(read.machine.patchSectionsFolded == show.machine.patchSectionsFolded);
+    }
 }
 
 TEST_CASE("an output the network refuses is named in the status line", "[ui]") {

@@ -1000,6 +1000,71 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     }
 }
 
+void WindowController::applyMachine(const settings::MachineSettings& machine) {
+    // **The input**, found by name as a launch finds it — and left alone when it is the one in
+    // use, so importing this rig's own file interrupts nothing. Another one, while listening, is
+    // listened to instead: stopped, switched, started again on it, as STOP, a pick and START would.
+    const settings::MachineSettings now = currentSettings().machine;
+    const bool sameInput = now.deviceName == machine.deviceName &&
+                           now.hostApiName == machine.hostApiName &&
+                           now.channel == machine.channel && now.mono == machine.mono;
+    if (!sameInput) {
+        const bool listening = wantRunning_ || tracker_.running();
+        if (listening) {
+            toggleRun();
+        }
+        // What is wanted from here on, as if takt4 had been launched with this file: an input
+        // that is not on this machine falls back as a launch does and is still the one saved and
+        // looked for (`deviceFallback_`), not the fallback.
+        remembered_.deviceName = machine.deviceName;
+        remembered_.hostApiName = machine.hostApiName;
+        remembered_.channel = machine.channel;
+        remembered_.mono = machine.mono;
+        deviceChosen_ = false;
+        refreshDevices(machine);
+        if (listening && !deviceFallback_) {
+            requestToggleRun();
+        }
+    }
+
+    // **MIDI control**: what was learned, then the port it was learned on — `setPort` keeps the
+    // bindings it is given, and an empty port is no control input.
+    std::vector<control::MidiBinding> bindings;
+    for (const std::string& text : machine.midiBindings) {
+        if (const std::optional<control::MidiBinding> binding = control::parseMidiBinding(text)) {
+            bindings.push_back(*binding);
+        }
+    }
+    control_.setBindings(std::move(bindings));
+    if (machine.midiControlPort != control_.config().port) {
+        setMidiControlPort(machine.midiControlPort);
+    }
+
+    // **OSC control**: switched off first when the file has it off, so the port and the network
+    // are then only numbers; switched on last when it has it on, so it opens once, where the file
+    // says.
+    if (!machine.oscControlEnabled) {
+        setOscControlEnabled(false);
+    }
+    setOscControlNetwork(!machine.oscControlLocalOnly);
+    setOscControlPort(machine.oscControlPort);
+    if (machine.oscControlEnabled) {
+        setOscControlEnabled(true);
+    }
+
+    // **The layout**: the main window's folds, through the arrow's own path so the window's
+    // height follows; and the rule editor's and the patch editor's.
+    if (window_->get_inputs_folded() != machine.inputsFolded) {
+        toggleFold(0);
+    }
+    if (window_->get_outputs_folded() != machine.outputsFolded) {
+        toggleFold(1);
+    }
+    editor_.applyLayout(machine);
+    patch_.applyLayout(machine);
+    publishControl();
+}
+
 void WindowController::publishPortLists() {
     // The first entry of each list is "nothing picked". **It says so in words**: it used to
     // be an empty string, and a dropdown showing nothing at all does not read as a list
@@ -2986,7 +3051,8 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // **The whole preset half against a fresh install's**, not four fields of it: this used to
     // look at the rules, the outputs, the prefix and the meters, so a file holding nothing but
     // a lighting patch — or a tempo window, or a decoder — was "no preset" (the audit's M18).
-    {
+    // A machine section is something too, since IMPORT restores it (2026-10-03).
+    if (!loaded.machine.inFile) {
         settings::Settings imported;
         imported.preset = loaded.preset;
         // Less the Link output every loaded set is given, when it is only that — switched off,
@@ -2998,15 +3064,14 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         }
         if (settings::toJson(imported) == settings::toJson(settings::Settings{})) {
             setStatus(io::pathText(path.filename()) +
-                          " has no preset in it, so nothing was changed.",
+                          " has no settings in it, so nothing was changed.",
                       true);
             return false;
         }
     }
 
-    // Q7's portable half only. The input device and the learned bindings are this desk's and
-    // are deliberately untouched — see the header. The outputs are the preset's, and Link and
-    // the MIDI clocks are outputs since 2026-09-25, so they come with them.
+    // The preset half first. The outputs are the preset's, and Link and the MIDI clocks are
+    // outputs since 2026-09-25, so they come with them. The machine half last — see the end.
     setRules(loaded.preset.rules);
     meters_ = loaded.preset.meters;
     postOptions(loaded.preset.tempo);
@@ -3052,13 +3117,23 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     }
     applyTargets();
 
-    setStatus("Imported " + io::pathText(path.filename()) + ": " +
-                  std::to_string(loaded.preset.rules.size()) + " rules, " +
-                  std::to_string(loaded.preset.outputs.size()) + " outputs, " +
-                  std::to_string(loaded.preset.fixtures.size()) + " fixtures." +
-                  (restart.empty() ? std::string{}
-                                   : " Restart takt4 for " + restart + " to take effect."),
-              false);
+    // **And this machine's half, when the file has one** (the operator, 2026-10-03: an import
+    // "should carry/restore EVERYTHING"). It used to be left alone by design — Q7 kept the input
+    // and the learned controls out of anything that travels — so a rig restored from its own
+    // export came back without its input, its pads, its OSC control or its layout.
+    if (loaded.machine.inFile) {
+        applyMachine(loaded.machine);
+    }
+
+    setStatus(
+        "Imported " + io::pathText(path.filename()) + ": " +
+            std::to_string(loaded.preset.rules.size()) + " rules, " +
+            std::to_string(loaded.preset.outputs.size()) + " outputs, " +
+            std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
+            (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
+            (restart.empty() ? std::string{}
+                             : " Restart takt4 for " + restart + " to take effect."),
+        false);
     return true;
 }
 

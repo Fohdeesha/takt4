@@ -432,12 +432,12 @@ public:
     /// damaged and what was done about it. On the status line, as an error.
     void showNotice(const std::string& text);
 
-    /// Load a file and apply **the portable half** — Q7's preset: the rules, the outputs (Link
-    /// and the MIDI clocks among them, since they became output rows on 2026-09-25), the
-    /// lighting patch, the fold window and the rest of `TempoTracker::Options`, the meters and
-    /// the OSC prefix. The machine-local half is deliberately left alone: the audio device, the
-    /// MIDI control input and the learned bindings describe *this* desk, and a preset carried
-    /// from another one naming a device that is not here would silently stop the tracker.
+    /// Load a file and apply **all of it** — the operator's call of 2026-10-03, over Q7: the
+    /// preset (the rules, the outputs with Link and the MIDI clocks among them, the lighting patch,
+    /// the fold window and the rest of `TempoTracker::Options`, the meters and the OSC prefix) and
+    /// the machine half (`applyMachine`: the input, the MIDI and OSC control, the folds). The
+    /// machine half only from a file that has one (`MachineSettings::inFile`). An input that is
+    /// not on this machine is still the one wanted, as at a launch that cannot find it.
     ///
     /// False only when the file could not be read as settings at all. Note that
     /// `settings::load` never fails, so this reports on the file existing and parsing rather
@@ -469,6 +469,11 @@ private:
     /// Fills the device picker and selects one: the remembered device if it is still
     /// there, otherwise the most useful one on the machine.
     void refreshDevices(const settings::MachineSettings& remembered);
+    /// IMPORT's machine half: the input (by name, its channel, mono), the MIDI control port and
+    /// what was learned on it, OSC control, and how the three windows were folded — through the
+    /// same calls the window's own controls make. An input other than the one listening to stops
+    /// it, switches and starts it again on the new one.
+    void applyMachine(const settings::MachineSettings& machine);
     /// Reads the tracker's device list into `devices_` and the picker's model, selecting
     /// nothing.
     void listDevices();

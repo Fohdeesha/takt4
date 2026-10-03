@@ -105,7 +105,7 @@ To control takt4, tick **listen** on the OSC row under **inputs** (port 7001; th
 ## Saving
 
 - Everything saves by itself to `settings.json` next to `takt4.exe`.
-- **export** / **import** carry the rules, outputs, lights and tempo settings to another machine. Import replaces them; the audio device and MIDI bindings stay as they are.
+- **export** / **import** carry everything: rules, outputs, lights, tempo settings, the audio input, MIDI and OSC control with what was learned, and which sections are folded. Import replaces it all. An input that isn't on this machine stays the one saved; **rescan** or the next launch finds it once it's plugged in.
 - A rule's mute and its ÷2 / ×2 aren't saved.
 - takt4 counts in 4/4. For a set with waltzes, close it and change `"meters": [4]` to `"meters": [3, 4]` in `settings.json`.
 
