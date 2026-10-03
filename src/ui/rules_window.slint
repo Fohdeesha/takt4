@@ -1310,7 +1310,8 @@ export component RulesWindow inherits Window {
                 picked(index) => {
                   root.rig-added(index);
                 }
-                // From out here: a `changed` inside the popup never fires (measured).
+                // From out here: a `changed` inside the popup never fires — its contents are made
+                // when it opens and dropped when it closes (measured).
                 changed open => {
                   root.presets-open = self.open;
                 }

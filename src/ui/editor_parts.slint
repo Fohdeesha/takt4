@@ -30,7 +30,8 @@ export component Word inherits Text {
 }
 
 /// A note after a control, which gives way first when a row is short of room: prose elides, and
-/// the controls keep their size.
+/// the controls keep their size — a `Text` that does not elide asks for its whole width, and the
+/// controls beside it are what give way instead.
 export component Note inherits Text {
   horizontal-stretch: 1;
   min-width: 20px;
