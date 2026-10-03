@@ -68,24 +68,27 @@ takt4 sends this feed to the OSC outputs you tick under **/takt4 global messages
 To control takt4, tick **listen** on the OSC row under **inputs** (port 7001; this machine only unless **allow other machines** is ticked):
 
 ```
-/takt4/ctl/tap                      tap the tempo
-/takt4/ctl/downbeat                 the one is now
-/takt4/ctl/tempo/halve              ÷2
-/takt4/ctl/tempo/double             ×2
-/takt4/ctl/lock            <0|1>    pin the lock, or let it go
-/takt4/ctl/panic                    panic
-/takt4/ctl/panic/release            release
-/takt4/ctl/manual                   fire the manual rules
-/takt4/ctl/rule/<id>/enable <0|1>   switch a rule on or off
-/takt4/ctl/rule/<id>/mute   <0|1>   mute or unmute a rule
-/takt4/ctl/rule/<id>/double         fire half as often
-/takt4/ctl/rule/<id>/halve          fire twice as often
-/takt4/ctl/rule/<id>/rate   <f>     multiply its count (2 = half as often), for a fader
-/takt4/ctl/rule/<id>/reset          back to the count it was written with
+address                       send           does
+/takt4/ctl/tap                nothing or 1   tap the tempo
+/takt4/ctl/downbeat           nothing or 1   the one is now
+/takt4/ctl/tempo/halve        nothing or 1   ÷2
+/takt4/ctl/tempo/double       nothing or 1   ×2
+/takt4/ctl/lock               1 or 0         pin the lock (1), or let it go (0)
+/takt4/ctl/panic              anything       panic
+/takt4/ctl/panic/release      nothing or 1   release
+/takt4/ctl/manual             nothing or 1   fire the manual rules
+/takt4/ctl/rule/<id>/enable   1 or 0         switch a rule on (1) or off (0)
+/takt4/ctl/rule/<id>/mute     1 or 0         mute (1) or unmute (0) a rule
+/takt4/ctl/rule/<id>/double   nothing or 1   fire half as often
+/takt4/ctl/rule/<id>/halve    nothing or 1   fire twice as often
+/takt4/ctl/rule/<id>/rate     a number       multiply its count, 0.0625 to 64 (2 = half as often), for a fader
+/takt4/ctl/rule/<id>/reset    nothing or 1   back to the count it was written with
 ```
 
+- Send the value as the first argument: an OSC **int** (`i`), **float** (`f`) or **boolean** (`T` is 1, `F` is 0). A string counts as nothing; any other type and the message is ignored.
+- **nothing or 1**: a button. Any number but 0 presses it too; a 0 is its release and does nothing, so a push button that sends 1 then 0 presses once. **panic** engages on anything, 0 included.
+- **1 or 0**: a switch, never a toggle, so a missed message can't leave one backwards. Anything but 0 is on; with no value it's ignored.
 - `<id>` is the rule's id, shown beside its name in the rule editor, or `all`.
-- Switches take `0` or `1`, never a toggle, so a missed message can't leave one backwards.
 
 **MIDI control**: on the MIDI row under **inputs**, pick the controller's **port** and an **action**, click **learn**, hit the pad. Actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held.
 
