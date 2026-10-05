@@ -2308,3 +2308,42 @@ TEST_CASE("a release owed to an output follows it when another is added above it
     CHECK(releasedAtDeck);
     CHECK_FALSE(releasedAtFresh);
 }
+
+TEST_CASE("the log of a rule that moves one head says which", "[output][dmx][heads]") {
+    Transports::Config config;
+    takt4::dmx::Fixture twin;
+    twin.id = "f-twin";
+    twin.name = "twin";
+    twin.address = 1;
+    twin.channels = {takt4::dmx::Role::Pan, takt4::dmx::Role::Tilt, takt4::dmx::Role::Pan,
+                     takt4::dmx::Role::Tilt};
+    twin.parked = {128, 128, 128, 128};
+    config.patch = {twin};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config); // stopped, so every post applies at once
+
+    Rule::Config right;
+    right.id = "right";
+    right.sendKind = takt4::trigger::Message::Kind::Dmx;
+    right.dmx.effect = takt4::dmx::EffectKind::Home;
+    right.dmx.fixtures = {"f-twin"};
+    right.dmx.heads = 0b10; // head 2
+    right.dmx.spread = 0.5;
+    Rule::Config both = right;
+    both.id = "both";
+    both.dmx.heads = 0;
+    both.dmx.spread = 0.0;
+    runner.post(OutputCommand::rules({right, both}));
+    runner.post(OutputCommand::testRule("right"));
+    runner.post(OutputCommand::testRule("both"));
+
+    std::vector<std::string> lines;
+    for (const OutputRunner::Fired& entry : runner.takeFired()) {
+        lines.push_back(entry.message);
+    }
+    REQUIRE(lines.size() == 2);
+    CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("head 2"));
+    CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("spread 50%"));
+    CHECK_THAT(lines[1], !Catch::Matchers::ContainsSubstring("head"));
+    CHECK_THAT(lines[1], !Catch::Matchers::ContainsSubstring("spread"));
+}

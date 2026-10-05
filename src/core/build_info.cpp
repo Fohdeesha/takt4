@@ -8,6 +8,7 @@
 #include <asio/version.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include <portaudio.h>
+#include <pugixml.hpp>
 
 #include <sstream>
 #include <string>
@@ -28,6 +29,13 @@ std::string nlohmannJsonVersion() {
            std::to_string(NLOHMANN_JSON_VERSION_PATCH);
 }
 
+/// pugixml says its own version, as major × 1000 + minor × 10 (1.16 is 1160). Read from the
+/// header rather than the pin in cmake/deps.cmake, so the two disagreeing is a failing test.
+std::string pugixmlVersion() {
+    return std::to_string(PUGIXML_VERSION / 1000) + '.' +
+           std::to_string(PUGIXML_VERSION % 1000 / 10);
+}
+
 } // namespace
 
 BuildInfo buildInfo() {
@@ -44,6 +52,10 @@ BuildInfo buildInfo() {
     info.rtneuralRevision = TAKT4_RTNEURAL_REV;
     info.kissfft = TAKT4_KISSFFT_VERSION;
     info.nlohmannJson = nlohmannJsonVersion();
+    info.pugixml = pugixmlVersion();
+    // miniz's header carries the version of the zlib it imitates (MZ_VERSION, "11.3.2"), not
+    // its own release; the release is the pin.
+    info.miniz = TAKT4_MINIZ_VERSION;
     info.slint = TAKT4_SLINT_VERSION;
     return info;
 }
@@ -68,6 +80,8 @@ std::string describe(const BuildInfo& info) {
         << "  RTNeural:      " << info.rtneuralRevision << '\n'
         << "  KissFFT:       " << info.kissfft << '\n'
         << "  nlohmann/json: " << info.nlohmannJson << '\n'
+        << "  pugixml:       " << info.pugixml << '\n'
+        << "  miniz:         " << info.miniz << '\n'
         << "  Slint:         " << (info.slint.empty() ? "not built" : info.slint) << '\n';
     return out.str();
 }

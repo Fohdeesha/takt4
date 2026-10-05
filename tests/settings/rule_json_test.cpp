@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -281,6 +282,77 @@ TEST_CASE("a rule that never used another kind does not write that kind's defaul
     CHECK(written.find("\"dmx\"") == std::string::npos);
     CHECK(written.find("\"channel\"") == std::string::npos);
     CHECK(written.find("\"number\"") == std::string::npos);
+}
+
+TEST_CASE("a movement rule keeps the heads it moves and their spread, and writes them only when "
+          "it names some",
+          "[settings][trigger][heads]") {
+    Rule::Config rule;
+    rule.id = "left";
+    rule.sendKind = Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Path;
+    rule.dmx.fixtures = {"f-twin"};
+    rule.dmx.heads = 0b101; // heads 1 and 3
+    rule.dmx.spread = 0.25;
+    const std::string written = rulesToJson({rule});
+    INFO(written);
+    REQUIRE(written.find("\"heads\"") != std::string::npos);
+    const std::vector<Rule::Config> back = rulesFromJson(written);
+    REQUIRE(back.size() == 1);
+    CHECK(back[0].dmx.heads == 0b101);
+    CHECK(back[0].dmx.spread == Approx(0.25));
+
+    SECTION("every head together, the default, writes nothing: a file saves as it did") {
+        Rule::Config every = rule;
+        every.dmx.heads = 0;
+        every.dmx.spread = 0.0;
+        const std::string text = rulesToJson({every});
+        CHECK(text.find("\"heads\"") == std::string::npos);
+        CHECK(text.find("\"spread\"") == std::string::npos);
+    }
+    SECTION("nor does an effect that moves nothing") {
+        Rule::Config fade = rule;
+        fade.dmx.effect = takt4::dmx::EffectKind::Level;
+        const std::string text = rulesToJson({fade});
+        CHECK(text.find("\"heads\"") == std::string::npos);
+        CHECK(text.find("\"spread\"") == std::string::npos);
+    }
+    SECTION("a hand-edited list keeps the heads that are heads, and nothing else") {
+        // The value after "heads": swapped for what a person might type.
+        const std::size_t key = written.find("\"heads\"");
+        const std::size_t colon = written.find(':', key);
+        const std::size_t close = written.find(']', colon);
+        const auto with = [&](const char* typed) {
+            const std::vector<Rule::Config> read = rulesFromJson(
+                written.substr(0, colon + 1) + " " + typed + written.substr(close + 1));
+            REQUIRE(read.size() == 1);
+            return read[0].dmx.heads;
+        };
+        for (const char* typed : {"[1e20]", "[-1, 0, 33]", "[\"2\"]", "[2.5]", "null", "7",
+                                  "[18446744073709551615]", "{}"}) {
+            INFO("heads: " << typed);
+            CHECK(with(typed) == 0);
+        }
+        CHECK(with("[1, 3, 3]") == 0b101);
+        CHECK(with("[32]") == std::uint32_t{1} << 31);
+        CHECK(with("[2, \"x\", 4]") == 0b1010);
+    }
+    SECTION("and a spread that is not one is none, or as far as one goes") {
+        const std::size_t key = written.find("\"spread\"");
+        const std::size_t colon = written.find(':', key);
+        const std::size_t end = written.find_first_of(",\n}", colon);
+        const auto with = [&](const char* typed) {
+            const std::vector<Rule::Config> read =
+                rulesFromJson(written.substr(0, colon + 1) + " " + typed + written.substr(end));
+            REQUIRE(read.size() == 1);
+            return read[0].dmx.spread;
+        };
+        CHECK(with("\"half\"") == 0.0);
+        CHECK(with("-1") == 0.0);
+        CHECK(with("1e20") == 1.0);
+        CHECK(with("null") == 0.0);
+        CHECK(with("0.5") == Approx(0.5));
+    }
 }
 
 TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {

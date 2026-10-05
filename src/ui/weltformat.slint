@@ -152,6 +152,10 @@ export global Wf {
     out property <color> slot-name: #ff7b6c;
     /// A switched-off rule's dot in the list.
     out property <color> dot-off: #8a8983;
+    /// A question a window asks before it changes anything — the patch editor's "replace or keep
+    /// both" — inside an amber edge (`holding`). Warmer than a band, so the box reads as the one
+    /// thing waiting for an answer (the import mockup, 2026-10-04).
+    out property <color> question: #1a1712;
 }
 
 /// A dashed outline — what says "locked" or "switched off" on a box, a tick box or a button.
@@ -505,6 +509,12 @@ export component Tick inherits Rectangle {
 export component Pick inherits Rectangle {
     in property <[string]> model;
     in property <int> current-index;
+    /// Beside each entry of the open list, at its right in the secondary ink: a mode's channel
+    /// count. Empty, or shorter than `model`, for none. Never in the closed box.
+    in property <[string]> asides;
+    /// A line under the open list saying what picking does — "picking one puts its channels back
+    /// as imported". Not an entry: it cannot be lit or picked. Empty for none.
+    in property <string> footnote;
     in property <bool> enabled: true;
     in property <bool> locked;
     in property <length> font-size: 15px;
@@ -526,6 +536,7 @@ export component Pick inherits Rectangle {
     private property <int> lit;
     private property <length> item-height: 30px;
     private property <int> rows-shown: min(10, max(1, root.model.length));
+    private property <length> footnote-height: root.footnote == "" ? 0px : 34px;
 
     height: 34px;
     min-width: 60px;
@@ -630,8 +641,10 @@ export component Pick inherits Rectangle {
         y: root.height + 2px;
         // As wide as the box, or as the longest entry needs, whichever is more — a device name in
         // a 165 px box would otherwise be cut short in the one place it has to be read whole.
-        width: max(root.width, min(520px, widest.preferred-width + root.pad-left + 12px));
-        height: root.rows-shown * root.item-height + 2px;
+        width: max(root.width, min(520px, max(widest.preferred-width + root.pad-left + 12px
+            + (root.asides.length > 0 ? widest-aside.preferred-width + 16px : 0px),
+            root.footnote == "" ? 0px : 300px)));
+        height: root.rows-shown * root.item-height + 2px + root.footnote-height;
         close-policy: close-on-click-outside;
         forward-focus: list-keys;
 
@@ -644,6 +657,14 @@ export component Pick inherits Rectangle {
                 font-family: root.font-family;
                 font-size: root.font-size;
                 font-weight: 700;
+            }
+        }
+        widest-aside := VerticalLayout {
+            visible: false;
+            for aside in root.asides: Text {
+                text: aside;
+                font-family: Wf.code;
+                font-size: 14px;
             }
         }
 
@@ -688,7 +709,7 @@ export component Pick inherits Rectangle {
                     x: 1px;
                     y: 1px;
                     width: parent.width - 2px;
-                    height: parent.height - 2px;
+                    height: parent.height - 2px - root.footnote-height;
                     interactive: false;
                     content-width: self.width;
                     content-height: root.model.length * root.item-height;
@@ -704,9 +725,19 @@ export component Pick inherits Rectangle {
                             background: index == root.lit ? Wf.ink
                                 : index == root.current-index ? Wf.row-picked : transparent;
 
+                            aside := Text {
+                                x: parent.width - 10px - self.width;
+                                width: self.preferred-width;
+                                text: index < root.asides.length ? root.asides[index] : "";
+                                color: index == root.lit ? Wf.on-primary : Wf.ink2;
+                                font-family: Wf.code;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
                             Text {
                                 x: root.pad-left;
-                                width: parent.width - root.pad-left - 10px;
+                                width: parent.width - root.pad-left - 10px
+                                    - (aside.text == "" ? 0px : aside.width + 12px);
                                 text: entry;
                                 color: index == root.lit ? Wf.on-primary : Wf.ink;
                                 font-family: root.font-family;
@@ -735,10 +766,34 @@ export component Pick inherits Rectangle {
                 if root.model.length > root.rows-shown: Rectangle {
                     x: parent.width - 6px;
                     width: 4px;
-                    y: 1px + (parent.height - 2px - self.height)
+                    y: 1px + (scroller.height - self.height)
                         * (-scroller.content-y / max(1px, scroller.content-height - scroller.height));
-                    height: max(20px, (parent.height - 2px) * root.rows-shown / root.model.length);
+                    height: max(20px, scroller.height * root.rows-shown / root.model.length);
                     background: Wf.scrollbar;
+                }
+
+                // The footnote, under a rule, below the entries.
+                if root.footnote != "": Rectangle {
+                    x: 1px;
+                    y: parent.height - 1px - root.footnote-height;
+                    width: parent.width - 2px;
+                    height: root.footnote-height;
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: 1px;
+                        background: Wf.line;
+                    }
+                    Text {
+                        x: root.pad-left;
+                        width: parent.width - root.pad-left - 10px;
+                        text: root.footnote;
+                        color: Wf.ink2;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
         }
@@ -1139,6 +1194,12 @@ export component Track inherits Rectangle {
     in property <bool> quiet;
     in property <bool> painted;
     in property <brush> paint;
+    /// **A right-click puts it back to `default-value`** — the operator's ask of 2026-10-05:
+    /// "right clicking on any slider should set it back to default value" — said through `moved`,
+    /// as a drag is, so the owner sets it as it sets any other value. Every slider in the windows
+    /// has one; a slider without (`has-default` false) ignores the right button.
+    in property <bool> has-default;
+    in property <float> default-value;
     out property <bool> dragging: touch.pressed;
     /// The handle's centre, from the slider's left edge.
     out property <length> handle-x: root.centre;
@@ -1153,6 +1214,8 @@ export component Track inherits Rectangle {
     // grabs it where it is rather than jumping its centre under the pointer.
     private property <float> grabbed;
     private property <length> grabbed-at;
+    // A drag is the left button's only: a right press, which resets, never drags.
+    private property <bool> held;
 
     height: 24px;
     min-width: 60px;
@@ -1259,8 +1322,17 @@ export component Track inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                if (root.has-default) {
+                    // The keyboard first, as a left press takes it: a box being typed in commits.
+                    keyboard.focus();
+                    root.send(root.default-value);
+                }
+                return;
+            }
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 keyboard.focus();
+                root.held = true;
                 if (abs(self.mouse-x - root.centre) <= root.thumb / 2) {
                     root.grabbed = root.value;
                     root.grabbed-at = self.mouse-x;
@@ -1269,10 +1341,13 @@ export component Track inherits Rectangle {
                     root.grabbed-at = self.mouse-x;
                     root.send(root.grabbed);
                 }
+            } else if (event.button == PointerEventButton.left
+                && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel)) {
+                root.held = false;
             }
         }
         moved => {
-            if (self.pressed && root.span > 0) {
+            if (self.pressed && root.held && root.span > 0) {
                 root.send(root.grabbed + (self.mouse-x - root.grabbed-at) / root.span * (root.maximum - root.minimum));
             }
         }
@@ -1294,6 +1369,11 @@ export component SpanTrack inherits Rectangle {
     in property <float> least-span: 0;
     in property <float> step: 1;
     in property <bool> enabled: true;
+    /// A right-click puts both ends back to these, as `Track`'s does: through `low-moved`,
+    /// `high-moved` and `settled`, the end that would cross the other moved first.
+    in property <bool> has-default;
+    in property <float> default-low;
+    in property <float> default-high;
     callback low-moved(float);
     callback high-moved(float);
     /// A drag let go, or a step from the keyboard made, **that moved something**: the two ends it
@@ -1346,6 +1426,38 @@ export component SpanTrack inherits Rectangle {
             root.shifted = false;
             root.settled(root.asked-low, root.asked-high);
         }
+    }
+
+    // Both ends to their defaults, as one gesture. The high end first when the low end's default is
+    // past where the high end is now, so the two never cross on the way.
+    function reset() {
+        root.begin();
+        let to-low = clamp(root.default-low, root.minimum, root.maximum);
+        let to-high = clamp(root.default-high, root.minimum, root.maximum);
+        if (to-low > root.asked-high) {
+            if (to-high != root.asked-high) {
+                root.asked-high = to-high;
+                root.shifted = true;
+                root.high-moved(to-high);
+            }
+            if (to-low != root.asked-low) {
+                root.asked-low = to-low;
+                root.shifted = true;
+                root.low-moved(to-low);
+            }
+        } else {
+            if (to-low != root.asked-low) {
+                root.asked-low = to-low;
+                root.shifted = true;
+                root.low-moved(to-low);
+            }
+            if (to-high != root.asked-high) {
+                root.asked-high = to-high;
+                root.shifted = true;
+                root.high-moved(to-high);
+            }
+        }
+        root.finish();
     }
 
     function send(end: int, v: float) {
@@ -1418,6 +1530,13 @@ export component SpanTrack inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                if (root.has-default && root.holding == 0) {
+                    keyboard.focus();
+                    root.reset();
+                }
+                return;
+            }
             if (event.button != PointerEventButton.left) {
                 return;
             }

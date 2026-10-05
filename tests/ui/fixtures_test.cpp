@@ -14,6 +14,8 @@
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/fixtures/fixture_library.hpp"
+#include "core/fixtures/fixture_profile.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/output/transports.hpp"
@@ -461,14 +463,146 @@ TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
 
     SECTION("and it lets go on its own") {
         // The hold is `FixturesController::kTestSeconds` long on the runner's clock, so this
-        // asks the engine directly rather than waiting three seconds of wall clock.
-        engine.tick(FixturesController::kTestSeconds + 1.0);
+        // asks the engine directly rather than waiting three seconds of wall clock — at a time
+        // on that clock past the hold's end. It used to tick at 4 s flat, which is past the end
+        // only for a TEST pressed in the runner's first second: under AddressSanitizer a slow
+        // set-up pressed it later, and the hold was still on (measured, 2026-10-04).
+        engine.tick(rig.runner.elapsed() + FixturesController::kTestSeconds + 1.0);
         CHECK(engine.levels(5)[71] == 0);
     }
 
     SECTION("a channel index that is not on the fixture does nothing") {
         patch.testChannel(9);
         CHECK(engine.levels(5)[71] == 180); // the one held before is still the only one
+    }
+}
+
+TEST_CASE("an imported fixture's channel names follow its channels through every edit",
+          "[ui][dmx][import]") {
+    // Nothing in the window imports yet; the fixtures an import makes are made here by the
+    // library itself and handed to the editor, whose own edits must keep each channel's name
+    // beside its channel and the link to the definition honest.
+    using takt4::fixtures::FixtureProfile;
+    using takt4::fixtures::ProfileChannel;
+    using takt4::fixtures::ProfileMode;
+    FixtureProfile profile;
+    profile.format = "gdtf";
+    profile.key = "KEY";
+    profile.model = "Bar";
+    ProfileMode single;
+    single.name = "A";
+    single.parts = {{ProfileChannel{Role::Dimmer, "dimmer", 0, {}},
+                     ProfileChannel{Role::Red, "red · Cell 1", 0, {}},
+                     ProfileChannel{Role::Green, "green · Cell 1", 0, {}},
+                     ProfileChannel{Role::Blue, "blue · Cell 1", 0, {}}}};
+    ProfileMode pair;
+    pair.name = "Pair";
+    pair.parts = {{ProfileChannel{Role::Dimmer, "dimmer", 0, {}}},
+                  {ProfileChannel{Role::Red, "red · Cell 2", 0, {}}}};
+    profile.modes = {single, pair};
+    std::vector<FixtureProfile> library;
+    takt4::fixtures::addProfile(library, profile);
+    std::vector<Fixture> fixtures =
+        takt4::fixtures::makeFixtures(library[0], "A", 1, 0, 1, {}).fixtures;
+    const auto two = takt4::fixtures::makeFixtures(library[0], "Pair", 1, 0, 20, fixtures).fixtures;
+    fixtures.insert(fixtures.end(), two.begin(), two.end());
+    REQUIRE(fixtures.size() == 3);
+
+    Rig rig;
+    FixturesController patch(rig.runner, fixtures);
+    FixturesWindow& window = patch.window();
+    window.invoke_picked(0);
+
+    SECTION("a channel removed takes its name with it") {
+        window.invoke_channel_removed(1);
+        CHECK(patch.fixtures()[0].labels ==
+              std::vector<std::string>{"dimmer", "green · Cell 1", "blue · Cell 1"});
+        CHECK(patch.fixtures()[0].parked.size() == 3);
+    }
+    SECTION("a channel added has no name, and the others keep theirs") {
+        window.invoke_channel_added();
+        CHECK(patch.fixtures()[0].labels == std::vector<std::string>{"dimmer", "red · Cell 1",
+                                                                     "green · Cell 1",
+                                                                     "blue · Cell 1", ""});
+        // Still from the definition, and now an edit of its mode.
+        CHECK(patch.fixtures()[0].profile.linked());
+        CHECK(takt4::fixtures::isEdited(patch.fixtures()[0], library[0]));
+    }
+    SECTION("a built-in shape is not the definition's mode") {
+        window.invoke_mode_picked(modeIndexOf("RGB (3ch)"));
+        CHECK(patch.fixtures()[0].labels.empty());
+        CHECK_FALSE(patch.fixtures()[0].profile.linked());
+    }
+    SECTION("a copy of a fixture stays linked; a copy of one of a pair leaves the pair") {
+        window.invoke_duplicated_at(0);
+        REQUIRE(patch.fixtures().size() == 4);
+        CHECK(patch.fixtures()[1].profile == patch.fixtures()[0].profile);
+        CHECK(patch.fixtures()[1].labels == patch.fixtures()[0].labels);
+        window.invoke_duplicated_at(3); // "Bar 1 · part 2"
+        REQUIRE(patch.fixtures().size() == 5);
+        CHECK_FALSE(patch.fixtures()[4].profile.linked());
+        CHECK(patch.fixtures()[4].labels == std::vector<std::string>{"red · Cell 2"});
+        // The pair itself is untouched: still two, sharing their id.
+        CHECK(patch.fixtures()[2].profile.pair == patch.fixtures()[3].profile.pair);
+        CHECK_FALSE(patch.fixtures()[3].profile.pair.empty());
+    }
+}
+
+TEST_CASE("a fixture with more than one head says which head each pan and tilt moves",
+          "[ui][dmx][heads]") {
+    // What a rule's "heads" ticks mean on this fixture, counted as the engine counts them: head n
+    // is the nth pan and the nth tilt, each with its nth fine, and a pan the heads share is the
+    // first's (`dmx::headsOf`). A fixture with one head, or none, has no such column.
+    Fixture twin;
+    twin.id = "f-twin";
+    twin.name = "twin";
+    twin.address = 1;
+    twin.channels = {Role::Dimmer, Role::Pan,     Role::PanFine, Role::Tilt,    Role::TiltFine,
+                     Role::Pan,    Role::PanFine, Role::Tilt,    Role::TiltFine};
+    twin.parked.assign(twin.channels.size(), 0);
+    Fixture yoke;
+    yoke.id = "f-yoke";
+    yoke.name = "yoke";
+    yoke.address = 20;
+    yoke.channels = {Role::Pan, Role::Tilt, Role::Tilt, Role::Dimmer};
+    yoke.parked.assign(yoke.channels.size(), 0);
+    Fixture head = takt4::dmx::fixtureFromMode("head", 6, 0, 40);
+    head.id = "f-head";
+
+    Rig rig;
+    FixturesController patch(rig.runner, {twin, yoke, head});
+    FixturesWindow& window = patch.window();
+    const auto heads = [&window] {
+        std::vector<int> out;
+        const auto rows = window.get_channels();
+        for (std::size_t i = 0; i < rows->row_count(); ++i) {
+            out.push_back(rows->row_data(i)->head);
+        }
+        return out;
+    };
+
+    window.invoke_picked(0);
+    CHECK(window.get_has_heads());
+    CHECK(heads() == std::vector<int>{0, 1, 1, 1, 1, 2, 2, 2, 2});
+
+    window.invoke_picked(1);
+    CHECK(window.get_has_heads());
+    CHECK(heads() == std::vector<int>{1, 1, 2, 0}); // the one pan is the first head's
+
+    window.invoke_picked(2);
+    CHECK_FALSE(window.get_has_heads());
+    CHECK(heads() == std::vector<int>(head.channels.size(), 0));
+
+    SECTION("a pan made something else by hand is no head's, and the count follows") {
+        window.invoke_picked(0);
+        const auto dimmer =
+            std::find(takt4::dmx::kRoles.begin(), takt4::dmx::kRoles.end(), Role::Dimmer) -
+            takt4::dmx::kRoles.begin();
+        window.invoke_channel_role_picked(1, static_cast<int>(dimmer));
+        // The second pan is the first now: head 1's pan is on channel 6, and the tilts are as
+        // they were.
+        CHECK(heads() == std::vector<int>{0, 0, 1, 1, 1, 1, 2, 2, 2});
+        CHECK(window.get_has_heads()); // two tilts: still two heads
     }
 }
 
@@ -1098,6 +1232,7 @@ struct Recorder {
         const auto n = [](int i) { return " " + std::to_string(i); };
         to.on_picked([=](int i) { note("picked" + n(i)); });
         to.on_added([=] { note("added"); });
+        to.on_import_clicked([=] { note("import"); });
         to.on_duplicated_at([=](int i) { note("copy" + n(i)); });
         to.on_removed_at([=](int i) { note("kill" + n(i)); });
         to.on_enabled_changed([=](int i, bool) { note("dot" + n(i)); });
@@ -1192,9 +1327,8 @@ TEST_CASE("every spot in the patch editor fires what is under it, once, and noth
 
         // What a click is for, and nothing else: a box is typed into, not clicked into a change,
         // and a list is picked from by a second click, which this sweep never makes.
-        std::set<std::string> expected = {"added",       "in-the-show", "identify", "fold 0",
-                                          "fold 1",      "fold 2",      "add-channel", "pan",
-                                          "tilt"};
+        std::set<std::string> expected = {"added",  "in-the-show", "identify", "fold 0", "fold 1",
+                                          "fold 2", "add-channel", "pan",      "tilt",   "import"};
         for (int i = 0; i < 5; ++i) {
             for (const char* what : {"picked ", "dot ", "copy ", "kill "}) {
                 expected.insert(what + std::to_string(i));
@@ -1672,6 +1806,73 @@ TEST_CASE("pan and tilt follow the hand, and are patched once, when let go", "[u
     CHECK(patch.fixtures()[2].panMin > before);
 }
 
+TEST_CASE("a right-click puts pan and tilt back to the whole of their travel, once each",
+          "[ui][dmx]") {
+    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default,
+    // and a fixture's own is the whole of its travel, 0 to 100 % (`dmx::Fixture`). Along each
+    // row, right-clicked until something changes: that one slider is put back, both ends, and
+    // the patch hears of it once.
+    Rig rig;
+    FixturesController patch(rig.runner, rigOfFive());
+    int patched = 0;
+    patch.setPatchChanged([&patched](const std::vector<Fixture>&) { ++patched; });
+    const Patching shown(patch, at::kWidth, at::kHeight);
+    patch.pick(2);
+    shown.settle();
+    REQUIRE(patch.window().get_moves());
+    const Fixture fresh;
+    const auto now = [&patch] { return patch.fixtures()[2]; };
+    REQUIRE(now().panMin == 0.1);
+    REQUIRE(now().tiltMax == 0.7);
+    const auto asSet = [&now] {
+        const Fixture fixture = now();
+        return fixture.panMin == 0.1 && fixture.panMax == 0.9 && fixture.tiltMin == 0.2 &&
+               fixture.tiltMax == 0.7;
+    };
+
+    const auto rightClick = [&shown](float x, float y) {
+        const slint::LogicalPosition point({x, y});
+        shown.window.dispatch_pointer_move_event(point);
+        shown.window.dispatch_pointer_press_event(point, slint::PointerEventButton::Right);
+        shown.window.dispatch_pointer_release_event(point, slint::PointerEventButton::Right);
+        shown.settle();
+    };
+    for (const bool pan : {true, false}) {
+        INFO((pan ? "pan" : "tilt"));
+        patched = 0;
+        float hit = -1.0f;
+        for (float x = 200.0f; x < at::kWidth - 4.0f && hit < 0.0f; x += 4.0f) {
+            rightClick(x, pan ? at::kPanY : at::kTiltY);
+            if (!asSet()) {
+                hit = x;
+            }
+        }
+        INFO("hit at " << hit);
+        REQUIRE(hit > 0.0f);
+        if (pan) {
+            CHECK(now().panMin == fresh.panMin);
+            CHECK(now().panMax == fresh.panMax);
+            CHECK(now().tiltMin == 0.2); // the other left alone
+            CHECK(now().tiltMax == 0.7);
+            CHECK(patch.window().get_pan_min() == 0.0f);
+            CHECK(patch.window().get_pan_max() == 100.0f);
+        } else {
+            CHECK(now().tiltMin == fresh.tiltMin);
+            CHECK(now().tiltMax == fresh.tiltMax);
+            CHECK(now().panMin == 0.1);
+            CHECK(now().panMax == 0.9);
+            CHECK(patch.window().get_tilt_min() == 0.0f);
+            CHECK(patch.window().get_tilt_max() == 100.0f);
+        }
+        CHECK(patched == 1);
+        // Put back as it was, for the other row.
+        patch.window().invoke_pan_range_changed(10.0f, 90.0f);
+        patch.window().invoke_tilt_range_changed(20.0f, 70.0f);
+        shown.settle();
+        REQUIRE(asSet());
+    }
+}
+
 TEST_CASE("the patch editor's sheets fold from their arrows, say what they hold, and are kept",
           "[ui][dmx]") {
     Rig rig;
@@ -1752,6 +1953,29 @@ TEST_CASE("the patch editor lays out the same at any height, and fits its narrow
     takt4::tests::render(patch.window(), 880, 520);
     CHECK(patch.window().get_body_width() >= patch.window().get_body_least_width());
     CHECK(patch.window().get_list_width() >= 200.0f);
+
+    // And a fixture with both of the channels' optional columns, its names and which head: at 880
+    // the head column pushed the test buttons and the × off the pane (the render of 2026-10-05).
+    Fixture twin;
+    twin.name = "twin yoke";
+    twin.address = 40;
+    twin.channels = {Role::Dimmer, Role::Pan,     Role::PanFine, Role::Tilt,    Role::TiltFine,
+                     Role::Pan,    Role::PanFine, Role::Tilt,    Role::TiltFine};
+    twin.labels = {"Dimmer",         "Pan Upper",       "Pan Upper fine",
+                   "Tilt Upper",     "Tilt Upper fine", "Pan Lower",
+                   "Pan Lower fine", "Tilt Lower",      "Tilt Lower fine"};
+    twin.parked.assign(twin.channels.size(), 0);
+    FixturesController named(rig.runner, {twin});
+    named.pick(0);
+    REQUIRE(named.window().get_has_labels());
+    REQUIRE(named.window().get_has_heads());
+    takt4::tests::render(named.window(), 880, 520);
+    slint::platform::update_timers_and_animations();
+    takt4::tests::render(named.window(), 880, 520);
+    INFO("the rows ask for " << named.window().get_body_least_width() << " px and have "
+                             << named.window().get_body_width());
+    CHECK(named.window().get_body_width() >= named.window().get_body_least_width());
+    CHECK(named.window().get_list_width() >= 200.0f);
 }
 
 TEST_CASE("every spot in the About box fires what is under it, once", "[ui]") {

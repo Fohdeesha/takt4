@@ -748,6 +748,9 @@ dmx::Payload Rule::buildPayload(const Context& context) {
     payload.hueFrom = hueOf(send.hueFrom);
     payload.hueTo = hueOf(send.hueTo);
     payload.size = static_cast<float>(std::clamp(send.size, 0.0, 1.0));
+    payload.heads = send.heads;
+    payload.spread =
+        static_cast<float>(std::isfinite(send.spread) ? std::clamp(send.spread, 0.0, 1.0) : 0.0);
     payload.durationSeconds =
         effectSeconds(musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
 

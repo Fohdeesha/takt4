@@ -452,6 +452,13 @@ struct DmxSend {
     Generator::Config tilt = fixedNumber(50);
     /// A `Path`'s radius as a fraction of the window's half-width, 0 to 1.
     double size = 0.5;
+    /// Which heads a movement moves on a fixture with several (`dmx::headsOf`): bit n for head
+    /// n + 1, none for every head — so one rule can move the left yoke and another the right. See
+    /// `dmx::Payload::heads`. Read by the kinds `dmx::takesMovement` names.
+    std::uint32_t heads = 0;
+    /// How far apart those heads move, 0 to 1 — "stagger movement between selected heads". See
+    /// `dmx::Payload::spread`. 0, together, unless the operator asks.
+    double spread = 0.0;
 };
 
 /// What a follow-up replaces of a DMX rule's own effect.

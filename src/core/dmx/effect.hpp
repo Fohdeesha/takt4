@@ -32,7 +32,8 @@ enum class EffectKind : std::uint8_t {
     Level,
     /// The three color channels to one color, with the same snap-or-fade duration. A
     /// fixture with a White channel has it driven to zero, so that a color is the color
-    /// asked for and not that color plus whatever white was left over.
+    /// asked for and not that color plus whatever white was left over. A CMY head's flags take
+    /// the complement — cyan is 1 - red — so the one rule colors both kinds of fixture.
     ///
     /// **A fade is in RGB and not in HSV, deliberately**: each channel runs in a straight
     /// line on its own, so red to green dims towards a dark olive and comes back up rather
@@ -212,6 +213,19 @@ struct Payload {
     float tilt = 0.5f;
     /// A `Path`'s radius, as a fraction of the window's half-width.
     float size = 0.5f;
+    /// **Which heads move**, on a fixture with several (`dmx::headsOf`): bit n for head n + 1, and
+    /// no bit at all for every head. Read by the kinds `takesMovement` names and by no other. What
+    /// lets one rule move the left yoke and another the right, rather than every rule moving every
+    /// head the same way — the operator's ask of 2026-10-05: *"the ability for them to be driven
+    /// independently"*. A fixture with none of those heads is not reached, and counts towards
+    /// `DmxEngine::missed`. Heads past the 32nd move only as every head.
+    std::uint32_t heads = 0;
+    /// **How far apart the heads it moves are**, 0 to 1 — the operator's "stagger movement between
+    /// selected heads". Of the n heads a move reaches on one fixture, the kth (from 0) trails by
+    /// `spread` × k / n: on a `Path`, that much of a turn round the figure, so at 1 they are spaced
+    /// evenly round it; on a `Position` or `Home`, that much of the move's duration later, so at 1
+    /// the last starts as the first nearly arrives. 0, the default, moves them together.
+    float spread = 0.0f;
 
     friend bool operator==(const Payload&, const Payload&) = default;
 };

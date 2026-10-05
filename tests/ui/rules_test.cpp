@@ -1,10 +1,13 @@
 #include "core/dmx/color.hpp"
 #include "core/dmx/effect.hpp"
+#include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
+#include "core/io/utf8.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/settings/rule_json.hpp"
 #include "core/tracking/random.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/generator.hpp"
@@ -25,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -99,6 +103,48 @@ std::vector<std::string> logLines(RulesController& editor) {
 std::string newestSent(RulesController& editor) {
     const auto log = editor.window().get_log();
     return log->row_count() == 0 ? std::string() : std::string(log->row_data(0)->message);
+}
+
+/// A fixture with `count` heads, each a pan and a tilt — named "Pan 1", "Tilt 1"… as a file
+/// names them, with `prefix` before each name, or unnamed when `named` is false.
+takt4::dmx::Fixture manyHeads(const std::string& id, std::size_t count, bool named = true,
+                              const std::string& prefix = {}) {
+    takt4::dmx::Fixture fixture;
+    fixture.id = id;
+    fixture.name = id;
+    fixture.address = 1;
+    fixture.channels.push_back(takt4::dmx::Role::Dimmer);
+    fixture.labels.emplace_back(named ? "Dimmer" : "");
+    for (std::size_t k = 1; k <= count; ++k) {
+        fixture.channels.push_back(takt4::dmx::Role::Pan);
+        fixture.labels.push_back(named ? prefix + "Pan " + std::to_string(k) : "");
+        fixture.channels.push_back(takt4::dmx::Role::Tilt);
+        fixture.labels.push_back(named ? prefix + "Tilt " + std::to_string(k) : "");
+    }
+    fixture.parked.assign(fixture.channels.size(), 0);
+    return fixture;
+}
+
+template <typename List, typename Value>
+int positionIn(const List& list, Value value) {
+    return static_cast<int>(std::find(list.begin(), list.end(), value) - list.begin());
+}
+
+/// The head ticks as the window shows them: "1 · Pan 1, Tilt 1 [x]".
+std::vector<std::string> headTicks(RulesController& editor) {
+    std::vector<std::string> out;
+    const auto rows = editor.window().get_head_choices();
+    for (std::size_t i = 0; i < rows->row_count(); ++i) {
+        const HeadChoice row = *rows->row_data(i);
+        out.push_back(std::string(row.label) + (row.ticked ? " [x]" : " [ ]"));
+    }
+    return out;
+}
+
+/// " at x, y", for a sweep's message.
+std::string atPoint(float x, float y) {
+    return " at " + std::to_string(static_cast<int>(x)) + ", " +
+           std::to_string(static_cast<int>(y));
 }
 
 } // namespace
@@ -3064,6 +3110,14 @@ struct Shown {
         window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
         settle();
     }
+    /// The right button, which puts a slider back to its default.
+    void rightClick(float x, float y) const {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, slint::PointerEventButton::Right);
+        window.window().dispatch_pointer_release_event(at, slint::PointerEventButton::Right);
+        settle();
+    }
     void type(const std::string& text) const {
         for (const char c : text) {
             const slint::SharedString key(std::string(1, c));
@@ -4734,6 +4788,28 @@ TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowes
              sendAs(Kind::Dmx);
              effect(EffectKind::Path);
          }},
+        {"a path over four heads, each named at length, spread",
+         [&] {
+             fresh();
+             editor.setPatch({manyHeads("f-quad", 4, true, "Bewegungskopf Unterseite ")});
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Path);
+             editor.setFixtureChosen("f-quad", true);
+             editor.setSpread(40.0f);
+             REQUIRE(editor.window().get_effect_takes_spread());
+         }},
+        {"a position over sixteen heads, two of them ticked",
+         [&] {
+             fresh();
+             editor.setPatch({manyHeads("f-bar", 16)});
+             sendAs(Kind::Dmx);
+             effect(EffectKind::Position);
+             editor.setFixtureChosen("f-bar", true);
+             for (int k = 2; k < 16; ++k) {
+                 editor.toggleHead(k, false);
+             }
+             REQUIRE(editor.rules().front().dmx.heads == 0b11);
+         }},
         {"a palette of twelve colors",
          [&] {
              fresh();
@@ -5692,4 +5768,469 @@ TEST_CASE("a double-click on a rule's copy mark makes one copy", "[ui][trigger]"
     std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds(60));
     editor.window().invoke_rule_duplicated_at(0);
     CHECK(editor.rules().size() == 3);
+}
+
+TEST_CASE("a movement aimed at fixtures with several heads ticks which of them move",
+          "[ui][trigger][dmx][heads]") {
+    // The operator's answer of 2026-10-05: a tick per head, all ticked being every head, and a
+    // spread under them that staggers the ticked heads, at 0 until it is slid.
+    using takt4::dmx::EffectKind;
+    using takt4::trigger::Message;
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    takt4::dmx::Fixture one = takt4::dmx::fixtureFromMode("head", 6, 0, 40);
+    one.id = "f-one";
+    editor.setPatch({manyHeads("f-twin", 2), one});
+    editor.add();
+    editor.pickSend(positionIn(takt4::trigger::kMessageKinds, Message::Kind::Dmx));
+    editor.setFixtureChosen("f-twin", true);
+    auto& window = editor.window();
+    const auto send = [&editor] { return editor.rules().front().dmx; };
+    const auto said = [](const slint::SharedString& text) { return std::string(text); };
+
+    // A level on the dimmer moves nothing: no heads to choose.
+    CHECK_FALSE(window.get_effect_takes_heads());
+    CHECK_FALSE(window.get_effect_takes_spread());
+    CHECK(said(window.get_fixtures_available()) == "reaches 1 fixture");
+
+    editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, EffectKind::Position));
+    CHECK(window.get_effect_takes_heads());
+    CHECK(headTicks(editor) ==
+          std::vector<std::string>{"1 · Pan 1, Tilt 1 [x]", "2 · Pan 2, Tilt 2 [x]"});
+    CHECK(said(window.get_heads_note()) == "all ticked: every head moves");
+    CHECK(said(window.get_fixtures_available()) == "reaches 1 fixture, 2 heads each");
+    CHECK(window.get_effect_takes_spread());
+    CHECK(window.get_effect_spread() == 0.0f);
+    CHECK(said(window.get_spread_note()) ==
+          "0%: the ticked heads move together — slide right to stagger them");
+    CHECK(send().heads == 0);
+
+    SECTION("one unticked moves the other alone, and the last tick cannot go") {
+        editor.toggleHead(0, false);
+        CHECK(send().heads == 0b10);
+        CHECK(headTicks(editor) ==
+              std::vector<std::string>{"1 · Pan 1, Tilt 1 [ ]", "2 · Pan 2, Tilt 2 [x]"});
+        CHECK_FALSE(window.get_effect_takes_spread()); // one head: nothing to stagger it against
+        CHECK(said(window.get_heads_note()) == "1 of 2 ticked: only those move");
+
+        editor.toggleHead(1, false);
+        CHECK(send().heads == 0b10); // refused
+        CHECK(said(window.get_status()) ==
+              "A rule moves at least one head: tick another before unticking this one.");
+        CHECK(window.get_status_is_error());
+        CHECK(headTicks(editor)[1] == "2 · Pan 2, Tilt 2 [x]");
+
+        editor.toggleHead(0, true);
+        CHECK(send().heads == 0);                 // all ticked is every head again
+        CHECK(said(window.get_status()).empty()); // and the refusal is answered
+        CHECK(window.get_effect_takes_spread());
+    }
+    SECTION("a tick past the heads there are is nothing") {
+        editor.toggleHead(2, false);
+        editor.toggleHead(-1, false);
+        CHECK(send().heads == 0);
+        CHECK(said(window.get_status()).empty());
+    }
+    SECTION("the spread says what it does, in the effect's own words") {
+        editor.setSpread(50.0f);
+        CHECK(send().spread == Approx(0.5));
+        CHECK(window.get_effect_spread() == Approx(50.0f));
+        CHECK(said(window.get_spread_note()) ==
+              "50%: each ticked head starts 25% of the move after the one before");
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, EffectKind::Path));
+        CHECK(window.get_effect_takes_spread());
+        CHECK(said(window.get_spread_note()) ==
+              "50%: each ticked head 25% of a turn behind the one before");
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, EffectKind::Position));
+        editor.setDuration("0");
+        CHECK(said(window.get_spread_note()) ==
+              "50%: a move with no time has nothing to stagger — give it a time over");
+        editor.setSpread(250.0f);
+        CHECK(send().spread == 1.0);
+        editor.setSpread(-5.0f);
+        CHECK(send().spread == 0.0);
+    }
+    SECTION("a fixture with fewer heads among them is said, and what misses it") {
+        editor.setFixtureChosen("f-one", true);
+        CHECK(said(window.get_fixtures_available()) == "reaches 2 fixtures, up to 2 heads");
+        // Each fixture's own ticked heads are staggered, and here those are two and one: no one
+        // number is true of both.
+        editor.setSpread(50.0f);
+        CHECK(said(window.get_spread_note()) ==
+              "50%: staggered per fixture — they have different numbers of these heads");
+        editor.toggleHead(0, false);
+        CHECK(said(window.get_heads_note()) ==
+              "1 of 2 fixtures have none of these heads: it does not reach them");
+    }
+    SECTION("aimed only at a fixture with one head, there is nothing to choose") {
+        editor.setFixtureChosen("f-twin", false);
+        editor.setFixtureChosen("f-one", true);
+        CHECK_FALSE(window.get_effect_takes_heads());
+        CHECK_FALSE(window.get_effect_takes_spread());
+        CHECK(window.get_head_choices()->row_count() == 0);
+        CHECK(said(window.get_fixtures_available()) == "reaches 1 fixture");
+    }
+    SECTION("a head is named only where every fixture calls it the same") {
+        editor.setPatch({manyHeads("f-twin", 2), manyHeads("f-other", 2, true, "Yoke ")});
+        editor.setFixtureChosen("f-other", true);
+        CHECK(headTicks(editor) == std::vector<std::string>{"1 [x]", "2 [x]"});
+        editor.setPatch({manyHeads("f-twin", 2, false)});
+        CHECK(headTicks(editor) == std::vector<std::string>{"1 [x]", "2 [x]"});
+        // A long name is cut at a character, never inside one, with an ellipsis: 26 bytes of
+        // this one end inside the "Ü", so the cut steps back a byte.
+        editor.setPatch({manyHeads("f-twin", 2, true, "Bewegungskopf Unterseite Ü ")});
+        const std::string cut = headTicks(editor)[0];
+        CHECK(cut == "1 · Bewegungskopf Unterseite … [x]");
+        CHECK(takt4::io::isValidUtf8(cut));
+        // Five heads are numbers only: names would not fit a row.
+        editor.setPatch({manyHeads("f-twin", 5)});
+        CHECK(headTicks(editor) ==
+              std::vector<std::string>{"1 [x]", "2 [x]", "3 [x]", "4 [x]", "5 [x]"});
+    }
+}
+
+TEST_CASE("a head's tick is clicked to leave it out, and clicked again to put it back",
+          "[ui][trigger][dmx][heads]") {
+    // The heads row by the pointer: what the test above proves through the controller's methods,
+    // proved here through the markup — a click on a head's tick reaches that head.
+    using takt4::dmx::EffectKind;
+    using takt4::trigger::Message;
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.setPatch({manyHeads("f-twin", 2)});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/a");
+        editor.pickSend(positionIn(takt4::trigger::kMessageKinds, Message::Kind::Dmx));
+        editor.setFixtureChosen("f-twin", true);
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, EffectKind::Position));
+        editor.applyLayout(takt4::settings::MachineSettings{}); // a probe may have folded one
+        editor.window().set_send_folded(false);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor, 1400.0f);
+    build();
+    const auto heads = [&editor] { return editor.rules().front().dmx.heads; };
+    const auto built = [&] {
+        if (editor.rules().size() != 1) {
+            return false;
+        }
+        const Rule::Config& rule = editor.rules().front();
+        return rule.sendKind == Message::Kind::Dmx && rule.dmx.effect == EffectKind::Position &&
+               rule.dmx.fixtures == std::vector<std::string>{"f-twin"} && rule.dmx.heads == 0 &&
+               !editor.window().get_send_folded();
+    };
+
+    // Head 1's tick: the first click that leaves head 1 out. A click below the event log, outside
+    // the platform's 900 x 520 window, closes whatever popup a miss opened.
+    const Spot first = sweep(
+        200.0f, 990.0f, 8.0f, 100.0f, 1300.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return heads() == 0b10;
+        },
+        [&] {
+            shown.click(990.0f, 1396.0f);
+            if (!built()) {
+                build();
+            }
+        });
+    INFO("head 1's tick at " << first.x << ", " << first.y);
+    REQUIRE(first.found());
+    // Its middle: the sweep found its corner.
+    const float x1 = first.x + 8.0f;
+    const float y1 = first.y + 6.0f;
+    shown.click(x1, y1);
+    REQUIRE(heads() == 0b10);
+    shown.click(x1, y1);
+    CHECK(heads() == 0); // ticked back: every head
+
+    // Head 2's, along the same row: unticking it leaves head 1 alone.
+    float x2 = -1.0f;
+    for (float x = x1 + 24.0f; x < 990.0f && x2 < 0.0f; x += 4.0f) {
+        shown.click(x, y1);
+        if (heads() == 0b01) {
+            x2 = x;
+        } else if (!built()) {
+            build();
+        }
+    }
+    INFO("head 2's tick at " << x2 << ", " << y1);
+    REQUIRE(x2 > 0.0f);
+    // With head 2 out, head 1's is the last tick: a click on it is refused, and says so.
+    shown.click(x1, y1);
+    CHECK(heads() == 0b01);
+    CHECK(std::string(editor.window().get_status()) ==
+          "A rule moves at least one head: tick another before unticking this one.");
+}
+
+TEST_CASE("sixteen heads are ticked on a grid, each click reaching its own head",
+          "[ui][trigger][dmx][heads]") {
+    // More than eight heads are laid out eight a row: a click on each tick must reach that head,
+    // and no other — the grid is placed by hand, so its arithmetic is what is being proved.
+    using takt4::dmx::EffectKind;
+    using takt4::trigger::Message;
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.setPatch({manyHeads("f-bar", 16)});
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.setAddress("/a");
+        editor.pickSend(positionIn(takt4::trigger::kMessageKinds, Message::Kind::Dmx));
+        editor.setFixtureChosen("f-bar", true);
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, EffectKind::Position));
+        editor.applyLayout(takt4::settings::MachineSettings{});
+        editor.window().set_send_folded(false);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor, 1400.0f);
+    build();
+    REQUIRE(editor.window().get_head_choices()->row_count() == 16);
+    const auto heads = [&editor] { return editor.rules().front().dmx.heads; };
+    constexpr std::uint32_t kAll = 0xFFFF;
+
+    const Spot first = sweep(
+        200.0f, 990.0f, 8.0f, 100.0f, 1300.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return heads() == (kAll & ~std::uint32_t{1});
+        },
+        [&] {
+            shown.click(990.0f, 1396.0f);
+            if (editor.rules().size() != 1 || heads() != 0 ||
+                editor.rules().front().dmx.effect != EffectKind::Position ||
+                editor.window().get_send_folded()) {
+                build();
+            }
+        });
+    INFO("head 1's tick at " << first.x << ", " << first.y);
+    REQUIRE(first.found());
+    const float x0 = first.x + 6.0f;
+    const float y0 = first.y + 6.0f;
+    for (int k = 0; k < 16; ++k) {
+        INFO("head " << k + 1);
+        const float x = x0 + static_cast<float>(k % 8) * 52.0f;
+        const float y = y0 + static_cast<float>(k / 8) * 28.0f;
+        shown.click(x, y);
+        CHECK(heads() == (kAll & ~(std::uint32_t{1} << k)));
+        shown.click(x, y);
+        CHECK(heads() == 0);
+    }
+}
+
+TEST_CASE("a right-click puts each of the rule editor's sliders back to a new rule's, and does "
+          "nothing anywhere else",
+          "[ui][trigger][dmx][heads]") {
+    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default.
+    // Every slider of a rule is moved off what a new rule has, and the whole editor is
+    // right-clicked on a grid: each slider must come back to a new rule's value, and nothing a
+    // right-click lands on may change anything else. Two rules between them show every slider:
+    // a path (size, spread) and a strobe (duty), each with B's confidence and probability.
+    using takt4::dmx::EffectKind;
+    using takt4::trigger::Message;
+    const Rule::Config fresh;
+    for (const EffectKind effect : {EffectKind::Path, EffectKind::Strobe}) {
+        INFO("a " << takt4::dmx::labelOf(effect));
+        Rig rig;
+        RulesController editor(rig.runner, {});
+        editor.setPatch({manyHeads("f-twin", 2)});
+        const auto build = [&] {
+            editor.setRules({});
+            editor.add();
+            editor.setAddress("/a");
+            editor.pickSend(positionIn(takt4::trigger::kMessageKinds, Message::Kind::Dmx));
+            editor.setFixtureChosen("f-twin", true);
+            editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, effect));
+            editor.setConditionsOn(true);
+            editor.setMinConfidence(0.6);
+            editor.setProbability(0.4);
+            editor.setDuty(20.0f);
+            editor.setSize(20.0f);
+            editor.setSpread(60.0f);
+            editor.applyLayout(takt4::settings::MachineSettings{});
+            editor.window().set_only_if_folded(false);
+            editor.window().set_send_folded(false);
+            editor.tick();
+            Shown::settle();
+        };
+        build();
+        const Shown shown(editor, 1400.0f);
+        build();
+        const std::string asBuilt = takt4::settings::rulesToJson(editor.rules());
+        REQUIRE(editor.window().get_effect_takes_spread() == (effect == EffectKind::Path));
+
+        std::set<std::string> reset;
+        std::vector<std::string> wrong;
+        // A 16 x 12 px grid: every slider is 24 px tall and wider than 100, and the smallest
+        // thing a right-click could land on, a list row's x, is 20 px square. Finer, the sweep
+        // took 96 s under ASan here, a third of CI's 300 s timeout on a far faster machine.
+        for (float y = 40.0f; y < 1390.0f; y += 12.0f) {
+            for (float x = 10.0f; x < 990.0f; x += 16.0f) {
+                shown.rightClick(x, y);
+                editor.tick();
+                if (editor.rules().size() != 1) {
+                    wrong.push_back("the rules changed" + atPoint(x, y));
+                    build();
+                    continue;
+                }
+                const Rule::Config now = editor.rules().front();
+                const auto check = [&](const char* what, double value, double set, double was) {
+                    if (value == Approx(set)) {
+                        return;
+                    }
+                    if (value == Approx(was)) {
+                        reset.insert(what);
+                    } else {
+                        wrong.push_back(std::string(what) + " to " + std::to_string(value) +
+                                        atPoint(x, y));
+                    }
+                };
+                check("confidence", now.conditions.minConfidence, 0.6,
+                      fresh.conditions.minConfidence);
+                check("probability", now.conditions.probability, 0.4, fresh.conditions.probability);
+                if (effect == EffectKind::Strobe) {
+                    check("duty", now.dmx.duty, 0.2, fresh.dmx.duty);
+                } else {
+                    check("size", now.dmx.size, 0.2, fresh.dmx.size);
+                    check("spread", now.dmx.spread, 0.6, fresh.dmx.spread);
+                }
+                // And nothing else: the rule as built once the sliders are put back as set.
+                Rule::Config same = now;
+                same.conditions.minConfidence = 0.6;
+                same.conditions.probability = 0.4;
+                same.dmx.duty = 0.2;
+                same.dmx.size = 0.2;
+                same.dmx.spread = 0.6;
+                if (takt4::settings::rulesToJson({same}) != asBuilt) {
+                    wrong.push_back("the rule changed otherwise" + atPoint(x, y));
+                }
+                if (takt4::settings::rulesToJson(editor.rules()) != asBuilt ||
+                    editor.window().get_only_if_folded() || editor.window().get_send_folded()) {
+                    build();
+                }
+            }
+        }
+        INFO("wrong: " << (wrong.empty() ? std::string("nothing") : wrong.front()) << " ("
+                       << wrong.size() << ")");
+        CHECK(wrong.empty());
+        if (effect == EffectKind::Strobe) {
+            CHECK(reset == std::set<std::string>{"confidence", "duty", "probability"});
+        } else {
+            CHECK(reset == std::set<std::string>{"confidence", "probability", "size", "spread"});
+        }
+    }
+}
+
+TEST_CASE("a right-click on a colour picker's slider puts that one back to white's",
+          "[ui][trigger][dmx]") {
+    // A new colour is white: hue 0, no saturation, full brightness. Each of the picker's three
+    // tracks, right-clicked, puts its own part of the colour back to white's and leaves the other
+    // two as they were.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    window.show();
+    window.window().dispatch_scale_factor_change_event(1.0f);
+    window.window().dispatch_resize_event(
+        slint::LogicalSize({takt4::ui::kRulesWindowWidth, 1400.0f}));
+    window.window().dispatch_window_active_changed_event(true);
+    const auto buildRule = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickSend(
+            positionIn(takt4::trigger::kMessageKinds, takt4::trigger::Message::Kind::Dmx));
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, takt4::dmx::EffectKind::Color));
+        // A palette: a new colour rule is one fixed colour until a second is added.
+        editor.addPaletteColor();
+        editor.setPaletteColor(0, 220.0f, 75.0f, 50.0f);
+        editor.tick();
+        editor.tick();
+    };
+    buildRule();
+    REQUIRE(window.get_palette_shown());
+    REQUIRE(editor.rules().front().dmx.color.values.size() > 1);
+    const auto firstColor = [&] {
+        return std::string(editor.rules().front().dmx.color.values.front().text());
+    };
+    const std::string set = firstColor();
+    const auto click = [&window](float x, float y, slint::PointerEventButton button) {
+        const slint::LogicalPosition at({x, y});
+        window.window().dispatch_pointer_move_event(at);
+        window.window().dispatch_pointer_press_event(at, button);
+        window.window().dispatch_pointer_release_event(at, button);
+        slint::platform::update_timers_and_animations();
+    };
+    float swatchX = 0.0f;
+    float swatchY = 0.0f;
+    for (float y = 300.0f; y < 900.0f && !editor.pickerOpen(); y += 8.0f) {
+        for (float x = 380.0f; x < 700.0f; x += 16.0f) {
+            click(x, y, slint::PointerEventButton::Left);
+            if (editor.pickerOpen()) {
+                swatchX = x;
+                swatchY = y;
+                break;
+            }
+            buildRule();
+        }
+    }
+    REQUIRE(editor.pickerOpen());
+    INFO("the swatch at " << swatchX << ", " << swatchY);
+
+    // Right-clicked all over and round the picker (placed inside the platform's 520 px window,
+    // wherever that puts it), opened again whenever a click outside it has closed it.
+    const auto hsv = [](takt4::dmx::Color color) {
+        double h = 0.0;
+        double s = 0.0;
+        double v = 0.0;
+        takt4::dmx::toHsv(color, h, s, v);
+        return std::array<double, 3>{h, s, v};
+    };
+    const std::array<double, 3> was = hsv(*takt4::dmx::parseColor(set));
+    std::set<std::string> reset;
+    std::vector<std::string> wrong;
+    const std::size_t colors = window.get_palette()->row_count();
+    // 12 px down a picker whose tracks are 24 px tall, 16 across: see the sweep above.
+    for (float y = 0.0f; y < swatchY + 300.0f; y += 12.0f) {
+        for (float x = std::max(0.0f, swatchX - 300.0f); x < swatchX + 300.0f; x += 16.0f) {
+            if (!editor.pickerOpen()) {
+                click(swatchX, swatchY, slint::PointerEventButton::Left);
+            }
+            click(x, y, slint::PointerEventButton::Right);
+            editor.tick();
+            if (window.get_palette()->row_count() != colors) {
+                wrong.push_back("the palette changed" + atPoint(x, y));
+                buildRule();
+                continue;
+            }
+            if (firstColor() == set) {
+                continue;
+            }
+            const std::array<double, 3> now = hsv(*takt4::dmx::parseColor(firstColor()));
+            // One part at white's, the other two as they were — to a byte's rounding.
+            const auto within = [](double a, double b, double by) { return std::abs(a - b) <= by; };
+            if (within(now[0], 0.0, 2.0) && within(now[1], was[1], 0.02) &&
+                within(now[2], was[2], 0.02)) {
+                reset.insert("hue");
+            } else if (within(now[1], 0.0, 0.01) && within(now[2], was[2], 0.02)) {
+                reset.insert("sat"); // with no saturation there is no hue to keep
+            } else if (within(now[2], 1.0, 0.01) && within(now[0], was[0], 2.0) &&
+                       within(now[1], was[1], 0.02)) {
+                reset.insert("bright");
+            } else {
+                wrong.push_back(firstColor() + atPoint(x, y));
+            }
+            editor.setPaletteColor(0, 220.0f, 75.0f, 50.0f);
+            editor.tick();
+        }
+    }
+    INFO("wrong: " << (wrong.empty() ? std::string("nothing") : wrong.front()) << " ("
+                   << wrong.size() << ")");
+    CHECK(wrong.empty());
+    CHECK(reset == std::set<std::string>{"bright", "hue", "sat"});
 }

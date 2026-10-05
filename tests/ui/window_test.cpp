@@ -7,6 +7,8 @@
 #include "core/dmx/fixture.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/fixtures/fixture_library.hpp"
+#include "core/fixtures/import.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/output/output_target.hpp"
 #include "core/settings/settings.hpp"
@@ -4150,6 +4152,14 @@ void clickAt(slint::Window& window, float x, float y) {
     window.dispatch_pointer_release_event(at, slint::PointerEventButton::Left);
 }
 
+/// The right button, which puts a slider back to its default.
+void rightClickAt(slint::Window& window, float x, float y) {
+    const slint::LogicalPosition at({x, y});
+    window.dispatch_pointer_move_event(at);
+    window.dispatch_pointer_press_event(at, slint::PointerEventButton::Right);
+    window.dispatch_pointer_release_event(at, slint::PointerEventButton::Right);
+}
+
 void press(slint::Window& window, const std::string& key) {
     window.dispatch_key_press_event(slint::SharedString(key));
     window.dispatch_key_release_event(slint::SharedString(key));
@@ -7222,4 +7232,160 @@ TEST_CASE("folding a section while one of its boxes is being typed in keeps the 
     settle();
     CHECK(window->get_outputs_folded());
     CHECK(fired == std::vector<std::string>{"host 0 10.0.0.407"});
+}
+
+TEST_CASE("the preset's library of fixture definitions is saved, grows with an import, and is "
+          "restored by IMPORT",
+          "[ui][dmx][import]") {
+    // Found wiring the import (2026-10-05): this window kept the patch for saving and not the
+    // library, so a library read at startup was gone at the next save, and every fixture's link
+    // to it at the launch after.
+    std::string problem;
+    std::optional<takt4::fixtures::FixtureProfile> diablo =
+        takt4::fixtures::importProfile(std::filesystem::path(TAKT4_TEST_DATA_DIR) / "fixtures" /
+                                           "ofl" / "ayrton" / "diablo-s.json",
+                                       problem);
+    INFO(problem);
+    REQUIRE(diablo);
+    takt4::settings::Settings loaded;
+    takt4::fixtures::addProfile(loaded.preset.library, *diablo);
+    loaded.preset.fixtures =
+        takt4::fixtures::makeFixtures(loaded.preset.library[0], "Standard", 1, 0, 1, {}).fixtures;
+    REQUIRE(loaded.preset.fixtures.size() == 1);
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, loaded);
+    takt4::settings::Settings saved = controller.currentSettings();
+    REQUIRE(saved.preset.library.size() == 1);
+    CHECK(saved.preset.library[0].id == loaded.preset.library[0].id);
+    REQUIRE(saved.preset.fixtures.size() == 1);
+    CHECK(saved.preset.fixtures[0].profile.id == saved.preset.library[0].id);
+    // And through the file, links and all.
+    const takt4::settings::Settings again =
+        takt4::settings::fromJson(takt4::settings::toJson(saved));
+    REQUIRE(again.preset.library.size() == 1);
+    CHECK(again.preset.fixtures[0].profile.linked());
+    CHECK(controller.patchEditor().library().size() == 1);
+
+    SECTION("an import in the patch editor reaches the file") {
+        auto& patch = controller.patchEditor();
+        patch.openImport();
+        patch.importFile(std::filesystem::path(TAKT4_TEST_DATA_DIR) / "fixtures" / "ofl" / "adb" /
+                         "alc4.json");
+        patch.confirmImport();
+        saved = controller.currentSettings();
+        CHECK(saved.preset.library.size() == 2);
+        CHECK(saved.preset.fixtures.size() == 2);
+    }
+    SECTION("IMPORT of a settings file brings its library with its fixtures") {
+        const takt4::test::TempDir dir;
+        const std::filesystem::path file = dir.path() / "no-library.json";
+        takt4::settings::Settings bare = saved;
+        bare.preset.library.clear();
+        bare.preset.fixtures.clear();
+        REQUIRE(takt4::settings::save(bare, file));
+        REQUIRE(controller.importFrom(file));
+        CHECK(controller.currentSettings().preset.library.empty());
+        CHECK(controller.patchEditor().library().empty());
+
+        const std::filesystem::path back = dir.path() / "with-library.json";
+        REQUIRE(takt4::settings::save(saved, back));
+        REQUIRE(controller.importFrom(back));
+        CHECK(controller.currentSettings().preset.library.size() == 1);
+        CHECK(controller.patchEditor().library().size() == 1);
+        CHECK(controller.currentSettings().preset.fixtures[0].profile.linked());
+    }
+}
+
+TEST_CASE("a right-click puts each of the main window's sliders back to a fresh preset's", "[ui]") {
+    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default —
+    // here what a fresh preset has (`settings::freshTempoOptions`), and no delay on an output.
+    // Each is moved off it, and the whole window is right-clicked on a grid: every slider must
+    // come back, each to its own default, and nothing real is reached on the way.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 1400.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const takt4::tests::NothingReal nothingReal;
+    const Options fresh = takt4::settings::freshTempoOptions();
+    const auto rows = window.get_outputs_list();
+    REQUIRE(rows->row_count() == 2);
+    const auto delay = [&rows] { return rows->row_data(1)->delay_ms; };
+    const auto moveOff = [&] {
+        controller.setFoldEnabled(true);
+        controller.setFoldMax(190.0);
+        controller.setFoldMin(100.0);
+        controller.setLatencyMs(-30.0);
+        controller.setTargetDelay(1, 40.0f);
+        settle();
+    };
+    moveOff();
+    REQUIRE(window.get_fold_min() == Catch::Approx(100.0f));
+    REQUIRE(window.get_fold_max() == Catch::Approx(190.0f));
+    REQUIRE(window.get_latency_ms() == Catch::Approx(-30.0f));
+    REQUIRE(delay() == Catch::Approx(40.0f));
+
+    std::set<std::string> reset;
+    std::vector<std::string> wrong;
+    // 16 x 12 px: every slider here is 24 px tall and wider than 100 (see the rule editor's
+    // sweep for why no finer).
+    for (float y = 4.0f; y < kHeight; y += 12.0f) {
+        for (float x = 4.0f; x < kWidth; x += 16.0f) {
+            rightClickAt(window.window(), x, y);
+            settle();
+            const std::string where = " at " + std::to_string(static_cast<int>(x)) + ", " +
+                                      std::to_string(static_cast<int>(y));
+            bool moved = false;
+            if (window.get_latency_ms() != Catch::Approx(-30.0f)) {
+                moved = true;
+                if (window.get_latency_ms() ==
+                    Catch::Approx(fresh.latencyOffsetSeconds * 1000.0).margin(0.01)) {
+                    reset.insert("latency");
+                } else {
+                    wrong.push_back("latency to " + std::to_string(window.get_latency_ms()) +
+                                    where);
+                }
+            }
+            if (window.get_fold_min() != Catch::Approx(100.0f) ||
+                window.get_fold_max() != Catch::Approx(190.0f)) {
+                moved = true;
+                if (window.get_fold_min() == Catch::Approx(fresh.minBpm) &&
+                    window.get_fold_max() == Catch::Approx(fresh.maxBpm)) {
+                    reset.insert("fold");
+                } else {
+                    wrong.push_back("keep BPM in to " + std::to_string(window.get_fold_min()) +
+                                    " - " + std::to_string(window.get_fold_max()) + where);
+                }
+            }
+            if (delay() != Catch::Approx(40.0f)) {
+                moved = true;
+                if (delay() == 0.0f) {
+                    reset.insert("delay");
+                } else {
+                    wrong.push_back("delay to " + std::to_string(delay()) + where);
+                }
+            }
+            if (rows->row_count() != 2 || !window.get_fold_on()) {
+                wrong.push_back("something else changed" + where);
+                moved = true;
+            }
+            if (moved) {
+                moveOff();
+            }
+        }
+    }
+    INFO("wrong: " << (wrong.empty() ? std::string("nothing") : wrong.front()) << " ("
+                   << wrong.size() << ")");
+    CHECK(wrong.empty());
+    CHECK(reset == std::set<std::string>{"delay", "fold", "latency"});
+    nothingReal.check();
 }

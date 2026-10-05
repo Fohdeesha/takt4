@@ -42,6 +42,7 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->set_rules(listModel_);
     window_->set_output_choices(choiceRows_.model());
     window_->set_fixture_choices(fixtureRows_.model());
+    window_->set_head_choices(headRows_.model());
     window_->set_slots(slotRows_.model());
     window_->set_palette(paletteRows_.model());
     window_->set_follow_ups(followRows_.model());
@@ -234,6 +235,8 @@ RulesController::RulesController(output::OutputRunner& runner,
         }
     });
     window_->on_effect_size_changed(finishing([this](float percent) { setSize(percent); }));
+    window_->on_head_toggled(finishing([this](int index, bool on) { toggleHead(index, on); }));
+    window_->on_effect_spread_changed(finishing([this](float percent) { setSpread(percent); }));
     window_->on_color_mode_picked(finishing([this](int index) { pickColorMode(index); }));
     window_->on_palette_added(finishing([this] { addPaletteColor(); }));
     window_->on_palette_removed(finishing([this](int index) { removePaletteColor(index); }));
@@ -1578,6 +1581,52 @@ void RulesController::setSize(float percent) {
         rule->dmx.size = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
         commit();
         window_->set_effect_size(static_cast<float>(rule->dmx.size * 100.0));
+    }
+}
+
+namespace {
+
+/// What unticking the last head says.
+constexpr std::string_view kOneHeadAtLeast =
+    "A rule moves at least one head: tick another before unticking this one.";
+
+} // namespace
+
+void RulesController::toggleHead(int index, bool on) {
+    Rule::Config* rule = current();
+    const std::size_t heads =
+        rule == nullptr ? 0 : std::min<std::size_t>(headsAimedAt(rule->dmx), 32);
+    if (rule == nullptr || index < 0 || static_cast<std::size_t>(index) >= heads) {
+        return;
+    }
+    // Every head is every tick; ticking the last one in goes back to every head, so a fixture
+    // patched later with more heads than these is moved whole too, as it was before ticks.
+    const std::uint32_t all = heads >= 32 ? ~std::uint32_t{0} : (std::uint32_t{1} << heads) - 1;
+    std::uint32_t ticked = rule->dmx.heads == 0 ? all : (rule->dmx.heads & all);
+    const std::uint32_t bit = std::uint32_t{1} << index;
+    if (on) {
+        ticked |= bit;
+    } else if ((ticked & ~bit) == 0) {
+        setStatus(std::string(kOneHeadAtLeast), true);
+        publishSelected();
+        return;
+    } else {
+        ticked &= ~bit;
+    }
+    rule->dmx.heads = ticked == all ? 0 : ticked;
+    // That line, if it was showing, is answered; any other is left as it was.
+    if (std::string(window_->get_status()) == kOneHeadAtLeast) {
+        setStatus({}, false);
+    }
+    commit();
+    publishSelected();
+}
+
+void RulesController::setSpread(float percent) {
+    if (Rule::Config* rule = current()) {
+        rule->dmx.spread = std::clamp(static_cast<double>(percent) / 100.0, 0.0, 1.0);
+        commit();
+        publishHeads(rule->dmx);
     }
 }
 

@@ -1,6 +1,7 @@
 #include "core/dmx/dmx_engine.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -242,16 +243,17 @@ void DmxEngine::retarget(const std::vector<std::uint16_t>& mapped) {
             if (fixture == nullptr) {
                 return true;
             }
-            const std::uint16_t pan = channelOf(*fixture, Role::Pan);
-            const std::uint16_t tilt = channelOf(*fixture, Role::Tilt);
+            // The same head of it: its nth pan and tilt, as the move was built.
+            const std::uint16_t pan = channelOf(*fixture, Role::Pan, move.nth);
+            const std::uint16_t tilt = channelOf(*fixture, Role::Tilt, move.nth);
             const std::size_t buffer = bufferOf(fixture->universe);
             if ((pan == 0 && tilt == 0) || buffer == static_cast<std::size_t>(-1)) {
                 return true;
             }
             move.fixture = mapped[move.fixture];
             move.buffer = static_cast<std::uint32_t>(buffer);
-            const std::uint16_t panFine = channelOf(*fixture, Role::PanFine);
-            const std::uint16_t tiltFine = channelOf(*fixture, Role::TiltFine);
+            const std::uint16_t panFine = channelOf(*fixture, Role::PanFine, move.nth);
+            const std::uint16_t tiltFine = channelOf(*fixture, Role::TiltFine, move.nth);
             move.pan = pan == 0 ? kNoChannel : static_cast<std::uint16_t>(pan - 1);
             move.tilt = tilt == 0 ? kNoChannel : static_cast<std::uint16_t>(tilt - 1);
             move.panFine = panFine == 0 ? kNoChannel : static_cast<std::uint16_t>(panFine - 1);
@@ -610,20 +612,23 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         return virtualDimmer ? virtuals_[index].intensity : kHere;
     };
 
-    /// The pan/tilt pair, with the fixture's own window. Nothing when the fixture cannot move.
-    const auto addMove = [&](double toPanUnit, double toTiltUnit, bool windowRelative) {
-        const std::uint16_t pan = channelOf(fixture, Role::Pan);
-        const std::uint16_t tilt = channelOf(fixture, Role::Tilt);
-        if (pan == 0 && tilt == 0) {
-            return false;
-        }
+    /// One head's pan/tilt pair — the fixture's `nth` pan and tilt, each with its `nth` fine —
+    /// with the fixture's own window, which every head shares, trailing the first by `lag`. A pan
+    /// or tilt the heads share (one pan, two tilting bars) is the first head's: it is the first
+    /// pan, and no other head has one — so two rules on two heads never fight over it.
+    const auto addHead = [&](std::size_t nth, double lag, double toPanUnit, double toTiltUnit,
+                             bool windowRelative) {
+        const std::uint16_t pan = channelOf(fixture, Role::Pan, nth);
+        const std::uint16_t tilt = channelOf(fixture, Role::Tilt, nth);
         Move move;
         move.fixture = fixtureIndex;
+        move.nth = static_cast<std::uint8_t>(nth);
+        move.lag = lag;
         move.buffer = buffer;
         move.pan = pan == 0 ? kNoChannel : static_cast<std::uint16_t>(pan - 1);
         move.tilt = tilt == 0 ? kNoChannel : static_cast<std::uint16_t>(tilt - 1);
-        const std::uint16_t panFine = channelOf(fixture, Role::PanFine);
-        const std::uint16_t tiltFine = channelOf(fixture, Role::TiltFine);
+        const std::uint16_t panFine = channelOf(fixture, Role::PanFine, nth);
+        const std::uint16_t tiltFine = channelOf(fixture, Role::TiltFine, nth);
         move.panFine = panFine == 0 ? kNoChannel : static_cast<std::uint16_t>(panFine - 1);
         move.tiltFine = tiltFine == 0 ? kNoChannel : static_cast<std::uint16_t>(tiltFine - 1);
 
@@ -650,7 +655,33 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
                                                           (move.tiltHigh - move.tiltLow)
                                      : std::clamp(toTiltUnit, 0.0, 1.0);
         running.moves.push_back(move);
-        return true;
+    };
+
+    /// Every head's pan/tilt pair, or the ones `Payload::heads` names (`headsOf`), each trailing
+    /// the one before by `Payload::spread` over their number. Nothing when the fixture cannot
+    /// move, or has none of those heads.
+    const auto addMove = [&](double toPanUnit, double toTiltUnit, bool windowRelative) {
+        // `Move::nth` is a byte; no fixture has 256 heads, and one that claimed to moves 256.
+        const std::size_t heads = std::min<std::size_t>(
+            headsOf(fixture), std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1);
+        // The heads this moves here, first to last: every one, or those named — a head past the
+        // 32nd only as every head. On the stack: no fixture has more than a few.
+        std::array<std::uint8_t, 256> chosen{};
+        std::size_t count = 0;
+        for (std::size_t nth = 0; nth < heads; ++nth) {
+            const bool named = payload.heads == 0 ||
+                               (nth < 32 && (payload.heads & (std::uint32_t{1} << nth)) != 0);
+            if (named && (channelOf(fixture, Role::Pan, nth) != 0 ||
+                          channelOf(fixture, Role::Tilt, nth) != 0)) {
+                chosen[count++] = static_cast<std::uint8_t>(nth);
+            }
+        }
+        const double spread = std::clamp(static_cast<double>(payload.spread), 0.0, 1.0);
+        for (std::size_t k = 0; k < count; ++k) {
+            addHead(chosen[k], spread * static_cast<double>(k) / static_cast<double>(count),
+                    toPanUnit, toTiltUnit, windowRelative);
+        }
+        return count > 0;
     };
 
     switch (payload.kind) {
@@ -690,6 +721,13 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         any |= addTrack(Role::Green, neutral ? 0.0 : unitOfByte(payload.color.g), Role::Green);
         any |= addTrack(Role::Blue, neutral ? 0.0 : unitOfByte(payload.color.b), Role::Blue);
         any |= addTrack(Role::White, neutral ? unitOfByte(payload.color.r) : 0.0, Role::White);
+        // **A CMY head's flags, as the complement of the color** — cyan takes the red out of a
+        // white beam, so full red is no cyan and no red is a cyan flag all the way in. Written
+        // wherever the fixture has them, beside RGB where it has that. A fade is a straight line
+        // in these as it is in RGB, and the same line: 1 - x is linear in x.
+        any |= addTrack(Role::Cyan, 1.0 - unitOfByte(payload.color.r), Role::Cyan);
+        any |= addTrack(Role::Magenta, 1.0 - unitOfByte(payload.color.g), Role::Magenta);
+        any |= addTrack(Role::Yellow, 1.0 - unitOfByte(payload.color.b), Role::Yellow);
         return any;
     }
     case EffectKind::HueSweep: {
@@ -700,6 +738,10 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         any |= addTrack(Role::Green, 0.0, Role::Green);
         any |= addTrack(Role::Blue, 0.0, Role::Blue);
         addTrack(Role::White, 0.0, Role::White);
+        // And a CMY head's flags, each the complement of the component it removes (see `Color`).
+        any |= addTrack(Role::Cyan, 1.0, Role::Cyan);
+        any |= addTrack(Role::Magenta, 1.0, Role::Magenta);
+        any |= addTrack(Role::Yellow, 1.0, Role::Yellow);
         return any;
     }
     case EffectKind::Blackout: {
@@ -809,6 +851,14 @@ void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fix
         ++missed_;
         return;
     }
+    // A move whose heads start one after another runs until the last has arrived.
+    if (payload.kind == EffectKind::Position || payload.kind == EffectKind::Home) {
+        double latest = 0.0;
+        for (const Move& move : staging_.moves) {
+            latest = std::max(latest, move.lag);
+        }
+        staging_.duration *= 1.0 + latest;
+    }
 
     preempt(staging_);
     running_.push_back(staging_);
@@ -866,10 +916,13 @@ void DmxEngine::evaluate(const Running& running, double now) {
         }
         const Color swept = fromHsv(hue, saturation, value);
         for (const Track& track : running.tracks) {
-            const double unit = track.role == Role::Red     ? unitOfByte(swept.r)
-                                : track.role == Role::Green ? unitOfByte(swept.g)
-                                : track.role == Role::Blue  ? unitOfByte(swept.b)
-                                                            : 0.0;
+            const double unit = track.role == Role::Red       ? unitOfByte(swept.r)
+                                : track.role == Role::Green   ? unitOfByte(swept.g)
+                                : track.role == Role::Blue    ? unitOfByte(swept.b)
+                                : track.role == Role::Cyan    ? 1.0 - unitOfByte(swept.r)
+                                : track.role == Role::Magenta ? 1.0 - unitOfByte(swept.g)
+                                : track.role == Role::Yellow  ? 1.0 - unitOfByte(swept.b)
+                                                              : 0.0;
             writeTrack(track, unit);
         }
         return;
@@ -877,9 +930,11 @@ void DmxEngine::evaluate(const Running& running, double now) {
     case EffectKind::Path: {
         const double turns =
             progress * static_cast<double>(payload.cycles > 0.0f ? payload.cycles : 1.0f);
-        const double angle = 2.0 * std::numbers::pi * turns;
         const double size = std::clamp(static_cast<double>(payload.size), 0.0, 1.0);
         for (const Move& move : running.moves) {
+            // Each head that much of a turn behind the first (`Payload::spread`).
+            const double here = turns - move.lag;
+            const double angle = 2.0 * std::numbers::pi * here;
             // The radius is half the window times `size`, so a full-size circle just touches
             // the operator's own limits and never crosses them.
             const double panRadius = (move.panHigh - move.panLow) * 0.5 * size;
@@ -901,7 +956,7 @@ void DmxEngine::evaluate(const Running& running, double now) {
                 panOffset = std::sin(angle) * panRadius;
                 break;
             case PathShape::Square: {
-                const double side = std::fmod(turns, 1.0) * 4.0;
+                const double side = (here - std::floor(here)) * 4.0;
                 const int corner = static_cast<int>(side) & 3;
                 panOffset = (corner == 0 || corner == 3) ? panRadius : -panRadius;
                 tiltOffset = (corner < 2) ? tiltRadius : -tiltRadius;
@@ -921,8 +976,15 @@ void DmxEngine::evaluate(const Running& running, double now) {
     }
     case EffectKind::Position:
     case EffectKind::Home: {
-        const double shaped = curveAt(payload.curve, progress);
+        // Each head's move takes the payload's duration, starting its `lag` of that duration
+        // after the first (`Payload::spread`); `Running::duration` covers the last of them.
+        const double each =
+            payload.durationSeconds > 0.0f ? static_cast<double>(payload.durationSeconds) : 0.0;
         for (const Move& move : running.moves) {
+            const double mine =
+                each > 0.0 ? std::clamp((now - running.start - move.lag * each) / each, 0.0, 1.0)
+                           : 1.0;
+            const double shaped = curveAt(payload.curve, mine);
             if (move.pan != kNoChannel) {
                 writeChannel(move.buffer, move.pan, move.panFine,
                              move.fromPan + (move.toPan - move.fromPan) * shaped);

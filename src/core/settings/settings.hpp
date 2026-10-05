@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/dmx/fixture.hpp"
+#include "core/fixtures/fixture_profile.hpp"
 #include "core/output/output_target.hpp"
 #include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -191,6 +192,14 @@ struct Preset {
     /// A patch opened on a rig that has not got those fixtures costs nothing: the universes
     /// are still built and the frames are still sent, into a node that is not there.
     std::vector<dmx::Fixture> fixtures;
+
+    /// The fixture definitions imported into this preset (GDTF and Open Fixture Library files,
+    /// converted), each with every mode of its file — what a fixture's `profile` link points at,
+    /// so it can be re-moded and brought up to date by a re-import. **In the preset**, so EXPORT
+    /// carries the definitions with the rig and the preset opens anywhere; an entry no fixture
+    /// uses is kept until the operator removes it. Written as `"fixtureLibrary"`; a build before
+    /// it ignores the key, and its fixtures still work, unlinked.
+    std::vector<fixtures::FixtureProfile> library;
 };
 
 struct Settings {

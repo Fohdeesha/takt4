@@ -226,6 +226,12 @@ public:
     void setHueRange(const std::string& text);
     /// A path's radius, as a percentage of the movement window's half-width.
     void setSize(float percent);
+    /// A movement's head `index` (from 0) ticked or not, among the heads of the fixtures the rule
+    /// is aimed at. All ticked is every head; the last one ticked cannot be unticked — a rule
+    /// that moved no head would be a rule that does nothing — and says so.
+    void toggleHead(int index, bool on);
+    /// How far apart those heads move, as a percentage (`trigger::DmxSend::spread`).
+    void setSpread(float percent);
     /// Whether the color comes from a palette or from three component generators — an index
     /// into `trigger::kColorModes`. See `trigger::ColorMode`.
     void pickColorMode(int index);
@@ -394,6 +400,10 @@ private:
     /// effect is aimed at exists on the fixtures the rule names, and what happens where it
     /// does not. Empty when there is nothing worth saying.
     std::string describeRoleReach(const trigger::DmxSend& send) const;
+    /// The heads row and the spread row, for a movement aimed at fixtures with several heads.
+    void publishHeads(const trigger::DmxSend& send);
+    /// How many heads the most of the fixtures `send` is aimed at has — 0 for none that moves.
+    std::size_t headsAimedAt(const trigger::DmxSend& send) const;
     void publishSlots();
     /// The palette swatches, for a color rule whose generator draws from a list.
     void publishPalette();
@@ -440,6 +450,7 @@ private:
     std::shared_ptr<slint::VectorModel<RuleRow>> listModel_;
     Repeater<OutputChoice> choiceRows_;
     Repeater<OutputChoice> fixtureRows_;
+    Repeater<HeadChoice> headRows_;
     Repeater<SlotRow> slotRows_;
     /// A rule row's ×, and a follow-up row's: a double-click on either is one deletion.
     DeleteGuard ruleMarks_;

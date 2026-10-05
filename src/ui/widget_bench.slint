@@ -339,6 +339,9 @@ export component WidgetBench inherits Window {
             maximum: 100;
             step: 1;
             enabled: root.track-on;
+            // A right-click's: 25, a value no other gesture of the tests lands on.
+            has-default: true;
+            default-value: 25;
             moved(v) => {
                 if (root.write-back) {
                     root.track-value = v;
@@ -356,6 +359,9 @@ export component WidgetBench inherits Window {
             maximum: 220;
             least-span: 5;
             step: 1;
+            has-default: true;
+            default-low: 70;
+            default-high: 140;
             low-moved(v) => {
                 if (root.write-back) {
                     root.span-low = v;

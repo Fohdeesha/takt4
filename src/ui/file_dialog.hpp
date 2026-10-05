@@ -19,7 +19,12 @@ namespace takt4::ui {
 /// see the note in the .cpp about what that costs when the port happens.
 ///
 /// Must be called from the UI thread: a native modal dialog runs its own message loop.
-std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested);
+///
+/// `kind` is what the dialog lists first: a takt4 preset (`.json`), or a fixture's definition —
+/// a GDTF file or an Open Fixture Library file (`.gdtf`, `.json`) — for the patch editor's import.
+enum class FileKind { Preset, FixtureDefinition };
+std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested,
+                                  FileKind kind = FileKind::Preset);
 std::filesystem::path askSaveFile(const std::string& title, const std::string& suggested);
 
 /// Whether a dialog may be shown at all: false while `TAKT4_NO_FILE_DIALOGS` is set, when both

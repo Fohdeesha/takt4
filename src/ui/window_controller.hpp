@@ -852,6 +852,11 @@ private:
     /// The lighting patch, as this class has it for saving. `patch_` owns the editing; this is
     /// the copy that goes into a settings file, kept in step by its changed callback.
     std::vector<dmx::Fixture> fixtures_;
+    /// And the preset's library of imported fixture definitions, the same way. **Kept here, not
+    /// only in the file it was read from**: a save writes what this class holds, and before it
+    /// held one a library read at startup was gone at the next save — and every fixture's link to
+    /// it with it at the launch after (found wiring the import, 2026-10-05).
+    std::vector<fixtures::FixtureProfile> library_;
     /// A decoder and an OSC prefix an imported preset asked for that this run cannot switch to
     /// — both are fixed while the application runs — saved so the next launch uses them.
     std::optional<tracking::Decoder> pendingDecoder_;
