@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -111,8 +112,11 @@ inline fixtures::Definition readOflJson(const std::string& json) {
     return *result.definition;
 }
 
+/// By `string_view`, not `const std::string&`: a literal passed to a reference parameter is a
+/// temporary, and GCC's -Wdangling-reference took every `const DefMode& m = modeNamed(d, "…")` for
+/// a reference into it.
 inline const fixtures::DefMode& modeNamed(const fixtures::Definition& definition,
-                                          const std::string& name) {
+                                          std::string_view name) {
     for (const fixtures::DefMode& mode : definition.modes) {
         if (mode.name == name) {
             return mode;
