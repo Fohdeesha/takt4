@@ -7,6 +7,11 @@ name: full
 # a tag that did not exist yet when this ran). What went with core.yml: the quicker first answer,
 # and its check that the engine builds without Slint ever being fetched.
 #
+# **No schedule**, by the user on 2026-10-05. A weekly run (Mondays, 06:00 UTC) dated from when
+# this ran only on demand; once every push that touches the code ran it, the weekly one only
+# tested main again — and GitHub, starting it seven hours late, put it in this concurrency group on
+# top of 1.3.0's release run and cancelled that.
+#
 # **A release:** push the bump commit and its annotated tag together —
 # `git push --atomic origin main vX.Y.Z` — so the tag is there when this checks out, and every
 # binary built here names it. When all three jobs pass on a commit a `v*` tag points at, the
@@ -39,7 +44,7 @@ name: full
 #
 # The path filter covers everything that can change the app (the audit found src/core,
 # tests/ui, tests/CMakeLists.txt, assets and tools/embed_asset.py all missing from it, so a
-# change there went unbuilt until the Monday run; and the audit of 2026-09-25, B4, the Rust
+# change there was not built when it was pushed; and the audit of 2026-09-25, B4, the Rust
 # pin, which is the compiler Slint is built with, and LICENSE and THIRD-PARTY-NOTICES.txt,
 # which are embedded in takt4.exe). Documentation alone does not trigger it.
 #
@@ -76,8 +81,6 @@ on:
       - 'LICENSE'
       - 'THIRD-PARTY-NOTICES.txt'
       - '.github/workflows/full.yml'
-  schedule:
-    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -248,7 +251,7 @@ jobs:
           ${{ matrix.cli }} devices
 
       # **A release's files**, on a commit a `v*` tag points at, pushed or dispatched — never a
-      # pull request or the Monday run. The tag must be the version in CMakeLists.txt, and both
+      # pull request. The tag must be the version in CMakeLists.txt, and both
       # binaries must say they are exactly that tag: not "-dirty", not a commit after it. The PDBs
       # go with them because a crash report without them cannot be read (0.9.4-0.9.6 shipped
       # none). Handed to `publish`, which attaches them once every job here has passed.
