@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -293,6 +294,21 @@ json dmxToJson(const trigger::DmxSend& send) {
         out["shape"] = std::string(dmx::nameOf(send.shape));
         out["size"] = send.size;
     }
+    // Only when they name some heads, and only a spread there is: every head, together, is what
+    // a rule meant before there was a choice, so a file of movement rules saves as it did. The
+    // heads by their numbers, as the editor shows them.
+    if (dmx::takesMovement(send.effect) && send.heads != 0) {
+        json heads = json::array();
+        for (int head = 0; head < 32; ++head) {
+            if ((send.heads & (std::uint32_t{1} << head)) != 0) {
+                heads.push_back(head + 1);
+            }
+        }
+        out["heads"] = std::move(heads);
+    }
+    if (dmx::takesMovement(send.effect) && send.spread > 0.0) {
+        out["spread"] = send.spread;
+    }
     return out;
 }
 
@@ -314,6 +330,22 @@ trigger::DmxSend dmxFromJson(const json& node) {
     read(node, "hueFrom", send.hueFrom);
     read(node, "hueTo", send.hueTo);
     read(node, "size", send.size);
+    // Whole numbers 1 to 32 only, each read wide and checked: a hand-edited file's 1e20, -3 or
+    // "2" names no head, rather than a cast that picks one at random. None left is every head.
+    if (const auto heads = node.find("heads"); heads != node.end() && heads->is_array()) {
+        for (const json& head : *heads) {
+            if (head.is_number_integer()) {
+                const auto value = head.get<std::int64_t>();
+                if (value >= 1 && value <= 32) {
+                    send.heads |= std::uint32_t{1} << (value - 1);
+                }
+            }
+        }
+    }
+    if (const auto spread = node.find("spread"); spread != node.end() && spread->is_number()) {
+        const double value = spread->get<double>();
+        send.spread = std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : 0.0;
+    }
     if (node.contains("fixtures") && node.at("fixtures").is_array()) {
         for (const json& name : node.at("fixtures")) {
             if (name.is_string()) {

@@ -161,6 +161,15 @@ std::string describeDmx(const trigger::Message& message) {
     case dmx::EffectKind::Blackout:
         break;
     }
+    // Which heads, where it names some, and how far apart: the log line of a rule moving the left
+    // yoke is not the line of one moving every head.
+    if (dmx::takesMovement(payload.kind) && payload.heads != 0) {
+        text += " " + dmx::describeHeads(payload.heads);
+    }
+    if (dmx::takesMovement(payload.kind) && payload.spread > 0.0f) {
+        text += " spread " +
+                std::to_string(std::lround(static_cast<double>(payload.spread) * 100.0)) + "%";
+    }
     if (payload.durationSeconds > 0.0f) {
         // Milliseconds, whatever unit the rule spelled it in: by the time it is a message the
         // duration has been settled against the tempo that was playing, and showing "2 bars"

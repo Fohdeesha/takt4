@@ -593,6 +593,89 @@ TEST_CASE("a random position draws once per fire and the engine executes a numbe
     }
 }
 
+TEST_CASE("two rules move the two heads of one fixture apart", "[dmx][trigger][heads]") {
+    // The operator, 2026-10-05: every head should move, "and the ability for them to be driven
+    // independently so a rule or multiple rules doesnt just move all heads the exact same way".
+    Fixture twin;
+    twin.id = "twin";
+    twin.name = "twin";
+    twin.address = 1;
+    twin.channels = {Role::Pan, Role::Tilt, Role::Pan, Role::Tilt};
+    twin.parked = {128, 128, 128, 128};
+    Transports::Config config;
+    config.patch = {twin};
+    Transports transports(config);
+    RuleSink sink(transports);
+    TriggerEngine engine(sink);
+
+    Rule::Config left = fadeRule("left", {"twin"}, 0, 0.0);
+    left.dmx.effect = EffectKind::Position;
+    left.dmx.pan = fixedInt(0);
+    left.dmx.tilt = fixedInt(0);
+    left.dmx.heads = 0b01; // head 1
+    Rule::Config right = left;
+    right.id = "right";
+    right.dmx.pan = fixedInt(100);
+    right.dmx.tilt = fixedInt(100);
+    right.dmx.heads = 0b10; // head 2
+    engine.setRules({left, right});
+    engine.rule(0).setFixtureMask(0b1);
+    engine.rule(1).setFixtureMask(0b1);
+    sink.setNow(0.0);
+    engine.onBeat(beatAt(1, 1, 1, 0.0));
+
+    CHECK(at(transports, 1) == 0); // head 1, where its rule sent it
+    CHECK(at(transports, 2) == 0);
+    CHECK(at(transports, 3) == 255); // head 2, where the other sent it
+    CHECK(at(transports, 4) == 255);
+    CHECK(sink.delivered() == 2);
+
+    SECTION("a rule left at every head moves both the same way, as before") {
+        Rule::Config both = left;
+        both.dmx.heads = 0; // every head
+        both.dmx.pan = fixedInt(50);
+        engine.setRules({both});
+        engine.rule(0).setFixtureMask(0b1);
+        sink.setNow(0.5);
+        engine.onBeat(beatAt(2, 2, 1, 0.5));
+        CHECK(at(transports, 1) == 128);
+        CHECK(at(transports, 3) == 128);
+    }
+    SECTION("a rule's spread reaches the heads: the second starts half the move later") {
+        // From where the two rules above left them, head 1 at 0 and head 2 at full, both to the
+        // middle over a second.
+        Rule::Config staggered = left;
+        staggered.dmx.heads = 0; // both
+        staggered.dmx.pan = fixedInt(50);
+        staggered.dmx.tilt = fixedInt(50);
+        staggered.dmx.unit = takt4::trigger::DelayUnit::Milliseconds;
+        staggered.dmx.durationSeconds = 1.0;
+        staggered.dmx.spread = 1.0; // two heads: the second half a move behind the first
+        engine.setRules({staggered});
+        engine.rule(0).setFixtureMask(0b1);
+        sink.setNow(0.5);
+        engine.onBeat(beatAt(2, 2, 1, 0.5));
+        transports.dmx().tick(1.0); // head 1 half way; head 2 starting
+        CHECK(static_cast<int>(at(transports, 1)) == 64);
+        CHECK(static_cast<int>(at(transports, 3)) == 255);
+        transports.dmx().tick(1.5); // head 1 there; head 2 half way
+        CHECK(static_cast<int>(at(transports, 1)) == 128);
+        CHECK(static_cast<int>(at(transports, 3)) == 191);
+        transports.dmx().tick(2.0); // and head 2 there
+        CHECK(static_cast<int>(at(transports, 3)) == 128);
+    }
+    SECTION("a rule naming a head the fixture has not got reaches nothing, and says so") {
+        Rule::Config third = left;
+        third.dmx.heads = 0b100; // head 3
+        engine.setRules({third});
+        engine.rule(0).setFixtureMask(0b1);
+        sink.setNow(0.5);
+        engine.onBeat(beatAt(2, 2, 1, 0.5));
+        CHECK(sink.undeliverable() == 1);
+        CHECK(at(transports, 1) == 0);
+    }
+}
+
 TEST_CASE("an effect aimed at fixtures that cannot do it is undeliverable, not an error",
           "[dmx][trigger]") {
     Transports::Config config;

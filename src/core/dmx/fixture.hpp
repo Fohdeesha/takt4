@@ -64,23 +64,36 @@ enum class Role : std::uint8_t {
     /// positions on a ramp, so this usually wants parking at "fastest" — which is what a
     /// fixture's parked levels are for — but a rule can sweep it for a deliberate lag.
     Speed,
+    /// The three subtractive flags of a CMY head — a filter swung into a white beam, not a
+    /// lamp. **0 is the flag out, which is no colour**: such a head is dark only through its
+    /// dimmer, so these are not emitters, and Blackout and the virtual dimmer leave them alone.
+    /// A colour effect writes each as one minus the additive component it removes — cyan takes
+    /// red out — so one colour rule means the same colour on an RGB par and on a CMY head.
+    ///
+    /// Last in the enum so that no role written before them changes its number; a settings file
+    /// holds role *names*, and `kRoles` puts them where a dropdown wants them.
+    Cyan,
+    Magenta,
+    Yellow,
 };
 
 /// Every role, in the order a channel-map dropdown should offer them: `Unused` first,
 /// because it is the default and the commonest answer for a channel nothing aims at, then
 /// intensity, then color, then movement, then the rest.
-inline constexpr std::array<Role, 18> kRoles{
-    Role::Unused, Role::Dimmer,      Role::Red,  Role::Green, Role::Blue,    Role::White,
-    Role::Amber,  Role::Uv,          Role::Pan,  Role::Tilt,  Role::PanFine, Role::TiltFine,
-    Role::Strobe, Role::ColorWheel, Role::Gobo, Role::Zoom,  Role::Focus,   Role::Speed};
+inline constexpr std::array<Role, 21> kRoles{
+    Role::Unused, Role::Dimmer,  Role::Red,      Role::Green,   Role::Blue,       Role::White,
+    Role::Amber,  Role::Uv,      Role::Cyan,     Role::Magenta, Role::Yellow,     Role::Pan,
+    Role::Tilt,   Role::PanFine, Role::TiltFine, Role::Strobe,  Role::ColorWheel, Role::Gobo,
+    Role::Zoom,   Role::Focus,   Role::Speed};
 
 /// The roles an *effect* may be aimed at — `kRoles` without `Unused`, which is not a target,
 /// and without the two fine bytes, which are written by their coarse partner rather than on
-/// their own. What the rule editor's "channel" dropdown offers.
-inline constexpr std::array<Role, 15> kAimableRoles{
-    Role::Dimmer,      Role::Red,  Role::Green, Role::Blue,  Role::White,
-    Role::Amber,       Role::Uv,   Role::Pan,   Role::Tilt,  Role::Strobe,
-    Role::ColorWheel, Role::Gobo, Role::Zoom,  Role::Focus, Role::Speed};
+/// their own. What the rule editor's "channel" dropdown offers. A level aimed at cyan is a raw
+/// level on the flag, as one aimed at red is on the LED.
+inline constexpr std::array<Role, 18> kAimableRoles{
+    Role::Dimmer, Role::Red,        Role::Green,   Role::Blue,   Role::White, Role::Amber,
+    Role::Uv,     Role::Cyan,       Role::Magenta, Role::Yellow, Role::Pan,   Role::Tilt,
+    Role::Strobe, Role::ColorWheel, Role::Gobo,    Role::Zoom,   Role::Focus, Role::Speed};
 
 std::string_view labelOf(Role role) noexcept;
 /// The word a settings file spells the role with, and what `roleOf` reads back.
@@ -90,6 +103,11 @@ std::optional<Role> roleOf(std::string_view name) noexcept;
 /// True for the three an RGB color is written to.
 constexpr bool isColor(Role role) noexcept {
     return role == Role::Red || role == Role::Green || role == Role::Blue;
+}
+
+/// True for the three subtractive flags a color is also written to, as its complement.
+constexpr bool isSubtractive(Role role) noexcept {
+    return role == Role::Cyan || role == Role::Magenta || role == Role::Yellow;
 }
 
 /// True for a role that is the low byte of a 16-bit pair, and so is never aimed at directly.
@@ -154,6 +172,34 @@ struct Fixture {
     /// operator loses an evening.
     std::vector<std::uint8_t> parked;
 
+    /// What each channel is called — "prism 1", "Red 3", "shutter 1 · Beam 2" — beside the role
+    /// the patch editor shows, which on most channels of a real fixture is `Unused` and so says
+    /// nothing about what the channel *is*. Filled by an import from the fixture's definition;
+    /// empty for a fixture patched by hand. Parallel to `channels` like `parked`: shorter or
+    /// longer is read as empty-filled or cut (`channelLabel`). Nothing drives by it.
+    std::vector<std::string> labels;
+
+    /// Which library entry this fixture was made from — `Preset::library`, the converted
+    /// definitions a preset carries — so its mode can be changed to another of the same
+    /// definition's, and a re-import can bring it up to date. Unlinked (an empty `id`) for one
+    /// patched by hand, or one whose mode a re-import took away.
+    struct ProfileLink {
+        /// The library entry's id ("p-…"), generated, never a name: see `Fixture::id`.
+        std::string id;
+        /// The mode's name as the definition spells it. A mode name is the file's and never the
+        /// operator's to edit, so this is safe to hold by name.
+        std::string mode;
+        /// 1, or 2 for the second start address of a mode that needs two.
+        int part = 1;
+        /// Shared by the two fixtures one two-address import made, so changing the mode of one
+        /// changes both; empty otherwise.
+        std::string pair;
+
+        bool linked() const noexcept { return !id.empty(); }
+        friend bool operator==(const ProfileLink&, const ProfileLink&) = default;
+    };
+    ProfileLink profile;
+
     /// Switched off contributes no channels and is reached by no rule — the fixture is on the
     /// truss but out of the show tonight. A switch rather than deleting it, for the reason
     /// `output::OutputTarget::enabled` gives.
@@ -161,6 +207,13 @@ struct Fixture {
 
     friend bool operator==(const Fixture&, const Fixture&) = default;
 };
+
+/// The label of the fixture's `index`th channel, or empty when it has none — see
+/// `Fixture::labels`.
+inline std::string_view channelLabel(const Fixture& fixture, std::size_t index) noexcept {
+    return index < fixture.labels.size() ? std::string_view(fixture.labels[index])
+                                         : std::string_view();
+}
 
 /// How many fixtures a rule can be routed to.
 ///
@@ -194,6 +247,19 @@ std::uint16_t channelOf(const Fixture& fixture, Role role, std::size_t nth = 0) 
 inline bool has(const Fixture& fixture, Role role) noexcept {
     return channelOf(fixture, role) != 0;
 }
+
+/// How many heads the fixture has: how many pans or tilts, whichever is more. **Head n is the
+/// fixture's nth pan with its nth tilt** (and the nth pan fine and tilt fine — `channelOf`'s
+/// `nth`, the way a level on pan pairs a pan with its fine), so a head that only tilts is a head.
+/// A moving head has one; a bar of tilting segments, or two yokes on one base, has several, and
+/// every one of them moves (`DmxEngine`). It used to be the first only: an imported fixture with
+/// two tilting bars moved one (found building the import, 2026-10-04). 0 for a fixture that
+/// cannot move.
+std::size_t headsOf(const Fixture& fixture) noexcept;
+
+/// A set of heads as a person reads it — bit n for head n + 1 (`Payload::heads`): "head 2",
+/// "heads 1 and 3", "heads 1, 2 and 4"; empty for none, which is every head.
+std::string describeHeads(std::uint32_t heads);
 
 /// Every role that puts light out, in the order a color is mixed from them. What a
 /// `Blackout` drives to zero and what a **virtual dimmer** drives instead of a dimmer.

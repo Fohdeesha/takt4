@@ -437,6 +437,11 @@ export component MainWindow inherits Window {
   in-out property <float> fold-limit-max: 220;
   in-out property <float> fold-least-span: 5;
   in-out property <float> latency-limit-ms: 250;
+  /// Where a right-click on a slider puts it back to: a fresh preset's tempo window and latency
+  /// (`settings::freshTempoOptions`), set from C++ at startup like the limits above.
+  in-out property <float> fold-default-min: 70;
+  in-out property <float> fold-default-max: 140;
+  in-out property <float> latency-default-ms: 0;
   /// How far a single output's delay slider goes, in milliseconds — `kMaxOutputDelaySeconds`.
   in-out property <float> output-delay-limit-ms: 1000;
 
@@ -1377,6 +1382,9 @@ export component MainWindow inherits Window {
                   least-span: root.fold-least-span;
                   step: 1;
                   enabled: root.fold-on;
+                  has-default: true;
+                  default-low: root.fold-default-min;
+                  default-high: root.fold-default-max;
                   low-moved(v) => {
                     root.fold-min = v;
                     root.fold-min-changed(v);
@@ -1417,6 +1425,8 @@ export component MainWindow inherits Window {
                     minimum: -root.latency-limit-ms;
                     maximum: root.latency-limit-ms;
                     step: 1;
+                    has-default: true;
+                    default-value: root.latency-default-ms;
                     moved(v) => {
                       root.latency-ms = v;
                       root.latency-changed(v);
@@ -1981,6 +1991,9 @@ export component MainWindow inherits Window {
                         maximum: root.output-delay-limit-ms;
                         step: 1;
                         enabled: target.enabled;
+                        // A new output's: no delay of its own (`OutputTarget::delaySeconds`).
+                        has-default: true;
+                        default-value: 0;
                         moved(v) => {
                           root.output-delay-changed(index, v);
                         }

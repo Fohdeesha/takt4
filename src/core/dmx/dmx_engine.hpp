@@ -193,10 +193,16 @@ private:
 
     /// A pan and tilt pair, driven together. Movement cannot be expressed as two independent
     /// tracks: a circle is one figure in two channels, and interpolating them separately would
-    /// make it a diagonal line.
+    /// make it a diagonal line. One per head of a fixture with several (`headsOf`).
     struct Move {
         /// See `Track::fixture`.
         std::uint16_t fixture = kNoFixture;
+        /// Which head: the fixture's nth pan and nth tilt (`channelOf`'s `nth`), so `setPatch`
+        /// re-aims it at the same head. See `Track::nth`.
+        std::uint8_t nth = 0;
+        /// How far this head trails the first the move reached on its fixture, 0 to 1 — a turn
+        /// of a path, or the move's duration of a position (`Payload::spread`).
+        double lag = 0.0;
         std::uint32_t buffer = 0;
         std::uint16_t pan = kNoChannel;
         std::uint16_t panFine = kNoChannel;

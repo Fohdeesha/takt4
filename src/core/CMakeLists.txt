@@ -96,6 +96,29 @@ add_library(takt4_core STATIC
   engine/control.hpp
   engine/live_tracker.cpp
   engine/live_tracker.hpp
+  fixtures/definition.cpp
+  fixtures/definition.hpp
+  fixtures/fixture_library.cpp
+  fixtures/fixture_library.hpp
+  fixtures/fixture_profile.hpp
+  fixtures/gdtf_attributes.cpp
+  fixtures/gdtf_attributes.hpp
+  fixtures/gdtf_reader.cpp
+  fixtures/gdtf_reader.hpp
+  fixtures/import.cpp
+  fixtures/import.hpp
+  fixtures/natural_order.cpp
+  fixtures/natural_order.hpp
+  fixtures/ofl_reader.cpp
+  fixtures/ofl_reader.hpp
+  fixtures/profile_json.cpp
+  fixtures/profile_json.hpp
+  fixtures/profile_mapper.cpp
+  fixtures/profile_mapper.hpp
+  fixtures/text.cpp
+  fixtures/text.hpp
+  fixtures/zip_reader.cpp
+  fixtures/zip_reader.hpp
   features/dimensions.hpp
   features/feature_extractor.cpp
   features/feature_extractor.hpp
@@ -201,6 +224,8 @@ target_link_libraries(takt4_core
     rtmidi
     RTNeural
     nlohmann_json::nlohmann_json
+    takt4::pugixml
+    takt4::miniz
     takt4::warnings
 )
 

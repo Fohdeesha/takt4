@@ -21,6 +21,8 @@ struct BuildInfo {
     std::string rtneuralRevision;
     std::string kissfft;
     std::string nlohmannJson;
+    std::string pugixml;
+    std::string miniz;
     std::string slint; // empty when built without the UI
 };
 

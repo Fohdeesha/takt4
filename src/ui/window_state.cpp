@@ -2,6 +2,7 @@
 
 #include "core/audio/hop_meter.hpp"
 #include "core/output/output_target.hpp"
+#include "core/settings/settings.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -100,6 +101,11 @@ void publishControlLimits(MainWindow& window) {
     // Per-output delay, which is a different control from §5.5's latency above: that one
     // moves the whole rig's timeline, this one is one cable's own lag.
     window.set_output_delay_limit_ms(static_cast<float>(output::kMaxOutputDelaySeconds * 1000.0));
+    // What a right-click puts the tempo window and the latency back to: a fresh preset's.
+    const tracking::TempoTracker::Options fresh = settings::freshTempoOptions();
+    window.set_fold_default_min(static_cast<float>(fresh.minBpm));
+    window.set_fold_default_max(static_cast<float>(fresh.maxBpm));
+    window.set_latency_default_ms(static_cast<float>(fresh.latencyOffsetSeconds * 1000.0));
 }
 
 void publishIdleReadouts(MainWindow& window) {

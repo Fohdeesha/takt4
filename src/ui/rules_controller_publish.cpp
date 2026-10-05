@@ -14,6 +14,7 @@
 #include "ui/window_state.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -494,6 +495,21 @@ void RulesController::publishFixtureChoices() {
     } else {
         available =
             "reaches " + std::to_string(reached) + (reached == 1 ? " fixture" : " fixtures");
+        // And their heads, for a movement aimed at fixtures with more than one: "2 heads each".
+        if (rule->sendKind == trigger::Message::Kind::Dmx && dmx::takesMovement(rule->dmx.effect) &&
+            headsAimedAt(rule->dmx) >= 2) {
+            const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, aims);
+            std::size_t fewest = 1000;
+            std::size_t most = 0;
+            for (std::size_t i = 0; i < reachable; ++i) {
+                if (mask.test(i)) {
+                    fewest = std::min(fewest, dmx::headsOf(patch_[i]));
+                    most = std::max(most, dmx::headsOf(patch_[i]));
+                }
+            }
+            available += fewest == most ? ", " + std::to_string(most) + " heads each"
+                                        : ", up to " + std::to_string(most) + " heads";
+        }
     }
     window_->set_fixtures_available(shared(available));
     // In the list itself the first line has 258 px, and the sentence above is 373 in Archivo 14:
@@ -618,6 +634,157 @@ void RulesController::publishDmx() {
                                                 : spellNumber(send.durationBeats)));
     }
     publishFixtureChoices();
+    publishHeads(send);
+}
+
+namespace {
+
+/// What a fixture's head `nth` is called: the names its pan and its tilt have in the patch,
+/// joined — "Pan, Tilt Top" — or nothing where they have none.
+std::string headName(const dmx::Fixture& fixture, std::size_t nth) {
+    std::vector<std::string> names;
+    for (const dmx::Role role : {dmx::Role::Pan, dmx::Role::Tilt}) {
+        std::size_t seen = 0;
+        for (std::size_t i = 0; i < fixture.channels.size(); ++i) {
+            if (fixture.channels[i] == role && seen++ == nth) {
+                const std::string_view label = dmx::channelLabel(fixture, i);
+                if (!label.empty()) {
+                    names.emplace_back(label);
+                }
+                break;
+            }
+        }
+    }
+    std::string text;
+    for (const std::string& name : names) {
+        text += (text.empty() ? "" : ", ") + name;
+    }
+    return text;
+}
+
+} // namespace
+
+std::size_t RulesController::headsAimedAt(const trigger::DmxSend& send) const {
+    const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, send.fixtures);
+    std::size_t most = 0;
+    const std::size_t count = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (mask.test(i)) {
+            most = std::max(most, dmx::headsOf(patch_[i]));
+        }
+    }
+    return most;
+}
+
+void RulesController::publishHeads(const trigger::DmxSend& send) {
+    const Rule::Config* rule = current();
+    const bool moves = rule != nullptr && rule->sendKind == trigger::Message::Kind::Dmx &&
+                       dmx::takesMovement(send.effect);
+    // Up to 32 ticks: a head past the 32nd moves only as every head (`dmx::Payload::heads`).
+    const std::size_t heads = moves ? std::min<std::size_t>(headsAimedAt(send), 32) : 0;
+    window_->set_effect_takes_heads(heads >= 2);
+    const std::uint32_t all = heads >= 32 ? ~std::uint32_t{0} : (std::uint32_t{1} << heads) - 1;
+    const std::uint32_t ticked = send.heads == 0 ? all : (send.heads & all);
+
+    std::vector<HeadChoice> rows;
+    std::size_t tickedCount = 0;
+    // How many of the ticked heads each fixture aimed at has, fewest and most among those with
+    // any: the engine staggers each fixture's own (`DmxEngine`), so one spread is one stagger only
+    // where they agree.
+    std::size_t fewestTicked = 0;
+    std::size_t mostTicked = 0;
+    if (heads >= 2) {
+        const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, send.fixtures);
+        const std::size_t count = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
+        rows.reserve(heads);
+        for (std::size_t k = 0; k < heads; ++k) {
+            // Named by its channels where every fixture aimed at that has this head calls them the
+            // same — and only with a few heads, or the row would not fit a bar of sixteen.
+            std::string name;
+            bool agreed = heads <= 4;
+            bool first = true;
+            for (std::size_t i = 0; i < count && agreed; ++i) {
+                if (!mask.test(i) || dmx::headsOf(patch_[i]) <= k) {
+                    continue;
+                }
+                const std::string here = headName(patch_[i], k);
+                if (first) {
+                    name = here;
+                    first = false;
+                } else if (here != name) {
+                    agreed = false;
+                }
+            }
+            if (!agreed) {
+                name.clear();
+            } else if (name.size() > 28) {
+                // Cut at a character, never inside one.
+                std::size_t cut = 26;
+                while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80) {
+                    --cut;
+                }
+                name = name.substr(0, cut) + "…";
+            }
+            HeadChoice row{};
+            row.label = shared(std::to_string(k + 1) + (name.empty() ? "" : " · " + name));
+            row.ticked = (ticked & (std::uint32_t{1} << k)) != 0;
+            tickedCount += row.ticked ? 1 : 0;
+            rows.push_back(std::move(row));
+        }
+        // Fixtures with none of the ticked heads: aimed at and not reached.
+        std::size_t aimed = 0;
+        std::size_t without = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!mask.test(i)) {
+                continue;
+            }
+            ++aimed;
+            const std::size_t own = std::min<std::size_t>(dmx::headsOf(patch_[i]), 32);
+            const std::uint32_t has = own >= 32 ? ~std::uint32_t{0} : (std::uint32_t{1} << own) - 1;
+            without += (ticked & has) == 0 ? 1 : 0;
+            const auto mine = static_cast<std::size_t>(std::popcount(ticked & has));
+            if (mine > 0) {
+                fewestTicked = fewestTicked == 0 ? mine : std::min(fewestTicked, mine);
+                mostTicked = std::max(mostTicked, mine);
+            }
+        }
+        window_->set_heads_note(shared(
+            without > 0 ? std::to_string(without) + " of " + std::to_string(aimed) +
+                              " fixtures have none of these heads: it does not reach them"
+            : tickedCount == heads ? std::string("all ticked: every head moves")
+                                   : std::to_string(tickedCount) + " of " + std::to_string(heads) +
+                                         " ticked: only those move"));
+    } else {
+        window_->set_heads_note(shared({}));
+    }
+    headRows_.write(rows);
+
+    // The spread, while two heads or more move: in plain words, what it does to them.
+    window_->set_effect_takes_spread(heads >= 2 && tickedCount >= 2);
+    const double spread = std::clamp(send.spread, 0.0, 1.0);
+    window_->set_effect_spread(static_cast<float>(spread * 100.0));
+    const long percent = std::lround(spread * 100.0);
+    const long each =
+        mostTicked == 0 ? 0 : std::lround(spread * 100.0 / static_cast<double>(mostTicked));
+    const bool timed = send.unit == trigger::DelayUnit::Milliseconds ? send.durationSeconds > 0.0
+                                                                     : send.durationBeats > 0.0;
+    // Under the slider, beside which it says what it does: what the value it is at does.
+    const std::string at = std::to_string(percent) + "%: ";
+    std::string note;
+    if (percent == 0) {
+        note = at + "the ticked heads move together — slide right to stagger them";
+    } else if (fewestTicked != mostTicked) {
+        note = at + "staggered per fixture — they have different numbers of these heads";
+    } else if (send.effect == dmx::EffectKind::Path) {
+        note =
+            at + "each ticked head " + std::to_string(each) + "% of a turn behind the one before";
+    } else if (!timed) {
+        note = at + "a move with no time has nothing to stagger — give it a time over";
+    } else {
+        note = at + "each ticked head starts " + std::to_string(each) +
+               "% of the move after the one before";
+    }
+    window_->set_spread_note(shared(note));
 }
 
 void RulesController::publishSlots() {

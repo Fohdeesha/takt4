@@ -62,6 +62,11 @@ $flags = @(
     "-isystem$build\_deps\rtmidi-src",
     "-isystem$build\_deps\r8brain-src",
     "-isystem$build\_deps\kissfft-src",
+    # The fixture import's two: one source file each, built as takt4's own targets
+    # (cmake/deps.cmake), with the defines those targets give everything that links them.
+    "-isystem$build\_deps\pugixml-src\src",
+    "-isystem$build\_deps\miniz-src",
+    '-DPUGIXML_NO_XPATH', '-DMINIZ_NO_STDIO', '-DMINIZ_NO_TIME', '-DMINIZ_NO_ZLIB_COMPATIBLE_NAMES',
     "-isystem$repo\third_party\portaudio\include",
     "-isystem$repo\third_party\link\include",
     "-isystem$repo\third_party\link\modules\asio-standalone\asio\include",
@@ -71,6 +76,7 @@ $flags = @(
     "-DTAKT4_TEST_DATA_DIR=\`"$slashed/tests/data\`"",
     "-DTAKT4_WEIGHTS_DIR=\`"$slashed/assets/weights\`"",
     "-DTAKT4_STATESPACE_DIR=\`"$slashed/assets/statespace\`"",
+    "-DTAKT4_REFERENCES_DIR=\`"$slashed/references\`"",
     '-D_WIN32_WINNT=0x0A00', '-DNOMINMAX', '-DWIN32_LEAN_AND_MEAN',
     '-DLINK_PLATFORM_WINDOWS=1',
     # RTNeural's, copied from CI's own compile line. Without them it picks a different

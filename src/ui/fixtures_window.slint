@@ -52,6 +52,44 @@ export struct ChannelRow {
   /// that moves on its own, and the only way to see a fade actually happening without a
   /// fixture plugged in.
   live: int,
+  /// What the fixture's definition calls the channel — "Pan/Tilt Speed", "red · Cell 3" — for a
+  /// fixture an import made; empty for one patched by hand (`dmx::Fixture::labels`).
+  label: string,
+  /// What the import had to say about the channel — "second focus — takt4 drives the first" —
+  /// on a line of its own under its band; empty for most.
+  note: string,
+  /// Which head a pan, tilt or fine channel moves, on a fixture with more than one
+  /// (`dmx::headsOf`) — what a rule's "heads" means; 0 for every other channel.
+  head: int,
+}
+
+/// One definition in the preset's library, as the import lists it.
+export struct LibraryRow {
+  /// "ayrton · ", in the secondary ink before the model; empty when the file named none.
+  maker: string,
+  /// "Diablo S" — or "Diablo S (2023-04-20 …)" where two of it are kept side by side.
+  model: string,
+  /// "2 fixtures", "1 fixture", "no fixture".
+  users: string,
+  /// No fixture is made from it, so its × can take it out of the library.
+  removable: bool,
+  picked: bool,
+}
+
+/// One mode of the definition being imported.
+export struct ModeRow {
+  name: string,
+  /// "25", or "18 + 28" for a mode that needs two start addresses.
+  channels: string,
+  /// What takt4 drives in it, all of it: "dimmer ×2 · RGBW ×7 · pan/tilt 16-bit".
+  drives: string,
+  /// How many of its channels have no role.
+  unused: int,
+  /// Why it cannot be imported, in plain words; empty when it can.
+  refused: string,
+  /// What the file had to say about the mode, one note to a line — shown while it is picked.
+  notes: string,
+  picked: bool,
 }
 
 /// One fixture in the list: its dot — which is its "in the show" switch — its name, and under it
@@ -203,6 +241,193 @@ component FixtureLine inherits Rectangle {
   }
 }
 
+/// The radio dot of a list one entry of which is picked: a 14 px ring, filled when picked, and
+/// dashed grey for an entry that cannot be (a mode an import refuses).
+component Radio inherits Rectangle {
+  in property <bool> on;
+  in property <bool> usable: true;
+
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  border-width: 2px;
+  border-color: root.usable ? Wf.ink : Wf.off-edge;
+  background: root.on && root.usable ? Wf.ink : transparent;
+}
+
+/// One definition in the preset's library, in the import's sheet A: its dot, its maker and model,
+/// how many fixtures are made from it, and — only when none is — the × that takes it out.
+component LibraryLine inherits Rectangle {
+  in property <LibraryRow> entry;
+  callback pressed();
+  callback kill-clicked();
+
+  height: 40px;
+  background: Wf.band;
+  border-width: root.entry.picked ? 2px : 0px;
+  border-color: Wf.edge;
+  accessible-role: button;
+  accessible-label: "import " + root.entry.maker + root.entry.model;
+  accessible-action-default => {
+    root.pressed();
+  }
+
+  // First, so it is under the ×.
+  touch := TouchArea {
+    clicked => {
+      root.pressed();
+    }
+  }
+
+  Radio {
+    x: 9px;
+    y: (parent.height - self.height) / 2;
+    on: root.entry.picked;
+  }
+
+  HorizontalLayout {
+    x: 36px;
+    width: parent.width - self.x - 10px;
+    height: parent.height;
+    spacing: 0px;
+
+    Text {
+      text: root.entry.maker;
+      color: Wf.ink2;
+      font-size: 15px;
+      vertical-alignment: center;
+      horizontal-stretch: 0;
+      min-width: 0px;
+      overflow: elide;
+    }
+    Text {
+      text: root.entry.model;
+      color: Wf.ink;
+      font-size: 15px;
+      vertical-alignment: center;
+      horizontal-stretch: 1;
+      min-width: 0px;
+      overflow: elide;
+    }
+    Text {
+      text: root.entry.users;
+      color: root.entry.removable ? Wf.ink-off : Wf.ink2;
+      font-size: 14px;
+      vertical-alignment: center;
+      horizontal-stretch: 0;
+    }
+    // The ×'s column, held whether or not it is drawn, so the counts line up.
+    Rectangle {
+      width: 30px;
+      horizontal-stretch: 0;
+    }
+  }
+
+  Mark {
+    x: parent.width - 10px - 20px;
+    y: (parent.height - self.height) / 2;
+    what: "definition " + root.entry.model + " from the library";
+    visible: root.entry.removable;
+    clicked => {
+      if (root.entry.removable) {
+        root.kill-clicked();
+      }
+    }
+  }
+}
+
+/// One mode of the definition being imported, in the import's sheet B: a band of two lines — its
+/// dot, its name, its channels and how many have no role; under them what takt4 drives in it,
+/// the whole of it, wrapped rather than cut — or, for one that cannot be imported, why, in amber
+/// and in plain words. Picked, the file's notes on it follow.
+component ModeLine inherits Rectangle {
+  in property <ModeRow> entry;
+  callback pressed();
+
+  private property <bool> usable: root.entry.refused == "";
+
+  background: Wf.band;
+  border-width: root.entry.picked ? 2px : 0px;
+  border-color: Wf.edge;
+  height: lines.preferred-height;
+  accessible-role: button;
+  accessible-label: "mode " + root.entry.name;
+  accessible-enabled: root.usable;
+  accessible-action-default => {
+    if (root.usable) {
+      root.pressed();
+    }
+  }
+
+  touch := TouchArea {
+    enabled: root.usable;
+    clicked => {
+      root.pressed();
+    }
+  }
+
+  Radio {
+    x: 9px;
+    y: 11px;
+    on: root.entry.picked;
+    usable: root.usable;
+  }
+
+  lines := VerticalLayout {
+    padding-left: 36px;
+    padding-right: 10px;
+    padding-top: 4px;
+    padding-bottom: 7px;
+    spacing: 1px;
+
+    HorizontalLayout {
+      height: 28px;
+      spacing: 10px;
+      Text {
+        text: root.entry.name;
+        color: root.usable ? Wf.ink : Wf.ink-off;
+        font-size: 15px;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        min-width: 0px;
+        overflow: elide;
+      }
+      Text {
+        width: 80px;
+        text: root.entry.channels;
+        color: Wf.ink;
+        font-family: Wf.code;
+        font-size: 15px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+      }
+      Text {
+        width: 64px;
+        text: root.usable ? root.entry.unused : "";
+        color: Wf.ink2;
+        font-family: Wf.code;
+        font-size: 15px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+      }
+    }
+    Text {
+      text: root.usable ? root.entry.drives : "can't be imported: " + root.entry.refused;
+      color: root.usable ? Wf.ink2 : Wf.holding;
+      font-size: 14px;
+      wrap: word-wrap;
+    }
+    Text {
+      height: root.entry.picked && root.entry.notes != "" ? self.preferred-height : 0px;
+      visible: root.entry.picked && root.entry.notes != "";
+      text: root.entry.notes;
+      color: Wf.ink2;
+      font-size: 13px;
+      wrap: word-wrap;
+    }
+  }
+}
+
 export component FixturesWindow inherits Window {
   title: "takt4 — fixtures";
   // See `RulesWindow`: these do not decide what the window opens at. `ui::kFixturesWindowWidth`
@@ -222,8 +447,11 @@ export component FixturesWindow inherits Window {
   in-out property <length> list-width: 260px;
   private property <length> list-wanted: 260px;
   private property <length> list-min: 200px;
+  // A fixture's channel names elide down to 66 px at the narrowest; the list gives way first, so
+  // they keep the 120 they had before the "head" column, where the window has it to give.
   function list-max() -> length {
-    return max(root.list-min, min(root.width * 0.4, root.width - 20px - root.body-least-width));
+    return max(root.list-min, min(root.width * 0.4, root.width - 20px - root.body-least-width
+      - (root.has-labels ? 54px : 0px)));
   }
   function fit-list() {
     root.list-width = clamp(root.list-wanted, root.list-min, root.list-max());
@@ -234,12 +462,16 @@ export component FixturesWindow inherits Window {
   changed body-least-width => {
     root.fit-list();
   }
+  changed has-labels => {
+    root.fit-list();
+  }
   /// The three sheets' folds — A where, B channels, C how far it moves. The window's, not the
   /// fixture's, and remembered across launches with the rule editor's (machine settings).
   in-out property <bool> where-folded;
   in-out property <bool> channels-folded;
   in-out property <bool> moves-folded;
-  /// 0 to 2: the controller folds it, having committed what was typed.
+  /// 0 to 2: the controller folds it, having committed what was typed; 3 to 5, the import's A, B
+  /// and C, which are not remembered.
   callback fold-clicked(int);
 
   in-out property <[FixtureRow]> fixtures;
@@ -255,10 +487,82 @@ export component FixturesWindow inherits Window {
   /// Every `dmx::Role`, in `kRoles` order — what a channel's dropdown offers.
   in-out property <[string]> roles;
   /// The ready-made channel maps, with "custom" at index 0 so that picking nothing is a
-  /// state rather than a fixture nobody meant.
+  /// state rather than a fixture nobody meant — or, for a fixture an import made, its
+  /// definition's modes, the one it is in first as "… (edited)" when its channels were changed by
+  /// hand, so picking that mode again puts them back.
   in-out property <[string]> modes;
   in-out property <int> mode-index;
+  /// Beside each mode in the open list, how many channels it has — for a definition's modes.
+  in-out property <[string]> mode-asides;
+  /// Under the open list: what picking does — for a definition's modes.
+  in-out property <string> mode-footnote;
+  /// What the mode row says after the dropdown: "fills in the channels below", or where the
+  /// fixture's definition came from — "from ayrton · Diablo S".
+  in-out property <string> mode-note: "fills in the channels below";
   in-out property <[ChannelRow]> channels;
+  /// Whether any channel has a name from a definition: B then has a column for them.
+  in-out property <bool> has-labels;
+  /// Whether the fixture has more than one head: B then says which each pan and tilt is.
+  in-out property <bool> has-heads;
+
+  // --- the import, in the editor's place while it is open --------------------------------------
+  /// What IMPORT beside the list's + opens: sheets A (which definition), B (which mode) and C
+  /// (where, and how many), with the editor kept and hidden behind them — a box being typed in
+  /// there is committed before this opens, and nothing of it is taken down.
+  in-out property <bool> importing;
+  /// A: the preset's library, by maker and model.
+  in-out property <[LibraryRow]> library-rows;
+  /// The file read last, as "Prolights@AstraWash7PIX.gdtf · Prolights · AstraWash7PIX", or what
+  /// FROM A FILE… will read when nothing has been.
+  in-out property <string> import-file-line: "a GDTF file (.gdtf) or an Open Fixture Library file (.json)";
+  /// Under it: whether the file is new to the library, the same as an entry, or could not be
+  /// read and why (`import-file-error`, in amber).
+  in-out property <string> import-file-note;
+  in-out property <bool> import-file-error;
+  /// A file the library has a different version of: the question, and what each answer does.
+  in-out property <bool> import-asking;
+  in-out property <string> ask-question;
+  in-out property <string> ask-library;
+  in-out property <string> ask-file;
+  in-out property <string> ask-replace;
+  /// B and C are there once a definition is picked and no question is open.
+  in-out property <bool> import-picked;
+  /// What A and B say while folded: "Elation · Rayzor 760", "Pixels 360Pan/Tilt".
+  in-out property <string> import-definition;
+  in-out property <string> import-mode;
+  in-out property <[ModeRow]> mode-rows;
+  /// C.
+  in-out property <int> import-count: 1;
+  in-out property <string> import-universe: "0";
+  in-out property <int> import-address: 1;
+  /// "channels 1 to 104 on universe 1, 52 each" — or why it cannot be imported there
+  /// (`import-takes-error`, in amber, IMPORT then off).
+  in-out property <string> import-takes;
+  in-out property <bool> import-takes-error;
+  /// Patched fixtures the block lands on. Allowed — either can be re-addressed after — and said.
+  in-out property <string> import-overlap;
+  in-out property <string> import-names;
+  in-out property <bool> import-pair;
+  in-out property <bool> import-can;
+  in-out property <bool> import-type-folded;
+  in-out property <bool> import-mode-folded;
+  in-out property <bool> import-where-folded;
+  callback import-clicked();
+  callback import-cancelled();
+  callback library-picked(int);
+  callback library-removed(int);
+  callback import-file-clicked();
+  callback ask-replace-clicked();
+  callback ask-keep-clicked();
+  callback ask-cancel-clicked();
+  callback import-mode-picked(int);
+  callback import-count-changed(int);
+  callback import-count-typed(int);
+  callback import-universe-edited(string);
+  callback import-universe-typed(string);
+  callback import-address-changed(int);
+  callback import-address-typed(int);
+  callback import-confirmed();
 
   /// What a channel's TEST holds it at, and for how long.
   in-out property <int> test-level: 255;
@@ -362,13 +666,14 @@ export component FixturesWindow inherits Window {
         VerticalLayout {
           spacing: 0px;
 
-          // "fixtures" and its +.
+          // "fixtures", IMPORT and its +.
           HorizontalLayout {
             height: 46px;
             padding-left: 14px;
             padding-right: 10px;
             padding-top: 10px;
             padding-bottom: 8px;
+            spacing: 6px;
             Text {
               text: "fixtures";
               color: Wf.ink;
@@ -378,6 +683,18 @@ export component FixturesWindow inherits Window {
               vertical-alignment: center;
               horizontal-stretch: 1;
               overflow: elide;
+            }
+            // A fixture from its definition — a GDTF or Open Fixture Library file, or one this
+            // preset has imported before — in the editor's place (the operator's decision 9).
+            Btn {
+              height: 28px;
+              text: "import";
+              accessible-text: "import fixtures from a definition";
+              font-size: 14px;
+              pad: 10px;
+              clicked => {
+                root.import-clicked();
+              }
             }
             Btn {
               width: 28px;
@@ -527,17 +844,53 @@ export component FixturesWindow inherits Window {
               // event loop after it loses the keyboard, and the last fixture's × would otherwise have
               // destroyed it first.
               Rectangle {
-                height: root.none ? 44px : 34px;
+                height: root.none && !root.importing ? 44px : 34px;
                 // The row's least width, which a layout inside a plain rectangle does not pass up on
                 // its own — without it the list would not give way and the row would be cut off.
-                min-width: top-row.min-width;
+                min-width: root.importing ? import-row.min-width : top-row.min-width;
+
+                // **The import's own row, in the same place** — and the editor's kept under it,
+                // hidden: its boxes commit what was typed into them a turn after the click that
+                // opened the import, and the operator asked that nothing typed there be lost
+                // (2026-10-05).
+                import-row := HorizontalLayout {
+                  x: 0;
+                  y: 0;
+                  width: parent.width;
+                  height: 34px;
+                  visible: root.importing;
+                  spacing: 10px;
+
+                  Text {
+                    text: "import fixtures";
+                    color: Wf.ink;
+                    font-size: 18px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    overflow: elide;
+                  }
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Btn {
+                      text: "cancel";
+                      accessible-text: "cancel the import";
+                      enabled: root.importing;
+                      clicked => {
+                        root.import-cancelled();
+                      }
+                    }
+                  }
+                }
 
                 top-row := HorizontalLayout {
                   x: 0;
                   y: 0;
                   width: parent.width;
                   height: 34px;
-                  visible: !root.none;
+                  visible: !root.none && !root.importing;
                   spacing: 10px;
 
                   // What the switch does rather than "on", which read as the lamp being lit.
@@ -612,8 +965,8 @@ export component FixturesWindow inherits Window {
                   y: 0;
                   width: parent.width;
                   height: parent.height;
-                  visible: root.none;
-                  text: "Nothing patched. Press + to add a fixture, pick its mode, and set the start address to the one on the back of the fixture.";
+                  visible: root.none && !root.importing;
+                  text: "Nothing patched. Press import to bring in a fixture from its file, or + to add one by hand, and set its start address to the one on the back of the fixture.";
                   color: Wf.ink2;
                   font-size: 15px;
                   wrap: word-wrap;
@@ -646,11 +999,12 @@ export component FixturesWindow inherits Window {
             spacing: 10px;
             alignment: start;
 
-            // **Clipped away with nothing patched, not removed** — for the reason the top row is, and
-            // so that no conditional sheet takes a share of the pane's spare height.
+            // **Clipped away with nothing patched, or while importing, not removed** — for the reason
+            // the top row is, and so that no conditional sheet takes a share of the pane's spare
+            // height.
             Rectangle {
-              height: root.none ? 0px : fixture-sheets.preferred-height;
-              min-width: fixture-sheets.min-width;
+              height: root.none || root.importing ? 0px : fixture-sheets.preferred-height;
+              min-width: root.importing ? 0px : fixture-sheets.min-width;
               clip: true;
 
               fixture-sheets := VerticalLayout {
@@ -736,6 +1090,8 @@ export component FixturesWindow inherits Window {
                       horizontal-stretch: 0;
                       model: root.modes;
                       current-index: root.mode-index;
+                      asides: root.mode-asides;
+                      footnote: root.mode-footnote;
                       selected(index) => {
                         root.mode-picked(index);
                         // And lets go of the keyboard: left with it, the next Up or Down picked the
@@ -745,7 +1101,7 @@ export component FixturesWindow inherits Window {
                       }
                     }
                     Note {
-                      text: "fills in the channels below";
+                      text: root.mode-note;
                     }
                   }
                 }
@@ -792,23 +1148,52 @@ export component FixturesWindow inherits Window {
                     }
                   }
 
-                  // The columns' headings, centred over them.
+                  // The columns' headings, centred over them. With the names' column the columns
+                  // sit 8 px apart and the numbers' column is 36 px: at the window's narrowest a
+                  // named fixture's rows asked 682 px of a 660 px pane, and 736 with "head" too
+                  // (measured, 2026-10-05) — the names give way to 66 px there, and elide.
                   HorizontalLayout {
                     height: 18px;
                     padding-left: 10px;
                     padding-right: 10px;
-                    spacing: 10px;
+                    spacing: root.has-labels ? 8px : 10px;
 
                     Text {
-                      width: 44px;
+                      width: root.has-labels ? 36px : 44px;
                       text: "ch";
                       color: Wf.ink2;
                       font-size: 14px;
                       font-weight: 700;
                       vertical-alignment: center;
                     }
+                    // What the definition calls each channel, in a column of its own before what
+                    // takt4 does with it (the operator's pick of the two drawn, 2026-10-05) — only
+                    // for a fixture an import made.
+                    if root.has-labels: Text {
+                      horizontal-stretch: 1;
+                      min-width: 66px;
+                      // Never from the text: every row's must be the same, or the columns after it
+                      // do not line up under their headings.
+                      preferred-width: 120px;
+                      text: "is called";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      vertical-alignment: center;
+                    }
+                    // Which head each pan and tilt moves, on a fixture with several (approved
+                    // 2026-10-05): what a rule's ticks for heads 1, 2… mean on this one.
+                    if root.has-heads: Text {
+                      width: 40px;
+                      text: "head";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                      vertical-alignment: center;
+                    }
                     Text {
-                      width: 180px;
+                      width: root.has-labels ? 150px : 180px;
                       text: "does";
                       color: Wf.ink2;
                       font-size: 14px;
@@ -827,7 +1212,10 @@ export component FixturesWindow inherits Window {
                     }
                     Text {
                       horizontal-stretch: 1;
-                      min-width: 80px;
+                      // Wide enough for its heading whole: beside the names' column, at the
+                      // window's narrowest, 80 cut it to "sending nov" (the render of 2026-10-05).
+                      min-width: root.has-labels ? 92px : 80px;
+                      max-width: root.has-labels ? 160px : 100000px;
                       text: "sending now";
                       color: Wf.ink2;
                       font-size: 14px;
@@ -850,26 +1238,50 @@ export component FixturesWindow inherits Window {
                   VerticalLayout {
                     spacing: 6px;
                     for channel[index] in root.channels: Band {
-                      height: 44px;
+                      // Taller by a line for a channel the import had something to say about: the
+                      // note goes under the band's controls, in the band (the mockup, approved
+                      // 2026-10-05), so it reads as the channel's and moves nothing beside it.
+                      height: channel.note == "" ? 44px : 66px;
 
                       HorizontalLayout {
+                        y: 0;
+                        height: 44px;
                         padding-left: 10px;
                         padding-right: 10px;
-                        spacing: 10px;
+                        spacing: root.has-labels ? 8px : 10px;
 
                         Text {
-                          width: 44px;
+                          width: root.has-labels ? 36px : 44px;
                           text: channel.number;
                           color: Wf.ink;
                           font-family: Wf.code;
                           font-size: 15px;
                           vertical-alignment: center;
                         }
+                        if root.has-labels: Text {
+                          horizontal-stretch: 1;
+                          min-width: 66px;
+                          preferred-width: 120px; // as its heading's: see there
+                          text: channel.label;
+                          color: Wf.ink;
+                          font-size: 14px;
+                          vertical-alignment: center;
+                          overflow: elide;
+                        }
+                        if root.has-heads: Text {
+                          width: 40px;
+                          text: channel.head > 0 ? channel.head : "";
+                          color: Wf.ink;
+                          font-family: Wf.code;
+                          font-size: 15px;
+                          horizontal-alignment: center;
+                          vertical-alignment: center;
+                        }
                         VerticalLayout {
                           alignment: center;
                           horizontal-stretch: 0;
                           Pick {
-                            width: 180px;
+                            width: root.has-labels ? 150px : 180px;
                             model: root.roles;
                             current-index: channel.role-index;
                             selected(role) => {
@@ -897,7 +1309,8 @@ export component FixturesWindow inherits Window {
                         // here is *movement* — that a fade is happening.
                         HorizontalLayout {
                           horizontal-stretch: 1;
-                          min-width: 80px;
+                          min-width: root.has-labels ? 92px : 80px;
+                          max-width: root.has-labels ? 160px : 100000px;
                           spacing: 8px;
                           VerticalLayout {
                             alignment: center;
@@ -948,6 +1361,20 @@ export component FixturesWindow inherits Window {
                           }
                         }
                       }
+
+                      // Under the names' column: past the padding, the numbers and their gap.
+                      Text {
+                        x: root.has-labels ? 54px : 64px;
+                        y: 40px;
+                        width: parent.width - self.x - 10px;
+                        height: 20px;
+                        visible: channel.note != "";
+                        text: channel.note;
+                        color: Wf.ink2;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                      }
                     }
 
                   }
@@ -961,7 +1388,9 @@ export component FixturesWindow inherits Window {
                   // redrawn one first left it out.
                   Note {
                     height: 20px;
-                    text: "a channel nothing uses is \"unused\": keep it, so the ones after it stay where the manual says";
+                    text: root.has-heads
+                      ? "\"head\" says which head each pan and tilt moves, as a rule's heads are numbered"
+                      : "a channel nothing uses is \"unused\": keep it, so the ones after it stay where the manual says";
                   }
                 }
 
@@ -1003,6 +1432,10 @@ export component FixturesWindow inherits Window {
                           minimum: 0;
                           maximum: 100;
                           step: 1;
+                          // A new fixture's: its whole travel (`dmx::Fixture::panMin` and the rest).
+                          has-default: true;
+                          default-low: 0;
+                          default-high: 100;
                           low-moved(value) => {
                             root.pan-min = value;
                           }
@@ -1044,6 +1477,10 @@ export component FixturesWindow inherits Window {
                           minimum: 0;
                           maximum: 100;
                           step: 1;
+                          // A new fixture's: its whole travel (`dmx::Fixture::panMin` and the rest).
+                          has-default: true;
+                          default-low: 0;
+                          default-high: 100;
                           low-moved(value) => {
                             root.tilt-min = value;
                           }
@@ -1072,6 +1509,437 @@ export component FixturesWindow inherits Window {
                     Note {
                       height: 20px;
                       text: "every random position and path stays inside this, so no head points at the audience";
+                    }
+                  }
+                }
+              }
+            }
+
+            // --- the import -------------------------------------------------------------------------
+            // In the editor's place while it is open, clipped away while it is not (as the editor's
+            // sheets are), drawn to the mockup the operator approved on 2026-10-05
+            // (design/weltformat-dark/import1.html).
+            Rectangle {
+              height: root.importing ? import-sheets.preferred-height : 0px;
+              min-width: root.importing ? import-sheets.min-width : 0px;
+              clip: true;
+
+              import-sheets := VerticalLayout {
+                y: 0;
+                width: parent.width;
+                spacing: 10px;
+
+                // --- A · fixture type -----------------------------------------------------------
+                Section {
+                  letter: "A";
+                  title: "fixture type";
+                  folded: root.import-type-folded;
+                  summary: root.import-picked ? root.import-definition : "none picked yet";
+                  fold-clicked => {
+                    root.fold-clicked(3);
+                  }
+
+                  // The preset's library: every definition imported into it before.
+                  VerticalLayout {
+                    spacing: 4px;
+                    for row[index] in root.library-rows: LibraryLine {
+                      entry: row;
+                      pressed => {
+                        root.library-picked(index);
+                      }
+                      kill-clicked => {
+                        root.library-removed(index);
+                      }
+                    }
+                  }
+                  if root.library-rows.length == 0: Note {
+                    height: 20px;
+                    text: "nothing imported into this preset yet";
+                  }
+
+                  HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+                    VerticalLayout {
+                      alignment: center;
+                      horizontal-stretch: 0;
+                      Btn {
+                        text: "from a file…";
+                        accessible-text: "import from a GDTF or Open Fixture Library file";
+                        clicked => {
+                          root.import-file-clicked();
+                        }
+                      }
+                    }
+                    Note {
+                      text: root.import-file-line;
+                    }
+                  }
+                  // New to the library, the same as an entry of it, or why it could not be read.
+                  Text {
+                    height: root.import-file-note == "" ? 0px : self.preferred-height;
+                    text: root.import-file-note;
+                    color: root.import-file-error ? Wf.holding : Wf.ink2;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                  }
+
+                  // **A file the library has another version of asks before it changes anything**
+                  // (decision 12): replace, keep both, or cancel.
+                  Rectangle {
+                    height: root.import-asking ? ask.preferred-height : 0px;
+                    min-width: root.import-asking ? ask.min-width : 0px;
+                    clip: true;
+                    background: Wf.question;
+                    border-width: root.import-asking ? 2px : 0px;
+                    border-color: Wf.holding;
+
+                    ask := VerticalLayout {
+                      y: 0;
+                      width: parent.width;
+                      padding-left: 14px;
+                      padding-right: 14px;
+                      padding-top: 12px;
+                      padding-bottom: 12px;
+                      spacing: 8px;
+
+                      Text {
+                        text: root.ask-question;
+                        color: Wf.ink;
+                        font-size: 15px;
+                        wrap: word-wrap;
+                      }
+                      HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                          width: 130px;
+                          text: "in the library";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                        }
+                        Text {
+                          text: root.ask-library;
+                          color: Wf.ink;
+                          font-size: 14px;
+                          horizontal-stretch: 1;
+                          wrap: word-wrap;
+                        }
+                      }
+                      HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                          width: 130px;
+                          text: "this file";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                        }
+                        Text {
+                          text: root.ask-file;
+                          color: Wf.ink;
+                          font-size: 14px;
+                          horizontal-stretch: 1;
+                          wrap: word-wrap;
+                        }
+                      }
+                      HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                          alignment: start;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 110px;
+                            text: "replace";
+                            primary: true;
+                            enabled: root.import-asking;
+                            clicked => {
+                              root.ask-replace-clicked();
+                            }
+                          }
+                        }
+                        Text {
+                          text: root.ask-replace;
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          horizontal-stretch: 1;
+                          vertical-alignment: center;
+                          wrap: word-wrap;
+                        }
+                      }
+                      HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                          alignment: start;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 110px;
+                            text: "keep both";
+                            enabled: root.import-asking;
+                            clicked => {
+                              root.ask-keep-clicked();
+                            }
+                          }
+                        }
+                        Text {
+                          text: "a second entry, shown with its revision; nothing patched changes";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          horizontal-stretch: 1;
+                          vertical-alignment: center;
+                          wrap: word-wrap;
+                        }
+                      }
+                      HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                          alignment: start;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 110px;
+                            text: "cancel";
+                            accessible-text: "leave the library as it is";
+                            enabled: root.import-asking;
+                            clicked => {
+                              root.ask-cancel-clicked();
+                            }
+                          }
+                        }
+                        Text {
+                          text: "leave the library as it is";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          horizontal-stretch: 1;
+                          vertical-alignment: center;
+                          wrap: word-wrap;
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // B and C, once a definition is picked and nothing is being asked.
+                Rectangle {
+                  height: root.import-picked ? picked-sheets.preferred-height : 0px;
+                  min-width: root.import-picked ? picked-sheets.min-width : 0px;
+                  clip: true;
+
+                  picked-sheets := VerticalLayout {
+                    y: 0;
+                    width: parent.width;
+                    spacing: 10px;
+
+                    // --- B · mode -----------------------------------------------------------------
+                    Section {
+                      letter: "B";
+                      title: "mode";
+                      folded: root.import-mode-folded;
+                      summary: root.import-mode;
+                      fold-clicked => {
+                        root.fold-clicked(4);
+                      }
+
+                      HorizontalLayout {
+                        height: 18px;
+                        padding-left: 36px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        Text {
+                          text: "mode, and what takt4 drives in it";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          font-weight: 700;
+                          vertical-alignment: center;
+                          horizontal-stretch: 1;
+                          min-width: 0px;
+                          overflow: elide;
+                        }
+                        Text {
+                          width: 80px;
+                          text: "channels";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          font-weight: 700;
+                          horizontal-alignment: right;
+                          vertical-alignment: center;
+                        }
+                        Text {
+                          width: 64px;
+                          text: "no role";
+                          color: Wf.ink2;
+                          font-size: 14px;
+                          font-weight: 700;
+                          horizontal-alignment: right;
+                          vertical-alignment: center;
+                        }
+                      }
+                      VerticalLayout {
+                        spacing: 4px;
+                        for mode[index] in root.mode-rows: ModeLine {
+                          entry: mode;
+                          pressed => {
+                            root.import-mode-picked(index);
+                          }
+                        }
+                      }
+                    }
+
+                    // --- C · where ----------------------------------------------------------------
+                    Section {
+                      letter: "C";
+                      title: "where";
+                      folded: root.import-where-folded;
+                      summary: root.import-takes;
+                      fold-clicked => {
+                        root.fold-clicked(5);
+                      }
+
+                      HorizontalLayout {
+                        height: 34px;
+                        spacing: 10px;
+                        RowLabel {
+                          text: "how many";
+                        }
+                        Count {
+                          width: 72px;
+                          value: root.import-count;
+                          minimum: 1;
+                          maximum: 512;
+                          typed(value) => {
+                            root.import-count-typed(value);
+                          }
+                          edited(value) => {
+                            root.import-count-changed(value);
+                          }
+                        }
+                        Rectangle {
+                          width: 4px;
+                        }
+                        Word {
+                          text: "universe";
+                        }
+                        Entry {
+                          width: 72px;
+                          horizontal-stretch: 0;
+                          value: root.import-universe;
+                          placeholder: "0";
+                          font-family: Wf.code;
+                          typed(text) => {
+                            root.import-universe-typed(text);
+                          }
+                          committed(text) => {
+                            root.import-universe-edited(text);
+                          }
+                        }
+                        Rectangle {
+                          width: 4px;
+                        }
+                        Word {
+                          text: "start address";
+                        }
+                        Count {
+                          width: 72px;
+                          value: root.import-address;
+                          minimum: 1;
+                          maximum: 512;
+                          typed(value) => {
+                            root.import-address-typed(value);
+                          }
+                          edited(value) => {
+                            root.import-address-changed(value);
+                          }
+                        }
+                        Rectangle {
+                          horizontal-stretch: 1;
+                        }
+                      }
+
+                      // What the block takes, then — each only while it has something to say —
+                      // what it lands on, what the fixtures are called and the pair's note: in one
+                      // column of their own, so a row that is not there leaves no gap behind.
+                      VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                          spacing: 10px;
+                          RowLabel {
+                            height: 20px;
+                            text: "takes";
+                          }
+                          Text {
+                            text: root.import-takes;
+                            color: root.import-takes-error ? Wf.holding : Wf.ink;
+                            font-size: 14px;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                          }
+                        }
+                        HorizontalLayout {
+                          height: root.import-overlap == "" ? 0px : self.preferred-height;
+                          visible: root.import-overlap != "";
+                          padding-top: 8px;
+                          spacing: 10px;
+                          Rectangle {
+                            width: 118px;
+                          }
+                          Text {
+                            text: root.import-overlap;
+                            color: Wf.holding;
+                            font-size: 14px;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                          }
+                        }
+                        // A label with nothing beside it — a block that runs past 512 makes no
+                        // fixtures — reads as a field left blank, so it goes with its names.
+                        HorizontalLayout {
+                          height: root.import-names == "" ? 0px : self.preferred-height;
+                          visible: root.import-names != "";
+                          padding-top: 8px;
+                          spacing: 10px;
+                          RowLabel {
+                            height: 20px;
+                            text: "named";
+                          }
+                          Text {
+                            text: root.import-names;
+                            color: Wf.ink;
+                            font-size: 14px;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                          }
+                        }
+                        HorizontalLayout {
+                          height: root.import-pair ? 28px : 0px;
+                          visible: root.import-pair;
+                          padding-top: 8px;
+                          Note {
+                            text: "two fixtures per copy, changing mode together, each with its own start address";
+                          }
+                        }
+                      }
+
+                      HorizontalLayout {
+                        height: 40px;
+                        spacing: 12px;
+                        VerticalLayout {
+                          alignment: end;
+                          horizontal-stretch: 0;
+                          Btn {
+                            width: 120px;
+                            text: "import";
+                            accessible-text: "import these fixtures";
+                            primary: true;
+                            enabled: root.import-can;
+                            clicked => {
+                              root.import-confirmed();
+                            }
+                          }
+                        }
+                        Note {
+                          vertical-alignment: bottom;
+                          text: "a channel with no role sits at its parked level; you can give it one after";
+                        }
+                      }
                     }
                   }
                 }

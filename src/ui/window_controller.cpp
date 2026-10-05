@@ -507,7 +507,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       editor_(runner_, settings.preset.rules),
       // And the lighting patch, the same way. The runner was built with it (see
       // `transportConfig`), so this one really is only the editor's copy.
-      patch_(runner_, settings.preset.fixtures) {
+      patch_(runner_, settings.preset.fixtures, settings.preset.library) {
     // §4.3's stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
@@ -672,6 +672,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         fixtures_ = fixtures;
         editor_.setPatch(fixtures_);
     });
+    // The library an import adds to, or a re-import replaces, comes back the same way.
+    patch_.setLibraryChanged(
+        [this](const std::vector<fixtures::FixtureProfile>& library) { library_ = library; });
 
     publishControlLimits(*window_);
     window_->set_tap_needs(static_cast<int>(taps_.options().needTaps));
@@ -758,6 +761,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // constructor, so the universes exist before the first frame. What is left is this
     // class's own copy for saving, and the rule editor's list of what a rule may aim at.
     fixtures_ = settings.preset.fixtures;
+    library_ = settings.preset.library;
     editor_.setPatch(fixtures_);
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
@@ -2897,6 +2901,7 @@ settings::Settings WindowController::currentSettings() const {
     // — the editor's copy, kept in step by its changed callback.
     out.preset.rules = rules_;
     out.preset.fixtures = fixtures_;
+    out.preset.library = library_;
     return out;
 }
 
@@ -3082,8 +3087,10 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // **The lighting patch too** (M18): an import used to leave the patch alone, so every
     // imported lighting rule aimed at fixtures this rig did not have, and reached nothing.
     fixtures_ = loaded.preset.fixtures;
+    // And the definitions its fixtures were imported from, which travel with them.
+    library_ = loaded.preset.library;
     runner_.post(output::OutputCommand::patch(fixtures_));
-    patch_.setFixtures(fixtures_);
+    patch_.setFixtures(fixtures_, library_);
     editor_.setPatch(fixtures_);
     // The decoder and the OSC prefix are fixed for as long as the application runs — the
     // engine is built with one, and a receiver is configured for the other — so a preset that

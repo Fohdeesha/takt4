@@ -1,5 +1,7 @@
 #include "core/settings/settings.hpp"
 
+#include "core/fixtures/fixture_library.hpp"
+#include "core/fixtures/profile_json.hpp"
 #include "core/io/atomic_file.hpp"
 #include "core/io/utf8.hpp"
 #include "core/output/osc_publisher.hpp"
@@ -435,7 +437,7 @@ std::string toJson(const Settings& settings) {
     // outputs above: a channel map is a *list*, and squeezing "pan, pan-fine, tilt, tilt-fine,
     // speed, dimmer, strobe, red, green, blue, white, gobo" onto one line beside an address
     // and a pair of movement limits would be a line nobody can read and nobody can edit.
-    json fixtures = json::array();
+    json patch = json::array();
     for (const dmx::Fixture& fixture : settings.preset.fixtures) {
         json channels = json::array();
         for (const dmx::Role role : fixture.channels) {
@@ -467,7 +469,44 @@ std::string toJson(const Settings& settings) {
             one["tiltMin"] = fixture.tiltMin;
             one["tiltMax"] = fixture.tiltMax;
         }
-        fixtures.push_back(std::move(one));
+        // What each channel is called, from an imported definition — only where there is one,
+        // so a fixture patched by hand writes nothing more than it did.
+        if (std::any_of(fixture.labels.begin(), fixture.labels.end(),
+                        [](const std::string& label) { return !label.empty(); })) {
+            one["labels"] = fixture.labels;
+        }
+        // And which library entry and mode it was made from, while it is linked.
+        if (fixture.profile.linked()) {
+            json linkTo{
+                {"id", fixture.profile.id},
+                {"mode", fixture.profile.mode},
+                {"part", fixture.profile.part},
+            };
+            if (!fixture.profile.pair.empty()) {
+                linkTo["pair"] = fixture.profile.pair;
+            }
+            one["profile"] = std::move(linkTo);
+        }
+        patch.push_back(std::move(one));
+    }
+
+    json preset{
+        {"tempo", tempoToJson(settings.preset.tempo)},
+        {"decoder", decoderName(settings.preset.decoder)},
+        {"meters", metersToJson(settings.preset.meters)},
+        {"link", link},
+        {"oscPrefix", settings.preset.oscPrefix},
+        {"outputs", targets},
+        {"fixtures", patch},
+        // Through `rule_json`, which owns the shape of a rule, and back through
+        // `json::parse` so it nests as an array rather than as a string of JSON.
+        // §5.8's rules are the largest thing a preset carries and the only part of it
+        // with a format of its own.
+        {"rules", json::parse(rulesToJson(settings.preset.rules))},
+    };
+    // The imported definitions, the same way through `profile_json`. Only when there are any.
+    if (!settings.preset.library.empty()) {
+        preset["fixtureLibrary"] = json::parse(fixtures::libraryToJson(settings.preset.library));
     }
 
     const json document{
@@ -491,21 +530,7 @@ std::string toJson(const Settings& settings) {
              {"ruleLogHeight", settings.machine.ruleLogHeight},
              {"patchSectionsFolded", settings.machine.patchSectionsFolded},
          }},
-        {"preset",
-         json{
-             {"tempo", tempoToJson(settings.preset.tempo)},
-             {"decoder", decoderName(settings.preset.decoder)},
-             {"meters", metersToJson(settings.preset.meters)},
-             {"link", link},
-             {"oscPrefix", settings.preset.oscPrefix},
-             {"outputs", targets},
-             {"fixtures", fixtures},
-             // Through `rule_json`, which owns the shape of a rule, and back through
-             // `json::parse` so it nests as an array rather than as a string of JSON.
-             // §5.8's rules are the largest thing a preset carries and the only part of it
-             // with a format of its own.
-             {"rules", json::parse(rulesToJson(settings.preset.rules))},
-         }},
+        {"preset", std::move(preset)},
     };
     // `replace` rather than nlohmann's default `strict`, for `rulesToJson`' reason and one
     // more of its own: the machine half carries names this program did not choose. PortAudio
@@ -673,7 +698,38 @@ Settings fromDocument(const json& document) {
                 read(one, "panMax", fixture.panMax);
                 read(one, "tiltMin", fixture.tiltMin);
                 read(one, "tiltMax", fixture.tiltMax);
+                if (one.contains("labels") && one.at("labels").is_array()) {
+                    for (const json& label : one.at("labels")) {
+                        // A label that is not text is an empty one, so those after it stay
+                        // beside their own channels.
+                        fixture.labels.push_back(label.is_string() ? label.get<std::string>()
+                                                                   : std::string());
+                    }
+                    if (fixture.labels.size() > fixture.channels.size()) {
+                        fixture.labels.resize(fixture.channels.size());
+                    }
+                }
+                if (one.contains("profile") && one.at("profile").is_object()) {
+                    const json& link = one.at("profile");
+                    read(link, "id", fixture.profile.id);
+                    read(link, "mode", fixture.profile.mode);
+                    read(link, "part", fixture.profile.part);
+                    read(link, "pair", fixture.profile.pair);
+                }
                 settings.preset.fixtures.push_back(std::move(fixture));
+            }
+        }
+        if (preset.is_object() && preset.contains("fixtureLibrary")) {
+            settings.preset.library = fixtures::libraryFromJson(preset.at("fixtureLibrary").dump());
+        }
+        // A link to an entry the file does not have, or that cannot be a link, is no link: the
+        // fixture keeps its channels and is a fixture patched by hand.
+        for (dmx::Fixture& fixture : settings.preset.fixtures) {
+            if (fixture.profile.linked() &&
+                (fixtures::findProfile(settings.preset.library, fixture.profile.id) == nullptr ||
+                 fixture.profile.mode.empty() || fixture.profile.part < 1 ||
+                 fixture.profile.part > 2)) {
+                fixture.profile = dmx::Fixture::ProfileLink{};
             }
         }
         // `outputs` is what this build writes; `oscTargets` is what older ones did. Both

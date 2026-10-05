@@ -143,6 +143,15 @@ struct Bench {
         up(x, y);
         settle();
     }
+    /// The right button, pressed and let go — what puts a slider back to its default.
+    void rightClick(float x, float y) {
+        move(x, y);
+        window().dispatch_pointer_press_event(slint::LogicalPosition({x, y}),
+                                              slint::PointerEventButton::Right);
+        window().dispatch_pointer_release_event(slint::LogicalPosition({x, y}),
+                                                slint::PointerEventButton::Right);
+        settle();
+    }
     void drag(float x0, float y0, float x1, float y1, int steps) {
         down(x0, y0);
         settle();
@@ -686,6 +695,84 @@ TEST_CASE("a slider steps with the arrows and goes to its ends with Home and End
     // Keys it has no use for are the window's.
     b.key("t");
     CHECK(b.keysSeen() == "t");
+}
+
+TEST_CASE("a right-click puts a slider back to its default, and drags nothing", "[ui][widgets]") {
+    // The operator, 2026-10-05: "right clicking on any slider should set it back to default
+    // value". The bench's default is 25.
+    Bench b;
+    b.click(trackX(-50.0f), kTrackY);
+    REQUIRE(b.ui->get_track_value() == Catch::Approx(-50.0f).margin(1.0f));
+    b.moves.clear();
+    b.rightClick(trackX(80.0f), kTrackY); // anywhere on it: not where the pointer is
+    REQUIRE(b.moves.size() == 1);
+    CHECK(b.moves.back() == 25.0f);
+    CHECK(b.ui->get_track_value() == 25.0f);
+
+    SECTION("already there, it says nothing") {
+        b.rightClick(trackX(0.0f), kTrackY);
+        CHECK(b.moves.size() == 1);
+    }
+    SECTION("the right button held and dragged moves nothing") {
+        b.moves.clear();
+        b.move(trackX(25.0f), kTrackY);
+        b.window().dispatch_pointer_press_event(slint::LogicalPosition({trackX(25.0f), kTrackY}),
+                                                slint::PointerEventButton::Right);
+        settle();
+        for (int i = 1; i <= 5; ++i) {
+            b.move(trackX(25.0f) + static_cast<float>(i) * 20.0f, kTrackY);
+            settle();
+        }
+        b.window().dispatch_pointer_release_event(
+            slint::LogicalPosition({trackX(25.0f) + 100.0f, kTrackY}),
+            slint::PointerEventButton::Right);
+        settle();
+        CHECK(b.moves.empty());
+        CHECK(b.ui->get_track_value() == 25.0f);
+    }
+    SECTION("switched off, it ignores the right button too") {
+        b.ui->set_track_on(false);
+        b.click(trackX(-50.0f), kTrackY);
+        b.moves.clear();
+        b.rightClick(trackX(0.0f), kTrackY);
+        CHECK(b.moves.empty());
+        CHECK(b.ui->get_track_value() == 25.0f);
+    }
+}
+
+TEST_CASE("a right-click puts a two-handled slider's ends back, never crossing them",
+          "[ui][widgets]") {
+    // The bench's defaults are 70 to 140. Every end-move in one list, in the order said.
+    Bench b;
+    std::vector<std::string> said;
+    b.ui->on_low_moved([&b, &said](float v) {
+        b.ui->set_span_low(v);
+        said.push_back("low " + std::to_string(static_cast<int>(v)));
+    });
+    b.ui->on_high_moved([&b, &said](float v) {
+        b.ui->set_span_high(v);
+        said.push_back("high " + std::to_string(static_cast<int>(v)));
+    });
+    SECTION("from above: the low end first") {
+        b.ui->set_span_low(150.0f);
+        b.ui->set_span_high(220.0f);
+        settle();
+        b.rightClick(spanX(200.0f), kTrackY);
+        CHECK(said == std::vector<std::string>{"low 70", "high 140"});
+    }
+    SECTION("from below: the high end first, or the low would pass it") {
+        b.ui->set_span_low(40.0f);
+        b.ui->set_span_high(60.0f);
+        settle();
+        b.rightClick(spanX(50.0f), kTrackY);
+        CHECK(said == std::vector<std::string>{"high 140", "low 70"});
+    }
+    SECTION("already there: nothing") {
+        b.rightClick(spanX(100.0f), kTrackY);
+        CHECK(said.empty());
+    }
+    CHECK(b.ui->get_span_low() == 70.0f);
+    CHECK(b.ui->get_span_high() == 140.0f);
 }
 
 TEST_CASE("the wheel over a slider changes nothing", "[ui][widgets]") {

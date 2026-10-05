@@ -220,6 +220,55 @@ block()
 endblock()
 
 # ---------------------------------------------------------------------------------------
+# pugixml 1.16 and miniz 3.1.2: reading a GDTF fixture definition, which is a zip archive
+# holding an XML file (src/core/fixtures). One source file each, so each is declared here as
+# a static library of that one file rather than built through its own CMake project — the
+# release archive of pugixml carries one (with install rules takt4 has no use for), miniz's
+# amalgamated release does not. `SOURCE_SUBDIR` names a directory that is not there, which is
+# what keeps FetchContent from adding pugixml's project: the archive is only unpacked.
+#
+# pugixml without XPath, which nothing here asks. Its parser expands the five predefined
+# entities and character references and nothing else: there is no DTD processing and it never
+# loads anything from outside the buffer it is given.
+#
+# miniz with no stdio and no clock: the archive is read through a callback over takt4's own
+# file handle, and the zip writer (only the tests use it, to build archives in memory) stamps
+# no time. Without its zlib-compatible names, so `crc32` and `compress` are not macros in any
+# file that includes it — Skia, inside Slint, carries the real zlib.
+# ---------------------------------------------------------------------------------------
+FetchContent_Declare(pugixml
+  URL "https://github.com/zeux/pugixml/releases/download/v1.16/pugixml-1.16.tar.gz"
+  URL_HASH SHA256=4cee1ca4aad395170f4c7a07824f3bdd41f28316c6e1e1090a1425b278ec0b4b
+  SOURCE_SUBDIR not-built-through-its-own-project
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(pugixml)
+if(NOT EXISTS "${pugixml_SOURCE_DIR}/src/pugixml.cpp")
+  message(FATAL_ERROR "pugixml archive layout changed: src/pugixml.cpp not found in ${pugixml_SOURCE_DIR}")
+endif()
+add_library(takt4_pugixml STATIC "${pugixml_SOURCE_DIR}/src/pugixml.cpp")
+add_library(takt4::pugixml ALIAS takt4_pugixml)
+target_include_directories(takt4_pugixml SYSTEM PUBLIC "${pugixml_SOURCE_DIR}/src")
+target_compile_definitions(takt4_pugixml PUBLIC PUGIXML_NO_XPATH)
+set(TAKT4_PUGIXML_VERSION "1.16")
+
+FetchContent_Declare(miniz
+  URL "https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip"
+  URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(miniz)
+if(NOT EXISTS "${miniz_SOURCE_DIR}/miniz.c")
+  message(FATAL_ERROR "miniz archive layout changed: miniz.c not found in ${miniz_SOURCE_DIR}")
+endif()
+add_library(takt4_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
+add_library(takt4::miniz ALIAS takt4_miniz)
+target_include_directories(takt4_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")
+target_compile_definitions(takt4_miniz PUBLIC
+  MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+set(TAKT4_MINIZ_VERSION "3.1.2")
+
+# ---------------------------------------------------------------------------------------
 # r8brain-free-src 7.5 (header-only since 7.0; the default Ooura FFT needs no extra
 # source file). The archive carries no CMake project, so this declares the target.
 # Its version string is read from the header (R8B_VERSION) rather than pinned here.

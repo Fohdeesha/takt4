@@ -150,6 +150,14 @@ export struct OutputChoice {
   missing: bool,
 }
 
+/// One head of the fixtures a movement is aimed at, as its tick shows it.
+export struct HeadChoice {
+  /// "1 · Pan, Tilt Top" — its number, and what the file calls its channels where every fixture
+  /// aimed at agrees — or its number alone.
+  label: string,
+  ticked: bool,
+}
+
 /// One line of the event log: when, which rule, what went out — in three columns rather than one
 /// string (HANDOFF §0.5), and whether it was muted, which is drawn apart.
 export struct LogLine {
@@ -714,6 +722,9 @@ component PickerBody inherits Rectangle {
         minimum: 0;
         maximum: 359;
         value: root.hue;
+        // A right-click: a new rule's colour, white — hue 0, no saturation, full brightness.
+        has-default: true;
+        default-value: 0;
         moved(v) => {
           root.moved(v, root.sat, root.val);
         }
@@ -732,6 +743,8 @@ component PickerBody inherits Rectangle {
         minimum: 0;
         maximum: 100;
         value: root.sat;
+        has-default: true;
+        default-value: 0;
         moved(v) => {
           root.moved(root.hue, v, root.val);
         }
@@ -752,6 +765,8 @@ component PickerBody inherits Rectangle {
         minimum: 0;
         maximum: 100;
         value: root.val;
+        has-default: true;
+        default-value: 100;
         moved(v) => {
           root.moved(root.hue, root.sat, v);
         }
@@ -1022,6 +1037,15 @@ export component RulesWindow inherits Window {
   in-out property <float> effect-duty;
   in-out property <string> effect-hue;
   in-out property <float> effect-size;
+  /// A movement aimed at fixtures with more than one head (`dmx::headsOf`): a tick per head, all
+  /// ticked being every head — the operator's pick of 2026-10-05.
+  in-out property <bool> effect-takes-heads;
+  in-out property <[HeadChoice]> head-choices;
+  in-out property <string> heads-note;
+  /// And, while it moves two heads or more, how far apart: 0 to 100.
+  in-out property <bool> effect-takes-spread;
+  in-out property <float> effect-spread;
+  in-out property <string> spread-note;
 
   callback fixture-chosen(string, bool);
   callback no-fixtures-chosen();
@@ -1036,6 +1060,8 @@ export component RulesWindow inherits Window {
   callback effect-duty-changed(float);
   callback effect-hue-edited(string);
   callback effect-size-changed(float);
+  callback head-toggled(int, bool);
+  callback effect-spread-changed(float);
   callback color-mode-picked(int);
   callback palette-added();
   callback palette-removed(int);
@@ -1677,6 +1703,9 @@ export component RulesWindow inherits Window {
                     value: root.min-confidence;
                     enabled: !root.none;
                     quiet: !root.conditions-on;
+                    // `Conditions::minConfidence`'s own: no floor.
+                    has-default: true;
+                    default-value: 0;
                     moved(v) => {
                       root.min-confidence-changed(v);
                     }
@@ -1710,6 +1739,9 @@ export component RulesWindow inherits Window {
                     value: root.probability;
                     enabled: !root.none;
                     quiet: !root.conditions-on;
+                    // `Conditions::probability`'s own: every time.
+                    has-default: true;
+                    default-value: 1;
                     moved(v) => {
                       root.probability-changed(v);
                     }
@@ -2170,6 +2202,9 @@ export component RulesWindow inherits Window {
                     maximum: 99;
                     value: root.effect-duty;
                     enabled: !root.none;
+                    // `DmxSend::duty`'s own: half of each cycle.
+                    has-default: true;
+                    default-value: 50;
                     moved(v) => {
                       root.effect-duty-changed(v);
                     }
@@ -2193,6 +2228,9 @@ export component RulesWindow inherits Window {
                     maximum: 100;
                     value: root.effect-size;
                     enabled: !root.none;
+                    // `DmxSend::size`'s own: half the window.
+                    has-default: true;
+                    default-value: 50;
                     moved(v) => {
                       root.effect-size-changed(v);
                     }
@@ -2238,6 +2276,119 @@ export component RulesWindow inherits Window {
                   Note {
                     text: root.fixtures-available;
                     wrap: word-wrap;
+                  }
+                }
+
+                // Which of their heads, where the fixtures have more than one: a tick each, named
+                // by its channels where the file named them, all ticked being every head. Up to
+                // eight in a row; more (a bar of sixteen tilting lamps) on a grid of eight a row,
+                // which a row of sixteen ticks did not fit at the window's narrowest (measured:
+                // 998 px asked of a 740 px pane). What the ticks reach is said on a line of its own
+                // under them: beside two named ticks it was cut off at the window's opening width.
+                if root.sends-dmx && root.effect-takes-heads: VerticalLayout {
+                  height: (root.head-choices.length <= 8 ? 34px : ceil(root.head-choices.length / 8) * 28px + 6px) + 20px;
+                  if root.head-choices.length <= 8: HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+                    RowLabel {
+                      text: "heads";
+                    }
+                    for head[index] in root.head-choices: VerticalLayout {
+                      alignment: center;
+                      horizontal-stretch: 0;
+                      Tick {
+                        text: head.label;
+                        checked: head.ticked;
+                        enabled: !root.none;
+                        toggled(on) => {
+                          root.head-toggled(index, on);
+                        }
+                      }
+                    }
+                    Rectangle {
+                      horizontal-stretch: 1;
+                    }
+                  }
+                  if root.head-choices.length > 8: HorizontalLayout {
+                    height: ceil(root.head-choices.length / 8) * 28px + 6px;
+                    spacing: 10px;
+                    RowLabel {
+                      text: "heads";
+                    }
+                    // Numbers only past four heads (`RulesController::publishHeads`), so a cell of
+                    // 52 px holds "32" beside its box.
+                    Rectangle {
+                      width: 8 * 52px;
+                      horizontal-stretch: 0;
+                      for head[index] in root.head-choices: Tick {
+                        x: mod(index, 8) * 52px;
+                        y: floor(index / 8) * 28px + 4px;
+                        width: 46px;
+                        height: 20px;
+                        text: head.label;
+                        checked: head.ticked;
+                        enabled: !root.none;
+                        toggled(on) => {
+                          root.head-toggled(index, on);
+                        }
+                      }
+                    }
+                    Rectangle {
+                      horizontal-stretch: 1;
+                    }
+                  }
+                  HorizontalLayout {
+                    height: 20px;
+                    spacing: 10px;
+                    Rectangle {
+                      width: 118px; // under the row's label
+                    }
+                    Note {
+                      text: root.heads-note;
+                    }
+                  }
+                }
+
+                // How far apart those heads move — only while it moves two or more, since one has
+                // nothing to be staggered against. 0, together, until somebody slides it. Beside
+                // the slider, what it does (the operator's words, 2026-10-05: "stagger movement
+                // between selected heads"); under it, what the value it is at does.
+                if root.sends-dmx && root.effect-takes-spread: VerticalLayout {
+                  height: 54px;
+                  HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+                    RowLabel {
+                      text: "spread";
+                    }
+                    Track {
+                      width: 240px;
+                      horizontal-stretch: 0;
+                      minimum: 0;
+                      maximum: 100;
+                      value: root.effect-spread;
+                      enabled: !root.none;
+                      has-default: true;
+                      default-value: 0;
+                      moved(v) => {
+                        root.effect-spread-changed(v);
+                      }
+                    }
+                    Note {
+                      // 31 characters: at the window's narrowest a longer line here was cut.
+                      text: "staggers movement between heads";
+                      color: Wf.ink;
+                    }
+                  }
+                  HorizontalLayout {
+                    height: 20px;
+                    spacing: 10px;
+                    Rectangle {
+                      width: 118px;
+                    }
+                    Note {
+                      text: root.spread-note;
+                    }
                   }
                 }
 

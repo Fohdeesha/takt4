@@ -17,7 +17,7 @@ struct RoleName {
 /// The label is what a dropdown shows; the name is what a settings file holds. They differ
 /// only where a space reads better than a hyphen, and a file keeps the hyphen so that
 /// `roleOf` never has to cope with one that has been re-cased or re-spaced by an editor.
-constexpr std::array<RoleName, 18> kRoleNames{{
+constexpr std::array<RoleName, 21> kRoleNames{{
     {Role::Unused, "unused", "unused"},
     {Role::Dimmer, "dimmer", "dimmer"},
     {Role::Red, "red", "red"},
@@ -26,6 +26,9 @@ constexpr std::array<RoleName, 18> kRoleNames{{
     {Role::White, "white", "white"},
     {Role::Amber, "amber", "amber"},
     {Role::Uv, "UV", "uv"},
+    {Role::Cyan, "cyan", "cyan"},
+    {Role::Magenta, "magenta", "magenta"},
+    {Role::Yellow, "yellow", "yellow"},
     {Role::Pan, "pan", "pan"},
     {Role::Tilt, "tilt", "tilt"},
     {Role::PanFine, "pan fine", "pan-fine"},
@@ -135,6 +138,30 @@ std::uint16_t channelOf(const Fixture& fixture, Role role, std::size_t nth) noex
         }
     }
     return 0;
+}
+
+std::size_t headsOf(const Fixture& fixture) noexcept {
+    const auto pans = std::count(fixture.channels.begin(), fixture.channels.end(), Role::Pan);
+    const auto tilts = std::count(fixture.channels.begin(), fixture.channels.end(), Role::Tilt);
+    return static_cast<std::size_t>(std::max(pans, tilts));
+}
+
+std::string describeHeads(std::uint32_t heads) {
+    std::vector<int> numbers;
+    for (int head = 0; head < 32; ++head) {
+        if ((heads & (std::uint32_t{1} << head)) != 0) {
+            numbers.push_back(head + 1);
+        }
+    }
+    if (numbers.empty()) {
+        return {};
+    }
+    std::string text = numbers.size() == 1 ? "head " : "heads ";
+    for (std::size_t i = 0; i < numbers.size(); ++i) {
+        text += i == 0 ? "" : i + 1 == numbers.size() ? " and " : ", ";
+        text += std::to_string(numbers[i]);
+    }
+    return text;
 }
 
 bool emits(const Fixture& fixture) noexcept {

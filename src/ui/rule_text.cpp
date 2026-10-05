@@ -433,8 +433,13 @@ std::string describeSend(const Rule::Config& rule, const std::vector<output::Out
                             : key.rfind("f-", 0) == 0 ? std::string("a fixture that is gone")
                                                       : key);
         }
+        // And which heads, where it names some: "position on spot 1 · head 2".
+        const std::string head =
+            dmx::takesMovement(rule.dmx.effect) && rule.dmx.heads != 0 && !names.empty()
+                ? " · " + dmx::describeHeads(rule.dmx.heads)
+                : std::string();
         return std::string(dmx::labelOf(rule.dmx.effect)) + " on " +
-               (names.empty() ? std::string("no fixtures — it sends nowhere") : join(names));
+               (names.empty() ? std::string("no fixtures — it sends nowhere") : join(names)) + head;
     }
     return std::string(trigger::labelOf(rule.sendKind)) + " ch " + std::to_string(rule.channel) +
            " to " + routedTo(rule, targets);

@@ -18,6 +18,8 @@
 #endif
 
 #include <cstdlib>
+#include <initializer_list>
+#include <string>
 
 namespace takt4::ui {
 
@@ -53,29 +55,35 @@ std::wstring widen(const std::string& text) {
 /// The filter is a list of null-separated label/pattern pairs, ended by a second null —
 /// which is why it is built rather than written as a literal: a string literal stops at the
 /// first embedded null and the dialog would see one truncated entry.
-const std::wstring& filter() {
-    static const std::wstring value = [] {
-        std::wstring out;
-        for (const wchar_t* part : {L"presets (*.json)", L"*.json", L"all files", L"*.*"}) {
-            out.append(part);
-            out.push_back(L'\0');
-        }
+std::wstring filterOf(std::initializer_list<const wchar_t*> parts) {
+    std::wstring out;
+    for (const wchar_t* part : parts) {
+        out.append(part);
         out.push_back(L'\0');
-        return out;
-    }();
-    return value;
+    }
+    out.push_back(L'\0');
+    return out;
 }
 
-OPENFILENAMEW baseOf(std::wstring& buffer, const std::wstring& title) {
+const std::wstring& filter(FileKind kind) {
+    static const std::wstring presets =
+        filterOf({L"presets (*.json)", L"*.json", L"all files", L"*.*"});
+    static const std::wstring definitions =
+        filterOf({L"fixture definitions (*.gdtf, *.json)", L"*.gdtf;*.json", L"GDTF (*.gdtf)",
+                  L"*.gdtf", L"Open Fixture Library (*.json)", L"*.json", L"all files", L"*.*"});
+    return kind == FileKind::FixtureDefinition ? definitions : presets;
+}
+
+OPENFILENAMEW baseOf(std::wstring& buffer, const std::wstring& title, FileKind kind) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = ::GetActiveWindow();
-    ofn.lpstrFilter = filter().c_str();
+    ofn.lpstrFilter = filter(kind).c_str();
     ofn.nFilterIndex = 1;
     ofn.lpstrFile = buffer.data();
     ofn.nMaxFile = static_cast<DWORD>(buffer.size());
     ofn.lpstrTitle = title.empty() ? nullptr : title.c_str();
-    ofn.lpstrDefExt = L"json";
+    ofn.lpstrDefExt = kind == FileKind::Preset ? L"json" : nullptr;
     return ofn;
 }
 
@@ -91,13 +99,14 @@ std::wstring bufferWith(const std::string& suggested) {
 
 } // namespace
 
-std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested) {
+std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested,
+                                  FileKind kind) {
     if (!fileDialogsAllowed()) {
         return {};
     }
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
-    OPENFILENAMEW ofn = baseOf(buffer, wideTitle);
+    OPENFILENAMEW ofn = baseOf(buffer, wideTitle, kind);
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (::GetOpenFileNameW(&ofn) == 0) {
         return {}; // cancelled, or the dialog could not be shown; both mean "do nothing"
@@ -111,7 +120,7 @@ std::filesystem::path askSaveFile(const std::string& title, const std::string& s
     }
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
-    OPENFILENAMEW ofn = baseOf(buffer, wideTitle);
+    OPENFILENAMEW ofn = baseOf(buffer, wideTitle, FileKind::Preset);
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (::GetSaveFileNameW(&ofn) == 0) {
         return {};
@@ -126,7 +135,9 @@ std::filesystem::path askSaveFile(const std::string& title, const std::string& s
 // import and export are simply unavailable rather than wrong. The port (§1's box) will want
 // GTK's chooser or a portal call here; until the UI compiles on those platforms at all,
 // anything written now would be untested.
-std::filesystem::path askOpenFile(const std::string&, const std::string&) { return {}; }
+std::filesystem::path askOpenFile(const std::string&, const std::string&, FileKind) {
+    return {};
+}
 std::filesystem::path askSaveFile(const std::string&, const std::string&) { return {}; }
 
 #endif

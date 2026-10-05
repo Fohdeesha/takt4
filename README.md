@@ -49,6 +49,7 @@ Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have
 - One **latency** slider for the rig, plus a delay per output. They add up.
 - Positive is later, negative is earlier. Once locked, a −300 ms output really gets its cue 300 ms early.
 - Click any underlined number to type a value.
+- Right-click any slider to put it back to its default.
 
 ## OSC
 
@@ -95,7 +96,7 @@ address                       send           does
 ## Lights
 
 1. **+ add output**, set its **protocol** to Art-Net and type the node's IP (port 6454).
-2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head).
+2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head). Or click **import** and pick a GDTF (`.gdtf`) or Open Fixture Library (`.json`) file: choose its mode, how many and where, and they arrive with every channel named and set up. The file is kept with the preset, so its other modes stay in the **mode** list.
 3. **identify** flashes the fixture; a channel's **test** holds it at the **test sends** level for 3 s.
 4. In a rule, set **send as** to DMX / Art-Net and pick an effect: level / fade, color, flash, pulse, strobe, hue sweep, position, path, home, blackout.
 
@@ -103,6 +104,7 @@ address                       send           does
 - Every effect ends with its duration, so nothing is left strobing.
 - Colors come from a palette (the picker lights the real lamps as you drag) or from red, green and blue values.
 - A moving head's **how far it moves** keeps random positions and paths inside the range you set.
+- A fixture with several heads moves them all. In a rule, tick which **heads** move, and slide **spread** to stagger them; a second rule can move the others.
 - **panic** freezes the lights where they are; **stop** and quitting black them out.
 
 ## Saving

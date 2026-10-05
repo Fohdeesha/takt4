@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/dmx/fixture.hpp"
+#include "core/fixtures/fixture_profile.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
 #include "ui/delete_guard.hpp"
@@ -9,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -44,14 +46,20 @@ public:
     /// Called whenever the patch changes, so the owner can save it (Q7) and keep its own copy
     /// in step. The controller does not know where settings live and does not want to.
     using PatchChanged = std::function<void(const std::vector<dmx::Fixture>&)>;
+    /// The same for the preset's library of imported definitions (`settings::Preset::library`),
+    /// called only when it changed: an import adds to it, a re-import replaces an entry, a × takes
+    /// an unused one out.
+    using LibraryChanged = std::function<void(const std::vector<fixtures::FixtureProfile>&)>;
 
     /// The runner must outlive this. Nothing is shown until `show()`.
-    FixturesController(output::OutputRunner& runner, std::vector<dmx::Fixture> fixtures);
+    FixturesController(output::OutputRunner& runner, std::vector<dmx::Fixture> fixtures,
+                       std::vector<fixtures::FixtureProfile> library = {});
 
     FixturesController(const FixturesController&) = delete;
     FixturesController& operator=(const FixturesController&) = delete;
 
     void setPatchChanged(PatchChanged changed) { changed_ = std::move(changed); }
+    void setLibraryChanged(LibraryChanged changed) { libraryChanged_ = std::move(changed); }
 
     void show();
     void hide();
@@ -68,8 +76,13 @@ public:
     FixturesWindow& window() { return *window_; }
 
     const std::vector<dmx::Fixture>& fixtures() const noexcept { return fixtures_; }
-    /// Replaces the patch from outside — a preset load. Keeps the selection where it can.
+    const std::vector<fixtures::FixtureProfile>& library() const noexcept { return library_; }
+    /// Replaces the patch from outside — a preset load. Keeps the selection where it can, and
+    /// closes an import: what it was importing into is gone. The library stays as it is.
     void setFixtures(std::vector<dmx::Fixture> fixtures);
+    /// The same with the library that came with them — an IMPORT of settings.
+    void setFixtures(std::vector<dmx::Fixture> fixtures,
+                     std::vector<fixtures::FixtureProfile> library);
 
     /// What the outputs row should say about the lighting rig: how many fixtures, how many
     /// universes, and whether anything is carrying them. Empty when nothing is patched.
@@ -100,7 +113,12 @@ public:
     void setUniverse(const std::string& text);
     void setAddress(int address);
     void setEnabled(bool on);
-    /// Index 0 is "custom" and changes nothing; the rest index `dmx::builtinModes()`.
+    /// For a fixture patched by hand, index 0 is "custom" and changes nothing, and the rest index
+    /// `dmx::builtinModes()`. For one an import made, the dropdown is its definition's modes — of
+    /// its own shape, one start address or two (`fixtures::modesFor`) — with the mode it is in
+    /// first as "… (edited)" while its channels differ from the definition's; picking a mode puts
+    /// its channels, parked levels and names back as imported, and for one of a pair re-modes both
+    /// (`fixtures::remode`).
     ///
     /// **It replaces the channel map and the parked levels and nothing else** — the name, the
     /// group, the universe, the address and the movement window are the operator's and are
@@ -127,6 +145,43 @@ public:
     void setTestLevel(int level);
     int testLevel() const noexcept { return testLevel_; }
 
+    // --- the import (the operator's decisions of 2026-10-04 and 2026-10-05) ----------------------
+    // In the editor's place while it is open; the editor is kept behind it, and what was being
+    // typed there is committed before it opens, so nothing typed is lost to it.
+
+    /// IMPORT beside the list's +: the import opens, with the universe of the fixture showing and
+    /// the first free address after everything patched on it.
+    void openImport();
+    /// CANCEL: back to the editor, as it was. What the import already did to the library — a
+    /// replace answered, an entry taken out — stays done.
+    void closeImport();
+    bool importing() const noexcept { return import_.open; }
+    /// A's library, by its row as the sheet lists it (`fixtures::libraryOrder`).
+    void pickLibraryEntry(int row);
+    /// An unused entry's ×. One a fixture is made from cannot be taken out, and has no ×.
+    void removeLibraryEntry(int row);
+    /// FROM A FILE…: the open dialog, then `importFile` with what was picked.
+    void chooseImportFile();
+    /// A definition file read and mapped: new to the library, the same as an entry of it (which
+    /// is picked), or another version of one (which asks — `answerReplace` and the rest). Or why
+    /// it could not be read, in A. **Tests call this in place of the dialog**, which they cannot
+    /// answer (`tests/support/crt_dialogs.cpp`).
+    void importFile(const std::filesystem::path& path);
+    /// The three answers to a file the library has another version of.
+    void answerReplace();
+    void answerKeepBoth();
+    void answerCancel();
+    /// B: a mode, by its row. A mode that cannot be imported cannot be picked.
+    void pickImportMode(int row);
+    /// C's boxes.
+    void setImportCount(int count);
+    void setImportUniverse(const std::string& text);
+    void setImportAddress(int address);
+    /// IMPORT: the fixtures made, added after the last, the first of them picked — and a
+    /// definition from a file added to the library. Refused, with the reason in C, when the block
+    /// runs past the universe.
+    void confirmImport();
+
     /// How long IDENTIFY holds the fixture at full. Long enough to look up and find it,
     /// short enough that walking away does not leave a lamp on.
     static constexpr double kIdentifySeconds = 3.0;
@@ -140,14 +195,23 @@ private:
 
     /// Hands the patch to the output thread and tells the owner. Every edit ends here.
     void commit();
+    /// Tells the owner the library changed, so it is saved with the preset.
+    void commitLibrary();
     /// Applies what is being typed — in a text box or a number box — to the fixture it was typed
     /// for. Called before **every** action — see the constructor, where each callback is wired.
     void commitDrafts();
 
-    /// The three number boxes, whose keystrokes are kept until they are entered — see `typed_`.
-    enum class Numbered : std::uint8_t { Address, TestLevel, Parked };
-    /// And the three text boxes — see `draft_`.
-    enum class Field : std::uint8_t { Name, Group, Universe };
+    /// The number boxes, whose keystrokes are kept until they are entered — see `typed_`. The
+    /// TEST level and the import's two are the window's, not a fixture's.
+    enum class Numbered : std::uint8_t { Address, TestLevel, Parked, ImportCount, ImportAddress };
+    /// And the text boxes — see `draft_`. The import's universe is the window's.
+    enum class Field : std::uint8_t { Name, Group, Universe, ImportUniverse };
+    /// Whether a box belongs to the window rather than to the fixture showing.
+    static bool windowsOwn(Numbered box) noexcept {
+        return box == Numbered::TestLevel || box == Numbered::ImportCount ||
+               box == Numbered::ImportAddress;
+    }
+    static bool windowsOwn(Field field) noexcept { return field == Field::ImportUniverse; }
     /// A keystroke in a number box: what Enter would set there now.
     void noteTyped(Numbered box, int index, int value);
     /// A number box's own commit, which counts only if it was typed in for the fixture showing —
@@ -174,11 +238,65 @@ private:
     /// Which built-in mode this fixture's channel map matches, or 0 for "custom". Recomputed
     /// after every edit, so the box cannot go on naming a mode the map no longer is.
     int modeOf(const dmx::Fixture& fixture) const;
+    /// The library entry a fixture is linked to, or null — unlinked, or linked to nothing there.
+    const fixtures::FixtureProfile* profileOf(const dmx::Fixture& fixture) const noexcept;
+    /// The mode dropdown's entries for the fixture showing — its definition's or the built-in
+    /// shapes — and which it is in. See `pickMode`.
+    void publishModes(const dmx::Fixture* fixture);
+    /// What a channel's note is: the definition's note for the channel of that name nearest it
+    /// in the mode, so it stays with its channel when one above was taken out.
+    std::string noteFor(const dmx::Fixture& fixture, std::size_t index) const;
+
+    /// The definition the import is on: a library entry, or the file read, or none.
+    const fixtures::FixtureProfile* importProfile() const noexcept;
+    /// Everything the import's sheets show, written in place.
+    void publishImport();
+    /// Picks the first mode of the definition that can be imported.
+    void pickFirstImportMode();
+    /// The file's state cleared: nothing read, nothing asked.
+    void forgetImportFile();
 
     output::OutputRunner& runner_;
     std::vector<dmx::Fixture> fixtures_;
+    /// The preset's library — see `settings::Preset::library`.
+    std::vector<fixtures::FixtureProfile> library_;
     int selected_ = -1;
     PatchChanged changed_;
+    LibraryChanged libraryChanged_;
+
+    /// The import, while it is open.
+    struct Import {
+        bool open = false;
+        /// The library entry picked, by id; empty for none — or for a file's definition the
+        /// library has not got (`incoming`).
+        std::string entryId;
+        /// A file's definition, read and mapped, not in the library: what IMPORT adds to it.
+        std::optional<fixtures::FixtureProfile> incoming;
+        /// A file's definition the library has another version of — `incoming` holds it — and
+        /// the entry it differs from: the question asked before anything changes.
+        std::optional<std::string> askingAbout;
+        /// What A says about the file: its name and maker, and under it what it is to the
+        /// library, or why it could not be read.
+        std::string fileLine;
+        std::string fileNote;
+        bool fileError = false;
+        std::string mode;
+        int count = 1;
+        dmx::PortAddress universe = 0;
+        int address = 1;
+    };
+    Import import_;
+    /// The library's rows as A lists them: `library_` indices, by maker and model.
+    std::vector<std::size_t> libraryOrder_;
+    std::shared_ptr<slint::VectorModel<LibraryRow>> libraryModel_;
+    std::shared_ptr<slint::VectorModel<ModeRow>> importModesModel_;
+    /// The mode dropdown's entries, its asides, and — for a fixture an import made — the mode
+    /// name behind each entry ("" for the "… (edited)" one, which picks nothing).
+    std::shared_ptr<slint::VectorModel<slint::SharedString>> modesModel_;
+    std::shared_ptr<slint::VectorModel<slint::SharedString>> modeAsidesModel_;
+    std::vector<std::string> modeNames_;
+    /// A library entry's ×: a double-click is one removal.
+    DeleteGuard libraryMarks_;
 
     slint::ComponentHandle<FixturesWindow> window_;
     std::shared_ptr<slint::VectorModel<FixtureRow>> listModel_;
@@ -212,7 +330,8 @@ private:
         int value = 0;
     };
     std::optional<Typed> typed_;
-    /// The same for the name, the group and the universe.
+    /// The same for the name, the group and the universe — and the import's universe, which is the
+    /// window's (`fixtureId` empty).
     struct Draft {
         std::string fixtureId;
         Field field = Field::Name;

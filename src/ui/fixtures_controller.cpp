@@ -2,12 +2,17 @@
 
 #include "core/dmx/artnet_packet.hpp"
 #include "core/dmx/effect.hpp"
+#include "core/fixtures/fixture_library.hpp"
+#include "core/fixtures/import.hpp"
 #include "core/io/utf8.hpp"
+#include "ui/file_dialog.hpp"
 #include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
 #include "ui/window_state.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdlib>
 #include <span>
 #include <string>
 #include <utility>
@@ -52,8 +57,14 @@ std::string freshName(const std::vector<dmx::Fixture>& patch, const std::string&
 } // namespace
 
 FixturesController::FixturesController(output::OutputRunner& runner,
-                                       std::vector<dmx::Fixture> fixtures)
-    : runner_(runner), fixtures_(std::move(fixtures)), window_(FixturesWindow::create()),
+                                       std::vector<dmx::Fixture> fixtures,
+                                       std::vector<fixtures::FixtureProfile> library)
+    : runner_(runner), fixtures_(std::move(fixtures)), library_(std::move(library)),
+      libraryModel_(std::make_shared<slint::VectorModel<LibraryRow>>()),
+      importModesModel_(std::make_shared<slint::VectorModel<ModeRow>>()),
+      modesModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()),
+      modeAsidesModel_(std::make_shared<slint::VectorModel<slint::SharedString>>()),
+      window_(FixturesWindow::create()),
       listModel_(std::make_shared<slint::VectorModel<FixtureRow>>()),
       channelModel_(std::make_shared<slint::VectorModel<ChannelRow>>()) {
     // A patch built in code, or read by something older than the settings loader, may have
@@ -61,22 +72,18 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     dmx::ensureFixtureIds(fixtures_);
     window_->set_fixtures(listModel_);
     window_->set_channels(channelModel_);
+    window_->set_library_rows(libraryModel_);
+    window_->set_mode_rows(importModesModel_);
+    // The mode dropdown's entries are the fixture's — its definition's modes, or the built-in
+    // shapes — so they are written for each fixture shown (`publishModes`), in place.
+    window_->set_modes(modesModel_);
+    window_->set_mode_asides(modeAsidesModel_);
 
     auto roles = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const dmx::Role role : dmx::kRoles) {
         roles->push_back(shared(std::string(dmx::labelOf(role))));
     }
     window_->set_roles(roles);
-
-    auto modes = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    // Index 0 is "custom", so that a channel map the operator has edited has something
-    // honest to be — and so picking nothing is a state rather than a fixture nobody meant.
-    // Worded as what it is, since picking it changes nothing (see `pickMode`).
-    modes->push_back(shared("custom (the channels below)"));
-    for (const dmx::FixtureMode& mode : dmx::builtinModes()) {
-        modes->push_back(shared(std::string(mode.name)));
-    }
-    window_->set_modes(modes);
 
     // **Every action commits what the boxes hold before it runs** (the audit of 2026-09-25, M18).
     // `commitDrafts` used to run only when the selection moved, so a name, a group or a universe
@@ -160,6 +167,45 @@ FixturesController::FixturesController(output::OutputRunner& runner,
         [this](int level) { noteTyped(Numbered::TestLevel, 0, level); });
     window_->on_fold_clicked(finishing([this](int section) { fold(section); }));
 
+    // The import. Every button through `finishing`, as the editor's are: IMPORT itself commits
+    // what was being typed in the editor before the import takes its place (the operator,
+    // 2026-10-05: "be sure to not lose edits that were made in the editor it replaces"), and
+    // the import's own IMPORT commits what was typed into its boxes before it reads them.
+    window_->on_import_clicked(finishing([this] { openImport(); }));
+    window_->on_import_cancelled(finishing([this] { closeImport(); }));
+    window_->on_library_picked(finishing([this](int row) { pickLibraryEntry(row); }));
+    window_->on_library_removed(finishing([this](int row) {
+        if (libraryMarks_.press(row)) { // a double-click on × is one removal (L10)
+            removeLibraryEntry(row);
+        }
+    }));
+    window_->on_import_file_clicked(finishing([this] { chooseImportFile(); }));
+    window_->on_ask_replace_clicked(finishing([this] { answerReplace(); }));
+    window_->on_ask_keep_clicked(finishing([this] { answerKeepBoth(); }));
+    window_->on_ask_cancel_clicked(finishing([this] { answerCancel(); }));
+    window_->on_import_mode_picked(finishing([this](int row) { pickImportMode(row); }));
+    window_->on_import_count_typed(
+        [this](int count) { noteTyped(Numbered::ImportCount, 0, count); });
+    window_->on_import_count_changed([this](int count) {
+        if (takeTyped(Numbered::ImportCount, 0)) {
+            setImportCount(count);
+        }
+    });
+    window_->on_import_address_typed(
+        [this](int address) { noteTyped(Numbered::ImportAddress, 0, address); });
+    window_->on_import_address_changed([this](int address) {
+        if (takeTyped(Numbered::ImportAddress, 0)) {
+            setImportAddress(address);
+        }
+    });
+    window_->on_import_universe_typed([this](const slint::SharedString& text) {
+        noteDraft(Field::ImportUniverse, std::string(text));
+    });
+    window_->on_import_universe_edited([this](const slint::SharedString& text) {
+        finishDraft(Field::ImportUniverse, std::string(text));
+    });
+    window_->on_import_confirmed(finishing([this] { confirmImport(); }));
+
     window_->set_test_level(testLevel_);
     window_->set_test_seconds(static_cast<int>(kTestSeconds));
 
@@ -231,6 +277,12 @@ void FixturesController::commit() {
     publishAll();
 }
 
+void FixturesController::commitLibrary() {
+    if (libraryChanged_) {
+        libraryChanged_(library_);
+    }
+}
+
 void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures) {
     fixtures_ = std::move(fixtures);
     dmx::ensureFixtureIds(fixtures_);
@@ -240,7 +292,16 @@ void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures) {
     // is another patch (the audit of 2026-09-25, M21).
     typed_.reset();
     draft_.reset();
+    // Nor an import, whose readouts were about the patch that was here.
+    import_ = Import{};
+    window_->set_importing(false);
     publishAll();
+}
+
+void FixturesController::setFixtures(std::vector<dmx::Fixture> fixtures,
+                                     std::vector<fixtures::FixtureProfile> library) {
+    library_ = std::move(library);
+    setFixtures(std::move(fixtures));
 }
 
 int FixturesController::modeOf(const dmx::Fixture& fixture) const {
@@ -259,6 +320,7 @@ void FixturesController::publishAll() {
     publishList();
     publishSelected();
     publishChannels();
+    publishImport();
     window_->set_summary(shared(summary()));
 }
 
@@ -289,13 +351,13 @@ void FixturesController::publishList() {
 
 void FixturesController::publishSelected() {
     const dmx::Fixture* const fixture = current();
+    publishModes(fixture);
     if (fixture == nullptr) {
         window_->set_name(shared({}));
         window_->set_group(shared({}));
         window_->set_universe(shared({}));
         window_->set_address(1);
         window_->set_enabled(true);
-        window_->set_mode_index(0);
         window_->set_moves(false);
         return;
     }
@@ -304,7 +366,6 @@ void FixturesController::publishSelected() {
     window_->set_universe(shared(dmx::describePortAddress(fixture->universe)));
     window_->set_address(static_cast<int>(fixture->address));
     window_->set_enabled(fixture->enabled);
-    window_->set_mode_index(modeOf(*fixture));
     // The movement window is shown for a fixture that can move, and hidden for one that
     // cannot — on a wash the four numbers mean nothing and would be four controls an operator
     // has to work out are irrelevant.
@@ -315,10 +376,100 @@ void FixturesController::publishSelected() {
     window_->set_tilt_max(static_cast<float>(fixture->tiltMax * 100.0));
 }
 
+const fixtures::FixtureProfile*
+FixturesController::profileOf(const dmx::Fixture& fixture) const noexcept {
+    return fixture.profile.linked() ? fixtures::findProfile(library_, fixture.profile.id) : nullptr;
+}
+
+void FixturesController::publishModes(const dmx::Fixture* fixture) {
+    std::vector<slint::SharedString> entries;
+    std::vector<slint::SharedString> asides;
+    modeNames_.clear();
+    int index = 0;
+    const fixtures::FixtureProfile* const profile =
+        fixture == nullptr ? nullptr : profileOf(*fixture);
+    const std::vector<std::string> names =
+        profile == nullptr ? std::vector<std::string>{} : fixtures::modesFor(*fixture, *profile);
+    if (profile != nullptr && !names.empty()) {
+        // **The definition's modes**, of this fixture's shape. One whose channels were changed by
+        // hand is in its mode no longer and says so, first — so that picking the mode itself,
+        // below it, puts the channels back (a dropdown does not pick what it already shows).
+        const bool edited =
+            fixtures::isEdited(*fixture, *profile) ||
+            std::find(names.begin(), names.end(), fixture->profile.mode) == names.end();
+        if (edited) {
+            entries.push_back(shared(fixture->profile.mode + " (edited)"));
+            asides.push_back(shared(std::to_string(fixture->channels.size())));
+            modeNames_.emplace_back();
+        }
+        for (const std::string& name : names) {
+            if (!edited && name == fixture->profile.mode) {
+                index = static_cast<int>(entries.size());
+            }
+            entries.push_back(shared(name));
+            const fixtures::ProfileMode* const mode = fixtures::findMode(*profile, name);
+            asides.push_back(
+                shared(mode == nullptr ? std::string() : fixtures::channelCountOf(*mode)));
+            modeNames_.push_back(name);
+        }
+        window_->set_mode_footnote(shared("picking one puts its channels back as imported"));
+        window_->set_mode_note(
+            shared("from " +
+                   (profile->manufacturer.empty() ? std::string() : profile->manufacturer + " · ") +
+                   fixtures::displayName(library_, *profile)));
+    } else {
+        // Index 0 is "custom", so that a channel map the operator has edited has something
+        // honest to be — and so picking nothing is a state rather than a fixture nobody meant.
+        // Worded as what it is, since picking it changes nothing (see `pickMode`).
+        entries.push_back(shared("custom (the channels below)"));
+        for (const dmx::FixtureMode& mode : dmx::builtinModes()) {
+            entries.push_back(shared(std::string(mode.name)));
+        }
+        index = fixture == nullptr ? 0 : modeOf(*fixture);
+        window_->set_mode_footnote(shared({}));
+        window_->set_mode_note(shared("fills in the channels below"));
+    }
+    writeRows(*modesModel_, entries);
+    writeRows(*modeAsidesModel_, asides);
+    window_->set_mode_index(index);
+}
+
+std::string FixturesController::noteFor(const dmx::Fixture& fixture, std::size_t index) const {
+    const fixtures::FixtureProfile* const profile = profileOf(fixture);
+    const std::string_view label = dmx::channelLabel(fixture, index);
+    if (profile == nullptr || label.empty()) {
+        return {};
+    }
+    const fixtures::ProfileMode* const mode = fixtures::findMode(*profile, fixture.profile.mode);
+    const int part = fixture.profile.part;
+    if (mode == nullptr || part < 1 || static_cast<std::size_t>(part) > mode->parts.size()) {
+        return {};
+    }
+    // The definition's channel of the same name nearest this one — at the same place unless a
+    // channel above it was added or taken out by hand — so a note stays with its channel.
+    const std::vector<fixtures::ProfileChannel>& channels =
+        mode->parts[static_cast<std::size_t>(part - 1)];
+    const fixtures::ProfileChannel* nearest = nullptr;
+    std::size_t distance = 0;
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (channels[i].label != label) {
+            continue;
+        }
+        const std::size_t away = i > index ? i - index : index - i;
+        if (nearest == nullptr || away < distance) {
+            nearest = &channels[i];
+            distance = away;
+        }
+    }
+    return nearest == nullptr ? std::string() : nearest->note;
+}
+
 ChannelRow FixturesController::rowFor(const dmx::Fixture& fixture, std::size_t index,
                                      const std::vector<std::uint8_t>& levels) const {
     ChannelRow row{};
     row.number = static_cast<int>(fixture.address) + static_cast<int>(index);
+    row.label = shared(std::string(dmx::channelLabel(fixture, index)));
+    row.note = shared(noteFor(fixture, index));
     row.role_index = 0;
     for (std::size_t r = 0; r < dmx::kRoles.size(); ++r) {
         if (dmx::kRoles[r] == fixture.channels[index]) {
@@ -327,6 +478,16 @@ ChannelRow FixturesController::rowFor(const dmx::Fixture& fixture, std::size_t i
         }
     }
     row.parked = index < fixture.parked.size() ? static_cast<int>(fixture.parked[index]) : 0;
+    // Which head it moves, as the engine counts them (`dmx::headsOf`): the nth pan, tilt or fine
+    // is head n's — a pan the heads share is the first's. Only where there is more than one.
+    const dmx::Role role = fixture.channels[index];
+    if (dmx::headsOf(fixture) >= 2 && (role == dmx::Role::Pan || role == dmx::Role::Tilt ||
+                                       role == dmx::Role::PanFine || role == dmx::Role::TiltFine)) {
+        const auto before =
+            std::count(fixture.channels.begin(),
+                       fixture.channels.begin() + static_cast<std::ptrdiff_t>(index), role);
+        row.head = static_cast<int>(before) + 1;
+    }
     const std::size_t channel = std::size_t{fixture.address} + index;
     row.live = channel >= 1 && channel <= levels.size() ? static_cast<int>(levels[channel - 1]) : 0;
     return row;
@@ -343,6 +504,12 @@ void FixturesController::publishChannels() {
             rows.push_back(rowFor(*fixture, i, levels));
         }
     }
+    // A column for what each channel is called, only for a fixture that has names for them.
+    window_->set_has_labels(fixture != nullptr &&
+                            std::any_of(fixture->labels.begin(), fixture->labels.end(),
+                                        [](const std::string& label) { return !label.empty(); }));
+    // And one for which head each pan and tilt moves, only for a fixture with more than one.
+    window_->set_has_heads(fixture != nullptr && dmx::headsOf(*fixture) >= 2);
     // **In place, always** — another fixture, a new mode, a channel added or taken away. Each row
     // shows what its model says and nothing of its own (weltformat.slint), so updating it is
     // enough, and rebuilding was what took a dropdown away under the pointer and left a box
@@ -444,6 +611,10 @@ void FixturesController::commitDrafts() {
         const dmx::Fixture* const fixture = current();
         if (pending.box == Numbered::TestLevel) {
             setTestLevel(pending.value);
+        } else if (pending.box == Numbered::ImportCount) {
+            setImportCount(pending.value);
+        } else if (pending.box == Numbered::ImportAddress) {
+            setImportAddress(pending.value);
         } else if (fixture != nullptr && fixture->id == pending.fixtureId) {
             if (pending.box == Numbered::Address) {
                 setAddress(pending.value);
@@ -456,7 +627,7 @@ void FixturesController::commitDrafts() {
         const Draft pending = *draft_;
         draft_.reset();
         const dmx::Fixture* const fixture = current();
-        if (fixture != nullptr && fixture->id == pending.fixtureId) {
+        if (windowsOwn(pending.field) || (fixture != nullptr && fixture->id == pending.fixtureId)) {
             applyField(pending.field, pending.text);
         }
     }
@@ -464,10 +635,10 @@ void FixturesController::commitDrafts() {
 
 void FixturesController::noteTyped(Numbered box, int index, int value) {
     const dmx::Fixture* const fixture = current();
-    if (box != Numbered::TestLevel && fixture == nullptr) {
+    if (!windowsOwn(box) && fixture == nullptr) {
         return;
     }
-    const std::string id = box == Numbered::TestLevel ? std::string() : fixture->id;
+    const std::string id = windowsOwn(box) ? std::string() : fixture->id;
     // Another box's draft still standing means its own commit has not come yet — the keyboard
     // moved straight from it to this one. Committed now, before this one replaces it.
     const bool another = (typed_ && (typed_->box != box || typed_->index != index ||
@@ -481,10 +652,9 @@ void FixturesController::noteTyped(Numbered box, int index, int value) {
 
 bool FixturesController::takeTyped(Numbered box, int index) {
     const dmx::Fixture* const fixture = current();
-    const std::string id =
-        box == Numbered::TestLevel || fixture == nullptr ? std::string() : fixture->id;
+    const std::string id = windowsOwn(box) || fixture == nullptr ? std::string() : fixture->id;
     if (!typed_ || typed_->box != box || typed_->index != index || typed_->fixtureId != id ||
-        (box != Numbered::TestLevel && fixture == nullptr)) {
+        (!windowsOwn(box) && fixture == nullptr)) {
         return false;
     }
     typed_.reset();
@@ -493,21 +663,26 @@ bool FixturesController::takeTyped(Numbered box, int index) {
 
 void FixturesController::noteDraft(Field field, const std::string& text) {
     const dmx::Fixture* const fixture = current();
-    if (fixture == nullptr) {
+    if (!windowsOwn(field) && fixture == nullptr) {
         return;
     }
-    if ((draft_ && (draft_->field != field || draft_->fixtureId != fixture->id)) || typed_) {
+    const std::string id = windowsOwn(field) ? std::string() : fixture->id;
+    if ((draft_ && (draft_->field != field || draft_->fixtureId != id)) || typed_) {
         commitDrafts();
     }
-    draft_ = Draft{fixture->id, field, text};
+    draft_ = Draft{id, field, text};
 }
 
 void FixturesController::finishDraft(Field field, const std::string& text) {
     const dmx::Fixture* const fixture = current();
     // Only an edit that was typed, for the fixture showing — see `typed_`. With nothing typed the
-    // box is only letting go of what it was shown, which may be another fixture's by now.
-    if (fixture == nullptr || !draft_ || draft_->field != field ||
-        draft_->fixtureId != fixture->id) {
+    // box is only letting go of what it was shown, which may be another fixture's by now. The
+    // import's universe is the window's, typed for no fixture.
+    const std::string id = windowsOwn(field)    ? std::string()
+                           : fixture == nullptr ? std::string()
+                                                : fixture->id;
+    if ((!windowsOwn(field) && fixture == nullptr) || !draft_ || draft_->field != field ||
+        draft_->fixtureId != id) {
         return;
     }
     draft_.reset();
@@ -525,6 +700,9 @@ void FixturesController::applyField(Field field, const std::string& text) {
     case Field::Universe:
         setUniverse(text);
         break;
+    case Field::ImportUniverse:
+        setImportUniverse(text);
+        break;
     }
 }
 
@@ -538,6 +716,10 @@ void FixturesController::pick(int index) {
         setStatus({}, false);
     }
     commitDrafts();
+    // A fixture clicked in the list while importing is the editor wanted back, on that fixture.
+    if (import_.open) {
+        closeImport();
+    }
     selected_ = index;
     publishList();
     publishSelected();
@@ -567,6 +749,15 @@ void FixturesController::fold(int section) {
     case 2:
         window_->set_moves_folded(!window_->get_moves_folded());
         break;
+    case 3:
+        window_->set_import_type_folded(!window_->get_import_type_folded());
+        break;
+    case 4:
+        window_->set_import_mode_folded(!window_->get_import_mode_folded());
+        break;
+    case 5:
+        window_->set_import_where_folded(!window_->get_import_where_folded());
+        break;
     default:
         break;
     }
@@ -576,6 +767,10 @@ void FixturesController::add() {
     commitDrafts();
     // What the line said was about the fixture showing, which this replaces.
     setStatus({}, false);
+    // A fixture added by hand is the editor wanted, on it.
+    if (import_.open) {
+        closeImport();
+    }
     if (fixtures_.size() >= dmx::kMaxRoutableFixtures) {
         // Past this a fixture can still be patched, parked and tested from here; what it
         // cannot be is reached by a rule, by name or by group, because a rule carries its
@@ -613,6 +808,12 @@ void FixturesController::duplicate() {
     copy.name = freshName(fixtures_, fixture->name);
     // A fixture of its own, which rules aimed at the original do not reach.
     copy.id = dmx::newFixtureId(fixtures_);
+    // A copy of one of a two-address pair is not in that pair — changing the pair's mode must
+    // not change it — and alone it is not the mode's shape any more, so it is not linked either.
+    // A copy of a fixture of one address stays linked to the same definition and mode.
+    if (!copy.profile.pair.empty()) {
+        copy.profile = dmx::Fixture::ProfileLink{};
+    }
     // Addressed after the one it came from, which is what duplicating a par in a row means.
     const std::uint16_t after = dmx::lastChannelOf(*fixture);
     copy.address = static_cast<std::uint16_t>(
@@ -630,6 +831,10 @@ void FixturesController::duplicateAt(int index) {
         return;
     }
     commitDrafts();
+    // The copy is picked, in the editor.
+    if (import_.open) {
+        closeImport();
+    }
     selected_ = index;
     duplicate();
 }
@@ -738,6 +943,29 @@ void FixturesController::pickMode(int mode) {
     if (fixture == nullptr) {
         return;
     }
+    // **A fixture an import made: its definition's modes** (`publishModes`). Its channels, parked
+    // levels and names as the definition has them — the way back from an edit by hand — and both
+    // fixtures of a two-address pair, each its own part.
+    if (!modeNames_.empty()) {
+        const fixtures::FixtureProfile* const profile = profileOf(*fixture);
+        if (profile == nullptr || mode < 0 || static_cast<std::size_t>(mode) >= modeNames_.size() ||
+            modeNames_[static_cast<std::size_t>(mode)].empty()) {
+            publishModes(fixture); // the "… (edited)" entry, which is where it is: nothing
+            return;
+        }
+        const std::string name = modeNames_[static_cast<std::size_t>(mode)];
+        const bool pair = !fixture->profile.pair.empty();
+        const std::string fixtureName = fixture->name;
+        if (!fixtures::remode(fixtures_, static_cast<std::size_t>(selected_), *profile, name)) {
+            publishModes(fixture);
+            return;
+        }
+        commit();
+        setStatus(pair ? "Both parts of " + fixtureName + "'s pair are in " + name + " now."
+                       : std::string(),
+                  false);
+        return;
+    }
     if (mode <= 0) {
         // **"custom" describes a map; it sets none.** Picked, it did nothing, and the dropdown
         // went on saying "custom" over a fixture that was still an RGB par (the audit of
@@ -760,6 +988,10 @@ void FixturesController::pickMode(int mode) {
     // shaped like that", not "start again".
     fixture->channels.assign(modes[index].channels.begin(), modes[index].channels.end());
     fixture->parked.assign(modes[index].parked.begin(), modes[index].parked.end());
+    // A built-in shape is not the imported definition's: what its channels were called and
+    // which mode they came from no longer describe them.
+    fixture->labels.clear();
+    fixture->profile = dmx::Fixture::ProfileLink{};
     commit();
 }
 
@@ -779,6 +1011,11 @@ void FixturesController::addChannel() {
     }
     fixture->channels.push_back(dmx::Role::Unused);
     fixture->parked.push_back(0);
+    // A fixture with names for its channels keeps them beside their channels; the new one has
+    // none.
+    if (!fixture->labels.empty()) {
+        fixture->labels.resize(fixture->channels.size());
+    }
     commit();
 }
 
@@ -791,6 +1028,10 @@ void FixturesController::removeChannel(int index) {
     fixture->channels.erase(fixture->channels.begin() + index);
     if (static_cast<std::size_t>(index) < fixture->parked.size()) {
         fixture->parked.erase(fixture->parked.begin() + index);
+    }
+    // And its name with it, or every name after it would describe the channel before.
+    if (static_cast<std::size_t>(index) < fixture->labels.size()) {
+        fixture->labels.erase(fixture->labels.begin() + index);
     }
     // Out of the rows' model at its own place, as a fixture is out of the list's.
     if (static_cast<std::size_t>(index) < channelModel_->row_count()) {
@@ -941,6 +1182,544 @@ void FixturesController::testChannel(int index) {
     setStatus("Channel " + std::to_string(number) + " at " + std::to_string(testLevel_) + " for " +
                   std::to_string(static_cast<int>(kTestSeconds)) + " s.",
               false);
+}
+
+// --- the import --------------------------------------------------------------------------------
+
+namespace {
+
+/// "Elation · Rayzor 760": the maker, where the file names one, and the model as a list shows it.
+std::string definitionName(const std::vector<fixtures::FixtureProfile>& library,
+                           const fixtures::FixtureProfile& profile) {
+    return (profile.manufacturer.empty() ? std::string() : profile.manufacturer + " · ") +
+           fixtures::displayName(library, profile);
+}
+
+/// "a", "a and b", "a, b and c".
+std::string listed(const std::vector<std::string>& names) {
+    std::string text;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        text += i == 0 ? "" : i + 1 == names.size() ? " and " : ", ";
+        text += names[i];
+    }
+    return text;
+}
+
+std::string counted(std::size_t count, const char* one, const char* many) {
+    return std::to_string(count) + " " + (count == 1 ? one : many);
+}
+
+constexpr const char* kFileHint = "a GDTF file (.gdtf) or an Open Fixture Library file (.json)";
+
+} // namespace
+
+const fixtures::FixtureProfile* FixturesController::importProfile() const noexcept {
+    if (import_.askingAbout) {
+        return nullptr; // nothing is picked while the question is open
+    }
+    if (import_.incoming) {
+        return &*import_.incoming;
+    }
+    return fixtures::findProfile(library_, import_.entryId);
+}
+
+void FixturesController::openImport() {
+    commitDrafts();
+    if (import_.open) {
+        return;
+    }
+    import_ = Import{};
+    import_.open = true;
+    // Where the block goes, to start with: the universe of the fixture showing — or of the last
+    // one patched — and the first channel after everything already patched on it.
+    const dmx::Fixture* const showing = current();
+    import_.universe = showing != nullptr  ? showing->universe
+                       : fixtures_.empty() ? dmx::PortAddress{0}
+                                           : fixtures_.back().universe;
+    int after = 0;
+    for (const dmx::Fixture& fixture : fixtures_) {
+        if (fixture.universe == import_.universe) {
+            after = std::max<int>(after, dmx::lastChannelOf(fixture));
+        }
+    }
+    import_.address = std::clamp(after + 1, 1, static_cast<int>(dmx::kChannelsPerUniverse));
+    setStatus({}, false); // it was about the fixture the import now covers
+    window_->set_import_type_folded(false);
+    window_->set_import_mode_folded(false);
+    window_->set_import_where_folded(false);
+    publishImport();
+}
+
+void FixturesController::closeImport() {
+    if (!import_.open) {
+        return;
+    }
+    import_ = Import{};
+    publishImport();
+}
+
+void FixturesController::forgetImportFile() {
+    import_.incoming.reset();
+    import_.askingAbout.reset();
+    import_.fileLine.clear();
+    import_.fileNote.clear();
+    import_.fileError = false;
+}
+
+void FixturesController::pickFirstImportMode() {
+    import_.mode.clear();
+    if (const fixtures::FixtureProfile* const profile = importProfile()) {
+        for (const fixtures::ProfileMode& mode : profile->modes) {
+            if (mode.importable()) {
+                import_.mode = mode.name;
+                break;
+            }
+        }
+    }
+}
+
+void FixturesController::pickLibraryEntry(int row) {
+    if (!import_.open || row < 0 || static_cast<std::size_t>(row) >= libraryOrder_.size()) {
+        return;
+    }
+    const fixtures::FixtureProfile& entry = library_[libraryOrder_[static_cast<std::size_t>(row)]];
+    if (import_.entryId == entry.id && !import_.incoming && !import_.askingAbout) {
+        return; // picked already: the mode chosen stays
+    }
+    forgetImportFile();
+    import_.entryId = entry.id;
+    pickFirstImportMode();
+    publishImport();
+}
+
+void FixturesController::removeLibraryEntry(int row) {
+    if (!import_.open || row < 0 || static_cast<std::size_t>(row) >= libraryOrder_.size()) {
+        return;
+    }
+    const fixtures::FixtureProfile& entry = library_[libraryOrder_[static_cast<std::size_t>(row)]];
+    const std::string id = entry.id;
+    const std::string name = definitionName(library_, entry);
+    // Only an entry no fixture is made from (decision 13): its × is not drawn otherwise, and
+    // this is the belt to that.
+    if (!fixtures::removeProfile(library_, id, fixtures_)) {
+        setStatus(name + " has fixtures made from it, so it stays in the library.", true);
+        publishImport();
+        return;
+    }
+    if (import_.entryId == id) {
+        import_.entryId.clear();
+        import_.mode.clear();
+    }
+    // The question about it is moot: the file's definition is new to the library now.
+    if (import_.askingAbout && *import_.askingAbout == id) {
+        import_.askingAbout.reset();
+        import_.fileNote = "new to this preset: added to its library when you import";
+        pickFirstImportMode();
+    }
+    commitLibrary();
+    setStatus(name + " is out of this preset's library.", false);
+    publishImport();
+}
+
+void FixturesController::chooseImportFile() {
+    if (!import_.open) {
+        return;
+    }
+    const std::filesystem::path path =
+        askOpenFile("Import a fixture's definition", "", FileKind::FixtureDefinition);
+    if (path.empty()) {
+        return; // cancelled
+    }
+    importFile(path);
+}
+
+void FixturesController::importFile(const std::filesystem::path& path) {
+    if (!import_.open) {
+        openImport();
+    }
+    forgetImportFile();
+    import_.entryId.clear();
+    import_.mode.clear();
+    const std::string fileName = io::pathText(path.filename());
+    std::string problem;
+    std::optional<fixtures::FixtureProfile> read = fixtures::importProfile(path, problem);
+    if (!read) {
+        // Said where the file was asked for, in plain words (the operator, 2026-10-05).
+        import_.fileLine = fileName;
+        import_.fileNote = "Can't read " + fileName + ": " + problem + ".";
+        import_.fileError = true;
+        publishImport();
+        return;
+    }
+    import_.fileLine = fileName + " · " +
+                       (read->manufacturer.empty() ? std::string() : read->manufacturer + " · ") +
+                       read->model;
+    const fixtures::Comparison seen = fixtures::compareWithLibrary(library_, *read);
+    switch (seen.arrival) {
+    case fixtures::Arrival::New:
+        import_.incoming = std::move(*read);
+        import_.fileNote = "new to this preset: added to its library when you import";
+        pickFirstImportMode();
+        break;
+    case fixtures::Arrival::Same:
+        // The library has it, the same: that entry, and nothing added (decision 12).
+        import_.entryId = library_[seen.index].id;
+        import_.fileNote = "this preset's library has it already, the same — picked above";
+        pickFirstImportMode();
+        break;
+    case fixtures::Arrival::Changed:
+        // Another version of an entry: asked before anything changes.
+        import_.incoming = std::move(*read);
+        import_.askingAbout = library_[seen.index].id;
+        break;
+    }
+    publishImport();
+}
+
+void FixturesController::answerReplace() {
+    if (!import_.askingAbout || !import_.incoming) {
+        return;
+    }
+    const std::string id = *import_.askingAbout;
+    const auto at =
+        std::find_if(library_.begin(), library_.end(),
+                     [&id](const fixtures::FixtureProfile& one) { return one.id == id; });
+    if (at == library_.end()) {
+        answerCancel();
+        return;
+    }
+    const std::string model = at->model;
+    const std::size_t users = fixtures::usersOf(fixtures_, id);
+    const std::vector<std::string> unlinked =
+        fixtures::replaceProfile(library_, static_cast<std::size_t>(at - library_.begin()),
+                                 std::move(*import_.incoming), fixtures_);
+    import_.incoming.reset();
+    import_.askingAbout.reset();
+    import_.entryId = id;
+    import_.fileNote = "the library's " + model + " is this file's now";
+    pickFirstImportMode();
+    commitLibrary();
+    commit(); // the fixtures made from it, brought up to date
+    std::string said = model + " replaced";
+    if (users > 0) {
+        said +=
+            ": " + counted(users - unlinked.size(), "fixture", "fixtures") + " brought up to date";
+    }
+    if (!unlinked.empty()) {
+        said += "; " + listed(unlinked) + (unlinked.size() == 1 ? " keeps its" : " keep their") +
+                " channels but " + (unlinked.size() == 1 ? "is" : "are") + " no longer linked — " +
+                (unlinked.size() == 1 ? "its" : "their") + " mode is not in the new file";
+    }
+    setStatus(said + ".", !unlinked.empty());
+}
+
+void FixturesController::answerKeepBoth() {
+    if (!import_.askingAbout || !import_.incoming) {
+        return;
+    }
+    const std::size_t index = fixtures::addProfile(library_, std::move(*import_.incoming));
+    import_.incoming.reset();
+    import_.askingAbout.reset();
+    import_.entryId = library_[index].id;
+    import_.fileNote = "kept both: this file's is the second entry, shown with its revision";
+    pickFirstImportMode();
+    commitLibrary();
+    publishImport();
+}
+
+void FixturesController::answerCancel() {
+    forgetImportFile();
+    import_.entryId.clear();
+    import_.mode.clear();
+    publishImport();
+}
+
+void FixturesController::pickImportMode(int row) {
+    const fixtures::FixtureProfile* const profile = importProfile();
+    if (!import_.open || profile == nullptr || row < 0 ||
+        static_cast<std::size_t>(row) >= profile->modes.size()) {
+        return;
+    }
+    const fixtures::ProfileMode& mode = profile->modes[static_cast<std::size_t>(row)];
+    if (!mode.importable()) {
+        return; // it says why, and has no dot to pick
+    }
+    import_.mode = mode.name;
+    publishImport();
+}
+
+void FixturesController::setImportCount(int count) {
+    import_.count = std::clamp(count, 1, static_cast<int>(dmx::kChannelsPerUniverse));
+    publishImport();
+}
+
+void FixturesController::setImportUniverse(const std::string& text) {
+    dmx::PortAddress universe = 0;
+    if (!dmx::parsePortAddress(text, universe)) {
+        setStatus("A universe is a number from 0 to 32767, or net:sub:uni past the first 256.",
+                  true);
+        publishImport();
+        return;
+    }
+    setStatus({}, false);
+    import_.universe = universe;
+    publishImport();
+}
+
+void FixturesController::setImportAddress(int address) {
+    import_.address = std::clamp(address, 1, static_cast<int>(dmx::kChannelsPerUniverse));
+    publishImport();
+}
+
+void FixturesController::confirmImport() {
+    if (!import_.open) {
+        return;
+    }
+    const fixtures::FixtureProfile* const profile = importProfile();
+    if (profile == nullptr || import_.mode.empty()) {
+        setStatus("Pick a fixture type and one of its modes first.", true);
+        return;
+    }
+    // Checked before anything changes: a file's definition goes into the library only with
+    // fixtures made from it.
+    fixtures::NewFixtures made = fixtures::makeFixtures(
+        *profile, import_.mode, import_.count, import_.universe, import_.address, fixtures_);
+    if (!made.problem.empty() || made.fixtures.empty()) {
+        setStatus("Nothing imported: " + made.problem + ".", true);
+        publishImport();
+        return;
+    }
+    const std::string model = profile->model;
+    const std::string modeName = import_.mode;
+    bool added = false;
+    if (import_.incoming) {
+        const std::size_t index = fixtures::addProfile(library_, std::move(*import_.incoming));
+        import_.incoming.reset();
+        import_.entryId = library_[index].id;
+        added = true;
+        // Made again from the library's copy, so they are linked to its id.
+        made = fixtures::makeFixtures(library_[index], modeName, import_.count, import_.universe,
+                                      import_.address, fixtures_);
+        if (!made.problem.empty() || made.fixtures.empty()) {
+            // The same arguments as the check above, so never — and if ever, the library keeps
+            // the definition and nothing is patched.
+            commitLibrary();
+            setStatus("Nothing imported: " + made.problem + ".", true);
+            publishImport();
+            return;
+        }
+    }
+    const bool pair = made.fixtures.size() == 2 * static_cast<std::size_t>(import_.count) &&
+                      !made.fixtures.front().profile.pair.empty();
+    const std::size_t first = fixtures_.size();
+    for (dmx::Fixture& fixture : made.fixtures) {
+        fixtures_.push_back(std::move(fixture));
+    }
+    selected_ = static_cast<int>(first);
+    const dmx::PortAddress universe = import_.universe;
+    const int count = import_.count;
+    closeImport();
+    if (added) {
+        commitLibrary();
+    }
+    commit();
+    std::string said =
+        "Imported " +
+        counted(static_cast<std::size_t>(count), pair ? "pair of " : "", pair ? "pairs of " : "") +
+        model + " in " + modeName + ", channels " + std::to_string(made.firstChannel) + " to " +
+        std::to_string(made.lastChannel) + " of universe " + dmx::describePortAddress(universe) +
+        ".";
+    if (fixtures_.size() > dmx::kMaxRoutableFixtures) {
+        said += " Rules reach the first " + std::to_string(dmx::kMaxRoutableFixtures) +
+                " fixtures only.";
+    }
+    setStatus(said, fixtures_.size() > dmx::kMaxRoutableFixtures);
+}
+
+void FixturesController::publishImport() {
+    window_->set_importing(import_.open);
+
+    // A: the library, by maker and model, each with how many fixtures are made from it.
+    libraryOrder_ = fixtures::libraryOrder(library_);
+    std::vector<LibraryRow> rows;
+    rows.reserve(libraryOrder_.size());
+    for (const std::size_t index : libraryOrder_) {
+        const fixtures::FixtureProfile& entry = library_[index];
+        const std::size_t users = fixtures::usersOf(fixtures_, entry.id);
+        LibraryRow row{};
+        row.maker = shared(entry.manufacturer.empty() ? std::string() : entry.manufacturer + " · ");
+        row.model = shared(fixtures::displayName(library_, entry));
+        row.users =
+            shared(users == 0 ? std::string("no fixture") : counted(users, "fixture", "fixtures"));
+        row.removable = users == 0;
+        row.picked = !import_.incoming && !import_.askingAbout && import_.entryId == entry.id;
+        rows.push_back(std::move(row));
+    }
+    writeRows(*libraryModel_, rows);
+
+    const fixtures::FixtureProfile* const profile = importProfile();
+    window_->set_import_file_line(shared(import_.fileLine.empty() ? kFileHint : import_.fileLine));
+    // Under it, what the file is to the library — and anything the definition itself says.
+    std::string note = import_.fileNote;
+    if (profile != nullptr) {
+        for (const std::string& line : profile->notes) {
+            note += (note.empty() ? "" : "\n") + line;
+        }
+    }
+    window_->set_import_file_note(shared(note));
+    window_->set_import_file_error(import_.fileError);
+
+    // The question, for a file the library has another version of.
+    const fixtures::FixtureProfile* const asked =
+        import_.askingAbout && import_.incoming
+            ? fixtures::findProfile(library_, *import_.askingAbout)
+            : nullptr;
+    window_->set_import_asking(asked != nullptr);
+    if (asked != nullptr) {
+        const fixtures::FixtureProfile& incoming = *import_.incoming;
+        std::size_t changed = 0;
+        for (const fixtures::ProfileMode& mode : incoming.modes) {
+            const fixtures::ProfileMode* const before = fixtures::findMode(*asked, mode.name);
+            changed += before == nullptr || !(*before == mode) ? 1 : 0;
+        }
+        std::size_t gone = 0;
+        for (const fixtures::ProfileMode& mode : asked->modes) {
+            gone += fixtures::findMode(incoming, mode.name) == nullptr ? 1 : 0;
+        }
+        const auto revised = [](const fixtures::FixtureProfile& one) {
+            return one.revision.empty() ? std::string("no revision given")
+                                        : "revised " + one.revision;
+        };
+        std::vector<std::string> users;
+        for (const dmx::Fixture& fixture : fixtures_) {
+            if (fixture.profile.id == asked->id) {
+                users.push_back(fixture.name);
+            }
+        }
+        window_->set_ask_question(shared(asked->model +
+                                         " is in this preset's library already, and this file is "
+                                         "not the same."));
+        window_->set_ask_library(
+            shared(revised(*asked) + " · used by " +
+                   (users.empty() ? std::string("no fixture")
+                                  : counted(users.size(), "fixture", "fixtures"))));
+        window_->set_ask_file(shared(revised(incoming) + " · " +
+                                     counted(incoming.modes.size(), "mode", "modes") + ", " +
+                                     std::to_string(changed) + " changed" +
+                                     (gone > 0 ? ", " + std::to_string(gone) + " gone" : "")));
+        window_->set_ask_replace(shared(
+            users.empty()
+                ? "the library's entry becomes this file's; no fixture is made from it"
+                : "bring " +
+                      (users.size() <= 3 ? listed(users)
+                                         : counted(users.size(), "fixture", "fixtures")) +
+                      " up to date — names, addresses and groups stay; one whose mode has gone "
+                      "keeps its channels and is no longer linked"));
+    }
+
+    // B: the modes.
+    window_->set_import_picked(profile != nullptr);
+    window_->set_import_definition(
+        shared(profile == nullptr ? std::string() : definitionName(library_, *profile)));
+    std::vector<ModeRow> modes;
+    if (profile != nullptr) {
+        modes.reserve(profile->modes.size());
+        for (const fixtures::ProfileMode& mode : profile->modes) {
+            ModeRow row{};
+            row.name = shared(mode.name);
+            row.picked = mode.name == import_.mode;
+            if (mode.importable()) {
+                row.channels = shared(fixtures::channelCountOf(mode));
+                row.drives = shared(fixtures::drivesOf(mode));
+                row.unused = static_cast<int>(fixtures::unusedIn(mode));
+            } else {
+                row.refused =
+                    shared(mode.refused.empty() ? std::string("it has no channels") : mode.refused);
+            }
+            std::string notes;
+            for (const std::string& line : mode.notes) {
+                notes += (notes.empty() ? "" : "\n") + line;
+            }
+            row.notes = shared(notes);
+            modes.push_back(std::move(row));
+        }
+    }
+    writeRows(*importModesModel_, modes);
+    window_->set_import_mode(shared(import_.mode));
+
+    // C: where, how many, what that takes and what they will be called.
+    window_->set_import_count(import_.count);
+    window_->set_import_universe(shared(dmx::describePortAddress(import_.universe)));
+    window_->set_import_address(import_.address);
+    std::string takes = "pick a mode above";
+    bool takesError = false;
+    std::string names;
+    std::string overlap;
+    bool pair = false;
+    bool can = false;
+    if (profile != nullptr && !import_.mode.empty()) {
+        const fixtures::NewFixtures made = fixtures::makeFixtures(
+            *profile, import_.mode, import_.count, import_.universe, import_.address, fixtures_);
+        const fixtures::ProfileMode* const mode = fixtures::findMode(*profile, import_.mode);
+        pair = mode != nullptr && mode->parts.size() == 2;
+        if (!made.problem.empty() || made.fixtures.empty()) {
+            takes = made.problem;
+            takesError = true;
+        } else {
+            can = true;
+            const std::string universe = dmx::describePortAddress(import_.universe);
+            const std::string span = made.firstChannel == made.lastChannel
+                                         ? "channel " + std::to_string(made.firstChannel)
+                                         : "channels " + std::to_string(made.firstChannel) +
+                                               " to " + std::to_string(made.lastChannel);
+            if (pair && import_.count == 1) {
+                takes = span + " on universe " + universe + ": part 1 at " +
+                        std::to_string(made.fixtures[0].address) + ", part 2 at " +
+                        std::to_string(made.fixtures[1].address);
+            } else if (pair) {
+                takes = span + " on universe " + universe + ", each copy part 1 then part 2";
+            } else if (import_.count > 1) {
+                takes = span + " on universe " + universe + ", " +
+                        std::to_string(made.fixtures.front().channels.size()) + " each";
+            } else {
+                takes = span + " on universe " + universe;
+            }
+            std::vector<std::string> madeNames;
+            for (const dmx::Fixture& fixture : made.fixtures) {
+                madeNames.push_back(fixture.name);
+            }
+            names = madeNames.size() <= 4
+                        ? listed(madeNames)
+                        : madeNames.front() + ", " + madeNames[1] + " … " + madeNames.back() +
+                              " (" + counted(madeNames.size(), "fixture", "fixtures") + ")";
+            names += " · group " + made.fixtures.front().group;
+            // Fixtures already on those channels: allowed — either can be re-addressed after —
+            // and said, because two fixtures on one channel drive each other.
+            std::vector<std::string> under;
+            for (const dmx::Fixture& existing : fixtures_) {
+                if (existing.universe != import_.universe || existing.channels.empty()) {
+                    continue;
+                }
+                const int from = existing.address;
+                const int to = dmx::lastChannelOf(existing);
+                if (from <= made.lastChannel && to >= made.firstChannel) {
+                    under.push_back(existing.name + " (" + whereOf(existing) + ")");
+                }
+            }
+            if (!under.empty()) {
+                overlap = "lands on " + under.front() +
+                          (under.size() > 1 ? " and " + counted(under.size() - 1, "more", "more")
+                                            : std::string()) +
+                          " — import anyway and re-address one of them after, or start later";
+            }
+        }
+    }
+    window_->set_import_takes(shared(takes));
+    window_->set_import_takes_error(takesError);
+    window_->set_import_names(shared(names));
+    window_->set_import_overlap(shared(overlap));
+    window_->set_import_pair(pair && can);
+    window_->set_import_can(can);
 }
 
 } // namespace takt4::ui

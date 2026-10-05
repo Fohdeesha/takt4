@@ -30,13 +30,21 @@ add_executable(takt4_tests
   control/osc_parse_test.cpp
   dmx/artnet_live_test.cpp
   dmx/artnet_test.cpp
+  dmx/cmy_test.cpp
   dmx/dmx_engine_test.cpp
   dmx/dmx_rule_test.cpp
   dmx/fixture_test.cpp
+  dmx/heads_test.cpp
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
   engine/control_test.cpp
   engine/live_tracker_test.cpp
+  fixtures/corpus_test.cpp
+  fixtures/fixture_files.hpp
+  fixtures/gdtf_reader_test.cpp
+  fixtures/library_test.cpp
+  fixtures/mapper_test.cpp
+  fixtures/ofl_reader_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   features/intensity_test.cpp
@@ -92,6 +100,9 @@ target_compile_definitions(takt4_tests PRIVATE
   "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
   "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
   "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+  # The example fixture definitions the import is swept over (tests/fixtures/corpus_test.cpp):
+  # local only, never in the repository, so that sweep skips where the folder is not.
+  "TAKT4_REFERENCES_DIR=\"${PROJECT_SOURCE_DIR}/references\""
 )
 
 target_link_libraries(takt4_tests
@@ -102,6 +113,8 @@ target_link_libraries(takt4_tests
     portaudio
     RTNeural
     nlohmann_json::nlohmann_json
+    # The fixture tests build GDTF archives in memory, good and broken, with its zip writer.
+    takt4::miniz
     Catch2::Catch2WithMain
     takt4::warnings
 )
@@ -228,6 +241,7 @@ if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests
     ui/crash_report_test.cpp
     ui/fixtures_test.cpp
+    ui/import_test.cpp
     ui/main.cpp
     ui/model_watch.hpp
     ui/nothing_real.hpp
@@ -249,12 +263,15 @@ if(TAKT4_BUILD_UI)
     "TAKT4_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tests/data\""
     "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
     "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""
+    "TAKT4_REFERENCES_DIR=\"${PROJECT_SOURCE_DIR}/references\""
   )
 
+  # miniz for the import's tests, which zip a GDTF description in memory as the core tests do.
   target_link_libraries(takt4_ui_tests
     PRIVATE
       takt4::ui
       takt4::core
+      takt4::miniz
       Catch2::Catch2
       takt4::warnings
   )
