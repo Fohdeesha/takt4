@@ -217,7 +217,9 @@ TEST_CASE("fixture corpus report", "[.][corpus-report]") {
                         }
                         if (channel.kind == Kind::Shutter) {
                             ++tally.shutters;
-                            tally.open += channel.openValue ? 1 : 0;
+                            if (channel.openValue) {
+                                ++tally.open;
+                            }
                         }
                         const bool color =
                             channel.kind >= Kind::Red && channel.kind <= Kind::IndirectBlue;

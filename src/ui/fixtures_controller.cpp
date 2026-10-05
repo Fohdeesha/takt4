@@ -1580,11 +1580,15 @@ void FixturesController::publishImport() {
         std::size_t changed = 0;
         for (const fixtures::ProfileMode& mode : incoming.modes) {
             const fixtures::ProfileMode* const before = fixtures::findMode(*asked, mode.name);
-            changed += before == nullptr || !(*before == mode) ? 1 : 0;
+            if (before == nullptr || !(*before == mode)) {
+                ++changed;
+            }
         }
         std::size_t gone = 0;
         for (const fixtures::ProfileMode& mode : asked->modes) {
-            gone += fixtures::findMode(incoming, mode.name) == nullptr ? 1 : 0;
+            if (fixtures::findMode(incoming, mode.name) == nullptr) {
+                ++gone;
+            }
         }
         const auto revised = [](const fixtures::FixtureProfile& one) {
             return one.revision.empty() ? std::string("no revision given")

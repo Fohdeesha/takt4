@@ -514,10 +514,6 @@ float cancelButtonX(FixturesController& patch) {
     return static_cast<float>(right - 20);
 }
 
-std::vector<std::string> labelsOf(const Fixture& fixture) {
-    return fixture.labels;
-}
-
 } // namespace
 
 TEST_CASE("IMPORT takes the editor's place, and nothing typed in the editor is lost to it",
