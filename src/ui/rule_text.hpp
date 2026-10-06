@@ -59,6 +59,18 @@ std::string spellNumber(double value);
 /// A weighted generator's list as its box shows it: "7:3, 12:1".
 std::string spellWeights(const std::vector<trigger::WeightedChoice>& choices);
 
+/// **A Liberation clip as Liberation names it** — "21-1" — for a value held as its place in deck
+/// order (`dmx::liberation::indexOf`). What a clip chip shows wherever another chip shows a
+/// number: nobody can read clip 106 off Liberation's deck, and everybody can read 21-1.
+std::string spellClip(const trigger::Value& value);
+/// "3-1, 7-2, 12-0".
+std::string spellClips(const std::vector<trigger::Value>& values);
+/// "3-1:3, 7-2:1".
+std::string spellClipWeights(const std::vector<trigger::WeightedChoice>& choices);
+/// One clip read back from a box, as its place in deck order — nothing for anything that is not
+/// a clip.
+std::optional<trigger::Value> parseClipValue(std::string_view text);
+
 /// The live interval multiplier in the words an operator thinks in, or **empty** at 1.
 ///
 /// The multiplier is on the *interval*, so 2 is half as often — which is exactly backwards

@@ -115,6 +115,14 @@ public:
     /// belongs.
     void cancelAll() noexcept;
 
+    /// **Every laser zone disarmed and its clip taken off** — arm, clip bank and clip select to
+    /// zero, at once, on every fixture that has them — and nothing else touched. What PANIC does
+    /// to the lasers after freezing the lights, and what the input going quiet does to them (the
+    /// operator's calls of 2026-10-05): a frozen laser look is still a beam in the air, and a
+    /// laser holding its last clip through a silence is a beam nobody is driving. Nothing at all
+    /// for a patch with no laser zone. The next clip effect arms a zone again.
+    void disarm(double now);
+
     /// Every effect stopped and every light-emitting channel of every fixture taken to zero —
     /// what the Blackout effect does, to the whole patch at once, and nothing that configures a
     /// fixture: a shutter or a head's position stays where it is. **Stop and quit**, the
@@ -189,6 +197,11 @@ private:
         /// which part of it: `kIntensity`, or 1 + a `kEmitters` index.
         bool isVirtual = false;
         std::uint8_t component = 0;
+        /// **A switch, not a fade**: `from` for as long as the effect runs and `to` the moment
+        /// it ends. A laser zone's arm and clip channels under a blackout — the clip number
+        /// faded would play every clip between, and the zone disarmed at the start would hide
+        /// the fade it is the end of.
+        bool step = false;
     };
 
     /// A pan and tilt pair, driven together. Movement cannot be expressed as two independent

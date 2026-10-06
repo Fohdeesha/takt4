@@ -93,7 +93,9 @@ public:
     ///
     /// **What is owed stays owed, at its own time.** A follow-up carries everything it needs,
     /// so the ones already queued go out when they are due whatever the rules become — a
-    /// release fired early by an edit cut a laser clip or a fade short.
+    /// release fired early by an edit cut a laser clip or a fade short. **A fire held for its
+    /// rule's delay is not owed**: it goes only while its rule is still there, switched on and
+    /// not muted, and every one goes with a `fresh` set.
     void setRules(const std::vector<Rule::Config>& rules, bool fresh = false);
 
     /// Moves every queued follow-up's routing after the outputs (`outputs`) or the patch
@@ -137,8 +139,39 @@ public:
     /// and its generators advance as they would on a real fire, because the point is to see
     /// what it will really send. False when there is no such rule, or it could not build a
     /// message. A disabled rule still tests: that is the state you are most likely to be in
-    /// while building one.
+    /// while building one. **Not held for the rule's delay** (`Rule::Config::delayOn`): a test
+    /// is pressed to see where the message lands, now.
+    ///
+    /// **And what it holds, let go of a moment later, when nothing else would** (the operator,
+    /// 2026-10-06: a laser left playing is "dangerous"). A note on or a laser clip tested from a
+    /// rule that is muted or switched off, or while the tracker is stopped, has nothing to fire
+    /// it again or take it off: its note off, or no clip, follows `kTestHoldSeconds` later — or
+    /// a beat, if that is longer — on top of any follow-up the rule owes of its own.
     bool test(std::string_view id, const Context& context);
+
+    /// How long a test that nothing else would let go of holds what it lit. See `test`.
+    static constexpr double kTestHoldSeconds = 0.5;
+
+    /// **What `id` holds, let go of now** — for a rule muted, switched off, deleted or re-aimed
+    /// (`output::OutputRunner`, which knows what each rule holds). Its fires still held for its
+    /// delay are dropped, and every MIDI and OSC follow-up it owes is sent now — no earlier than
+    /// the press it follows, so a release never overtakes a note on still held for a target's
+    /// delay. Its lighting follow-ups are left owed at their time: a lamp's fade out is not a
+    /// hazard, and a laser's clip is taken off by the runner.
+    void releaseRule(std::string_view id, double now);
+
+    /// Sends `message` as a follow-up of `ruleId` — what the runner releases a held note or a
+    /// laser zone with, so the log shows the release beside the press it lets go of.
+    void sendRelease(std::string_view ruleId, const Message& message) {
+        deliver(message, ruleId, true, {});
+    }
+
+    /// Every fire held for a rule's delay, dropped unsent — for the input going quiet, which
+    /// fires nothing new. PANIC and Stop drop them too (`panic`, `flushFollowUps`).
+    void dropHeldFires() noexcept;
+
+    /// Fires held for their rule's delay — see `Rule::Config::delayOn`.
+    std::size_t heldFires() const noexcept;
 
     /// §5.8's PANIC: *"A global halt that stops every rule instantly, reachable from the UI,
     /// a keyboard shortcut, OSC and MIDI. Non-negotiable for live use."*
@@ -164,7 +197,8 @@ public:
     bool listening() const noexcept { return listening_; }
 
     /// Sends every follow-up still owed, now rather than when it comes due, and latches
-    /// nothing. `panic` without the halt.
+    /// nothing. `panic` without the halt. A fire still held for its rule's delay is dropped: it
+    /// is a press, and the rig is stopping.
     ///
     /// **For a stop.** A note on whose note off has not yet come due is a laser still lit, and
     /// an operator pressing Stop has said the opposite — so the release goes out on the way
@@ -190,11 +224,11 @@ public:
     std::uint64_t dropped() const noexcept { return dropped_; }
     /// Fires that happened and were not sent, because their rule was muted.
     std::uint64_t muted() const noexcept { return muted_; }
-    /// Follow-ups waiting for their delay to pass.
+    /// Follow-ups waiting for their delay to pass, and fires waiting for their rule's.
     std::size_t pending() const noexcept { return pending_.size(); }
 
 private:
-    /// A follow-up and when it comes due, on `Context::now`.
+    /// A follow-up and when it comes due, on `Context::now` — or a fire held for its rule's delay.
     struct Pending {
         double due = 0.0;
         Message message;
@@ -202,29 +236,49 @@ private:
         /// way it names the press. Copied rather than pointed at: the rule set can be
         /// replaced while a follow-up is still owed, and §5.8 says those are still sent.
         std::string ruleId;
+        /// **A fire, not a follow-up**: held for `Rule::Config::delayOn`. Dropped rather than
+        /// sent early by everything that stops the rig, and by its rule going quiet before it
+        /// is due; its follow-ups wait inside it until it goes.
+        bool press = false;
+        /// A held fire's: what its generators drew, for the observer, and what it owes, each
+        /// with its delay after it.
+        std::vector<Value> slots;
+        std::vector<std::pair<double, Message>> owed;
+        /// A follow-up's: the moment of the press it follows. A release sent early is held to
+        /// no earlier than this, so it cannot overtake its own press in a target's queue.
+        double pressMoment = 0.0;
     };
 
     /// Fires one rule that has already passed its trigger and its conditions: builds the
-    /// message, sends it, and queues the follow-up.
+    /// message, sends it — or holds it for the rule's delay — and queues the follow-up.
     ///
-    /// `force` sends even from a muted rule — the [test] button, and nothing else.
+    /// `force` sends even from a muted rule, and at once whatever the rule's delay — the
+    /// [test] button, and nothing else.
     bool dispatch(Rule& rule, const Context& context, bool force = false);
+    /// Queues what `message` owes, each `delay` seconds after `due`.
+    void queueFollowUps(std::vector<std::pair<double, Message>>& owed, const Message& message,
+                        double due, const std::string& ruleId);
     /// Everything whose delay has passed, in the order it was queued.
     void drainDue(double now);
     void flushPending();
     void deliver(const Message& message, std::string_view ruleId, bool followUp,
                  std::span<const Value> slots);
+public:
     /// Whether a beat satisfies `rule`'s trigger — §5.8's WHEN stage, for the four that
-    /// count beats and bars.
+    /// count beats and bars. Public for the tests, which state the bar grid with it.
     static bool beatSatisfies(const Rule& rule, const Context& context) noexcept;
+
+private:
 
     Sink& sink_;
     FireObserver observer_;
     std::vector<Rule> rules_;
     std::vector<Pending> pending_;
     /// What `Rule::followUpsFor` filled in for the fire being dispatched, reused so that a
-    /// rule owing several messages allocates nothing after its first fire.
+    /// rule owing several messages allocates nothing after its first fire — and the same with
+    /// each one's delay settled.
     std::vector<std::pair<std::size_t, Message>> owed_;
+    std::vector<std::pair<double, Message>> delayed_;
     bool panicked_ = false;
     bool listening_ = true;
     std::uint64_t sent_ = 0;

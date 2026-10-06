@@ -2,6 +2,7 @@
 // the color picker, and the palette. The rest of the edits are in `rules_controller.cpp`,
 // what is drawn from them in `rules_controller_publish.cpp`.
 
+#include "core/dmx/liberation.hpp"
 #include "core/features/intensity.hpp"
 #include "core/io/utf8.hpp"
 #include "core/trigger/generator.hpp"
@@ -32,6 +33,16 @@ using namespace rules_detail;
 using trigger::Generator;
 using trigger::GeneratorKind;
 using trigger::Rule;
+
+bool RulesController::slotIsClip(int slot) const {
+    const Rule::Config* rule = current();
+    if (rule == nullptr || slot < 0) {
+        return false;
+    }
+    const std::vector<trigger::Slot> layout = trigger::slotLayout(*rule);
+    return static_cast<std::size_t>(slot) < layout.size() &&
+           layout[static_cast<std::size_t>(slot)].role == trigger::SlotRole::Clip;
+}
 
 void RulesController::pickSlotShape(int slot, int shape) {
     Generator::Config* config = slotConfig(slot);
@@ -65,10 +76,20 @@ void RulesController::pickSlotKind(int slot, int kind) {
         return;
     }
     const GeneratorKind picked = trigger::kGeneratorKinds[static_cast<std::size_t>(kind)];
-    if (config == paletteConfig() && !trigger::handsBackValues(picked)) {
+    if ((config == paletteConfig() || slotIsClip(slot)) && !trigger::handsBackValues(picked)) {
         return; // not offered there (`color-generator-kinds`); nothing else may set it either
     }
     config->kind = picked;
+    // **One clip, picked: the first of the range**, not the zero a fixed generator holds by
+    // default — which is clip 0-0, a clip nobody chose. One already inside the range is kept.
+    if (slotIsClip(slot) && picked == GeneratorKind::Fixed) {
+        const int low = std::min(config->low, config->high);
+        const int high = std::max(config->low, config->high);
+        if (config->fixed.kind() != trigger::Value::Kind::Int || config->fixed.asInt() < low ||
+            config->fixed.asInt() > high) {
+            config->fixed = trigger::Value::ofInt(low);
+        }
+    }
 
     // **A color switched to shuffle gets a palette, not a range.**
     //
@@ -146,6 +167,25 @@ void RulesController::setSlotRange(int slot, const std::string& text) {
     if (config == nullptr) {
         return;
     }
+    // **A clip range is two clips**, "1-1 to 21-1" — the dash inside a clip's name is why it
+    // cannot be split on one. Every clip between them in Liberation's deck order.
+    if (slotIsClip(slot)) {
+        const auto range = dmx::liberation::parseRange(text);
+        if (!range) {
+            setStatus("A clip range is two clips as Liberation names them, like 1-1 to 21-1: the "
+                      "column, then the row (0 to 4).",
+                      true);
+            publishSelected();
+            return;
+        }
+        const int from = dmx::liberation::indexOf(range->first);
+        const int to = dmx::liberation::indexOf(range->second);
+        config->low = std::min(from, to);
+        config->high = std::max(from, to);
+        choseSlot(slot);
+        commit();
+        return;
+    }
     const std::vector<std::string_view> parts = split(text, "-– ");
     if (parts.size() != 2) {
         setStatus("A range is two numbers, like 1 - 12.", true);
@@ -167,6 +207,31 @@ void RulesController::setSlotValues(int slot, const std::string& text) {
     typed(TypedIn::Slot, slot, 2);
     Generator::Config* config = slotConfig(slot);
     if (config == nullptr) {
+        return;
+    }
+    if (slotIsClip(slot)) {
+        // Clips as Liberation names them, every one of them read or none: a list half-read
+        // would shuffle clips the operator did not type.
+        std::vector<trigger::Value> clips;
+        for (const std::string_view part : split(text, ",;")) {
+            if (trim(part).empty()) {
+                continue;
+            }
+            const std::optional<trigger::Value> clip = parseClipValue(part);
+            if (!clip) {
+                setStatus("\"" + std::string(trim(part)) +
+                              "\" is not a clip. Type them as Liberation names them, like 3-1, "
+                              "7-2, 12-0.",
+                          true);
+                publishSelected();
+                return;
+            }
+            clips.push_back(*clip);
+        }
+        config->values = std::move(clips);
+        config->pool = trigger::Pool::List;
+        choseSlot(slot);
+        commit();
         return;
     }
     config->values.clear();
@@ -226,6 +291,20 @@ void RulesController::setSlotWeights(int slot, const std::string& text) {
         } else {
             choice.value = parseValue(entry);
         }
+        if (slotIsClip(slot)) {
+            const std::string_view named =
+                trim(colon != std::string_view::npos ? entry.substr(0, colon) : entry);
+            const std::optional<trigger::Value> clip = parseClipValue(named);
+            if (!clip) {
+                setStatus("\"" + std::string(named) +
+                              "\" is not a clip. Type them as Liberation names them, with a "
+                              "weight after each: 3-1:3, 7-2:1.",
+                          true);
+                publishSelected();
+                return;
+            }
+            choice.value = *clip;
+        }
         choices.push_back(choice);
     }
     config->choices = std::move(choices);
@@ -272,7 +351,17 @@ void RulesController::setSlotFixed(int slot, const std::string& text) {
     if (config == nullptr) {
         return;
     }
-    const trigger::Value value = parseValue(text);
+    trigger::Value value = parseValue(text);
+    // One clip, as Liberation names it.
+    if (slotIsClip(slot)) {
+        const std::optional<trigger::Value> clip = parseClipValue(text);
+        if (!clip) {
+            setStatus("A clip is its column and its row as Liberation names it, like 21-1.", true);
+            publishSelected();
+            return;
+        }
+        value = *clip;
+    }
     // A MIDI note or controller is a number. Text here would go out as note 0 — and, typed
     // into a number nobody has chosen yet, would arm the rule on it.
     const Rule::Config* rule = current();
@@ -401,6 +490,13 @@ std::optional<std::pair<int, int>> RulesController::slotRange(int slot) noexcept
         } else {
             ++at; // the palette, which is a list of colors and has no range
         }
+    }
+    // A clip, then its intensity: the clip's range is the operator's, the intensity a byte.
+    if (dmx::takesClip(rule->dmx.effect)) {
+        if (index == at + 1) {
+            return std::pair{0, 255};
+        }
+        at += 2;
     }
     if (rule->dmx.effect == dmx::EffectKind::Position && index >= at && index < at + 2) {
         return std::pair{0, 100};

@@ -6,6 +6,7 @@
 #include "core/trigger/rule.hpp"
 #include "ui/delete_guard.hpp"
 #include "ui/model_rows.hpp"
+#include "ui/rule_presets.hpp"
 
 #include "main_window.h" // generated; holds RulesWindow too — see src/ui/CMakeLists.txt
 
@@ -46,6 +47,20 @@ public:
     /// copy in step. The controller does not know where settings live and does not want to.
     using RulesChanged = std::function<void(const std::vector<trigger::Rule::Config>&)>;
 
+    /// **What the Liberation preset needs in place before its rules mean anything**, and which
+    /// this controller does not own: the zones in the patch, an Art-Net output to Liberation, and
+    /// Link on for Liberation's tempo to follow. The owner puts them there, and hands the new
+    /// patch back through `setPatch` as it does for any other change to it.
+    struct RigSetup {
+        /// The whole patch, the zones in it.
+        std::vector<dmx::Fixture> patch;
+        /// An enabled Art-Net output to this host and port — one already there switched on, or
+        /// a new one. The port is Art-Net's own, but in a test (`LiberationAsk::port`).
+        std::string artNetHost;
+        std::uint16_t artNetPort = dmx::kArtNetPort;
+    };
+    using RigNeeded = std::function<void(const RigSetup&)>;
+
     /// How many messages the event log remembers. Phase 6's list asks for a log tab; this is
     /// the pane. Bounded because a rule on every beat at 214 BPM is 3.6 lines a second, and
     /// an unbounded log of a four-hour set is a memory leak with a scrollbar.
@@ -67,6 +82,7 @@ public:
     RulesController& operator=(const RulesController&) = delete;
 
     void setRulesChanged(RulesChanged changed) { changed_ = std::move(changed); }
+    void setRigNeeded(RigNeeded needed) { rigNeeded_ = std::move(needed); }
 
     /// Shows the window, or brings it forward if it is already up.
     void show();
@@ -142,6 +158,29 @@ public:
     /// have to build the same rule three times. Index 0 is "no preset" and adds nothing; the
     /// menu counts from one. Every rule it makes is armed, like every rule the editor makes.
     void addRig(int index);
+
+    /// **The Liberation preset's prompt** (`rule_presets::planLiberation`): opened by its entry
+    /// in the preset menu, answered here, and added — zones, output, Link and rules — by
+    /// `addLiberation`, which does nothing while the plan has a problem. The answers are kept
+    /// between one opening and the next.
+    void openLiberation();
+    void closeLiberation();
+    void addLiberation();
+    bool liberationOpen() const noexcept { return liberationOpen_; }
+    const rule_presets::LiberationAsk& liberationAsk() const noexcept { return liberationAsk_; }
+    void setLaserCount(int lasers);
+    void setLaserClip(int laser, bool to, const std::string& text);
+    void setLaserTiming(int laser, int timing);
+    void setLiberationHost(const std::string& host);
+    void setLiberationUniverse(int universe);
+    void setLiberationAddress(int address);
+    void setLiberationMove(bool on);
+    void setLiberationShape(int shape);
+    void setLiberationAmount(int amount);
+    void setLiberationBars(int bars);
+    /// The port Liberation's DMX input listens on — Art-Net's own, 6454, unless the operator
+    /// moved it. A test aims it at a listener of its own (`LiberationAsk::port`).
+    void setLiberationPort(int port);
     void rename(const std::string& name);
     void setEnabled(bool on);
     /// §5.7's per-rule mute, from the window rather than from a control surface. **Live state,
@@ -165,6 +204,13 @@ public:
     void pickTrigger(int index);
     void setEvery(int every);
     void setPulses(int pulses);
+    /// Which beat of the bar the rule fires on, or counts from — `Rule::Config::onBeat`.
+    void setOnBeat(int beat);
+    /// A's wait: switched on or off, its amount as typed — milliseconds, beats or bars, as the
+    /// unit picked says — and the unit. See `Rule::Config::delayOn`.
+    void setDelayOn(bool on);
+    void setDelay(const std::string& text);
+    void pickDelayUnit(int unit);
     /// §5.6's rule subset, as a comma-separated list of output names. Empty is everywhere.
     /// Not reachable from the window any more — the routing is ticked from the rig's own
     /// list — but it is how a whole routing is set at once. The rule keeps the *ids* of the
@@ -350,6 +396,9 @@ private:
         /// with that rule at the same value, landed on it (found reviewing the patch editor's fix).
         kConfidenceBox,
         kProbabilityBox,
+        /// A's beat of the bar and its wait (2026-10-06).
+        kBeatOfBarBox,
+        kDelayBox,
     };
     /// A keystroke in a box; `index` is the row and `field` which box of it — the numbering is
     /// the markup's (`slot-typed`, `follow-typed`, `palette-typed`, `rule-typed`). See `typing_`.
@@ -400,6 +449,14 @@ private:
     /// effect is aimed at exists on the fixtures the rule names, and what happens where it
     /// does not. Empty when there is nothing worth saying.
     std::string describeRoleReach(const trigger::DmxSend& send) const;
+    /// The same for a Liberation clip: which of the rule's fixtures are laser zones, said only
+    /// where some are not — a clip aimed at a lamp reaches nothing.
+    std::string describeClipReach(const trigger::DmxSend& send) const;
+    /// Whether chip `slot` of the rule showing is its Liberation clip, which reads and shows
+    /// clips as Liberation names them rather than as numbers.
+    bool slotIsClip(int slot) const;
+    /// A's beat-of-the-bar box, its words, and whether it shows — see `setOnBeat`.
+    void publishBeatOfBar(const trigger::Rule::Config& rule);
     /// The heads row and the spread row, for a movement aimed at fixtures with several heads.
     void publishHeads(const trigger::DmxSend& send);
     /// How many heads the most of the fixtures `send` is aimed at has — 0 for none that moves.
@@ -437,6 +494,16 @@ private:
     std::vector<bool> chosen_;
     int anchor_ = -1;
     RulesChanged changed_;
+    RigNeeded rigNeeded_;
+    /// The Liberation prompt's answers, and whether it is up. See `openLiberation`.
+    rule_presets::LiberationAsk liberationAsk_;
+    bool liberationOpen_ = false;
+    Repeater<LaserRow> laserRows_;
+    /// Writes the prompt from `liberationAsk_` and the plan it makes.
+    void publishLiberation();
+    /// Appends `added` as one rig: ids numbered up where taken, seeds made fresh where shared,
+    /// and the whole of it selected — `addRig`'s, and the Liberation prompt's.
+    void appendRig(std::vector<trigger::Rule::Config> added);
     /// What §5.6's targets are called on this rig, so the editor can say which of a rule's
     /// names reach something. Only the names are needed; the addresses are the main
     /// window's business.

@@ -23,6 +23,7 @@
 import { Btn, Count, Dashes, Entry, FoldArrow, Keycap, Pick, Reading, Scroller, Tick, Track, Wf } from "weltformat.slint";
 import { FocusSink } from "theme.slint";
 import { Band, Heading, Mark, Note, RowLabel, Section, Word } from "editor_parts.slint";
+import { LaserRow, LiberationSheet } from "liberation_sheet.slint";
 
 /// One row of the rule list. Everything the list shows without the editor being open.
 export struct RuleRow {
@@ -85,6 +86,11 @@ export struct SlotRow {
   is-color: bool,
   /// The color that slot is currently set to, for the swatch.
   swatch: color,
+  /// Whether this slot is a **Liberation clip** — held as a place in deck order, and shown and typed
+  /// as Liberation names a clip, "21-1". `values`, `fixed` and `weights` are spelled that way for
+  /// it, and `range` is its range: "1-1 to 21-1".
+  is-clip: bool,
+  range: string,
   /// And the same color as hue, saturation and value, which is what the picker's three sliders
   /// move. Held apart from `swatch` because a grey has no hue to read back out of it — see
   /// `dmx::toHsv` — so the picker would jump to red the moment the saturation reached zero.
@@ -844,8 +850,9 @@ export component RulesWindow inherits Window {
   /// rows get less than their least width** — the list gives way first, dragged or not, and comes
   /// back when the room does. The page's margin and the gap are the 20 px; the scroll bar's margin
   /// is inside the pane's own width (`body-width`, and its least). Measured on 2026-09-30: a
-  /// Euclidean rule with its rate shown needs 692 px, which a 960 px window beside a 260 px list is
-  /// 12 short of, and a list dragged to two-fifths of 1000 left 580.
+  /// Euclidean rule with its rate shown needed 692 px, which a 960 px window beside a 260 px list
+  /// was 12 short of, and a list dragged to two-fifths of 1000 left 580. Since 2026-10-06, with A's
+  /// count boxes at 52 px and its rate reading in Archivo, the same rule needs 659.
   ///
   /// **Set, not bound**: the list's width is part of the layout the window's own width is worked
   /// out from, so a binding on `root.width` here is a binding loop (the Slint compiler warns of it).
@@ -908,6 +915,39 @@ export component RulesWindow inherits Window {
   /// §5.6's presets at rig scale: a whole set of rules in one pick.
   in-out property <[string]> rig-presets;
   callback rig-added(int);
+
+  // --- the Liberation preset's prompt (`LiberationSheet`) ----------------------------------------
+  in-out property <bool> liberation-open;
+  in-out property <[LaserRow]> lasers;
+  in-out property <int> laser-count: 1;
+  in-out property <[string]> laser-timings;
+  in-out property <[string]> laser-moves;
+  in-out property <string> liberation-host;
+  in-out property <int> liberation-port: 6454;
+  in-out property <int> liberation-universe: 1;
+  in-out property <int> liberation-address: 1;
+  in-out property <string> liberation-takt4-universe;
+  in-out property <bool> liberation-move;
+  in-out property <int> liberation-shape;
+  in-out property <int> liberation-amount: 25;
+  in-out property <int> liberation-bars: 4;
+  in-out property <string> liberation-instructions;
+  in-out property <string> liberation-problem;
+  callback laser-count-changed(int);
+  callback laser-clip-typed(int, bool, string);
+  callback laser-clip-edited(int, bool, string);
+  callback laser-timing-picked(int, int);
+  callback liberation-host-typed(string);
+  callback liberation-host-edited(string);
+  callback liberation-port-changed(int);
+  callback liberation-universe-changed(int);
+  callback liberation-address-changed(int);
+  callback liberation-move-toggled(bool);
+  callback liberation-shape-picked(int);
+  callback liberation-amount-changed(int);
+  callback liberation-bars-changed(int);
+  callback liberation-added();
+  callback liberation-cancelled();
   /// §5.9's per-rule [test] button: fires past `enabled` and past the conditions, deliberately.
   callback rule-tested();
 
@@ -928,11 +968,29 @@ export component RulesWindow inherits Window {
   /// Text the controller writes, not a number the markup formats — see `bpm-range`.
   in-out property <string> cooldown-ms;
   in-out property <string> when-summary;
+  /// Which beat of the bar — `Rule::Config::onBeat` — shown where it changes anything: on a bar,
+  /// and on beats counted more than one at a time. Its words name what it does for the trigger
+  /// showing: "on beat" 3 of a bar, every 2 "from beat" 2 "of the bar".
+  in-out property <bool> beat-of-bar-shown;
+  in-out property <int> beat-of-bar: 1;
+  in-out property <string> beat-of-bar-word;
+  in-out property <string> beat-of-bar-after;
+  /// What that beat means here, when it needs saying — a bar too short to have it.
+  in-out property <string> beat-of-bar-note;
+  /// The wait between the trigger and the send — `Rule::Config::delayOn` — off until ticked, and
+  /// the amount as the controller spells it, in the unit picked.
+  in-out property <bool> delay-on;
+  in-out property <string> delay-amount;
+  in-out property <int> delay-unit;
 
   callback trigger-picked(int);
   callback every-changed(int);
   callback pulses-changed(int);
   callback cooldown-changed(string);
+  callback beat-of-bar-changed(int);
+  callback delay-toggled(bool);
+  callback delay-edited(string);
+  callback delay-unit-picked(int);
 
   // --- B · only if -------------------------------------------------------------------------------
   /// The tick on B's heading: off, the rule fires every time A comes round, whatever is set below.
@@ -1023,6 +1081,11 @@ export component RulesWindow inherits Window {
   in-out property <bool> effect-takes-shape;
   in-out property <bool> effect-takes-curve;
   in-out property <bool> effect-takes-color;
+  /// Whether the effect runs over a time at all — not a Liberation clip, which is a switch.
+  in-out property <bool> effect-takes-duration: true;
+  /// A Liberation clip, and — where some of its fixtures are not laser zones — what it misses.
+  in-out property <bool> effect-takes-clip;
+  in-out property <string> effect-clip-note;
   /// Whether the fixtures this rule names *have* the channel it is aimed at — see
   /// `RulesController::describeRoleReach`. Empty when there is nothing worth saying.
   in-out property <string> effect-role-note;
@@ -1101,8 +1164,8 @@ export component RulesWindow inherits Window {
   callback follow-typed(int, int, string);
   /// And for the rule's own boxes: 0 the address, 1 the BPM range, 2 the cooldown, 3 the effect's
   /// duration, 4 its cycles, 5 its hue sweep, 6 "every", 7 the pulses, 8 the MIDI channel, 9 the
-  /// effect's "down to", 10 and 11 B's confidence and probability readings.
-  /// `RulesController::RuleBox` is this list.
+  /// effect's "down to", 10 and 11 B's confidence and probability readings, 12 A's beat of the
+  /// bar, 13 A's wait. `RulesController::RuleBox` is this list.
   callback rule-typed(int, string);
   callback slot-normalise-edited(int, string);
   callback slot-weights-edited(int, string);
@@ -1540,8 +1603,9 @@ export component RulesWindow inherits Window {
                   if root.trigger-takes-every: Word {
                     text: "every";
                   }
+                  // Two digits at most, so 52 px: A's first row is the widest the editor has.
                   if root.trigger-takes-every: Count {
-                    width: 64px;
+                    width: 52px;
                     value: root.every;
                     minimum: 1;
                     maximum: 64;
@@ -1569,17 +1633,50 @@ export component RulesWindow inherits Window {
                       root.pulses-changed(v);
                     }
                   }
-                  // "every 4 bars" counts from the first — bars 1, 5 and 9 — and a Euclidean
-                  // pattern shows itself: two numbers are not a rhythm anybody can hear. Prose
-                  // gives way before the buttons do.
-                  if root.trigger-takes-every: Text {
+                  // A Euclidean pattern shows itself: two numbers are not a rhythm anybody can hear.
+                  // Prose gives way before the buttons do.
+                  if root.trigger-takes-pulses: Text {
                     // Its own width and no more, and the first thing to give way.
                     horizontal-stretch: 1;
                     max-width: self.preferred-width;
                     min-width: 20px;
-                    text: root.trigger-takes-pulses ? root.euclid-pattern : "counting from the first";
+                    text: root.euclid-pattern;
                     color: Wf.ink2;
-                    font-family: root.trigger-takes-pulses ? Wf.code : Wf.sans;
+                    font-family: Wf.code;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                  }
+                  // Which beat of the bar (the operator, 2026-10-06: "not just fire every two
+                  // beats, but WHICH two beats"): "on beat 3" of a bar, every 2 "from beat 2 of
+                  // the bar". Only where it changes something — on a bar, and on beats counted
+                  // more than one at a time; every single beat is every beat from any of them.
+                  if root.beat-of-bar-shown: Word {
+                    text: root.beat-of-bar-word;
+                  }
+                  if root.beat-of-bar-shown: Count {
+                    width: 52px;
+                    value: root.beat-of-bar;
+                    minimum: 1;
+                    maximum: 16;
+                    enabled: !root.none;
+                    typed(v) => {
+                      root.rule-typed(12, v);
+                    }
+                    edited(v) => {
+                      root.beat-of-bar-changed(v);
+                    }
+                  }
+                  // The words after the box give way first, as the prose here always has — and go
+                  // altogether while a control surface has set a rate, whose reading after ×2 is
+                  // the widest this row gets (measured: 26 px over at the window's least width,
+                  // with ÷2 and ×2 eliding). The heading's summary still says "of the bar".
+                  if root.beat-of-bar-shown && root.beat-of-bar-after != "" && root.rule-rate == "": Text {
+                    horizontal-stretch: 1;
+                    max-width: self.preferred-width;
+                    min-width: 20px;
+                    text: root.beat-of-bar-after;
+                    color: Wf.ink2;
                     font-size: 14px;
                     vertical-alignment: center;
                     overflow: elide;
@@ -1612,18 +1709,80 @@ export component RulesWindow inherits Window {
                   }
                   // The rate a surface has moved it to, in amber: the one thing here that is not
                   // the rule as written.
+                  // Words, so Archivo — and narrower than mono, which at the window's least width
+                  // is what keeps ÷2 and ×2 whole beside a beat of the bar.
                   if root.trigger-takes-every && root.rule-rate != "": Text {
                     horizontal-stretch: 0;
                     text: root.rule-rate;
                     color: Wf.holding;
-                    font-family: Wf.code;
+                    font-family: Wf.sans;
                     font-size: 14px;
                     vertical-alignment: center;
                   }
                   if !root.trigger-takes-every && !root.none: Note {
                     text: "÷2 and ×2 need a count";
                   }
+                  if root.trigger-takes-every && root.beat-of-bar-note != "": Note {
+                    text: root.beat-of-bar-note;
+                  }
                   Rectangle { horizontal-stretch: 1; }
+                }
+
+                // The wait between the trigger and the send (the operator, 2026-10-06): off until
+                // ticked, as nothing optional is on by default; its box dashed and its unit quiet
+                // while it is off, and settable all the same, for later — as B's are.
+                HorizontalLayout {
+                  height: 34px;
+                  spacing: 10px;
+
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Tick {
+                      text: "then wait";
+                      checked: root.delay-on;
+                      enabled: !root.none;
+                      toggled(on) => {
+                        root.delay-toggled(on);
+                      }
+                    }
+                  }
+                  Entry {
+                    width: 80px;
+                    horizontal-stretch: 0;
+                    value: root.none ? "" : root.delay-amount;
+                    enabled: !root.none;
+                    dashed: !root.delay-on;
+                    font-family: Wf.code;
+                    typed(text) => {
+                      root.rule-typed(13, text);
+                    }
+                    committed(text) => {
+                      root.delay-edited(text);
+                    }
+                  }
+                  Pick {
+                    width: 100px;
+                    horizontal-stretch: 0;
+                    model: root.follow-up-units;
+                    current-index: root.delay-unit;
+                    enabled: !root.none;
+                    selected(unit) => {
+                      root.delay-unit-picked(unit);
+                    }
+                  }
+                  Text {
+                    text: "before it sends";
+                    color: root.delay-on && !root.none ? Wf.ink : Wf.ink-off;
+                    font-size: 15px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                  }
+                  Note {
+                    text: root.none ? ""
+                      : root.delay-on ? "its follow-ups wait with it"
+                      : "off: it sends on the trigger itself";
+                  }
                 }
 
                 // The cooldown, moved here from B: live for the triggers that come in bursts, and
@@ -1982,6 +2141,21 @@ export component RulesWindow inherits Window {
                   Rectangle { horizontal-stretch: 1; }
                 }
 
+                // What a Liberation clip does to a zone, since it is four channels at once — and,
+                // where some of the fixtures are not laser zones, that it misses them, in amber.
+                if root.sends-dmx && root.effect-takes-clip: HorizontalLayout {
+                  height: 35px;
+                  spacing: 10px;
+                  RowLabel {
+                    text: "on each zone";
+                  }
+                  Note {
+                    text: root.effect-clip-note != "" ? root.effect-clip-note
+                      : "arms it, sets its intensity and selects the clip, all at once";
+                    color: root.effect-clip-note != "" ? Wf.holding : Wf.ink2;
+                  }
+                }
+
                 // Which channel it drives — "a flash on the dimmer" — and, where the fixtures have
                 // not got it, what happens instead, in amber (`describeRoleReach`).
                 if root.sends-dmx && root.effect-takes-role: HorizontalLayout {
@@ -2057,8 +2231,9 @@ export component RulesWindow inherits Window {
                 }
 
                 // How long the effect runs — not how long until it starts, which is a follow-up's
-                // delay: its number and its unit together in the 240.
-                if root.sends-dmx: HorizontalLayout {
+                // delay: its number and its unit together in the 240. Not for a clip, which is a
+                // switch.
+                if root.sends-dmx && root.effect-takes-duration: HorizontalLayout {
                   height: 34px;
                   spacing: 10px;
                   RowLabel {
@@ -2422,8 +2597,9 @@ export component RulesWindow inherits Window {
                       Pick {
                         width: 120px;
                         horizontal-stretch: 0;
-                        // A color's chip offers only what can make a color.
-                        model: slot.is-color ? root.color-generator-kinds : root.generator-kinds;
+                        // A color's chip offers only what can make a color, and a clip's only what
+                        // hands back the clips it was given.
+                        model: slot.is-color || slot.is-clip ? root.color-generator-kinds : root.generator-kinds;
                         current-index: slot.kind-index;
                         selected(kind) => {
                           root.slot-kind-picked(index, kind);
@@ -2454,8 +2630,8 @@ export component RulesWindow inherits Window {
                       // Empty while the number is still to be chosen: a default range showing here
                       // read as one chosen (the audit of 2026-09-25, L11).
                       if slot.takes-pool && !slot.is-color && !slot.is-list: Entry {
-                        value: slot.wanting ? "" : slot.low + " - " + slot.high;
-                        placeholder: slot.wanting ? "choose a range" : "1 - 8";
+                        value: slot.wanting ? "" : slot.is-clip ? slot.range : slot.low + " - " + slot.high;
+                        placeholder: slot.wanting ? "choose a range" : slot.is-clip ? "1-1 to 21-1" : "1 - 8";
                         font-family: Wf.code;
                         typed(text) => {
                           root.slot-typed(index, 1, text);
@@ -2466,7 +2642,8 @@ export component RulesWindow inherits Window {
                       }
                       if slot.takes-pool && !slot.is-color && slot.is-list: Entry {
                         value: slot.wanting ? "" : slot.values;
-                        placeholder: slot.wanting ? "choose the numbers" : "3, 7, 1, 12 — in this order";
+                        placeholder: slot.wanting ? "choose the numbers"
+                          : slot.is-clip ? "3-1, 7-2, 12-0 — in this order" : "3, 7, 1, 12 — in this order";
                         font-family: Wf.code;
                         typed(text) => {
                           root.slot-typed(index, 2, text);
@@ -2524,7 +2701,7 @@ export component RulesWindow inherits Window {
 
                       if slot.is-fixed && !slot.is-osc-value: Entry {
                         value: slot.fixed;
-                        placeholder: slot.is-color ? "#ff2040" : slot.wanting ? "choose one" : "value";
+                        placeholder: slot.is-color ? "#ff2040" : slot.is-clip ? "21-1" : slot.wanting ? "choose one" : "value";
                         font-family: Wf.code;
                         typed(text) => {
                           root.slot-typed(index, 0, text);
@@ -2558,7 +2735,8 @@ export component RulesWindow inherits Window {
 
                       if slot.is-weighted: Entry {
                         value: slot.wanting ? "" : slot.weights;
-                        placeholder: slot.wanting ? "choose them, 7:3, 12:1" : "7:3, 12:1 — value:weight";
+                        placeholder: slot.wanting ? "choose them, 7:3, 12:1"
+                          : slot.is-clip ? "3-1:3, 7-2:1 — clip:weight" : "7:3, 12:1 — value:weight";
                         font-family: Wf.code;
                         typed(text) => {
                           root.slot-typed(index, 3, text);
@@ -3195,6 +3373,82 @@ export component RulesWindow inherits Window {
             }
           }
         }
+      }
+    }
+
+    // **The Liberation preset's prompt, over everything** — last, so it is drawn on top and takes
+    // every click while it is up. Built when it opens and dropped when it closes, with the answers
+    // kept by `RulesController`, not by it.
+    if root.liberation-open: LiberationSheet {
+      x: 0;
+      y: 0;
+      width: root.width;
+      height: root.height;
+      lasers: root.lasers;
+      laser-count: root.laser-count;
+      timings: root.laser-timings;
+      moves: root.laser-moves;
+      host: root.liberation-host;
+      port: root.liberation-port;
+      universe: root.liberation-universe;
+      address: root.liberation-address;
+      takt4-universe: root.liberation-takt4-universe;
+      move: root.liberation-move;
+      shape: root.liberation-shape;
+      amount: root.liberation-amount;
+      bars: root.liberation-bars;
+      instructions: root.liberation-instructions;
+      problem: root.liberation-problem;
+      count-changed(v) => {
+        root.laser-count-changed(v);
+      }
+      clip-typed(i, to, t) => {
+        root.laser-clip-typed(i, to, t);
+      }
+      clip-edited(i, to, t) => {
+        root.laser-clip-edited(i, to, t);
+      }
+      timing-picked(i, t) => {
+        root.laser-timing-picked(i, t);
+      }
+      host-typed(t) => {
+        root.liberation-host-typed(t);
+      }
+      host-edited(t) => {
+        root.liberation-host-edited(t);
+      }
+      port-changed(v) => {
+        root.liberation-port-changed(v);
+      }
+      universe-changed(v) => {
+        root.liberation-universe-changed(v);
+      }
+      address-changed(v) => {
+        root.liberation-address-changed(v);
+      }
+      move-toggled(on) => {
+        root.liberation-move-toggled(on);
+      }
+      shape-picked(s) => {
+        root.liberation-shape-picked(s);
+      }
+      amount-changed(v) => {
+        root.liberation-amount-changed(v);
+      }
+      bars-changed(v) => {
+        root.liberation-bars-changed(v);
+      }
+      added => {
+        // The keyboard back to the window first, as for cancel: the prompt goes the moment this
+        // works, the focus inside it with it, and Escape — PANIC — would reach nothing. ADD is only
+        // live while the plan has no problem, so the prompt does not stay up behind this.
+        keys.focus();
+        root.liberation-added();
+      }
+      cancelled => {
+        // The keyboard back to the window, where Escape is PANIC again.
+        keys.focus();
+        root.liberation-cancelled();
       }
     }
   }

@@ -1,3 +1,4 @@
+#include "core/dmx/liberation.hpp"
 #include "core/settings/settings.hpp"
 
 #include "support/scoped_env.hpp"
@@ -1268,4 +1269,22 @@ TEST_CASE("the patch editor's folds are remembered on this machine", "[settings]
     CHECK(folds("[true, true, true, true]") == std::array<bool, 3>{false, false, false});
     CHECK(folds("{\"a\": true}") == std::array<bool, 3>{false, false, false});
     CHECK(folds("[true, \"no\", true]") == std::array<bool, 3>{true, false, true});
+}
+
+TEST_CASE("a Liberation zone comes back from the file as the zone it was",
+          "[settings][liberation]") {
+    // Its roles by their new names, its channels named as Liberation names them, its parked levels
+    // and the movement window the preset narrowed — anything lost and the zone either renders
+    // nothing (a scale of 0) or is no longer one the next preset recognises and reuses.
+    Settings in;
+    takt4::dmx::Fixture zone = takt4::dmx::liberation::zone("laser 1", 3, 33);
+    zone.id = "f-laser";
+    zone.group = "lasers";
+    zone.panMin = zone.tiltMin = 0.375;
+    zone.panMax = zone.tiltMax = 0.625;
+    in.preset.fixtures = {zone};
+    const Settings out = roundTrip(in);
+    REQUIRE(out.preset.fixtures.size() == 1);
+    CHECK(out.preset.fixtures[0] == zone);
+    CHECK(takt4::dmx::liberation::isZone(out.preset.fixtures[0]));
 }

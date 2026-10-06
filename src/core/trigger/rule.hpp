@@ -3,6 +3,7 @@
 #include "core/dmx/color.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/trigger/context.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/value.hpp"
@@ -67,6 +68,20 @@ bool takesEvery(Trigger trigger) noexcept;
 
 /// True where `Trigger::pulses` means anything — `Euclid` alone.
 bool takesPulses(Trigger trigger) noexcept;
+
+/// True where `Rule::Config::onBeat` means anything: `Bar`, which fires on that beat of its bars,
+/// and `Beat`, whose every-N count is laid from that beat of the bar. See `TriggerEngine::
+/// beatSatisfies`.
+bool takesBeatOfBar(Trigger trigger) noexcept;
+
+/// The most beats of the bar `Rule::Config::onBeat` can name — as many as a bar the tracker can
+/// report (`--meters` takes up to 16).
+inline constexpr std::uint32_t kMaxBeatOfBar = 16;
+
+/// The longest a rule may wait between its trigger and its send (`Rule::Config::delayOn`): five
+/// minutes, past any musical delay anybody types. A settings file edited by hand can hold
+/// anything, and a fire held for a day is a rule that has quietly stopped.
+inline constexpr double kMaxFireDelaySeconds = 300.0;
 
 /// True where `Rule::Config::cooldownSeconds` means anything: the triggers that can come in
 /// bursts — an onset, a tempo, lock or intensity change, the M key. **Not** beats, bars, the
@@ -391,6 +406,12 @@ Generator::Config componentMix() noexcept;
 /// they have said anything — full, and centre.
 Generator::Config fixedNumber(int value) noexcept;
 
+/// The clip generator a lighting rule starts with: **a shuffle over Liberation clips 1-1 to 21-1**
+/// in deck order (`dmx::liberation::indexOf`), the operator's own example of 2026-10-05. A clip is
+/// held as its place in deck order, so a range is two of them and a shuffle over it is every clip
+/// between, as Liberation counts them.
+Generator::Config clipShuffle(dmx::liberation::Clip from, dmx::liberation::Clip to) noexcept;
+
 struct DmxSend {
     dmx::EffectKind effect = dmx::EffectKind::Level;
     /// Which channel, for the kinds `dmx::takesRole` names.
@@ -409,8 +430,11 @@ struct DmxSend {
     std::vector<std::string> fixtures;
 
     /// The target level, peak or high end, 0 to 255. Clamped, not wrapped. Full by default —
-    /// see `fixedNumber`, and what a shuffle over 1 to 8 does to a lamp.
+    /// see `fixedNumber`, and what a shuffle over 1 to 8 does to a lamp. A laser clip's intensity.
     Generator::Config level = fixedNumber(255);
+    /// Which Liberation clip, for `dmx::EffectKind::Clip`: a place in deck order, which the editor
+    /// shows and reads as Liberation's own "x-y". See `clipShuffle`.
+    Generator::Config clip = clipShuffle({1, 1}, {21, 1});
     /// The low end, for the kinds `dmx::takesBase` names.
     int base = 0;
     /// Which of the two ways below decides the color.
@@ -602,12 +626,39 @@ public:
         Trigger trigger = Trigger::Bar;
         /// Every Nth beat or bar, counted from the first — so "every 4 bars" fires on bars
         /// 1, 5 and 9 rather than 4, 8 and 12. An operator counting a phrase in starts at
-        /// one. Ignored where `takesEvery` is false; zero is read as one.
+        /// one. Beats are counted on the bar's grid from `onBeat` once the tracker has a bar,
+        /// and from the first beat until then. Ignored where `takesEvery` is false; zero is
+        /// read as one.
         std::uint32_t every = 1;
         /// How many of `every` steps a `Euclid` pattern hits. Ignored by every other
         /// trigger. Zero is silence and is left as the operator typed it — a pattern being
         /// built up from nothing passes through it.
         std::uint32_t pulses = 3;
+        /// **Which beat of the bar**, 1 to `kMaxBeatOfBar` — the operator's ask of 2026-10-06:
+        /// *"not just fire every two beats, but WHICH two beats ... one trigger firing on the
+        /// first beat of a bar, another on the second, another on the third"*.
+        ///
+        /// For `Bar`, the beat of every Nth bar it fires on: every bar on beat 3. For `Beat`, the
+        /// beat its every-N count is laid from, **on the bar's grid** rather than from whichever
+        /// beat came first — every 2 beats from beat 2 is the backbeat, 2 and 4 of every bar;
+        /// every 8 from beat 5 is the downbeat of every second bar. One is the downbeat, which is
+        /// what every rule meant before this existed. Ignored where `takesBeatOfBar` is false.
+        std::uint32_t onBeat = 1;
+        /// **A wait between the trigger and the send** — the operator's ask of the same day, in
+        /// the same breath: *"an optional delay setting default to unticked in the when section,
+        /// where u can set it to static time in ms or beats / bars"*. Off by default, as nothing
+        /// optional is on until asked for. On, every fire is held this long before it goes, and
+        /// its follow-ups after it; with `onBeat` it reaches the places between the beats — every
+        /// bar on beat 2, half a beat late, is the "and" of 2.
+        ///
+        /// The two numbers are kept apart for the reason `FollowUp::delayBeats` gives, and the
+        /// wait is settled against the tempo at the fire (`Rule::fireDelay`). A held fire is
+        /// **dropped**, never sent early, by everything that stops the rig — PANIC, Stop, quit,
+        /// no signal — and by its rule being muted, switched off or deleted before it goes.
+        bool delayOn = false;
+        DelayUnit delayUnit = DelayUnit::Beats;
+        double delaySeconds = 0.1;
+        double delayBeats = 0.5;
         /// How far the published tempo has to move to count as a `TempoChange`, as a
         /// fraction. The published tempo is *refined* continuously once locked — the beat
         /// spacing resolves it to a fraction of a BPM and it moves most beats — so an exact
@@ -821,6 +872,11 @@ public:
     /// rule has not got.
     double followUpDelay(const Context& context, std::size_t index) const noexcept;
 
+    /// How long a fire now is held before it is sent, in seconds: `Config::delayOn`'s wait,
+    /// settled against the tempo in `context` like a follow-up's, and at most
+    /// `kMaxFireDelaySeconds`. Zero while the delay is off.
+    double fireDelay(const Context& context) const noexcept;
+
     /// When this rule last fired, on `Context::now`. Negative before it ever has.
     double lastFired() const noexcept { return lastFired_; }
     std::uint64_t fires() const noexcept { return fires_; }
@@ -871,6 +927,7 @@ private:
     Generator dmxBlue_;
     Generator dmxPan_;
     Generator dmxTilt_;
+    Generator dmxClip_;
     /// §5.8's probability percentage, on this rule's own stream. See `conditionsHold`.
     tracking::Xoshiro256pp probability_;
     /// See `outputMask`. Everywhere until somebody who knows the outputs says otherwise,
@@ -918,6 +975,8 @@ enum class SlotRole : std::uint8_t {
     Blue,
     Pan,
     Tilt,
+    /// A laser clip, by its place in deck order — `DmxSend::clip`.
+    Clip,
 };
 struct Slot {
     SlotRole role = SlotRole::Value;

@@ -2,6 +2,7 @@
 // picked, its slots, follow-ups, routing, lighting and firing. The edits are in
 // `rules_controller.cpp` and `rules_controller_slots.cpp`.
 
+#include "core/dmx/liberation.hpp"
 #include "core/features/intensity.hpp"
 #include "core/io/utf8.hpp"
 #include "core/trigger/generator.hpp"
@@ -137,6 +138,9 @@ void RulesController::publishSelected() {
         window_->set_rule_problem(slint::SharedString(""));
         window_->set_address(slint::SharedString(""));
         window_->set_conditions_on(false);
+        window_->set_beat_of_bar_shown(false);
+        window_->set_beat_of_bar_note(slint::SharedString(""));
+        window_->set_delay_on(false);
         publishFollowUps();
         publishSummaries();
         return;
@@ -155,6 +159,17 @@ void RulesController::publishSelected() {
     window_->set_trigger_takes_pulses(trigger::takesPulses(rule->trigger));
     window_->set_pulses(static_cast<int>(rule->pulses));
     window_->set_euclid_pattern(shared(spellEuclid(*rule)));
+    publishBeatOfBar(*rule);
+    // A's wait: its tick, its unit, and its amount in that unit — not while it is being typed in.
+    window_->set_delay_on(rule->delayOn);
+    window_->set_delay_unit(static_cast<int>(
+        std::find(trigger::kDelayUnits.begin(), trigger::kDelayUnits.end(), rule->delayUnit) -
+        trigger::kDelayUnits.begin()));
+    if (!typingInto(kDelayBox)) {
+        window_->set_delay_amount(shared(rule->delayUnit == trigger::DelayUnit::Milliseconds
+                                             ? spellNumber(rule->delaySeconds * 1000.0)
+                                             : spellNumber(rule->delayBeats)));
+    }
     // A's cooldown: live for the triggers that come in bursts, switched off for the rest — where
     // the engine ignores it too (`trigger::takesCooldown`).
     window_->set_trigger_takes_cooldown(trigger::takesCooldown(rule->trigger));
@@ -216,6 +231,23 @@ void RulesController::publishSelected() {
 
     publishFollowUps();
     publishSummaries();
+}
+
+void RulesController::publishBeatOfBar(const Rule::Config& rule) {
+    // Where it changes something: a bar's beat, and the beat a count of more than one is laid
+    // from. Every single beat is every beat from whichever, so it is not offered there.
+    const bool beats = rule.trigger == trigger::Trigger::Beat;
+    window_->set_beat_of_bar_shown(trigger::takesBeatOfBar(rule.trigger) &&
+                                   (!beats || rule.every > 1));
+    window_->set_beat_of_bar(static_cast<int>(rule.onBeat));
+    window_->set_beat_of_bar_word(slint::SharedString(beats ? "from beat" : "on beat"));
+    window_->set_beat_of_bar_after(slint::SharedString(beats ? "of the bar" : ""));
+    // A bar of four has no fifth beat; a rule on one fires only in the longer bars, and says so
+    // rather than looking like a rule that is broken.
+    window_->set_beat_of_bar_note(
+        !beats && rule.trigger == trigger::Trigger::Bar && rule.onBeat > 4
+            ? shared("only in bars of " + std::to_string(rule.onBeat) + " beats or more")
+            : slint::SharedString(""));
 }
 
 void RulesController::publishSummaries() {
@@ -318,6 +350,11 @@ void RulesController::publishFollowUps() {
         // be a setting that does nothing. The summary says why.
         if (!entry.kind && rule->sendKind == trigger::Message::Kind::Dmx &&
             dmx::takesMovement(rule->dmx.effect)) {
+            row.takes_value = false;
+        }
+        // And of a clip, whose release is no clip whatever the box says (`Rule::followUpsFor`).
+        if (!entry.kind && rule->sendKind == trigger::Message::Kind::Dmx &&
+            dmx::takesClip(rule->dmx.effect)) {
             row.takes_value = false;
         }
         // Named for whatever the row resolves to, which for a release is the *released* kind
@@ -568,6 +605,32 @@ std::string RulesController::describeRoleReach(const trigger::DmxSend& send) con
     return {};
 }
 
+std::string RulesController::describeClipReach(const trigger::DmxSend& send) const {
+    if (!dmx::takesClip(send.effect)) {
+        return {};
+    }
+    const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, send.fixtures);
+    std::size_t zones = 0;
+    std::size_t total = 0;
+    const std::size_t count = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (mask.test(i)) {
+            ++total;
+            if (dmx::has(patch_[i], dmx::Role::ClipSelect)) {
+                ++zones;
+            }
+        }
+    }
+    if (total == 0 || zones == total) {
+        return {}; // "reaches no fixtures" is already said beside the fixture picker
+    }
+    if (zones == 0) {
+        return "none of them is a Liberation zone — this reaches nothing";
+    }
+    return std::to_string(total - zones) + " of " + std::to_string(total) +
+           " are not Liberation zones — those it does not reach";
+}
+
 void RulesController::publishDmx() {
     const Rule::Config* rule = current();
     if (rule == nullptr) {
@@ -603,7 +666,12 @@ void RulesController::publishDmx() {
     window_->set_effect_takes_duty(send.effect == dmx::EffectKind::Strobe);
     window_->set_effect_takes_hue(send.effect == dmx::EffectKind::HueSweep);
     window_->set_effect_takes_shape(send.effect == dmx::EffectKind::Path);
-    window_->set_effect_takes_curve(send.effect != dmx::EffectKind::Strobe);
+    // A clip is a switch: nothing to time and nothing to shape (`dmx::takesDuration`).
+    window_->set_effect_takes_curve(send.effect != dmx::EffectKind::Strobe &&
+                                    dmx::takesDuration(send.effect));
+    window_->set_effect_takes_duration(dmx::takesDuration(send.effect));
+    window_->set_effect_takes_clip(dmx::takesClip(send.effect));
+    window_->set_effect_clip_note(shared(describeClipReach(send)));
     window_->set_effect_takes_color(dmx::takesColor(send.effect));
 
     const auto colorModeIndex =
@@ -836,7 +904,8 @@ void RulesController::publishSlots() {
 
     std::vector<SlotRow> rows;
     const auto push = [&rows, produced, this](const std::string& label,
-                                              const Generator::Config& raw, bool color = false) {
+                                              const Generator::Config& raw, bool color = false,
+                                              bool clip = false) {
         // What the generator **accepted**, not what was typed. `Generator::config()` gives
         // back the clamped configuration, so §5.8's clamp-never-refuse policy shows on
         // screen instead of being silent: a range typed backwards comes back the right way
@@ -882,6 +951,16 @@ void RulesController::publishSlots() {
         row.last = produced != nullptr && rows.size() < produced->size()
                        ? shared(spellValue((*produced)[rows.size()]))
                        : slint::SharedString("");
+        // A Liberation clip, said as Liberation says it wherever a number would be: the range
+        // as two clips, the list and the weights as clips, the one fixed clip as itself. The last
+        // one sent is already its name (`Rule::lastSlots`).
+        row.is_clip = clip;
+        if (clip) {
+            row.range = shared(dmx::liberation::formatRange(config.low, config.high));
+            row.values = shared(spellClips(config.values));
+            row.weights = shared(spellClipWeights(config.choices));
+            row.fixed = shared(spellClip(config.fixed));
+        }
 
         // A color slot gets a swatch and a picker, because `#20ff80` is the one value in
         // this window nobody can read. The swatch shows what the generator is *set* to — a
@@ -962,7 +1041,15 @@ void RulesController::publishSlots() {
             }
             break;
         case trigger::SlotRole::Level:
-            push(std::string(dmx::labelOf(rule->dmx.role)), generator);
+            // A clip's level is the laser zone's intensity — its dimmer, as the patch names the
+            // channel — whatever role the rule last aimed at. ("intensity" is cut short in the
+            // chip's name column.)
+            push(std::string(dmx::labelOf(dmx::takesClip(rule->dmx.effect) ? dmx::Role::Dimmer
+                                                                           : rule->dmx.role)),
+                 generator);
+            break;
+        case trigger::SlotRole::Clip:
+            push("clip", generator, /*color=*/false, /*clip=*/true);
             break;
         case trigger::SlotRole::Color:
             push("color", generator, /*color=*/true);

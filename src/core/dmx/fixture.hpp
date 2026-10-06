@@ -75,25 +75,45 @@ enum class Role : std::uint8_t {
     Cyan,
     Magenta,
     Yellow,
+    /// **A laser zone's safety gate** — Pangolin Liberation's DMX Input renders a zone only while
+    /// this is at 250 or more (`dmx::liberation`). Not aimable: a clip effect raises it with the
+    /// clip it selects, and Stop, quit, a blackout, PANIC and the input going quiet take it back to
+    /// 0 (the operator, 2026-10-05) — so nothing can leave a laser armed on a level of its own.
+    Arm,
+    /// The page of a laser zone's clip deck, and the clip on it: the two channels a clip effect
+    /// writes together (`liberation::goboOf`). **Never faded**: a fade through Gobo Select passes
+    /// through every clip between the two ends. Not aimable, for that reason.
+    ClipBank,
+    ClipSelect,
+    /// How far a laser zone's clip is tinted towards its RGB channels: 0 is the clip's own colours,
+    /// full is the RGB. A color effect raises it with the color it writes, so a color rule aimed at
+    /// a zone colours it; a blackout takes it back to the clip's own.
+    ColorBlend,
 };
 
 /// Every role, in the order a channel-map dropdown should offer them: `Unused` first,
 /// because it is the default and the commonest answer for a channel nothing aims at, then
-/// intensity, then color, then movement, then the rest.
-inline constexpr std::array<Role, 21> kRoles{
-    Role::Unused, Role::Dimmer,  Role::Red,      Role::Green,   Role::Blue,       Role::White,
-    Role::Amber,  Role::Uv,      Role::Cyan,     Role::Magenta, Role::Yellow,     Role::Pan,
-    Role::Tilt,   Role::PanFine, Role::TiltFine, Role::Strobe,  Role::ColorWheel, Role::Gobo,
-    Role::Zoom,   Role::Focus,   Role::Speed};
+/// intensity, then color, then movement, then the rest — a laser zone's last.
+inline constexpr std::array<Role, 25> kRoles{
+    Role::Unused, Role::Dimmer,     Role::Red,      Role::Green,      Role::Blue,
+    Role::White,  Role::Amber,      Role::Uv,       Role::Cyan,       Role::Magenta,
+    Role::Yellow, Role::Pan,        Role::Tilt,     Role::PanFine,    Role::TiltFine,
+    Role::Strobe, Role::ColorWheel, Role::Gobo,     Role::Zoom,       Role::Focus,
+    Role::Speed,  Role::Arm,        Role::ClipBank, Role::ClipSelect, Role::ColorBlend};
 
 /// The roles an *effect* may be aimed at — `kRoles` without `Unused`, which is not a target,
 /// and without the two fine bytes, which are written by their coarse partner rather than on
 /// their own. What the rule editor's "channel" dropdown offers. A level aimed at cyan is a raw
 /// level on the flag, as one aimed at red is on the LED.
-inline constexpr std::array<Role, 18> kAimableRoles{
-    Role::Dimmer, Role::Red,        Role::Green,   Role::Blue,   Role::White, Role::Amber,
-    Role::Uv,     Role::Cyan,       Role::Magenta, Role::Yellow, Role::Pan,   Role::Tilt,
-    Role::Strobe, Role::ColorWheel, Role::Gobo,    Role::Zoom,   Role::Focus, Role::Speed};
+///
+/// Without a laser zone's arm and clip channels too, which only the clip effect writes (see
+/// `Role::Arm`). Its color blend is here: fading a zone between its clip's colours and a desk
+/// color is a gesture, and nothing about it can leave a beam in the air.
+inline constexpr std::array<Role, 19> kAimableRoles{
+    Role::Dimmer, Role::Red,   Role::Green,  Role::Blue,       Role::White,
+    Role::Amber,  Role::Uv,    Role::Cyan,   Role::Magenta,    Role::Yellow,
+    Role::Pan,    Role::Tilt,  Role::Strobe, Role::ColorWheel, Role::Gobo,
+    Role::Zoom,   Role::Focus, Role::Speed,  Role::ColorBlend};
 
 std::string_view labelOf(Role role) noexcept;
 /// The word a settings file spells the role with, and what `roleOf` reads back.
@@ -349,6 +369,10 @@ struct FixtureMode {
     /// zeroes; the moving-head modes open the shutter and set movement to its fastest, which
     /// is the difference between a head that responds and one that appears dead.
     std::span<const std::uint8_t> parked;
+    /// What each channel is called — `Fixture::labels`. Empty for the generic shapes, whose
+    /// roles say it; a Liberation zone's names its channels as Liberation does, since most of
+    /// them are `Unused` and a role would say nothing.
+    std::span<const std::string_view> labels = {};
 };
 
 std::span<const FixtureMode> builtinModes() noexcept;

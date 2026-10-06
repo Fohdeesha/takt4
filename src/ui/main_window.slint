@@ -25,6 +25,7 @@ import { Btn, Entry, Keycap, Meter, Pick, Reading, Scroller, SectionHead, SpanTr
 // §5.9's rule editor is a window of its own (rules_window.slint), re-exported through here
 // so the Slint compiler produces one generated header for both. See src/ui/CMakeLists.txt.
 export { RulesWindow, RuleRow, SlotRow } from "rules_window.slint";
+export { LaserRow } from "liberation_sheet.slint";
 // And the patch editor, for the same reason — see src/ui/CMakeLists.txt on why there is one
 // generated header rather than one per window.
 export { FixturesWindow, FixtureRow, ChannelRow } from "fixtures_window.slint";
@@ -400,6 +401,14 @@ export component MainWindow inherits Window {
   /// One while the tempo below has been halved is the state worth seeing: the readout has
   /// moved and the beats have not.
   in-out property <int> beat-divisor: 1;
+  /// The operator's ÷2 and ×2, as octaves — `TempoState::octaveShift`: -1 after a ÷2, +1 after a
+  /// ×2. Shown beside the number and on the buttons while it is in force (the operator,
+  /// 2026-10-06: "no indication anywhere in the program that a divide by two action is currently
+  /// in effect").
+  in-out property <int> octave-shift;
+  /// The rate the published beats — the dots — are arriving at, measured: `TempoState::
+  /// beatsBpm`. Zero until there are eight gaps to measure.
+  in-out property <float> beats-bpm;
 
   // --- §5.5's octave fold, made visible (§7 deviation 4) and settable -------------
   in-out property <bool> fold-on;
@@ -908,6 +917,17 @@ export component MainWindow inherits Window {
             // Whether the fold moved the number: see the line under the tempo.
             property <bool> folded-note: root.fold-on && root.called-bpm > 0 && root.bpm > 0
               && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67);
+            // **Whether the dots and the number disagree by an octave** (the operator, 2026-10-06:
+            // "the beat dots advance at the right bpm ... but the bpm display shows twice that.
+            // theres not indication why"). Measured from the beats going out rather than inferred
+            // from the tracker's state, so it says what is on the wire whatever put it there; a
+            // clean octave within 12 %, which a beat let pass or a stray one cannot fake past the
+            // median. Only while locked: a hunting tracker's number is not a claim yet.
+            property <float> beats-ratio: root.bpm > 0 ? root.beats-bpm / root.bpm : 0;
+            property <bool> beats-apart: root.running && root.locked && !root.no-signal
+              && root.beats-bpm > 0
+              && (abs(self.beats-ratio - 0.5) < 0.06 || abs(self.beats-ratio - 2) < 0.24
+                  || abs(self.beats-ratio - 0.25) < 0.03 || abs(self.beats-ratio - 4) < 0.48);
             // "no audio" before anything else: with the input dead the tracker is frozen on its
             // last state, and "locked" at that tempo was the window lying about a rig that had
             // stopped hearing the music.
@@ -958,7 +978,7 @@ export component MainWindow inherits Window {
               letter-spacing: -2.48px;
             }
 
-            Text {
+            bpm-unit := Text {
               x: digits.x + digits.width + 8px;
               y: 62px - self.font-metrics.ascent;
               text: "bpm";
@@ -967,11 +987,25 @@ export component MainWindow inherits Window {
               font-size: 14px;
               font-weight: 800;
             }
+            // The operator's ÷2 or ×2, while it is in force: the number alone cannot say it has
+            // been halved, and the next record may want it gone ("keep half/double settings").
+            if root.octave-shift != 0 && root.bpm > 0: Text {
+              x: bpm-unit.x + bpm-unit.width + 10px;
+              y: 62px - self.font-metrics.ascent;
+              width: max(0px, tempo-sheet.right-x - 12px - self.x);
+              text: (root.octave-shift < 0 ? "÷" : "×")
+                + (abs(root.octave-shift) >= 2 ? "4" : "2") + " applied";
+              color: Wf.holding;
+              font-family: Wf.sans;
+              font-size: 14px;
+              font-weight: 800;
+              overflow: elide;
+            }
 
             // Where the number comes from: before `refineNeedsBeats` beat gaps are in, the
             // filter's tempo interval, which steps in whole frames; after, the spacing of the
             // beats themselves.
-            if !tempo-sheet.folded-note && root.bpm > 0: Rectangle {
+            if !tempo-sheet.folded-note && !tempo-sheet.beats-apart && root.bpm > 0: Rectangle {
               x: 22px;
               y: 84px - truth-key.font-metrics.ascent;
               width: truth-key.width + 4px + truth-value.width;
@@ -1005,7 +1039,7 @@ export component MainWindow inherits Window {
             // is a real state — see `TempoState::beatDivisor` — and the one thing here that is
             // otherwise invisible: the readout says 92 and every output fires at 184. Against
             // `called-bpm`, the grid the filter is calling beats on, not `raw-bpm`, its cloud.
-            if tempo-sheet.folded-note: Text {
+            if tempo-sheet.folded-note && !tempo-sheet.beats-apart: Text {
               x: 22px;
               y: 84px - self.font-metrics.ascent;
               width: tempo-sheet.half - 8px;
@@ -1013,6 +1047,21 @@ export component MainWindow inherits Window {
                 + root.called-bpm.to-fixed(1) + " BPM"
                 + (root.called-bpm > root.bpm && root.beat-divisor <= 1
                    ? " — beats still at " + round(root.called-bpm) : "");
+              color: Wf.holding;
+              font-family: Wf.sans;
+              font-size: 13px;
+              overflow: elide;
+            }
+
+            // **And when the dots and the number disagree, that above all** — what the beats are
+            // going out at, and which button makes the number agree with them. It takes the line
+            // from the fold's note, which says the same thing less exactly.
+            if tempo-sheet.beats-apart: Text {
+              x: 22px;
+              y: 84px - self.font-metrics.ascent;
+              width: tempo-sheet.half - 8px;
+              text: "beats going out at " + root.beats-bpm.to-fixed(1) + " BPM — "
+                + (root.beats-bpm < root.bpm ? "÷2" : "×2") + " matches the number to them";
               color: Wf.holding;
               font-family: Wf.sans;
               font-size: 13px;
@@ -1281,9 +1330,11 @@ export component MainWindow inherits Window {
                 spacing: 10px;
 
                 // 18 px so the ÷ does not read as + (HANDOFF §0.5).
+                // Lit while the shift they make is in force, as LOCK is while it holds.
                 Btn {
                   text: "÷2";
                   font-size: 18px;
+                  active: root.octave-shift < 0;
                   enabled: root.running;
                   clicked => {
                     root.halve();
@@ -1292,6 +1343,7 @@ export component MainWindow inherits Window {
                 Btn {
                   text: "×2";
                   font-size: 18px;
+                  active: root.octave-shift > 0;
                   enabled: root.running;
                   clicked => {
                     root.redouble();

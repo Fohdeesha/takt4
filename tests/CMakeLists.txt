@@ -35,6 +35,7 @@ add_executable(takt4_tests
   dmx/dmx_rule_test.cpp
   dmx/fixture_test.cpp
   dmx/heads_test.cpp
+  dmx/liberation_test.cpp
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
   engine/control_test.cpp

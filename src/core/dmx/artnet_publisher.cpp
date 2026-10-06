@@ -153,6 +153,17 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
                 break;
             }
         }
+        // One still being sent its farewell, back again: it is fed as before rather than
+        // fought by the disarmed frames of its own going.
+        for (auto going = leaving_.begin(); target.sender == nullptr && going != leaving_.end();
+             ++going) {
+            if (going->target.id == config.id && going->target.sender->host() == config.host &&
+                going->target.sender->port() == config.port) {
+                target = std::move(going->target);
+                leaving_.erase(going);
+                break;
+            }
+        }
         if (target.sender == nullptr) {
             try {
                 target.sender = std::make_unique<ArtNetSender>(config.host, config.port);
@@ -166,13 +177,47 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
         target.id = config.id;
         next.push_back(std::move(target));
     }
+    // Every node not kept has gone, and is sent zeros for a moment: see the header.
+    // Not one whose address another node now has — the two would fight over it.
+    for (std::size_t i = 0; i < targets_.size(); ++i) {
+        if (taken[i] || targets_[i].sender == nullptr) {
+            continue;
+        }
+        const bool reused = std::any_of(next.begin(), next.end(), [&](const Target& kept) {
+            return kept.sender->host() == targets_[i].sender->host() &&
+                   kept.sender->port() == targets_[i].sender->port();
+        });
+        if (!reused) {
+            leaving_.push_back(Leaving{std::move(targets_[i]), -1.0});
+        }
+    }
     targets_ = std::move(next);
     return failures;
+}
+
+bool ArtNetPublisher::sendFarewell(const DmxEngine& engine, Target& target, PortAddress universe,
+                                   double now) {
+    if (engine.levels(universe).size() != kChannelsPerUniverse) {
+        return false;
+    }
+    static constexpr std::array<std::uint8_t, kChannelsPerUniverse> kDark{};
+    Paced& paced = pacedFor(target, universe);
+    if (target.sender->sendDmx(universe, kDark)) {
+        ++sent_;
+    } else {
+        ++failed_;
+    }
+    paced.lastSentAt = now;
+    paced.everSent = true;
+    return true;
 }
 
 void ArtNetPublisher::refresh() noexcept {
     for (Target& target : targets_) {
         (void)target.sender->ready();
+    }
+    for (Leaving& going : leaving_) {
+        (void)going.target.sender->ready();
     }
 }
 
@@ -279,17 +324,44 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             paced.everSent = true;
         }
     }
+    // The nodes that have gone: all zeros, at the 44 Hz pace whatever has moved, for a released
+    // universe's time — and at once, whatever their delay: this is the way out. See `setTargets`.
+    for (Leaving& going : leaving_) {
+        if (going.until < 0.0) {
+            going.until = now + kFarewellSeconds;
+        }
+        const std::size_t patched = engine.universes().size();
+        const std::size_t total = patched + engine.released().size();
+        for (std::size_t u = 0; u < total; ++u) {
+            const PortAddress universe =
+                u >= patched ? engine.released()[u - patched] : engine.universes()[u];
+            if (const Paced* const known = findPaced(going.target, universe);
+                known != nullptr && known->everSent && now - known->lastSentAt < kMinFramePeriod) {
+                continue;
+            }
+            if (sendFarewell(engine, going.target, universe, now)) {
+                ++datagrams;
+            }
+        }
+    }
+    std::erase_if(leaving_, [now](const Leaving& going) { return now >= going.until; });
     return datagrams;
 }
 
 double ArtNetPublisher::secondsUntilPaced(double now) const noexcept {
     double wait = 0.0;
-    for (const Target& target : targets_) {
+    const auto pace = [&wait, now](const Target& target) {
         for (const Paced& paced : target.paced) {
             if (paced.everSent) {
                 wait = std::max(wait, paced.lastSentAt + kMinFramePeriod - now);
             }
         }
+    };
+    for (const Target& target : targets_) {
+        pace(target);
+    }
+    for (const Leaving& going : leaving_) {
+        pace(going.target);
     }
     return std::clamp(wait, 0.0, kMinFramePeriod);
 }
@@ -319,6 +391,16 @@ std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {
             paced.lastSentAt = now;
             paced.lastRevision = engine.revision(universe);
             paced.everSent = true;
+        }
+    }
+    // And a node still being sent its farewell, its last word dark.
+    for (Leaving& going : leaving_) {
+        for (std::size_t u = 0; u < total; ++u) {
+            const PortAddress universe =
+                u >= patched ? engine.released()[u - patched] : engine.universes()[u];
+            if (sendFarewell(engine, going.target, universe, now)) {
+                ++datagrams;
+            }
         }
     }
     return datagrams;

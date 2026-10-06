@@ -1,5 +1,6 @@
 #include "core/output/output_runner.hpp"
 
+#include "core/dmx/liberation.hpp"
 #include "core/rt/thread_priority.hpp"
 
 #include <algorithm>
@@ -99,6 +100,18 @@ std::vector<int> movedFixtures(const std::vector<dmx::Fixture>& before,
     return moved;
 }
 
+/// What a held zone is known by: its id, or its name for a fixture built in code with none —
+/// the one kind that can have none, as `movedFixtures` says.
+const std::string& fixtureKey(const dmx::Fixture& fixture) noexcept {
+    return fixture.id.empty() ? fixture.name : fixture.id;
+}
+
+/// Whether a fixture is a laser zone — has the channel that arms it, or the one that picks its
+/// clip. The same test `dmx::DmxEngine::disarm` makes.
+bool armable(const dmx::Fixture& fixture) noexcept {
+    return dmx::has(fixture, dmx::Role::Arm) || dmx::has(fixture, dmx::Role::ClipSelect);
+}
+
 /// How many rounds — milliseconds — between two looks at whether the output targets have found
 /// their addresses. A name server answers in tens of milliseconds or not at all.
 constexpr std::uint32_t kRefreshRounds = 250;
@@ -159,6 +172,12 @@ std::string describeDmx(const trigger::Message& message) {
         break;
     case dmx::EffectKind::Home:
     case dmx::EffectKind::Blackout:
+        break;
+    case dmx::EffectKind::Clip:
+        // As Liberation names the clip, and "none" for the one that disarms.
+        text += payload.clip == 0 ? std::string(" none")
+                                  : " " + dmx::liberation::formatIndex(payload.clip - 1) + " at " +
+                                        std::to_string(static_cast<int>(payload.level));
         break;
     }
     // Which heads, where it names some, and how far apart: the log line of a rule moving the left
@@ -227,6 +246,10 @@ OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config&
     triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
                                      bool followUp, std::span<const trigger::Value> slots,
                                      bool muted) {
+        // What it put on or took off — only if it went: a muted fire held nothing.
+        if (!muted) {
+            noteHolds(ruleId, message);
+        }
         Fired entry;
         entry.ruleId = ruleId;
         entry.message = describe(message);
@@ -329,6 +352,177 @@ bool OutputRunner::liveRulesCurrent() const {
     }
     const std::lock_guard<std::mutex> lock(liveMutex_);
     return liveGeneration_ == posted;
+}
+
+OutputRunner::Holds OutputRunner::holds() const {
+    const std::lock_guard<std::mutex> owner(ownerMutex_);
+    return Holds{heldNotes_.size(), heldZones_.size()};
+}
+
+void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& message) {
+    using Kind = trigger::Message::Kind;
+    // A note on with a velocity: held until a note off reaches the same note on the same
+    // outputs. Velocity zero is a note off by convention, and every receiver reads it as one.
+    if (message.kind == Kind::MidiNote && message.value > 0) {
+        for (HeldNote& held : heldNotes_) {
+            if (held.channel == message.channel && held.number == message.number &&
+                held.outputs == message.outputs) {
+                held.ruleId = ruleId; // struck again: whoever struck it last holds it
+                held.moment = message.moment;
+                return;
+            }
+        }
+        heldNotes_.push_back(HeldNote{std::string(ruleId), message.outputs, message.channel,
+                                      message.number, message.moment});
+        return;
+    }
+    if (message.kind == Kind::MidiNoteOff || message.kind == Kind::MidiNote) {
+        // Let go of on the outputs it reached, and held still on any it did not.
+        std::erase_if(heldNotes_, [&message](HeldNote& held) {
+            if (held.channel != message.channel || held.number != message.number) {
+                return false;
+            }
+            held.outputs &= ~message.outputs;
+            return held.outputs == 0;
+        });
+        return;
+    }
+    if (message.kind != Kind::Dmx || message.payload.kind != dmx::EffectKind::Clip) {
+        return;
+    }
+    // A clip arms the zones it reaches and no clip disarms them; whoever armed one last holds it.
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
+    for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+        if (!message.fixtures.test(i) || !armable(patch[i])) {
+            continue;
+        }
+        const std::string& key = fixtureKey(patch[i]);
+        std::erase_if(heldZones_, [&key](const HeldZone& held) { return held.fixture == key; });
+        if (message.payload.clip != 0) {
+            heldZones_.push_back(HeldZone{key, std::string(ruleId), message.moment});
+        }
+    }
+}
+
+void OutputRunner::releaseHolds(const std::function<bool(const std::string&)>& whose,
+                                double now) {
+    releaseMatching([&whose](const HeldNote& held) { return whose(held.ruleId); },
+                    [&whose](const HeldZone& held) { return whose(held.ruleId); }, now);
+}
+
+void OutputRunner::releaseMatching(const std::function<bool(const HeldNote&)>& notes,
+                                   const std::function<bool(const HeldZone&)>& zones,
+                                   double now) {
+    // Copied before sending: each release reaches `noteHolds` through the observer, which takes
+    // what it lets go of out of the very lists being walked.
+    std::vector<HeldNote> going;
+    for (const HeldNote& held : heldNotes_) {
+        if (notes(held)) {
+            going.push_back(held);
+        }
+    }
+    for (const HeldNote& held : going) {
+        trigger::Message off;
+        off.kind = trigger::Message::Kind::MidiNoteOff;
+        off.outputs = held.outputs;
+        off.channel = held.channel;
+        off.number = held.number;
+        off.value = 0;
+        // About now, but never before its note on: see `HeldNote`.
+        off.moment = std::max(now, held.moment);
+        triggers_.sendRelease(held.ruleId, off);
+    }
+
+    // The zones, a message per rule, so the log says whose clip was taken off.
+    std::vector<HeldZone> dark;
+    std::erase_if(heldZones_, [&](const HeldZone& held) {
+        if (!zones(held)) {
+            return false;
+        }
+        dark.push_back(held);
+        return true;
+    });
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
+    while (!dark.empty()) {
+        const std::string owner = dark.front().ruleId;
+        trigger::Message clear;
+        clear.kind = trigger::Message::Kind::Dmx;
+        clear.payload.kind = dmx::EffectKind::Clip;
+        clear.payload.clip = 0;
+        clear.moment = now;
+        for (const HeldZone& held : dark) {
+            if (held.ruleId != owner) {
+                continue;
+            }
+            clear.moment = std::max(clear.moment, held.moment);
+            for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+                if (fixtureKey(patch[i]) == held.fixture) {
+                    clear.fixtures.set(i);
+                }
+            }
+        }
+        std::erase_if(dark, [&owner](const HeldZone& held) { return held.ruleId == owner; });
+        // A zone gone from the patch is dark already — the engine zeroes a channel nothing
+        // covers — and is only forgotten.
+        if (clear.fixtures.any()) {
+            triggers_.sendRelease(owner, clear);
+        }
+    }
+}
+
+void OutputRunner::releaseNotesTo(std::uint64_t outputs, double now) {
+    std::vector<HeldNote> notes;
+    for (const HeldNote& held : heldNotes_) {
+        if ((held.outputs & outputs) != 0) {
+            notes.push_back(held);
+        }
+    }
+    for (const HeldNote& held : notes) {
+        trigger::Message off;
+        off.kind = trigger::Message::Kind::MidiNoteOff;
+        off.outputs = held.outputs & outputs; // the going ones alone; the rest still hold it
+        off.channel = held.channel;
+        off.number = held.number;
+        off.value = 0;
+        off.moment = std::max(now, held.moment);
+        triggers_.sendRelease(held.ruleId, off);
+    }
+}
+
+void OutputRunner::releaseStale(bool fresh, double now) {
+    // Whether the rule that holds something could still let go of it itself: there, switched on,
+    // not muted, and sending what it held to where it held it. Anything else is let go of now —
+    // each hold on its own, so a rule taken off one zone keeps the other it still drives.
+    const auto live = [this, fresh](const std::string& id) -> const trigger::Rule* {
+        if (fresh) {
+            return nullptr; // a loaded set is a new show, and nothing of the last one is its
+        }
+        const trigger::Rule* found = triggers_.find(id);
+        return found != nullptr && found->enabled() && !found->muted() ? found : nullptr;
+    };
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
+    releaseMatching(
+        [&live](const HeldNote& held) {
+            const trigger::Rule* const owner = live(held.ruleId);
+            return owner == nullptr ||
+                   owner->config().sendKind != trigger::Message::Kind::MidiNote ||
+                   owner->config().channel != held.channel ||
+                   (held.outputs & ~owner->outputMask()) != 0;
+        },
+        [&live, &patch](const HeldZone& held) {
+            const trigger::Rule* const owner = live(held.ruleId);
+            if (owner == nullptr || owner->config().sendKind != trigger::Message::Kind::Dmx ||
+                !dmx::takesClip(owner->config().dmx.effect)) {
+                return true;
+            }
+            for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+                if (fixtureKey(patch[i]) == held.fixture) {
+                    return !owner->fixtureMask().test(i);
+                }
+            }
+            return true;
+        },
+        now);
 }
 
 void OutputRunner::mirrorLevels(double now) {
@@ -469,6 +663,8 @@ void OutputRunner::stop() noexcept {
             // and an operator pressing Stop has said the opposite. Same argument as `panic`
             // and `setRules`; this is the third place that owed a flush and did not have one.
             triggers_.flushFollowUps();
+            // And every note still on whose release nothing owed (see `holds`).
+            releaseHolds([](const std::string&) { return true; }, elapsed());
             // And everything held for an output's offset, releases included — a held datagram
             // used to sit in the queue until the next Start (the audit's H6).
             sink_.flushQueued();
@@ -482,6 +678,7 @@ void OutputRunner::stop() noexcept {
             // after the round's own frame, a node that drops frames arriving faster than 44 Hz
             // dropped this one and kept the look (the audit of 2026-09-25, L7).
             transports_.dmx().blackout(elapsed());
+            forgetZones();
             if (const double wait = transports_.artnet().secondsUntilPaced(elapsed()); wait > 0.0) {
                 std::this_thread::sleep_for(std::chrono::duration<double>(wait));
             }
@@ -544,19 +741,39 @@ void OutputRunner::apply(const OutputCommand& command) {
             transports_.setLinkEnabled(command.enabled);
             break;
         case OutputCommand::Kind::OscTargets:
-            setTargets(oscOutputs(command.targets));
+            setTargets(oscOutputs(command.targets), now);
             break;
         case OutputCommand::Kind::Outputs:
-            setTargets(command.outputTargets);
+            setTargets(command.outputTargets, now);
             break;
         case OutputCommand::Kind::MidiClockPort:
             transports_.setMidiClockPort(command.port);
             break;
-        case OutputCommand::Kind::Rules:
+        case OutputCommand::Kind::Rules: {
+            // The rules that were sending, so that one deleted or switched off by this set lets
+            // go of what it owes now rather than at its time — see `holds`.
+            std::vector<std::string> sending;
+            for (std::size_t i = 0; i < triggers_.ruleCount(); ++i) {
+                const trigger::Rule& rule = triggers_.rule(i);
+                if (rule.enabled() && !rule.muted()) {
+                    sending.push_back(rule.id());
+                }
+            }
             triggers_.setRules(command.ruleConfigs, command.freshRules);
             rulesApplied_ = command.generation;
             resolveRouting();
+            if (!command.freshRules) {
+                for (const std::string& id : sending) {
+                    const trigger::Rule* const after = triggers_.find(id);
+                    if (after == nullptr || !after->enabled() || after->muted()) {
+                        triggers_.releaseRule(id, now);
+                    }
+                }
+            }
+            // And whatever a rule holds that it can no longer let go of itself.
+            releaseStale(command.freshRules, now);
             break;
+        }
         case OutputCommand::Kind::Panic:
             if (command.enabled) {
                 // Every release owed goes now — except the lighting's, which would move the lamps
@@ -565,6 +782,10 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // would otherwise start at once (the audit's M6; see `holdLighting`).
                 sink_.holdLighting(true);
                 triggers_.panic(contextAt(now));
+                // And every note still on that nothing owed a release for — a rule that sends a
+                // note on and leaves the off to something else (see `holds`). The zones are
+                // disarmed below, whoever holds them.
+                releaseHolds([](const std::string&) { return true; }, now);
                 sink_.holdLighting(false);
                 // What is held for an output's offset goes now too. A release among it must not
                 // wait, and a press among it is at most one lead's worth early — and would
@@ -579,6 +800,11 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // on a rig, and a panic that blacked out the stage would take down lights that
                 // were not takt4's to take. See `dmx::DmxEngine::cancelAll`.
                 transports_.dmx().cancelAll();
+                // **Except the lasers, which are disarmed**: a frozen laser look is still a beam
+                // in the air, and PANIC is the button pressed when something is wrong (the
+                // operator, 2026-10-05). Every other channel keeps its level.
+                transports_.dmx().disarm(now);
+                forgetZones();
                 // On every node at once: a delayed one was sent its last second of animation
                 // after the freeze (the audit of 2026-09-25, M5).
                 transports_.artnet().forgetHistory();
@@ -590,13 +816,30 @@ void OutputRunner::apply(const OutputCommand& command) {
             panicked_.store(command.enabled, std::memory_order_relaxed);
             break;
         case OutputCommand::Kind::RuleEnabled:
-            forEachNamed(command.ruleId,
-                         [&](trigger::Rule& rule) { rule.setEnabled(command.enabled); });
+        case OutputCommand::Kind::RuleMuted: {
+            // **A rule that stops sending lets go of what it holds** (the operator, 2026-10-06: a
+            // laser went on playing under a muted rule). Its clip was a state Liberation keeps,
+            // and nothing would ever have taken it off: its owed releases go now, its held fires
+            // go nowhere, and its notes and zones are let go of — see `holds`.
+            const bool enabling = command.kind == OutputCommand::Kind::RuleEnabled;
+            std::vector<std::string> quietened;
+            forEachNamed(command.ruleId, [&](trigger::Rule& rule) {
+                const bool sending = rule.enabled() && !rule.muted();
+                if (enabling) {
+                    rule.setEnabled(command.enabled);
+                } else {
+                    rule.setMuted(command.enabled);
+                }
+                if (sending && (!rule.enabled() || rule.muted())) {
+                    quietened.push_back(rule.id());
+                }
+            });
+            for (const std::string& id : quietened) {
+                triggers_.releaseRule(id, now);
+                releaseHolds([&id](const std::string& owner) { return owner == id; }, now);
+            }
             break;
-        case OutputCommand::Kind::RuleMuted:
-            forEachNamed(command.ruleId,
-                         [&](trigger::Rule& rule) { rule.setMuted(command.enabled); });
-            break;
+        }
         case OutputCommand::Kind::RuleRate:
             forEachNamed(command.ruleId, [&](trigger::Rule& rule) {
                 // Relative multiplies what the rule is already at, which is what lets a
@@ -614,6 +857,14 @@ void OutputRunner::apply(const OutputCommand& command) {
             triggers_.remapPending({}, moved);
             sink_.remap({}, moved);
             resolveRouting();
+            // A zone gone from the patch, or switched off in it, is dark already — the engine
+            // zeroes a channel nothing covers — and holds nothing any more.
+            std::erase_if(heldZones_, [this](const HeldZone& held) {
+                const std::vector<dmx::Fixture>& patch = transports_.patch();
+                return std::none_of(patch.begin(), patch.end(), [&held](const dmx::Fixture& f) {
+                    return f.enabled && fixtureKey(f) == held.fixture;
+                });
+            });
             break;
         }
         case OutputCommand::Kind::OutputDelay:
@@ -662,14 +913,17 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // otherwise light a lamp again at its release level (see `holdLighting`);
                 sink_.holdLighting(true);
                 triggers_.flushFollowUps();
+                // every note still on whose release nothing owed (see `holds`);
+                releaseHolds([](const std::string&) { return true; }, now);
                 sink_.holdLighting(false);
                 sink_.dropQueuedLighting();
                 sink_.flushQueued();
                 transports_.osc().flushAll();
                 // and the lights go out and stay out — sent, because the outputs keep running
-                // (Q3 of 2026-09-23).
+                // (Q3 of 2026-09-23). The blackout disarms every laser zone with them.
                 transports_.stopClock();
                 transports_.dmx().blackout(now);
+                forgetZones();
             }
             tracking_.store(command.enabled, std::memory_order_relaxed);
             break;
@@ -743,7 +997,7 @@ std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
     return answer;
 }
 
-void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
+void OutputRunner::setTargets(const std::vector<OutputTarget>& targets, double now) {
     // What is held and what is owed names its output by its place in the list, which is about
     // to move — so each follows its output by id afterwards, rather than being flushed early
     // or sent to whatever takes its place (the audit's H12).
@@ -756,6 +1010,8 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
     // on still held for its delay goes before its own note off.
     if (const std::uint64_t leaving = leavingOutputs(before, targets); leaving != 0) {
         triggers_.flushFollowUpsTo(leaving);
+        // And every note still on there that nothing owed a release for (see `holds`).
+        releaseNotesTo(leaving, now);
         sink_.flushQueuedTo(leaving);
         transports_.osc().flushTo(leaving);
     }
@@ -763,6 +1019,11 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
         const std::vector<int> moved = movedOutputs(before, transports_.outputs());
         triggers_.remapPending(moved, {});
         sink_.remap(moved, {});
+        // A held note follows its outputs too, and is forgotten where they have all gone.
+        std::erase_if(heldNotes_, [&moved](HeldNote& held) {
+            held.outputs = trigger::remapBits(held.outputs, moved);
+            return held.outputs == 0;
+        });
         resolveRouting();
     };
     // Either way — see the declaration. A target that would not open still took its place in
@@ -958,6 +1219,23 @@ void OutputRunner::drainOnce(double now) {
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
     // (the audit's M4): its bar and downbeat rules fire now, as that bar's.
     const tracking::TempoState state = engine_.state();
+    // **The input gone quiet disarms the lasers** (the operator, 2026-10-05). Nothing fires until
+    // the next lock, so a laser zone would otherwise hold its last clip through the silence — a
+    // beam nobody is driving. Once, as it goes quiet: the next clip a rule fires arms it again.
+    if (state.noSignal != noSignalSeen_) {
+        noSignalSeen_ = state.noSignal;
+        if (state.noSignal) {
+            guarded("disarming the lasers", [&] {
+                transports_.dmx().disarm(now);
+                forgetZones();
+                // And the same for what MIDI holds on — a note on is a Liberation clip too, on a
+                // rig that drives it by MIDI — and for a fire still held for its rule's delay,
+                // which would otherwise go out into the silence (see `holds`).
+                triggers_.dropHeldFires();
+                releaseHolds([](const std::string&) { return true; }, now);
+            });
+        }
+    }
     // Seen whether or not it fires, and fired only once a lock has been earned, as a beat is.
     if (countMoved(state.barsDeclared, barsDeclaredSeen_) && state.acquired) {
         guarded("a declared bar's rules", [&] {

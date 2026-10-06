@@ -44,6 +44,7 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->set_fixture_choices(fixtureRows_.model());
     window_->set_head_choices(headRows_.model());
     window_->set_slots(slotRows_.model());
+    window_->set_lasers(laserRows_.model());
     window_->set_palette(paletteRows_.model());
     window_->set_follow_ups(followRows_.model());
     window_->set_log(logModel_);
@@ -136,6 +137,17 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_color_modes(colorModes);
 
+    auto timings = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const LaserTiming& timing : kLaserTimings) {
+        timings->push_back(slint::SharedString(timing.label));
+    }
+    window_->set_laser_timings(timings);
+    auto moves = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* move : kLaserMoves) {
+        moves->push_back(slint::SharedString(move));
+    }
+    window_->set_laser_moves(moves);
+
     // **Every action commits what was being typed before it runs** (the audit of 2026-09-25,
     // M18) — see `typing_`. A box's own commit is not wrapped: its setter clears its own record
     // (`typed`), and while it has the keyboard no other box can have one. What the box keystrokes
@@ -174,6 +186,31 @@ RulesController::RulesController(output::OutputRunner& runner,
         }
     }));
     window_->on_rig_added(finishing([this](int index) { addRig(index); }));
+    // The Liberation prompt. Its boxes keep what is typed into them as it is typed, so what
+    // ADD reads is what the boxes show, whichever of them still has the keyboard.
+    window_->on_laser_count_changed([this](int lasers) { setLaserCount(lasers); });
+    window_->on_laser_clip_typed([this](int laser, bool to, const slint::SharedString& text) {
+        setLaserClip(laser, to, std::string(text));
+    });
+    window_->on_laser_clip_edited([this](int laser, bool to, const slint::SharedString& text) {
+        setLaserClip(laser, to, std::string(text));
+    });
+    window_->on_laser_timing_picked(
+        [this](int laser, int timing) { setLaserTiming(laser, timing); });
+    window_->on_liberation_host_typed(
+        [this](const slint::SharedString& text) { setLiberationHost(std::string(text)); });
+    window_->on_liberation_host_edited(
+        [this](const slint::SharedString& text) { setLiberationHost(std::string(text)); });
+    window_->on_liberation_port_changed([this](int port) { setLiberationPort(port); });
+    window_->on_liberation_universe_changed(
+        [this](int universe) { setLiberationUniverse(universe); });
+    window_->on_liberation_address_changed([this](int address) { setLiberationAddress(address); });
+    window_->on_liberation_move_toggled([this](bool on) { setLiberationMove(on); });
+    window_->on_liberation_shape_picked([this](int shape) { setLiberationShape(shape); });
+    window_->on_liberation_amount_changed([this](int amount) { setLiberationAmount(amount); });
+    window_->on_liberation_bars_changed([this](int bars) { setLiberationBars(bars); });
+    window_->on_liberation_added([this] { addLiberation(); });
+    window_->on_liberation_cancelled([this] { closeLiberation(); });
     window_->on_rule_enabled_changed(finishing([this](bool on) { setEnabled(on); }));
     window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
     window_->on_rule_muted_at(finishing([this](int index, bool on) { setMutedAt(index, on); }));
@@ -198,6 +235,18 @@ RulesController::RulesController(output::OutputRunner& runner,
             setPulses(pulses);
         }
     });
+    window_->on_beat_of_bar_changed([this, number](int beat) {
+        if (!echoes(TypedIn::Rule, kBeatOfBarBox, number(beat))) {
+            setOnBeat(beat);
+        }
+    });
+    window_->on_delay_toggled(finishing([this](bool on) { setDelayOn(on); }));
+    window_->on_delay_edited([this](const slint::SharedString& t) {
+        if (!echoes(TypedIn::Rule, kDelayBox, t)) {
+            setDelay(std::string(t));
+        }
+    });
+    window_->on_delay_unit_picked(finishing([this](int unit) { pickDelayUnit(unit); }));
     window_->on_output_chosen(
         finishing([this](const slint::SharedString& name, bool chosen) {
             setOutputChosen(std::string(name), chosen);
@@ -570,6 +619,14 @@ void RulesController::commitTyping() {
             if (number) {
                 setPulses(*number);
             }
+            break;
+        case kBeatOfBarBox:
+            if (number) {
+                setOnBeat(*number);
+            }
+            break;
+        case kDelayBox:
+            setDelay(pending.text);
             break;
         case kChannelBox:
             if (number) {
@@ -953,7 +1010,14 @@ void RulesController::addRig(int index) {
         return; // the picker's own label
     }
     commitTyping();
-    const std::vector<Rule::Config> added = rigPresetRules(static_cast<std::size_t>(index));
+    if (static_cast<std::size_t>(index) == kLiberationPreset) {
+        openLiberation(); // a rig that asks first
+        return;
+    }
+    appendRig(rigPresetRules(static_cast<std::size_t>(index)));
+}
+
+void RulesController::appendRig(std::vector<Rule::Config> added) {
     if (added.empty()) {
         return;
     }
@@ -1102,6 +1166,9 @@ void RulesController::setEvery(int every) {
         // Back into the box: a `NumberBox` never writes its own value, so it shows what this
         // says it is — the std `SpinBox` it replaced set itself and so needed nothing here.
         window_->set_every(static_cast<int>(rule->every));
+        // And the beat of the bar, which every single beat has no use for and every two do.
+        publishBeatOfBar(*rule);
+        publishSummaries();
     }
 }
 
@@ -1117,6 +1184,59 @@ void RulesController::setTargets(std::vector<output::OutputTarget> targets) {
     }
     targets_ = std::move(targets);
     publishSelected(); // the "reaches ..." line beside the routing field
+}
+
+void RulesController::setOnBeat(int beat) {
+    typed(TypedIn::Rule, 0, kBeatOfBarBox);
+    if (Rule::Config* rule = current()) {
+        rule->onBeat = static_cast<std::uint32_t>(
+            std::clamp(beat, 1, static_cast<int>(trigger::kMaxBeatOfBar)));
+        commit();
+        publishSelected(); // the box, and what the heading says the rule does
+    }
+}
+
+void RulesController::setDelayOn(bool on) {
+    if (Rule::Config* rule = current()) {
+        rule->delayOn = on;
+        commit();
+        publishSelected();
+    }
+}
+
+void RulesController::setDelay(const std::string& text) {
+    typed(TypedIn::Rule, 0, kDelayBox);
+    Rule::Config* rule = current();
+    if (rule == nullptr) {
+        return;
+    }
+    const std::optional<double> number = readNumber(trim(text));
+    if (!number || *number < 0.0) {
+        setStatus("A wait is a number of milliseconds, beats or bars, like 120 or 0.5.", true);
+        publishSelected(); // the box back to what the rule holds
+        return;
+    }
+    // Into whichever of the two numbers the unit shows, leaving the other alone — as a
+    // follow-up's delay is kept (`setFollowDelay`, and `trigger::FollowUp::delayBeats` for why).
+    if (rule->delayUnit == trigger::DelayUnit::Milliseconds) {
+        rule->delaySeconds = *number / 1000.0;
+    } else {
+        rule->delayBeats = *number;
+    }
+    // Settable while switched off, for later, as B's settings are: the tick alone switches it.
+    commit();
+    publishSelected();
+}
+
+void RulesController::pickDelayUnit(int unit) {
+    Rule::Config* rule = current();
+    if (rule == nullptr || unit < 0 ||
+        static_cast<std::size_t>(unit) >= trigger::kDelayUnits.size()) {
+        return;
+    }
+    rule->delayUnit = trigger::kDelayUnits[static_cast<std::size_t>(unit)];
+    commit();
+    publishSelected();
 }
 
 void RulesController::setPulses(int pulses) {
@@ -1182,6 +1302,10 @@ void RulesController::setPatch(std::vector<dmx::Fixture> patch) {
     }
     patch_ = std::move(patch);
     publishSelected();
+    // The Liberation prompt reads the patch too: where its zones would clash, and which it reuses.
+    if (liberationOpen_) {
+        publishLiberation();
+    }
 }
 
 void RulesController::setFixtureChosen(const std::string& key, bool chosen) {
@@ -1220,6 +1344,13 @@ void RulesController::setConditionsOn(bool on) {
         rule->conditionsOn = on;
         commit();
         window_->set_conditions_on(on);
+        // Ticked, it opens: what was switched on is what is to be set next, and a section that
+        // stays folded over it hides the very thing the tick asked for (the operator,
+        // 2026-10-06). Unticked, it stays as it is — folding it under the hand would be a second
+        // thing nobody asked for.
+        if (on) {
+            window_->set_only_if_folded(false);
+        }
     }
 }
 

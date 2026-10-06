@@ -2,6 +2,7 @@
 
 #include "core/tracking/particle_filter.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -62,6 +63,19 @@ struct TempoState {
     /// below its own cloud is publishing exactly the grid it calls, and that is not this
     /// state — see `Options::beatOctaveBeats`.)
     std::uint32_t beatDivisor = 1;
+    /// **The operator's ÷2 and ×2, as octaves**: -1 after one ÷2, +1 after one ×2, -2 to 2, zero
+    /// for none — and a tap that named another octave counts. Published so the window can say a
+    /// shift is in force (the operator, 2026-10-06: *"theres no indication anywhere in the
+    /// program that a divide by two action is currently in effect. same with multiply"*); the
+    /// readout alone cannot, since a halved tempo reads like any other.
+    std::int32_t octaveShift = 0;
+    /// **The rate the published beats are arriving at**, in BPM: the median of the last eight
+    /// gaps between them, or zero until there are enough, or once the next is more than two gaps
+    /// late. What the bar dots move at, measured rather than assumed — so that when it is an
+    /// octave from `bpm` the window can say so, and say which button agrees them (the operator,
+    /// 2026-10-06: *"the beat dots advance at the right bpm ... but the bpm display shows twice
+    /// that. theres not indication why"*).
+    double beatsBpm = 0.0;
 };
 
 /// One beat, as the output transports want it.
@@ -871,6 +885,14 @@ private:
     std::uint64_t framesSinceBeat_ = 0;
     std::uint64_t beatsSeen_ = 0;
     std::uint32_t filterIntervalFrames_ = 0;
+    /// The frames the last `kBeatRateGaps + 1` *published* beats went out on, in a ring — what
+    /// `TempoState::beatsBpm` is measured from. Published, not called: under a divided grid the
+    /// two differ, and the dots move on the published ones.
+    static constexpr std::size_t kBeatRateGaps = 8;
+    std::array<std::uint64_t, kBeatRateGaps + 1> publishedFrames_{};
+    std::size_t publishedCount_ = 0;
+    /// `TempoState::beatsBpm` from the ring, and zero once the next beat is overdue.
+    void measureBeatRate() noexcept;
 
     /// The frames the last few beats were called on, oldest first. Bounded by
     /// `refineOverBeats + 1`, so this allocates once and never grows.

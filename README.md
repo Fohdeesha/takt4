@@ -22,7 +22,8 @@ cues, notes and light looks on the music. No manual tapping, locks on to new son
 ## When the beat is wrong (rare)
 
 - A beat or two out: press **downbeat** (or **D**) on the one
-- Half or double speed: **÷2** or **×2**. They reset on the next track unless **keep half/double settings for next track** is ticked
+- Half or double speed: **÷2** or **×2**. The button stays lit and the tempo says **÷2 applied** while it's in force. They reset on the next track unless **keep half/double settings for next track** is ticked
+- If the number and the beat dots disagree, the line under the tempo says what the beats are going out at and which of **÷2** / **×2** matches them
 - Keep it in a range: tick **keep BPM in** and drag its two handles
 - **tap** (or **T**) to tap it in
 - **latency** moves everything earlier or later
@@ -32,13 +33,15 @@ cues, notes and light looks on the music. No manual tapping, locks on to new son
 The rule editor (the **triggers** window). **+** adds a rule. Each rule has four sections:
 
 - **A when**: every N beats or bars, the downbeat, a euclidean pattern (3 in 8...), an onset, a tempo change, lock or unlock, an intensity change, or the **M** key. **÷2** / **×2** fire it twice / half as often.
-- **B only if** (off until ticked): confidence, probability, intensity, BPM range.
+  - Bars fire **on beat** 1 to 16 of the bar; every 2 beats or more counts **from beat** N **of the bar** (2 and 4 is from beat 2).
+  - Tick **then wait** to send it so many ms, beats or bars after the trigger; its follow-ups wait with it.
+- **B only if** (off until ticked; ticking opens it): confidence, probability, intensity, BPM range.
 - **C send**: an OSC address, a MIDI note, note off, CC, program change or pitch bend, or a light effect. **send to** picks the outputs; a light effect picks fixtures under **lights** instead.
 - **D then send**: follow-ups (a clip release, a note off) after so many ms, beats or bars.
 
 Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have played), random, cycle, weighted, fixed, a live value (BPM, bar, confidence...) or a ramp. The **preset** box fills in Resolume, TouchDesigner and MadMapper addresses.
 
-- Click a rule's dot to mute it; it keeps time, so it comes back in phase.
+- Click a rule's dot to mute it; it keeps time, so it comes back in phase. Muting, switching off or deleting a rule lets go of what it holds: its notes get their note off and its lasers are disarmed.
 - **test** fires it once.
 - The **event log** along the bottom shows everything that went out.
 - **panic** (or **Esc**, in the main window or the rule editor) stops every rule until **release**.
@@ -95,9 +98,9 @@ address                       send           does
 ## Lights
 
 1. **+ add output**, set its **protocol** to Art-Net and type the node's IP (port 6454).
-2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head). Or click **import** and pick a GDTF (`.gdtf`) or Open Fixture Library (`.json`) file: choose its mode, how many and where, and they arrive with every channel named and set up. The file is kept with the preset, so its other modes stay in the **mode** list.
+2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head, Liberation zone). Or click **import** and pick a GDTF (`.gdtf`) or Open Fixture Library (`.json`) file: choose its mode, how many and where, and they arrive with every channel named and set up. The file is kept with the preset, so its other modes stay in the **mode** list.
 3. **identify** flashes the fixture; a channel's **test** holds it at the **test sends** level for 3 s.
-4. In a rule, set **send as** to DMX / Art-Net and pick an effect: level / fade, color, flash, pulse, strobe, hue sweep, position, path, home, blackout.
+4. In a rule, set **send as** to DMX / Art-Net and pick an effect: level / fade, color, flash, pulse, strobe, hue sweep, position, path, home, blackout, Liberation clip.
 
 - Click a fixture's dot to leave it out of the show; copy and × are on its row.
 - Every effect ends with its duration, so nothing is left strobing.
@@ -105,6 +108,16 @@ address                       send           does
 - A moving head's **how far it moves** keeps random positions and paths inside the range you set.
 - A fixture with several heads moves them all. In a rule, tick which **heads** move, and slide **spread** to stagger them; a second rule can move the others.
 - **panic** freezes the lights where they are; **stop** and quitting black them out.
+
+## Lasers (Pangolin Liberation)
+
+1. Open the rules (**add a rule** or **edit rules** in the triggers row), then **select a preset** > **Liberation: lasers…**.
+2. Fill in the prompt: how many **lasers** (1 to 4), **Liberation's IP** (127.0.0.1 on this computer) and **port** (6454 unless you changed it in Liberation), where the **first zone** is in Liberation's universe numbering, and each laser's **clips from** and **to** as Liberation names them (`21-1`). Every clip between the two, in Liberation's deck order, is shuffled.
+3. **add** patches a Liberation zone per laser, adds an Art-Net output to Liberation, switches Link on and adds a trigger per laser: every beat, 2 beats, bar and 2 bars to start. Tick **also move each laser** for a circle, figure 8, sweep or random spots, as far as you set from the centre.
+4. In Liberation, do what the prompt lists: DMX Input on with Art-Net, one Extended 32ch profile per laser at the addresses it shows, tempo source Ableton Link.
+
+- A clip arms its zone and sets its intensity. **stop**, quitting, **panic** and **no signal** (the input silent for 4 s) disarm every laser. So does muting or switching off its rule. Unticking or deleting an Art-Net output sends it zeros for 3 s, so its lights go dark and its lasers disarm.
+- Nothing fires until takt4 has a lock.
 
 ## Saving
 

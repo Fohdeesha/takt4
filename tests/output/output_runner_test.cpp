@@ -1,6 +1,7 @@
 #include "core/audio/rates.hpp"
 #include "core/control/rule_control.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
@@ -17,6 +18,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -2346,4 +2348,493 @@ TEST_CASE("the log of a rule that moves one head says which", "[output][dmx][hea
     CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("spread 50%"));
     CHECK_THAT(lines[1], !Catch::Matchers::ContainsSubstring("head"));
     CHECK_THAT(lines[1], !Catch::Matchers::ContainsSubstring("spread"));
+}
+
+namespace {
+
+/// A Liberation zone at channel 1 and a dimmer at 100, the zone armed on clip 4-2 and the lamp at
+/// 180 — through the runner's own queue, as the rule editor's preview reaches them.
+void armZoneBesideLamp(OutputRunner& runner) {
+    takt4::dmx::Payload clip;
+    clip.kind = takt4::dmx::EffectKind::Clip;
+    clip.clip = static_cast<std::uint16_t>(takt4::dmx::liberation::indexOf({4, 2}) + 1);
+    clip.level = 255;
+    runner.post(OutputCommand::effect(0b01, clip));
+    takt4::dmx::Payload lamp;
+    lamp.kind = takt4::dmx::EffectKind::Level;
+    lamp.role = takt4::dmx::Role::Dimmer;
+    lamp.level = 180;
+    runner.post(OutputCommand::effect(0b10, lamp));
+}
+
+Transports::Config zoneBesideLamp() {
+    Transports::Config config;
+    config.patch = {takt4::dmx::liberation::zone("laser", 0, 1),
+                    takt4::dmx::fixtureFromMode("lamp", 0, 0, 100)};
+    config.patch[0].id = "laser";
+    config.patch[1].id = "lamp";
+    return config;
+}
+
+/// Arm, Gobo Select and the lamp, read between two of the output thread's rounds.
+std::array<std::uint8_t, 3> zoneAndLamp(const OutputRunner& runner) {
+    return runner.inspect([](const auto&, const Transports& transports, const auto&) {
+        const auto levels = transports.dmx().levels(0);
+        return std::array<std::uint8_t, 3>{levels[0], levels[3], levels[99]};
+    });
+}
+
+} // namespace
+
+TEST_CASE("PANIC disarms the lasers and freezes the lamps", "[output][dmx][liberation]") {
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, zoneBesideLamp()); // stopped, so every post applies at once
+    armZoneBesideLamp(runner);
+    const std::uint8_t select =
+        takt4::dmx::liberation::goboOf(takt4::dmx::liberation::indexOf({4, 2})).select;
+    REQUIRE(zoneAndLamp(runner) == std::array<std::uint8_t, 3>{255, select, 180});
+
+    runner.post(OutputCommand::panic(true));
+    // The laser disarmed with its clip taken off; the lamp where PANIC found it.
+    CHECK(zoneAndLamp(runner) == std::array<std::uint8_t, 3>{0, 0, 180});
+
+    runner.post(OutputCommand::panic(false));
+    armZoneBesideLamp(runner);
+    CHECK(zoneAndLamp(runner)[0] == 255); // and the next clip arms it again
+}
+
+TEST_CASE("the input going quiet disarms the lasers and leaves the lamps",
+          "[output][dmx][liberation]") {
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, zoneBesideLamp());
+    armZoneBesideLamp(runner);
+    REQUIRE(zoneAndLamp(runner)[0] == 255);
+
+    runner.start();
+    // Digital silence, past the four seconds that say there is no signal.
+    const std::vector<float> silence(
+        static_cast<std::size_t>(6.0 * takt4::audio::kInternalSampleRate), 0.0f);
+    for (std::size_t hop = 0; hop < silence.size() / kHopSize; ++hop) {
+        engine->processHop(silence.data() + hop * kHopSize, hop);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().noSignal);
+    waitForRounds(runner, 3);
+    CHECK(zoneAndLamp(runner) == std::array<std::uint8_t, 3>{0, 0, 180});
+    runner.stop();
+}
+
+TEST_CASE("Liberation hears the clip a rule picked, armed and lit, on the wire",
+          "[output][dmx][liberation]") {
+    // Verified as the operator asked on 2026-10-05: not by launching Liberation, but by a listener
+    // of the test's own on a loopback port, reading every ArtDmx frame and decoding it with the
+    // formula Liberation's own document gives. Two zones, at 1 and 33; only the first is fired.
+    namespace liberation = takt4::dmx::liberation;
+    LoopbackReceiver node;
+    Transports::Config config;
+    takt4::output::OutputTarget target;
+    target.id = "o-0000libe";
+    target.name = "Liberation";
+    target.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    target.host = "127.0.0.1";
+    target.port = node.port();
+    config.outputs = {target};
+    config.patch = {liberation::zone("laser 1", 0, 1), liberation::zone("laser 2", 0, 33)};
+    config.patch[0].id = "z1";
+    config.patch[1].id = "z2";
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.start();
+
+    // A frame with both zones in it, read off the wire until `wanted` says it is the one.
+    const auto frameWhere = [&node](auto wanted) {
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            const std::string datagram = node.receive();
+            if (datagram.empty()) {
+                break;
+            }
+            const std::vector<std::uint8_t> levels = artDmxLevels(datagram);
+            if (levels.size() >= 64 && wanted(levels)) {
+                return levels;
+            }
+        }
+        return std::vector<std::uint8_t>{};
+    };
+
+    // Parked: both disarmed, dark and on no clip — and at full scale, which is what renders.
+    const std::vector<std::uint8_t> parked = frameWhere([](const auto&) { return true; });
+    REQUIRE(parked.size() >= 64);
+    CHECK(parked[0] == 0);
+    CHECK(parked[1] == 0);
+    CHECK(parked[3] == 0);
+    CHECK(parked[9] == 255);
+    CHECK(parked[10] == 255);
+    CHECK(parked[32] == 0);
+
+    Rule::Config rule;
+    rule.id = "laser1";
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Clip;
+    rule.dmx.fixtures = {"z1"};
+    rule.dmx.clip.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.clip.fixed = takt4::trigger::Value::ofInt(liberation::indexOf({21, 1}));
+    rule.dmx.level = takt4::trigger::fixedNumber(200);
+    runner.post(OutputCommand::rules({rule}));
+    runner.post(OutputCommand::testRule("laser1"));
+
+    // Armed (Liberation renders at 250 and up), lit, and on 21-1 as Liberation decodes it.
+    const std::vector<std::uint8_t> lit =
+        frameWhere([](const auto& levels) { return levels[0] >= 250; });
+    REQUIRE(lit.size() >= 64);
+    CHECK(lit[1] == 200);
+    CHECK(liberation::decode(lit[2], lit[3]) == liberation::Clip{21, 1});
+    CHECK(lit[32] == 0); // the second zone, untouched
+    CHECK_FALSE(liberation::decode(lit[34], lit[35]).has_value());
+
+    // And PANIC takes it off the air.
+    runner.post(OutputCommand::panic(true));
+    const std::vector<std::uint8_t> off =
+        frameWhere([](const auto& levels) { return levels[0] == 0; });
+    REQUIRE(off.size() >= 64);
+    CHECK_FALSE(liberation::decode(off[2], off[3]).has_value());
+    runner.stop();
+}
+
+namespace {
+
+using Bytes = std::vector<std::vector<unsigned char>>;
+
+/// A laser desk on one MIDI cable, recorded, beside a Liberation zone at channel 1 and a lamp at
+/// 100: the two things takt4 sends that stay on until something takes them off.
+Transports::Config heldRig(const std::shared_ptr<Bytes>& cable) {
+    Transports::Config config = zoneBesideLamp();
+    takt4::output::OutputTarget desk;
+    desk.id = "o-0000desk";
+    desk.name = "laser desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "Laser";
+    config.outputs = {desk};
+    config.openMidi = [cable](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name,
+                                                           std::make_unique<KeepingPort>(cable));
+    };
+    return config;
+}
+
+/// A note on with nothing to let go of it — no follow-up — on the desk.
+Rule::Config heldNote() {
+    Rule::Config rule;
+    rule.id = "note";
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    rule.channel = 1;
+    rule.number.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.number.fixed = takt4::trigger::Value::ofInt(60);
+    rule.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.value.fixed = takt4::trigger::Value::ofInt(100);
+    return rule;
+}
+
+/// A Liberation clip on the zone, with nothing to take it off: the preset's own rule.
+Rule::Config heldClip(std::string id = "clip") {
+    Rule::Config rule;
+    rule.id = std::move(id);
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Clip;
+    rule.dmx.fixtures = {"laser"};
+    rule.dmx.clip.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.clip.fixed =
+        takt4::trigger::Value::ofInt(takt4::dmx::liberation::indexOf({4, 2}));
+    rule.dmx.level = takt4::trigger::fixedNumber(255);
+    return rule;
+}
+
+/// The releases the log shows, as "rule: message".
+std::vector<std::string> releasesLogged(OutputRunner& runner) {
+    std::vector<std::string> out;
+    for (const OutputRunner::Fired& entry : runner.takeFired()) {
+        if (entry.followUp) {
+            out.push_back(entry.ruleId + ": " + entry.message);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a rule that stops sending lets go of what it holds", "[output][trigger][release]") {
+    // The operator, 2026-10-06: "if I mute a trigger by clicking its green circle in the rules
+    // editor, the laser will sometimes still play. might do this for midi shit too, anything that
+    // needs an excpicit release/disarm". A Liberation clip arms its zone until something takes it
+    // off, and a note on sounds until its note off; a rule muted, switched off, deleted or aimed
+    // elsewhere would never send either again. Not started, so every post applies at once.
+    auto cable = std::make_shared<Bytes>();
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, heldRig(cable));
+    const Rule::Config note = heldNote();
+    const Rule::Config clip = heldClip();
+    runner.post(OutputCommand::rules({note, clip}));
+    runner.post(OutputCommand::testRule("note"));
+    runner.post(OutputCommand::testRule("clip"));
+    REQUIRE(*cable == Bytes{{0x90, 60, 100}});
+    REQUIRE(zoneAndLamp(runner)[0] == 255);
+    REQUIRE(runner.holds().notes == 1);
+    REQUIRE(runner.holds().zones == 1);
+    (void)runner.takeFired();
+
+    SECTION("muted from the editor's dot") {
+        runner.post(OutputCommand::ruleMuted("note", true));
+        runner.post(OutputCommand::ruleMuted("clip", true));
+    }
+    SECTION("muted from a control surface, all at once") {
+        runner.setRuleMuted("all", true);
+    }
+    SECTION("switched off") {
+        runner.post(OutputCommand::ruleEnabled("note", false));
+        runner.post(OutputCommand::ruleEnabled("clip", false));
+    }
+    SECTION("deleted") {
+        runner.post(OutputCommand::rules({}));
+    }
+    SECTION("aimed elsewhere: another channel, another fixture") {
+        Rule::Config moved = note;
+        moved.channel = 2;
+        Rule::Config lamp = clip;
+        lamp.dmx.fixtures = {"lamp"};
+        runner.post(OutputCommand::rules({moved, lamp}));
+    }
+    SECTION("made another kind or effect") {
+        Rule::Config cc = note;
+        cc.sendKind = takt4::trigger::Message::Kind::MidiCc;
+        Rule::Config move = clip;
+        move.dmx.effect = takt4::dmx::EffectKind::Position;
+        runner.post(OutputCommand::rules({cc, move}));
+    }
+    SECTION("replaced by a show loaded") {
+        runner.post(OutputCommand::rules({note, clip}, true));
+    }
+    SECTION("PANIC") {
+        runner.post(OutputCommand::panic(true));
+    }
+    SECTION("Stop") {
+        runner.post(OutputCommand::tracking(false));
+    }
+    // The note's own Note Off on the cable, and the zone disarmed with its clip taken off.
+    CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+    CHECK(zoneAndLamp(runner)[0] == 0);
+    CHECK(zoneAndLamp(runner)[1] == 0);
+    CHECK(runner.holds().notes == 0);
+    CHECK(runner.holds().zones == 0);
+}
+
+TEST_CASE("the log shows a release beside the rule that held it", "[output][trigger][release]") {
+    auto cable = std::make_shared<Bytes>();
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, heldRig(cable));
+    runner.post(OutputCommand::rules({heldNote(), heldClip()}));
+    runner.post(OutputCommand::testRule("note"));
+    runner.post(OutputCommand::testRule("clip"));
+    (void)runner.takeFired();
+    runner.post(OutputCommand::ruleMuted("note", true));
+    runner.post(OutputCommand::ruleMuted("clip", true));
+    const std::vector<std::string> logged = releasesLogged(runner);
+    REQUIRE(logged.size() == 2);
+    CHECK(logged[0] == "note: note off 60 ch 1");
+    CHECK_THAT(logged[1], Catch::Matchers::StartsWith("clip: ") &&
+                              Catch::Matchers::EndsWith(" none"));
+}
+
+TEST_CASE("an edit that keeps a rule's aim leaves what it holds", "[output][trigger][release]") {
+    // Every keystroke in the editor posts the whole set. A rename must not cut a note or drop a
+    // laser between two of a rule's own fires.
+    auto cable = std::make_shared<Bytes>();
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, heldRig(cable));
+    Rule::Config note = heldNote();
+    Rule::Config clip = heldClip();
+    runner.post(OutputCommand::rules({note, clip}));
+    runner.post(OutputCommand::testRule("note"));
+    runner.post(OutputCommand::testRule("clip"));
+    note.name = "renamed";
+    clip.name = "renamed too";
+    clip.dmx.fixtures = {"laser", "lamp"}; // aimed at more, and still at the zone
+    runner.post(OutputCommand::rules({note, clip}));
+    CHECK(*cable == Bytes{{0x90, 60, 100}});
+    CHECK(zoneAndLamp(runner)[0] == 255);
+    CHECK(runner.holds().notes == 1);
+    CHECK(runner.holds().zones == 1);
+
+    SECTION("and a rule muted lets go of only its own") {
+        // A second clip rule arms the zone after the first: the zone is the second's now, and
+        // muting the first leaves it lit.
+        runner.post(OutputCommand::rules({note, clip, heldClip("other")}));
+        runner.post(OutputCommand::testRule("other"));
+        runner.post(OutputCommand::ruleMuted("clip", true));
+        CHECK(zoneAndLamp(runner)[0] == 255);
+        runner.post(OutputCommand::ruleMuted("other", true));
+        CHECK(zoneAndLamp(runner)[0] == 0);
+    }
+}
+
+TEST_CASE("a MIDI output switched off is sent the note offs it is owed", "[output][trigger][release]") {
+    // Held on two outputs, one switched off: its note off goes to that one alone, before its port
+    // closes, and the other still holds the note.
+    using Kind = takt4::output::OutputTarget::Kind;
+    std::map<std::string, std::shared_ptr<Bytes>> cables{{"Laser", std::make_shared<Bytes>()},
+                                                         {"Synth", std::make_shared<Bytes>()}};
+    const auto midi = [](const char* id, const char* device) {
+        takt4::output::OutputTarget target;
+        target.id = id;
+        target.name = id;
+        target.kind = Kind::Midi;
+        target.device = device;
+        return target;
+    };
+    Transports::Config config;
+    config.outputs = {midi("o-laser", "Laser"), midi("o-synth", "Synth")};
+    config.openMidi = [cables](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<KeepingPort>(cables.at(name)));
+    };
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.post(OutputCommand::rules({heldNote()}));
+    runner.post(OutputCommand::testRule("note"));
+    REQUIRE(*cables["Laser"] == Bytes{{0x90, 60, 100}});
+    REQUIRE(*cables["Synth"] == Bytes{{0x90, 60, 100}});
+
+    takt4::output::OutputTarget off = midi("o-laser", "Laser");
+    off.enabled = false;
+    runner.post(OutputCommand::outputs({off, midi("o-synth", "Synth")}));
+    CHECK(*cables["Laser"] == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+    CHECK(*cables["Synth"] == Bytes{{0x90, 60, 100}});
+    CHECK(runner.holds().notes == 1); // still on the synth
+
+    // And PANIC lets go of it there — the synth now the first output in the list.
+    runner.post(OutputCommand::outputs({midi("o-synth", "Synth")}));
+    runner.post(OutputCommand::panic(true));
+    CHECK(*cables["Synth"] == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+    CHECK(runner.holds().notes == 0);
+}
+
+TEST_CASE("the input going quiet lets go of the notes it holds", "[output][trigger][release]") {
+    // As it disarms the lasers: a note on is a Liberation clip too, on a rig that drives it by
+    // MIDI, and nothing fires again until the next lock.
+    auto cable = std::make_shared<Bytes>();
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, heldRig(cable));
+    runner.post(OutputCommand::rules({heldNote()}));
+    runner.post(OutputCommand::testRule("note"));
+    REQUIRE(runner.holds().notes == 1);
+
+    runner.start();
+    const std::vector<float> silence(
+        static_cast<std::size_t>(6.0 * takt4::audio::kInternalSampleRate), 0.0f);
+    for (std::size_t hop = 0; hop < silence.size() / kHopSize; ++hop) {
+        engine->processHop(silence.data() + hop * kHopSize, hop);
+        (void)engine->step();
+    }
+    REQUIRE(engine->state().noSignal);
+    waitForRounds(runner, 3);
+    runner.stop();
+    CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+}
+
+TEST_CASE("an Art-Net node switched off is sent zeros: its lights dark, its lasers disarmed",
+          "[output][dmx][liberation][release]") {
+    // The operator, 2026-10-06: "unchecking the liberation artnet output in the main window
+    // doesnt disarm them either" — the node held the last frame it was sent, which armed the zone
+    // — and then "untickng artnet should black out lights / send zeroed". Read off the wire with
+    // a listener of the test's own, never Liberation (the operator's rule).
+    LoopbackReceiver node;
+    Transports::Config config = zoneBesideLamp();
+    takt4::output::OutputTarget target;
+    target.id = "o-0000libe";
+    target.name = "Liberation";
+    target.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    target.host = "127.0.0.1";
+    target.port = node.port();
+    config.outputs = {target};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.start();
+    armZoneBesideLamp(runner);
+
+    const auto frameWhere = [&node](auto wanted) {
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            const std::string datagram = node.receive();
+            if (datagram.empty()) {
+                break;
+            }
+            const std::vector<std::uint8_t> levels = artDmxLevels(datagram);
+            if (levels.size() >= 100 && wanted(levels)) {
+                return levels;
+            }
+        }
+        return std::vector<std::uint8_t>{};
+    };
+    REQUIRE_FALSE(frameWhere([](const auto& levels) {
+                      return levels[0] == 255 && levels[99] == 180;
+                  }).empty());
+
+    takt4::output::OutputTarget off = target;
+    off.enabled = false;
+    runner.post(OutputCommand::outputs({off}));
+    // Every channel zero: the zone disarmed with its clip taken off, the lamp dark — and the
+    // zone's scale, parked at full, zero too: nothing of the frame before is left.
+    const auto dark = [](const std::vector<std::uint8_t>& levels) {
+        return levels.size() == 512 &&
+               std::all_of(levels.begin(), levels.end(), [](std::uint8_t v) { return v == 0; });
+    };
+    REQUIRE_FALSE(frameWhere(dark).empty());
+    const auto first = std::chrono::steady_clock::now();
+    // And then nothing: every frame until the line goes quiet is the same, for a released
+    // universe's three seconds, and then it goes quiet.
+    int after = 0;
+    bool lit = false;
+    auto last = first;
+    for (std::string datagram = node.receive(); !datagram.empty(); datagram = node.receive()) {
+        ++after;
+        last = std::chrono::steady_clock::now();
+        lit = lit || !dark(artDmxLevels(datagram));
+        REQUIRE(after < 400); // three seconds at 44 Hz is 132; this is a node that never stops
+    }
+    CHECK_FALSE(lit);
+    const double lasted = std::chrono::duration<double>(last - first).count();
+    INFO("zeros for " << lasted << " s, " << after << " frames after the first");
+    CHECK(lasted > 2.5);
+    CHECK(lasted < 3.5);
+    CHECK(runner.inspect([](const auto&, const Transports& transports, const auto&) {
+        return transports.artnet().leaving();
+    }) == 0);
+    // The engine still has the zone armed: switched back on, the node is fed what takt4 holds.
+    CHECK(zoneAndLamp(runner)[0] == 255);
+    runner.stop();
+}
+
+TEST_CASE("a node switched back on within its farewell is fed, not fought",
+          "[output][dmx][liberation][release]") {
+    LoopbackReceiver node;
+    Transports::Config config = zoneBesideLamp();
+    takt4::output::OutputTarget target;
+    target.id = "o-0000libe";
+    target.name = "Liberation";
+    target.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    target.host = "127.0.0.1";
+    target.port = node.port();
+    config.outputs = {target};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config); // stopped: nothing is sent, and every post applies now
+    takt4::output::OutputTarget off = target;
+    off.enabled = false;
+    runner.post(OutputCommand::outputs({off}));
+    const auto leaving = [&runner] {
+        return runner.inspect([](const auto&, const Transports& transports, const auto&) {
+            return transports.artnet().leaving();
+        });
+    };
+    CHECK(leaving() == 1);
+    runner.post(OutputCommand::outputs({target}));
+    CHECK(leaving() == 0);
 }

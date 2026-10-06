@@ -1,5 +1,7 @@
 #include "core/dmx/fixture.hpp"
 
+#include "core/dmx/liberation.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -17,7 +19,7 @@ struct RoleName {
 /// The label is what a dropdown shows; the name is what a settings file holds. They differ
 /// only where a space reads better than a hyphen, and a file keeps the hyphen so that
 /// `roleOf` never has to cope with one that has been re-cased or re-spaced by an editor.
-constexpr std::array<RoleName, 21> kRoleNames{{
+constexpr std::array<RoleName, 25> kRoleNames{{
     {Role::Unused, "unused", "unused"},
     {Role::Dimmer, "dimmer", "dimmer"},
     {Role::Red, "red", "red"},
@@ -39,6 +41,10 @@ constexpr std::array<RoleName, 21> kRoleNames{{
     {Role::Zoom, "zoom", "zoom"},
     {Role::Focus, "focus", "focus"},
     {Role::Speed, "speed", "speed"},
+    {Role::Arm, "arm", "arm"},
+    {Role::ClipBank, "clip bank", "clip-bank"},
+    {Role::ClipSelect, "clip select", "clip-select"},
+    {Role::ColorBlend, "color blend", "color-blend"},
 }};
 
 // --- the built-in channel maps ------------------------------------------------------
@@ -78,7 +84,7 @@ constexpr std::array<Role, 12> kHead16Channels{
     Role::Strobe, Role::Red,     Role::Green, Role::Blue,     Role::White, Role::Gobo};
 constexpr std::array<std::uint8_t, 12> kHead16Parked{128, 0, 128, 0, 0, 0, 255, 0, 0, 0, 0, 0};
 
-constexpr std::array<FixtureMode, 7> kModes{{
+constexpr std::array<FixtureMode, 8> kModes{{
     {"dimmer (1ch)", kDimmerChannels, kDimmerParked},
     {"RGB (3ch)", kRgbChannels, kRgbParked},
     {"RGBW (4ch)", kRgbwChannels, kRgbwParked},
@@ -86,6 +92,10 @@ constexpr std::array<FixtureMode, 7> kModes{{
     {"LED par (6ch)", kParChannels, kParParked},
     {"moving head 8-bit (8ch)", kHead8Channels, kHead8Parked},
     {"moving head 16-bit (12ch)", kHead16Channels, kHead16Parked},
+    // Not a lamp: one zone of Pangolin Liberation's DMX Input, the laser software's own profile.
+    // See `liberation::kZoneRoles` for its channels and why each is parked where it is.
+    {liberation::kZoneModeName, liberation::kZoneRoles, liberation::kZoneParked,
+     liberation::kZoneLabels},
 }};
 
 } // namespace
@@ -361,6 +371,9 @@ Fixture fixtureFromMode(std::string_view name, std::size_t mode, PortAddress uni
     const FixtureMode& chosen = kModes[mode < kModes.size() ? mode : 0];
     fixture.channels.assign(chosen.channels.begin(), chosen.channels.end());
     fixture.parked.assign(chosen.parked.begin(), chosen.parked.end());
+    for (const std::string_view label : chosen.labels) {
+        fixture.labels.emplace_back(label);
+    }
     return fixture;
 }
 

@@ -1,5 +1,7 @@
 #include "core/dmx/dmx_engine.hpp"
 
+#include "core/dmx/liberation.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -16,6 +18,10 @@ namespace {
 /// `kEmitters` without the dimmer, which a blackout does want; the dimmer is added here.
 constexpr std::array<Role, 7> kBlackoutRoles{Role::Dimmer, Role::Red,   Role::Green, Role::Blue,
                                              Role::White,  Role::Amber, Role::Uv};
+
+/// A laser zone's channels that say whether it renders and what: a blackout, PANIC and the input
+/// going quiet take all three to zero, and a clip effect writes all three. See `Role::Arm`.
+constexpr std::array<Role, 3> kDisarmRoles{Role::Arm, Role::ClipBank, Role::ClipSelect};
 
 double unitOfByte(std::uint8_t value) noexcept {
     return value / 255.0;
@@ -356,6 +362,19 @@ void DmxEngine::cancelAll() noexcept {
     // (the 2026-09-25 audit's L2).
     releaseTestHolds();
     running_.clear();
+}
+
+void DmxEngine::disarm(double now) {
+    const bool lasers = std::any_of(patch_.begin(), patch_.end(), [](const Fixture& fixture) {
+        return fixture.enabled && (has(fixture, Role::Arm) || has(fixture, Role::ClipSelect));
+    });
+    if (!lasers) {
+        return; // nothing to disarm, and nothing started that `missed()` would count
+    }
+    Payload none;
+    none.kind = EffectKind::Clip;
+    none.clip = 0;
+    launch(none, now, 0, true);
 }
 
 void DmxEngine::blackout(double now) {
@@ -705,6 +724,11 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         return addSweep(payload.role, baseOf(), unitOfByte(payload.level));
     case EffectKind::Color: {
         bool any = false;
+        // A laser zone tints its clip towards the RGB only as far as its color blend says, and
+        // it sits at the clip's own colours — so a color aimed at one raises the blend with it,
+        // or the color would change nothing anybody could see. Not counted as reaching the
+        // fixture: a blend with no RGB beside it has no color to blend towards.
+        addTrack(Role::ColorBlend, 1.0, Role::ColorBlend);
         // An RGBW fixture makes a far better white from its white LED than from three
         // colored ones, and a far worse *color* if some white is left mixed into it. So a
         // neutral grey goes to White and nothing else, and every other color goes to RGB with
@@ -738,6 +762,7 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         any |= addTrack(Role::Green, 0.0, Role::Green);
         any |= addTrack(Role::Blue, 0.0, Role::Blue);
         addTrack(Role::White, 0.0, Role::White);
+        addTrack(Role::ColorBlend, 1.0, Role::ColorBlend); // as `Color` does
         // And a CMY head's flags, each the complement of the component it removes (see `Color`).
         any |= addTrack(Role::Cyan, 1.0, Role::Cyan);
         any |= addTrack(Role::Magenta, 1.0, Role::Magenta);
@@ -751,7 +776,37 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
         for (const Role role : kBlackoutRoles) {
             any |= addTrack(role, 0.0, Role::Unused);
         }
+        // And a laser zone disarmed, with its clip taken off and its colours its clip's own — as
+        // switches at the end, so the fade is seen. See `EffectKind::Blackout`.
+        const std::size_t before = running.tracks.size();
+        for (const Role role : kDisarmRoles) {
+            any |= addTrack(role, 0.0, Role::Unused);
+        }
+        any |= addTrack(Role::ColorBlend, 0.0, Role::Unused);
+        for (std::size_t t = before; t < running.tracks.size(); ++t) {
+            running.tracks[t].step = true;
+        }
         return any;
+    }
+    case EffectKind::Clip: {
+        // Every channel a snap (`evaluate`), and the clip's two bytes exactly: a byte b handed
+        // over as the unit b / 255 is written back as b.
+        if (payload.clip == 0) {
+            bool any = false;
+            for (const Role role : kDisarmRoles) {
+                any |= addTrack(role, 0.0, Role::Unused);
+            }
+            return any;
+        }
+        if (!has(fixture, Role::ClipSelect)) {
+            return false; // not a laser zone: nothing here selects a clip
+        }
+        const liberation::Gobo gobo = liberation::goboOf(payload.clip - 1);
+        addTrack(Role::Arm, 1.0, Role::Unused);
+        addTrack(Role::Dimmer, unitOfByte(payload.level), Role::Unused);
+        addTrack(Role::ClipBank, unitOfByte(gobo.bank), Role::Unused);
+        addTrack(Role::ClipSelect, unitOfByte(gobo.select), Role::Unused);
+        return true;
     }
     case EffectKind::Position:
         return addMove(static_cast<double>(payload.pan), static_cast<double>(payload.tilt), true);
@@ -832,7 +887,9 @@ void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fix
     staging_.moves.clear();
     staging_.payload = payload;
     staging_.start = now;
-    staging_.duration = payload.durationSeconds > 0.0f ? static_cast<double>(payload.durationSeconds) : 0.0;
+    staging_.duration = payload.durationSeconds > 0.0f && takesDuration(payload.kind)
+                            ? static_cast<double>(payload.durationSeconds)
+                            : 0.0;
 
     const std::size_t count =
         everyFixture ? patch_.size() : std::min(patch_.size(), kMaxRoutableFixtures);
@@ -916,13 +973,14 @@ void DmxEngine::evaluate(const Running& running, double now) {
         }
         const Color swept = fromHsv(hue, saturation, value);
         for (const Track& track : running.tracks) {
-            const double unit = track.role == Role::Red       ? unitOfByte(swept.r)
-                                : track.role == Role::Green   ? unitOfByte(swept.g)
-                                : track.role == Role::Blue    ? unitOfByte(swept.b)
-                                : track.role == Role::Cyan    ? 1.0 - unitOfByte(swept.r)
-                                : track.role == Role::Magenta ? 1.0 - unitOfByte(swept.g)
-                                : track.role == Role::Yellow  ? 1.0 - unitOfByte(swept.b)
-                                                              : 0.0;
+            const double unit = track.role == Role::Red          ? unitOfByte(swept.r)
+                                : track.role == Role::Green      ? unitOfByte(swept.g)
+                                : track.role == Role::Blue       ? unitOfByte(swept.b)
+                                : track.role == Role::Cyan       ? 1.0 - unitOfByte(swept.r)
+                                : track.role == Role::Magenta    ? 1.0 - unitOfByte(swept.g)
+                                : track.role == Role::Yellow     ? 1.0 - unitOfByte(swept.b)
+                                : track.role == Role::ColorBlend ? 1.0
+                                                                 : 0.0;
             writeTrack(track, unit);
         }
         return;
@@ -996,6 +1054,12 @@ void DmxEngine::evaluate(const Running& running, double now) {
         }
         return;
     }
+    case EffectKind::Clip:
+        // A switch: the clip, the arm and the intensity land together, now.
+        for (const Track& track : running.tracks) {
+            writeTrack(track, track.to);
+        }
+        return;
     case EffectKind::Level:
     case EffectKind::Color:
     case EffectKind::Flash:
@@ -1005,6 +1069,10 @@ void DmxEngine::evaluate(const Running& running, double now) {
 
     const double shaped = curveAt(payload.curve, progress);
     for (const Track& track : running.tracks) {
+        if (track.step) {
+            writeTrack(track, progress >= 1.0 ? track.to : track.from);
+            continue;
+        }
         writeTrack(track,
                      track.from + (track.to - track.from) * shaped);
     }

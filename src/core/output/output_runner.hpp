@@ -610,6 +610,32 @@ public:
     /// When beats have been fired, for a test to read. Output thread only, like `triggers()`.
     const BeatScheduler& scheduler() const noexcept { return scheduler_; }
 
+    /// **What the rig is being held on, and by which rule** — the audit of releases the operator
+    /// asked for on 2026-10-06, after a laser went on playing under a muted rule: *"anything that
+    /// needs an explicit release/disarm ... this is dangerous"*.
+    ///
+    /// Two things takt4 sends stay on until something takes them off: a MIDI note on, until its
+    /// note off, and a Liberation zone given a clip, until it is given none. Everything that sends
+    /// one is recorded here with the rule that sent it, and everything that takes one off clears
+    /// it. Then whatever stops a rule from sending lets go of what it holds:
+    ///
+    ///   * the rule **muted** or **switched off** — from the editor, a control surface or OSC;
+    ///   * the rule **deleted**, **re-aimed** (another channel, other outputs, other fixtures, a
+    ///     different kind or effect) or replaced by an IMPORT;
+    ///   * **PANIC, Stop, quit and no signal**, which let go of everything;
+    ///   * an **output going** — switched off, deleted or pointed elsewhere — which is sent the
+    ///     note offs it is owed before its port closes (an Art-Net node is sent zeros, its lights
+    ///     dark and its zones disarmed: `dmx::ArtNetPublisher::setTargets`).
+    ///
+    /// A note is let go of with its Note Off and a zone with no clip, each as a follow-up of the
+    /// rule that held it, so the log shows the release beside the press. Counted here for the
+    /// tests; any thread.
+    struct Holds {
+        std::size_t notes = 0;
+        std::size_t zones = 0;
+    };
+    Holds holds() const;
+
 private:
     void run() noexcept;
     /// One round: every beat heard, every beat predicted and due, then the clock. **The caller
@@ -647,7 +673,7 @@ private:
     /// whichever target now occupies it. One unplugged MIDI device was enough to send a
     /// rule's clips to the lighting desk. Rethrows what `Transports` raised, so the failure
     /// still reaches `lastError`.
-    void setTargets(const std::vector<OutputTarget>& targets);
+    void setTargets(const std::vector<OutputTarget>& targets, double now);
     /// Turns every rule's output and fixture *names* into the bit masks its messages carry.
     /// Run after the rules change, after the targets do and after the patch does, because any
     /// of the three moves the answer.
@@ -657,6 +683,27 @@ private:
     /// The instant every rule in this round is judged against — §5.8's ONLY IF stage, made
     /// once so that two rules with the same condition cannot disagree about it.
     trigger::Context contextAt(double now) const;
+
+    /// Records what `message`, just sent by `ruleId`, puts on or takes off — see `holds`. The
+    /// fire observer's, on the output thread.
+    void noteHolds(std::string_view ruleId, const trigger::Message& message);
+    /// Lets go of everything held by a rule `whose` picks — see `holds`. The rule's own owed
+    /// releases and held fires are `trigger::TriggerEngine::releaseRule`'s.
+    void releaseHolds(const std::function<bool(const std::string&)>& whose, double now);
+    struct HeldNote;
+    struct HeldZone;
+    /// The same, hold by hold.
+    void releaseMatching(const std::function<bool(const HeldNote&)>& notes,
+                         const std::function<bool(const HeldZone&)>& zones, double now);
+    /// Lets go of every note held on the outputs in `outputs` (routing bits), on those outputs
+    /// alone — for an output that is going.
+    void releaseNotesTo(std::uint64_t outputs, double now);
+    /// After a new rule set: lets go of what a rule holds that it could no longer let go of
+    /// itself — gone, switched off, muted, or aimed elsewhere — or of everything, for a set
+    /// that was loaded rather than edited.
+    void releaseStale(bool fresh, double now);
+    /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
+    void forgetZones() noexcept { heldZones_.clear(); }
 
     engine::BeatEngine& engine_;
     Transports transports_;
@@ -677,6 +724,26 @@ private:
     std::uint64_t onsetsSeen_ = 0;
     /// `TempoState::barsDeclared` last seen, likewise.
     std::uint64_t barsDeclaredSeen_ = 0;
+    /// `TempoState::noSignal` last seen: the round it turns on is the one that disarms the lasers.
+    bool noSignalSeen_ = false;
+    /// See `holds`: a note on and where it went, and a zone given a clip, each with the rule
+    /// that sent it and the moment it was about — which its release is held to no earlier than,
+    /// so it cannot overtake a press a target's delay is still holding back. A zone by its
+    /// fixture's id, which a re-patch does not move. The output thread's, under `ownerMutex_`.
+    struct HeldNote {
+        std::string ruleId;
+        std::uint64_t outputs = 0;
+        int channel = 1;
+        int number = 0;
+        double moment = 0.0;
+    };
+    struct HeldZone {
+        std::string fixture;
+        std::string ruleId;
+        double moment = 0.0;
+    };
+    std::vector<HeldNote> heldNotes_;
+    std::vector<HeldZone> heldZones_;
     BeatObserver observer_;
 
     /// **Who may touch the transports and the rules right now.** Held for a whole round by

@@ -152,6 +152,7 @@ void TempoTracker::reset() noexcept {
     sinceSnap_ = 0;
     framesSinceBeat_ = 0;
     beatsSeen_ = 0;
+    publishedCount_ = 0;
     filterIntervalFrames_ = 0;
     resetFoldPhase(1);
     framesSinceCalled_ = 0;
@@ -189,6 +190,12 @@ void TempoTracker::resetFoldPhase(std::uint32_t divisor) noexcept {
     const std::uint32_t was = foldDivisor_;
     foldDivisor_ = divisor;
     foldSlot_ = 0;
+    // The published beats' rate is measured afresh on the new grid: gaps from the old one would
+    // say the beats disagree with a number that has just been made to agree with them.
+    if (was != divisor) {
+        publishedCount_ = 0;
+        state_.beatsBpm = 0.0;
+    }
     foldPhase_ = 0;
     foldAnchored_ = false;
     for (double& score : foldScore_) {
@@ -393,6 +400,32 @@ void TempoTracker::weighBeatOctave(double cloudIntervalFrames) noexcept {
     refinedBpm_ = 0.0;
 }
 
+void TempoTracker::measureBeatRate() noexcept {
+    const std::size_t size = publishedFrames_.size();
+    if (publishedCount_ < size) {
+        state_.beatsBpm = 0.0; // not eight gaps yet
+        return;
+    }
+    // The median gap, which a beat let pass or a stray one between two moves by nothing: the
+    // dots' own pace, as an eye counting them would give it.
+    std::array<double, kBeatRateGaps> gaps{};
+    const std::size_t newest = (publishedCount_ - 1) % size;
+    for (std::size_t i = 0; i < kBeatRateGaps; ++i) {
+        const std::size_t later = (newest + size - i) % size;
+        const std::size_t earlier = (later + size - 1) % size;
+        gaps[i] = static_cast<double>(publishedFrames_[later] - publishedFrames_[earlier]);
+    }
+    std::sort(gaps.begin(), gaps.end());
+    const double median = 0.5 * (gaps[kBeatRateGaps / 2 - 1] + gaps[kBeatRateGaps / 2]);
+    // And nothing at all once the beats have stopped coming: a rate the dots are not moving at
+    // would be a claim about beats that are not there.
+    if (!(median > 0.0) || static_cast<double>(framesSinceBeat_) > 2.0 * median) {
+        state_.beatsBpm = 0.0;
+        return;
+    }
+    state_.beatsBpm = 60.0 / (median * secondsPerFrame_);
+}
+
 double TempoTracker::calledBpm(double cloudBpm) const noexcept {
     return applyShift(cloudBpm, beatOctave_);
 }
@@ -560,8 +593,15 @@ void TempoTracker::movePublishedOctave(std::int64_t moved) noexcept {
     refinedBpm_ = applyShift(refinedBpm_, moved);
     state_.bpm = applyShift(state_.bpm, moved);
     // And the grid with it, on the press rather than on the next frame: a reader of the
-    // state between the two would otherwise see the number halved and the divisor not.
+    // state between the two would otherwise see the number halved and the divisor not. The
+    // shift too, so the window says ÷2 the moment the number halves.
     state_.beatDivisor = foldDivisor();
+    state_.octaveShift = static_cast<std::int32_t>(octaveShift_);
+    // And the beats' own rate measured afresh, for the reason `resetFoldPhase` gives.
+    if (moved != 0) {
+        publishedCount_ = 0;
+        state_.beatsBpm = 0.0;
+    }
     // A grid this divides is divided by the operator — see `resetFoldPhase`.
     operatorDivided_ = true;
 }
@@ -927,6 +967,8 @@ void TempoTracker::setNoSignal(bool noSignal) noexcept {
     // A gap across the silence is not a beat period, and the beats before it are not this
     // tempo's evidence.
     beatFrames_.clear();
+    publishedCount_ = 0;
+    state_.beatsBpm = 0.0;
 }
 
 std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexcept {
@@ -1045,7 +1087,11 @@ std::optional<BeatEvent> TempoTracker::process(const TrackedFrame& frame) noexce
         ++beatsSeen_;
         sinceDownbeat_ = downbeat ? 0 : sinceDownbeat_ + 1;
         anyDownbeat_ = anyDownbeat_ || downbeat;
+        publishedFrames_[publishedCount_ % publishedFrames_.size()] = frame.frameIndex;
+        ++publishedCount_;
     }
+    measureBeatRate();
+    state_.octaveShift = static_cast<std::int32_t>(octaveShift_);
 
     // Holding below the confidence gate keeps whatever was last published (§5.5: "hold the
     // last good tempo, stop emitting new values, and say so"). Hunting after a lock has

@@ -71,13 +71,26 @@ enum class EffectKind : std::uint8_t {
     /// color, white, amber and UV. Not the shutter, not the movement, not the speed — those
     /// stay where they are, because a fixture that is *dark* should still be ready for the
     /// next rule, and a shutter closed by a blackout would stay dark when it fires.
+    ///
+    /// **A laser zone is disarmed by it as well** — its arm and clip to zero, its color blend
+    /// back to the clip's own colours — at the *end* of the fade, so a blackout over two beats
+    /// is seen to fade before the zone stops rendering. A laser left armed and dark would light
+    /// again on the next level rule, which for a laser is not "ready", it is a beam waiting.
     Blackout,
+    /// **One clip of a Pangolin Liberation zone's deck**, by its place in deck order
+    /// (`Payload::clip`, `liberation::indexOf`): the zone armed, its intensity at `level`, and
+    /// its Gobo Bank and Gobo Select set to the clip — all four at once, because Liberation
+    /// renders a zone only when all of them say so (the operator, 2026-10-05: "it must be armed,
+    /// intensity set, then clip selection works"). No clip — `clip` 0 — disarms it and selects
+    /// none. A snap, whatever the duration: a fade through Gobo Select would play every clip in
+    /// between. Reaches only fixtures with a clip select channel.
+    Clip,
 };
 
-inline constexpr std::array<EffectKind, 10> kEffectKinds{
-    EffectKind::Level,  EffectKind::Color,   EffectKind::Flash,    EffectKind::Pulse,
+inline constexpr std::array<EffectKind, 11> kEffectKinds{
+    EffectKind::Level,  EffectKind::Color,    EffectKind::Flash,    EffectKind::Pulse,
     EffectKind::Strobe, EffectKind::HueSweep, EffectKind::Position, EffectKind::Path,
-    EffectKind::Home,   EffectKind::Blackout};
+    EffectKind::Home,   EffectKind::Blackout, EffectKind::Clip};
 
 std::string_view labelOf(EffectKind kind) noexcept;
 std::string_view nameOf(EffectKind kind) noexcept;
@@ -98,6 +111,16 @@ constexpr bool takesColor(EffectKind kind) noexcept {
 /// Whether the kind moves a head — and so does nothing at all on a fixture with no pan.
 constexpr bool takesMovement(EffectKind kind) noexcept {
     return kind == EffectKind::Position || kind == EffectKind::Path || kind == EffectKind::Home;
+}
+
+/// Whether the kind selects a laser zone's clip, and so draws one.
+constexpr bool takesClip(EffectKind kind) noexcept {
+    return kind == EffectKind::Clip;
+}
+
+/// Whether the kind runs over a duration at all. A clip is a switch, never a fade.
+constexpr bool takesDuration(EffectKind kind) noexcept {
+    return kind != EffectKind::Clip;
 }
 
 /// Whether the kind repeats within its duration, and so has a `cycles` count.
@@ -179,7 +202,7 @@ struct Payload {
     Curve curve = Curve::EaseOut;
     PathShape shape = PathShape::Circle;
 
-    /// The target, the peak, or the high end of a sweep.
+    /// The target, the peak, or the high end of a sweep. A clip's intensity.
     std::uint8_t level = 255;
     /// The low end, for the kinds `takesBase` names.
     std::uint8_t base = 0;
@@ -226,6 +249,10 @@ struct Payload {
     /// evenly round it; on a `Position` or `Home`, that much of the move's duration later, so at 1
     /// the last starts as the first nearly arrives. 0, the default, moves them together.
     float spread = 0.0f;
+    /// **Which clip**, for `Clip`: its place in deck order plus one (`liberation::indexOf`), and
+    /// 0 for none — which disarms the zone. Plus one so that the zero a payload starts as is the
+    /// safe value, as every other field's is.
+    std::uint16_t clip = 0;
 
     friend bool operator==(const Payload&, const Payload&) = default;
 };

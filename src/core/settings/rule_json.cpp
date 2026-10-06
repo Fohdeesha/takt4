@@ -262,6 +262,12 @@ json dmxToJson(const trigger::DmxSend& send) {
         out["role"] = std::string(dmx::nameOf(send.role));
         out["level"] = generatorToJson(send.level);
     }
+    // A laser clip: which clips, by their place in Liberation's deck order, and the intensity it
+    // lands at.
+    if (dmx::takesClip(send.effect)) {
+        out["clip"] = generatorToJson(send.clip);
+        out["level"] = generatorToJson(send.level);
+    }
     if (dmx::takesBase(send.effect)) {
         out["base"] = send.base;
     }
@@ -356,6 +362,9 @@ trigger::DmxSend dmxFromJson(const json& node) {
     if (node.contains("level")) {
         send.level = generatorFromJson(node.at("level"));
     }
+    if (node.contains("clip")) {
+        send.clip = generatorFromJson(node.at("clip"));
+    }
     readNamed(node, "colorMode", send.colorMode, trigger::colorModeOf);
     // `colour` was the key until a rig asked for the other spelling on 2026-09-16. A preset
     // written before that holds it, and a color that does not read back is a rule that fires
@@ -402,6 +411,23 @@ json ruleToJson(const Rule::Config& rule) {
     }
     if (trigger::takesPulses(rule.trigger)) {
         out["pulses"] = rule.pulses;
+    }
+    if (trigger::takesBeatOfBar(rule.trigger)) {
+        out["onBeat"] = rule.onBeat;
+    }
+    // The wait between the trigger and the send: when it is on, and when it holds anything but
+    // the defaults — kept switched off, like B's conditions, so ticking it again brings it back.
+    {
+        const Rule::Config fresh;
+        if (rule.delayOn || rule.delayUnit != fresh.delayUnit ||
+            rule.delaySeconds != fresh.delaySeconds || rule.delayBeats != fresh.delayBeats) {
+            out["delay"] = json{
+                {"on", rule.delayOn},
+                {"unit", std::string(trigger::nameOf(rule.delayUnit))},
+                {"delaySeconds", rule.delaySeconds},
+                {"delayBeats", rule.delayBeats},
+            };
+        }
     }
     if (!rule.outputs.empty()) {
         // §5.6's rule subset. Left out when a rule goes everywhere, which is the default and
@@ -529,6 +555,25 @@ Rule::Config ruleFromJson(const json& node) {
     readNamed(node, "trigger", rule.trigger, trigger::triggerOf);
     read(node, "every", rule.every);
     read(node, "pulses", rule.pulses);
+    read(node, "onBeat", rule.onBeat);
+    // Which beat of a bar there is: the first to the sixteenth (`trigger::kMaxBeatOfBar`).
+    rule.onBeat = std::clamp<std::uint32_t>(rule.onBeat, 1, trigger::kMaxBeatOfBar);
+    if (node.contains("delay") && node.at("delay").is_object()) {
+        const json& delay = node.at("delay");
+        read(delay, "on", rule.delayOn);
+        readNamed(delay, "unit", rule.delayUnit, trigger::delayUnitOf);
+        read(delay, "delaySeconds", rule.delaySeconds);
+        read(delay, "delayBeats", rule.delayBeats);
+        // A wait that is not a number, or is below none, is none — whoever wrote it. The engine
+        // takes the longest to `trigger::kMaxFireDelaySeconds` itself.
+        const Rule::Config fresh;
+        if (!std::isfinite(rule.delaySeconds) || rule.delaySeconds < 0.0) {
+            rule.delaySeconds = fresh.delaySeconds;
+        }
+        if (!std::isfinite(rule.delayBeats) || rule.delayBeats < 0.0) {
+            rule.delayBeats = fresh.delayBeats;
+        }
+    }
     read(node, "tempoChangeTolerance", rule.tempoChangeTolerance);
     if (node.contains("outputs") && node.at("outputs").is_array()) {
         for (const json& name : node.at("outputs")) {

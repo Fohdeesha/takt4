@@ -35,6 +35,7 @@
 #include "core/trigger/rule.hpp"
 #include "ui/app.hpp"
 #include "ui/headless.hpp"
+#include "ui/rule_presets.hpp"
 #include "ui/window_state.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -350,6 +351,64 @@ void fillFixtures(FixturesWindow& window, const std::string& state) {
 /// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout has any
 /// business opening. What is drawn is the real component with the real models; only where the
 /// values came from differs.
+/// The Liberation preset's prompt over the editor, filled from the real planner: "liberation" as it
+/// first opens, "liberation-4" with four lasers moving, and "liberation-clash" with a fixture in
+/// the way.
+void fillLiberation(RulesWindow& window, const std::string& state) {
+    rule_presets::LiberationAsk ask;
+    std::vector<dmx::Fixture> patch;
+    if (state == "liberation-4") {
+        ask.lasers = 4;
+        ask.from = {"1-1", "22-0", "40-0", "1-1"};
+        ask.to = {"21-1", "30-4", "55-4", "88-4"};
+        ask.move = true;
+        ask.amount = 30;
+    } else if (state == "liberation-clash") {
+        ask.lasers = 2;
+        dmx::Fixture par = dmx::fixtureFromMode("Bedroom RGB", 1, 0, 40);
+        par.id = "f-bedroom";
+        patch.push_back(par);
+    }
+    const rule_presets::LiberationPlan plan = rule_presets::planLiberation(ask, patch);
+    auto rows = std::make_shared<slint::VectorModel<LaserRow>>();
+    for (int laser = 0; laser < ask.lasers; ++laser) {
+        const auto at = static_cast<std::size_t>(laser);
+        LaserRow row{};
+        row.label = slint::SharedString("laser " + std::to_string(laser + 1));
+        row.from = slint::SharedString(ask.from[at]);
+        row.to = slint::SharedString(ask.to[at]);
+        row.clips = slint::SharedString(plan.clips[at]);
+        row.timing = ask.timing[at];
+        row.where = slint::SharedString(plan.where[at]);
+        rows->push_back(row);
+    }
+    auto timings = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const rule_presets::LaserTiming& timing : rule_presets::kLaserTimings) {
+        timings->push_back(slint::SharedString(timing.label));
+    }
+    auto moves = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const char* move : rule_presets::kLaserMoves) {
+        moves->push_back(slint::SharedString(move));
+    }
+    window.set_lasers(rows);
+    window.set_laser_count(ask.lasers);
+    window.set_laser_timings(timings);
+    window.set_laser_moves(moves);
+    window.set_liberation_host(slint::SharedString(ask.host));
+    window.set_liberation_port(static_cast<int>(ask.port));
+    window.set_liberation_universe(ask.universe);
+    window.set_liberation_address(ask.address);
+    window.set_liberation_takt4_universe(
+        slint::SharedString("→ takt4's patch editor calls it universe 0"));
+    window.set_liberation_move(ask.move);
+    window.set_liberation_shape(ask.moveShape);
+    window.set_liberation_amount(ask.amount);
+    window.set_liberation_bars(ask.bars);
+    window.set_liberation_instructions(slint::SharedString(plan.instructions));
+    window.set_liberation_problem(slint::SharedString(plan.problem));
+    window.set_liberation_open(true);
+}
+
 void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& state) {
     const auto strings = [](std::initializer_list<const char*> items) {
         auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
@@ -387,8 +446,9 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_host_presets(strings({"custom", "Resolume 7 - clip", "Resolume 7 - resync",
                                      "TouchDesigner", "MadMapper - cue"}));
     window.set_host_preset_index(1);
-    window.set_rig_presets(strings({"Resolume: clips on 3 layers", "Resolume: tempo and resync",
-                                    "Resolume: breathing dashboard", "MIDI: euclidean stabs"}));
+    window.set_rig_presets(
+        strings({"Resolume: clips on 3 layers", "Resolume: tempo and resync",
+                 "Resolume: breathing dashboard", "MIDI: euclidean stabs", "Liberation: lasers…"}));
     auto units = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::DelayUnit unit : trigger::kDelayUnits) {
         units->push_back(slint::SharedString(std::string(trigger::labelOf(unit))));
@@ -451,6 +511,14 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_every(4);
     window.set_cooldown_ms(slint::SharedString("250"));
     window.set_when_summary(slint::SharedString("every 4 bars, counting from the first"));
+    // Which beat of the bar, as a bar rule shows it, and the wait, off — as a new rule's is.
+    window.set_beat_of_bar_shown(true);
+    window.set_beat_of_bar(1);
+    window.set_beat_of_bar_word(slint::SharedString("on beat"));
+    window.set_beat_of_bar_after(slint::SharedString(""));
+    window.set_delay_on(false);
+    window.set_delay_amount(slint::SharedString("0.5"));
+    window.set_delay_unit(1);
 
     // B, switched off and folded, as a new rule's is — and what it holds, set for later.
     window.set_conditions_on(false);
@@ -643,6 +711,31 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
         window.set_trigger_takes_every(false);
         window.set_trigger_takes_cooldown(true);
         window.set_when_summary(slint::SharedString("onset · at most once every 250 ms"));
+    } else if (state == "beat") {
+        // A bar rule on beat 3 of every bar, sent half a beat late: the "and" of 3.
+        window.set_every(1);
+        window.set_beat_of_bar(3);
+        window.set_delay_on(true);
+        window.set_when_summary(
+            slint::SharedString("every bar, on beat 3 · sent 0.5 beats later"));
+    } else if (state == "backbeat") {
+        // Every 2 beats from beat 2 of the bar: the backbeat.
+        window.set_trigger_index(0);
+        window.set_every(2);
+        window.set_beat_of_bar(2);
+        window.set_beat_of_bar_word(slint::SharedString("from beat"));
+        window.set_beat_of_bar_after(slint::SharedString("of the bar"));
+        window.set_when_summary(slint::SharedString("every 2 beats from beat 2 of the bar"));
+    } else if (state == "backbeat-rate") {
+        // The same, slowed from a control surface: the widest row A has.
+        window.set_trigger_index(0);
+        window.set_every(2);
+        window.set_beat_of_bar(2);
+        window.set_beat_of_bar_word(slint::SharedString("from beat"));
+        window.set_beat_of_bar_after(slint::SharedString("of the bar"));
+        window.set_rule_rate(slint::SharedString("16× slower"));
+        window.set_when_summary(
+            slint::SharedString("every 2 beats from beat 2 of the bar · 16× slower"));
     } else if (state == "log") {
         window.set_log_open(true);
     } else if (state == "folded") {
@@ -681,6 +774,8 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
             slint::SharedString("pick at least one — a DMX rule with no fixtures does nothing"));
         window.set_fixtures_list_note(slint::SharedString("pick at least one"));
         window.set_fixtures_reaches_nothing(true);
+    } else if (state.rfind("liberation", 0) == 0) {
+        fillLiberation(window, state);
     }
 }
 
@@ -907,6 +1002,38 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_trace(traceModel);
     if (options.running) {
         fillFromSyntheticRun(*window, traceModel);
+        // The tempo banner's two states of 2026-10-06: a ÷2 in force, and the dots going out an
+        // octave from the number — each as the tracker would publish it.
+        // A ÷2 divides the grid with the number, so the beats go out at the halved tempo.
+        if (options.state == "halved") {
+            window->set_octave_shift(-1);
+            window->set_bpm(window->get_bpm() / 2.0f);
+            window->set_beat_divisor(2);
+            window->set_beats_bpm(window->get_bpm());
+        } else if (options.state == "apart") {
+            window->set_bpm(180.0f);
+            window->set_beats_bpm(90.1f);
+        } else if (options.state == "doubled" || options.state == "doubled-before") {
+            // A ×2 left in force: the number doubled, the grid not, so the dots go on at the
+            // music's tempo — the operator's report of 2026-10-06, as the window shows it now and
+            // as it showed it then.
+            const float music = window->get_bpm();
+            window->set_bpm(2.0f * music);
+            if (options.state == "doubled") {
+                window->set_octave_shift(1);
+                window->set_beats_bpm(music);
+            } else {
+                window->set_beats_bpm(0.0f);
+            }
+        } else if (options.state == "halved-before" || options.state == "apart-before") {
+            // The same two moments as the window drew them before 2026-10-06, which published
+            // neither the shift nor the beats' own rate: what the operator saw, with nothing
+            // to say why.
+            const bool halved = options.state == "halved-before";
+            window->set_bpm(halved ? window->get_bpm() / 2.0f : 180.0f);
+            window->set_beat_divisor(halved ? 2 : 1);
+            window->set_beats_bpm(0.0f);
+        }
         // §5.9's own example row, so the picture shows what a configured rig looks like
         // rather than an empty one. There is no output thread behind a shot, so these are
         // illustrative in the way the status line below already is; the beat count is the

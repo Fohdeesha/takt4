@@ -43,6 +43,7 @@ constexpr std::uint64_t kDmxTiltRole = 7;
 constexpr std::uint64_t kDmxRedRole = 8;
 constexpr std::uint64_t kDmxGreenRole = 9;
 constexpr std::uint64_t kDmxBlueRole = 10;
+constexpr std::uint64_t kDmxClipRole = 11;
 constexpr std::uint64_t kSegmentRole = 16;
 
 /// A DMX channel is a byte, so everything a generator offers one is clamped to it — wrapped
@@ -143,6 +144,10 @@ bool takesEvery(Trigger trigger) noexcept {
 
 bool takesPulses(Trigger trigger) noexcept {
     return trigger == Trigger::Euclid;
+}
+
+bool takesBeatOfBar(Trigger trigger) noexcept {
+    return trigger == Trigger::Beat || trigger == Trigger::Bar;
 }
 
 bool takesCooldown(Trigger trigger) noexcept {
@@ -246,6 +251,15 @@ Generator::Config fixedNumber(int value) noexcept {
     Generator::Config config;
     config.kind = GeneratorKind::Fixed;
     config.fixed = Value::ofInt(value);
+    return config;
+}
+
+Generator::Config clipShuffle(dmx::liberation::Clip from, dmx::liberation::Clip to) noexcept {
+    Generator::Config config;
+    config.kind = GeneratorKind::Shuffle;
+    config.pool = Pool::Range;
+    config.low = dmx::liberation::indexOf(from);
+    config.high = dmx::liberation::indexOf(to);
     return config;
 }
 
@@ -424,6 +438,7 @@ Rule::Rule(Config config)
       dmxBlue_(seeded(config_.dmx.blue, config_.seed, kDmxBlueRole)),
       dmxPan_(seeded(config_.dmx.pan, config_.seed, kDmxPanRole)),
       dmxTilt_(seeded(config_.dmx.tilt, config_.seed, kDmxTiltRole)),
+      dmxClip_(seeded(config_.dmx.clip, config_.seed, kDmxClipRole)),
       probability_(mixSeed(config_.seed, kProbabilityRole)) {
     segments_.reserve(config_.segments.size());
     for (std::size_t i = 0; i < config_.segments.size(); ++i) {
@@ -540,6 +555,7 @@ void Rule::carryFrom(const Rule& previous) {
     keep(dmxBlue_, previous.dmxBlue_);
     keep(dmxPan_, previous.dmxPan_);
     keep(dmxTilt_, previous.dmxTilt_);
+    keep(dmxClip_, previous.dmxClip_);
     if (config_.seed == previous.config_.seed) {
         probability_ = previous.probability_;
     }
@@ -571,6 +587,7 @@ void Rule::reset() noexcept {
     dmxBlue_.reset();
     dmxPan_.reset();
     dmxTilt_.reset();
+    dmxClip_.reset();
     probability_.reseed(mixSeed(config_.seed, kProbabilityRole));
     lastBpmSeen_ = -1.0;
     lastLockedSeen_ = -1;
@@ -751,8 +768,13 @@ dmx::Payload Rule::buildPayload(const Context& context) {
     payload.heads = send.heads;
     payload.spread =
         static_cast<float>(std::isfinite(send.spread) ? std::clamp(send.spread, 0.0, 1.0) : 0.0);
+    // None for a clip, which is a switch: a duration left over from the effect the rule was
+    // before it would only show in a log as one that does nothing.
     payload.durationSeconds =
-        effectSeconds(musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats));
+        dmx::takesDuration(send.effect)
+            ? effectSeconds(
+                  musicalSeconds(context, send.unit, send.durationSeconds, send.durationBeats))
+            : 0.0f;
 
     // **Only the generators this effect actually uses are drawn**, and in the order
     // `lastSlots` documents — `slotLayout`, which §5.9's editor draws its chips from and a
@@ -791,6 +813,16 @@ dmx::Payload Rule::buildPayload(const Context& context) {
             payload.color = dmx::parseColor(text).value_or(dmx::kWhite);
             lastSlots_.push_back(Value::ofText(dmx::formatColor(payload.color)));
         }
+    }
+    if (dmx::takesClip(send.effect)) {
+        // The clip, then its intensity. Recorded as Liberation names the clip — "21-1" — which
+        // is what the chip beside the generator should say it sent, not its place in deck order.
+        const int index = std::clamp(dmxClip_.next(context).asInt(), 0, dmx::liberation::kMaxIndex);
+        payload.clip = static_cast<std::uint16_t>(index + 1);
+        lastSlots_.push_back(Value::ofText(dmx::liberation::formatIndex(index)));
+        const int level = std::clamp(dmxLevel_.next(context).asInt(), 0, kDmxMax);
+        payload.level = static_cast<std::uint8_t>(level);
+        lastSlots_.push_back(Value::ofInt(level));
     }
     if (send.effect == dmx::EffectKind::Position) {
         const int pan = std::clamp(dmxPan_.next(context).asInt(), 0, 100);
@@ -843,6 +875,13 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
                     musicalSeconds(context, next.unit, next.durationSeconds, next.durationBeats));
                 follow.payload.level =
                     static_cast<std::uint8_t>(std::clamp(owed.value.asInt(), 0, kDmxMax));
+                // A clip follow-up has no clip of its own to select: it is the one that takes
+                // the clip off. The fired clip again would be a press, not a follow-up.
+                follow.payload.clip = 0;
+            } else if (dmx::takesClip(fired.payload.kind)) {
+                // **The release of a clip is no clip** — the zone disarmed, as a note's release
+                // is its Note Off. A clip held for two beats is a press and this.
+                follow.payload.clip = 0;
             } else if (dmx::takesMovement(fired.payload.kind)) {
                 // There is no "let go" of a pan. See `FollowUp::dmx`.
                 continue;
@@ -887,6 +926,16 @@ double Rule::followUpDelay(const Context& context, std::size_t index) const noex
     return musicalSeconds(context, owed.unit, owed.delaySeconds, owed.delayBeats);
 }
 
+double Rule::fireDelay(const Context& context) const noexcept {
+    if (!config_.delayOn) {
+        return 0.0;
+    }
+    const double wait =
+        musicalSeconds(context, config_.delayUnit, config_.delaySeconds, config_.delayBeats);
+    // Not a number is no wait: `std::clamp` hands a NaN straight back (see `Rule::setRate`).
+    return std::isfinite(wait) ? std::clamp(wait, 0.0, kMaxFireDelaySeconds) : 0.0;
+}
+
 std::vector<Slot> slotLayout(const Rule::Config& config) {
     // The conditions `fire` and `buildPayload` draw under, in the order they draw.
     std::vector<Slot> slots;
@@ -910,6 +959,10 @@ std::vector<Slot> slotLayout(const Rule::Config& config) {
             } else {
                 slots.push_back(Slot{SlotRole::Color});
             }
+        }
+        if (dmx::takesClip(send.effect)) {
+            slots.push_back(Slot{SlotRole::Clip});
+            slots.push_back(Slot{SlotRole::Level});
         }
         if (send.effect == dmx::EffectKind::Position) {
             slots.push_back(Slot{SlotRole::Pan});
@@ -946,6 +999,8 @@ Generator::Config& slotGenerator(Rule::Config& config, const Slot& slot) noexcep
         return config.dmx.pan;
     case SlotRole::Tilt:
         return config.dmx.tilt;
+    case SlotRole::Clip:
+        return config.dmx.clip;
     case SlotRole::Value:
         break;
     }

@@ -88,6 +88,8 @@ add_library(takt4_core STATIC
   dmx/effect.hpp
   dmx/fixture.cpp
   dmx/fixture.hpp
+  dmx/liberation.cpp
+  dmx/liberation.hpp
   dsp/real_fft.cpp
   dsp/real_fft.hpp
   engine/beat_engine.cpp
