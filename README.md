@@ -2,9 +2,9 @@
 
 ![takt4's main window, tracking a track at 128 BPM and sending it to Link, two MIDI clocks and OSC, beside the rule editor with a Resolume clip rule open](docs/screenshot.png)
 
-takt4 listens to your mixer, finds the beat, downbeat and tempo, and sends them to the rest of
-the rig: **Ableton Link, MIDI clock, OSC, MIDI notes and Art-Net lights**. Rules fire clips,
-cues, notes and light looks on the music. No click track, no tapping along.
+takt4 listens to incoming audio (WASAPI, ASIO, etc), finds the beat, downbeat and tempo, and sends them to the rest of
+your rig: **Ableton Link, MIDI clock, OSC, MIDI notes and Art-Net lights**. Plus optional built in triggers can fire clips,
+cues, notes and light looks on the music. No manual tapping, locks on to new songs automatically.
 
 ## Get it
 
@@ -19,14 +19,13 @@ cues, notes and light looks on the music. No click track, no tapping along.
 3. Under **outputs**, tick **Link**, or click **+ add output** and pick its **protocol**: OSC, MIDI, MIDI clock or Art-Net.
 4. In the **triggers** row, click **add a rule** (it says **edit rules** once you have some). Pick a ready-made set from **select a preset**, or build your own.
 
-## When the beat is wrong
+## When the beat is wrong (rare)
 
-- A beat or two out: press **downbeat** (or **D**) on the one.
-- Half or double speed: **÷2** or **×2**. They reset on the next track unless **keep half/double settings for next track** is ticked.
-- Keep it in a range: tick **keep BPM in** and drag its two handles.
-- **tap** (or **T**) to tap it in.
-- **lock** holds the tempo through a breakdown.
-- **latency** moves everything earlier or later.
+- A beat or two out: press **downbeat** (or **D**) on the one
+- Half or double speed: **÷2** or **×2**. They reset on the next track unless **keep half/double settings for next track** is ticked
+- Keep it in a range: tick **keep BPM in** and drag its two handles
+- **tap** (or **T**) to tap it in
+- **latency** moves everything earlier or later
 
 ## Rules
 
@@ -116,7 +115,7 @@ address                       send           does
 
 ## How well it tracks
 
-Beat and downbeat F-measure (`mir_eval`, 70 ms) with the weights that ship:
+Multiple training sets, bolstered on off-kilter electronic music that trackers usually die on. Beat and downbeat F-measure (`mir_eval`, 70 ms) with the weights that ship:
 
 | tested on | beat | downbeat |
 |---|---|---|
