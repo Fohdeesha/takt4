@@ -2,6 +2,7 @@
 
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/features/intensity.hpp"
 
 #include <algorithm>
@@ -108,6 +109,39 @@ std::string spellValue(const trigger::Value& value) {
     std::string text;
     value.appendTo(text);
     return text;
+}
+
+std::string spellClip(const trigger::Value& value) {
+    if (value.kind() != trigger::Value::Kind::Int) {
+        return spellValue(value); // not a clip at all: shown as what it is, never invented
+    }
+    return dmx::liberation::formatIndex(value.asInt());
+}
+
+std::string spellClips(const std::vector<trigger::Value>& values) {
+    std::string text;
+    for (const trigger::Value& value : values) {
+        text += text.empty() ? "" : ", ";
+        text += spellClip(value);
+    }
+    return text;
+}
+
+std::string spellClipWeights(const std::vector<trigger::WeightedChoice>& choices) {
+    std::string text;
+    for (const trigger::WeightedChoice& choice : choices) {
+        text += text.empty() ? "" : ", ";
+        text += spellClip(choice.value) + ":" + spellNumber(choice.weight);
+    }
+    return text;
+}
+
+std::optional<trigger::Value> parseClipValue(std::string_view text) {
+    const std::optional<dmx::liberation::Clip> clip = dmx::liberation::parseClip(text);
+    if (!clip) {
+        return std::nullopt;
+    }
+    return trigger::Value::ofInt(dmx::liberation::indexOf(*clip));
 }
 
 std::string spellNumber(double value) {
@@ -267,6 +301,9 @@ std::string releaseLabelOf(trigger::Message::Kind sent) {
 }
 
 std::string describeDmxRelease(const trigger::DmxSend& send) {
+    if (dmx::takesClip(send.effect)) {
+        return "the clip taken off and the zone disarmed, same lasers";
+    }
     if (dmx::takesMovement(send.effect)) {
         return "nothing — a move has no release, so this row sends nothing";
     }
@@ -355,12 +392,22 @@ std::string routedTo(const Rule::Config& rule, const std::vector<output::OutputT
 std::string describeWhen(const Rule::Config& rule, double rate) {
     const auto every = static_cast<double>(std::max<std::uint32_t>(1, rule.every));
     std::string text;
+    const std::string beat = std::to_string(rule.onBeat);
     switch (rule.trigger) {
     case trigger::Trigger::Beat:
-        text = every == 1 ? "every beat" : "every " + counted(every, "beat", "beats") + ", counting from the first";
+        // Laid on the bar from the beat it names: every 2 from beat 2 is the backbeat.
+        text = every == 1 ? "every beat"
+                          : "every " + counted(every, "beat", "beats") + " from beat " + beat +
+                                " of the bar";
         break;
     case trigger::Trigger::Bar:
-        text = every == 1 ? "every bar" : "every " + counted(every, "bar", "bars") + ", counting from the first";
+        text = every == 1 ? "every bar" : "every " + counted(every, "bar", "bars");
+        if (rule.onBeat != 1) {
+            text += ", on beat " + beat;
+        }
+        if (every != 1) {
+            text += ", counting from the first";
+        }
         break;
     case trigger::Trigger::Downbeat:
         text = "every downbeat";
@@ -380,6 +427,16 @@ std::string describeWhen(const Rule::Config& rule, double rate) {
     }
     if (trigger::takesEvery(rule.trigger) && rate != 1.0) {
         text += " · " + describeRate(rate);
+    }
+    // And the wait, in the unit it was set in: "sent 0.5 beats later", "sent 120 ms later".
+    if (rule.delayOn) {
+        text += " · sent " +
+                (rule.delayUnit == trigger::DelayUnit::Milliseconds
+                     ? spellNumber(std::round(rule.delaySeconds * 1000.0)) + " ms"
+                 : rule.delayUnit == trigger::DelayUnit::Bars
+                     ? counted(rule.delayBeats, "bar", "bars")
+                     : counted(rule.delayBeats, "beat", "beats")) +
+                " later";
     }
     return text;
 }
@@ -438,8 +495,19 @@ std::string describeSend(const Rule::Config& rule, const std::vector<output::Out
             dmx::takesMovement(rule.dmx.effect) && rule.dmx.heads != 0 && !names.empty()
                 ? " · " + dmx::describeHeads(rule.dmx.heads)
                 : std::string();
+        // And which clips: "Liberation clip on laser 1 · 1-1 to 21-1".
+        std::string clips;
+        if (dmx::takesClip(rule.dmx.effect) && !names.empty()) {
+            const trigger::Generator::Config& clip = rule.dmx.clip;
+            clips = clip.kind == trigger::GeneratorKind::Fixed ? " · " + spellClip(clip.fixed)
+                    : trigger::takesPool(clip.kind) && clip.pool == trigger::Pool::Range
+                        ? " · " + dmx::liberation::formatRange(std::min(clip.low, clip.high),
+                                                               std::max(clip.low, clip.high))
+                        : std::string();
+        }
         return std::string(dmx::labelOf(rule.dmx.effect)) + " on " +
-               (names.empty() ? std::string("no fixtures — it sends nowhere") : join(names)) + head;
+               (names.empty() ? std::string("no fixtures — it sends nowhere") : join(names)) +
+               head + clips;
     }
     return std::string(trigger::labelOf(rule.sendKind)) + " ch " + std::to_string(rule.channel) +
            " to " + routedTo(rule, targets);

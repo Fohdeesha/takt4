@@ -50,6 +50,7 @@ add_library(takt4_ui STATIC
   rule_text.hpp
   rules_controller.cpp
   rules_controller.hpp
+  rules_controller_liberation.cpp
   rules_controller_publish.cpp
   rules_controller_slots.cpp
   rules_editor_support.hpp

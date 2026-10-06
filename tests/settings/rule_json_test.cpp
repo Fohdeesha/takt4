@@ -570,3 +570,79 @@ TEST_CASE("rules travel in the preset half of the settings file", "[settings][tr
         CHECK(takt4::settings::fromJson(R"({"preset":{}})").preset.rules.empty());
     }
 }
+
+TEST_CASE("a Liberation clip rule keeps its clips and its intensity through the file",
+          "[settings][trigger][liberation]") {
+    Rule::Config rule;
+    rule.id = "laser1";
+    rule.sendKind = Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Clip;
+    rule.dmx.fixtures = {"f-1"};
+    rule.dmx.clip = takt4::trigger::clipShuffle({2, 0}, {30, 4});
+    rule.dmx.clip.noRepeatWithin = 3;
+    rule.dmx.level = takt4::trigger::fixedNumber(200);
+
+    const std::string written = rulesToJson({rule});
+    const Rule::Config back = first(written);
+    CHECK(back.dmx.effect == takt4::dmx::EffectKind::Clip);
+    CHECK(back.dmx.clip.kind == GeneratorKind::Shuffle);
+    CHECK(back.dmx.clip.low == 10);   // 2-0
+    CHECK(back.dmx.clip.high == 154); // 30-4
+    CHECK(back.dmx.clip.noRepeatWithin == 3);
+    CHECK(back.dmx.level.fixed.asInt() == 200);
+    CHECK(back.dmx.fixtures == std::vector<std::string>{"f-1"});
+    // Spelled as a file holds it: the effect's own name, which `effectKindOf` reads back.
+    CHECK(written.find("\"liberation-clip\"") != std::string::npos);
+}
+
+TEST_CASE("a rule keeps which beat of the bar it fires on, and its wait", "[settings][trigger]") {
+    Rule::Config rule = resolumeClip();
+    rule.trigger = Trigger::Bar;
+    rule.every = 2;
+    rule.onBeat = 3;
+    rule.delayOn = true;
+    rule.delayUnit = takt4::trigger::DelayUnit::Milliseconds;
+    rule.delaySeconds = 0.12;
+    rule.delayBeats = 0.25;
+    const std::string text = rulesToJson({rule});
+    const Rule::Config out = first(text);
+    CHECK(out.onBeat == 3);
+    CHECK(out.delayOn);
+    CHECK(out.delayUnit == takt4::trigger::DelayUnit::Milliseconds);
+    CHECK(out.delaySeconds == Approx(0.12));
+    CHECK(out.delayBeats == Approx(0.25)); // the other unit's number, kept for a switch back
+
+    SECTION("a wait switched off is kept, for when it is ticked again") {
+        rule.delayOn = false;
+        const Rule::Config off = first(rulesToJson({rule}));
+        CHECK_FALSE(off.delayOn);
+        CHECK(off.delaySeconds == Approx(0.12));
+    }
+    SECTION("an untouched rule writes neither") {
+        Rule::Config plain;
+        plain.id = "plain";
+        plain.trigger = Trigger::Onset; // no beat of the bar to write
+        const std::string written = rulesToJson({plain});
+        CHECK(written.find("onBeat") == std::string::npos);
+        CHECK(written.find("delay\"") == std::string::npos);
+        const Rule::Config back = first(written);
+        CHECK(back.onBeat == 1);
+        CHECK_FALSE(back.delayOn);
+    }
+    SECTION("a file from before either loads as it fired") {
+        const Rule::Config old = first(R"([{"id":"x","trigger":"bar","every":4}])");
+        CHECK(old.onBeat == 1);
+        CHECK_FALSE(old.delayOn);
+    }
+    SECTION("nonsense in a hand-edited file is clamped or refused") {
+        const Rule::Config odd = first(
+            R"([{"id":"x","trigger":"bar","onBeat":99,"delay":{"on":true,"unit":"fortnights","delaySeconds":-4,"delayBeats":"lots"}}])");
+        CHECK(odd.onBeat == takt4::trigger::kMaxBeatOfBar);
+        CHECK(odd.delayOn);
+        CHECK(odd.delayUnit == takt4::trigger::DelayUnit::Beats); // the default
+        CHECK(odd.delaySeconds == Approx(Rule::Config{}.delaySeconds));
+        CHECK(odd.delayBeats == Approx(Rule::Config{}.delayBeats));
+        const Rule::Config zero = first(R"([{"id":"x","trigger":"bar","onBeat":0}])");
+        CHECK(zero.onBeat == 1);
+    }
+}

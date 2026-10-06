@@ -1,6 +1,7 @@
 #include "core/dmx/color.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/utf8.hpp"
 #include "core/model/weights.hpp"
@@ -35,6 +36,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -265,7 +267,7 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
     // adds the one back on (`rig-added(i + 1)`), so the two counts have to agree here or a
     // pick lands on the preset next to the one that was clicked.
     const auto offered = editor.window().get_rig_presets();
-    REQUIRE(offered->row_count() == 4);
+    REQUIRE(offered->row_count() == 5);
     CHECK(std::string(*offered->row_data(0)) == "Resolume: clips on 3 layers");
 
     editor.addRig(1); // "Resolume: clips on 3 layers"
@@ -1954,7 +1956,9 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     // Below the trigger's dropdown, which a stray click would open and Enter pick from.
     float boxX = -1.0f;
     float boxY = -1.0f;
-    for (float y = 158.0f; y < 220.0f && boxX < 0.0f; y += 2.0f) {
+    // Under the "then wait" row since 2026-10-06: from below it, so a probe types into neither
+    // its box nor its unit.
+    for (float y = 222.0f; y < 268.0f && boxX < 0.0f; y += 2.0f) {
         for (float x = 420.0f; x < 540.0f && boxX < 0.0f; x += 20.0f) {
             click(x, y);
             type("5");
@@ -2218,7 +2222,9 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
     // and Enter that reach the rule are the box; the rule is put back after every probe.
     float boxX = -1.0f;
     float boxY = -1.0f;
-    for (float y = 158.0f; y < 220.0f && boxX < 0.0f; y += 2.0f) {
+    // Under the "then wait" row since 2026-10-06: from below it, so a probe types into neither
+    // its box nor its unit.
+    for (float y = 222.0f; y < 268.0f && boxX < 0.0f; y += 2.0f) {
         for (float x = 420.0f; x < 540.0f && boxX < 0.0f; x += 20.0f) {
             click(x, y);
             type("5");
@@ -4455,8 +4461,10 @@ TEST_CASE("TEST fires the address being typed, not the one before it", "[ui][tri
     const Spot test = findTest(editor, shown);
     REQUIRE(test.found());
 
+    // Below SEND AS and the preset, whose lists a probe would open and Enter pick from — and put
+    // back if one did, since the address goes when the rule stops being OSC.
     const Spot address = sweep(
-        300.0f, 900.0f, 100.0f, 360.0f, 640.0f, 4.0f,
+        300.0f, 900.0f, 100.0f, 444.0f, 640.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             shown.clearBox();
@@ -4465,7 +4473,8 @@ TEST_CASE("TEST fires the address being typed, not the one before it", "[ui][tri
             return editor.rules().front().address == "/probe";
         },
         [&] {
-            if (editor.rules().front().address != "/before") {
+            if (editor.rules().front().address != "/before" ||
+                editor.rules().front().sendKind != takt4::trigger::Message::Kind::Osc) {
                 build();
             }
         });
@@ -4874,10 +4883,17 @@ TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowes
     CHECK(window.get_body_width() < before); // the drag widened the list
     CHECK(window.get_body_least_width() <= window.get_body_width() + 0.5f);
 
-    // At the narrowest, where the list has given way to 248 px from the 260 it was left at, a drag
-    // left moves it from where it is drawn: from 260, the first 12 px would move nothing. The last
-    // drag is one quick move of 10 px — in 2 px moves a drag counted from 260 lands within a pixel
-    // of the right place by another road (measured: it passed with that broken).
+    // At the narrowest, the list gives way to what the widest row leaves it — measured, not written
+    // down: it was 248 beside 692 px of rows, and is 281 beside the 659 they have asked for since
+    // A's count boxes and its rate reading narrowed (2026-10-06). Left 12 px wider than that, a drag
+    // left moves it from where it is drawn: from where it was left, the first 12 px would move
+    // nothing. The last drag is one quick move of 10 px — in 2 px moves a drag counted from where
+    // it was left lands within a pixel of the right place by another road (measured: it passed
+    // with that broken).
+    const float fits = 960.0f - 20.0f - least;
+    INFO("the list fits in " << fits << "px at the window's narrowest");
+    REQUIRE(fits > 212.0f);
+    REQUIRE(fits < 0.4f * 960.0f);
     const auto drag = [&window](float from, float to, float by = 2.0f) {
         const auto point = [](float x) { return slint::LogicalPosition({x, 400.0f}); };
         window.window().dispatch_pointer_move_event(point(from));
@@ -4891,15 +4907,16 @@ TEST_CASE("nothing in the rule editor runs off its pane at the window's narrowes
         slint::platform::update_timers_and_animations();
     };
     drag(10.0f + window.get_list_width() + 5.0f, 10.0f); // back to its narrowest, 200
-    drag(10.0f + window.get_list_width() + 5.0f, 10.0f + window.get_list_width() + 5.0f + 60.0f);
-    REQUIRE(window.get_list_width() == Approx(260.0f).margin(1.0f)); // left at 260
+    const float left = std::round(fits) + 12.0f;
+    drag(10.0f + window.get_list_width() + 5.0f, 10.0f + left + 5.0f);
+    REQUIRE(window.get_list_width() == Approx(left).margin(1.0f)); // left there
     (void)takt4::tests::render(window, 960, 1900);
     slint::platform::update_timers_and_animations();
     (void)takt4::tests::render(window, 960, 1900);
-    REQUIRE(window.get_list_width() == Approx(248.0f).margin(1.0f)); // given way
+    REQUIRE(window.get_list_width() == Approx(fits).margin(1.0f)); // given way
     const float drawn = 10.0f + window.get_list_width() + 5.0f;
     drag(drawn, drawn - 10.0f, 10.0f);
-    CHECK(window.get_list_width() == Approx(238.0f).margin(1.0f));
+    CHECK(window.get_list_width() == Approx(fits - 10.0f).margin(1.0f));
 }
 
 TEST_CASE("a click on a rule's dot mutes that rule and leaves the one being edited alone",
@@ -5011,9 +5028,9 @@ TEST_CASE("B's tick switches ONLY IF on and off, folded or open", "[ui][trigger]
     CHECK_FALSE(window.get_conditions_on());
     CHECK(std::string(window.get_only_if_summary()) == "off — fires every time A comes round");
 
-    // Beside B's letter, under A.
+    // Beside B's letter, under A — under its "then wait" row since 2026-10-06.
     const Spot tick = sweep(
-        290.0f, 380.0f, 4.0f, 200.0f, 290.0f, 4.0f,
+        290.0f, 380.0f, 4.0f, 240.0f, 340.0f, 4.0f,
         [&](float x, float y) {
             shown.click(x, y);
             return on();
@@ -5032,12 +5049,15 @@ TEST_CASE("B's tick switches ONLY IF on and off, folded or open", "[ui][trigger]
     shown.click(tx, ty);
     CHECK(on());
     CHECK(window.get_conditions_on());
-    CHECK(window.get_only_if_folded()); // the switch is not the fold
+    // **Ticked, it opens** (the operator, 2026-10-06: "if you tick 'only if', that section should
+    // automatically expand"): what was just switched on is what is set next.
+    CHECK_FALSE(window.get_only_if_folded());
     CHECK(std::string(window.get_only_if_summary()) ==
           "on — nothing set yet, so it fires every time A comes round");
     shown.click(tx, ty);
     CHECK_FALSE(on());
     CHECK_FALSE(window.get_conditions_on());
+    CHECK_FALSE(window.get_only_if_folded()); // and unticked, it is left as it is
 
     // Open, the tick is where it was.
     window.set_only_if_folded(false);
@@ -5162,7 +5182,7 @@ TEST_CASE("the cooldown box takes a number only where the trigger reads one", "[
 
     // Below the trigger's dropdown, which a stray click would open and Enter pick from.
     const Spot box = sweep(
-        420.0f, 540.0f, 20.0f, 158.0f, 220.0f, 2.0f,
+        420.0f, 540.0f, 20.0f, 222.0f, 268.0f, 2.0f,
         [&](float x, float y) {
             shown.click(x, y);
             shown.clearBox();
@@ -5294,6 +5314,158 @@ TEST_CASE("a fold arrow folds its section and keeps what was being typed in it",
         CHECK_FALSE(machine.ruleSectionsFolded[0]);
         CHECK(machine.ruleSectionsFolded[1]); // B, folded on a new rule
     }
+}
+
+TEST_CASE("A's beat of the bar is typed into, and its wait is ticked and typed into",
+          "[ui][trigger]") {
+    // The operator, 2026-10-06: "WHICH two beats ... one trigger firing on the first beat of a
+    // bar, another on the second beat" and "an optional delay setting default to unticked in the
+    // when section, where u can set it to static time in ms or beats / bars". Driven as a person
+    // would: the box after "on beat", the "then wait" tick under it, and the box after that.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    const auto build = [&] {
+        editor.setRules({});
+        editor.add();
+        editor.pickTrigger(indexOf(Trigger::Bar));
+        window.set_when_folded(false);
+        window.set_log_open(false);
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+    const auto rule = [&editor] { return editor.rules().front(); };
+    const auto untouched = [&] {
+        return editor.rules().size() == 1 && rule().trigger == Trigger::Bar && rule().every == 1 &&
+               rule().onBeat == 1 && !rule().delayOn &&
+               rule().delayBeats == Approx(Rule::Config{}.delayBeats);
+    };
+    // A new rule: on the bar's first beat, and no wait — nothing optional is on.
+    REQUIRE(untouched());
+    CHECK(window.get_beat_of_bar_shown());
+    CHECK(std::string(window.get_beat_of_bar_word()) == "on beat");
+    CHECK_FALSE(window.get_delay_on());
+
+    // The box after "on beat", right of "every" on A's first row.
+    const Spot beat = sweep(
+        600.0f, 780.0f, 10.0f, 110.0f, 160.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("3");
+            shown.enter();
+            return rule().onBeat == 3;
+        },
+        [&] {
+            if (!untouched()) {
+                build();
+            }
+        });
+    // The tick that says "then wait", on the row under it.
+    const Spot tick = sweep(
+        284.0f, 330.0f, 4.0f, 160.0f, 200.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return rule().delayOn;
+        },
+        [&] {
+            if (!untouched()) {
+                build();
+            }
+        });
+    // And the box after it.
+    const Spot amount = sweep(
+        380.0f, 500.0f, 10.0f, 160.0f, 200.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("0.25");
+            shown.enter();
+            return rule().delayBeats == Approx(0.25);
+        },
+        [&] {
+            if (!untouched()) {
+                build();
+            }
+        });
+    INFO("on beat at " << beat.x << ", " << beat.y << "; then wait at " << tick.x << ", "
+                       << tick.y << "; its box at " << amount.x << ", " << amount.y);
+    REQUIRE(beat.found());
+    REQUIRE(tick.found());
+    REQUIRE(amount.found());
+
+    // The whole gesture, on a fresh rule: beat 2, ticked, a quarter of a beat.
+    build();
+    shown.click(beat.x + 6.0f, beat.y + 6.0f);
+    shown.clearBox();
+    shown.type("2");
+    shown.enter();
+    shown.click(tick.x + 6.0f, tick.y + 6.0f);
+    shown.click(amount.x + 6.0f, amount.y + 6.0f);
+    shown.clearBox();
+    shown.type("0.25");
+    shown.enter();
+    editor.tick();
+    CHECK(rule().onBeat == 2);
+    CHECK(rule().delayOn);
+    CHECK(rule().delayBeats == Approx(0.25));
+    CHECK(window.get_beat_of_bar() == 2);
+    CHECK(window.get_delay_on());
+    CHECK(std::string(window.get_delay_amount()) == "0.25");
+    CHECK(std::string(window.get_when_summary()) == "every bar, on beat 2 · sent 0.25 beats later");
+    // And on the output thread, which is what fires.
+    REQUIRE(rig.runner.triggers().ruleCount() == 1);
+    CHECK(rig.runner.triggers().rule(0).config().onBeat == 2);
+    CHECK(rig.runner.triggers().rule(0).config().delayOn);
+
+    SECTION("milliseconds go into their own number, and the beats' are kept") {
+        editor.pickDelayUnit(0);
+        CHECK(std::string(window.get_delay_amount()) == "100"); // the untouched default
+        shown.click(amount.x + 6.0f, amount.y + 6.0f);
+        shown.clearBox();
+        shown.type("120");
+        shown.enter();
+        CHECK(rule().delayUnit == takt4::trigger::DelayUnit::Milliseconds);
+        CHECK(rule().delaySeconds == Approx(0.12));
+        CHECK(rule().delayBeats == Approx(0.25));
+    }
+    SECTION("unticked, the wait is off and its amount kept") {
+        shown.click(tick.x + 6.0f, tick.y + 6.0f);
+        CHECK_FALSE(rule().delayOn);
+        CHECK(rule().delayBeats == Approx(0.25));
+        CHECK(std::string(window.get_when_summary()) == "every bar, on beat 2");
+    }
+}
+
+TEST_CASE("the beat of the bar is offered only where it changes something", "[ui][trigger]") {
+    // "Never offer a choice that cannot do anything": every single beat is every beat, whichever
+    // beat it is laid from; every two is a choice of which two. A bar names its beat; nothing
+    // else counts beats at all.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    editor.setRules({});
+    editor.add();
+    editor.pickTrigger(indexOf(Trigger::Beat));
+    editor.setEvery(1);
+    CHECK_FALSE(window.get_beat_of_bar_shown());
+    editor.setEvery(2);
+    CHECK(window.get_beat_of_bar_shown());
+    CHECK(std::string(window.get_beat_of_bar_word()) == "from beat");
+    CHECK(std::string(window.get_beat_of_bar_after()) == "of the bar");
+    editor.pickTrigger(indexOf(Trigger::Onset));
+    CHECK_FALSE(window.get_beat_of_bar_shown());
+    editor.pickTrigger(indexOf(Trigger::Bar));
+    CHECK(window.get_beat_of_bar_shown());
+    CHECK(std::string(window.get_beat_of_bar_word()) == "on beat");
+    // A beat a bar of four has not got says so.
+    editor.setOnBeat(5);
+    CHECK(std::string(window.get_beat_of_bar_note()) == "only in bars of 5 beats or more");
+    editor.setOnBeat(4);
+    CHECK(std::string(window.get_beat_of_bar_note()).empty());
 }
 
 TEST_CASE("the rule editor's folds are the window's, and come back as they were left",
@@ -6233,4 +6405,386 @@ TEST_CASE("a right-click on a colour picker's slider puts that one back to white
                    << wrong.size() << ")");
     CHECK(wrong.empty());
     CHECK(reset == std::set<std::string>{"bright", "hue", "sat"});
+}
+
+// --- the Liberation preset ---------------------------------------------------------------------
+
+namespace {
+
+/// A rule editor whose Liberation prompt hands what it needs to the test, as the window controller
+/// would take it: the zones go into the patch, and come back through `setPatch`.
+struct LiberationEditor {
+    Rig rig;
+    RulesController editor{rig.runner, {}};
+    std::optional<RulesController::RigSetup> asked;
+
+    LiberationEditor() {
+        editor.setRigNeeded([this](const RulesController::RigSetup& setup) {
+            asked = setup;
+            editor.setPatch(setup.patch);
+        });
+    }
+
+    /// The prompt's answers back where they start — what a probe that missed its box typed into
+    /// whatever box it found instead.
+    void resetAsk(int lasers) {
+        editor.setLaserCount(lasers);
+        editor.setLiberationHost("127.0.0.1");
+        editor.setLiberationUniverse(1);
+        editor.setLiberationAddress(1);
+        for (int laser = 0; laser < 4; ++laser) {
+            editor.setLaserClip(laser, false, "1-1");
+            editor.setLaserClip(laser, true, "21-1");
+        }
+        editor.setLiberationMove(false);
+        editor.setLiberationAmount(25);
+        editor.setLiberationBars(4);
+        Shown::settle();
+    }
+};
+
+int indexIn(const auto& list, auto value) {
+    return static_cast<int>(std::find(list.begin(), list.end(), value) - list.begin());
+}
+
+} // namespace
+
+TEST_CASE("the Liberation preset asks first, then adds the lasers it was told",
+          "[ui][trigger][liberation]") {
+    // The operator's ask of 2026-10-05: choosing the Liberation preset asks how many lasers, and
+    // the rules come from the answers. Driven as a person would: the menu, its entry, the boxes,
+    // ADD.
+    LiberationEditor rig;
+    RulesController& editor = rig.editor;
+    auto& window = editor.window();
+    const auto build = [&] {
+        if (window.get_presets_open()) {
+            window.window().dispatch_key_press_event(slint::SharedString("\x1b"));
+            window.window().dispatch_key_release_event(slint::SharedString("\x1b"));
+            Shown::settle();
+        }
+        if (editor.liberationOpen()) {
+            editor.closeLiberation();
+        }
+        editor.setRules({});
+        editor.tick();
+        Shown::settle();
+    };
+    build();
+    const Shown shown(editor);
+    build();
+
+    // The menu at the foot of the list, and in it the entry that opens the prompt: every other one
+    // adds a rig there and then.
+    const Spot menu = sweep(
+        40.0f, 240.0f, 40.0f, 690.0f, 760.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return window.get_presets_open();
+        },
+        [&] {
+            if (window.get_presets_open() || !editor.rules().empty()) {
+                build();
+            }
+        });
+    REQUIRE(menu.found());
+    float entryY = -1.0f;
+    for (float y = 20.0f; y < 860.0f && entryY < 0.0f; y += 6.0f) {
+        if (y > menu.y - 20.0f && y < menu.y + 20.0f) {
+            continue;
+        }
+        shown.click(menu.x, menu.y);
+        shown.click(menu.x, y);
+        if (editor.liberationOpen()) {
+            entryY = y;
+        } else {
+            build();
+        }
+    }
+    INFO("the Liberation entry at " << entryY);
+    REQUIRE(entryY >= 0.0f);
+    CHECK(window.get_liberation_open());
+    CHECK_FALSE(window.get_presets_open());
+    CHECK(editor.rules().empty()); // asking is not adding
+    CHECK_FALSE(rig.asked.has_value());
+
+    const auto reopen = [&](int lasers) {
+        if (!editor.rules().empty() || rig.asked) {
+            editor.setRules({}); // a probe that found ADD
+            editor.setPatch({});
+            rig.asked.reset();
+        }
+        if (!editor.liberationOpen()) {
+            editor.openLiberation(); // a probe that found CANCEL, or an Escape
+        }
+        rig.resetAsk(lasers);
+    };
+    rig.resetAsk(1);
+
+    // "lasers": 2, typed into its box.
+    const Spot lasers = sweep(
+        150.0f, 330.0f, 20.0f, 250.0f, 370.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("2");
+            shown.enter();
+            return editor.liberationAsk().lasers == 2;
+        },
+        [&] {
+            if (editor.liberationAsk().lasers != 2 || !editor.liberationOpen()) {
+                reopen(1);
+            }
+        });
+    INFO("lasers box" << atPoint(lasers.x, lasers.y));
+    REQUIRE(lasers.found());
+    REQUIRE(window.get_lasers()->row_count() == 2);
+
+    // Liberation's port, beside its IP (the operator, 2026-10-06: "it has box for IP, but not
+    // port"): 7000, typed into its box. Before the clips, since a miss here resets them.
+    const Spot port = sweep(
+        560.0f, 780.0f, 20.0f, 250.0f, 330.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("7000");
+            shown.enter();
+            return editor.liberationAsk().port == 7000;
+        },
+        [&] {
+            if (editor.liberationAsk().port != 7000 || !editor.liberationOpen() ||
+                editor.liberationAsk().lasers != 2) {
+                editor.setLiberationPort(6454);
+                reopen(2);
+            }
+        });
+    INFO("port box" << atPoint(port.x, port.y));
+    REQUIRE(port.found());
+    CHECK(window.get_liberation_port() == 7000);
+    // And what to do in Liberation says so, since it is not the port Liberation starts on.
+    CHECK(std::string(window.get_liberation_instructions()).find("port 7000") != std::string::npos);
+
+    // Laser 2's clips end at 9-4: the "to" box of the second row.
+    const Spot to = sweep(
+        330.0f, 460.0f, 20.0f, 370.0f, 470.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            shown.clearBox();
+            shown.type("9-4");
+            shown.enter();
+            return editor.liberationAsk().to[1] == "9-4";
+        },
+        [&] {
+            if (editor.liberationAsk().to[1] != "9-4" || !editor.liberationOpen()) {
+                reopen(2);
+            }
+        });
+    INFO("laser 2's to box" << atPoint(to.x, to.y));
+    REQUIRE(to.found());
+    CHECK(std::string(window.get_lasers()->row_data(1)->clips) == "44 clips");
+    CHECK(std::string(window.get_liberation_problem()).empty());
+
+    // ADD.
+    const Spot add = sweep(
+        780.0f, 920.0f, 20.0f, 620.0f, 760.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return !editor.rules().empty();
+        },
+        [] {});
+    INFO("add" << atPoint(add.x, add.y));
+    REQUIRE(add.found());
+
+    CHECK_FALSE(editor.liberationOpen());
+    CHECK_FALSE(window.get_liberation_open());
+    // The zones, by whoever owns the patch and the outputs.
+    REQUIRE(rig.asked.has_value());
+    CHECK(rig.asked->artNetHost == "127.0.0.1");
+    CHECK(rig.asked->artNetPort == 7000);
+    REQUIRE(rig.asked->patch.size() == 2);
+    for (std::size_t laser = 0; laser < 2; ++laser) {
+        const takt4::dmx::Fixture& zone = rig.asked->patch[laser];
+        CHECK(takt4::dmx::liberation::isZone(zone));
+        CHECK(zone.universe == 0);
+        CHECK(zone.address == 1 + 32 * laser);
+    }
+    // And a clip rule a laser, aimed at its own zone, on the stagger.
+    REQUIRE(editor.rules().size() == 2);
+    const Rule::Config& first = editor.rules()[0];
+    const Rule::Config& second = editor.rules()[1];
+    CHECK(first.dmx.effect == takt4::dmx::EffectKind::Clip);
+    CHECK(first.dmx.fixtures == std::vector<std::string>{rig.asked->patch[0].id});
+    CHECK(second.dmx.fixtures == std::vector<std::string>{rig.asked->patch[1].id});
+    CHECK(first.trigger == Trigger::Beat);
+    CHECK(first.every == 1);
+    CHECK(second.trigger == Trigger::Beat);
+    CHECK(second.every == 2);
+    CHECK(first.dmx.clip.low == 6);
+    CHECK(first.dmx.clip.high == 106);
+    CHECK(second.dmx.clip.low == 6);
+    CHECK(second.dmx.clip.high == takt4::dmx::liberation::indexOf({9, 4}));
+    // On the output thread too, aimed at fixtures it has.
+    CHECK(rig.rig.runner.triggers().ruleCount() == 2);
+    CHECK(std::string(window.get_status()).find("Added 2 lasers") != std::string::npos);
+
+    // And the keyboard is the window's again: the prompt took its focus with it when it went, and
+    // Escape — PANIC — reached nothing until something was clicked.
+    REQUIRE_FALSE(rig.rig.runner.panicked());
+    shown.escape();
+    CHECK(rig.rig.runner.panicked());
+}
+
+TEST_CASE("Escape closes the Liberation prompt without adding anything or panicking",
+          "[ui][trigger][liberation]") {
+    LiberationEditor rig;
+    RulesController& editor = rig.editor;
+    editor.tick();
+    const Shown shown(editor);
+    editor.openLiberation();
+    Shown::settle();
+    REQUIRE(editor.window().get_liberation_open());
+
+    shown.escape();
+    CHECK_FALSE(editor.liberationOpen());
+    CHECK_FALSE(editor.window().get_liberation_open());
+    CHECK(editor.rules().empty());
+    CHECK_FALSE(rig.rig.runner.panicked());
+
+    SECTION("from inside a box: the first Escape leaves the box, the second the prompt") {
+        editor.openLiberation();
+        Shown::settle();
+        // The IP box, found by typing into it.
+        const Spot host = sweep(
+            420.0f, 600.0f, 20.0f, 250.0f, 370.0f, 6.0f,
+            [&](float x, float y) {
+                shown.click(x, y);
+                shown.clearBox();
+                shown.type("10.0.0.5");
+                return editor.liberationAsk().host == "10.0.0.5";
+            },
+            [&] {
+                if (editor.liberationAsk().host != "10.0.0.5") {
+                    if (!editor.liberationOpen()) {
+                        editor.openLiberation();
+                    }
+                    rig.resetAsk(1);
+                }
+            });
+        INFO("IP box" << atPoint(host.x, host.y));
+        REQUIRE(host.found());
+        REQUIRE(editor.liberationOpen());
+        shown.escape();
+        shown.escape();
+        CHECK_FALSE(editor.liberationOpen());
+        CHECK_FALSE(rig.rig.runner.panicked());
+        CHECK(editor.rules().empty());
+    }
+}
+
+TEST_CASE("the Liberation prompt names a fixture in the way and adds nothing until it is moved",
+          "[ui][trigger][liberation]") {
+    LiberationEditor rig;
+    RulesController& editor = rig.editor;
+    takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("Bedroom RGB", 1, 0, 40);
+    par.id = "f-par";
+    editor.setPatch({par});
+    editor.openLiberation();
+    editor.setLaserCount(2);
+
+    const std::string problem(editor.window().get_liberation_problem());
+    CHECK(problem.find("laser 2") != std::string::npos);
+    CHECK(problem.find("Bedroom RGB") != std::string::npos);
+    editor.addLiberation();
+    CHECK(editor.liberationOpen());
+    CHECK(editor.rules().empty());
+    CHECK_FALSE(rig.asked.has_value());
+
+    // Liberation's universe 2, which is takt4's 1, and the way is clear.
+    editor.setLiberationUniverse(2);
+    CHECK(std::string(editor.window().get_liberation_problem()).empty());
+    CHECK(std::string(editor.window().get_liberation_takt4_universe()).find("universe 1") !=
+          std::string::npos);
+    editor.addLiberation();
+    REQUIRE(rig.asked.has_value());
+    REQUIRE(rig.asked->patch.size() == 3);
+    CHECK(rig.asked->patch[0].id == "f-par"); // left where it was
+    CHECK(rig.asked->patch[1].universe == 1);
+    CHECK(rig.asked->patch[2].universe == 1);
+    CHECK(editor.rules().size() == 2);
+}
+
+TEST_CASE("a Liberation clip's chips read and show clips as Liberation names them",
+          "[ui][trigger][liberation]") {
+    LiberationEditor rig;
+    RulesController& editor = rig.editor;
+    editor.add();
+    editor.pickSend(indexIn(takt4::trigger::kMessageKinds, takt4::trigger::Message::Kind::Dmx));
+    editor.pickEffect(indexIn(takt4::dmx::kEffectKinds, takt4::dmx::EffectKind::Clip));
+    const auto chip = [&editor](std::size_t at) {
+        const auto rows = editor.window().get_slots();
+        REQUIRE(rows->row_count() == 2);
+        return *rows->row_data(at);
+    };
+    const auto clip = [&editor]() -> const takt4::trigger::Generator::Config& {
+        return editor.rules().front().dmx.clip;
+    };
+
+    // A clip, then its intensity; no fade, no curve — a clip is a switch.
+    CHECK(std::string(chip(0).label) == "clip");
+    CHECK(chip(0).is_clip);
+    CHECK(std::string(chip(0).range) == "1-1 to 21-1");
+    CHECK(std::string(chip(1).label) == "dimmer");
+    CHECK_FALSE(chip(1).is_clip);
+    CHECK_FALSE(editor.window().get_effect_takes_duration());
+    CHECK_FALSE(editor.window().get_effect_takes_curve());
+    CHECK(editor.window().get_effect_takes_clip());
+
+    editor.setSlotRange(0, "3-0 to 5-4");
+    CHECK(clip().low == 15);
+    CHECK(clip().high == 29);
+    CHECK(std::string(chip(0).range) == "3-0 to 5-4");
+    // A range is two clips: one written the way a number range is, is refused and said so.
+    editor.setSlotRange(0, "3 - 5");
+    CHECK(editor.window().get_status_is_error());
+    CHECK(clip().low == 15);
+
+    // One clip: the first of the range until another is typed.
+    editor.pickSlotKind(0, indexIn(takt4::trigger::kGeneratorKinds, GeneratorKind::Fixed));
+    CHECK(std::string(chip(0).fixed) == "3-0");
+    editor.setSlotFixed(0, "21-1");
+    CHECK(clip().fixed.asInt() == 106);
+    CHECK(std::string(chip(0).fixed) == "21-1");
+    editor.setSlotFixed(0, "21-9");
+    CHECK(editor.window().get_status_is_error());
+    CHECK(clip().fixed.asInt() == 106);
+
+    // A list of them, in the order typed.
+    editor.pickSlotKind(0, indexIn(takt4::trigger::kGeneratorKinds, GeneratorKind::Shuffle));
+    editor.setSlotValues(0, "3-1, 7-2");
+    REQUIRE(clip().values.size() == 2);
+    CHECK(clip().values[0].asInt() == 16);
+    CHECK(clip().values[1].asInt() == 37);
+    CHECK(clip().pool == Pool::List);
+    CHECK(std::string(chip(0).values) == "3-1, 7-2");
+    editor.setSlotValues(0, "3-1, nope");
+    CHECK(editor.window().get_status_is_error());
+    CHECK(clip().values.size() == 2);
+
+    // Nothing that computes a number is a clip.
+    editor.pickSlotKind(0, indexIn(takt4::trigger::kGeneratorKinds, GeneratorKind::Live));
+    CHECK(clip().kind == GeneratorKind::Shuffle);
+
+    // Aimed at a lamp, it says it reaches nothing.
+    takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("par", 1, 0, 1);
+    par.id = "f-par";
+    editor.setPatch({par});
+    editor.setFixtureChosen("f-par", true);
+    CHECK(std::string(editor.window().get_effect_clip_note()).find("reaches nothing") !=
+          std::string::npos);
+    // And beside a zone, that it misses the lamp.
+    takt4::dmx::Fixture zone = takt4::dmx::liberation::zone("laser", 0, 10);
+    zone.id = "f-zone";
+    editor.setPatch({par, zone});
+    editor.setFixtureChosen("f-zone", true);
+    CHECK(std::string(editor.window().get_effect_clip_note()).find("1 of 2") != std::string::npos);
 }

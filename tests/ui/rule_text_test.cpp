@@ -1,5 +1,6 @@
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/output/output_target.hpp"
 #include "core/trigger/rule.hpp"
 #include "core/trigger/value.hpp"
@@ -9,10 +10,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The rule editor's words, on their own: what `rule_text` makes of what is typed into a box,
@@ -193,10 +197,14 @@ TEST_CASE("rule presets: the picker follows the address", "[ui][trigger]") {
     CHECK(rule_presets::presetOf("") == 0);
     CHECK(rule_presets::presetOf("/composition/tempocontroller/resync ") == 0);
 
-    // Every rig preset adds rules, and the menu offers exactly as many as there are.
+    // Every rig preset adds rules, and the menu offers exactly as many as there are — but the
+    // Liberation entry, which asks first and adds nothing by itself (`planLiberation`).
     for (std::size_t i = 1; i <= rule_presets::kRigPresets.size(); ++i) {
-        CHECK_FALSE(rule_presets::rigPresetRules(i).empty());
+        INFO("preset " << i);
+        CHECK(rule_presets::rigPresetRules(i).empty() == (i == rule_presets::kLiberationPreset));
     }
+    CHECK(std::string_view(rule_presets::kRigPresets[rule_presets::kLiberationPreset - 1])
+              .rfind("Liberation", 0) == 0);
     CHECK(rule_presets::rigPresetRules(0).empty());
     CHECK(rule_presets::rigPresetRules(rule_presets::kRigPresets.size() + 1).empty());
 }
@@ -215,10 +223,37 @@ TEST_CASE("a folded section of the editor reads what it holds in one line", "[ui
         CHECK(rule_text::describeWhen(rule, 1.0) == "every bar");
         rule.trigger = Trigger::Beat;
         rule.every = 2;
-        CHECK(rule_text::describeWhen(rule, 1.0) == "every 2 beats, counting from the first");
+        // Laid on the bar, from the beat it names (2026-10-06).
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 2 beats from beat 1 of the bar");
+        rule.onBeat = 2;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 2 beats from beat 2 of the bar");
         // Slowed from a control surface: said where the trigger counts.
         CHECK(rule_text::describeWhen(rule, 16.0) ==
-              "every 2 beats, counting from the first · 16× slower");
+              "every 2 beats from beat 2 of the bar · 16× slower");
+        // A bar on a beat of its own, and the wait in the unit it was set in.
+        rule.trigger = Trigger::Bar;
+        rule.every = 1;
+        rule.onBeat = 3;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every bar, on beat 3");
+        rule.every = 2;
+        CHECK(rule_text::describeWhen(rule, 1.0) == "every 2 bars, on beat 3, counting from the first");
+        rule.delayOn = true;
+        rule.delayUnit = takt4::trigger::DelayUnit::Beats;
+        rule.delayBeats = 0.5;
+        CHECK(rule_text::describeWhen(rule, 1.0) ==
+              "every 2 bars, on beat 3, counting from the first · sent 0.5 beats later");
+        rule.delayUnit = takt4::trigger::DelayUnit::Milliseconds;
+        rule.delaySeconds = 0.12;
+        CHECK(rule_text::describeWhen(rule, 1.0) ==
+              "every 2 bars, on beat 3, counting from the first · sent 120 ms later");
+        rule.delayUnit = takt4::trigger::DelayUnit::Bars;
+        rule.delayBeats = 1.0;
+        CHECK(rule_text::describeWhen(rule, 1.0) ==
+              "every 2 bars, on beat 3, counting from the first · sent 1 bar later");
+        rule.delayOn = false; // switched off, what it holds is not what it does
+        rule.onBeat = 1;
+        rule.trigger = Trigger::Beat;
+        rule.every = 2;
         // A cooldown is said either way on a trigger that comes in bursts...
         rule.trigger = Trigger::Onset;
         CHECK(rule_text::describeWhen(rule, 1.0) == "onset · no limit");
@@ -301,4 +336,194 @@ TEST_CASE("a folded section of the editor reads what it holds in one line", "[ui
         CHECK(rule_text::describeThen(rule) ==
               "release after 1 beat · MIDI CC 21 after 2 bars · release after 50 ms");
     }
+}
+
+// --- the Liberation preset's plan -------------------------------------------------------------
+
+namespace {
+
+namespace liberation = takt4::dmx::liberation;
+using rule_presets::LiberationAsk;
+using rule_presets::LiberationPlan;
+using rule_presets::planLiberation;
+
+/// The fixture of `plan`'s patch a laser's rules aim at. A copy: a reference returned from a call
+/// with a temporary among its arguments is a shape GCC's -Wdangling-reference flags.
+takt4::dmx::Fixture zoneOf(const LiberationPlan& plan, std::size_t laser) {
+    const takt4::dmx::Fixture* const zone =
+        takt4::dmx::findFixture(plan.patch, plan.zones.at(laser));
+    REQUIRE(zone != nullptr);
+    return *zone;
+}
+
+} // namespace
+
+TEST_CASE("the Liberation plan stacks a zone per laser as Liberation does",
+          "[ui][trigger][liberation]") {
+    LiberationAsk ask;
+    ask.lasers = 4;
+    const LiberationPlan plan = planLiberation(ask, {});
+    REQUIRE(plan.problem.empty());
+    REQUIRE(plan.zones.size() == 4);
+    for (std::size_t laser = 0; laser < 4; ++laser) {
+        const takt4::dmx::Fixture zone = zoneOf(plan, laser);
+        CHECK(liberation::isZone(zone));
+        CHECK(zone.universe == 0); // Liberation's universe 1
+        CHECK(zone.address == 1 + 32 * laser);
+        CHECK(zone.group == "lasers");
+        CHECK(zone.name == "laser " + std::to_string(laser + 1));
+    }
+    CHECK(plan.where[0] == "universe 1 · 1-32");
+    CHECK(plan.where[3] == "universe 1 · 97-128");
+    CHECK(plan.clips[0] == "101 clips");
+
+    // One clip rule each, aimed at its own zone, staggered as the operator asked: a beat, two
+    // beats, a bar, two bars.
+    REQUIRE(plan.rules.size() == 4);
+    const std::array<std::pair<takt4::trigger::Trigger, std::uint32_t>, 4> stagger{{
+        {takt4::trigger::Trigger::Beat, 1},
+        {takt4::trigger::Trigger::Beat, 2},
+        {takt4::trigger::Trigger::Bar, 1},
+        {takt4::trigger::Trigger::Bar, 2},
+    }};
+    std::set<std::uint64_t> seeds;
+    for (std::size_t laser = 0; laser < 4; ++laser) {
+        const Rule::Config& rule = plan.rules[laser];
+        INFO("laser " << laser + 1);
+        CHECK(rule.sendKind == Message::Kind::Dmx);
+        CHECK(rule.dmx.effect == takt4::dmx::EffectKind::Clip);
+        CHECK(rule.dmx.fixtures == std::vector<std::string>{plan.zones[laser]});
+        CHECK(rule.trigger == stagger[laser].first);
+        CHECK(rule.every == stagger[laser].second);
+        CHECK(rule.dmx.clip.kind == takt4::trigger::GeneratorKind::Shuffle);
+        CHECK(rule.dmx.clip.low == liberation::indexOf({1, 1}));
+        CHECK(rule.dmx.clip.high == liberation::indexOf({21, 1}));
+        CHECK(Rule(rule).valid());
+        seeds.insert(rule.seed);
+    }
+    CHECK(seeds.size() == 4); // or every laser would shuffle the same clips as every other
+
+    // What to set up in Liberation, in its numbering.
+    CHECK(plan.instructions.find("add 4 profiles, Extended 32ch, universe 1, addresses 1, 33, 65 "
+                                 "and 97") != std::string::npos);
+    CHECK(plan.instructions.find("Ableton Link") != std::string::npos);
+}
+
+TEST_CASE("the Liberation plan spills onto the next universe as Liberation does",
+          "[ui][trigger][liberation]") {
+    LiberationAsk ask;
+    ask.lasers = 3;
+    ask.universe = 2;
+    ask.address = 449; // 449-480 fits, 481-512 fits, the third would cross 512
+    const LiberationPlan plan = planLiberation(ask, {});
+    REQUIRE(plan.problem.empty());
+    CHECK(zoneOf(plan, 0).universe == 1);
+    CHECK(zoneOf(plan, 0).address == 449);
+    CHECK(zoneOf(plan, 1).address == 481);
+    CHECK(zoneOf(plan, 2).universe == 2);
+    CHECK(zoneOf(plan, 2).address == 1);
+    CHECK(plan.where[2] == "universe 3 · 1-32");
+    CHECK(plan.instructions.find("universe 2 address 449, universe 2 address 481 and universe 3 "
+                                 "address 1") != std::string::npos);
+}
+
+TEST_CASE("the Liberation plan says what is wrong and adds nothing until it is put right",
+          "[ui][trigger][liberation]") {
+    SECTION("a clip that is not one") {
+        LiberationAsk ask;
+        ask.lasers = 2;
+        ask.to[1] = "21-7";
+        const LiberationPlan plan = planLiberation(ask, {});
+        CHECK(plan.problem.find("laser 2") != std::string::npos);
+        CHECK(plan.problem.find("\"21-7\" is not a clip") != std::string::npos);
+        CHECK(plan.rules.empty());
+        CHECK(plan.clips[1].empty());
+    }
+    SECTION("no address for Liberation") {
+        LiberationAsk ask;
+        ask.host = "  ";
+        CHECK_FALSE(planLiberation(ask, {}).problem.empty());
+    }
+    SECTION("a fixture already on the channels") {
+        takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("Bedroom RGB", 1, 0, 40);
+        par.id = "f-par";
+        LiberationAsk ask;
+        ask.lasers = 2;
+        const LiberationPlan plan = planLiberation(ask, {par});
+        CHECK(plan.problem.find("laser 2") != std::string::npos);
+        CHECK(plan.problem.find("Bedroom RGB") != std::string::npos);
+        CHECK(plan.problem.find("channel 40") != std::string::npos);
+        CHECK(plan.rules.empty());
+        // Somewhere else, and it is fine.
+        ask.universe = 2;
+        CHECK(planLiberation(ask, {par}).problem.empty());
+        // And switched off, it is in nobody's way.
+        par.enabled = false;
+        ask.universe = 1;
+        CHECK(planLiberation(ask, {par}).problem.empty());
+    }
+    SECTION("a range typed backwards is turned round") {
+        LiberationAsk ask;
+        ask.from[0] = "21-1";
+        ask.to[0] = "1-1";
+        const LiberationPlan plan = planLiberation(ask, {});
+        REQUIRE(plan.problem.empty());
+        CHECK(plan.rules[0].dmx.clip.low == 6);
+        CHECK(plan.rules[0].dmx.clip.high == 106);
+    }
+}
+
+TEST_CASE("the Liberation plan uses the zones the patch already has", "[ui][trigger][liberation]") {
+    takt4::dmx::Fixture mine = liberation::zone("left laser", 0, 33);
+    mine.id = "f-mine";
+    mine.enabled = false;
+    LiberationAsk ask;
+    ask.lasers = 2;
+    const LiberationPlan plan = planLiberation(ask, {mine});
+    REQUIRE(plan.problem.empty());
+    CHECK(plan.reused == 1);
+    CHECK(plan.patch.size() == 2); // the one it had, and laser 1's
+    CHECK(plan.zones[1] == "f-mine");
+    const takt4::dmx::Fixture reused = zoneOf(plan, 1);
+    CHECK(reused.name == "left laser"); // the operator's name kept
+    CHECK(reused.enabled);              // and switched on, since driving it is what was asked
+}
+
+TEST_CASE("the Liberation plan moves each laser within the amount asked",
+          "[ui][trigger][liberation]") {
+    LiberationAsk ask;
+    ask.lasers = 2;
+    ask.move = true;
+    ask.amount = 40;
+    ask.bars = 8;
+    for (int shape = 0; shape < 4; ++shape) {
+        ask.moveShape = shape;
+        const LiberationPlan plan = planLiberation(ask, {});
+        REQUIRE(plan.problem.empty());
+        REQUIRE(plan.rules.size() == 4); // clips, move; clips, move
+        for (std::size_t laser = 0; laser < 2; ++laser) {
+            const Rule::Config& move = plan.rules[laser * 2 + 1];
+            INFO("shape " << shape << ", laser " << laser + 1);
+            CHECK(move.dmx.fixtures == std::vector<std::string>{plan.zones[laser]});
+            CHECK(move.trigger == takt4::trigger::Trigger::Bar);
+            CHECK(move.every == 8);
+            CHECK(move.dmx.unit == takt4::trigger::DelayUnit::Bars);
+            CHECK(move.dmx.durationBeats == 8.0);
+            CHECK(move.dmx.effect ==
+                  (shape == 3 ? takt4::dmx::EffectKind::Position : takt4::dmx::EffectKind::Path));
+            CHECK(Rule(move).valid());
+            // 40% of the way to the edge either side of the centre.
+            const takt4::dmx::Fixture zone = zoneOf(plan, laser);
+            CHECK(zone.panMin == Approx(0.3));
+            CHECK(zone.panMax == Approx(0.7));
+            CHECK(zone.tiltMin == Approx(0.3));
+            CHECK(zone.tiltMax == Approx(0.7));
+        }
+    }
+    // Not asked to move, the zones keep their whole window.
+    ask.move = false;
+    const LiberationPlan still = planLiberation(ask, {});
+    CHECK(still.rules.size() == 2);
+    CHECK(zoneOf(still, 0).panMin == 0.0);
+    CHECK(zoneOf(still, 0).panMax == 1.0);
 }

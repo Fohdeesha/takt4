@@ -1955,3 +1955,124 @@ TEST_CASE("no signal drops the lock, and what comes back is acquired afresh", "[
         CHECK(tracker.state().bpm == Approx(bpmOf(31)));
     }
 }
+
+
+namespace {
+
+/// The filter contradicting itself the way the operator met it on 2026-10-06: a cloud at
+/// `interval` frames, beats called twice that apart — and a stray one half way every seventh
+/// beat, so the beats are never clean for the eight in a row `Options::beatOctaveBeats` asks for,
+/// and the readout stays at the cloud's tempo while the dots move at half of it.
+std::size_t feedWithStrays(TempoTracker& tracker, std::uint64_t& index, std::uint32_t interval,
+                           std::size_t frames) {
+    const std::uint32_t called = 2 * interval;
+    std::size_t published = 0;
+    for (std::size_t f = 0; f < frames; ++f) {
+        TrackedFrame frame = frameAt(index, interval, 0.9, 4);
+        const bool on = index % called == 0;
+        const bool stray = index % called == interval && (index / called) % 7 == 3;
+        if (on || stray) {
+            frame.emitted = on && (index / called) % 4 == 0 ? TrackedFrame::Emitted::Downbeat
+                                                            : TrackedFrame::Emitted::Beat;
+            frame.beatActivation = 0.7f;
+        }
+        ++index;
+        if (tracker.process(frame)) {
+            ++published;
+        }
+    }
+    return published;
+}
+
+} // namespace
+
+TEST_CASE("the readout an octave from the dots is published, and halving agrees them",
+          "[tracking][tempo][octave]") {
+    // The operator, 2026-10-06: "the beat dots advance at the right bpm, for instance 90, and the
+    // track is 90, but the bpm display shows twice that. theres not indication why ... i click
+    // divide by 2 button to fix it. but then theres no indication anywhere in the program that a
+    // divide by two action is currently in effect".
+    TempoTracker::Options options = testOptions();
+    options.octaveFold = false;
+    options.lockAfter = 5;
+    options.confidenceSmoothing = 2.0;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+
+    // A minute: the cloud at 15 frames (200 BPM), the beats 30 apart (100) and a stray now and
+    // then. The readout says 200, and the dots — what `beatsBpm` measures — go at 100.
+    const std::size_t before = feedWithStrays(tracker, index, 15, 3000);
+    REQUIRE(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(15)).margin(2.0));
+    CHECK(before > 100); // a hundred beats and the strays
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(30)).margin(2.0));
+    CHECK(tracker.state().octaveShift == 0);
+
+    // ÷2: the number halves, the shift is published — and the beats stay where they were, since
+    // the grid is divided by time, which drops the strays rather than every other beat.
+    tracker.halve();
+    CHECK(tracker.state().octaveShift == -1);
+    CHECK(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+    CHECK(tracker.state().beatsBpm == 0.0); // measured afresh on the new grid
+    const std::size_t after = feedWithStrays(tracker, index, 15, 3000);
+    CHECK(after >= 98);
+    CHECK(after <= 102);
+    CHECK(tracker.state().beatsBpm == Approx(tracker.state().bpm).margin(2.0));
+
+    // ×2 takes it back, and the shift with it.
+    tracker.redouble();
+    CHECK(tracker.state().octaveShift == 0);
+    tracker.redouble();
+    CHECK(tracker.state().octaveShift == 1);
+}
+
+TEST_CASE("the dots' own rate is measured from the beats published, and forgotten when they stop",
+          "[tracking][tempo][octave]") {
+    TempoTracker::Options options = testOptions();
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    CHECK(tracker.state().beatsBpm == 0.0);
+    settle(tracker, index, 23, 0.9, 23 * 4); // four beats: not eight gaps yet
+    CHECK(tracker.state().beatsBpm == 0.0);
+    settle(tracker, index, 23, 0.9, 23 * 12);
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(23)).margin(0.5));
+    // No beat for more than two gaps: the dots have stopped, and so has the claim about them.
+    for (int f = 0; f < 23 * 3; ++f) {
+        (void)tracker.process(frameAt(index++, 23, 0.9));
+    }
+    CHECK(tracker.state().beatsBpm == 0.0);
+}
+
+TEST_CASE("a doubling left in force reads double over dots at the right tempo, and says so",
+          "[tracking][tempo][octave]") {
+    // The operator's report of 2026-10-06, on 808 State "In Yer Face (Bicep Remix)": the dots at
+    // the track's tempo, the number twice it, nothing saying why, and ÷2 the fix. The file itself
+    // does not do it — tracked from its start and from nine points through it, both versions on
+    // the operator's drive keep the number with the beats whenever they are locked. A ×2 does:
+    // it moves the number and not the grid, so the beats go on at the music's tempo. And it is
+    // dropped "at the next track" only when a different tempo takes the lock, which a set
+    // beatmatched into the next record never shows: the ×2 carries on into it.
+    TempoTracker::Options options = testOptions();
+    options.octaveFold = false;
+    options.keepOctaveShift = false; // the operator's setting: drop it at the next track
+    TempoTracker tracker(kFramePeriod, options);
+    std::uint64_t index = 0;
+    settle(tracker, index, 25, 0.9, 25 * 40); // 120 BPM, locked
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(25)).margin(0.5));
+
+    tracker.redouble();
+    // Forty more bars at the same tempo: the record after, mixed in at its tempo.
+    settle(tracker, index, 25, 0.9, 25 * 160);
+    CHECK(tracker.state().octaveShift == 1); // still in force
+    CHECK(tracker.state().bpm == Approx(2.0 * bpmOf(25)).margin(1.0));
+    CHECK(tracker.state().beatDivisor == 1);
+    // The dots at 120, measured, against a number of 240: what the window now says, and the
+    // shift it now shows.
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(25)).margin(0.5));
+
+    tracker.halve();
+    CHECK(tracker.state().octaveShift == 0);
+    CHECK(tracker.state().bpm == Approx(bpmOf(25)).margin(0.5));
+}

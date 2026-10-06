@@ -672,6 +672,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         fixtures_ = fixtures;
         editor_.setPatch(fixtures_);
     });
+    // The Liberation preset's zones, its Art-Net output and Link, which are this window's and the
+    // patch editor's to hold — asked for by the rule editor before it adds the rules.
+    editor_.setRigNeeded([this](const RulesController::RigSetup& setup) { applyRig(setup); });
     // The library an import adds to, or a re-import replaces, comes back the same way.
     patch_.setLibraryChanged(
         [this](const std::vector<fixtures::FixtureProfile>& library) { library_ = library; });
@@ -1930,6 +1933,49 @@ void WindowController::addTarget() {
     row.id = shared(output::newOutputId(known));
     targetDrafts_.push_back(row);
     // Anything already typed into the rows above survives because `editTarget` kept it here.
+    applyTargets();
+}
+
+void WindowController::applyRig(const RulesController::RigSetup& setup) {
+    // The patch, as an import lays one: the runner, the patch editor and the rule editor.
+    fixtures_ = setup.patch;
+    runner_.post(output::OutputCommand::patch(fixtures_));
+    patch_.setFixtures(fixtures_, library_);
+    editor_.setPatch(fixtures_);
+
+    // An Art-Net output to Liberation — one already there, switched on, or a new one — and Link,
+    // which Liberation's tempo follows. Whatever is being typed into the outputs goes first.
+    applyDrafts();
+    constexpr int artNet = static_cast<int>(output::OutputTarget::Kind::ArtNet);
+    constexpr int link = static_cast<int>(output::OutputTarget::Kind::Link);
+    bool found = false;
+    for (OutputRow& row : targetDrafts_) {
+        if (row.kind_index == artNet && std::string(row.host) == setup.artNetHost &&
+            readPort(std::string(row.port)) == static_cast<int>(setup.artNetPort)) {
+            row.enabled = true;
+            found = true;
+        }
+        if (row.kind_index == link) {
+            row.enabled = true;
+        }
+    }
+    if (!found) {
+        OutputRow row{};
+        row.enabled = true;
+        row.kind_index = artNet;
+        row.name = shared("Liberation");
+        row.host = shared(setup.artNetHost);
+        row.port = shared(std::to_string(setup.artNetPort));
+        row.address = shared(addressOf(row, deviceNames_));
+        std::vector<output::OutputTarget> known = runner_.snapshot().outputs;
+        for (const OutputRow& other : targetDrafts_) {
+            output::OutputTarget holder;
+            holder.id = std::string(other.id);
+            known.push_back(std::move(holder));
+        }
+        row.id = shared(output::newOutputId(known));
+        targetDrafts_.push_back(row);
+    }
     applyTargets();
 }
 

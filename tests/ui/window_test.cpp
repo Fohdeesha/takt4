@@ -5,6 +5,7 @@
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/fixtures/fixture_library.hpp"
@@ -7388,4 +7389,78 @@ TEST_CASE("a right-click puts each of the main window's sliders back to a fresh 
     CHECK(wrong.empty());
     CHECK(reset == std::set<std::string>{"delay", "fold", "latency"});
     nothingReal.check();
+}
+
+TEST_CASE("the Liberation preset patches its zones, adds Liberation's output and switches Link on",
+          "[ui][liberation][network]") {
+    // Tagged for the network because adding switches Link on, which joins the session on the LAN.
+    // The Art-Net output is aimed at a listener of the test's own rather than Art-Net's port, so a
+    // Liberation running on this machine never hears it (`RulesController::setLiberationPort`).
+    takt4::testing::LoopbackReceiver node;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::ui::RulesController& editor = controller.editor();
+    editor.setLiberationPort(node.port());
+    editor.openLiberation();
+    editor.setLaserCount(2);
+    editor.addLiberation();
+    REQUIRE_FALSE(editor.liberationOpen());
+
+    const takt4::settings::Settings saved = controller.currentSettings();
+    // Two zones, in the patch the file keeps and the patch editor shows.
+    std::vector<std::string> zones;
+    for (const takt4::dmx::Fixture& fixture : saved.preset.fixtures) {
+        if (takt4::dmx::liberation::isZone(fixture)) {
+            zones.push_back(fixture.id);
+        }
+    }
+    REQUIRE(zones.size() == 2);
+    CHECK(controller.patchEditor().fixtures().size() == saved.preset.fixtures.size());
+    // An Art-Net output to Liberation, on — and Link, on.
+    const auto& outputs = saved.preset.outputs;
+    const auto artNet = [&outputs, &node] {
+        return std::count_if(outputs.begin(), outputs.end(), [&node](const auto& target) {
+            return target.kind == takt4::output::OutputTarget::Kind::ArtNet &&
+                   target.host == "127.0.0.1" && target.port == node.port();
+        });
+    };
+    REQUIRE(artNet() == 1);
+    for (const takt4::output::OutputTarget& target : outputs) {
+        if (target.kind == takt4::output::OutputTarget::Kind::ArtNet) {
+            CHECK(target.enabled);
+            CHECK(target.name == "Liberation");
+        }
+    }
+    REQUIRE_FALSE(outputs.empty());
+    CHECK(outputs.front().kind == takt4::output::OutputTarget::Kind::Link);
+    CHECK(outputs.front().enabled);
+    // The rules, aimed at the zones.
+    REQUIRE(saved.preset.rules.size() == 2);
+    CHECK(saved.preset.rules[0].dmx.fixtures == std::vector<std::string>{zones[0]});
+    CHECK(saved.preset.rules[1].dmx.fixtures == std::vector<std::string>{zones[1]});
+
+    // And the zones reach the node: both disarmed until a clip fires.
+    bool heard = false;
+    for (int attempt = 0; attempt < 200 && !heard; ++attempt) {
+        const std::string datagram = node.receive();
+        if (datagram.size() >= 18 + 64 &&
+            datagram.compare(0, 8, std::string("Art-Net\0", 8)) == 0) {
+            heard = static_cast<std::uint8_t>(datagram[18]) == 0 &&
+                    static_cast<std::uint8_t>(datagram[18 + 32]) == 0 &&
+                    static_cast<std::uint8_t>(datagram[18 + 9]) == 255; // laser 1's scale
+        }
+    }
+    CHECK(heard);
+
+    // Asked again for the same Liberation, it reuses the output and the zones.
+    editor.openLiberation();
+    editor.addLiberation();
+    const takt4::settings::Settings again = controller.currentSettings();
+    CHECK(std::count_if(again.preset.outputs.begin(), again.preset.outputs.end(),
+                        [&node](const auto& target) {
+                            return target.kind == takt4::output::OutputTarget::Kind::ArtNet &&
+                                   target.port == node.port();
+                        }) == 1);
+    CHECK(again.preset.fixtures.size() == saved.preset.fixtures.size());
+    CHECK(again.preset.rules.size() == 4);
 }

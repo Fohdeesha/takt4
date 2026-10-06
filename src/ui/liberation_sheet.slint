@@ -1,0 +1,470 @@
+// The Liberation preset's prompt: how many lasers, which clips each shuffles, where Liberation is and
+// where its zones are patched — the preset that cannot be added blind (the operator, 2026-10-05).
+//
+// **A sheet over the trigger window, not a window of its own**: it is the one question the preset
+// menu asks, it is answered or dismissed before anything else is done, and a second window could be
+// left open behind the first with its answers half typed. Everything under it takes no clicks while
+// it is up.
+//
+// Every control is weltformat.slint's, so nothing here sets its own value: each says what was asked
+// for and shows what `RulesController` then holds (see that file).
+
+import { Btn, Count, Entry, Pick, Scroller, Tick, Wf } from "weltformat.slint";
+import { FocusSink } from "theme.slint";
+import { Note, RowLabel, Word } from "editor_parts.slint";
+
+/// One laser's row of the prompt.
+export struct LaserRow {
+  /// "laser 1".
+  label: string,
+  /// Its clips, as typed: every clip from one to the other in Liberation's deck order.
+  from: string,
+  to: string,
+  /// How many clips that is — "101 clips" — or empty while a box cannot be read.
+  clips: string,
+  /// An index into `laser-timings`.
+  timing: int,
+  /// Where its zone lands, in Liberation's numbering: "universe 1 · 1-32".
+  where: string,
+}
+
+export component LiberationSheet inherits Rectangle {
+  in property <[LaserRow]> lasers;
+  in property <int> laser-count;
+  in property <[string]> timings;
+  in property <[string]> moves;
+  in property <string> host;
+  /// The port Liberation's DMX input listens on: Art-Net's own, 6454, unless it was moved.
+  in property <int> port;
+  in property <int> universe;
+  in property <int> address;
+  /// "= takt4 universe 0": the same universe as takt4's patch editor numbers it.
+  in property <string> takt4-universe;
+  in property <bool> move;
+  in property <int> shape;
+  in property <int> amount;
+  in property <int> bars;
+  in property <string> instructions;
+  /// Why nothing can be added yet, or empty.
+  in property <string> problem;
+
+  callback count-changed(int);
+  callback clip-typed(int, bool, string);
+  callback clip-edited(int, bool, string);
+  callback timing-picked(int, int);
+  callback host-typed(string);
+  callback host-edited(string);
+  callback port-changed(int);
+  callback universe-changed(int);
+  callback address-changed(int);
+  callback move-toggled(bool);
+  callback shape-picked(int);
+  callback amount-changed(int);
+  callback bars-changed(int);
+  callback added();
+  callback cancelled();
+
+  private property <length> label-width: 118px;
+  private property <length> clip-width: 110px;
+
+  // The window behind, dimmed and deaf: a click on it finishes what is being typed and does nothing
+  // else — it does not dismiss the prompt, whose answers would go with it.
+  background: #000000b0;
+  TouchArea {
+    clicked => {
+      sink.take();
+    }
+  }
+
+  // Escape leaves a box first (the box's own), then dismisses the prompt — as it closes an open list
+  // anywhere in takt4, and never PANIC from in here.
+  keys := FocusScope {
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+    key-pressed(event) => {
+      if (event.text == Key.Escape) {
+        root.cancelled();
+        return accept;
+      }
+      // Nor the window's M, which fires the manual rules: nothing behind the prompt is reached
+      // from it.
+      if (event.text == "m" || event.text == "M") {
+        return accept;
+      }
+      return reject;
+    }
+
+    panel := Rectangle {
+      width: min(860px, root.width - 40px);
+      // The padding and the two gaps between the three parts are the 64.
+      height: min(head.preferred-height + body.preferred-height + foot.preferred-height + 64px,
+                  root.height - 40px);
+      x: (root.width - self.width) / 2;
+      y: (root.height - self.height) / 2;
+      background: Wf.sheet;
+      border-width: 1px;
+      border-color: Wf.edge;
+
+      // A click on the panel's own background: somewhere for the keyboard to go (`FocusSink`).
+      TouchArea {
+        clicked => {
+          sink.take();
+        }
+      }
+      sink := FocusSink { }
+
+      VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+
+        head := VerticalLayout {
+          spacing: 6px;
+          Text {
+            height: 28px;
+            text: "Liberation lasers";
+            color: Wf.ink;
+            font-size: 20px;
+            font-weight: 800;
+            vertical-alignment: center;
+            overflow: elide;
+          }
+          Text {
+            height: 40px;
+            text: "A laser zone per laser in the lighting patch, an Art-Net output to Liberation, and a "
+              + "trigger per laser that shuffles its clips. A clip arms its zone; Stop, PANIC and \"no "
+              + "signal\" disarm it.";
+            color: Wf.ink2;
+            font-size: 14px;
+            wrap: word-wrap;
+            overflow: elide;
+          }
+        }
+
+        Scroller {
+          height: min(body.preferred-height,
+                      root.height - 40px - 40px - head.preferred-height - foot.preferred-height - 24px);
+          body := VerticalLayout {
+            spacing: 8px;
+            padding-right: 18px; // the scroll bar's lane
+
+            // --- where -------------------------------------------------------------------------
+            HorizontalLayout {
+              height: 34px;
+              spacing: 10px;
+              RowLabel {
+                width: root.label-width;
+                text: "lasers";
+              }
+              Count {
+                width: 64px;
+                value: root.laser-count;
+                minimum: 1;
+                maximum: 4;
+                typed(v) => {
+                  root.count-changed(v);
+                }
+                edited(v) => {
+                  root.count-changed(v);
+                }
+              }
+              Rectangle { width: 16px; }
+              Word {
+                text: "Liberation's IP";
+              }
+              Entry {
+                width: 170px;
+                horizontal-stretch: 0;
+                value: root.host;
+                placeholder: "127.0.0.1";
+                font-family: Wf.code;
+                typed(t) => {
+                  root.host-typed(t);
+                }
+                committed(t) => {
+                  root.host-edited(t);
+                }
+              }
+              // Beside the IP, as every output row has its port beside its host: Liberation can be
+              // told to listen elsewhere, and a second copy on one machine has to be.
+              Word {
+                text: "port";
+              }
+              Count {
+                width: 90px;
+                value: root.port;
+                minimum: 1;
+                maximum: 65535;
+                typed(v) => {
+                  root.port-changed(v);
+                }
+                edited(v) => {
+                  root.port-changed(v);
+                }
+              }
+              Rectangle { horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+              height: 34px;
+              spacing: 10px;
+              RowLabel {
+                width: root.label-width;
+                text: "first zone at";
+              }
+              Word {
+                text: "universe";
+              }
+              Count {
+                width: 76px;
+                value: root.universe;
+                minimum: 1;
+                maximum: 32768;
+                typed(v) => {
+                  root.universe-changed(v);
+                }
+                edited(v) => {
+                  root.universe-changed(v);
+                }
+              }
+              Word {
+                text: "address";
+              }
+              Count {
+                width: 64px;
+                value: root.address;
+                minimum: 1;
+                maximum: 512;
+                typed(v) => {
+                  root.address-changed(v);
+                }
+                edited(v) => {
+                  root.address-changed(v);
+                }
+              }
+              // A readout, not a setting: what takt4's own patch editor will call that universe.
+              Note {
+                text: root.takt4-universe;
+              }
+            }
+
+            // --- each laser: a table, so its columns are named once ----------------------------
+            HorizontalLayout {
+              height: 20px;
+              spacing: 10px;
+              Rectangle { width: root.label-width; }
+              Word {
+                width: root.clip-width;
+                text: "clips from";
+              }
+              Word {
+                width: root.clip-width;
+                text: "to";
+              }
+              Word {
+                width: 76px;
+                text: "";
+              }
+              Word {
+                width: 150px;
+                text: "changes";
+              }
+              Word {
+                horizontal-stretch: 1;
+                text: "its zone in Liberation";
+                overflow: elide;
+              }
+            }
+            for row[i] in root.lasers: HorizontalLayout {
+              height: 34px;
+              spacing: 10px;
+              RowLabel {
+                width: root.label-width;
+                text: row.label;
+              }
+              Entry {
+                width: root.clip-width;
+                horizontal-stretch: 0;
+                value: row.from;
+                placeholder: "1-1";
+                font-family: Wf.code;
+                typed(t) => {
+                  root.clip-typed(i, false, t);
+                }
+                committed(t) => {
+                  root.clip-edited(i, false, t);
+                }
+              }
+              Entry {
+                width: root.clip-width;
+                horizontal-stretch: 0;
+                value: row.to;
+                placeholder: "21-1";
+                font-family: Wf.code;
+                typed(t) => {
+                  root.clip-typed(i, true, t);
+                }
+                committed(t) => {
+                  root.clip-edited(i, true, t);
+                }
+              }
+              Word {
+                width: 76px;
+                text: row.clips;
+                overflow: elide;
+              }
+              Pick {
+                width: 150px;
+                horizontal-stretch: 0;
+                model: root.timings;
+                current-index: row.timing;
+                selected(t) => {
+                  root.timing-picked(i, t);
+                }
+              }
+              Note {
+                text: row.where == "" ? "" : "→ " + row.where;
+              }
+            }
+
+            // --- moving them ---------------------------------------------------------------------
+            HorizontalLayout {
+              height: 34px;
+              spacing: 10px;
+              VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                Tick {
+                  text: "also move each laser";
+                  checked: root.move;
+                  toggled(on) => {
+                    root.move-toggled(on);
+                  }
+                }
+              }
+              Rectangle { width: 6px; }
+              Word {
+                text: "shape";
+              }
+              Pick {
+                width: 150px;
+                horizontal-stretch: 0;
+                model: root.moves;
+                current-index: root.shape;
+                enabled: root.move;
+                selected(s) => {
+                  root.shape-picked(s);
+                }
+              }
+              Rectangle { horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+              height: 34px;
+              spacing: 10px;
+              Rectangle { width: root.label-width; }
+              Word {
+                text: "as far as";
+              }
+              Count {
+                width: 64px;
+                value: root.amount;
+                minimum: 1;
+                maximum: 100;
+                enabled: root.move;
+                typed(v) => {
+                  root.amount-changed(v);
+                }
+                edited(v) => {
+                  root.amount-changed(v);
+                }
+              }
+              Word {
+                text: "% to the zone's edge,";
+              }
+              Word {
+                text: root.shape == 3 ? "a new spot every" : "one turn every";
+              }
+              Count {
+                width: 64px;
+                value: root.bars;
+                minimum: 1;
+                maximum: 64;
+                enabled: root.move;
+                typed(v) => {
+                  root.bars-changed(v);
+                }
+                edited(v) => {
+                  root.bars-changed(v);
+                }
+              }
+              Word {
+                text: "bars";
+              }
+              Rectangle { horizontal-stretch: 1; }
+            }
+
+            // --- what to do in Liberation --------------------------------------------------------
+            Text {
+              height: 22px;
+              text: "in Liberation";
+              color: Wf.ink;
+              font-size: 15px;
+              font-weight: 800;
+              vertical-alignment: center;
+            }
+            Text {
+              height: 66px;
+              text: root.instructions;
+              color: Wf.ink2;
+              font-size: 14px;
+              wrap: word-wrap;
+              overflow: elide;
+            }
+          }
+        }
+
+        // What is wrong, whole — it says what to change, so it wraps rather than eliding — and under
+        // it the two buttons. Two lines' room always, so the buttons do not move as it comes and goes.
+        foot := VerticalLayout {
+          spacing: 6px;
+          Text {
+            height: 38px;
+            text: root.problem;
+            color: Wf.alarm;
+            font-size: 14px;
+            wrap: word-wrap;
+            vertical-alignment: bottom;
+            overflow: elide;
+          }
+          HorizontalLayout {
+            height: 34px;
+            spacing: 10px;
+            alignment: end;
+            Btn {
+              text: "cancel";
+              min-width: 90px;
+              clicked => {
+                sink.take();
+                root.cancelled();
+              }
+            }
+            Btn {
+              text: root.laser-count == 1 ? "add 1 laser" : "add " + root.laser-count + " lasers";
+              primary: true;
+              enabled: root.problem == "";
+              min-width: 130px;
+              clicked => {
+                // The box being typed in first, so what it holds is what is added (`FocusSink`).
+                sink.take();
+                root.added();
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The keyboard into the prompt when it opens, so Escape reaches it.
+  init => {
+    keys.focus();
+  }
+}

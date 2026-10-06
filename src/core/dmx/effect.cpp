@@ -12,7 +12,7 @@ struct EffectName {
     std::string_view name;
 };
 
-constexpr std::array<EffectName, 10> kEffectNames{{
+constexpr std::array<EffectName, 11> kEffectNames{{
     {EffectKind::Level, "level / fade", "level"},
     {EffectKind::Color, "color", "color"},
     {EffectKind::Flash, "flash", "flash"},
@@ -23,6 +23,7 @@ constexpr std::array<EffectName, 10> kEffectNames{{
     {EffectKind::Path, "path", "path"},
     {EffectKind::Home, "home", "home"},
     {EffectKind::Blackout, "blackout", "blackout"},
+    {EffectKind::Clip, "Liberation clip", "liberation-clip"},
 }};
 
 struct CurveName {

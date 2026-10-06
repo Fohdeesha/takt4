@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using Catch::Approx;
@@ -955,4 +956,292 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
         engine.onBeat(beatAt(1, 1, 1, 20.0));
         CHECK(engine.rule(0).lastSlots().empty());
     }
+}
+
+TEST_CASE("a rule names which beat of the bar it fires on", "[trigger][engine][beat-of-bar]") {
+    // The operator, 2026-10-06: "not just fire every two beats, but WHICH two beats. for example
+    // I want one trigger firing on the first beat of a bar, another on the second beat, another
+    // on the third". Eight bars of 4/4; where each rule's fires landed, as heard.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    const auto onBeat = [](std::string id, Trigger trigger, std::uint32_t every,
+                           std::uint32_t beat) {
+        Rule::Config config = simple(std::move(id), trigger, every);
+        config.onBeat = beat;
+        return config;
+    };
+    engine.setRules({onBeat("first", Trigger::Bar, 1, 1), onBeat("second", Trigger::Bar, 1, 2),
+                     onBeat("third", Trigger::Bar, 1, 3), onBeat("backbeat", Trigger::Beat, 2, 2),
+                     onBeat("ones", Trigger::Beat, 2, 1), onBeat("pairs", Trigger::Beat, 8, 5),
+                     onBeat("every", Trigger::Beat, 1, 3), onBeat("fifth", Trigger::Bar, 1, 5),
+                     onBeat("late", Trigger::Bar, 2, 4)});
+    using Where = std::vector<std::pair<std::uint64_t, std::uint32_t>>;
+    // Which bar, and which beat of it, each rule's fires landed on.
+    std::vector<std::pair<std::string, std::pair<std::uint64_t, std::uint32_t>>> heard;
+    std::pair<std::uint64_t, std::uint32_t> now{0, 0};
+    engine.setFireObserver([&heard, &now](std::string_view id, const Message&, bool,
+                                          std::span<const Value>, bool) {
+        heard.emplace_back(std::string(id), now);
+    });
+    std::uint64_t beat = 0;
+    std::uint64_t bar = 0;
+    for (int i = 0; i < 32; ++i) {
+        const std::uint32_t inBar = static_cast<std::uint32_t>(i % 4) + 1;
+        ++beat;
+        if (inBar == 1) {
+            ++bar;
+        }
+        now = {bar, inBar};
+        engine.onBeat(beatAt(beat, inBar, bar, 0.5 * static_cast<double>(i)));
+    }
+    const auto beatsOf = [&heard](const char* id) {
+        Where out;
+        for (const auto& [rule, where] : heard) {
+            if (rule == id) {
+                out.push_back(where);
+            }
+        }
+        return out;
+    };
+    // Once a bar each, each on its own beat.
+    CHECK(beatsOf("first").size() == 8);
+    CHECK(beatsOf("second") ==
+          Where{{1, 2}, {2, 2}, {3, 2}, {4, 2}, {5, 2}, {6, 2}, {7, 2}, {8, 2}});
+    REQUIRE(beatsOf("third").size() == 8);
+    CHECK(beatsOf("third").front() == std::pair<std::uint64_t, std::uint32_t>{1, 3});
+    // Every two beats from beat 2 is the backbeat; from beat 1, the ones and threes.
+    CHECK(beatsOf("backbeat").size() == 16);
+    for (const auto& [b, inBar] : beatsOf("backbeat")) {
+        CHECK((inBar == 2 || inBar == 4));
+    }
+    CHECK(beatsOf("ones").size() == 16);
+    for (const auto& [b, inBar] : beatsOf("ones")) {
+        CHECK((inBar == 1 || inBar == 3));
+    }
+    // Every eight from beat 5: the downbeat of every second bar, the even ones.
+    CHECK(beatsOf("pairs") == Where{{2, 1}, {4, 1}, {6, 1}, {8, 1}});
+    // Every single beat is every beat, whichever it is laid from.
+    CHECK(beatsOf("every").size() == 32);
+    // A bar of four has no fifth beat.
+    CHECK(beatsOf("fifth").empty());
+    // Every second bar, on its last beat: bars 1, 3, 5 and 7.
+    CHECK(beatsOf("late") == Where{{1, 4}, {3, 4}, {5, 4}, {7, 4}});
+
+    SECTION("and before the tracker has a bar, beats count from the first") {
+        Recorder quiet;
+        TriggerEngine unmetered(quiet);
+        unmetered.setRules({onBeat("backbeat", Trigger::Beat, 2, 2)});
+        for (std::uint64_t b = 1; b <= 8; ++b) {
+            unmetered.onBeat(beatAt(b, 0, 0, 0.5 * static_cast<double>(b)));
+        }
+        CHECK(quiet.sent.size() == 4); // beats 1, 3, 5, 7: there is no bar to lay it on
+    }
+    SECTION("a beat before the first downbeat is placed on the grid it leads into") {
+        // A run that starts on beat 3: bar 0, beats 3 and 4, then bar 1. The backbeat is still
+        // the 2 and the 4, so the first fire is beat 4 of the bar before the first.
+        Recorder early;
+        TriggerEngine lead(early);
+        lead.setRules({onBeat("backbeat", Trigger::Beat, 2, 2)});
+        lead.onBeat(beatAt(1, 3, 0, 0.0));
+        CHECK(early.sent.empty());
+        lead.onBeat(beatAt(2, 4, 0, 0.5));
+        CHECK(early.sent.size() == 1);
+        lead.onBeat(beatAt(3, 1, 1, 1.0));
+        lead.onBeat(beatAt(4, 2, 1, 1.5));
+        CHECK(early.sent.size() == 2);
+    }
+}
+
+TEST_CASE("a rule's wait holds its fire, and its follow-ups after it", "[trigger][engine][delay]") {
+    // The other half of the operator's ask of 2026-10-06: "an optional delay setting default to
+    // unticked in the when section, where u can set it to static time in ms or beats / bars".
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config rule = simple("late", Trigger::Manual);
+    rule.delayOn = true;
+    rule.delayUnit = takt4::trigger::DelayUnit::Beats;
+    rule.delayBeats = 0.5; // a quarter of a second at 120
+    rule.followUps = {releaseAfterMs(0, 100.0)};
+    engine.setRules({rule});
+
+    engine.manual(beatAt(1, 1, 1, 10.0));
+    CHECK(sink.sent.empty()); // held
+    CHECK(engine.heldFires() == 1);
+    CHECK(engine.find("late")->fires() == 1); // it fired: its generators and its count moved
+
+    engine.advance(beatAt(1, 1, 1, 10.2));
+    CHECK(sink.sent.empty());
+    engine.advance(beatAt(1, 1, 1, 10.25));
+    REQUIRE(sink.sent.size() == 1);
+    CHECK(sink.arguments() == std::vector<std::int32_t>{1});
+    // About its moment plus the wait, so every target hears it the wait late.
+    CHECK(sink.sent[0].moment == Approx(10.25));
+    // Its release a hundred milliseconds after it, not after the trigger.
+    engine.advance(beatAt(1, 1, 1, 10.30));
+    CHECK(sink.sent.size() == 1);
+    engine.advance(beatAt(1, 1, 1, 10.36));
+    REQUIRE(sink.sent.size() == 2);
+    CHECK(sink.arguments() == std::vector<std::int32_t>{1, 0});
+    CHECK(sink.sent[1].moment == Approx(10.35));
+
+    SECTION("in milliseconds and bars too, and not at all while switched off") {
+        Rule::Config ms = simple("ms", Trigger::Manual);
+        ms.delayOn = true;
+        ms.delayUnit = takt4::trigger::DelayUnit::Milliseconds;
+        ms.delaySeconds = 0.12;
+        Rule::Config bars = simple("bars", Trigger::Manual);
+        bars.delayOn = true;
+        bars.delayUnit = takt4::trigger::DelayUnit::Bars;
+        bars.delayBeats = 1.0; // four beats of 4/4 at 120: two seconds
+        Rule::Config off = simple("off", Trigger::Manual);
+        off.delayBeats = 4.0; // set, and not switched on: nothing waits
+        Recorder three;
+        TriggerEngine waits(three);
+        waits.setRules({ms, bars, off});
+        waits.manual(beatAt(1, 1, 1, 0.0));
+        CHECK(three.addresses() == std::vector<std::string>{"/fire/off"});
+        waits.advance(beatAt(1, 1, 1, 0.13));
+        CHECK(three.addresses() == std::vector<std::string>{"/fire/off", "/fire/ms"});
+        waits.advance(beatAt(1, 1, 1, 1.99));
+        CHECK(three.sent.size() == 2);
+        waits.advance(beatAt(1, 1, 1, 2.0));
+        CHECK(three.addresses() ==
+              std::vector<std::string>{"/fire/off", "/fire/ms", "/fire/bars"});
+    }
+    SECTION("PANIC drops a held fire rather than sending it") {
+        engine.manual(beatAt(1, 1, 1, 20.0));
+        engine.panic(beatAt(1, 1, 1, 20.1));
+        CHECK(engine.heldFires() == 0);
+        engine.release();
+        engine.advance(beatAt(1, 1, 1, 21.0));
+        CHECK(sink.sent.size() == 2); // the two from before, and nothing of this fire
+    }
+    SECTION("so does a stop") {
+        engine.manual(beatAt(1, 1, 1, 20.0));
+        engine.flushFollowUps();
+        engine.advance(beatAt(1, 1, 1, 21.0));
+        CHECK(sink.sent.size() == 2);
+    }
+    SECTION("and muting its rule while it waits") {
+        engine.manual(beatAt(1, 1, 1, 20.0));
+        engine.find("late")->setMuted(true);
+        const std::uint64_t mutedBefore = engine.muted();
+        engine.advance(beatAt(1, 1, 1, 21.0));
+        CHECK(sink.sent.size() == 2);
+        CHECK(engine.muted() == mutedBefore + 1); // a muted fire, and counted as one
+    }
+    SECTION("and deleting its rule") {
+        engine.manual(beatAt(1, 1, 1, 20.0));
+        engine.setRules({});
+        CHECK(engine.heldFires() == 0);
+        engine.advance(beatAt(1, 1, 1, 21.0));
+        CHECK(sink.sent.size() == 2);
+    }
+    SECTION("but not an edit, which keeps the fire it made") {
+        engine.manual(beatAt(1, 1, 1, 20.0));
+        Rule::Config renamed = rule;
+        renamed.name = "renamed";
+        engine.setRules({renamed});
+        engine.advance(beatAt(1, 1, 1, 21.0));
+        CHECK(sink.sent.size() == 3); // it,
+        engine.advance(beatAt(1, 1, 1, 21.001));
+        CHECK(sink.sent.size() == 4); // and its release, queued as it went
+    }
+    SECTION("a test does not wait") {
+        CHECK(engine.test("late", beatAt(1, 1, 1, 30.0)));
+        CHECK(sink.sent.size() == 3);
+    }
+}
+
+TEST_CASE("a rule let go of sends what it owes now, and no earlier than its press",
+          "[trigger][engine][release]") {
+    // `releaseRule`: what the output runner calls for a rule muted, switched off or deleted.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config note = simple("note", Trigger::Manual);
+    note.sendKind = Message::Kind::MidiNote;
+    note.number = fixedAt(60);
+    note.value = fixedAt(100);
+    note.followUps = {releaseAfterMs(0, 2000.0)};
+    Rule::Config held = simple("held", Trigger::Manual);
+    held.delayOn = true;
+    held.delayUnit = takt4::trigger::DelayUnit::Milliseconds;
+    held.delaySeconds = 1.0;
+    engine.setRules({note, held});
+
+    // A press about a moment ahead of the round — a beat fired early on a prediction.
+    Context ahead = beatAt(1, 1, 1, 5.0);
+    ahead.moment = 5.03;
+    engine.manual(ahead);
+    REQUIRE(sink.sent.size() == 1); // the note on; the other is held
+    REQUIRE(engine.pending() == 2);
+
+    engine.releaseRule("note", 5.01);
+    REQUIRE(sink.sent.size() == 2);
+    CHECK(sink.sent[1].kind == Message::Kind::MidiNoteOff);
+    // Now — but about no earlier a moment than the note on's, which a target may still hold.
+    CHECK(sink.sent[1].moment == Approx(5.03));
+    CHECK(engine.pending() == 1);
+
+    engine.releaseRule("held", 5.02);
+    CHECK(engine.pending() == 0);
+    engine.advance(beatAt(1, 1, 1, 7.0));
+    CHECK(sink.sent.size() == 2); // the held fire went nowhere
+}
+
+TEST_CASE("a test that nothing else would let go of lets go a moment later",
+          "[trigger][engine][release]") {
+    // A laser clip or a note on, tested from a rule that is muted or switched off — or with the
+    // tracker stopped — has nothing to take it off again. It is taken off half a second later,
+    // or a beat if that is longer.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config note = simple("note", Trigger::Manual);
+    note.sendKind = Message::Kind::MidiNote;
+    note.number = fixedAt(64);
+    note.value = fixedAt(90);
+    Rule::Config clip = simple("clip", Trigger::Manual);
+    clip.sendKind = Message::Kind::Dmx;
+    clip.dmx.effect = takt4::dmx::EffectKind::Clip;
+    clip.dmx.fixtures = {"zone"};
+    clip.dmx.clip = fixedAt(7);
+    engine.setRules({note, clip});
+
+    SECTION("muted") {
+        engine.find("note")->setMuted(true);
+        engine.find("clip")->setMuted(true);
+    }
+    SECTION("switched off") {
+        engine.find("note")->setEnabled(false);
+        engine.find("clip")->setEnabled(false);
+    }
+    SECTION("the tracker stopped") {
+        engine.setListening(false);
+    }
+    Context context = beatAt(1, 1, 1, 3.0);
+    context.bpm = 60.0; // a beat is a second: longer than the half
+    REQUIRE(engine.test("note", context));
+    REQUIRE(engine.test("clip", context));
+    REQUIRE(sink.sent.size() == 2);
+    engine.advance(beatAt(1, 1, 1, 3.9));
+    CHECK(sink.sent.size() == 2);
+    engine.advance(beatAt(1, 1, 1, 4.0));
+    REQUIRE(sink.sent.size() == 4);
+    CHECK(sink.sent[2].kind == Message::Kind::MidiNoteOff);
+    CHECK(sink.sent[2].number == 64);
+    CHECK(sink.sent[3].kind == Message::Kind::Dmx);
+    CHECK(sink.sent[3].payload.kind == takt4::dmx::EffectKind::Clip);
+    CHECK(sink.sent[3].payload.clip == 0);
+}
+
+TEST_CASE("a test of a rule that will go on sending is left to it", "[trigger][engine][release]") {
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config note = simple("note", Trigger::Manual);
+    note.sendKind = Message::Kind::MidiNote;
+    note.number = fixedAt(64);
+    engine.setRules({note});
+    REQUIRE(engine.test("note", beatAt(1, 1, 1, 3.0)));
+    engine.advance(beatAt(1, 1, 1, 10.0));
+    CHECK(sink.sent.size() == 1); // its own rule lets go of it, or does not, as it was built
 }

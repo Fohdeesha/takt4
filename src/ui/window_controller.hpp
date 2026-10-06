@@ -280,6 +280,9 @@ public:
     void setNewOutputPort(std::uint16_t port) noexcept { newTargetPort_ = port; }
     /// Any row but the Link row, which is switched off rather than removed.
     void removeTarget(int index);
+    /// What the Liberation preset needs before its rules are added — see
+    /// `RulesController::RigSetup`.
+    void applyRig(const RulesController::RigSetup& setup);
     void setTargetEnabled(int index, bool on);
     /// Whether OSC row `index` is sent takt4's own messages — `output::OutputTarget::
     /// sendsNamespace`, off until asked for. Off, only the rules aimed at it are.

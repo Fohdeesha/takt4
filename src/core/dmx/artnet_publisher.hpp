@@ -77,8 +77,26 @@ public:
     /// output edit reset every clock and sequence number, so a dragged slider on another row
     /// sent frames faster than the 44 Hz a node takes. Returns, for each config whose sender
     /// could not be made, its bit and why.
+    ///
+    /// **A node that goes — switched off, deleted, or pointed somewhere else — is sent every
+    /// universe all zeros before it is let go**: its lights dark and its laser zones disarmed (the
+    /// operator, 2026-10-06: *"unchecking the liberation artnet output in the main window doesnt
+    /// disarm them"*, and then *"untickng artnet should black out lights / send zeroed"*). A node
+    /// holds the last frame it was sent, and Liberation did — that frame armed the zone, so the
+    /// beam stayed up with nothing driving it. The zeros go at the 44 Hz pace for
+    /// `kFarewellSeconds`, so one lost datagram costs nothing, and then nothing: what a universe
+    /// that has left the patch is sent (`DmxEngine::released`), for the same reason, so that
+    /// whatever takes the node over next is not fought for it. A node brought back at the same
+    /// address within that time takes its sender back and is fed as before, rather than being
+    /// fought by its own farewell.
     std::vector<std::pair<std::size_t, std::string>>
     setTargets(const std::vector<TargetConfig>& configs);
+
+    /// How long a node that has gone is sent its zeros: a released universe's time. See
+    /// `setTargets`.
+    static constexpr double kFarewellSeconds = DmxEngine::kReleasedSeconds;
+    /// Nodes still being sent their farewell.
+    std::size_t leaving() const noexcept { return leaving_.size(); }
 
     /// Lets every node find its address and open its socket — see `ArtNetSender::ready`.
     void refresh() noexcept;
@@ -185,6 +203,16 @@ private:
     static const Paced* findPaced(const Target& target, PortAddress universe) noexcept;
 
     std::vector<Target> targets_;
+    /// A node that has gone, and until when it is sent its farewell — negative until the first
+    /// `publish` after it went, which is the first moment this object knows the time.
+    struct Leaving {
+        Target target;
+        double until = -1.0;
+    };
+    std::vector<Leaving> leaving_;
+    /// Sends one farewell frame of `universe` — all zeros — to `target`, now. False when the
+    /// patch has no such universe, patched or released.
+    bool sendFarewell(const DmxEngine& engine, Target& target, PortAddress universe, double now);
     std::vector<History> history_;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;

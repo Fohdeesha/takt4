@@ -83,6 +83,8 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_beat_in_bar(static_cast<int>(state.beatInBar));
     window.set_bars(static_cast<int>(state.bars));
     window.set_beat_divisor(static_cast<int>(state.beatDivisor));
+    window.set_octave_shift(static_cast<int>(state.octaveShift));
+    window.set_beats_bpm(static_cast<float>(state.beatsBpm));
 }
 
 void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options) {

@@ -811,6 +811,11 @@ TEST_CASE("the slot layout is the order a fire records its slots in, for every k
             if (layout[i].role == takt4::trigger::SlotRole::Color) {
                 generator.fixed = Value::ofText(colorText);
                 expected.push_back(Value::ofText(colorRecorded));
+            } else if (layout[i].role == takt4::trigger::SlotRole::Clip) {
+                // A clip is held by its place in deck order and recorded as Liberation names it.
+                const int number = 11 + static_cast<int>(i) * 7;
+                generator.fixed = Value::ofInt(number);
+                expected.push_back(Value::ofText(takt4::dmx::liberation::formatIndex(number)));
             } else {
                 // Distinct, and inside every range a slot clamps to: a percentage, a DMX byte,
                 // a MIDI number or value.
