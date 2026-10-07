@@ -250,11 +250,11 @@ jobs:
           ${{ matrix.cli }} --version
           ${{ matrix.cli }} devices
 
-      # **A release's files**, on a commit a `v*` tag points at, pushed or dispatched — never a
-      # pull request. The tag must be the version in CMakeLists.txt, and both
-      # binaries must say they are exactly that tag: not "-dirty", not a commit after it. The PDBs
-      # go with them because a crash report without them cannot be read (0.9.4-0.9.6 shipped
-      # none). Handed to `publish`, which attaches them once every job here has passed.
+      # **A release's file**, on a commit a `v*` tag points at, pushed or dispatched — never a pull
+      # request. The tag must be the version in CMakeLists.txt, and takt4.exe must say it is exactly
+      # that tag: not "-dirty", not a commit after it. takt4.exe alone: takt4-cli is the development
+      # console, built and tested here but not released. Handed to `publish`, which attaches it
+      # once every job here has passed.
       - name: Release files
         id: release
         if: matrix.preset == 'windows-msvc' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -269,13 +269,9 @@ jobs:
           test "v$version" = "$tag"
           bin=build/windows-msvc/bin/Release
           "$bin/takt4.exe" --version | tee app.txt
-          "$bin/takt4-cli.exe" --version | tee cli.txt
           grep -qx "  commit:        $tag" app.txt
-          grep -qx "  commit:        $tag" cli.txt
           mkdir dist
-          cp "$bin/takt4.exe" "$bin/takt4.pdb" "$bin/takt4-cli.exe" "$bin/takt4-cli.pdb" dist/
-          cp LICENSE dist/
-          if [ -f THIRD-PARTY-NOTICES.txt ]; then cp THIRD-PARTY-NOTICES.txt dist/; fi
+          cp "$bin/takt4.exe" dist/
           ls -l dist
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
