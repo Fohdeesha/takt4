@@ -57,7 +57,8 @@ std::size_t stepsFor(const tracking::BeatDecoder& decoder) noexcept {
 BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::StateSpaceModel& model,
                        Options options)
     : model_(&model), activations_(std::make_unique<model::ActivationEngine>(weights)),
-      decoderKind_(options.decoder), decoder_(makeDecoder(model, options)),
+      decoderKind_(options.decoder), meters_(options.forward.meters),
+      decoder_(makeDecoder(model, options)),
       tempo_(decoder_->secondsPerFrame(), forDecoder(options.tempo, *decoder_)),
       stepsPerActivation_(stepsFor(*decoder_)),
       noSignalRms_(static_cast<float>(std::pow(10.0, options.noSignalBelowDb / 20.0))),

@@ -18,7 +18,9 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <limits>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -747,9 +749,10 @@ void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
     // Nothing half-typed is carried into a set it was not typed for.
     typing_.reset();
     // A whole new set, so the counts and last values start again. A preset may well reuse
-    // the ids of the set it replaces — `add` numbers them "rule1", "rule2" — and a card
-    // inheriting a number from a different rule that happened to share its id is a readout
-    // that is quietly wrong, which is worse than one that reads zero.
+    // the ids of the set it replaces — the same file loaded twice, or two from before ids were
+    // random, when `add` numbered them "rule1", "rule2" — and a card inheriting a number from a
+    // different rule that happened to share its id is a readout that is quietly wrong, which is
+    // worse than one that reads zero.
     firesSeen_.clear();
     slotsSeen_.clear();
     // And the mutes and rates last seen on the running rules, which the loaded set starts without
@@ -858,22 +861,27 @@ void RulesController::pickWith(int index, bool control, bool shift) {
               false);
 }
 
+std::string RulesController::newRuleId(const std::vector<Rule::Config>& rules) {
+    static thread_local std::mt19937_64 random{std::random_device{}()};
+    for (;;) {
+        char text[16] = {};
+        std::snprintf(text, sizeof text, "r-%08x", static_cast<unsigned int>(random()));
+        const std::string id(text);
+        const auto clash = [&id](const Rule::Config& other) { return other.id == id; };
+        if (std::none_of(rules.begin(), rules.end(), clash)) {
+            return id;
+        }
+    }
+}
+
 void RulesController::add() {
     commitTyping();
     Rule::Config rule;
     // A fresh id that is legal as an OSC address segment (§5.7 addresses a rule by it) and
-    // that nothing else has. Numbered rather than named, because a name is the operator's
-    // to write and an id is only ever machine-facing.
-    for (int n = static_cast<int>(rules_.size()) + 1;; ++n) {
-        const std::string candidate = "rule" + std::to_string(n);
-        const auto clash = [&candidate](const Rule::Config& other) {
-            return other.id == candidate;
-        };
-        if (std::none_of(rules_.begin(), rules_.end(), clash)) {
-            rule.id = candidate;
-            break;
-        }
-    }
+    // that nothing else has. **Random, as an output's and a fixture's are**, never a number
+    // counted from the rules there are: delete rule3, add a rule, and the new one was "rule3" —
+    // and a control surface's button aimed at the old one drove the new one.
+    rule.id = newRuleId(rules_);
     // A name, rather than the blank the list showed as "(unnamed)". It is the operator's to
     // change and most of them will, but a list of "(unnamed)" rows is a list that cannot be
     // read, and "Trigger #5" at least says which one this is. Numbered past anything already
@@ -923,9 +931,8 @@ void RulesController::remove() {
         if (at >= rules_.size()) {
             continue;
         }
-        // Forgotten with the rule. `add` recycles ids — delete "rule1" and the next rule
-        // added is called "rule1" again — so a count left behind here would be handed to a
-        // rule that has never fired.
+        // Forgotten with the rule. Its id can come back — a preset holding it, loaded again —
+        // and a count left behind here would be handed to a rule that has never fired there.
         firesSeen_.erase(rules_[at].id);
         slotsSeen_.erase(rules_[at].id);
         rules_.erase(rules_.begin() + static_cast<std::ptrdiff_t>(at));

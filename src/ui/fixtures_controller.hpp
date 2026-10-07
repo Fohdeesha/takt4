@@ -224,6 +224,9 @@ private:
     /// True, having said why in the status line, when PANIC is engaged — IDENTIFY and TEST
     /// send nothing then (the audit's M17).
     bool refusedForPanic();
+    /// Says the fixture is left out of the show, and so that nothing went to it, when it is —
+    /// the answer for IDENTIFY and TEST (`verb`) on one. True when it said so.
+    bool refusedForOff(const dmx::Fixture& fixture, const char* verb);
     void publishAll();
     void publishList();
     void publishSelected();

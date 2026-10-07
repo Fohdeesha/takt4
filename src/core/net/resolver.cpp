@@ -10,8 +10,11 @@
 #include <string_view>
 #include <exception>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace takt4::net {
 namespace {

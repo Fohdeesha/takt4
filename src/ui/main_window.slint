@@ -561,6 +561,8 @@ export component MainWindow inherits Window {
 
   callback osc-control-toggled(bool);
   callback osc-control-port-edited(string);
+  // Each keystroke, held by the window until something finishes the edit — closing it included.
+  callback osc-control-port-typed(string);
   callback osc-control-network-toggled(bool);
 
   /// §5.9's TRIGGERS row. The editor is a window of its own (rules_window.slint), so what
@@ -1678,6 +1680,9 @@ export component MainWindow inherits Window {
                       value: root.osc-control-port;
                       placeholder: "port";
                       font-family: Wf.mono;
+                      typed(text) => {
+                        root.osc-control-port-typed(text);
+                      }
                       committed(text) => {
                         root.osc-control-port-edited(text);
                       }

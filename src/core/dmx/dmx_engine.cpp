@@ -940,9 +940,9 @@ void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fix
 
     preempt(staging_);
     running_.push_back(staging_);
-    // Evaluated once here so that a snap lands on this round rather than the next, and so
-    // that a flash is at full in the same frame the rule fired in. A one-round delay is a
-    // millisecond and would not be visible; landing a *frame* late would be 23 ms and is.
+    // Evaluated once here, so the levels are this moment's at once: a snap is in the next frame
+    // made and a flash is at full in it, rather than waiting for the next round to evaluate it.
+    // A round is a millisecond; a frame missed for want of it is 23 ms.
     evaluate(running_.back(), now);
     composeVirtuals();
 }

@@ -1100,7 +1100,7 @@ void FixturesController::setTiltRange(float low, float high) {
 
 void FixturesController::identify() {
     const dmx::Fixture* const fixture = current();
-    if (fixture == nullptr || refusedForPanic()) {
+    if (fixture == nullptr || refusedForPanic() || refusedForOff(*fixture, "identify")) {
         return;
     }
     if (static_cast<std::size_t>(selected_) >= dmx::kMaxRoutableFixtures) {
@@ -1148,6 +1148,19 @@ void FixturesController::identify() {
     setStatus("Identifying " + fixture->name + "…", false);
 }
 
+bool FixturesController::refusedForOff(const dmx::Fixture& fixture, const char* verb) {
+    // A fixture left out of the show is sent nothing — its universe let go of, when it was the
+    // last on it — and IDENTIFY and TEST said they were lighting it all the same.
+    if (fixture.enabled) {
+        return false;
+    }
+    setStatus((fixture.name.empty() ? std::string("This fixture") : fixture.name) +
+                  " is left out of the show, so nothing goes to it: tick \"in the show\" to " +
+                  verb + " it.",
+              true);
+    return true;
+}
+
 bool FixturesController::refusedForPanic() {
     // The runner drops a hand-fired effect while PANIC is engaged (the audit's M17); this is
     // the window saying so, rather than a button that did nothing.
@@ -1166,7 +1179,8 @@ void FixturesController::setTestLevel(int level) {
 void FixturesController::testChannel(int index) {
     const dmx::Fixture* const fixture = current();
     if (fixture == nullptr || index < 0 ||
-        static_cast<std::size_t>(index) >= fixture->channels.size() || refusedForPanic()) {
+        static_cast<std::size_t>(index) >= fixture->channels.size() || refusedForPanic() ||
+        refusedForOff(*fixture, "test")) {
         return;
     }
     // The real DMX number, which is the fixture's start address plus the offset — the number

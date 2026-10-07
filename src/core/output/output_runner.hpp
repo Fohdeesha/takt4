@@ -555,8 +555,8 @@ public:
     }
 
     /// How long `postAndWait` waits. A round is a millisecond; this is long enough for a busy
-    /// one and short enough that a window never visibly stalls on a change — a hostname being
-    /// resolved on the output thread can take the resolver's whole timeout.
+    /// one and short enough that a window never visibly stalls on a change. A host name is
+    /// looked up on a thread of its own (`net::AsyncAddress`) and never holds a round up.
     static constexpr std::chrono::milliseconds kWaitForApply{250};
 
     /// §5.7's `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.

@@ -289,7 +289,9 @@ public:
     void removeTarget(int index);
     /// What the Liberation preset needs before its rules are added — see
     /// `RulesController::RigSetup`.
-    void applyRig(const RulesController::RigSetup& setup);
+    /// Empty when done; otherwise what adding would cost, for the prompt, and nothing done — see
+    /// `RulesController::RigNeeded`.
+    std::string applyRig(const RulesController::RigSetup& setup);
     void setTargetEnabled(int index, bool on);
     /// Whether OSC row `index` is sent takt4's own messages — `output::OutputTarget::
     /// sendsNamespace`, off until asked for. Off, only the rules aimed at it are.
@@ -483,7 +485,10 @@ private:
     /// what was learned on it, OSC control, and how the three windows were folded — through the
     /// same calls the window's own controls make. An input other than the one listening to stops
     /// it, switches and starts it again on the new one.
-    void applyMachine(const settings::MachineSettings& machine);
+    /// Returns what it did to the input, said as a sentence for the import's line — another one
+    /// listened to now, or one not on this machine and so nothing listened to — or nothing when
+    /// the input was left alone.
+    std::string applyMachine(const settings::MachineSettings& machine);
     /// Reads the tracker's device list into `devices_` and the picker's model, selecting
     /// nothing.
     void listDevices();
@@ -536,7 +541,9 @@ private:
     /// heading — and a stage that threw on the status line, when what it said is new.
     void publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble);
     void publishStopped();
-    void publishOpenStream();
+    /// What is being listened to, on the status line — or `said` in its place, when it is not
+    /// empty: what the import that asked for this START said (`importFrom`).
+    void publishOpenStream(const std::string& said);
     /// The latency figures of the input that is open — what the status line's second line says
     /// after START, a restart and an outage's end alike — or empty with none open.
     std::string latencyLine() const;
@@ -869,6 +876,11 @@ private:
     /// the value `currentSettings` writes back — kept here rather than read from the
     /// decoder because the decoder interface does not expose its bars.
     std::array<std::uint8_t, 4> meters_{4, 0, 0, 0};
+    /// What an import said, for the START it asked for to say again in place of its own line —
+    /// see `toggleRun`.
+    std::string importSaid_;
+    /// The OSC control port's box, as typed and not yet committed — see `applyDrafts`.
+    std::optional<std::string> oscPortTyped_;
 
     /// The tracker's beat count when a downbeat snap was posted, while one is still in
     /// flight. §5.5's snap lands on the *next* beat called, so the count moving is what

@@ -640,7 +640,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_forget_clicked([this] { forgetLearned(); });
 
     window_->on_osc_control_toggled([this](bool on) { setOscControlEnabled(on); });
+    window_->on_osc_control_port_typed(
+        [this](const slint::SharedString& text) { oscPortTyped_ = std::string(text); });
     window_->on_osc_control_port_edited([this](const slint::SharedString& text) {
+        oscPortTyped_.reset();
         setOscControlPort(readPort(std::string(text)));
     });
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
@@ -674,7 +677,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     });
     // The Liberation preset's zones, its Art-Net output and Link, which are this window's and the
     // patch editor's to hold — asked for by the rule editor before it adds the rules.
-    editor_.setRigNeeded([this](const RulesController::RigSetup& setup) { applyRig(setup); });
+    editor_.setRigNeeded(
+        [this](const RulesController::RigSetup& setup) { return applyRig(setup); });
     // The library an import adds to, or a re-import replaces, comes back the same way.
     patch_.setLibraryChanged(
         [this](const std::vector<fixtures::FixtureProfile>& library) { library_ = library; });
@@ -792,6 +796,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // a relaunch finding the interface busy (the audit's H14). And the About box, which is a
     // window of its own as well and was left out (the audit of 2026-09-25, M16).
     window_->window().on_close_requested([this] {
+        // What is being typed is finished first, as a click anywhere else finishes it: the
+        // settings are saved once the loop has returned, and a name or a port typed and closed on
+        // was not in them.
+        applyDrafts();
         editor_.hide();
         patch_.hide();
         if (about_) {
@@ -1019,7 +1027,8 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     }
 }
 
-void WindowController::applyMachine(const settings::MachineSettings& machine) {
+std::string WindowController::applyMachine(const settings::MachineSettings& machine) {
+    std::string said;
     // **The input**, found by name as a launch finds it — and left alone when it is the one in
     // use, so importing this rig's own file interrupts nothing. Another one, while listening, is
     // listened to instead: stopped, switched, started again on it, as STOP, a pick and START would.
@@ -1041,8 +1050,20 @@ void WindowController::applyMachine(const settings::MachineSettings& machine) {
         remembered_.mono = machine.mono;
         deviceChosen_ = false;
         refreshDevices(machine);
-        if (listening && !deviceFallback_) {
+        // **And said**: an import that took the show off its input and put it on another — or on
+        // none, the input not being on this machine — said only how many rules it brought.
+        // Started again only on an input there is: with none at all — the list empty, the file
+        // naming none — it says so rather than that it is listening to nothing.
+        const bool picked = device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size();
+        if (listening && !deviceFallback_ && picked) {
             requestToggleRun();
+            said = "Now listening to " + devices_[static_cast<std::size_t>(device_)].name +
+                   ", as the file has it.";
+        } else if (listening && deviceFallback_) {
+            said = "Stopped listening: " + machine.deviceName +
+                   " is not on this machine, so pick an input and press START.";
+        } else if (listening) {
+            said = "Stopped listening: there is no input. Connect an interface and press RESCAN.";
         }
     }
 
@@ -1082,6 +1103,7 @@ void WindowController::applyMachine(const settings::MachineSettings& machine) {
     editor_.applyLayout(machine);
     patch_.applyLayout(machine);
     publishControl();
+    return said;
 }
 
 void WindowController::publishPortLists() {
@@ -1326,6 +1348,9 @@ void WindowController::requestToggleRun() {
 }
 
 void WindowController::toggleRun() {
+    // What an import said, for the START it asked for and no other: one that fails says why
+    // instead, and the next one says what it opened. See `importFrom`.
+    const std::string importSaid = std::exchange(importSaid_, std::string{});
     // By what was asked for, not by whether a stream is open: during an outage the tracker is
     // stopped between attempts to reopen it, and STOP has to mean stop — not "start".
     if (wantRunning_ || tracker_.running()) {
@@ -1393,7 +1418,7 @@ void WindowController::toggleRun() {
     input_ = tracker_.current();
     watchOpenedInput();
     window_->set_running(true);
-    publishOpenStream();
+    publishOpenStream(importSaid);
 }
 
 void WindowController::watchOpenedInput() {
@@ -1951,7 +1976,13 @@ void WindowController::addTarget() {
     applyTargets();
 }
 
-void WindowController::applyRig(const RulesController::RigSetup& setup) {
+std::string WindowController::applyRig(const RulesController::RigSetup& setup) {
+    // **A fixture import half done in the patch editor is dropped by a new patch** — said first,
+    // and ADD pressed again goes on. It went without a word.
+    if (patch_.importing() && !setup.goAhead) {
+        return "Adding drops the fixture import half done in the patch editor. Finish it there "
+               "first, or add again to drop it.";
+    }
     // The patch, as an import lays one: the runner, the patch editor and the rule editor.
     fixtures_ = setup.patch;
     runner_.post(output::OutputCommand::patch(fixtures_));
@@ -1992,6 +2023,7 @@ void WindowController::applyRig(const RulesController::RigSetup& setup) {
         targetDrafts_.push_back(row);
     }
     applyTargets();
+    return {};
 }
 
 void WindowController::removeTarget(int index) {
@@ -2043,6 +2075,13 @@ void WindowController::applyDrafts() {
     if (draftsPending_) {
         applyTargets();
     }
+    // The OSC control port's box, which commits only when finished with — a socket reopened on
+    // every digit would be no use — and so was not finished by anything but itself.
+    if (oscPortTyped_) {
+        const std::string typed = std::move(*oscPortTyped_);
+        oscPortTyped_.reset();
+        setOscControlPort(readPort(typed));
+    }
 }
 
 void WindowController::setTargetDelay(int index, float ms) {
@@ -2063,7 +2102,12 @@ void WindowController::setTargetDelay(int index, float ms) {
     // A row that is not an output yet — still being typed — has nothing to move, and goes the
     // long way when it becomes one.
     const std::string id(draft.id);
-    if (!id.empty() && output::findTarget(runner_.snapshot().outputs, id) != nullptr) {
+    // **Only with nothing else waiting.** A name, a host or a port typed and not yet committed
+    // went into the rows with the delay (`publishTargetRows`), so the box's own commit, a turn
+    // later, found nothing changed — and what was typed was never applied. With such a draft
+    // waiting, the whole list goes, this delay with it; the drag after it is the fast path again.
+    if (!draftsPending_ && !id.empty() &&
+        output::findTarget(runner_.snapshot().outputs, id) != nullptr) {
         runner_.post(output::OutputCommand::outputDelay(id, static_cast<double>(clamped) / 1000.0));
         publishTargetRows();
         publishOutputs();
@@ -3173,6 +3217,12 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         restart += restart.empty() ? "the OSC prefix " + loaded.preset.oscPrefix
                                    : " and the OSC prefix " + loaded.preset.oscPrefix;
     }
+    // **And the meters**, which the tracker is built with as it is with the decoder: kept for the
+    // next launch, and — like the decoder — said. They were kept and not said, so the bars went
+    // on being counted in the old meters with nothing to say why.
+    if (meters_ != tracker_.engine().meters()) {
+        restart += restart.empty() ? "the meters" : " and the meters";
+    }
 
     // The rows the operator edits, not just the transports: these are the window's copy from
     // construction onwards (see the constructor), so an import that changed only the
@@ -3193,19 +3243,23 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // "should carry/restore EVERYTHING"). It used to be left alone by design — Q7 kept the input
     // and the learned controls out of anything that travels — so a rig restored from its own
     // export came back without its input, its pads, its OSC control or its layout.
-    if (loaded.machine.inFile) {
-        applyMachine(loaded.machine);
-    }
+    const std::string input = loaded.machine.inFile ? applyMachine(loaded.machine) : std::string{};
 
-    setStatus(
-        "Imported " + io::pathText(path.filename()) + ": " +
-            std::to_string(loaded.preset.rules.size()) + " rules, " +
-            std::to_string(loaded.preset.outputs.size()) + " outputs, " +
-            std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
-            (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
-            (restart.empty() ? std::string{}
-                             : " Restart takt4 for " + restart + " to take effect."),
-        false);
+    // **What it did to the input first**, when it did anything: the status shows two lines and
+    // keeps the first, and an import that took the show off its input is the part that must not
+    // be cut off the end. It used to say only how many rules it brought.
+    const std::string summary =
+        (input.empty() ? std::string{} : input + " ") + "Imported " +
+        io::pathText(path.filename()) + ": " + std::to_string(loaded.preset.rules.size()) +
+        " rules, " + std::to_string(loaded.preset.outputs.size()) + " outputs, " +
+        std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
+        (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
+        (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.");
+    // The START it asked for says this again once the input is open, in place of its own line
+    // (`toggleRun`); an import that stopped listening says it as the trouble it is.
+    const bool restarting = !input.empty() && runPending_;
+    setStatus(summary, !input.empty() && !restarting);
+    importSaid_ = restarting ? summary : std::string{};
     return true;
 }
 
@@ -3445,9 +3499,15 @@ std::string WindowController::latencyLine() const {
            " ms input + " + fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing";
 }
 
-void WindowController::publishOpenStream() {
+void WindowController::publishOpenStream(const std::string& said) {
     const audio::InputStream* stream = tracker_.stream();
     if (stream == nullptr || !tracker_.current()) {
+        return;
+    }
+    // An import that moved the show to this input said so, and that is what stays said: see
+    // `importFrom`. It fills the two lines itself, so the latency figures wait for the next START.
+    if (!said.empty()) {
+        setStatus(said, false);
         return;
     }
     const engine::LiveTracker::Running& running = *tracker_.current();
