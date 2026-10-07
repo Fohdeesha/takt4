@@ -15,6 +15,19 @@
 
 namespace takt4::audio {
 
+/// When a buffer arrived, for stamping what it carries with when it was heard
+/// (`HopProcessor::beginBuffer`): the moment, in nanoseconds on `std::chrono::steady_clock`, and
+/// how long before it the buffer's first sample was at the input — the input latency the driver
+/// reports. A zero moment is not known — a test feeding audio faster than it plays, or a file —
+/// and nothing is said about the buffer. `InputPipeline::Arrival`.
+///
+/// Out here rather than inside `InputPipeline`, because it is a default argument there: GCC will
+/// not use a nested class's member initialisers before the class around it is complete.
+struct BufferArrival {
+    std::int64_t steadyNanos = 0;
+    double inputLatencySeconds = 0.0;
+};
+
 /// The audio-thread half of HANDOFF §4.1's input stage, with no PortAudio in it so it
 /// can be driven from a test: interleaved device block → ChannelPicker → mono →
 /// Resampler → 22050 Hz → HopAccumulator → HopProcessor, one hop at a time.
@@ -32,15 +45,8 @@ public:
     InputPipeline(const InputPipeline&) = delete;
     InputPipeline& operator=(const InputPipeline&) = delete;
 
-    /// When a buffer arrived, for stamping what it carries with when it was heard
-    /// (`HopProcessor::beginBuffer`): the moment, in nanoseconds on `std::chrono::steady_clock`,
-    /// and how long before it the buffer's first sample was at the input — the input latency the
-    /// driver reports. A zero moment is not known — a test feeding audio faster than it plays,
-    /// or a file — and nothing is said about the buffer.
-    struct Arrival {
-        std::int64_t steadyNanos = 0;
-        double inputLatencySeconds = 0.0;
-    };
+    /// See `BufferArrival`.
+    using Arrival = BufferArrival;
 
     /// Real-time. `interleaved` holds `frames` frames of picker().streamChannelCount()
     /// channels at the input rate, which arrived as `arrival` says.
