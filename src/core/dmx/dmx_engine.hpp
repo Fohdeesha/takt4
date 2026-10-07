@@ -296,6 +296,9 @@ private:
     void writeTrack(const Track& track, double unit) noexcept;
     /// Writes every virtual fixture whose state moved to its channels, as color × intensity.
     void composeVirtuals() noexcept;
+    /// Marks the virtual fixture whose colour `channel` of `buffer` carries, if there is one, to be
+    /// written again by `composeVirtuals`.
+    void rewriteVirtualOn(std::uint32_t buffer, std::uint16_t channel) noexcept;
     /// A virtual fixture's state, read from its channels as they stand — for a new patch.
     Virtual virtualFromLevels(const Fixture& fixture) const;
     /// Drops the channels `running` is about to drive from every effect already driving them.

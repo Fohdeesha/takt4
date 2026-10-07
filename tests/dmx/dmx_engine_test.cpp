@@ -933,3 +933,28 @@ TEST_CASE("PANIC and Stop let a channel test go, back to the level it found", "[
         CHECK(at(engine, 0, 7) == 0);
     }
 }
+
+TEST_CASE("a channel test that ends on a par a colour rule moved leaves the rule's colour",
+          "[dmx]") {
+    // A par with no dimmer is written from its colour and an intensity of its own. A channel
+    // TEST holds one channel and puts back what it had when it was taken — and a colour a rule
+    // set on the par meanwhile was overwritten with it: left the wrong colour until the next rule.
+    takt4::dmx::DmxEngine engine;
+    engine.setPatch({takt4::dmx::fixtureFromMode("par", 1, 0, 1)}); // RGB at 1-3, no dimmer
+    takt4::dmx::Payload red;
+    red.kind = takt4::dmx::EffectKind::Color;
+    red.color = takt4::dmx::Color{255, 0, 0};
+    engine.start(0b1, red, 0.0);
+    engine.tick(0.1);
+    REQUIRE(engine.levels(0)[0] == 255);
+    engine.holdChannel(0, 1, 40, 0.5, 1.0); // red held at 40 for half a second
+    engine.tick(1.1);
+    REQUIRE(engine.levels(0)[0] == 40);
+    takt4::dmx::Payload blue = red;
+    blue.color = takt4::dmx::Color{0, 0, 255};
+    engine.start(0b1, blue, 1.2);
+    engine.tick(1.2);
+    engine.tick(1.6); // the test has let go
+    CHECK(engine.levels(0)[0] == 0);
+    CHECK(engine.levels(0)[2] == 255);
+}

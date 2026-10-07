@@ -49,9 +49,13 @@ struct OscSender::Impl {
     }
 };
 
-OscSender::OscSender(std::string_view host, std::uint16_t port) : host_(host), port_(port) {
+OscSender::OscSender(std::string_view host, std::uint16_t port)
+    : OscSender(host, port, net::AsyncAddress::kRefreshSeconds) {}
+
+OscSender::OscSender(std::string_view host, std::uint16_t port, double refreshSeconds)
+    : host_(host), port_(port) {
     auto impl = std::make_unique<Impl>();
-    impl->where.emplace(std::string(host), port);
+    impl->where.emplace(std::string(host), port, refreshSeconds);
     impl_ = impl.release();
     // A literal address has its socket now, as it always did — and a literal that cannot get
     // one is the one failure worth throwing for, since no amount of waiting will fix it.
@@ -91,6 +95,41 @@ bool OscSender::ready() noexcept {
         return true;
     } catch (...) {
         return false; // an allocation on the way to a look-up; the next send tries again
+    }
+}
+
+void OscSender::refresh() noexcept {
+    if (impl_ == nullptr) {
+        return;
+    }
+    if (impl_->socket == kInvalidSocket) {
+        (void)ready();
+        return;
+    }
+    try {
+        const std::optional<net::AsyncAddress::Address> known = impl_->where->address();
+        if (!known) {
+            return;
+        }
+        const auto length = static_cast<socklen_t>(known->length);
+        if (length == impl_->addressLength &&
+            std::memcmp(&impl_->address, known->storage, static_cast<std::size_t>(length)) == 0) {
+            return;
+        }
+        if (known->family != impl_->address.ss_family) {
+            // Another family wants another socket: this one is let go of, and `ready` opens the
+            // right kind for the new address.
+            closeSocket(impl_->socket);
+            impl_->socket = kInvalidSocket;
+            (void)ready();
+            return;
+        }
+        std::memcpy(&impl_->address, known->storage, static_cast<std::size_t>(length));
+        impl_->addressLength = length;
+        resolved_ = describe(reinterpret_cast<const sockaddr*>(&impl_->address),
+                             impl_->addressLength);
+    } catch (...) {
+        // An allocation on the way to the answer; the next look tries again.
     }
 }
 

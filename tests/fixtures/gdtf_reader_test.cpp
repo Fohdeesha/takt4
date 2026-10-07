@@ -686,3 +686,25 @@ TEST_CASE("hostile GDTF XML is read or refused without crashing", "[fixtures][gd
         CHECK(result.definition->modes[0].parts.at(0).at(0).label.size() <= 80);
     }
 }
+
+TEST_CASE("a GDTF mode that places more channels than any fixture has is refused before they are built",
+          "[fixtures][gdtf]") {
+    // Every channel is placed once per reference to its part, and a small file can hold a great
+    // many references: the 512 check came after every one was built, hundreds of megabytes from
+    // a 250 KB file. Placement stops at what two start addresses could ever hold.
+    std::string references;
+    for (int i = 0; i < 3000; ++i) {
+        references += R"(<GeometryReference Name="P)" + std::to_string(i) +
+                      R"(" Geometry="Pixel"><Break DMXBreak="1" DMXOffset="1"/></GeometryReference>)";
+    }
+    const std::string geometries = R"(<Geometry Name="Bar">)" + references +
+                                   R"(</Geometry><Geometry Name="Pixel"><Beam Name="B"/></Geometry>)";
+    const std::string channels = gdtfChannel("Pixel", "1", "ColorAdd_R") +
+                                 gdtfChannel("Pixel", "2", "ColorAdd_G") +
+                                 gdtfChannel("Pixel", "3", "ColorAdd_B");
+    const DefMode& mode =
+        onlyMode(readGdtf(gdtfDocument(geometries, gdtfMode("Pixels", "Bar", channels))));
+    INFO(mode.refusal);
+    CHECK_THAT(mode.refusal, ContainsSubstring("more channels than any fixture has"));
+    CHECK(mode.parts.empty());
+}

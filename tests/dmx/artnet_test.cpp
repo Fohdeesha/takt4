@@ -3,6 +3,7 @@
 #include "core/dmx/artnet_sender.hpp"
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/net/resolver.hpp"
 
 #include "support/artnet_nodes.hpp"
 #include "support/loopback_receiver.hpp"
@@ -252,6 +253,32 @@ TEST_CASE("an Art-Net sender puts a real datagram on the loopback", "[dmx][artne
         REQUIRE(sender.sendDmx(4, levels));
         CHECK(static_cast<std::uint8_t>(receiver.receive()[12]) == 2);
     }
+}
+
+TEST_CASE("a node aimed at a name follows the name to a new address", "[dmx][artnet][net]") {
+    // As an OSC output: the name is looked up again, and the node is sent to where it now is
+    // rather than where it was when the socket opened.
+    LoopbackReceiver before(0x7F000001u, 0);
+    LoopbackReceiver after(0x7F000002u, before.port());
+    takt4::net::AsyncAddress::answerForTests("node.test", "127.0.0.1");
+    ArtNetSender sender("node.test", before.port(), 0.05);
+    const std::array<std::uint8_t, 512> levels{};
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!sender.ready() && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(sender.sendDmx(0, levels));
+    CHECK_FALSE(before.receive().empty());
+
+    takt4::net::AsyncAddress::answerForTests("node.test", "127.0.0.2");
+    bool arrived = false;
+    const auto by = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!arrived && std::chrono::steady_clock::now() < by) {
+        sender.refresh();
+        (void)sender.sendDmx(0, levels);
+        arrived = after.ready(20);
+    }
+    CHECK(arrived);
 }
 
 TEST_CASE("an Art-Net node that cannot be resolved is reported, not swallowed", "[dmx][artnet]") {
@@ -794,4 +821,88 @@ TEST_CASE("a delay raised while the lighting runs never shows a node a flash twi
     CHECK(nodes.first(0, 255, 1.0) < 1.000 + kArtNetFrame);
     CHECK(nodes.first(1, 255, 1.0) >= 1.400);
     CHECK(nodes.first(1, 255, 1.0) < 1.400 + kArtNetFrame);
+}
+
+TEST_CASE("a frame a node failed to take is sent again at the next frame, not the keep-alive",
+          "[dmx][artnet]") {
+    // A failed send was recorded as the frame sent, so a static look a node missed waited 0.9 s
+    // for the keep-alive. 0.0.0.1 is an address every system refuses to send to.
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    ArtNetPublisher::TargetConfig config;
+    config.host = "0.0.0.1";
+    config.port = 6454;
+    publisher.addTarget(config);
+    paint(engine, 255, 0.0);
+    for (int ms = 0; ms < 1000; ++ms) {
+        (void)publisher.publish(engine, ms / 1000.0);
+    }
+    INFO(publisher.failed() << " attempts failed in a second");
+    CHECK(publisher.sent() == 0);
+    // At the 44 Hz pace, every frame period: 44 a second, give or take one.
+    CHECK(publisher.failed() >= 40);
+    CHECK(publisher.failed() <= 45);
+}
+
+TEST_CASE("a node taken back during its farewell is sent the lighting at the next frame",
+          "[dmx][artnet]") {
+    // Its farewell sends it zeros, and what it showed last was not the lighting — but its pacing
+    // remembered the lighting as sent, and it waited up to 0.9 s dark for the keep-alive.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(1);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    ArtNetPublisher::TargetConfig node;
+    node.host = "127.0.0.1";
+    node.port = nodes.port(0);
+    node.id = "o-a0";
+    REQUIRE(publisher.setTargets({node}).empty());
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+    paint(engine, 255, 0.0);
+    nodes.run(round, 0, 100);
+    REQUIRE(nodes.first(0, 255) >= 0.0);
+    REQUIRE(publisher.setTargets({}).empty()); // switched off: its farewell begins
+    nodes.run(round, 100, 200);
+    REQUIRE(nodes.first(0, 0, 0.1) >= 0.1); // dark
+    REQUIRE(publisher.setTargets({node}).empty()); // and back on, within the farewell
+    nodes.run(round, 200, 1200);
+    CHECK(nodes.first(0, 255, 0.2) >= 0.2);
+    CHECK(nodes.first(0, 255, 0.2) < 0.2 + 2.0 * kArtNetFrame);
+}
+
+TEST_CASE("a farewell stops when a new node is given its address", "[dmx][artnet]") {
+    // A node switched off is sent zeros for a moment; and an output added in its place — a new
+    // one, with an id of its own, at the same address — was fought by those zeros, the lighting
+    // and the dark in turn, until the farewell ran out.
+    takt4::testing::ArtNetNodes nodes(1);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    ArtNetPublisher::TargetConfig old;
+    old.host = "127.0.0.1";
+    old.port = nodes.port(0);
+    old.id = "o-old";
+    REQUIRE(publisher.setTargets({old}).empty());
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+    paint(engine, 255, 0.0);
+    nodes.run(round, 0, 100);
+    REQUIRE(publisher.setTargets({}).empty());
+    nodes.run(round, 100, 150);
+    REQUIRE(publisher.leaving() == 1);
+    ArtNetPublisher::TargetConfig replacement = old;
+    replacement.id = "o-new";
+    REQUIRE(publisher.setTargets({replacement}).empty());
+    CHECK(publisher.leaving() == 0);
+    nodes.run(round, 150, 700);
+    // From the first frame after the new one was given the address, only the lighting.
+    const double lit = nodes.first(0, 255, 0.15);
+    REQUIRE(lit >= 0.15);
+    for (const auto& heard : nodes.heard(0)) {
+        if (heard.at > lit) {
+            INFO("sent at " << heard.at);
+            CHECK(heard.channel1 == 255);
+        }
+    }
 }

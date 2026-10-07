@@ -236,6 +236,9 @@ private:
     std::vector<History> history_;
     /// Whether a cue is seen by a node `lag` behind within the period from `now`.
     bool cueSoon(PortAddress universe, double lag, double now) const noexcept;
+    /// A revision no frame has: what a node's pacing is left holding when what it last showed
+    /// was not the lighting — so the lighting goes at the next frame.
+    static constexpr std::uint64_t kNeverSent = ~std::uint64_t{0};
     /// See `setUpcomingCues` and `cueStarted`; the cues started are kept as long as a lag can be.
     std::vector<std::pair<PortAddress, double>> upcoming_;
     std::vector<std::pair<PortAddress, double>> started_;

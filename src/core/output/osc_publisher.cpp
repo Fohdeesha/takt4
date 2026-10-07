@@ -63,11 +63,10 @@ OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
 
 void OscPublisher::addTarget(std::string_view host, std::uint16_t port, std::size_t bit,
                              double delaySeconds) {
-    // Past the mask's width a target cannot be named individually, so it is given every bit
-    // instead: it then receives from rules that go everywhere, which is the default, and
-    // nothing that was routed away from it. Losing routing is better than losing the feed.
-    const std::uint64_t selector =
-        bit < kMaxRoutableTargets ? (std::uint64_t{1} << bit) : kAllOutputs;
+    // Past the mask's width a target cannot be named individually, so it has no bit at all: it
+    // receives what goes everywhere, which is the default, and nothing routed — see `reaches`.
+    // It used to be given every bit, so a rule routed to any output reached it too.
+    const std::uint64_t selector = bit < kMaxRoutableTargets ? (std::uint64_t{1} << bit) : 0;
     const double delay =
         std::clamp(delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
     targets_.push_back(Target{std::make_unique<OscSender>(host, port), selector, delay, bit, {}});
@@ -91,7 +90,9 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
             }
         }
         Target target;
-        target.bit = spec.bit < kMaxRoutableTargets ? (std::uint64_t{1} << spec.bit) : kAllOutputs;
+        // Past the 64th, no bit of its own: it is reached by what goes everywhere and nothing
+        // else (`reaches`). It had every bit, so every rule routed anywhere reached it.
+        target.bit = spec.bit < kMaxRoutableTargets ? (std::uint64_t{1} << spec.bit) : 0;
         target.output = spec.bit;
         target.id = spec.id;
         target.delaySeconds =
@@ -161,7 +162,7 @@ void OscPublisher::setDelay(std::size_t bit, double delaySeconds) noexcept {
 
 void OscPublisher::refresh() noexcept {
     for (Target& target : targets_) {
-        (void)target.sender->ready();
+        target.sender->refresh();
     }
 }
 
@@ -312,9 +313,19 @@ void OscPublisher::sendAddressTo(std::uint64_t outputs, std::string_view address
     sendPacket(message, outputs, moment.value_or(now_), false);
 }
 
+namespace {
+
+/// Whether a message for `outputs` goes to a target holding `bit`: everything that goes
+/// everywhere does, and otherwise what is routed to its bit. A target past the 64th has none.
+bool reaches(std::uint64_t bit, std::uint64_t outputs) noexcept {
+    return outputs == kAllOutputs || (bit & outputs) != 0;
+}
+
+} // namespace
+
 bool OscPublisher::anyTargetIn(std::uint64_t outputs) const noexcept {
     for (const Target& target : targets_) {
-        if ((target.bit & outputs) != 0) {
+        if (reaches(target.bit, outputs)) {
             return true;
         }
     }
@@ -325,7 +336,7 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double
     const auto packet = message.packet();
     for (std::size_t i = 0; i < targets_.size(); ++i) {
         const Target& target = targets_[i];
-        if ((target.bit & outputs) == 0) {
+        if (!reaches(target.bit, outputs)) {
             continue; // routed away from this one
         }
         if (own && !target.sendsNamespace) {

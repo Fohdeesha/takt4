@@ -65,8 +65,9 @@ public:
     /// `bit` is which bit of a rule's `Message::outputs` mask selects this one — the index
     /// of the target in `Transports`' own list, so that a rig with an OSC target, a MIDI
     /// target and another OSC target routes to bits 0 and 2 here rather than 0 and 1.
-    /// Anything past `kMaxRoutableTargets` is given `kAllOutputs`, so it still receives
-    /// everything a rule sends everywhere.
+    /// Anything past `kMaxRoutableTargets` has no bit of its own: it receives everything a rule
+    /// sends everywhere, and nothing routed (it used to be given every bit, and so every rule
+    /// routed anywhere).
     /// `delaySeconds` offsets everything bound for this target — later when positive, earlier
     /// when negative, measured from the moment a message is about. See
     /// `OutputTarget::delaySeconds`.

@@ -355,6 +355,17 @@ private:
         bool fromReference = false;
     };
 
+    /// More channels placed than any fixture can have: two start addresses of 512 channels, of
+    /// up to 8 bytes each. **Checked as they are placed**, because a file small enough to read can
+    /// place a great many — every channel once per reference to its part — and the 512 check
+    /// came after all of them were built: hundreds of megabytes from a 250 KB file.
+    static constexpr std::size_t kMaxInstances = 2 * 512 * 8;
+
+    static std::string tooManyChannels() {
+        return "the file places more channels than any fixture has (over " +
+               std::to_string(kMaxInstances) + ") — it may be damaged";
+    }
+
     /// Every channel of the mode placed at its addresses — or why one cannot be.
     std::string place() {
         const std::string_view geometryName = valueOf(mode_, "Geometry");
@@ -412,6 +423,9 @@ private:
             const std::string geometry(valueOf(channel, "Geometry"));
 
             if (!overwrite && tree.names.contains(geometry)) {
+                if (instances_.size() >= kMaxInstances) {
+                    return tooManyChannels();
+                }
                 instances_.push_back(Instance{channel, breakNumber, offsets, {}, geometry, false});
                 continue;
             }
@@ -485,6 +499,9 @@ private:
                                   geometry, true};
                 for (std::int64_t& address : instance.addresses) {
                     address += shift;
+                }
+                if (instances_.size() >= kMaxInstances) {
+                    return tooManyChannels();
                 }
                 instances_.push_back(std::move(instance));
             }
