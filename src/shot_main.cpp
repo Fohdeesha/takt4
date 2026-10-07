@@ -40,7 +40,7 @@ void printUsage(std::ostream& out) {
            "                  backbeat, log, fit, folded, b-on, b-off, none, no-lights, and\n"
            "                  the Liberation prompt: liberation, liberation-4,\n"
            "                  liberation-clash; with --fixtures: par, none, message; and\n"
-           "                  for the main window: halved, apart\n"
+           "                  for the main window: halved, apart, frozen\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
            "  --widgets       draw one of each of the main window's controls, in each state\n"

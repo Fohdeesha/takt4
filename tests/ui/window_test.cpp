@@ -357,6 +357,10 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     CHECK(window->get_beat_in_bar() == 2);
     CHECK(window->get_bars() == 17);
     CHECK_FALSE(window->get_no_signal());
+    CHECK_FALSE(window->get_acquired());
+    state.acquired = true;
+    takt4::ui::publishTempoState(*window, state);
+    CHECK(window->get_acquired());
 
     // A deck that stopped: the lock readout says "no signal" over the tempo it holds.
     state.noSignal = true;
@@ -371,9 +375,46 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     CHECK_FALSE(window->get_no_signal());
     CHECK_FALSE(window->get_locked());
     CHECK_FALSE(window->get_pinned()); // and the LOCK button is not still lit
+    CHECK_FALSE(window->get_acquired());
     CHECK(window->get_beats_per_bar() == 0);
     CHECK(window->get_input_level() == 0.0f);
     CHECK(std::string(window->get_input_reading()).empty());
+}
+
+TEST_CASE("the beats' own rate is said whenever the outputs are live, locked or not",
+          "[ui][relock]") {
+    // The re-lock trap as the operator met it (2026-10-07): a lock lost mid-track leaves the
+    // number where the lock left it — 188 — while the dots and every output go at the record's
+    // 94. The line that says so ("beats going out at ...") was drawn only while locked, so in
+    // exactly that state nothing on screen said why. Rendered, and the line's amber looked for
+    // where it is drawn: under the number, in the tempo sheet's left half.
+    auto window = MainWindow::create();
+    window->set_running(true);
+    window->set_locked(false);
+    window->set_bpm(187.7f);
+    window->set_beats_bpm(93.8f);
+    const auto amberUnderNumber = [&](bool acquired) {
+        window->set_acquired(acquired);
+        const takt4::tests::Shot shot = takt4::tests::render(*window, 900, 1300);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        const int top = sheets[1].first; // the tempo sheet
+        std::size_t amber = 0;
+        for (int y = top + 64; y < top + 96 && y < shot.height; ++y) {
+            for (int x = 15; x < shot.width / 2; ++x) {
+                const slint::Rgb8Pixel p = shot.at(x, y);
+                // Wf.holding, #ffb541, as text renders it: the glyphs' cores and their edges.
+                if (p.r > 200 && p.g > 120 && p.g < 210 && p.b < 110) {
+                    ++amber;
+                }
+            }
+        }
+        return amber;
+    };
+    CHECK(amberUnderNumber(true) > 40);
+    // And not before the outputs are live: before the first lock nothing is going out, and the
+    // number is the hunt's.
+    CHECK(amberUnderNumber(false) == 0);
 }
 
 TEST_CASE("the build's version is on screen and stays there", "[ui]") {

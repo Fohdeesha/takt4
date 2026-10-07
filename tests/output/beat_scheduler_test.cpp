@@ -411,3 +411,20 @@ TEST_CASE("a tracker that starts again starts the counts again", "[output][sched
     REQUIRE(first.has_value());
     CHECK(first->beats == 1);
 }
+
+TEST_CASE("the beats are predicted at the rate they go out at when the number is left behind",
+          "[output][scheduler][relock]") {
+    // A lock on its way out — or a number left where a lost lock put it — at 176 over a record
+    // at 130: four to three, which no octave of the number reaches. The tracker's own rate for
+    // the beats (`TempoState::gridBpm`) is what the next beat is predicted from.
+    EngineBeat left = beat(1, 176.0);
+    left.state.calledBpm = 130.0;
+    left.state.gridBpm = 130.0;
+    CHECK(takt4::output::beatSeconds(left.state, 176.0) == Approx(60.0 / 130.0));
+
+    BeatScheduler scheduler;
+    (void)scheduler.heard(left, 1.0, 1.06, 0.35);
+    const auto next = scheduler.due(2.0, 0.0, 10.0);
+    REQUIRE(next.has_value());
+    CHECK(next->moment == Approx(1.0 + 60.0 / 130.0));
+}

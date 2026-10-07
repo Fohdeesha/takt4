@@ -1728,3 +1728,160 @@ TEST_CASE("a bar the tracker counts differently is taken up after a bar of it, a
         CHECK_THAT(link.phaseAtBeat(8), WithinAbs(0.0, 1e-6));
     }
 }
+
+namespace {
+
+/// What a receiver of the MIDI clock heard over beats at `music` BPM published with `bpm` on screen,
+/// `gridBpm` going out and the operator's `clockOctaves`, locked throughout.
+struct Received {
+    std::size_t ticksPerBeat = 0; ///< ticks between the 16th and the 40th beat, per beat
+    std::size_t restarts = 0;     ///< Stops sent before the end — each a receiver stopped mid-song
+    std::vector<double> barStarts; ///< every 96th tick from the first after Start
+    std::vector<double> beats;
+};
+
+Received receive(double music, double bpm, double gridBpm, std::int32_t clockOctaves) {
+    auto wire = std::make_shared<TimedWire>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<TimedPort>(wire));
+    };
+    Transports transports(config);
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    Received out;
+    for (std::size_t k = 0; k < 48; ++k) {
+        out.beats.push_back(0.2 + static_cast<double>(k) * 60.0 / music);
+    }
+    const TempoState state;
+    std::size_t next = 0;
+    for (double now = 0.0; now < out.beats.back() + 0.5; now += 0.001) {
+        wire->now = now;
+        while (next < out.beats.size() && out.beats[next] + 0.050 <= now) {
+            BeatEvent event = beatAt(out.beats[next], static_cast<std::uint32_t>(next % 4) + 1, bpm);
+            event.gridBpm = gridBpm;
+            event.clockOctaves = clockOctaves;
+            transports.publish(event, 0, out.beats[next]);
+            ++next;
+        }
+        transports.advance(now, state);
+    }
+    std::size_t start = wire->messages.size();
+    std::size_t ticks = 0;
+    for (std::size_t i = 0; i < wire->messages.size(); ++i) {
+        const unsigned char status = wire->messages[i].bytes[0];
+        const double at = wire->messages[i].at;
+        if (status == takt4::output::MidiClock::kStart && start == wire->messages.size()) {
+            start = i;
+        }
+        if (status == takt4::output::MidiClock::kStop) {
+            ++out.restarts;
+        }
+        if (status == takt4::output::MidiClock::kTick && at >= out.beats[16] && at < out.beats[40]) {
+            ++ticks;
+        }
+    }
+    out.ticksPerBeat = (ticks + 12) / 24;
+    std::size_t n = 0;
+    for (std::size_t i = start + 1; i < wire->messages.size(); ++i) {
+        if (wire->messages[i].bytes[0] == takt4::output::MidiClock::kTick) {
+            if (n % 96 == 0) {
+                out.barStarts.push_back(wire->messages[i].at);
+            }
+            ++n;
+        }
+    }
+    transports.stopOutputs();
+    return out;
+}
+
+/// The music's beat nearest `t`.
+std::size_t nearestBeat(const std::vector<double>& beats, double t) {
+    std::size_t nearest = 0;
+    for (std::size_t k = 1; k < beats.size(); ++k) {
+        if (std::abs(beats[k] - t) < std::abs(beats[nearest] - t)) {
+            nearest = k;
+        }
+    }
+    return nearest;
+}
+
+} // namespace
+
+TEST_CASE("the MIDI clock runs at the beats going out, not at a number left behind",
+          "[output][midi][relock]") {
+    // The re-lock trap's clock half (2026-10-07): a lock on its way out — or a number left where
+    // a lost lock put it — at 188 over a record whose beats go out at 94. The clock ticked at
+    // 188: a receiver at twice the music, and Stop, Song Position 0 and Start about every bar,
+    // since its quarter notes and the tracker's beats then disagreed two to one.
+    const Received heard = receive(94.0, 188.0, 94.0, 0);
+    CHECK(heard.ticksPerBeat == 24);
+    CHECK(heard.restarts == 0);
+    REQUIRE(heard.barStarts.size() >= 6);
+    for (std::size_t b = 0; b + 1 < heard.barStarts.size(); ++b) {
+        INFO("the receiver's bar " << b + 1);
+        CHECK(nearestBeat(heard.beats, heard.barStarts[b]) % 4 == 0);
+    }
+}
+
+TEST_CASE("a times-two runs the MIDI clock at twice the beats, its bars on the music",
+          "[output][midi][relock]") {
+    // ×2 doubles the number and cannot double the beats, and it is pressed so what follows the
+    // tempo — a drum machine on the clock — runs at the doubled one (`TempoState::clockOctaves`).
+    // Its receiver counts two quarter notes to each beat going out, so its bar is two of them:
+    // every one of its bars starts on a beat of the music, every other one on a downbeat, and it
+    // is never stopped and started again for disagreeing with the tracker's count.
+    const Received heard = receive(94.0, 188.0, 94.0, 1);
+    CHECK(heard.ticksPerBeat == 48);
+    CHECK(heard.restarts == 0);
+    REQUIRE(heard.barStarts.size() >= 12);
+    CHECK(nearestBeat(heard.beats, heard.barStarts.front()) % 4 == 0);
+    for (std::size_t b = 0; b + 1 < heard.barStarts.size(); ++b) {
+        INFO("the receiver's bar " << b + 1);
+        CHECK(nearestBeat(heard.beats, heard.barStarts[b]) % 2 == 0);
+        // On the beat, once the clock has pulled in on the beats: locked from the first beat
+        // here, so Start can come before it has.
+        if (b >= 2) {
+            CHECK(std::abs(heard.beats[nearestBeat(heard.beats, heard.barStarts[b])] -
+                           heard.barStarts[b]) < 0.015);
+        }
+    }
+}
+
+TEST_CASE("a times-two puts Link at twice the beats, the tracker's downbeat on a bar",
+          "[output][link][network][relock]") {
+    // The same for Link: the session's tempo twice the beats going out, and its phase two of its
+    // beats on for each of them, so the tracker's downbeat starts a bar of Link's and the beat
+    // after it is Link's beat 3 — rather than a whole beat apart, three beats in four.
+    Transports transports(Transports::Config{});
+    transports.setLinkEnabled(true);
+    transports.startOutputs(0.0);
+    const auto paced = [&transports](const BeatEvent& event, std::int64_t at, double beatTime) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        transports.publish(event, at, beatTime);
+    };
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    const std::int64_t origin = transports.link().now().count();
+    constexpr double kMusic = 120.0;
+    const auto micros = [origin](std::size_t beat) {
+        return origin + static_cast<std::int64_t>(static_cast<double>(beat) * 60.0e6 / kMusic);
+    };
+    for (std::size_t k = 0; k < 8; ++k) {
+        BeatEvent event = beatAt(0.5 * static_cast<double>(k), static_cast<std::uint32_t>(k % 4) + 1,
+                                 2.0 * kMusic);
+        event.gridBpm = kMusic;
+        event.clockOctaves = 1;
+        paced(event, micros(k), 0.5 * static_cast<double>(k));
+        INFO("beat " << k);
+        // Within the most a phase nudge moves it (`kLinkMaxNudge`, two per cent).
+        CHECK_THAT(transports.link().tempoBpm(), WithinAbs(2.0 * kMusic, 2.0 * kMusic * 0.021));
+        const double phase =
+            transports.link().phaseAtTime(std::chrono::microseconds{micros(k)}, 4.0);
+        const double expected = static_cast<double>((k % 4) * 2 % 4);
+        double apart = phase - expected;
+        apart -= 4.0 * std::floor(apart / 4.0 + 0.5);
+        CHECK(std::abs(apart) < 0.05);
+    }
+    transports.stopOutputs();
+}

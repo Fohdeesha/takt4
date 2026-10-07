@@ -486,8 +486,7 @@ bool TriggerEngine::test(std::string_view id, const Context& context) {
         release.payload.kind = dmx::EffectKind::Clip;
         release.payload.clip = 0;
     }
-    const double beat = context.bpm > 0.0 ? 60.0 / context.bpm : 0.0;
-    const double hold = std::max(kTestHoldSeconds, beat);
+    const double hold = std::max(kTestHoldSeconds, secondsPerBeat(context));
     const double moment = context.moment.value_or(context.now);
     release.moment = moment + hold;
     Pending waiting;

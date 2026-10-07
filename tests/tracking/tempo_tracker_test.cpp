@@ -2076,3 +2076,248 @@ TEST_CASE("a doubling left in force reads double over dots at the right tempo, a
     CHECK(tracker.state().octaveShift == 0);
     CHECK(tracker.state().bpm == Approx(bpmOf(25)).margin(0.5));
 }
+
+namespace {
+
+/// A decoder feed that can change tempo between calls: the cloud's interval, the beats' spacing
+/// and where the next beat falls carry over, so a record can settle at another tempo mid-feed.
+struct Feed {
+    std::uint64_t index = 0;
+    std::uint64_t nextBeat = 0;
+    std::uint64_t calls = 0;
+    std::uint64_t sinceBeat = 0;
+    std::optional<BeatEvent> last; ///< the last beat published
+};
+
+/// `frames` frames of a decoder whose cloud reads `cloud` frames and whose beats are `beat` frames
+/// apart, every fourth a downbeat — and, when `dip` is set, whose interval reads `dip` on each
+/// beat's frame and the `dipFrames - 1` after it: **the decoder's tempo dipping as each beat
+/// arrives**, which the forward filter does on every record (2026-10-07: SNACK 65 → 60-63 frames
+/// at 100 Hz, Poor Boy 49 → 44-46). No beats at all for `beat` zero. Returns how many beats were
+/// published.
+std::size_t feedBeats(TempoTracker& tracker, Feed& feed, std::uint32_t cloud, std::uint32_t beat,
+                      std::size_t frames, std::uint32_t dip = 0, std::uint32_t dipFrames = 0,
+                      double agreement = 0.9) {
+    std::size_t published = 0;
+    for (std::size_t f = 0; f < frames; ++f) {
+        TrackedFrame frame = frameAt(feed.index, cloud, agreement, 4);
+        if (beat != 0 && feed.index >= feed.nextBeat) {
+            frame.emitted = feed.calls % 4 == 0 ? TrackedFrame::Emitted::Downbeat
+                                                : TrackedFrame::Emitted::Beat;
+            frame.beatActivation = 0.7f;
+            ++feed.calls;
+            feed.nextBeat = feed.index + beat;
+            feed.sinceBeat = 0;
+        }
+        if (dip != 0 && feed.sinceBeat < dipFrames) {
+            frame.intervalFrames = dip;
+            frame.refinedIntervalFrames = static_cast<double>(dip);
+            frame.bpm = bpmOf(dip);
+        }
+        ++feed.sinceBeat;
+        ++feed.index;
+        if (const std::optional<BeatEvent> event = tracker.process(frame)) {
+            feed.last = event;
+            ++published;
+        }
+    }
+    return published;
+}
+
+} // namespace
+
+TEST_CASE("a wrong lock lost is taken back on the beats, despite a dip on every beat",
+          "[tracking][tempo][relock]") {
+    // The re-lock trap, found on the operator's 109-g playlist on 2026-10-07: "THE SNACK THAT
+    // SMILES BACK" locked at 188 in a double-time passage, settled at 94, lost the lock — and the
+    // number stayed at 188 for two minutes while every beat went out at 94. The real tempo could
+    // never take the lock back: replacing a lock that has held for half a minute asks for a run
+    // of agreement as long as `relockAfter`, and the decoder's tempo dips past the lock's band as
+    // each beat arrives, which breaks the run on every beat.
+    TempoTracker::Options options; // the strict lock as it ships
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    // Half a minute at double time, 187.5: a lock that has earned the full price.
+    (void)feedBeats(tracker, feed, 16, 16, 1500);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(16)).margin(1.0));
+
+    // The record settles at 93.75, half of it, the decoder's tempo dipping to 29 frames — ten
+    // per cent, past the six-per-cent band — for two frames as each beat arrives.
+    std::optional<std::size_t> relocked;
+    for (std::size_t f = 0; f < 1500; ++f) {
+        (void)feedBeats(tracker, feed, 32, 32, 1, 29, 2);
+        if (!relocked && tracker.state().locked &&
+            std::abs(tracker.state().bpm - bpmOf(32)) < 2.0) {
+            relocked = f;
+        }
+    }
+    REQUIRE(relocked.has_value());
+    // Eight steady gaps after the change, as soon as the old lock has let go: about nine beats.
+    CHECK(*relocked < 32 * 12);
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().acquired);
+    CHECK(tracker.state().bpm == Approx(bpmOf(32)).margin(1.5));
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(32)).margin(1.0));
+    // And what goes out with the beats says so.
+    REQUIRE(feed.last.has_value());
+    CHECK(feed.last->bpm == Approx(bpmOf(32)).margin(1.5));
+    CHECK(feed.last->gridBpm == Approx(bpmOf(32)).margin(1.5));
+}
+
+TEST_CASE("after an unlock the beats' rate goes out, whatever the number says",
+          "[tracking][tempo][relock]") {
+    // The other shape of the trap: Poor Boy, Goldene Kugel and Nullspace lock their openings at
+    // 172-177 over records at 130 — four to three, which no octave of the number reaches — and
+    // then the same dip keeps the lock from moving. Whatever the number does, the rate the clocks
+    // and a rule's lengths are counted in (`gridBpm`) is the beats'.
+    const bool relock = GENERATE(true, false);
+    INFO("relockOnBeats " << relock);
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    options.relockOnBeats = relock;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    (void)feedBeats(tracker, feed, 18, 18, 1500); // 166.7, locked for half a minute
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().gridBpm == Approx(tracker.state().bpm).margin(0.01));
+
+    // The record at 125, its tempo dipping to 22 frames (136.4, nine per cent) on each beat.
+    (void)feedBeats(tracker, feed, 24, 24, 1500, 22, 2);
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(24)).margin(1.0));
+    CHECK(tracker.state().gridBpm == Approx(bpmOf(24)).margin(1.0));
+    REQUIRE(feed.last.has_value());
+    CHECK(feed.last->gridBpm == Approx(bpmOf(24)).margin(1.0));
+    if (relock) {
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(24)).margin(1.5));
+    } else {
+        // Without the re-lock, the trap itself: the number left where the old lock put it —
+        // refined a little by the beats on the way out, and nowhere near the record's 125.
+        CHECK_FALSE(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(18)).margin(3.0));
+    }
+}
+
+TEST_CASE("the beats' evidence never takes a first lock", "[tracking][tempo][relock]") {
+    // The operator's strict-lock ruling of 2026-10-03: tolerating the dip on a *first* lock made a
+    // drum machine lock sooner and locked wrong tempi half as often again. The beats' evidence is
+    // for replacing a lock, and only that. Here a run of agreement can never reach `lockAfter`
+    // (beats twenty frames apart, the dip on two of them), so nothing locks, however steady the
+    // beats are.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    (void)feedBeats(tracker, feed, 20, 20, 3000, 17, 2);
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(20)).margin(1.0));
+    CHECK_FALSE(tracker.state().locked);
+    CHECK_FALSE(tracker.state().acquired);
+}
+
+TEST_CASE("a lock move keeps the octave the beats are on, and drops one they have left",
+          "[tracking][tempo][relock][octave]") {
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    // Moonlake: the cloud at 15 frames (200), the beats called 30 apart (100).
+    (void)feedBeats(tracker, feed, 15, 30, 1500);
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+
+    // While locked in the second record, whether the number ever read `wrong`.
+    const auto readsWhileLocked = [&](std::uint32_t cloud, std::uint32_t beat, double wrong) {
+        bool read = false;
+        for (std::size_t f = 0; f < 1500; ++f) {
+            (void)feedBeats(tracker, feed, cloud, beat, 1);
+            if (tracker.state().locked && std::abs(tracker.state().bpm - wrong) < 3.0) {
+                read = true;
+            }
+        }
+        return read;
+    };
+
+    SECTION("a record whose beats are still an octave from its cloud keeps the octave") {
+        // The cloud at 18 (166.7), the beats 36 apart (83.3): the lock moves to 83.3, and must
+        // not spend a moment at 166.7 — what clearing the octave on every lock move would do.
+        CHECK_FALSE(readsWhileLocked(18, 36, bpmOf(18)));
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(36)).margin(1.0));
+    }
+    SECTION("a record whose beats are on its own cloud drops it") {
+        // The cloud at 23 (130.4), the beats on it: the octave learnt on Moonlake is stale, and a
+        // lock taken with it would read 65.2 over beats at 130.4 until eight beats unlearnt it.
+        CHECK_FALSE(readsWhileLocked(23, 23, bpmOf(46)));
+        CHECK(tracker.state().locked);
+        CHECK(tracker.state().bpm == Approx(bpmOf(23)).margin(1.0));
+    }
+}
+
+TEST_CASE("after no signal the beats' octave is kept only where the beats still show it",
+          "[tracking][tempo][relock][octave]") {
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    (void)feedBeats(tracker, feed, 15, 30, 1500); // Moonlake, locked at 100
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+    tracker.setNoSignal(true);
+    (void)feedBeats(tracker, feed, 15, 0, 200, 0, 0, 0.0); // four seconds of nothing
+    tracker.setNoSignal(false);
+
+    // The first lock after the silence, and the number it reads.
+    const auto firstLock = [&](std::uint32_t cloud, std::uint32_t beat) -> std::optional<double> {
+        for (std::size_t f = 0; f < 1500; ++f) {
+            (void)feedBeats(tracker, feed, cloud, beat, 1);
+            if (tracker.state().locked) {
+                return tracker.state().bpm;
+            }
+        }
+        return std::nullopt;
+    };
+
+    SECTION("the same record coming back is read where its beats are") {
+        // Clearing the octave at the silence read it at 200 for eight beats after every one.
+        const std::optional<double> first = firstLock(15, 30);
+        REQUIRE(first.has_value());
+        CHECK(*first == Approx(bpmOf(30)).margin(1.0));
+    }
+    SECTION("a record at twice the tempo, its beats on its cloud, is read at its own") {
+        // Held at 100, and the stale octave halves this record's 200 to exactly that — so the
+        // lock is no move at all, and only the silence can say the octave is unconfirmed.
+        const std::optional<double> first = firstLock(15, 15);
+        REQUIRE(first.has_value());
+        CHECK(*first == Approx(bpmOf(15)).margin(1.0));
+    }
+}
+
+TEST_CASE("a double-time passage is not followed the moment the lock lets go",
+          "[tracking][tempo][relock]") {
+    // Most of the wrong locks a looser re-lock took (measured 2026-10-07 on references/audio)
+    // were the decoder going to double time for a passage: its beats were steady there before
+    // the old lock had let go, so a lock taken the moment it did followed the excursion — and
+    // Link and the MIDI clock with it — where the number held from the record's own lock was
+    // right all along. The beats' evidence waits `kRelockWaitSeconds` after the unlock.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    (void)feedBeats(tracker, feed, 30, 30, 1500); // 100, locked for half a minute
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+
+    // Four seconds at double time, the decoder's tempo dipping on every beat as it does, then
+    // the record's own tempo again.
+    bool followed = false;
+    for (std::size_t f = 0; f < 200; ++f) {
+        (void)feedBeats(tracker, feed, 15, 15, 1, 13, 2);
+        followed = followed || (tracker.state().locked && tracker.state().bpm > 150.0);
+    }
+    CHECK_FALSE(followed);
+    (void)feedBeats(tracker, feed, 30, 30, 500);
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(30)).margin(1.5));
+}
