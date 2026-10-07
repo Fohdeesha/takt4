@@ -212,14 +212,16 @@ void ensureOutputIds(std::vector<OutputTarget>& targets) {
     }
 }
 
-void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets) {
+void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets,
+                const std::vector<bool>* named) {
     for (std::string& entry : routing) {
         if (findTarget(targets, entry) != nullptr) {
             continue;
         }
-        for (const OutputTarget& target : targets) {
-            if (!target.id.empty() && target.name == entry) {
-                entry = target.id;
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            const bool nameable = named == nullptr || (i < named->size() && (*named)[i]);
+            if (nameable && !targets[i].id.empty() && targets[i].name == entry) {
+                entry = targets[i].id;
                 break;
             }
         }

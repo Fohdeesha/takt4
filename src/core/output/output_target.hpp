@@ -183,7 +183,12 @@ void ensureOutputIds(std::vector<OutputTarget>& targets);
 /// Re-points routing written by name at the ids of the targets with those names: what every
 /// settings file written before targets had ids holds, and what a hand-written preset may. An
 /// entry that is already an id is left alone, and one that names nothing is kept as it is.
-void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets);
+///
+/// `named`, when given, is which targets may be found by name — the ones the file gave no id;
+/// see `dmx::aimByIds`. A name left in a rule's routing, for an output since deleted, found the
+/// next output given that name after a restart.
+void routeByIds(std::vector<std::string>& routing, const std::vector<OutputTarget>& targets,
+                const std::vector<bool>* named = nullptr);
 
 /// Unnamed OSC targets as `OutputTarget`s, each named after its own address.
 ///

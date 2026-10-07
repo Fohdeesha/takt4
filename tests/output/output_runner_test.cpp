@@ -829,6 +829,47 @@ TEST_CASE("starting the tracker again does not fire the onset rules", "[output][
     CHECK(runner.triggers().rule(0).fires() == fired);
 }
 
+TEST_CASE("an onset heard before the first lock fires nothing", "[output][trigger]") {
+    // Beats and declared bars waited for a lock; an onset rule fired from the first hit heard,
+    // on whatever was playing while the tracker hunted. Every trigger the music fires waits for
+    // the lock now (`trigger::Context::acquired`), and fires from it.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    Rule::Config rule;
+    rule.id = "hits";
+    rule.trigger = takt4::trigger::Trigger::Onset;
+    rule.address = "/hits";
+    runner.post(OutputCommand::rules({rule}));
+    runner.start();
+
+    const std::vector<float>& samples = excerpt();
+    const std::size_t hops = samples.size() / kHopSize;
+    std::uint64_t onsetsUnlocked = 0;
+    std::uint64_t firesUnlocked = 0;
+    std::size_t hop = 0;
+    for (; hop < hops; ++hop) {
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+        (void)engine->step();
+        waitForRounds(runner, 2); // the runner has read this hop's onsets
+        if (engine->state().acquired) {
+            break;
+        }
+        onsetsUnlocked = engine->intensity().onsets;
+        firesUnlocked = firesOf(runner);
+    }
+    REQUIRE(engine->state().acquired);
+    REQUIRE(onsetsUnlocked > 0);
+    CHECK(firesUnlocked == 0);
+
+    for (++hop; hop < hops; ++hop) {
+        engine->processHop(samples.data() + hop * kHopSize, hop);
+        (void)engine->step();
+    }
+    waitForRounds(runner, 3);
+    CHECK(firesOf(runner) > 0);
+    runner.stop();
+}
+
 namespace {
 
 /// A MIDI port that keeps every message it is sent, whole.

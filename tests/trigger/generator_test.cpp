@@ -445,6 +445,80 @@ TEST_CASE("a live generator reads the tracker rather than drawing", "[trigger][g
     }
 }
 
+TEST_CASE("only a shuffle's range is cut to what a bag can hold", "[trigger][generator]") {
+    // The 4096 cap is a bag's — `Shuffle` holds its whole range — and it was applied to every
+    // kind: a pitch bend drawn or stepped over 0 to 16383 never went above 4095, and a ramp was
+    // cut the same way, while the editor showed what had been typed.
+    Generator::Config config;
+    config.low = 0;
+    config.high = 16383;
+    SECTION("random reaches the top of a pitch bend") {
+        config.kind = GeneratorKind::Random;
+        config.noRepeatWithin = 0;
+        Generator generator(config);
+        CHECK(generator.config().high == 16383);
+        const std::vector<std::int32_t> drawn = draw(generator, 4000);
+        CHECK(*std::max_element(drawn.begin(), drawn.end()) > 12000);
+        CHECK(*std::min_element(drawn.begin(), drawn.end()) >= 0);
+        CHECK(*std::max_element(drawn.begin(), drawn.end()) <= 16383);
+    }
+    SECTION("a cycle goes past 4095") {
+        config.kind = GeneratorKind::Cycle;
+        Generator generator(config);
+        const std::vector<std::int32_t> drawn = draw(generator, 5000);
+        CHECK(drawn.back() == 4999);
+    }
+    SECTION("a cycle over the whole of int32 does not overflow") {
+        config.kind = GeneratorKind::Cycle;
+        config.low = -2147483647 - 1;
+        config.high = 2147483647;
+        Generator generator(config);
+        const std::vector<std::int32_t> drawn = draw(generator, 3);
+        CHECK(drawn == std::vector<std::int32_t>{-2147483647 - 1, -2147483647, -2147483646});
+    }
+    SECTION("a shuffle is still a bag of 4096") {
+        config.kind = GeneratorKind::Shuffle;
+        const Generator generator(config);
+        CHECK(generator.config().high == Generator::kMaxRangeSize - 1);
+    }
+}
+
+TEST_CASE("a ramp given from high to low falls", "[trigger][generator]") {
+    // A ramp from 100 down to 0 over four bars was swapped to 0 up to 100, like a backwards
+    // range for a draw — where the order only says which end is which. A ramp has a direction.
+    Generator::Config config;
+    config.kind = GeneratorKind::Ramp;
+    config.low = 3;
+    config.high = 0;
+    config.rampBars = 4;
+    config.rampFloat = false; // a step a bar
+    config.shape = takt4::trigger::RampShape::Saw;
+    Generator generator(config);
+    CHECK(generator.config().low == 3);
+    CHECK(generator.config().high == 0);
+    Context context;
+    context.meter = 4;
+    std::vector<std::int32_t> perBar;
+    for (std::uint64_t bar = 1; bar <= 4; ++bar) {
+        context.bars = bar;
+        context.beatInBar = 1;
+        perBar.push_back(generator.next(context).asInt());
+    }
+    CHECK(perBar == std::vector<std::int32_t>{3, 2, 1, 0});
+
+    SECTION("and as a float, from the one to the other") {
+        config.rampFloat = true;
+        config.low = 100;
+        config.high = 0;
+        Generator sweep(config);
+        context.bars = 3;
+        context.beatInBar = 1;
+        CHECK(sweep.next(context).asFloat() == Approx(50.0f));
+        context.bars = 1;
+        CHECK(sweep.next(context).asFloat() == Approx(100.0f));
+    }
+}
+
 TEST_CASE("a ramp breathes with the bar rather than jumping about", "[trigger][generator]") {
     // The user's ask on 2026-09-06: "algorithmic settings ... based on the bpm of the song
     // and downbeat". A ramp is the one generator whose value is computed from *where in the

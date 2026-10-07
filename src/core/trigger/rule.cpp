@@ -567,9 +567,15 @@ void Rule::carryFrom(const Rule& previous) {
     }
     muted_ = previous.muted_;
     rate_ = previous.rate_;
-    lastBpmSeen_ = previous.lastBpmSeen_;
-    lastLockedSeen_ = previous.lastLockedSeen_;
-    lastIntensitySeen_ = previous.lastIntensitySeen_;
+    // What a change trigger last saw, **only while it is the same trigger**. One switched to a
+    // beat and back watched nothing meanwhile, and the tempo it remembered from before was a
+    // change the moment it came back: it fired on the edit. A fresh memory takes the first look
+    // as where things are.
+    if (config_.trigger == previous.config_.trigger) {
+        lastBpmSeen_ = previous.lastBpmSeen_;
+        lastLockedSeen_ = previous.lastLockedSeen_;
+        lastIntensitySeen_ = previous.lastIntensitySeen_;
+    }
     lastFired_ = previous.lastFired_;
     fires_ = previous.fires_;
     outputMask_ = previous.outputMask_;
@@ -854,6 +860,7 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
         // entry that names a kind changes that one field and keeps the rest, so "note on then
         // CC" still goes to the channel and the outputs the note went to.
         Message follow = fired;
+        follow.gesture = owed.kind.has_value();
         if (owed.kind) {
             follow.kind = *owed.kind;
         } else if (fired.kind == Message::Kind::MidiNote) {

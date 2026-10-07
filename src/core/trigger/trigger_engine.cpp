@@ -70,7 +70,9 @@ void TriggerEngine::releaseRule(std::string_view id, double now) {
     for (std::size_t i = 0; i < pending_.size(); ++i) {
         Pending& waiting = pending_[i];
         if (waiting.ruleId == id && (waiting.press || !isDmx(waiting.message.kind))) {
-            if (!waiting.press) {
+            // A gesture of its own is dropped with the press, not sent early: see
+            // `Message::gesture`.
+            if (!waiting.press && !waiting.message.gesture) {
                 // Now — but about no earlier moment than its press's, which a target's delay may
                 // still be holding back: a note off sent past its own note on is a note stuck on.
                 waiting.message.moment =
@@ -155,13 +157,27 @@ bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noex
                (context.bars - 1) % every == 0;
     case Trigger::Downbeat:
         return context.beatInBar == 1;
-    case Trigger::Euclid:
-        // Counted from the first beat, like `Beat` above and for the same reason — an
-        // operator counting a phrase in starts at one — so the pattern's step 0 is beat 1
-        // and a 3-in-8 lands on beats 1, 4 and 7 of every eight.
-        return context.beats >= 1 &&
-               euclidHit(static_cast<std::uint32_t>((context.beats - 1) % every), config.pulses,
+    case Trigger::Euclid: {
+        // **On the bar's grid**, as `Beat` is: the pattern's step 0 is beat 1 of a bar, so a
+        // 3-in-8 lands on beats 1, 4 and 7 of every two bars of four, whichever beat the tracker
+        // happened to call first. It was counted from the first beat called, so a run that began
+        // on beat 3 played the whole pattern two beats late.
+        std::uint64_t step = 0;
+        if (context.meter > 0 && context.beatInBar >= 1 && context.beatInBar <= context.meter) {
+            const auto meter = static_cast<std::int64_t>(context.meter);
+            const std::int64_t place = (static_cast<std::int64_t>(context.bars) - 1) * meter +
+                                       static_cast<std::int64_t>(context.beatInBar - 1);
+            const auto length = static_cast<std::int64_t>(every);
+            step = static_cast<std::uint64_t>(((place % length) + length) % length);
+        } else if (context.beats >= 1) {
+            // No bar to count in yet: from the first beat, as `Beat` does.
+            step = (context.beats - 1) % every;
+        } else {
+            return false;
+        }
+        return euclidHit(static_cast<std::uint32_t>(step), config.pulses,
                          static_cast<std::uint32_t>(every));
+    }
     default:
         return false;
     }
@@ -330,7 +346,9 @@ void TriggerEngine::flushPending() {
     std::vector<Pending> owed;
     owed.swap(pending_);
     for (const Pending& waiting : owed) {
-        if (!waiting.press) {
+        // The releases, and not a gesture of its own, which is dropped rather than sent early
+        // (`Message::gesture`).
+        if (!waiting.press && !waiting.message.gesture) {
             deliver(waiting.message, waiting.ruleId, true, {});
         }
     }
@@ -354,10 +372,14 @@ void TriggerEngine::flushFollowUpsTo(std::uint64_t outputs) {
             }
         } else if (!isDmx(waiting.message.kind) && (waiting.message.outputs & outputs) != 0) {
             // Split: the leaving outputs' half now, the rest when it is due. One release routed
-            // to two synths is two releases, and only one of the synths is going.
-            Message now = waiting.message;
-            now.outputs &= outputs;
-            deliver(now, waiting.ruleId, true, {});
+            // to two synths is two releases, and only one of the synths is going. A gesture of
+            // its own is not a release, and the leaving outputs' half of it is dropped rather
+            // than sent early (`Message::gesture`).
+            if (!waiting.message.gesture) {
+                Message now = waiting.message;
+                now.outputs &= outputs;
+                deliver(now, waiting.ruleId, true, {});
+            }
             waiting.message.outputs &= ~outputs;
             if (waiting.message.outputs == 0) {
                 continue; // all of it has gone
@@ -406,7 +428,8 @@ void TriggerEngine::advance(const Context& context) {
         // tells a change from a value it has already seen, and one that stopped watching
         // would fire the moment it was switched back on. See Rule::seesChange.
         const bool changed = rule.seesChange(context);
-        if (!changed || panicked_ || !listening_ || !rule.enabled() || !rule.valid()) {
+        if (!changed || panicked_ || !listening_ || !context.acquired || !rule.enabled() ||
+            !rule.valid()) {
             continue;
         }
         if (!rule.conditionsHold(context)) {
@@ -417,7 +440,9 @@ void TriggerEngine::advance(const Context& context) {
 }
 
 void TriggerEngine::onOnset(const Context& context) {
-    if (panicked_ || !listening_) {
+    // Not before a lock: an onset in the hunt is whatever is playing, and nothing else reaches
+    // the rig then (`Context::acquired`).
+    if (panicked_ || !listening_ || !context.acquired) {
         return;
     }
     for (Rule& rule : rules_) {

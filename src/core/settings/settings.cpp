@@ -396,11 +396,28 @@ void migrateTransportOutputs(Settings& settings) {
 }
 
 void assignIds(Preset& preset) {
+    // **Only what was given an id here can be named by a rule.** A file written before ids, and a
+    // line typed by hand, hold none, and their rules name what they point at; a file this build
+    // wrote holds ids everywhere, and its rules point at those. So a name in a rule is looked for
+    // among the entries that had no id — or a duplicated one — until now, and nowhere else: it
+    // used to be looked for on every load, so a fixture renamed to a group's label joined that
+    // group's rules after a restart, and a deleted output's name found the next output called it.
+    const auto givenIds = [](const auto& before, const auto& after) {
+        std::vector<bool> given(after.size(), false);
+        for (std::size_t i = 0; i < after.size(); ++i) {
+            given[i] = i >= before.size() || before[i].id != after[i].id;
+        }
+        return given;
+    };
+    const std::vector<output::OutputTarget> outputsBefore = preset.outputs;
+    const std::vector<dmx::Fixture> fixturesBefore = preset.fixtures;
     output::ensureOutputIds(preset.outputs);
     dmx::ensureFixtureIds(preset.fixtures);
+    const std::vector<bool> newOutputs = givenIds(outputsBefore, preset.outputs);
+    const std::vector<bool> newFixtures = givenIds(fixturesBefore, preset.fixtures);
     for (trigger::Rule::Config& rule : preset.rules) {
-        output::routeByIds(rule.outputs, preset.outputs);
-        dmx::aimByIds(rule.dmx.fixtures, preset.fixtures);
+        output::routeByIds(rule.outputs, preset.outputs, &newOutputs);
+        dmx::aimByIds(rule.dmx.fixtures, preset.fixtures, &newFixtures);
     }
 }
 

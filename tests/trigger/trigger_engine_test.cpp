@@ -449,6 +449,153 @@ TEST_CASE("the triggers that do not wait for a beat fire on a round", "[trigger]
     }
 }
 
+TEST_CASE("nothing fires before a lock but a hand on a button", "[trigger][engine]") {
+    // Before a lock has been earned the tempo is the hunt's, octave flips and all, and an onset
+    // or an intensity is read off whatever is playing. Beats and declared bars already waited
+    // for the lock (the operator, 2026-10-03); an onset, a tempo change and an intensity change
+    // fired from the first frame. A lock change fires on the lock itself, which is when a lock
+    // has been earned; manual and the test button are a hand on a button and go whenever.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    engine.setRules({simple("tempo", Trigger::TempoChange), simple("lock", Trigger::LockChange),
+                     simple("mood", Trigger::IntensityChange), simple("hit", Trigger::Onset),
+                     simple("hand", Trigger::Manual)});
+
+    Context hunting = beatAt(1, 1, 1, 0.0);
+    hunting.locked = false;
+    hunting.acquired = false;
+    engine.advance(hunting);
+    hunting.bpm = 87.0;
+    hunting.intensity = Intensity::Calm;
+    engine.advance(hunting);
+    engine.onOnset(hunting);
+    CHECK(sink.sent.empty());
+    engine.manual(hunting);
+    CHECK(engine.test("tempo", hunting));
+    CHECK(sink.addresses() == std::vector<std::string>{"/fire/hand", "/fire/tempo"});
+
+    // The lock: it fires, and from here everything does.
+    sink.sent.clear();
+    Context locked = hunting;
+    locked.locked = true;
+    locked.acquired = true;
+    engine.advance(locked);
+    CHECK(sink.addresses() == std::vector<std::string>{"/fire/lock"});
+    locked.bpm = 174.0;
+    engine.advance(locked);
+    engine.onOnset(locked);
+    CHECK(sink.addresses() ==
+          std::vector<std::string>{"/fire/lock", "/fire/tempo", "/fire/hit"});
+}
+
+TEST_CASE("a stop lets go of the releases a rule owes and drops its second gestures",
+          "[trigger][engine][release]") {
+    // A follow-up with a kind of its own is a second gesture — a CC a bar after a note — not the
+    // release of the note. PANIC, STOP, a mute and a delete send every release owed at once, so
+    // nothing is left latched, and used to send the gestures with them: the CC a bar early.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("note", Trigger::Beat);
+    config.address.clear();
+    config.sendKind = Message::Kind::MidiNote;
+    config.number = fixedAt(60);
+    config.value = fixedAt(100);
+    config.followUps.push_back(releaseAfterMs(0, 10000));
+    takt4::trigger::FollowUp cc;
+    cc.kind = Message::Kind::MidiCc;
+    cc.number = 7;
+    cc.value = Value::ofInt(64);
+    cc.unit = takt4::trigger::DelayUnit::Milliseconds;
+    cc.delaySeconds = 10.0;
+    config.followUps.push_back(cc);
+    const auto fire = [&](double now) {
+        sink.sent.clear();
+        engine.setRules({config}, true);
+        engine.onBeat(beatAt(1, 1, 1, now));
+        REQUIRE(sink.sent.size() == 1);
+        REQUIRE(engine.pending() == 2);
+        sink.sent.clear();
+    };
+    const auto onlyTheRelease = [&] {
+        REQUIRE(sink.sent.size() == 1);
+        CHECK(sink.sent[0].kind == Message::Kind::MidiNoteOff);
+        CHECK(engine.pending() == 0);
+    };
+    SECTION("PANIC") {
+        fire(0.0);
+        engine.panic(beatAt(1, 1, 1, 0.5));
+        onlyTheRelease();
+    }
+    SECTION("STOP") {
+        fire(0.0);
+        engine.flushFollowUps();
+        onlyTheRelease();
+    }
+    SECTION("a mute or a delete") {
+        fire(0.0);
+        engine.releaseRule("note", 0.5);
+        onlyTheRelease();
+    }
+    SECTION("the output it was going to switched off") {
+        fire(0.0);
+        engine.flushFollowUpsTo(~std::uint64_t{0});
+        onlyTheRelease();
+    }
+}
+
+TEST_CASE("a euclidean pattern counts from beat 1 of the bar, whichever beat came first",
+          "[trigger][engine]") {
+    // Like `Beat`: the pattern's step 0 is the bar's first beat, so a 3-in-8 is beats 1, 4 and 7
+    // of every two bars. Counted from the first beat called, a run the tracker began on beat 3
+    // played the whole pattern two beats late.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config rule = simple("e", Trigger::Euclid, 8);
+    rule.pulses = 3;
+    engine.setRules({rule});
+    // Beats 3 and 4 of bar 1, then two whole bars.
+    std::vector<std::uint32_t> fired; // the beat of the bar, and the bar's place in the two
+    std::uint64_t beats = 0;
+    for (std::uint64_t bar = 1; bar <= 3; ++bar) {
+        for (std::uint32_t inBar = bar == 1 ? 3 : 1; inBar <= 4; ++inBar) {
+            ++beats;
+            const std::size_t before = sink.sent.size();
+            engine.onBeat(beatAt(beats, inBar, bar, 0.5 * static_cast<double>(beats)));
+            if (sink.sent.size() > before) {
+                fired.push_back(static_cast<std::uint32_t>((bar - 1) * 4 + inBar));
+            }
+        }
+    }
+    // Steps 0, 3 and 6 of each eight, counted from beat 1 of bar 1: beats 4 and 7 (beat 1 came
+    // before the run did), then 9 and 12 — beats 1 and 4 of the next eight.
+    CHECK(fired == std::vector<std::uint32_t>{4, 7, 9, 12});
+}
+
+TEST_CASE("a rule switched to another trigger and back does not fire on the edit",
+          "[trigger][engine]") {
+    // A tempo-change rule remembered the tempo it last saw while it was something else, and the
+    // tempo had moved on meanwhile: switched back, it fired at once, on the edit.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config rule = simple("t", Trigger::TempoChange);
+    engine.setRules({rule});
+    Context context = beatAt(1, 1, 1, 0.0);
+    context.bpm = 120.0;
+    engine.advance(context); // remembered
+    rule.trigger = Trigger::Beat;
+    engine.setRules({rule});
+    context.bpm = 140.0;
+    engine.advance(context);
+    rule.trigger = Trigger::TempoChange;
+    engine.setRules({rule});
+    engine.advance(context);
+    CHECK(sink.sent.empty());
+    // And it still sees a change that happens from here.
+    context.bpm = 170.0;
+    engine.advance(context);
+    CHECK(sink.addresses() == std::vector<std::string>{"/fire/t"});
+}
+
 TEST_CASE("a rule disabled while a change happens does not fire when it comes back",
           "[trigger][engine]") {
     // What a rule remembers is how it tells a change from a value it has already seen. One

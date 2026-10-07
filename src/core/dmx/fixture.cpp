@@ -286,7 +286,8 @@ void ensureFixtureIds(std::vector<Fixture>& patch) {
     }
 }
 
-void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch) {
+void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch,
+              const std::vector<bool>* named) {
     std::vector<std::string> out;
     out.reserve(aims.size());
     for (const std::string& aim : aims) {
@@ -295,20 +296,22 @@ void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch)
             continue;
         }
         bool isGroup = false;
-        bool named = false;
-        for (const Fixture& fixture : patch) {
+        bool found = false;
+        for (std::size_t i = 0; i < patch.size(); ++i) {
+            const Fixture& fixture = patch[i];
             isGroup = isGroup || (!fixture.group.empty() && fixture.group == aim);
-            if (!fixture.id.empty() && fixture.name == aim &&
+            const bool nameable = named == nullptr || (i < named->size() && (*named)[i]);
+            if (nameable && !fixture.id.empty() && fixture.name == aim &&
                 std::find(out.begin(), out.end(), fixture.id) == out.end()) {
                 // Every fixture of that name: two called the same were both reached before,
                 // and still are.
                 out.push_back(fixture.id);
-                named = true;
+                found = true;
             }
         }
         // A label is kept as a label, and so is something that matched nothing at all — a
         // name that was a group and a fixture both keeps reaching the group too.
-        if (isGroup || !named) {
+        if (isGroup || !found) {
             out.push_back(aim);
         }
     }
