@@ -748,10 +748,15 @@ void OutputRunner::stop() noexcept {
             // dropped this one and kept the look (the audit of 2026-09-25, L7).
             transports_.dmx().blackout(elapsed());
             forgetZones();
-            if (const double wait = transports_.artnet().secondsUntilPaced(elapsed()); wait > 0.0) {
-                std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+            // **Three times, a frame apart**: UDP keeps no promise, and one dark frame lost on the
+            // way left a node lit after takt4 had gone. 70 ms on the way out.
+            for (int frame = 0; frame < kQuitFrames; ++frame) {
+                if (const double wait = transports_.artnet().secondsUntilPaced(elapsed());
+                    wait > 0.0) {
+                    std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+                }
+                (void)transports_.artnet().flush(transports_.dmx(), elapsed());
             }
-            (void)transports_.artnet().flush(transports_.dmx(), elapsed());
         } catch (const std::exception& e) {
             // Nothing useful to do while shutting down, and letting it out of a noexcept
             // function would call std::terminate.

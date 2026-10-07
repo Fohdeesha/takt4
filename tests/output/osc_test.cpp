@@ -1,3 +1,4 @@
+#include "core/net/resolver.hpp"
 #include "core/net/udp.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_publisher.hpp"
@@ -161,6 +162,37 @@ TEST_CASE("datagrams reach a socket that is really listening", "[output][osc]") 
         CHECK(sender.problem().empty());
         CHECK(sender.ready());
     }
+}
+
+TEST_CASE("an output aimed at a name follows the name to a new address", "[output][osc][net]") {
+    // A name is looked up again every half minute (`net::AsyncAddress`), so a media server that
+    // comes back from a restart on a new DHCP address is found there — but the sender stopped
+    // asking once its socket was open, and went on sending to the old address with no error
+    // until the output was edited. Here the name is the test's own, moved from one loopback
+    // address to another on the same port, and looked up again a twentieth of a second apart.
+    LoopbackReceiver before(0x7F000001u, 0);
+    LoopbackReceiver after(0x7F000002u, before.port());
+    takt4::net::AsyncAddress::answerForTests("media-server.test", "127.0.0.1");
+    OscSender sender("media-server.test", before.port(), 0.05);
+    OscMessage message("/clip");
+    message.addInt(1);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!sender.ready() && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(sender.send(message.packet()));
+    CHECK_FALSE(before.receive().empty());
+
+    takt4::net::AsyncAddress::answerForTests("media-server.test", "127.0.0.2");
+    bool arrived = false;
+    const auto by = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!arrived && std::chrono::steady_clock::now() < by) {
+        sender.refresh();
+        (void)sender.send(message.packet());
+        arrived = after.ready(20);
+    }
+    CHECK(arrived);
+    CHECK(sender.resolved().find("127.0.0.2") != std::string::npos);
 }
 
 TEST_CASE("a sending socket never waits", "[output][osc]") {
@@ -717,4 +749,21 @@ TEST_CASE("the tracker finding the beat again sends a resync", "[output][osc]") 
         publisher.publishState(state);
         CHECK(resyncs(received()) == 0);
     }
+}
+
+TEST_CASE("an OSC target past the 64th is sent what goes everywhere and nothing routed",
+          "[output][osc]") {
+    // A rule's routing is a bit per output, 64 of them. A target past the 64th was given every
+    // bit, so every rule routed to any output reached it too.
+    LoopbackReceiver third;
+    LoopbackReceiver past;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", third.port(), 3, 0.0);
+    publisher.addTarget("127.0.0.1", past.port(), 64, 0.0);
+    publisher.sendAddressTo(std::uint64_t{1} << 3, "/routed", 1);
+    CHECK_FALSE(third.receive().empty());
+    CHECK(past.receive().empty());
+    publisher.sendAddressTo(takt4::output::kAllOutputs, "/everywhere", 1);
+    CHECK_FALSE(third.receive().empty());
+    CHECK_FALSE(past.receive().empty());
 }

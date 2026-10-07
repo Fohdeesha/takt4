@@ -1125,10 +1125,13 @@ void FixturesController::identify() {
     // lit one went out, and an LED par lost its colour (the 2026-09-25 audit's L1).
     //
     // Every emitter rather than the dimmer alone, because plenty of pars have no dimmer at
-    // all: on those, a flash aimed at `Dimmer` reaches nothing and the lamp never lights.
+    // all — **and the dimmer whether the fixture has one or not**: a par without one has its
+    // colour scaled by an intensity of its own (`dmx::DmxEngine`), which a dimmer flash a rule
+    // left at nothing kept dark through the colour flashes. Flashed, it is lit; decayed back,
+    // it is where it was.
     for (const dmx::Role role :
          {dmx::Role::Dimmer, dmx::Role::Red, dmx::Role::Green, dmx::Role::Blue, dmx::Role::White}) {
-        if (!dmx::has(*fixture, role)) {
+        if (role != dmx::Role::Dimmer && !dmx::has(*fixture, role)) {
             continue;
         }
         dmx::Payload payload;

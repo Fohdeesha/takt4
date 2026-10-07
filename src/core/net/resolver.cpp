@@ -54,15 +54,40 @@ bool isLocalhost(const std::string& host) noexcept {
            });
 }
 
+/// `AsyncAddress::answerForTests`'s answers.
+std::mutex& testAnswersMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::vector<std::pair<std::string, std::string>>& testAnswers() {
+    static std::vector<std::pair<std::string, std::string>> answers;
+    return answers;
+}
+
+std::optional<std::string> testAnswer(const std::string& host) {
+    const std::lock_guard<std::mutex> lock(testAnswersMutex());
+    for (const auto& [name, numeric] : testAnswers()) {
+        if (name == host) {
+            return numeric;
+        }
+    }
+    return std::nullopt;
+}
+
 /// One look-up. `numericOnly` asks nobody — `AI_NUMERICHOST` fails at once on a name — which is
 /// what makes the constructor safe to call from the output thread. Zero, or the error.
 int resolve(const std::string& host, std::uint16_t port, bool numericOnly,
             std::optional<AsyncAddress::Address>& out) {
     // In the test binaries, a name goes nowhere: see `sandbox.hpp`. -2 is not one of
     // `getaddrinfo`'s codes, so a status line that shows it is recognisably this.
-    if (!numericOnly && sandbox::active() && !isLocalhost(host)) {
-        sandbox::refuse(sandbox::Refused::Lookup);
-        return -2;
+    if (!numericOnly && sandbox::active()) {
+        if (const std::optional<std::string> answer = testAnswer(host)) {
+            return resolve(*answer, port, true, out);
+        }
+        if (!isLocalhost(host)) {
+            sandbox::refuse(sandbox::Refused::Lookup);
+            return -2;
+        }
     }
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -140,6 +165,17 @@ void AsyncAddress::lookUp() {
         state_->error = -1;
         state_->failedAt = Clock::now();
     }
+}
+
+void AsyncAddress::answerForTests(const std::string& host, const std::string& numeric) {
+    const std::lock_guard<std::mutex> lock(testAnswersMutex());
+    for (auto& [name, answer] : testAnswers()) {
+        if (name == host) {
+            answer = numeric;
+            return;
+        }
+    }
+    testAnswers().emplace_back(host, numeric);
 }
 
 std::optional<AsyncAddress::Address> AsyncAddress::address() {

@@ -2022,6 +2022,48 @@ TEST_CASE("the frame sent on quitting keeps the 44 Hz spacing", "[output][dmx]")
     CHECK(gap >= 0.020); // 1/44 s is 22.7 ms; a little is left for the stamps' own jitter
 }
 
+TEST_CASE("quitting sends the dark frame three times, a frame apart", "[output][dmx]") {
+    // UDP keeps no promise: one dark frame lost on the way out left a node lit after takt4 had
+    // gone.
+    LoopbackReceiver node;
+    const auto origin = std::chrono::steady_clock::now();
+    std::vector<std::pair<double, std::vector<std::uint8_t>>> frames;
+    std::atomic<bool> listening{true};
+    std::thread reader([&] {
+        while (listening.load()) {
+            const std::string datagram = node.receive();
+            if (std::vector<std::uint8_t> levels = artDmxLevels(datagram); !levels.empty()) {
+                frames.emplace_back(
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - origin)
+                        .count(),
+                    std::move(levels));
+            }
+        }
+    });
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, parOnNode(node.port()));
+    runner.start();
+    runner.post(paint(255, 255, 255));
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    runner.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    listening = false;
+    reader.join();
+
+    // The dark frames at the end: three, each a frame period after the one before.
+    std::size_t dark = 0;
+    for (auto frame = frames.rbegin(); frame != frames.rend() && frame->second[0] == 0 &&
+                                       frame->second[1] == 0 && frame->second[2] == 0;
+         ++frame) {
+        ++dark;
+    }
+    INFO(frames.size() << " frames, the last " << dark << " dark");
+    REQUIRE(dark >= 3);
+    for (std::size_t i = frames.size() - dark + 1; i < frames.size(); ++i) {
+        CHECK(frames[i].first - frames[i - 1].first >= 0.020);
+    }
+}
+
 TEST_CASE("quitting sends a release held for a delayed output", "[output][trigger]") {
     // The audit's H6: a release parked for an OSC target's delay went out at the *next* Start,
     // so a Resolume clip stayed latched until then.

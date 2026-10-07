@@ -26,6 +26,9 @@ public:
     /// when a socket cannot be had at all for a literal one; a name that does not resolve is
     /// not an error here but a `problem()`, because nobody can know that yet.
     OscSender(std::string_view host, std::uint16_t port);
+    /// The same, looking a name up again every `refreshSeconds` rather than
+    /// `net::AsyncAddress::kRefreshSeconds` — for a test.
+    OscSender(std::string_view host, std::uint16_t port, double refreshSeconds);
     ~OscSender();
 
     OscSender(const OscSender&) = delete;
@@ -53,6 +56,14 @@ public:
     /// this itself; it is public so that a target nothing is being sent to still finds its
     /// address, and still says when it cannot.
     bool ready() noexcept;
+
+    /// **Asks the address again**, and follows it: a name is looked up again now and then
+    /// (`net::AsyncAddress`), and an answer that moved is where this sends from here on — on a
+    /// new socket when it is another family. `ready` stops asking once a socket is open, so the
+    /// looking-up again did nothing: a media server that came back from a restart on a new DHCP address was
+    /// sent to the old one, with no error, until somebody edited the output. Every few hundred
+    /// milliseconds, from whoever sends (`refresh` on the publisher).
+    void refresh() noexcept;
 
 private:
 

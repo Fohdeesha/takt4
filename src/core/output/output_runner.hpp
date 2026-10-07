@@ -377,6 +377,8 @@ public:
     /// millisecond apart, so reaching this is a control surface flooding the port; the presses it
     /// sends past it are refused and counted, and nothing that changes the rig's set-up is.
     static constexpr std::size_t kMaxPendingCommands = 1024;
+    /// How many dark frames quitting sends each node, a frame period apart.
+    static constexpr int kQuitFrames = 3;
 
     /// Seconds since this runner was **constructed**, on the steady clock the transports are
     /// driven from — and the clock `trigger::Context::now` is, so §5.8's cooldowns and

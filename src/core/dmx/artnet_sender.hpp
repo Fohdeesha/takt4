@@ -45,6 +45,9 @@ public:
     /// `port` is almost always `kArtNetPort`; it is settable because a few software nodes
     /// listen elsewhere and because two nodes behind one NAT have to be told apart somehow.
     ArtNetSender(std::string_view host, std::uint16_t port = kArtNetPort);
+    /// The same, looking a name up again every `refreshSeconds` rather than
+    /// `net::AsyncAddress::kRefreshSeconds` — for a test.
+    ArtNetSender(std::string_view host, std::uint16_t port, double refreshSeconds);
     ~ArtNetSender();
 
     ArtNetSender(const ArtNetSender&) = delete;
@@ -77,6 +80,14 @@ public:
     /// this itself; it is public so that a target nothing is being sent to still finds its
     /// address, and still says when it cannot.
     bool ready() noexcept;
+
+    /// **Asks the address again**, and follows it: a name is looked up again now and then
+    /// (`net::AsyncAddress`), and an answer that moved is where this sends from here on — on a
+    /// new socket when it is another family. `ready` stops asking once a socket is open, so the
+    /// looking-up again did nothing: a node that came back from a restart on a new DHCP address was
+    /// sent to the old one, with no error, until somebody edited the output. Every few hundred
+    /// milliseconds, from whoever sends (`refresh` on the publisher).
+    void refresh() noexcept;
 
 private:
 

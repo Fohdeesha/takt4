@@ -70,44 +70,12 @@ class LoopbackReceiver {
 public:
     /// `allowed` false only for the sandbox's own test: a real socket the sandbox has not been
     /// told about, which nothing in takt4 may send to.
-    explicit LoopbackReceiver(bool allowed = true) {
-#if defined(_WIN32)
-        WSADATA data{};
-        REQUIRE(::WSAStartup(MAKEWORD(2, 2), &data) == 0);
-        started_ = true;
-        socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        REQUIRE(socket_ != INVALID_SOCKET);
-#else
-        socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        REQUIRE(socket_ >= 0);
-#endif
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = 0; // let the OS pick
-        socklen_t length = static_cast<socklen_t>(sizeof address);
-        REQUIRE(::bind(socket_, reinterpret_cast<const sockaddr*>(&address), length) == 0);
-        REQUIRE(::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
-        port_ = ntohs(address.sin_port);
-        // A port the system gave this process, so the sandbox lets takt4 send here — and bind
-        // here, for the tests that free one and ask takt4 to listen on it. See `sandbox.hpp`.
-        if (allowed) {
-            takt4::sandbox::allowPort(port_);
-        }
+    explicit LoopbackReceiver(bool allowed = true) { open(INADDR_LOOPBACK, 0, allowed); }
 
-        // A test must not hang if a datagram is lost; half a second is far longer than a
-        // loopback packet can take.
-#if defined(_WIN32)
-        const DWORD timeout = 500;
-        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
-                     sizeof timeout);
-#else
-        timeval timeout{};
-        timeout.tv_usec = 500000;
-        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout,
-                     static_cast<socklen_t>(sizeof timeout));
-#endif
-    }
+    /// Bound to `ipv4` (in host order) and `port`, rather than 127.0.0.1 and a port the system
+    /// picks: a second receiver at another loopback address on the same port as a first, for an
+    /// output whose name moves from the one to the other. The whole of 127/8 is the loopback.
+    LoopbackReceiver(std::uint32_t ipv4, std::uint16_t port) { open(ipv4, port, true); }
 
     ~LoopbackReceiver() {
 #if defined(_WIN32)
@@ -158,6 +126,45 @@ public:
     }
 
 private:
+    void open(std::uint32_t ipv4, std::uint16_t port, bool allowed) {
+#if defined(_WIN32)
+        WSADATA data{};
+        REQUIRE(::WSAStartup(MAKEWORD(2, 2), &data) == 0);
+        started_ = true;
+        socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        REQUIRE(socket_ != INVALID_SOCKET);
+#else
+        socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        REQUIRE(socket_ >= 0);
+#endif
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(ipv4);
+        address.sin_port = htons(port); // 0: let the OS pick
+        socklen_t length = static_cast<socklen_t>(sizeof address);
+        REQUIRE(::bind(socket_, reinterpret_cast<const sockaddr*>(&address), length) == 0);
+        REQUIRE(::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+        port_ = ntohs(address.sin_port);
+        // A port the system gave this process, so the sandbox lets takt4 send here — and bind
+        // here, for the tests that free one and ask takt4 to listen on it. See `sandbox.hpp`.
+        if (allowed) {
+            takt4::sandbox::allowPort(port_);
+        }
+
+        // A test must not hang if a datagram is lost; half a second is far longer than a
+        // loopback packet can take.
+#if defined(_WIN32)
+        const DWORD timeout = 500;
+        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+                     sizeof timeout);
+#else
+        timeval timeout{};
+        timeout.tv_usec = 500000;
+        ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                     static_cast<socklen_t>(sizeof timeout));
+#endif
+    }
+
 #if defined(_WIN32)
     SOCKET socket_ = INVALID_SOCKET;
     bool started_ = false;

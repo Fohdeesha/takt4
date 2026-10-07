@@ -296,6 +296,27 @@ DmxEngine::Virtual DmxEngine::virtualFromLevels(const Fixture& fixture) const {
     return state;
 }
 
+void DmxEngine::rewriteVirtualOn(std::uint32_t buffer, std::uint16_t channel) noexcept {
+    for (std::size_t index = 0; index < virtuals_.size() && index < patch_.size(); ++index) {
+        Virtual& state = virtuals_[index];
+        if (!state.active || bufferOf(patch_[index].universe) != buffer) {
+            continue;
+        }
+        for (std::size_t e = 0; e < kEmitters.size() && !state.dirty; ++e) {
+            for (std::size_t nth = 0;; ++nth) {
+                const std::uint16_t at = channelOf(patch_[index], kEmitters[e], nth);
+                if (at == 0) {
+                    break;
+                }
+                if (at - 1 == channel) {
+                    state.dirty = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 void DmxEngine::composeVirtuals() noexcept {
     for (std::size_t index = 0; index < virtuals_.size() && index < patch_.size(); ++index) {
         Virtual& state = virtuals_[index];
@@ -1115,6 +1136,19 @@ void DmxEngine::holdChannel(PortAddress universe, std::uint16_t channel, std::ui
 void DmxEngine::tick(double now) {
     for (const Running& running : running_) {
         evaluate(running, now);
+    }
+    // **A channel held on its own that lets go on a fixture with no dimmer** puts back what the
+    // channel had when it was taken — a channel TEST (`holdChannel`) — and a colour a rule set on
+    // that fixture meanwhile was overwritten with it: the lamp left the wrong colour until the
+    // next rule. Such a fixture is written again from its colour and intensity, below.
+    for (const Running& running : running_) {
+        if (running.duration <= 0.0 || now >= running.start + running.duration) {
+            for (const Track& track : running.tracks) {
+                if (!track.isVirtual) {
+                    rewriteVirtualOn(track.buffer, track.channel);
+                }
+            }
+        }
     }
     // Every virtual fixture an effect moved this round, written once from its color and its
     // intensity — after every effect, so a color change and a flash in the same round compose

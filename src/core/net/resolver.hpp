@@ -29,6 +29,11 @@ namespace takt4::net {
 /// somebody edited the output (the 2026-09-25 audit's L20). A numeric address is never asked.
 class AsyncAddress {
 public:
+    /// For the tests: from now on `host` is looked up as `numeric` — a name whose answer a test
+    /// can change, which no name server offers it. Only in the test binaries' sandbox
+    /// (`sandbox.hpp`), where a name otherwise goes nowhere; nothing outside it reads this.
+    static void answerForTests(const std::string& host, const std::string& numeric);
+
     /// How long after a failed look-up the next one starts, at the earliest.
     static constexpr double kRetrySeconds = 5.0;
     /// How long a name's address is used before it is looked up again.

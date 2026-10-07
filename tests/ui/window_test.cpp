@@ -5275,6 +5275,61 @@ TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][
     CHECK(lit);
 }
 
+TEST_CASE("IDENTIFY lights a par without a dimmer that a rule left at nothing", "[ui][dmx]") {
+    // A par without a dimmer has its colour scaled by an intensity of its own, and a dimmer rule
+    // that took it to nothing left it there — so IDENTIFY's colour flashes came out dark. It
+    // flashes that intensity as well now.
+    takt4::testing::LoopbackReceiver node;
+    takt4::settings::Settings settings;
+    takt4::output::OutputTarget truss;
+    truss.name = "truss";
+    truss.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    truss.host = "127.0.0.1";
+    truss.port = node.port();
+    settings.preset.outputs = {truss};
+    settings.preset.fixtures = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    takt4::trigger::Rule::Config out;
+    out.id = "out";
+    out.trigger = takt4::trigger::Trigger::Manual;
+    out.sendKind = takt4::trigger::Message::Kind::Dmx;
+    out.dmx.fixtures = {"par"};
+    out.dmx.effect = takt4::dmx::EffectKind::Level;
+    out.dmx.role = takt4::dmx::Role::Dimmer;
+    out.dmx.level.kind = takt4::trigger::GeneratorKind::Fixed;
+    out.dmx.level.fixed = takt4::trigger::Value::ofInt(0);
+    out.dmx.durationBeats = 0.0;
+    settings.preset.rules = {out};
+
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    const auto frame = [&node] {
+        const std::string datagram = node.receive();
+        return datagram.size() >= 21 && datagram.compare(0, 8, std::string("Art-Net ", 8)) == 0
+                   ? std::array<int, 3>{static_cast<std::uint8_t>(datagram[18]),
+                                        static_cast<std::uint8_t>(datagram[19]),
+                                        static_cast<std::uint8_t>(datagram[20])}
+                   : std::array<int, 3>{-1, -1, -1};
+    };
+    // Lit white first, so the rule has something to take to nothing.
+    controller.patchEditor().pick(0);
+    controller.patchEditor().identify();
+    controller.editor().pick(0);
+    controller.editor().test();
+    bool dark = false;
+    for (int attempt = 0; attempt < 400 && !dark; ++attempt) {
+        const std::array<int, 3> rgb = frame();
+        dark = rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0;
+    }
+    REQUIRE(dark);
+    controller.patchEditor().identify();
+    bool lit = false;
+    for (int attempt = 0; attempt < 400 && !lit; ++attempt) {
+        const std::array<int, 3> rgb = frame();
+        lit = rgb[0] > 200 && rgb[1] > 200 && rgb[2] > 200;
+    }
+    CHECK(lit);
+}
+
 TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's does", "[ui]") {
     // The operator's call of 2026-09-25, which reverses the audit's M9: every output has a delay
     // that works the same way, and a node's is honoured — the node is sent the lighting that

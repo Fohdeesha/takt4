@@ -164,6 +164,12 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
                 going->target.sender->port() == config.port) {
                 target = std::move(going->target);
                 leaving_.erase(going);
+                // What it was last sent is its farewell's zeros, whatever the lighting it last
+                // had says: sent the lighting again at the next frame, not at the keep-alive —
+                // it waited up to 0.9 s dark.
+                for (Paced& paced : target.paced) {
+                    paced.lastRevision = kNeverSent;
+                }
                 break;
             }
         }
@@ -194,6 +200,14 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
             leaving_.push_back(Leaving{std::move(targets_[i]), -1.0});
         }
     }
+    // **And a farewell still going to an address a new node has just been given** stops: the two
+    // would fight over it, the new node's lighting and the old one's zeros in turn.
+    std::erase_if(leaving_, [&next](const Leaving& going) {
+        return std::any_of(next.begin(), next.end(), [&going](const Target& kept) {
+            return kept.sender->host() == going.target.sender->host() &&
+                   kept.sender->port() == going.target.sender->port();
+        });
+    });
     targets_ = std::move(next);
     return failures;
 }
@@ -217,10 +231,10 @@ bool ArtNetPublisher::sendFarewell(const DmxEngine& engine, Target& target, Port
 
 void ArtNetPublisher::refresh() noexcept {
     for (Target& target : targets_) {
-        (void)target.sender->ready();
+        target.sender->refresh();
     }
     for (Leaving& going : leaving_) {
-        (void)going.target.sender->ready();
+        going.target.sender->refresh();
     }
 }
 
@@ -373,14 +387,19 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             // node has certainly been tested against. At 44 Hz it is 23 KB/s per universe,
             // which is not a number worth optimising on a wired rig and not a protocol worth
             // running on a wireless one.
-            if (target.sender->sendDmx(universe, levels)) {
+            // **A frame that did not go is not the frame sent**: the 44 Hz pacing counts from the
+            // attempt, and the lighting it carried is tried again at the next frame. It used to be
+            // recorded as sent, so a static look a failing node missed waited for the 0.9 s
+            // keep-alive.
+            const bool went = target.sender->sendDmx(universe, levels);
+            if (went) {
                 ++sent_;
                 ++datagrams;
+                paced.lastRevision = revision;
             } else {
                 ++failed_;
             }
             paced.lastSentAt = now;
-            paced.lastRevision = revision;
             paced.everSent = true;
         }
     }
