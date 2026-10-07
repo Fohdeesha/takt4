@@ -154,7 +154,6 @@ ctest --preset windows-msvc
 
 - The default tests stay off your audio, MIDI and network. `windows-msvc-all` runs everything: close anything using your interface first.
 - `windows-asan` runs the suite under AddressSanitizer; `linux-tsan` (Linux only) under ThreadSanitizer.
-- `takt4-cli.exe` (a separate download on the release) runs the engine without the window: list devices, track a file or an input. Run it with no arguments for the list.
 
 ## License
 

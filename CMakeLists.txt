@@ -36,21 +36,6 @@ option(TAKT4_BUILD_UI "Build the Slint user interface and the takt4 executable" 
 option(TAKT4_BUILD_TESTS "Build the test suite" "${PROJECT_IS_TOP_LEVEL}")
 option(TAKT4_WARNINGS_AS_ERRORS "Treat warnings in takt4's own sources as errors" ON)
 
-# A release build that keeps its symbols.
-#
-# takt4 crashed on a rig on 2026-09-16 and left a minidump, and the dump named the faulting
-# instruction as `takt4.exe+0xf80723` and could say no more, because the shipped build had no
-# PDB to name it with. The optimisation is unchanged — `/Zi` only writes the symbols to a
-# file beside the exe, and `/OPT:REF /OPT:ICF` put back the two folding passes that `/DEBUG`
-# would otherwise turn off. Nothing about the binary changes; it just becomes readable when
-# it falls over.
-if(MSVC)
-  add_compile_options($<$<CONFIG:Release>:/Zi>)
-  add_link_options($<$<CONFIG:Release>:/DEBUG>
-                   $<$<CONFIG:Release>:/OPT:REF>
-                   $<$<CONFIG:Release>:/OPT:ICF>)
-endif()
-
 # **The Visual C++ runtime is a DLL, and an older copy of it must not crash takt4.**
 #
 # takt4.exe imports MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll, which come with the
