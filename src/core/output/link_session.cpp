@@ -1,11 +1,13 @@
 #include "core/output/link_session.hpp"
 
+#include "core/audio/host_time_fit.hpp"
+#include "core/audio/rates.hpp"
 #include "core/sandbox.hpp"
 
 #include <ableton/Link.hpp>
-#include <ableton/link/HostTimeFilter.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -13,10 +15,11 @@
 namespace takt4::output {
 
 struct LinkSession::Impl {
-    explicit Impl(double bpm) : link(bpm) {}
+    explicit Impl(double bpm) : link(bpm), hostTime(1e6 / audio::kInternalSampleRate) {}
     ableton::Link link;
-    /// Touched only by the audio thread; see the header.
-    ableton::link::HostTimeFilter<ableton::link::platform::Clock> hostTime;
+    /// Touched only by the audio thread — and by `resetHostTimeFilter`, which runs while no
+    /// stream is open. See the header.
+    audio::HostTimeFit hostTime;
 };
 
 LinkSession::LinkSession(double initialTempoBpm) : impl_(std::make_unique<Impl>(initialTempoBpm)) {}
@@ -57,8 +60,20 @@ std::chrono::microseconds LinkSession::now() const {
     return impl_->link.clock().micros();
 }
 
+void LinkSession::observe(double sampleTime, std::int64_t steadyMicros) noexcept {
+    // Onto Link's clock by what lies between the two now, read together. On Windows they are the
+    // same QueryPerformanceCounter count from the same zero, and this moves nothing; elsewhere
+    // Link keeps a clock of its own (CLOCK_MONOTONIC_RAW against the steady clock's
+    // CLOCK_MONOTONIC on Linux), and a moment on the one is not a moment on the other.
+    const std::int64_t linkNow = impl_->link.clock().micros().count();
+    const std::int64_t steadyNow = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count();
+    impl_->hostTime.observe(sampleTime, static_cast<double>(steadyMicros + (linkNow - steadyNow)));
+}
+
 std::int64_t LinkSession::hostMicrosForSample(double sampleTime) noexcept {
-    return impl_->hostTime.sampleTimeToHostTime(sampleTime).count();
+    return static_cast<std::int64_t>(std::llround(impl_->hostTime.at(sampleTime)));
 }
 
 void LinkSession::resetHostTimeFilter() noexcept {

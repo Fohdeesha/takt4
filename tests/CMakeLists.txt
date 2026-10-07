@@ -17,11 +17,13 @@ add_executable(takt4_tests
   audio/hop_fanout_test.cpp
   audio/hop_meter_test.cpp
   audio/host_apis_test.cpp
+  audio/host_time_fit_test.cpp
   audio/input_pipeline_test.cpp
   audio/input_stream_test.cpp
   audio/input_watchdog_test.cpp
   audio/playback_stream_test.cpp
   audio/resampler_test.cpp
+  audio/stamp_test.cpp
   audio/stereo_check_test.cpp
   audio/stream_setup_test.cpp
   control/midi_binding_test.cpp

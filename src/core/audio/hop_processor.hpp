@@ -21,6 +21,19 @@ public:
     /// of HANDOFF §4.3.
     virtual void processHop(const float* hop, std::uint64_t hopIndex) noexcept = 0;
 
+    /// A buffer of input has arrived, before any hop it completes is handed over: its first
+    /// sample is internal-rate sample `firstSample` (the hop clock above, counting only what was
+    /// delivered), it was at the input at `steadyMicros` on `std::chrono::steady_clock`, and
+    /// `lostSamples` of audio, as internal-rate samples, have been lost before it since the stream
+    /// started (`LostTime`). What stamps a hop with the moment its audio was heard — see
+    /// `HostTimeSource`. The default ignores it; only a processor that stamps needs it.
+    virtual void beginBuffer(double firstSample, std::int64_t steadyMicros,
+                             double lostSamples) noexcept {
+        (void)firstSample;
+        (void)steadyMicros;
+        (void)lostSamples;
+    }
+
 protected:
     HopProcessor() = default;
     HopProcessor(const HopProcessor&) = default;

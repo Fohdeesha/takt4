@@ -40,6 +40,8 @@ struct InputStream::Impl {
                         const PaStreamCallbackTimeInfo* /*timeInfo*/,
                         PaStreamCallbackFlags statusFlags, void* userData) noexcept {
         auto* self = static_cast<Impl*>(userData);
+        // When the buffer came, read first: what it carries is stamped from it.
+        const std::int64_t arrived = CallbackClock::steadyNanos();
         const rt::RealtimeScope realtime;
         // Detached: whatever the driver does now, nothing it sends reaches the processor.
         const CallbackGate::Pass pass(self->gate);
@@ -51,7 +53,12 @@ struct InputStream::Impl {
             self->inputOverflows.fetch_add(1, std::memory_order_relaxed);
         }
         if (input != nullptr) {
-            self->pipeline.process(static_cast<const float*>(input), frameCount);
+            // Its first sample was at the input the driver's input latency before it came: on
+            // ASIO exactly what PortAudio says of every buffer (`inputBufferAdcTime`), and the
+            // driver's own estimate on the others, whose per-buffer figure is not the same
+            // quantity from one host to the next.
+            self->pipeline.process(static_cast<const float*>(input), frameCount,
+                                   InputPipeline::Arrival{arrived, self->inputLatency});
         }
         self->clock.onCallback(static_cast<std::uint32_t>(frameCount), CallbackClock::steadyNanos());
         return paContinue;

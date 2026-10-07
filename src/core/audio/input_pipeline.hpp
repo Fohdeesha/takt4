@@ -3,6 +3,7 @@
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/hop_accumulator.hpp"
 #include "core/audio/hop_processor.hpp"
+#include "core/audio/lost_time.hpp"
 #include "core/audio/resampler.hpp"
 #include "core/audio/stereo_check.hpp"
 #include "core/rt/published.hpp"
@@ -31,9 +32,19 @@ public:
     InputPipeline(const InputPipeline&) = delete;
     InputPipeline& operator=(const InputPipeline&) = delete;
 
+    /// When a buffer arrived, for stamping what it carries with when it was heard
+    /// (`HopProcessor::beginBuffer`): the moment, in nanoseconds on `std::chrono::steady_clock`,
+    /// and how long before it the buffer's first sample was at the input — the input latency the
+    /// driver reports. A zero moment is not known — a test feeding audio faster than it plays,
+    /// or a file — and nothing is said about the buffer.
+    struct Arrival {
+        std::int64_t steadyNanos = 0;
+        double inputLatencySeconds = 0.0;
+    };
+
     /// Real-time. `interleaved` holds `frames` frames of picker().streamChannelCount()
-    /// channels at the input rate.
-    void process(const float* interleaved, std::size_t frames) noexcept;
+    /// channels at the input rate, which arrived as `arrival` says.
+    void process(const float* interleaved, std::size_t frames, Arrival arrival = {}) noexcept;
 
     const ChannelPicker& picker() const noexcept { return picker_; }
     double inputRate() const noexcept { return resampler_.inputRate(); }
@@ -53,6 +64,9 @@ public:
     std::uint64_t samplesRepaired() const noexcept {
         return samplesRepaired_.load(std::memory_order_relaxed);
     }
+    /// Seconds of audio the device never delivered since the stream started, as the buffers'
+    /// arrivals measure it (`LostTime`). Any thread.
+    double lostSeconds() const noexcept { return lostSeconds_.load(std::memory_order_relaxed); }
     /// A pair's sums since construction — `ChannelPicker::addPairSums`, whole as of one block.
     /// Always zero for a single channel. Any thread.
     StereoSums stereoSums() const noexcept { return publishedSums_.load(); }
@@ -68,6 +82,9 @@ private:
     std::atomic<std::uint64_t> samplesOut_{0};
     std::atomic<std::uint64_t> hopsOut_{0};
     std::atomic<std::uint64_t> samplesRepaired_{0};
+    /// The audio thread's account of what the device lost, and the copy other threads read.
+    LostTime lost_;
+    std::atomic<double> lostSeconds_{0.0};
     /// The audio thread's own running sums, and the copy other threads read.
     StereoSums pairSums_;
     rt::Published<StereoSums> publishedSums_;

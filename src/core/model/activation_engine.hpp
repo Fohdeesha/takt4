@@ -22,9 +22,9 @@ namespace takt4::model {
 struct FrameActivation {
     std::uint64_t frameIndex = 0; ///< madmom's frame number: centred on sample 441 · k
     std::uint64_t hopIndex = 0;   ///< the hop whose arrival completed the frame
-    /// When the audio this frame is centred on reached the machine, on the host clock
-    /// the output transports use (HANDOFF §4.3). Zero when no HostTimeSource is
-    /// installed, which is the case offline and in every test that does not need it.
+    /// When the audio this frame is centred on was at the input, on the host clock the output
+    /// transports use. Zero when no HostTimeSource is installed, which is the
+    /// case offline and in every test that does not need it.
     std::int64_t hostMicros = 0;
     float beat = 0.0f;
     float downbeat = 0.0f;
@@ -85,9 +85,10 @@ public:
     ActivationEngine& operator=(const ActivationEngine&) = delete;
 
     /// Installs the clock that stamps each activation with the host time of the audio it
-    /// was made from (HANDOFF §4.3). It is called from the audio thread, once per hop,
-    /// and must outlive the stream. Null — the default — leaves `hostMicros` at zero,
-    /// which is what offline runs and most tests want.
+    /// was made from. It is called from the audio thread — told of every
+    /// buffer (`beginBuffer`) and asked about every hop — and must outlive the stream. Null —
+    /// the default — leaves `hostMicros` at zero, which is what offline runs and most tests
+    /// want.
     ///
     /// Atomic because the audio thread reads it, but that only makes the swap itself
     /// safe: the source has to be installed before the stream is started and cleared
@@ -109,6 +110,10 @@ public:
     /// worker has fallen an entire queue behind. A sample that is not a finite number is
     /// copied as silence and counted — see `samplesRepaired`.
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
+    /// Audio thread. Tells the host time source where this buffer's first sample is and when it
+    /// was heard, and keeps the audio lost so far for the hops it completes. See `HopProcessor`.
+    void beginBuffer(double firstSample, std::int64_t steadyMicros,
+                     double lostSamples) noexcept override;
 
     /// Reader thread. False when nothing is queued.
     bool pop(FrameActivation& out) noexcept { return activations_.tryPop(out); }
@@ -163,7 +168,7 @@ public:
 private:
     struct QueuedHop {
         std::uint64_t index = 0;
-        std::int64_t hostMicros = 0; ///< of the hop's first sample; 0 with no source
+        std::int64_t hostMicros = 0; ///< when its first sample was heard; 0 with no source
         std::array<float, audio::kHopSize> samples{};
     };
 
@@ -175,6 +180,15 @@ private:
     features::IntensityClassifier intensity_;
     BeatModel model_;
     std::atomic<audio::HostTimeSource*> hostTime_{nullptr};
+    /// The audio lost so far, as internal-rate samples, which every hop's sample time is moved
+    /// past — and, from the last time it grew, where that was and what it had been. A hop whose
+    /// first sample came before the gap was heard before it, and is stamped with what was lost
+    /// before, though the buffer that finishes it comes after: the frame it completes is centred
+    /// two hops before the gap and was stamped the whole gap late without this. The audio
+    /// thread's alone; reset with the stream by `start`.
+    double lostSamples_ = 0.0;
+    double lostBefore_ = 0.0;
+    double gapSample_ = 0.0;
     rt::SpscRing<QueuedHop, kHopQueueCapacity> hops_;
     rt::SpscRing<FrameActivation, kActivationQueueCapacity> activations_;
 

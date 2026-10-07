@@ -1349,6 +1349,19 @@ TEST_CASE("two control surfaces can post to a stopped runner at once", "[output]
     CHECK_FALSE(runner.panicked());
 }
 
+namespace {
+
+/// When hop `hop` of audio fed in real time from `began` had its first sample heard, in
+/// microseconds on the steady clock — what the input's callback tells the stamping.
+std::int64_t heardMicros(std::chrono::steady_clock::time_point began, std::size_t hop,
+                         double hopSeconds) {
+    const auto at = began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                std::chrono::duration<double>(static_cast<double>(hop) * hopSeconds));
+    return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count();
+}
+
+} // namespace
+
 TEST_CASE("a negative offset lands a beat's cue before that beat from live audio",
           "[output][trigger][slow]") {
     // The audit's H4 at the far end of the chain, where an operator meets it: the excerpt fed
@@ -1428,6 +1441,10 @@ TEST_CASE("a negative offset lands a beat's cue before that beat from live audio
         std::this_thread::sleep_until(
             began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
+        // Each hop a buffer of its own, as the input's callback hands them over: its first
+        // sample heard a hop before it arrived (`audio::HopProcessor::beginBuffer`).
+        engine->beginBuffer(static_cast<double>(hop * kHopSize), heardMicros(began, hop, hopSeconds),
+                            0.0);
         engine->processHop(samples.data() + hop * kHopSize, hop);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds{600});
@@ -1833,6 +1850,10 @@ TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of wha
         std::this_thread::sleep_until(
             began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
+        // Each hop a buffer of its own, as the input's callback hands them over: its first
+        // sample heard a hop before it arrived (`audio::HopProcessor::beginBuffer`).
+        engine->beginBuffer(static_cast<double>(hop * kHopSize), heardMicros(began, hop, hopSeconds),
+                            0.0);
         engine->processHop(samples.data() + hop * kHopSize, hop);
     }
 

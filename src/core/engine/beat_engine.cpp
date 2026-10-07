@@ -145,6 +145,11 @@ void BeatEngine::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
     activations_->processHop(hop, hopIndex);
 }
 
+void BeatEngine::beginBuffer(double firstSample, std::int64_t steadyMicros,
+                             double lostSamples) noexcept {
+    activations_->beginBuffer(firstSample, steadyMicros, lostSamples);
+}
+
 std::size_t BeatEngine::step() noexcept {
     applyCommands();
     // Both halves, in order: the model worker's queued hops through the network, then

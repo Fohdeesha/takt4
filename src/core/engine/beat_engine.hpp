@@ -173,6 +173,9 @@ public:
 
     /// Audio thread. Hands the hop to the model worker and returns.
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
+    /// Audio thread. What stamps the hops with when they were heard: see `audio::HopProcessor`.
+    void beginBuffer(double firstSample, std::int64_t steadyMicros,
+                     double lostSamples) noexcept override;
 
     /// Consumer thread. Every frame, for the trace and the readouts.
     bool popFrame(EngineFrame& out) noexcept { return frames_.tryPop(out); }

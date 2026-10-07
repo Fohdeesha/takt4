@@ -48,6 +48,10 @@ void ActivationEngine::start() {
     hopsWorked_.store(0, std::memory_order_relaxed);
     workerRaised_.store(false, std::memory_order_relaxed);
     workerFlushes_.store(false, std::memory_order_relaxed);
+    // A new stream: nothing lost yet. Before the stream starts, so the audio thread is not here.
+    lostSamples_ = 0.0;
+    lostBefore_ = 0.0;
+    gapSample_ = 0.0;
 
     running_.store(true, std::memory_order_release);
     worker_ = std::thread([this] { run(); });
@@ -60,14 +64,32 @@ void ActivationEngine::stop() noexcept {
     }
 }
 
+void ActivationEngine::beginBuffer(double firstSample, std::int64_t steadyMicros,
+                                   double lostSamples) noexcept {
+    if (lostSamples != lostSamples_) {
+        // Audio was lost before this buffer: its samples, and every one after, are that much
+        // further on in the room's time — the ones already in hand from before the gap are not.
+        gapSample_ = firstSample;
+        lostBefore_ = lostSamples_;
+        lostSamples_ = lostSamples;
+    }
+    if (audio::HostTimeSource* clock = hostTime_.load(std::memory_order_relaxed)) {
+        clock->observe(firstSample + lostSamples, steadyMicros);
+    }
+}
+
 void ActivationEngine::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
     QueuedHop queued;
     queued.index = hopIndex;
-    // HANDOFF §4.3: the sample counter goes in here, on the audio thread, and Link's
-    // regression turns it into a host time. Nothing else on this thread reads a clock.
+    // The hop's own first sample, on the sample clock with the audio lost before it counted
+    // in, read off the line the buffers have drawn (`audio::HostTimeSource`) — the
+    // moment it was heard, whichever buffer finished the hop and however many hops that buffer
+    // finished. Nothing else on this thread reads a clock.
     if (audio::HostTimeSource* clock = hostTime_.load(std::memory_order_relaxed)) {
-        queued.hostMicros = clock->hostMicrosForSample(static_cast<double>(hopIndex) *
-                                                       static_cast<double>(audio::kHopSize));
+        const double sample =
+            static_cast<double>(hopIndex) * static_cast<double>(audio::kHopSize);
+        const double lost = sample < gapSample_ ? lostBefore_ : lostSamples_;
+        queued.hostMicros = clock->hostMicrosForSample(sample + lost);
     }
     // Copied one sample at a time so that one that is not a number goes on as silence. The
     // network and the intensity state are both recurrent, so a single NaN would be in every
@@ -139,9 +161,9 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         const BeatModel::Activation activation = model_.process(extractor_.frame());
         recordWorst(worstModelMicros_, microsSince(modelStart));
 
-        // The hop's stamp is the host time of its first sample; the frame is centred a fixed
-        // number of hops back in the audio the extractor has been *fed*. The regression
-        // behind the stamp is linear, so this is the same answer it would have given.
+        // The hop's stamp is when its first sample was at the input; the frame is centred a
+        // fixed number of hops back in the audio the extractor has been *fed*. The line behind
+        // the stamp is straight, so this is the same answer it would have given.
         //
         // **Counted in hops fed, not in `hop.index`.** The index counts every hop the audio
         // thread saw, including any this worker never received because its queue was full; the

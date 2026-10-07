@@ -3457,6 +3457,10 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     // Said, and not in red: it is fixed, and a red status that asks for nothing stays red until
     // something else is said (the audit's M25).
     CHECK_FALSE(controller.statusIsError());
+    // And the latency figures with it, which a reopen can change — they were said after START
+    // alone, so a buffer size changed in the driver's panel went on showing the old ones.
+    CHECK(std::string(controller.window().get_status()).find("latency taken out of the beat times") !=
+          std::string::npos);
 
     // A clock moved by another program: reopened at once, and said.
     Reading moved;
@@ -3465,6 +3469,8 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     controller.superviseInput(moved, nothing, 102.0);
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("moved from") != std::string::npos);
+    CHECK(std::string(controller.window().get_status()).find("latency taken out of the beat times") !=
+          std::string::npos);
     CHECK_FALSE(controller.statusIsError());
 
     // A driver asking to be reset: the same. And whatever a driver says while the stream is

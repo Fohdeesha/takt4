@@ -22,11 +22,12 @@ namespace takt4::output {
 /// play the part of other peers with these — and nothing in the application calls them (the
 /// audit of 2026-09-25's stale-comment list). Start/stop sync is off by default.
 ///
-/// Timing goes through HostTimeSource (§4.3): the audio thread hands a sample count to
-/// `hostMicrosForSample` and Link's own 512-point regression turns it into a host time,
-/// so nothing depends on the driver reporting one. That method is the only one here that
-/// may be called from the audio thread, and only from that one thread. Everything else
-/// belongs to the output thread.
+/// Timing goes through HostTimeSource: the audio thread tells `observe` where each
+/// buffer's first sample is and when it was heard, and reads every hop's moment off the line
+/// through the last 512 of those (`audio::HostTimeFit`) with `hostMicrosForSample` — on Link's
+/// own clock, which is what the outputs measure a beat's moment on. Those two are the only
+/// methods here that may be called from the audio thread, and only from that one thread.
+/// Everything else belongs to the output thread.
 class LinkSession final : public audio::HostTimeSource {
 public:
     explicit LinkSession(double initialTempoBpm);
@@ -50,9 +51,13 @@ public:
     /// Link's own clock, for a caller with no sample counter of its own.
     std::chrono::microseconds now() const;
 
-    /// **Audio thread.** HANDOFF §4.3's regression; see HostTimeSource.
+    /// **Audio thread.** One buffer's first sample, and when it was heard on the steady clock;
+    /// see HostTimeSource.
+    void observe(double sampleTime, std::int64_t steadyMicros) noexcept override;
+    /// **Audio thread.** The line through the buffers observed, read at `sampleTime`; see
+    /// HostTimeSource.
     std::int64_t hostMicrosForSample(double sampleTime) noexcept override;
-    /// Forgets the regression, for a stream that has been restarted.
+    /// Forgets the line, for a stream that has been restarted.
     void resetHostTimeFilter() noexcept override;
 
     /// Publishes the tracker's tempo, effective at `at`.

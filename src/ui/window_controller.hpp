@@ -530,6 +530,9 @@ private:
     void publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble);
     void publishStopped();
     void publishOpenStream();
+    /// The latency figures of the input that is open — what the status line's second line says
+    /// after START, a restart and an outage's end alike — or empty with none open.
+    std::string latencyLine() const;
     void publishOptions();
     void publishPin();
     void publishTrace();

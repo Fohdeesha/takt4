@@ -145,56 +145,43 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
     }
 }
 
-TEST_CASE("the host time filter stamps a hop with the time it was fed at", "[link]") {
-    // HANDOFF §4.3: "the only requirement is a monotonically increasing sample counter".
-    // Feed it the way ActivationEngine does — one point per hop, with real time passing
-    // between them — and the stamp for the hop being fed is the present. What it must
-    // not be given is a burst of points taken at the same instant: the least-squares
-    // line through those has no slope worth anything, and asking for one back is asking
-    // the regression about noise. That is not a fault in the filter, and nothing in
-    // takt4 does it; a hop only exists once its 20 ms of audio has arrived.
+TEST_CASE("the host time line stamps a buffer's samples with when they were heard", "[link]") {
+    // Each buffer of input is observed once — where its first sample is on the sample clock,
+    // and when that sample was heard on the steady clock — and a sample's moment is
+    // read off the line through them, on Link's clock. Fed here the way the input does it, a
+    // buffer every couple of milliseconds of real time, each heard "now".
     LinkSession session(120.0);
+    const auto steadyNow = [] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
 
-    // Two claims, and only one of them is this machine's to make.
-    //
-    // Real hops arrive on a hardware clock, evenly. This test fakes them with sleep_for,
-    // and the regression fits a straight line through whatever intervals it was actually
-    // handed — so one long gap among short ones skews the fit and the prediction with it.
-    // That is the test's premise breaking, not the filter: measured on CI 2026-09-05, a
-    // descheduled thread turned a 2 ms sleep into most of a second and the stamp came out
-    // 716 ms off.
-    //
-    // So: the stamp being on Link's clock at all — the right epoch, the right unit, a
-    // slope that is not inverted — is checked always, because no amount of scheduling
-    // noise can fake it. Accuracy is checked only when the hops really did arrive evenly,
-    // which is the only condition under which this test is entitled to an opinion on it.
-    constexpr std::uint64_t kWarmUp = 5;
-    constexpr std::uint64_t kHops = 40;
+    // Two claims, and only one of them is this machine's to make — as before this was a line
+    // fitted to buffers rather than a filter fed hops. Real buffers arrive on a hardware clock,
+    // evenly; this test fakes them with sleep_for, and a descheduled thread turns a 2 ms sleep
+    // into most of a second (measured on CI 2026-09-05). So the stamp being on Link's clock at
+    // all — the right epoch, the right unit, a slope that is not inverted — is checked always,
+    // and its accuracy only when the buffers really did arrive evenly.
+    constexpr std::uint64_t kBuffers = 40;
+    constexpr double kSamplesPerBuffer = 44.1; // 2 ms at 22050 Hz
     constexpr std::chrono::milliseconds kSleep{2};
-    /// Wide enough that scheduling cannot reach it, narrow enough that a wrong epoch, a
-    /// wrong unit or an inverted slope cannot hide inside it.
     constexpr std::int64_t kOnLinksClock = 5'000'000;
-    /// What the filter is held to when the feed was regular.
     constexpr std::int64_t kTolerance = 250'000;
-    /// A gap this far past the sleep means the thread was descheduled, and the regression
-    /// was fed intervals that §4.3's premise says it never sees.
     constexpr std::int64_t kGapLimit = 50'000;
 
+    CHECK(session.hostMicrosForSample(0.0) == 0); // nothing observed: no host time, not a guess
     std::int64_t worst = 0;
     bool evenlyFed = true;
-    for (std::uint64_t hop = 0; hop < kHops; ++hop) {
+    for (std::uint64_t buffer = 0; buffer < kBuffers; ++buffer) {
+        const double sample = static_cast<double>(buffer) * kSamplesPerBuffer;
         const std::int64_t before = session.now().count();
-        const std::int64_t micros = session.hostMicrosForSample(static_cast<double>(hop) * 441.0);
+        session.observe(sample, steadyNow());
+        const std::int64_t micros = session.hostMicrosForSample(sample);
         const std::int64_t after = session.now().count();
-        if (hop >= kWarmUp) {
-            // The stamp is when the regression thinks this hop's samples arrived, and this
-            // hop's samples are arriving now.
-            CHECK(micros > before - kOnLinksClock);
-            CHECK(micros < after + kOnLinksClock);
-            // How far outside [before, after] it fell. Inside that bracket the stamp *is*
-            // the present, however long the call itself took.
-            worst = std::max({worst, before - micros, micros - after});
-        }
+        CHECK(micros > before - kOnLinksClock);
+        CHECK(micros < after + kOnLinksClock);
+        worst = std::max({worst, before - micros, micros - after});
         std::this_thread::sleep_for(kSleep);
         if (session.now().count() - after > kGapLimit) {
             evenlyFed = false;
@@ -204,17 +191,16 @@ TEST_CASE("the host time filter stamps a hop with the time it was fed at", "[lin
     if (evenlyFed) {
         CHECK(worst < kTolerance);
     } else {
-        WARN("the runner descheduled this thread, so the hops were not evenly fed and the "
-             "regression's accuracy was not tested; that the stamp is on Link's clock was");
+        WARN("the runner descheduled this thread, so the buffers were not evenly fed and the "
+             "line's accuracy was not tested; that the stamp is on Link's clock was");
     }
 
     SECTION("resetting forgets it, for a stream that was restarted") {
         session.resetHostTimeFilter();
+        CHECK(session.hostMicrosForSample(0.0) == 0);
         const std::int64_t before = session.now().count();
-        const std::int64_t micros = session.hostMicrosForSample(0.0);
-        // One point is a degenerate fit, and Link returns the mean host time rather than
-        // dividing by zero, which is still the present.
-        CHECK(micros > before - kTolerance);
+        session.observe(0.0, steadyNow());
+        CHECK(session.hostMicrosForSample(0.0) > before - kTolerance);
     }
 }
 

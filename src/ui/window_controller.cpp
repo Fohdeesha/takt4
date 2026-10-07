@@ -1480,7 +1480,9 @@ void WindowController::restartInput(const std::string& why, double now) {
         const audio::InputStream* stream = tracker_.stream();
         // Not red: it is fixed, and an error colour on a status that asks for nothing stays
         // there until something else is said (the audit's M25).
-        setStatus(why + "; reopened at " + fixed(stream->sampleRate(), 0) + " Hz.", false);
+        setStatus(why + "; reopened at " + fixed(stream->sampleRate(), 0) + " Hz.\n" +
+                      latencyLine(),
+                  false);
         return;
     }
     beginOutage(why + ", and it would not open again (" + error + ")", now, now);
@@ -1534,7 +1536,7 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
                 window_->set_input_lost(false);
                 setStatus("Audio is back from " + name + " after " + fixed(lasted, 0) +
                               " s without it; reopened at " + fixed(stream->sampleRate(), 0) +
-                              " Hz.",
+                              " Hz.\n" + latencyLine(),
                           false); // fixed, so not red — see `restartInput`
                 return;
             }
@@ -3416,13 +3418,25 @@ void WindowController::publishStopped() {
     }
 }
 
+std::string WindowController::latencyLine() const {
+    const audio::InputStream* stream = tracker_.stream();
+    if (stream == nullptr) {
+        return {};
+    }
+    const double resamplerMs =
+        1000.0 * static_cast<double>(stream->resamplerDelayFrames()) / stream->sampleRate();
+    // **Taken out of every beat's time**: each beat is stamped with when its audio was at the
+    // input, whatever the buffer size, so none of these moves an output — and a buffer size
+    // changed in the driver's panel reopens the input and is said again here.
+    return "latency taken out of the beat times: " + fixed(stream->inputLatencySeconds() * 1000.0, 1) +
+           " ms input + " + fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing";
+}
+
 void WindowController::publishOpenStream() {
     const audio::InputStream* stream = tracker_.stream();
     if (stream == nullptr || !tracker_.current()) {
         return;
     }
-    const double resamplerMs =
-        1000.0 * static_cast<double>(stream->resamplerDelayFrames()) / stream->sampleRate();
     const engine::LiveTracker::Running& running = *tracker_.current();
     const std::string inputs =
         running.selection.count == 2
@@ -3434,9 +3448,7 @@ void WindowController::publishOpenStream() {
     setStatus(inputs + " of " + running.device.name + " \xC2\xB7 " +
                   fixed(stream->sampleRate(), 0) + " Hz \xE2\x86\x92 " +
                   fixed(audio::kInternalSampleRate, 0) + " Hz \xC2\xB7 " +
-                  audio::toString(stream->picker().mode()) + " pick\nlatency " +
-                  fixed(stream->inputLatencySeconds() * 1000.0, 1) + " ms input + " +
-                  fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing",
+                  audio::toString(stream->picker().mode()) + " pick\n" + latencyLine(),
               false);
 }
 
