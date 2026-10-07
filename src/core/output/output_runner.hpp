@@ -83,6 +83,9 @@ struct OutputCommand {
         /// the delay slider sends while it is dragged, where a whole `Outputs` per pixel
         /// reopened senders and flushed what was held (the audit's H12).
         OutputDelay,
+        /// The input has stopped delivering audio at all — an interface unplugged, a driver
+        /// gone. See `OutputRunner::letGoOfTheRig`.
+        InputLost,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -174,6 +177,11 @@ struct OutputCommand {
         OutputCommand command;
         command.kind = Kind::Tracking;
         command.enabled = on;
+        return command;
+    }
+    static OutputCommand inputLost() {
+        OutputCommand command;
+        command.kind = Kind::InputLost;
         return command;
     }
     static OutputCommand outputDelay(std::string outputId, double seconds) {
@@ -337,6 +345,10 @@ public:
     /// Whether the output thread got a raised priority when it started (the audit's M13; see
     /// rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
     bool threadRaised() const noexcept { return threadRaised_.load(std::memory_order_acquire); }
+    /// Whether the output thread waits between rounds on a high-resolution timer
+    /// (`rt::RoundTimer`) rather than a sleep, as the thread itself saw it. False before it has
+    /// started.
+    bool preciseRounds() const noexcept { return preciseRounds_.load(std::memory_order_acquire); }
 
     /// Stages of a round that threw. A transport failing must not take the process down — an
     /// OSC target can go away mid-set — but it must not be silent either, and it must not take
@@ -348,6 +360,23 @@ public:
     std::uint64_t beatsUnsent() const noexcept {
         return beatsUnsent_.load(std::memory_order_relaxed);
     }
+
+    /// How many times the input was said to be lost (`OutputCommand::inputLost`).
+    std::uint64_t inputsLost() const noexcept { return inputsLost_.load(std::memory_order_relaxed); }
+
+    /// Commands applied, each counted once however it reached the output thread — a run of
+    /// rule sets, patches or previews posted back to back is one (see `post`).
+    std::uint64_t commandsApplied() const noexcept {
+        return commandsApplied_.load(std::memory_order_relaxed);
+    }
+    /// Commands refused because `kMaxPendingCommands` were already waiting — see `post`.
+    std::uint64_t commandsDropped() const noexcept {
+        return commandsDropped_.load(std::memory_order_relaxed);
+    }
+    /// How many commands may wait for the output thread. A round takes every one of them, a
+    /// millisecond apart, so reaching this is a control surface flooding the port; the presses it
+    /// sends past it are refused and counted, and nothing that changes the rig's set-up is.
+    static constexpr std::size_t kMaxPendingCommands = 1024;
 
     /// Seconds since this runner was **constructed**, on the steady clock the transports are
     /// driven from — and the clock `trigger::Context::now` is, so §5.8's cooldowns and
@@ -649,10 +678,13 @@ private:
     void applyCommands() noexcept;
     void apply(const OutputCommand& command);
     /// Copies what the transports are set to into `snapshot_`. Called by whichever thread
-    /// owns them, at the end of every `apply`, so a reader never has to touch the live ones.
+    /// owns them, at the end of an `apply` that changed what it holds, so a reader never has to
+    /// touch the live ones.
     void takeSnapshot();
     /// `Snapshot::Trouble` as it stands. Whichever thread owns the transports.
     Snapshot::Trouble currentTrouble() const;
+    /// Whether `currentTrouble` has moved from what the last snapshot holds.
+    bool troubleMoved() const;
     /// Runs one stage of a round, and if it throws, counts it and keeps what it said — and the
     /// round goes on to the next stage. See `drainOnce`.
     template <typename Stage>
@@ -704,6 +736,12 @@ private:
     void releaseStale(bool fresh, double now);
     /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
     void forgetZones() noexcept { heldZones_.clear(); }
+    /// **The input gone quiet or gone altogether** (the operator, 2026-10-05): the lasers
+    /// disarmed, every note and clip a rule holds let go, every fire still waiting for its rule's
+    /// delay dropped, nothing predicted from the last beats heard, and Link put under the first
+    /// locked beat when the music is back. Nothing fires until the next lock, so a laser zone would
+    /// otherwise hold its last clip through the silence — a beam nobody is driving.
+    void letGoOfTheRig(double now);
 
     engine::BeatEngine& engine_;
     Transports transports_;
@@ -819,6 +857,10 @@ private:
     std::atomic<std::uint64_t> errors_{0};
     std::atomic<std::uint64_t> beatsUnsent_{0};
     std::atomic<bool> threadRaised_{false};
+    std::atomic<std::uint64_t> inputsLost_{0};
+    std::atomic<std::uint64_t> commandsApplied_{0};
+    std::atomic<std::uint64_t> commandsDropped_{0};
+    std::atomic<bool> preciseRounds_{false};
     /// The last stage that threw, as "stage: what". Whichever thread owns the transports; a
     /// reader has it from the snapshot.
     std::string lastRoundError_;

@@ -76,6 +76,67 @@ std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {})
 
 } // namespace
 
+TEST_CASE("presses made while the tracker is stopped do not land on the next run",
+          "[engine]") {
+    // A MIDI pad's or an OSC /ctl press between sets waited in the engine's queue, and START
+    // applied it to the run that had ended before resetting for the new one. The reset undid a
+    // ÷2, a pin or a DOWNBEAT — and not a tap, which moves the BPM window, a setting: tapped on a
+    // pad between sets, the next set opened in the window the tap had made. The window greys its
+    // own buttons while stopped, and the engine drops what they would have sent. A setting posted
+    // meanwhile is the operator's, and goes through.
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    engine->start();
+    engine->stop();
+    takt4::tracking::TempoTracker::Options options = engine->tempoOptions();
+    options.octaveFold = true;
+    options.minBpm = 90.0;
+    options.maxBpm = 180.0;
+    options.latencyOffsetSeconds = 0.123;
+    REQUIRE(engine->post(Command::setTempoOptions(options)));
+    REQUIRE(engine->post(Command::seedTempo(200.0)));
+    REQUIRE(engine->post(Command::halve()));
+    REQUIRE(engine->post(Command::setLockPinned(true)));
+    REQUIRE(engine->post(Command::snapDownbeat()));
+
+    engine->start();
+    const takt4::tracking::TempoTracker::Options now = engine->tempoOptions();
+    CHECK(now.minBpm == Approx(90.0));
+    CHECK(now.maxBpm == Approx(180.0));
+    CHECK(now.latencyOffsetSeconds == Approx(0.123));
+    CHECK(engine->state().octaveShift == 0);
+    CHECK_FALSE(engine->state().pinned);
+    engine->stop();
+
+    SECTION("and a setting is taken however many presses were posted with it") {
+        for (std::size_t i = 0; i < takt4::engine::ControlQueue::kCapacity; ++i) {
+            REQUIRE(engine->post(Command::redouble()));
+        }
+        options.latencyOffsetSeconds = 0.045;
+        CHECK(engine->post(Command::setTempoOptions(options)));
+        engine->start();
+        CHECK(engine->tempoOptions().latencyOffsetSeconds == Approx(0.045));
+        engine->stop();
+    }
+}
+
+TEST_CASE("a tempo hold is held when posted after START, and let go of by one it came before",
+          "[engine]") {
+    // START stops what was running first, which applies what is queued to the run that is
+    // ending, and then lets go of every hold with the reset that begins the new one. So a hold
+    // posted before START — which the console's --hold did on a live input — was let go of before
+    // a frame was tracked. Posted after, it holds.
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
+    REQUIRE(forward != nullptr);
+    REQUIRE(engine->post(Command::holdTempo(128.0)));
+    engine->start();
+    CHECK(forward->heldBpm() == 0.0);
+    REQUIRE(engine->post(Command::holdTempo(128.0)));
+    std::this_thread::sleep_for(std::chrono::milliseconds{50}); // the worker takes it
+    engine->stop(); // joins the worker, so what it applied can be read here
+    CHECK(forward->heldBpm() == Approx(128.0));
+}
+
 TEST_CASE("an engine takes its first command without touching the heap", "[engine][rt]") {
     // The audit of 2026-09-25's stale-comment list. The engine says it allocates on
     // construction and on reset and nothing after, and the first drain of its command queue

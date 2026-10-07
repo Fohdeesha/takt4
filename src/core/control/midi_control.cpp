@@ -1,6 +1,7 @@
 #include "core/control/midi_control.hpp"
 
 #include "core/output/midi_ports.hpp"
+#include "core/output/rtmidi_errors.hpp"
 #include "core/sandbox.hpp"
 
 #include <RtMidi.h>
@@ -50,6 +51,8 @@ bool isRelease(const MidiEvent& event) noexcept {
 } // namespace
 
 struct MidiControl::Impl {
+    /// Before `in`, which reports to it and so must go first.
+    output::RtMidiErrors errors;
     RtMidiIn in;
 };
 
@@ -77,11 +80,13 @@ void MidiControl::start() {
                                  error.getMessage() + ")");
     }
 
+    impl->errors.watch(impl->in);
     unsigned int index = 0;
     std::string name;
     try {
         index = findPort(impl->in, config_.port); // output::MidiPortMissing: not here
         name = impl->in.getPortName(index);
+        impl->errors.raise();
     } catch (const RtMidiError& error) {
         throw std::runtime_error("MIDI control: " + error.getMessage());
     }
@@ -92,6 +97,7 @@ void MidiControl::start() {
     }
     try {
         impl->in.openPort(index, "takt4 control");
+        impl->errors.raise();
     } catch (const RtMidiError& error) {
         // Listed and refused: a WinMM input is one program's at a time, and a DAW that opened
         // every input it saw is the usual holder. Not "no such port" — the operator can see it.
@@ -140,6 +146,7 @@ void MidiControl::stop() noexcept {
         try {
             impl_->in.cancelCallback();
             impl_->in.closePort();
+            impl_->errors.raise();
         } catch (const RtMidiError&) {
             // Closing a port that is already gone — an unplugged controller — is not
             // something a stop path can usefully report.

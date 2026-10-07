@@ -187,6 +187,13 @@ public:
     /// H1). Every reopen it then tries fails the way a dead interface's does.
     void beginOutageOn(const engine::LiveTracker::Running& input, double now);
 
+    /// Keeps the input supervised while a dialog, a menu or a message box holds this thread in
+    /// a message loop of its own — see `superviseWhileBlocked`. `run` does it; public so a test
+    /// can, and then run such a loop.
+    void superviseThroughModalLoops();
+    /// The clock every `now` here is on: seconds since the window was made.
+    double secondsNow() const { return nowSeconds(); }
+
     /// §5.5's manual controls. Each one posts on the engine's control queue and returns;
     /// the inference thread applies it before the next frame it tracks, so none of them
     /// blocks a redraw and none of them touches the tracker from this thread.
@@ -570,6 +577,15 @@ private:
     /// does not run — `ui::keepPaintingWhileDragged`, which this is registered with. Static
     /// because it is reached through a C callback; `self` is the controller.
     static void pumpWhileDragged(void* self);
+    /// The input's supervision, one look: the watchdog's reading and the ASIO driver's events
+    /// handed to `superviseInput`. What `tick` does each round, and what a modal loop does in
+    /// its place (`superviseWhileBlocked`).
+    void superviseNow(double now);
+    /// `superviseNow` from Windows' timer, when `tick` has missed `kTickMissedSeconds` — a file
+    /// dialog, the system menu or a message box running its own message loop, where Slint's
+    /// timers do not run. A rate change met while IMPORT's dialog was open left every tempo
+    /// 8.8 % off until it closed. Static because it is reached through a C callback.
+    static void superviseWhileBlocked(void* self);
     /// Writes this round's number to `tickProbe_` and sweeps the input meter — see that
     /// member. Called only when the environment asked for it.
     void writeTickProbe();
@@ -815,6 +831,15 @@ private:
     float peak_ = 0.0f;
     bool statusIsError_ = false;
     std::uint64_t ticks_ = 0;
+    /// When `tick` last ran, on `nowSeconds()`'s clock; negative before it has.
+    double lastTickAt_ = -1.0;
+    /// `superviseNow` is under way — see there.
+    bool supervising_ = false;
+    /// `superviseThroughModalLoops`'s timer, or 0.
+    std::uintptr_t modalPump_ = 0;
+    static constexpr unsigned kModalPumpMilliseconds = 200;
+    /// How long without a `tick` says the window's own loop is being held. Ten of its rounds.
+    static constexpr double kTickMissedSeconds = 0.33;
 
     /// Where to write this window's redraw count each round, from the `TAKT4_TICK_PROBE`
     /// environment variable, or empty — which is every ordinary run.

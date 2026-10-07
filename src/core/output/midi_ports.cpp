@@ -1,5 +1,7 @@
 #include "core/output/midi_ports.hpp"
 
+#include "core/output/rtmidi_errors.hpp"
+
 #include <RtMidi.h>
 
 #include <algorithm>
@@ -27,12 +29,15 @@ template <typename Midi>
 std::vector<std::string> listPorts() {
     std::vector<std::string> ports;
     try {
+        RtMidiErrors errors;
         Midi midi;
+        errors.watch(midi);
         const unsigned int count = midi.getPortCount();
         ports.reserve(count);
         for (unsigned int i = 0; i < count; ++i) {
             ports.push_back(midi.getPortName(i));
         }
+        errors.raise();
     } catch (const RtMidiError&) {
         // No usable MIDI API on this machine; see the header.
     }

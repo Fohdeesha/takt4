@@ -31,6 +31,7 @@
 #include "core/output/output_runner.hpp"
 #include "core/output/transports.hpp"
 #include "core/rt/alloc_guard.hpp"
+#include "core/rt/thread_priority.hpp"
 #include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/forward_filter.hpp"
 #include "core/tracking/particle_filter.hpp"
@@ -1202,9 +1203,6 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             : takt4::audio::ChannelSelection::pair(args.beats.stream.pair->first,
                                                    args.beats.stream.pair->second);
     takt4::engine::BeatEngine* const engine = &tracker.engine();
-    if (args.holdBpm > 0.0) {
-        (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
-    }
 
     // **The declaration order from here down is the destruction order reversed, and all of
     // it is load-bearing.** Everything below runs to completion in the ordinary path; what
@@ -1232,6 +1230,11 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // noticed it. `LiveTracker::start` installs it, and resets its filter, before the stream.
     tracker.setHostTimeSource(&runner.hostTimeClock());
     tracker.start(device, selection);
+    // The tempo hold once the run has started: posted before, it was applied to the run START
+    // ends (`BeatEngine::start` stops first) and let go of by the reset that begins the new one.
+    if (args.holdBpm > 0.0) {
+        (void)engine->post(takt4::engine::Command::holdTempo(args.holdBpm));
+    }
     const takt4::audio::InputStream& stream = *tracker.stream();
     FrameTracer tracer;
     if (args.traceOut) {
@@ -1505,6 +1508,9 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    // A console behind other windows is throttled as a minimised one is — see
+    // `rt::keepFullSpeed`. `track` drives the outputs from here.
+    (void)takt4::rt::keepFullSpeed();
     std::vector<std::string_view> args(argv + 1, argv + argc);
     if (args.empty() || args[0] == "--help" || args[0] == "-h") {
         printUsage(std::cout);

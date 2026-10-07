@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -3261,6 +3262,69 @@ TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
     CHECK(std::string(controller.window().get_status()).find("Found ") != std::string::npos);
 }
 
+namespace {
+
+/// A machine with one interface on it, as the window lists it: nothing in it is ever opened —
+/// the tests' sandbox refuses every device, which is how a dead interface's reopen fails.
+InputDevice motuAt(int index) {
+    InputDevice made;
+    made.index = index;
+    made.name = "MOTU Pro Audio";
+    made.hostApiName = "ASIO";
+    made.maxInputChannels = 8;
+    made.defaultSampleRate = 48000.0;
+    return made;
+}
+
+} // namespace
+
+TEST_CASE("an outage tells the outputs, which let go of the rig", "[ui]") {
+    // An interface unplugged sends nothing at all, so the tracker never hears the silence that
+    // says the input has gone quiet — and the lasers held their last clip, and the notes stayed
+    // on, for the whole of the outage. The window tells the outputs it has lost the input; what
+    // they then do is output_runner_test.cpp's "an input outage disarms the lasers and lets go of
+    // the notes".
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {motuAt(0)}; });
+    WindowController controller(tracker);
+    REQUIRE(controller.settleOutputs());
+    REQUIRE(controller.outputs().inputsLost() == 0);
+    controller.beginOutageOn({motuAt(0), takt4::audio::ChannelSelection::single(5)},
+                             controller.secondsNow());
+    REQUIRE(controller.settleOutputs());
+    CHECK(controller.outputs().inputsLost() == 1);
+}
+
+#if defined(_WIN32)
+TEST_CASE("an outage is still brought back while a dialog holds the window's loop", "[ui]") {
+    // A file dialog, the system menu and a message box each run a message loop of their own, and
+    // Slint's timers — the redraw that supervises the input — do not run inside it. A dead input,
+    // a moved clock or a driver asking to be reset met while IMPORT's dialog was open waited until
+    // it closed: every tempo 8.8 % off meanwhile, for a rate change. The supervision rides a
+    // Windows timer as well now, which every message loop on the thread serves.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {motuAt(0)}; });
+    WindowController controller(tracker);
+    controller.superviseThroughModalLoops(); // as `run` does
+    controller.beginOutageOn({motuAt(0), takt4::audio::ChannelSelection::single(5)},
+                             controller.secondsNow());
+    REQUIRE(controller.outageTries() == std::optional<int>(0));
+    // What such a dialog does with the thread: its own loop, dispatching messages — never Slint's
+    // timers, never `tick`.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{1600};
+    MSG message{};
+    while (std::chrono::steady_clock::now() < until) {
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        (void)MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+    }
+    // A second in, the first try at opening it again.
+    CHECK(controller.outageTries() == std::optional<int>(1));
+}
+#endif
+
 TEST_CASE("an outage that looks for the devices again finds its interface there by name",
           "[ui]") {
     // The audit of 2026-09-25, H1. An outage long enough to reach its third reopen reads the
@@ -3408,6 +3472,40 @@ TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN cl
     CHECK(after.find("Found ") != std::string::npos);
 }
 #endif
+
+TEST_CASE("STOP quiets the outputs before it waits on the driver", "[ui][hardware]") {
+    // The tracker's stop waits on the driver, and the outputs were told only once it had
+    // returned: they went on firing the beats they predicted meanwhile, and then blacked out.
+    // Here the driver's stop is held until the outputs have been looked at.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (!bestInputDevice(tracker)) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    REQUIRE(controller.settleOutputs());
+    REQUIRE(controller.outputs().tracking());
+    std::atomic<bool> stopped{false};
+    std::atomic<bool> quietFirst{false};
+    tracker.setAudioJobHook([&controller, &stopped, &quietFirst](const char* what) {
+        if (std::string_view(what) != "stop") {
+            return;
+        }
+        // On the audio thread, with the window's thread waiting for this stop to finish.
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+        while (controller.outputs().tracking() && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        quietFirst = !controller.outputs().tracking();
+        stopped = true;
+    });
+    controller.toggleRun();
+    tracker.setAudioJobHook({});
+    CHECK_FALSE(tracker.running());
+    CHECK(stopped.load());
+    CHECK(quietFirst.load());
+}
 
 TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     // The audit's C4, the window's half. The watchdog's arithmetic is input_watchdog_test.cpp's

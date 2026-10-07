@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 namespace takt4::ui {
@@ -48,6 +49,14 @@ using DragPump = void (*)(void* user);
 /// already, which is how a window opened later — the rule editor — gets covered too. Call it
 /// from the redraw timer every second or so.
 void keepPaintingWhileDragged(DragPump pump, void* user);
+
+/// Calls `pump(user)` every `periodMs` from **any** message loop on the calling thread — Slint's
+/// own, and the ones Windows runs for a file dialog, a menu or a message box, which Slint's
+/// timers do not reach. A thread timer: every loop that dispatches messages serves it. Returns a
+/// handle for `stopPumping`, or 0 where there is none (not Windows).
+std::uintptr_t pumpThroughModalLoops(DragPump pump, void* user, unsigned periodMs);
+/// Stops what `pumpThroughModalLoops` started. Nothing for 0.
+void stopPumping(std::uintptr_t handle);
 
 /// A size in Slint's logical pixels, kept free of Slint's own types so this header is not.
 struct LogicalExtent {

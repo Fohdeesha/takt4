@@ -84,6 +84,13 @@ void BeatEngine::setHostTimeSource(audio::HostTimeSource* source) noexcept {
 }
 
 void BeatEngine::start() {
+    // **The presses made while stopped go first**: a ÷2, ×2, tap, pin or DOWNBEAT from a control
+    // surface between sets — the window greys its own. `stop` below takes what is queued and
+    // applies it to the run that ended, and the reset after it undoes most of a press — but not a
+    // tap, which moves the BPM window, a setting: a tap on a pad between sets moved the next
+    // set's window. The settings posted meanwhile stay, for the run about to start. See
+    // `ControlQueue::dropPresses`.
+    controls_.dropPresses();
     stop();
 
     EngineFrame frame;

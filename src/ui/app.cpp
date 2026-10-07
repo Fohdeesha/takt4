@@ -4,6 +4,7 @@
 #include "core/engine/live_tracker.hpp"
 #include "core/io/utf8.hpp"
 #include "core/model/weights.hpp"
+#include "core/rt/thread_priority.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/state_space.hpp"
 #include "ui/crash_report.hpp"
@@ -63,6 +64,8 @@ int run() {
     CrashReport::install(home, environment("TAKT4_NO_CRASH_DIALOG").empty()
                                    ? CrashReport::kAfterCrashOption
                                    : std::string_view{});
+    // Full speed whether the window is in front, behind or minimised — see `rt::keepFullSpeed`.
+    (void)rt::keepFullSpeed();
 
     // Whatever the last run left (Q7). Never fails: a settings file that is missing or
     // unreadable gives the defaults, because it must not be the reason the app will not

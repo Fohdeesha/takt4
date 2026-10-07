@@ -118,6 +118,8 @@ target_link_libraries(takt4_tests
     nlohmann_json::nlohmann_json
     # The fixture tests build GDTF archives in memory, good and broken, with its zip writer.
     takt4::miniz
+    # Directly, for the test that RtMidi's errors stay off stderr (output/midi_ports_test.cpp).
+    rtmidi
     Catch2::Catch2WithMain
     takt4::warnings
 )

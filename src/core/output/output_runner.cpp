@@ -112,6 +112,68 @@ bool armable(const dmx::Fixture& fixture) noexcept {
     return dmx::has(fixture, dmx::Role::Arm) || dmx::has(fixture, dmx::Role::ClipSelect);
 }
 
+/// Whether `newer` makes `waiting`, the last command queued, pointless: the same whole thing
+/// again — a rule set, a patch — or the same effect again on the same channels of the same
+/// fixtures, which is what a colour picker dragged sends. **Not another effect on the same
+/// fixtures**: IDENTIFY flashes the dimmer, the red, the green and the blue as four, and only the
+/// last of them went. Never one somebody is waiting on (`OutputRunner::postAndWait`), which has
+/// to be answered.
+bool supersedes(const OutputCommand& waiting, const OutputCommand& newer) noexcept {
+    if (waiting.ticket != 0 || waiting.kind != newer.kind) {
+        return false;
+    }
+    switch (newer.kind) {
+    case OutputCommand::Kind::Rules:
+    case OutputCommand::Kind::Patch:
+        return true;
+    case OutputCommand::Kind::Effect:
+        return waiting.fixtureMask == newer.fixtureMask &&
+               waiting.payload.kind == newer.payload.kind &&
+               waiting.payload.role == newer.payload.role &&
+               waiting.payload.heads == newer.payload.heads;
+    default:
+        return false;
+    }
+}
+
+/// Whether `command` may be refused when the queue is full: a press or a preview, which a
+/// control surface can send a thousand of, and never a change to the rig's set-up, PANIC, STOP
+/// or anything somebody is waiting on.
+bool droppable(const OutputCommand& command) noexcept {
+    if (command.ticket != 0) {
+        return false;
+    }
+    switch (command.kind) {
+    case OutputCommand::Kind::Manual:
+    case OutputCommand::Kind::TestRule:
+    case OutputCommand::Kind::RuleEnabled:
+    case OutputCommand::Kind::RuleMuted:
+    case OutputCommand::Kind::RuleRate:
+    case OutputCommand::Kind::Effect:
+    case OutputCommand::Kind::ChannelTest:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Whether a command changes what `OutputRunner::Snapshot` holds — the outputs and their
+/// delays, Link, the clock's port, the patch — or whether the clock is running.
+bool changesSnapshot(OutputCommand::Kind kind) noexcept {
+    switch (kind) {
+    case OutputCommand::Kind::LinkEnabled:
+    case OutputCommand::Kind::OscTargets:
+    case OutputCommand::Kind::Outputs:
+    case OutputCommand::Kind::MidiClockPort:
+    case OutputCommand::Kind::Patch:
+    case OutputCommand::Kind::OutputDelay:
+    case OutputCommand::Kind::Tracking:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// How many rounds — milliseconds — between two looks at whether the output targets have found
 /// their addresses. A name server answers in tens of milliseconds or not at all.
 constexpr std::uint32_t kRefreshRounds = 250;
@@ -285,6 +347,12 @@ void OutputRunner::takeSnapshot() {
     const std::lock_guard<std::mutex> lock(snapshotMutex_);
     snapshot_ = std::move(taken);
     snapshotVersion_.fetch_add(1, std::memory_order_release);
+}
+
+bool OutputRunner::troubleMoved() const {
+    const Snapshot::Trouble trouble = currentTrouble();
+    const std::lock_guard<std::mutex> lock(snapshotMutex_);
+    return trouble != snapshot_.trouble;
 }
 
 OutputRunner::Snapshot::Trouble OutputRunner::currentTrouble() const {
@@ -622,6 +690,7 @@ void OutputRunner::start() {
     }
     running_.store(true, std::memory_order_release);
     threadRaised_.store(false, std::memory_order_relaxed);
+    preciseRounds_.store(false, std::memory_order_relaxed);
     try {
         worker_ = std::thread([this] { run(); });
     } catch (...) {
@@ -707,7 +776,20 @@ void OutputRunner::post(OutputCommand command) {
         if (command.kind == OutputCommand::Kind::Rules) {
             command.generation = ++rulesPosted_;
         }
-        pending_.push_back(std::move(command));
+        // **The newest of a run replaces it** — a whole rule set, a whole patch, a preview on the
+        // same fixtures, each waiting at the end of the queue and nobody waiting on it. A slider
+        // dragged in the rule editor posts the whole set a step, and the colour picker a preview
+        // a pixel; each was applied in turn, and each took a copy of every output and the whole
+        // patch, in the rounds of a set. A set loaded rather than edited stays one (`fresh`).
+        if (!pending_.empty() && supersedes(pending_.back(), command)) {
+            command.freshRules = command.freshRules || pending_.back().freshRules;
+            pending_.back() = std::move(command);
+        } else if (pending_.size() >= kMaxPendingCommands && droppable(command)) {
+            commandsDropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        } else {
+            pending_.push_back(std::move(command));
+        }
     }
     if (running()) {
         return; // the output thread takes it at the top of its next round, a millisecond off
@@ -932,6 +1014,14 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Sync:
             break;
+        case OutputCommand::Kind::InputLost:
+            // **An outage is the input gone quiet** (the operator, 2026-10-05). An interface
+            // unplugged delivers no frames at all, so the tracker never sees the silence that
+            // says "no signal" — and the lasers held their last clip, and the notes stayed on,
+            // for the whole of the outage.
+            inputsLost_.fetch_add(1, std::memory_order_relaxed);
+            letGoOfTheRig(now);
+            break;
         case OutputCommand::Kind::Manual:
             triggers_.manual(contextAt(now));
             break;
@@ -948,8 +1038,14 @@ void OutputRunner::apply(const OutputCommand& command) {
         lastError_ = e.what();
     }
     // Whether it worked or not: what a reader must see is what the transports are *now*, and
-    // a command that threw part-way through has still changed some of them.
-    takeSnapshot();
+    // a command that threw part-way through has still changed some of them. **Only for a
+    // command that changes what it holds**: every rule set posted by a drag in the editor took a
+    // copy of every output and the whole patch, for a reader to find nothing new in them.
+    // A press that reached nothing moves the trouble counts, and a reader is told that at once.
+    commandsApplied_.fetch_add(1, std::memory_order_relaxed);
+    if (changesSnapshot(command.kind) || troubleMoved()) {
+        takeSnapshot();
+    }
     switch (command.kind) {
     case OutputCommand::Kind::Rules:
     case OutputCommand::Kind::RuleEnabled:
@@ -1092,6 +1188,9 @@ void OutputRunner::run() noexcept {
     // late MIDI tick and a late cue. See rt/thread_priority.hpp.
     const rt::PriorityScope priority(rt::ThreadWork::Output);
     threadRaised_.store(priority.raised(), std::memory_order_release);
+    // A millisecond between rounds that is a millisecond, minimised or not — see `rt::RoundTimer`.
+    rt::RoundTimer timer;
+    preciseRounds_.store(timer.precise(), std::memory_order_release);
     while (running_.load(std::memory_order_acquire)) {
         applyCommands();
         {
@@ -1101,7 +1200,7 @@ void OutputRunner::run() noexcept {
             guarded("the output round", [this] { drainOnce(elapsed()); });
         }
         rounds_.fetch_add(1, std::memory_order_relaxed);
-        std::this_thread::sleep_for(kPeriod);
+        timer.wait(kPeriod);
     }
 }
 
@@ -1142,6 +1241,21 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     context.bars = beat.bars;
     context.moment = beat.moment;
     triggers_.onBeat(context);
+}
+
+void OutputRunner::letGoOfTheRig(double now) {
+    // Link snaps under the first locked beat after it, as after a START.
+    transports_.resnapLink();
+    transports_.dmx().disarm(now);
+    forgetZones();
+    // And the same for what MIDI holds on — a note on is a Liberation clip too, on a rig that
+    // drives it by MIDI — and for a fire still held for its rule's delay, which would otherwise go
+    // out into the silence (see `holds`).
+    triggers_.dropHeldFires();
+    releaseHolds([](const std::string&) { return true; }, now);
+    // And no beat predicted from the last ones heard: an input that is gone says nothing about
+    // where the next beat is, and the engine's last locked state stays published through it.
+    scheduler_.reset();
 }
 
 void OutputRunner::drainOnce(double now) {
@@ -1237,17 +1351,7 @@ void OutputRunner::drainOnce(double now) {
     if (state.noSignal != noSignalSeen_) {
         noSignalSeen_ = state.noSignal;
         if (state.noSignal) {
-            guarded("disarming the lasers", [&] {
-                // Link snaps under the first locked beat after it, as after a START.
-                transports_.resnapLink();
-                transports_.dmx().disarm(now);
-                forgetZones();
-                // And the same for what MIDI holds on — a note on is a Liberation clip too, on a
-                // rig that drives it by MIDI — and for a fire still held for its rule's delay,
-                // which would otherwise go out into the silence (see `holds`).
-                triggers_.dropHeldFires();
-                releaseHolds([](const std::string&) { return true; }, now);
-            });
+            guarded("letting go of the rig", [&] { letGoOfTheRig(now); });
         }
     }
     // Seen whether or not it fires, and fired only once a lock has been earned, as a beat is.

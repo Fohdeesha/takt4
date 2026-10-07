@@ -854,6 +854,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
 }
 
 WindowController::~WindowController() {
+    // Nothing may call back into this from Windows' timer once it starts to go.
+    stopPumping(modalPump_);
     // Before any member goes: `runner_` owns the clock the audio thread reads on every hop,
     // and it is destroyed long before `tracker_`, which is not this class's. `ui::run` stops
     // the tracker itself before letting go of the window; a test that fails half-way through a
@@ -891,8 +893,14 @@ void WindowController::show() {
 
 void WindowController::run() {
     show();
+    superviseThroughModalLoops();
     slint::run_event_loop();
     window_->hide();
+    // Quiet before `ui::run` stops the tracker on the way out, as STOP is: that stop can wait on
+    // the driver, and the outputs would go on firing the beats they predict meanwhile.
+    if (wantRunning_) {
+        runner_.setTracking(false);
+    }
 }
 
 void WindowController::listDevices() {
@@ -1329,13 +1337,14 @@ void WindowController::toggleRun() {
         stereoProblem_.clear();
         window_->set_input_lost(false);
         window_->set_input_trouble(shared(""));
-        // The tracker first, so it is quiet before the runner is told. The runner itself goes
-        // on — it runs for the application's whole life (the audit's H5) — and is told the
-        // tracker stopped: nothing fires after that, not the beats the tracker called on its
-        // way down nor any it would have predicted, what is owed to a clip or a laser goes out
-        // at once, the MIDI clock stops, and the lights go out (Q3; the audit of 2026-09-25, H3).
-        tracker_.stop();
+        // **The runner first**, then the tracker. The runner goes on — it runs for the
+        // application's whole life — and is told the tracker is stopping: nothing fires after
+        // that, not the beats the tracker calls on its way down nor any it would have predicted,
+        // what is owed to a clip or a laser goes out at once, the MIDI clock stops, and the lights
+        // go out. The other way round, the runner heard only once the tracker had stopped — which
+        // waits on the driver — and went on firing the beats it predicted meanwhile.
         runner_.setTracking(false);
+        tracker_.stop();
         publishStopped();
         return;
     }
@@ -1464,6 +1473,10 @@ void WindowController::beginOutage(const std::string& why, double since, double 
         outage.tries = outageEndedTries_;
     }
     outage_ = outage;
+    // And the outputs, which let go of the rig as they do when the input goes quiet: an
+    // interface unplugged sends nothing at all, so the tracker never hears the silence that says
+    // so, and the lasers held their last clip and the notes stayed on through the outage.
+    runner_.post(output::OutputCommand::inputLost());
     window_->set_input_lost(true);
     // The meter goes to nothing rather than holding its last reading: it is the first thing an
     // operator looks at to see whether sound is arriving, and it used to say it was.
@@ -3524,6 +3537,50 @@ void WindowController::writeTickProbe() {
     setStatus("tick " + std::to_string(ticks_), false);
 }
 
+void WindowController::superviseNow(double now) {
+    // Once at a time: a dialog opened from inside a round would otherwise run the supervision a
+    // second time, inside the first.
+    if (!wantRunning_ || supervising_) {
+        return;
+    }
+    supervising_ = true;
+    struct Done {
+        bool& flag;
+        ~Done() { flag = false; }
+    } const done{supervising_};
+    audio::InputWatchdog::Reading reading;
+    audio::AsioDriverEvents events;
+    if (!outage_ && tracker_.stream() != nullptr) {
+        if (input_ && input_->selection.count == 2) {
+            superviseStereo(tracker_.stream()->stereo(), now);
+        }
+        reading = watchdog_.observe(tracker_.stream()->counters(), now);
+        if (input_ && input_->device.hostApi == audio::HostApiKind::Asio) {
+            events = audio::takeAsioDriverEvents();
+        }
+    }
+    superviseInput(reading, events, now);
+}
+
+void WindowController::superviseThroughModalLoops() {
+    if (modalPump_ == 0) {
+        modalPump_ = pumpThroughModalLoops(&WindowController::superviseWhileBlocked, this,
+                                           kModalPumpMilliseconds);
+    }
+}
+
+void WindowController::superviseWhileBlocked(void* self) {
+    // From Windows' own timer, which every message loop on this thread serves — a file dialog's,
+    // the system menu's, a message box's — where Slint's timers, and so `tick`, do not run. Only
+    // when `tick` has not: it supervises the input itself.
+    auto* const controller = static_cast<WindowController*>(self);
+    const double now = controller->nowSeconds();
+    if (now - controller->lastTickAt_ < kTickMissedSeconds) {
+        return;
+    }
+    controller->superviseNow(now);
+}
+
 void WindowController::pumpWhileDragged(void* self) {
     // Called from inside Windows' drag loop, on this same thread — see `native_window.hpp`.
     // One ordinary round plus the redraw the event loop would otherwise have asked for.
@@ -3537,6 +3594,7 @@ void WindowController::pumpWhileDragged(void* self) {
 
 void WindowController::tick() {
     ++ticks_;
+    lastTickAt_ = nowSeconds();
     // START or STOP carried out a moment ago: the button takes presses again. See
     // `requestToggleRun`.
     if (!runPending_ && window_->get_run_busy() &&
@@ -3598,21 +3656,7 @@ void WindowController::tick() {
     }
     // The input's health, above the early return because an outage is exactly when no stream
     // is open: the tracker is stopped between attempts to bring it back. See `superviseInput`.
-    if (wantRunning_) {
-        const double now = nowSeconds();
-        audio::InputWatchdog::Reading reading;
-        audio::AsioDriverEvents events;
-        if (!outage_ && tracker_.stream() != nullptr) {
-            if (input_ && input_->selection.count == 2) {
-                superviseStereo(tracker_.stream()->stereo(), now);
-            }
-            reading = watchdog_.observe(tracker_.stream()->counters(), now);
-            if (input_ && input_->device.hostApi == audio::HostApiKind::Asio) {
-                events = audio::takeAsioDriverEvents();
-            }
-        }
-        superviseInput(reading, events, now);
-    }
+    superviseNow(nowSeconds());
     publishDriverState();
     if (!tracker_.running()) {
         // The outputs keep going through an outage, so what they are doing is still shown.

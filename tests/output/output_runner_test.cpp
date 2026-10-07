@@ -2243,6 +2243,36 @@ private:
 
 } // namespace
 
+TEST_CASE("the output thread makes a round every millisecond", "[output][timing]") {
+    // A millisecond's sleep under `timeBeginPeriod(1)` was measured at a round every 1.47 ms on
+    // the rig — 682 a second where a thousand were asked for — and from Windows 11 a window
+    // minimised or covered does not even get that. The rounds keep to a millisecond grid now, on
+    // a high-resolution timer (`rt::RoundTimer`): counted over a second, from the thread's own
+    // count.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.start();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (runner.rounds() < 100 && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+#if defined(_WIN32)
+    REQUIRE(runner.preciseRounds());
+#endif
+    const std::uint64_t before = runner.rounds();
+    const auto began = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::seconds{1});
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+    const double perSecond = static_cast<double>(runner.rounds() - before) / seconds;
+    runner.stop();
+    INFO(perSecond << " rounds a second");
+#if defined(_WIN32)
+    CHECK(perSecond > 900.0);
+#endif
+    CHECK(perSecond < 1100.0);
+}
+
 TEST_CASE("the model, the tracker and the output thread each ask to run ahead",
           "[output][engine]") {
     // The audit's M13, read off the threads themselves: each asks for its own priority as it
@@ -2500,6 +2530,89 @@ TEST_CASE("a name server that does not answer does not stop the output thread",
     CHECK(during > 100);
     // And the target is there, waiting for its address rather than refused.
     CHECK(runner.snapshot().outputs.size() == 1);
+}
+
+TEST_CASE("a run of whole rule sets, patches or previews is applied once, as the newest",
+          "[output][trigger]") {
+    // A slider dragged in the rule editor posts the whole rule set a step, and the colour picker a
+    // preview a pixel. The output thread applied every one in turn, and took a copy of every
+    // output and the whole patch for a reader after each — in the rounds of a set. Posted while
+    // the output thread is held between two rounds, so they all wait at once: each run is one
+    // command, the newest, and only the patch takes a snapshot.
+    Transports::Config config;
+    config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, config);
+    runner.start();
+    REQUIRE(runner.sync());
+    const std::uint64_t applied = runner.commandsApplied();
+    const std::uint64_t snapshots = runner.snapshotVersion();
+    runner.inspect([&](const auto&, const auto&, const auto&) {
+        for (int k = 1; k <= 50; ++k) {
+            Rule::Config rule;
+            rule.id = "rule" + std::to_string(k);
+            rule.address = "/r";
+            runner.post(OutputCommand::rules({rule}));
+        }
+        for (int k = 1; k <= 50; ++k) {
+            runner.post(OutputCommand::patch({takt4::dmx::fixtureFromMode(
+                "par" + std::to_string(k), 1, 0, static_cast<std::uint16_t>(k))}));
+        }
+        for (int k = 1; k <= 50; ++k) {
+            takt4::dmx::Payload payload;
+            payload.kind = takt4::dmx::EffectKind::Color;
+            payload.color = takt4::dmx::Color{static_cast<std::uint8_t>(k), 0, 0};
+            runner.post(OutputCommand::effect(0b1, payload));
+        }
+        return 0;
+    });
+    REQUIRE(runner.sync());
+    CHECK(runner.commandsApplied() - applied == 4); // the three runs and the sync
+    CHECK(runner.snapshotVersion() - snapshots == 1);
+    CHECK(runner.liveRulesCurrent());
+    const std::vector<OutputRunner::LiveRule> live = runner.liveRules();
+    REQUIRE(live.size() == 1);
+    CHECK(live[0].id == "rule50");
+    const OutputRunner::Snapshot snapshot = runner.snapshot();
+    REQUIRE(snapshot.patch.size() == 1);
+    CHECK(snapshot.patch[0].name == "par50");
+    CHECK(snapshot.patch[0].address == 50);
+    // The last preview is what the lamp shows, once a round has drawn it.
+    waitForRounds(runner, 2);
+    CHECK(runner.inspect([](const auto&, const Transports& transports, const auto&) {
+              return transports.dmx().levels(0)[49];
+          }) == 50);
+
+    SECTION("effects on other channels of the same fixtures are each applied") {
+        // IDENTIFY flashes a fixture's dimmer, red, green and blue as four effects.
+        const std::uint64_t before = runner.commandsApplied();
+        runner.inspect([&](const auto&, const auto&, const auto&) {
+            for (const takt4::dmx::Role role : {takt4::dmx::Role::Dimmer, takt4::dmx::Role::Red,
+                                                takt4::dmx::Role::Green, takt4::dmx::Role::Blue}) {
+                takt4::dmx::Payload flash;
+                flash.kind = takt4::dmx::EffectKind::Flash;
+                flash.role = role;
+                runner.post(OutputCommand::effect(0b1, flash));
+            }
+            return 0;
+        });
+        REQUIRE(runner.sync());
+        CHECK(runner.commandsApplied() - before == 5); // the four and the sync
+    }
+
+    SECTION("a flood of presses is refused past the cap, and STOP is not") {
+        runner.inspect([&](const auto&, const auto&, const auto&) {
+            for (std::size_t i = 0; i < OutputRunner::kMaxPendingCommands + 10; ++i) {
+                runner.post(OutputCommand::testRule("nothing"));
+            }
+            runner.post(OutputCommand::tracking(false));
+            return 0;
+        });
+        REQUIRE(runner.sync());
+        CHECK(runner.commandsDropped() == 10);
+        CHECK_FALSE(runner.tracking());
+    }
+    runner.stop();
 }
 
 TEST_CASE("a delay slider moves one output's delay and drops nothing held", "[output][osc]") {
@@ -3020,6 +3133,40 @@ TEST_CASE("the input going quiet lets go of the notes it holds", "[output][trigg
     waitForRounds(runner, 3);
     runner.stop();
     CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+}
+
+TEST_CASE("an input outage disarms the lasers and lets go of the notes", "[output][dmx][liberation][release]") {
+    // An interface unplugged delivers no audio at all, so the tracker never hears the silence
+    // that says "no signal" — and the lasers held their last clip, and the notes stayed on, for
+    // the whole of the outage. The window tells the runner the input is lost, and it lets go of
+    // the rig as the silence does (the operator, 2026-10-05).
+    SECTION("the lasers") {
+        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+        OutputRunner runner(*engine, zoneBesideLamp());
+        armZoneBesideLamp(runner);
+        REQUIRE(zoneAndLamp(runner)[0] == 255);
+        runner.start();
+        runner.post(OutputCommand::inputLost());
+        REQUIRE(runner.sync());
+        waitForRounds(runner, 3);
+        CHECK(zoneAndLamp(runner) == std::array<std::uint8_t, 3>{0, 0, 180});
+        CHECK(runner.inputsLost() == 1);
+        runner.stop();
+    }
+    SECTION("the notes") {
+        auto cable = std::make_shared<Bytes>();
+        auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+        OutputRunner runner(*engine, heldRig(cable));
+        runner.post(OutputCommand::rules({heldNote()}));
+        runner.post(OutputCommand::testRule("note"));
+        REQUIRE(runner.holds().notes == 1);
+        runner.start();
+        runner.post(OutputCommand::inputLost());
+        REQUIRE(runner.sync());
+        CHECK(runner.holds().notes == 0);
+        runner.stop();
+        CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+    }
 }
 
 TEST_CASE("an Art-Net node switched off is sent zeros: its lights dark, its lasers disarmed",

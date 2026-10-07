@@ -98,6 +98,48 @@ TEST_CASE("a full queue refuses and counts rather than growing", "[engine]") {
     CHECK(queue.post(Command::halve()));
 }
 
+TEST_CASE("a setting is taken even by a queue full of presses", "[engine]") {
+    // Sixty-four presses posted while nothing drained — a control surface, and a tracker stopped
+    // — and the latency slider moved: the setting went nowhere, and the slider went on moving on
+    // screen. The oldest press gives way for it now.
+    ControlQueue queue;
+    for (std::size_t i = 0; i < ControlQueue::kCapacity; ++i) {
+        REQUIRE(queue.post(i == 0 ? Command::snapDownbeat() : Command::halve()));
+    }
+    REQUIRE_FALSE(queue.post(Command::redouble()));
+    CHECK(queue.dropped() == 1);
+
+    CHECK(queue.post(Command::setTempoOptions(windowed(100.0, 200.0))));
+    CHECK(queue.post(Command::holdTempo(128.0)));
+    CHECK(queue.dropped() == 3);
+    CHECK(queue.pending() == ControlQueue::kCapacity);
+    std::vector<Command> drained;
+    queue.drain(drained);
+    REQUIRE(drained.size() == ControlQueue::kCapacity);
+    // The oldest two presses gave way, the DOWNBEAT first; the settings are last, in their order.
+    CHECK(drained.front().kind == Command::Kind::Halve);
+    CHECK(drained[drained.size() - 2].kind == Command::Kind::SetTempoOptions);
+    CHECK(drained.back().kind == Command::Kind::HoldTempo);
+}
+
+TEST_CASE("dropping the presses keeps the settings, in their order", "[engine]") {
+    ControlQueue queue;
+    queue.post(Command::halve());
+    queue.post(Command::setTempoOptions(windowed(60.0, 120.0)));
+    queue.post(Command::setLockPinned(true));
+    queue.post(Command::seedTempo(128.0));
+    queue.post(Command::holdTempo(120.0));
+    queue.post(Command::snapDownbeat());
+    queue.post(Command::redouble());
+    queue.dropPresses();
+    std::vector<Command> drained;
+    queue.drain(drained);
+    REQUIRE(drained.size() == 2);
+    CHECK(drained[0].kind == Command::Kind::SetTempoOptions);
+    CHECK(drained[1].kind == Command::Kind::HoldTempo);
+    CHECK(queue.dropped() == 0); // put aside on purpose, not refused
+}
+
 TEST_CASE("several producers may post at once", "[engine]") {
     // A UI thread, an OSC receiver and a MIDI receiver all post here (§5.7), which is the
     // reason this is not an rt::SpscRing. Nothing may be lost or torn while under

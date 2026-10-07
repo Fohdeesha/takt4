@@ -1,8 +1,15 @@
 #include "core/output/midi_ports.hpp"
+#include "core/output/rtmidi_errors.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <RtMidi.h>
+
 #include <algorithm>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <streambuf>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +37,35 @@ TEST_CASE("RtMidi was compiled with the platform's APIs", "[midi]") {
     CHECK(has("jack"));
 #endif
     CHECK_FALSE(has("dummy"));
+}
+
+TEST_CASE("RtMidi's errors are thrown where they were asked for, and none is written to stderr",
+          "[midi]") {
+    // Left to itself RtMidi writes every error to stderr and then throws it, and takt4's stderr is
+    // its log file, unbuffered, beside the executable — a network share on the rig. A MIDI
+    // interface pulled out mid-set failed every send that way, on the output thread, every round.
+    // `RtMidiErrors` keeps what RtMidi says and throws it after the call, as RtMidi did. A port
+    // asked for past the end of the list is the one RtMidi error with no device behind it: nothing
+    // is opened.
+    std::ostringstream captured;
+    struct Restore {
+        std::streambuf* was;
+        ~Restore() { std::cerr.rdbuf(was); }
+    } const restore{std::cerr.rdbuf(captured.rdbuf())};
+    takt4::output::RtMidiErrors errors;
+    std::unique_ptr<RtMidiOut> out;
+    try {
+        out = std::make_unique<RtMidiOut>();
+    } catch (const RtMidiError&) {
+        SKIP("no MIDI API on this machine");
+    }
+    errors.watch(*out);
+    (void)out->getPortName(100000); // a warning, which was only ever printed
+    out->openPort(100000, "takt4 test");
+    CHECK_FALSE(out->isPortOpen());
+    CHECK_THROWS_AS(errors.raise(), RtMidiError);
+    CHECK_NOTHROW(errors.raise()); // said once
+    CHECK(captured.str().empty());
 }
 
 TEST_CASE("MIDI output ports can be listed without throwing", "[midi]") {
