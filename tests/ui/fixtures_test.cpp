@@ -2324,3 +2324,37 @@ TEST_CASE("the About box fits its least size and the notices' path stays on its 
     }
     CHECK(closeDrawn);
 }
+
+TEST_CASE("TEST and IDENTIFY on a fixture left out of the show say so and light nothing",
+          "[ui][dmx]") {
+    // A fixture left out is sent nothing, and both said they were lighting it all the same: a
+    // TEST that read "channel 3 at 180" over a dark lamp, and an IDENTIFY that flashed nothing.
+    Rig rig;
+    FixturesController patch(rig.runner, {});
+    patch.add();
+    patch.rename("Bedroom RGB");
+    patch.setUniverse("5");
+    patch.setAddress(70);
+    patch.pickMode(modeIndexOf("RGB (3ch)"));
+    takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
+    patch.window().invoke_fixture_enabled_changed(false); // the "in the show" tick
+    REQUIRE_FALSE(patch.fixtures().front().enabled);
+    const auto said = [&patch] { return std::string(patch.window().get_status()); };
+
+    enterTestLevel(patch.window(), 180);
+    patch.window().invoke_channel_tested(2);
+    CHECK(engine.levels(5)[71] == 0);
+    CHECK(said().find("Bedroom RGB is left out of the show") != std::string::npos);
+    CHECK(said().find("to test it") != std::string::npos);
+    CHECK(patch.window().get_status_error());
+
+    patch.window().invoke_identify();
+    CHECK(engine.running() == 0);
+    CHECK(said().find("to identify it") != std::string::npos);
+
+    // In the show again, TEST lights it.
+    patch.window().invoke_fixture_enabled_changed(true);
+    patch.window().invoke_channel_tested(2);
+    CHECK(engine.levels(5)[71] == 180);
+    CHECK(said().find("left out") == std::string::npos);
+}

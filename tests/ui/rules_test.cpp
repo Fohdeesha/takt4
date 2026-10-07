@@ -5,6 +5,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/io/utf8.hpp"
 #include "core/model/weights.hpp"
+#include "core/output/osc_message.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
@@ -1367,7 +1368,7 @@ TEST_CASE("every card counts its own fires, and a release is not one", "[ui][tri
         REQUIRE(rules->row_data(0)->fires == 5);
         std::vector<Rule::Config> fresh;
         Rule::Config one;
-        one.id = "rule1"; // the same id the counted rule had
+        one.id = editor.rules().front().id; // the same id the counted rule had
         one.name = "From a file";
         fresh.push_back(one);
         editor.setRules(std::move(fresh));
@@ -4927,7 +4928,7 @@ TEST_CASE("a click on a rule's dot mutes that rule and leaves the one being edit
     Rig rig;
     RulesController editor(rig.runner, {});
     // Two rules with addresses, so neither row carries a line saying it will not fire; both
-    // sending, since the output thread keeps a mute by the rule's id and "rule1" comes round again.
+    // sending, said outright each time they are built.
     const auto build = [&] {
         editor.setRules({});
         editor.add();
@@ -6234,7 +6235,14 @@ TEST_CASE("a right-click puts each of the rule editor's sliders back to a new ru
         build();
         const Shown shown(editor, 1400.0f);
         build();
-        const std::string asBuilt = takt4::settings::rulesToJson(editor.rules());
+        // Less its id, which every `add` makes afresh: a rule built again is the same rule here.
+        const auto json = [](std::vector<Rule::Config> rules) {
+            for (Rule::Config& rule : rules) {
+                rule.id.clear();
+            }
+            return takt4::settings::rulesToJson(rules);
+        };
+        const std::string asBuilt = json(editor.rules());
         REQUIRE(editor.window().get_effect_takes_spread() == (effect == EffectKind::Path));
 
         std::set<std::string> reset;
@@ -6279,11 +6287,11 @@ TEST_CASE("a right-click puts each of the rule editor's sliders back to a new ru
                 same.dmx.duty = 0.2;
                 same.dmx.size = 0.2;
                 same.dmx.spread = 0.6;
-                if (takt4::settings::rulesToJson({same}) != asBuilt) {
+                if (json({same}) != asBuilt) {
                     wrong.push_back("the rule changed otherwise" + atPoint(x, y));
                 }
-                if (takt4::settings::rulesToJson(editor.rules()) != asBuilt ||
-                    editor.window().get_only_if_folded() || editor.window().get_send_folded()) {
+                if (json(editor.rules()) != asBuilt || editor.window().get_only_if_folded() ||
+                    editor.window().get_send_folded()) {
                     build();
                 }
             }
@@ -6417,11 +6425,18 @@ struct LiberationEditor {
     Rig rig;
     RulesController editor{rig.runner, {}};
     std::optional<RulesController::RigSetup> asked;
+    /// What adding costs, said before it goes on — as a window says a fixture import half done in
+    /// the patch editor (`RulesController::RigNeeded`). Empty: it goes on at once.
+    std::string cost;
 
     LiberationEditor() {
         editor.setRigNeeded([this](const RulesController::RigSetup& setup) {
             asked = setup;
+            if (!cost.empty() && !setup.goAhead) {
+                return cost;
+            }
             editor.setPatch(setup.patch);
+            return std::string{};
         });
     }
 
@@ -6787,4 +6802,165 @@ TEST_CASE("a Liberation clip's chips read and show clips as Liberation names the
     editor.setPatch({par, zone});
     editor.setFixtureChosen("f-zone", true);
     CHECK(std::string(editor.window().get_effect_clip_note()).find("1 of 2") != std::string::npos);
+}
+
+TEST_CASE("the Liberation prompt's add, pressed again after it has said what adding costs, adds",
+          "[ui][trigger][liberation]") {
+    // A fixture import half done in the patch editor is dropped by the patch ADD lays. ADD says so
+    // first and adds nothing — and stays a button that can be pressed: said as a problem, it was
+    // switched off with it, and "add again" could not be done.
+    LiberationEditor rig;
+    rig.cost = "Adding drops the fixture import half done in the patch editor.";
+    RulesController& editor = rig.editor;
+    auto& window = editor.window();
+    const Shown shown(editor);
+    const auto ask = [&] {
+        if (!editor.liberationOpen()) {
+            editor.openLiberation(); // a probe that found CANCEL
+        }
+        rig.resetAsk(1);
+    };
+    ask();
+
+    // ADD, found by what its first press does: the cost said, nothing added.
+    const Spot add = sweep(
+        700.0f, 960.0f, 10.0f, 520.0f, 800.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            return !std::string(window.get_liberation_warning()).empty();
+        },
+        ask);
+    INFO("add" << atPoint(add.x, add.y));
+    REQUIRE(add.found());
+    CHECK(std::string(window.get_liberation_warning()) == rig.cost);
+    CHECK(std::string(window.get_liberation_problem()).empty());
+    CHECK(editor.liberationOpen());
+    CHECK(editor.rules().empty());
+    REQUIRE(rig.asked.has_value());
+    CHECK_FALSE(rig.asked->goAhead);
+
+    // Pressed again, where it was: it goes on.
+    shown.click(add.x, add.y);
+    CHECK_FALSE(editor.liberationOpen());
+    CHECK(editor.rules().size() == 1);
+    REQUIRE(rig.asked.has_value());
+    CHECK(rig.asked->goAhead);
+    CHECK(std::string(window.get_liberation_warning()).empty());
+
+    SECTION("and the prompt opened again says it again before adding") {
+        editor.openLiberation();
+        rig.resetAsk(1);
+        rig.asked.reset();
+        shown.click(add.x, add.y);
+        CHECK(editor.liberationOpen());
+        CHECK(editor.rules().size() == 1);
+        REQUIRE(rig.asked.has_value());
+        CHECK_FALSE(rig.asked->goAhead);
+    }
+}
+
+TEST_CASE("a rule added after one is deleted never takes its id", "[ui][trigger]") {
+    // Rule ids were counted from the rules there were: delete rule3, add a rule, and it was
+    // "rule3" — and a control surface's button aimed at the old one drove the new one. Random
+    // now, as an output's and a fixture's are, and still a legal OSC address segment.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    editor.add();
+    editor.add();
+    REQUIRE(editor.rules().size() == 3);
+    std::set<std::string> ids;
+    for (const Rule::Config& rule : editor.rules()) {
+        INFO(rule.id);
+        CHECK(rule.id.size() == 10);
+        CHECK(rule.id.rfind("r-", 0) == 0);
+        CHECK(takt4::output::addressIsLegal("/" + rule.id));
+        ids.insert(rule.id);
+    }
+    CHECK(ids.size() == 3);
+
+    const std::string gone = editor.rules().back().id;
+    editor.pick(2);
+    editor.remove();
+    REQUIRE(editor.rules().size() == 2);
+    editor.add();
+    REQUIRE(editor.rules().size() == 3);
+    CHECK(editor.rules().back().id != gone);
+    CHECK(ids.count(editor.rules().back().id) == 0);
+}
+
+TEST_CASE("a palette swatch's picker opens on its own rule's colour after another rule's moved",
+          "[ui][trigger][dmx]") {
+    // The palette's pickers hold where their sliders were dragged (`pickedPalette_`), as the slot
+    // pickers do, and were not let go of with the rows: picking another rule opened its first
+    // swatch's picker on the hue, saturation and brightness the last rule's was dragged to.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    const auto paletteRule = [&editor] {
+        editor.add();
+        editor.pickSend(
+            positionIn(takt4::trigger::kMessageKinds, takt4::trigger::Message::Kind::Dmx));
+        editor.pickEffect(positionIn(takt4::dmx::kEffectKinds, takt4::dmx::EffectKind::Color));
+        editor.addPaletteColor(); // a fixed color becomes a palette, which is what has swatches
+        editor.tick();
+    };
+    paletteRule();
+    paletteRule();
+    REQUIRE(editor.rules().size() == 2);
+    const auto palette = editor.window().get_palette();
+
+    editor.pick(0);
+    editor.tick();
+    REQUIRE(palette->row_count() > 0);
+    editor.setPaletteColor(0, 200.0f, 30.0f, 40.0f);
+    editor.tick();
+    REQUIRE(palette->row_data(0)->hue == Approx(200.0f));
+
+    editor.pick(1);
+    editor.tick();
+    REQUIRE(palette->row_count() > 0);
+    const auto own = takt4::dmx::parseColor(editor.rules()[1].dmx.color.values[0].text());
+    REQUIRE(own.has_value());
+    double hue = 0.0;
+    double saturation = 1.0;
+    double value = 1.0;
+    takt4::dmx::toHsv(*own, hue, saturation, value);
+    const auto row = *palette->row_data(0);
+    INFO("the picker opened on " << row.hue << ", " << row.sat << ", " << row.val);
+    CHECK(row.hue == Approx(hue).margin(0.5));
+    CHECK(row.sat == Approx(saturation * 100.0).margin(0.5));
+    CHECK(row.val == Approx(value * 100.0).margin(0.5));
+}
+
+TEST_CASE("a rule's reach counts only the fixtures in the show", "[ui][trigger][dmx]") {
+    // A fixture the patch editor has left out of the show is sent nothing, and was counted as
+    // reached: a rule aimed at it and nothing else said it reached a fixture.
+    using takt4::trigger::Message;
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    takt4::dmx::Fixture in = takt4::dmx::fixtureFromMode("wash L", 1, 0, 1);
+    in.id = "f-in";
+    takt4::dmx::Fixture out = takt4::dmx::fixtureFromMode("wash R", 1, 0, 4);
+    out.id = "f-out";
+    out.enabled = false;
+    editor.setPatch({in, out});
+    editor.add();
+    editor.pickSend(positionIn(takt4::trigger::kMessageKinds, Message::Kind::Dmx));
+    editor.setFixtureChosen("f-in", true);
+    editor.setFixtureChosen("f-out", true);
+    auto& window = editor.window();
+    const auto said = [&window] { return std::string(window.get_fixtures_available()); };
+
+    CHECK(said() == "reaches 1 fixture, 1 left out");
+    CHECK_FALSE(window.get_fixtures_reaches_nothing());
+
+    editor.setFixtureChosen("f-in", false);
+    CHECK(said() == "its fixtures are left out of the show");
+    CHECK(window.get_fixtures_reaches_nothing());
+
+    // Back in the show, it is reached.
+    out.enabled = true;
+    editor.setPatch({in, out});
+    CHECK(said() == "reaches 1 fixture");
+    CHECK_FALSE(window.get_fixtures_reaches_nothing());
 }

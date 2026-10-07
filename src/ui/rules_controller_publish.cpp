@@ -522,24 +522,34 @@ void RulesController::publishFixtureChoices() {
     // 232, and was only ever seen cut off.
     window_->set_fixtures_summary(shared(aims.empty() ? "nothing — sends nowhere" : join(shown)));
     // What the rule actually reaches on *this* rig, in fixtures. The count matters: "heads"
-    // reaching three fixtures and "heads" reaching none look identical in a list of ticks.
-    const std::size_t reached = dmx::resolveFixtures(patch_, aims).count();
+    // reaching three fixtures and "heads" reaching none look identical in a list of ticks. **Only
+    // what is in the show**: a fixture the patch editor has left out is sent nothing, and was
+    // counted as reached, so a rule aimed at nothing else said it reached them.
+    const dmx::FixtureSet targeted = dmx::resolveFixtures(patch_, aims);
+    std::size_t reached = 0;
+    std::size_t off = 0;
+    for (std::size_t i = 0; i < patch_.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+        if (targeted.test(i)) {
+            ++(patch_[i].enabled ? reached : off);
+        }
+    }
     std::string available;
     if (aims.empty()) {
         available = "pick at least one — a DMX rule with no fixtures does nothing";
     } else if (reached == 0) {
-        available = "reaches nothing on this rig";
-    } else {
         available =
-            "reaches " + std::to_string(reached) + (reached == 1 ? " fixture" : " fixtures");
+            off > 0 ? "its fixtures are left out of the show" : "reaches nothing on this rig";
+    } else {
+        available = "reaches " + std::to_string(reached) +
+                    (reached == 1 ? " fixture" : " fixtures") +
+                    (off > 0 ? ", " + std::to_string(off) + " left out" : std::string{});
         // And their heads, for a movement aimed at fixtures with more than one: "2 heads each".
         if (rule->sendKind == trigger::Message::Kind::Dmx && dmx::takesMovement(rule->dmx.effect) &&
             headsAimedAt(rule->dmx) >= 2) {
-            const dmx::FixtureSet mask = dmx::resolveFixtures(patch_, aims);
             std::size_t fewest = 1000;
             std::size_t most = 0;
             for (std::size_t i = 0; i < reachable; ++i) {
-                if (mask.test(i)) {
+                if (targeted.test(i) && patch_[i].enabled) {
                     fewest = std::min(fewest, dmx::headsOf(patch_[i]));
                     most = std::max(most, dmx::headsOf(patch_[i]));
                 }
@@ -892,8 +902,10 @@ void RulesController::publishSlots() {
         // The picker's sliders belong to the rows that were on screen, and the rows are about
         // to be different ones. Kept across an ordinary republish — that is the whole point of
         // holding them — and dropped when the slots themselves change, so another rule's
-        // picker opens on that rule's own color.
+        // picker opens on that rule's own color. The palette's swatches likewise: a swatch's
+        // picker opened with the hue the last rule's swatch at that place was dragged to.
         pickedColors_.clear();
+        pickedPalette_.clear();
     }
 
     // What this rule's generators produced last time it fired, in the order the chips are

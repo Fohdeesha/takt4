@@ -13,6 +13,7 @@
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -224,6 +225,10 @@ public:
     /// inference thread; the commands are the way in otherwise.
     const tracking::BeatDecoder& decoder() const noexcept { return *decoder_; }
     tracking::Decoder decoderKind() const noexcept { return decoderKind_; }
+    /// The bar lengths the forward filter was built to model (`ForwardFilter::Options::meters`).
+    /// Fixed for the engine's life, as the decoder is: a preset with others takes effect at the
+    /// next launch.
+    std::array<std::uint8_t, 4> meters() const noexcept { return meters_; }
     /// One frame of the decoder's clock, in seconds: what `EngineFrame`s and beats are
     /// timed in. 0.02 for the particle filter, 0.01 for the forward filter.
     double secondsPerFrame() const noexcept { return decoder_->secondsPerFrame(); }
@@ -272,6 +277,7 @@ private:
     // On the heap: ActivationEngine carries 130 KB of rings and the network's weights.
     std::unique_ptr<model::ActivationEngine> activations_;
     tracking::Decoder decoderKind_;
+    std::array<std::uint8_t, 4> meters_;
     /// Before `tempo_`, which is built at its frame rate.
     std::unique_ptr<tracking::BeatDecoder> decoder_;
     tracking::TempoTracker tempo_;

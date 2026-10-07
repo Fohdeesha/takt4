@@ -58,8 +58,13 @@ public:
         /// a new one. The port is Art-Net's own, but in a test (`LiberationAsk::port`).
         std::string artNetHost;
         std::uint16_t artNetPort = dmx::kArtNetPort;
+        /// ADD pressed again after the prompt said what adding would cost: go on regardless.
+        bool goAhead = false;
     };
-    using RigNeeded = std::function<void(const RigSetup&)>;
+    /// Empty when it is done. Otherwise what adding would cost — a fixture import half done,
+    /// which a new patch drops — and nothing is done: the prompt says it, and ADD pressed again
+    /// asks again with `goAhead`.
+    using RigNeeded = std::function<std::string(const RigSetup&)>;
 
     /// How many messages the event log remembers. Phase 6's list asks for a log tab; this is
     /// the pane. Bounded because a rule on every beat at 214 BPM is 3.6 lines a second, and
@@ -83,6 +88,11 @@ public:
 
     void setRulesChanged(RulesChanged changed) { changed_ = std::move(changed); }
     void setRigNeeded(RigNeeded needed) { rigNeeded_ = std::move(needed); }
+
+    /// A rule id no rule in `rules` has — random, as an output's is (`output::newOutputId`), so
+    /// not a deleted rule's but by a one-in-four-billion chance: "r-" and eight hex digits, a legal
+    /// OSC address segment.
+    static std::string newRuleId(const std::vector<trigger::Rule::Config>& rules);
 
     /// Shows the window, or brings it forward if it is already up.
     void show();
@@ -498,6 +508,9 @@ private:
     /// The Liberation prompt's answers, and whether it is up. See `openLiberation`.
     rule_presets::LiberationAsk liberationAsk_;
     bool liberationOpen_ = false;
+    /// The prompt has said what ADD would cost (`RigNeeded`), so the next ADD goes on. For as
+    /// long as the prompt is up.
+    bool liberationWarned_ = false;
     Repeater<LaserRow> laserRows_;
     /// Writes the prompt from `liberationAsk_` and the plan it makes.
     void publishLiberation();

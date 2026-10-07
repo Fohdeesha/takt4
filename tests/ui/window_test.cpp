@@ -1079,9 +1079,34 @@ TEST_CASE("an import while listening leaves the same input running and moves to 
     CHECK(runs() == run + 1);
     CHECK(controller.window().get_input_mono() == other.machine.mono);
     CHECK(controller.currentSettings().machine.mono == other.machine.mono);
+    // **And said**, first, and still said once the input has opened again: it said how many
+    // rules it brought, and START's own line then wrote over that.
+    const std::string moved(controller.window().get_status());
+    INFO(moved);
+    CHECK(moved.rfind("Now listening to ", 0) == 0);
+    CHECK(moved.find("Imported other.json") != std::string::npos);
+    CHECK_FALSE(controller.window().get_status_is_error());
 
-    controller.window().invoke_toggle_run();
-    waitUntil(controller, [&tracker] { return !tracker.running(); });
+    // One naming an input this machine has not got stops the show, and says that first.
+    takt4::settings::Settings missing = other;
+    missing.machine.deviceName = "No Such Interface";
+    const std::filesystem::path missingFile = dir.path() / "missing.json";
+    REQUIRE(takt4::settings::save(missing, missingFile));
+    REQUIRE(controller.importFrom(missingFile));
+    for (int i = 0; i < 5; ++i) {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    }
+    CHECK_FALSE(tracker.running());
+    const std::string stopped(controller.window().get_status());
+    INFO(stopped);
+    CHECK(stopped.rfind("Stopped listening: No Such Interface is not on this machine", 0) == 0);
+    CHECK(controller.window().get_status_is_error());
+
+    if (tracker.running()) {
+        controller.window().invoke_toggle_run();
+        waitUntil(controller, [&tracker] { return !tracker.running(); });
+    }
 }
 
 TEST_CASE("a window closed with the tracker running stops it first", "[ui][hardware]") {
@@ -6559,6 +6584,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
         [&](bool on) { note(std::string("listen ") + (on ? "1" : "0")); });
     window->on_osc_control_port_edited(
         [&](const slint::SharedString& t) { note("osc-port " + std::string(t)); });
+    window->on_osc_control_port_typed([&](const slint::SharedString&) { note("osc-port-key"); });
     window->on_osc_control_network_toggled(
         [&](bool on) { note(std::string("network ") + (on ? "1" : "0")); });
     window->on_fold_clicked([&](int s) { note("fold " + std::to_string(s)); });
@@ -6842,7 +6868,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     press(handle, "\xEF\x9C\xAB"); // End
     key("2");
     key("\n");
-    expect({"osc-port 70012"}, "the OSC port box, on Enter");
+    expect({"osc-port-key", "osc-port 70012"}, "the OSC port box: a keystroke, then Enter");
     // The allow box: the first run right of the port box.
     for (const auto& run : osc) {
         if (middleOf(run) > portX + 40.0f) {
@@ -7663,4 +7689,197 @@ TEST_CASE("the Liberation preset patches its zones, adds Liberation's output and
                         }) == 1);
     CHECK(again.preset.fixtures.size() == saved.preset.fixtures.size());
     CHECK(again.preset.rules.size() == 4);
+}
+
+TEST_CASE("a name typed into an output and left for its delay handle is applied", "[ui]") {
+    // A box commits a turn after it loses the keyboard, and only what differs from its row. A
+    // press on the delay's track takes the keyboard and moves the delay in the same event, and the
+    // move wrote the rows — the name being typed with them — so the name box, let go of a turn
+    // later, found its row already holding what it held and committed nothing: the name was never
+    // applied. Driven as an operator does it: a click in the name box, a letter, a click on the
+    // track beside the handle.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added; // the new row's, not this machine's 9000
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    constexpr int kSize = 1000;
+    layOut(controller, static_cast<float>(kSize), static_cast<float>(kSize));
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const takt4::tests::NothingReal nothingReal;
+    const std::vector<float> rows = outputRowsAt(controller, static_cast<float>(kSize));
+    REQUIRE(rows.size() == 2);
+    REQUIRE(rows[1] > 0.0f);
+    const float y = rows[1];
+    REQUIRE(seen(controller).targets[1].name != "a");
+
+    // The handle, on a picture of the window as it is.
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kSize, kSize);
+    float thumb = -1.0f;
+    for (int x = 400; x < kSize - 20 && thumb < 0.0f; ++x) {
+        if (is(shot, x, static_cast<int>(y), kThumb)) {
+            thumb = static_cast<float>(x) + 9.0f;
+        }
+    }
+    INFO("the delay handle at x=" << thumb << ", y=" << y);
+    REQUIRE(thumb > 0.0f);
+
+    clickAt(window, 110.0f, y);
+    press(window, "a"); // the box selects what it holds when clicked into
+    settle();
+    // Off the handle, so the press itself moves the delay — no turn of the loop between the
+    // keyboard leaving the box and the rows being written.
+    clickAt(window, thumb + 40.0f, y);
+    settle();
+    settle();
+
+    const takt4::output::OutputTarget after = seen(controller).targets[1];
+    INFO("name '" << after.name << "', delay " << after.delaySeconds);
+    CHECK(after.delaySeconds > 0.0); // the drag reached the output
+    CHECK(after.name == "a");
+    nothingReal.check();
+}
+
+TEST_CASE("closing the main window applies what is being typed, the OSC control port's included",
+          "[ui]") {
+    // The settings are written once the event loop has returned, and a click anywhere finishes a
+    // box — but closing the window clicked nothing: a name typed into an output and the window
+    // closed on it was not in them, and neither was a port typed into OSC control's box, which
+    // only Enter or a click away committed.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::testing::LoopbackReceiver added;
+    controller.setNewOutputPort(added.port());
+    controller.addTarget();
+    // A keystroke in each, as the boxes say them, and nothing committed.
+    controller.window().invoke_output_name_edited(1, slint::SharedString("deck"));
+    controller.window().invoke_osc_control_port_typed(slint::SharedString("7044"));
+    REQUIRE(controller.currentSettings().preset.outputs.size() == 2);
+    REQUIRE(controller.currentSettings().preset.outputs[1].name != "deck");
+    REQUIRE(controller.currentSettings().machine.oscControlPort != 7044);
+
+    // The real gesture, dispatched into the window.
+    controller.window().window().dispatch_close_requested_event();
+    const takt4::settings::Settings saved = controller.currentSettings();
+    CHECK(saved.preset.outputs[1].name == "deck");
+    CHECK(saved.machine.oscControlPort == 7044);
+    CHECK(controller.oscControlPort() == 0); // a number, not a socket: listening was off
+}
+
+TEST_CASE("an import with other meters keeps them for the next launch and says so",
+          "[ui][settings]") {
+    // The forward filter is built with its meters, as the engine is with its decoder: an import
+    // that carried others kept them for the next launch and said nothing, so the bars went on
+    // being counted in the old ones with nothing on screen to say why.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir dir;
+    const std::array<std::uint8_t, 4> running = tracker.engine().meters();
+
+    takt4::settings::Settings waltz = controller.currentSettings();
+    REQUIRE(waltz.preset.meters == running);
+    waltz.preset.meters = {3, 4, 0, 0};
+    const std::filesystem::path waltzFile = dir.path() / "waltz.json";
+    REQUIRE(takt4::settings::save(waltz, waltzFile));
+    REQUIRE(controller.importFrom(waltzFile));
+    const std::string said(controller.window().get_status());
+    INFO(said);
+    CHECK(said.find("Restart takt4 for the meters to take effect.") != std::string::npos);
+    CHECK(controller.currentSettings().preset.meters == waltz.preset.meters);
+    CHECK(tracker.engine().meters() == running);
+
+    // A file with the meters already running says nothing about them.
+    takt4::settings::Settings four = waltz;
+    four.preset.meters = running;
+    const std::filesystem::path fourFile = dir.path() / "four.json";
+    REQUIRE(takt4::settings::save(four, fourFile));
+    REQUIRE(controller.importFrom(fourFile));
+    const std::string again(controller.window().get_status());
+    INFO(again);
+    CHECK(again.find("meters") == std::string::npos);
+}
+
+TEST_CASE("the Liberation preset says it drops a half-done fixture import before it does",
+          "[ui][liberation]") {
+    // ADD lays a patch, and a new patch drops a fixture import half done in the patch editor —
+    // which it did without a word. It says so first, adds nothing, and ADD again goes on.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::ui::RulesController& editor = controller.editor();
+    takt4::ui::FixturesController& patch = controller.patchEditor();
+    const takt4::testing::LoopbackReceiver node;
+    const auto ask = [&] {
+        editor.openLiberation();
+        editor.setLaserCount(1);
+        editor.setLiberationHost("127.0.0.1");
+        editor.setLiberationPort(static_cast<int>(node.port()));
+        editor.setLiberationUniverse(1);
+        editor.setLiberationAddress(1);
+        REQUIRE(std::string(editor.window().get_liberation_problem()).empty());
+    };
+
+    SECTION("with an import half done") {
+        patch.openImport();
+        REQUIRE(patch.importing());
+        ask();
+        editor.addLiberation();
+        const std::string warning(editor.window().get_liberation_warning());
+        INFO(warning);
+        CHECK(warning.find("fixture import") != std::string::npos);
+        CHECK(std::string(editor.window().get_liberation_problem()).empty()); // ADD still works
+        CHECK(editor.liberationOpen());
+        CHECK(patch.importing());
+        CHECK(editor.rules().empty());
+        CHECK(patch.fixtures().empty());
+
+        // Closed and opened again, it says it again: what was said was said to that prompt.
+        editor.closeLiberation();
+        ask();
+        CHECK(std::string(editor.window().get_liberation_warning()).empty());
+        editor.addLiberation();
+        CHECK(editor.liberationOpen());
+        CHECK(patch.importing());
+
+        editor.addLiberation();
+        CHECK_FALSE(editor.liberationOpen());
+        CHECK_FALSE(patch.importing());
+        CHECK(editor.rules().size() == 1);
+        CHECK(patch.fixtures().size() == 1);
+    }
+
+    SECTION("with none, it adds at once") {
+        ask();
+        editor.addLiberation();
+        CHECK_FALSE(editor.liberationOpen());
+        CHECK(editor.rules().size() == 1);
+        CHECK(patch.fixtures().size() == 1);
+    }
+}
+
+TEST_CASE("an import naming an input this machine has not got, while stopped, keeps it asked for "
+          "and says nothing of listening",
+          "[ui][settings]") {
+    // The import's way through the input list, on whatever this machine has: on a runner with no
+    // audio the list is empty, which is where a list's first entry has been read before now.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir dir;
+    takt4::settings::Settings other = controller.currentSettings();
+    other.machine.deviceName = "An interface that is switched off";
+    other.machine.hostApiName = "ASIO";
+    const std::filesystem::path file = dir.path() / "other.json";
+    REQUIRE(takt4::settings::save(other, file));
+    REQUIRE(controller.importFrom(file));
+
+    CHECK_FALSE(tracker.running());
+    const std::string said(controller.window().get_status());
+    INFO(said);
+    CHECK(said.rfind("Imported other.json", 0) == 0);
+    CHECK(said.find("listening") == std::string::npos);
+    // Still the one wanted, for RESCAN and the next launch to find.
+    CHECK(controller.currentSettings().machine.deviceName == "An interface that is switched off");
 }

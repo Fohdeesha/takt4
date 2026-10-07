@@ -12,8 +12,10 @@
 #      which costs it nothing because it resamples everything to 22050 Hz anyway.
 #   3. What the driver says is **kept rather than dropped**: a reset request, a buffer-size
 #      change, a sample-rate change and a resync each set a bit that takt4 reads and clears
-#      (PaAsio_Takt4_TakeDriverEvents) and answers by reopening the stream. Upstream
-#      acknowledges all four and does nothing ("FIXME … ticket #108"; #472, PR #519).
+#      (PaAsio_Takt4_TakeDriverEvents). The first three it answers by reopening the stream; a
+#      resync it counts, and the audio the resync cost is counted into the beats' times as
+#      audio lost (audio::LostTime). Upstream acknowledges all four and does nothing
+#      ("FIXME … ticket #108"; #472, PR #519).
 #   4. A process with TAKT4_NO_ASIO in its environment **gets no ASIO host at all**. The test
 #      binaries set it (tests/support/crt_dialogs.cpp) unless TAKT4_TEST_HARDWARE is set:
 #      every window test builds a real tracker, a tracker enumerates the devices, and

@@ -47,6 +47,9 @@ export component LiberationSheet inherits Rectangle {
   in property <string> instructions;
   /// Why nothing can be added yet, or empty.
   in property <string> problem;
+  /// What adding would cost, said before it does — a fixture import half done in the patch editor.
+  /// Not a problem: ADD stays as it is, and pressed again goes on.
+  in property <string> warning;
 
   callback count-changed(int);
   callback clip-typed(int, bool, string);
@@ -427,8 +430,8 @@ export component LiberationSheet inherits Rectangle {
           spacing: 6px;
           Text {
             height: 38px;
-            text: root.problem;
-            color: Wf.alarm;
+            text: root.problem != "" ? root.problem : root.warning;
+            color: root.problem != "" ? Wf.alarm : Wf.holding;
             font-size: 14px;
             wrap: word-wrap;
             vertical-alignment: bottom;

@@ -352,8 +352,8 @@ void fillFixtures(FixturesWindow& window, const std::string& state) {
 /// business opening. What is drawn is the real component with the real models; only where the
 /// values came from differs.
 /// The Liberation preset's prompt over the editor, filled from the real planner: "liberation" as it
-/// first opens, "liberation-4" with four lasers moving, and "liberation-clash" with a fixture in
-/// the way.
+/// first opens, "liberation-4" with four lasers moving, "liberation-clash" with a fixture in the
+/// way, and "liberation-warning" saying what ADD would drop (`WindowController::applyRig`'s words).
 void fillLiberation(RulesWindow& window, const std::string& state) {
     rule_presets::LiberationAsk ask;
     std::vector<dmx::Fixture> patch;
@@ -406,6 +406,11 @@ void fillLiberation(RulesWindow& window, const std::string& state) {
     window.set_liberation_bars(ask.bars);
     window.set_liberation_instructions(slint::SharedString(plan.instructions));
     window.set_liberation_problem(slint::SharedString(plan.problem));
+    window.set_liberation_warning(slint::SharedString(
+        state == "liberation-warning"
+            ? "Adding drops the fixture import half done in the patch editor. Finish it there "
+              "first, or add again to drop it."
+            : ""));
     window.set_liberation_open(true);
 }
 

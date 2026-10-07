@@ -471,6 +471,8 @@ component ChoiceField inherits Rectangle {
             }
           }
 
+          // Elided, not spilled: the list is 258 px inside, and "reaches 12 fixtures, 3 left out, up
+          // to 4 heads" is 271 in Archivo 14 (measured). The note beside the field says it whole.
           if root.head-note != "": Text {
             height: root.row-height;
             text: root.head-note;
@@ -478,6 +480,7 @@ component ChoiceField inherits Rectangle {
             font-size: 14px;
             horizontal-alignment: center;
             vertical-alignment: center;
+            overflow: elide;
           }
 
           if root.choices.length == 0 && root.empty-note != "": Text {
@@ -933,6 +936,7 @@ export component RulesWindow inherits Window {
   in-out property <int> liberation-bars: 4;
   in-out property <string> liberation-instructions;
   in-out property <string> liberation-problem;
+  in-out property <string> liberation-warning;
   callback laser-count-changed(int);
   callback laser-clip-typed(int, bool, string);
   callback laser-clip-edited(int, bool, string);
@@ -3399,6 +3403,7 @@ export component RulesWindow inherits Window {
       bars: root.liberation-bars;
       instructions: root.liberation-instructions;
       problem: root.liberation-problem;
+      warning: root.liberation-warning;
       count-changed(v) => {
         root.laser-count-changed(v);
       }

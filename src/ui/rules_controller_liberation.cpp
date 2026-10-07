@@ -33,12 +33,16 @@ std::string trimmed(std::string text) {
 
 void RulesController::openLiberation() {
     liberationOpen_ = true;
+    liberationWarned_ = false;
+    window_->set_liberation_warning(shared(""));
     publishLiberation();
     window_->set_liberation_open(true);
 }
 
 void RulesController::closeLiberation() {
     liberationOpen_ = false;
+    liberationWarned_ = false;
+    window_->set_liberation_warning(shared(""));
     window_->set_liberation_open(false);
 }
 
@@ -155,7 +159,14 @@ void RulesController::addLiberation() {
     // The zones, the output and Link first, by whoever owns them — so that the rules, when they
     // arrive, aim at fixtures the runner already has. The patch comes back through `setPatch`.
     if (rigNeeded_) {
-        rigNeeded_(RigSetup{plan.patch, trimmed(liberationAsk_.host), liberationAsk_.port});
+        const std::string cost = rigNeeded_(RigSetup{plan.patch, trimmed(liberationAsk_.host),
+                                                     liberationAsk_.port, liberationWarned_});
+        if (!cost.empty()) {
+            // Said where the operator is looking, and ADD left as it is: pressed again, it goes on.
+            liberationWarned_ = true;
+            window_->set_liberation_warning(shared(cost));
+            return;
+        }
     } else {
         setPatch(plan.patch);
     }
