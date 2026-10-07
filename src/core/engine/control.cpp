@@ -24,12 +24,25 @@ bool ControlQueue::post(const Command& command) {
         });
         pending_.erase(stale, pending_.end());
     }
+    if (pending_.size() >= kCapacity && isSetting(command.kind)) {
+        const auto press = std::find_if(pending_.begin(), pending_.end(),
+                                        [](const Command& c) { return !isSetting(c.kind); });
+        if (press != pending_.end()) {
+            pending_.erase(press);
+            ++dropped_;
+        }
+    }
     if (pending_.size() >= kCapacity) {
         ++dropped_;
         return false;
     }
     pending_.push_back(command);
     return true;
+}
+
+void ControlQueue::dropPresses() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::erase_if(pending_, [](const Command& c) { return !isSetting(c.kind); });
 }
 
 void ControlQueue::drain(std::vector<Command>& out) {

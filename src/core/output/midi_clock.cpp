@@ -1,5 +1,7 @@
 #include "core/output/midi_clock.hpp"
 
+#include "core/output/rtmidi_errors.hpp"
+
 #include "core/output/midi_ports.hpp"
 #include "core/sandbox.hpp"
 
@@ -57,6 +59,7 @@ public:
     RtMidiPort() {
         try {
             out_ = std::make_unique<RtMidiOut>();
+            errors_.watch(*out_);
         } catch (const RtMidiError& error) {
             // A machine can have no usable MIDI API at all — a headless Linux box without an
             // ALSA sequencer is the ordinary case, and CI runs on one — and RtMidi reports
@@ -81,6 +84,7 @@ public:
         try {
             index = findPort(*out_, spec); // MidiPortMissing: not on this machine
             name = out_->getPortName(index);
+            errors_.raise();
         } catch (const RtMidiError& error) {
             throw std::runtime_error("MIDI output: " + error.getMessage());
         }
@@ -92,6 +96,7 @@ public:
         }
         try {
             out_->openPort(index, "takt4");
+            errors_.raise();
         } catch (const RtMidiError& error) {
             // Listed, and refused: on Windows a MIDI port is one program's at a time, so this is
             // another program holding it far more often than a broken driver — and saying "no
@@ -108,6 +113,7 @@ public:
         }
         try {
             out_->closePort();
+            errors_.raise();
         } catch (...) {
             // A port that is already gone cannot be closed any more gone.
         }
@@ -123,9 +129,12 @@ public:
             throw std::runtime_error("MIDI output: the port is not open");
         }
         out_->sendMessage(message.data(), message.size());
+        errors_.raise();
     }
 
 private:
+    /// Before `out_`, which reports to it and so must go first.
+    RtMidiErrors errors_;
     std::unique_ptr<RtMidiOut> out_;
     /// RtMidi's reason, when it could not start at all and `out_` is empty.
     std::string unusable_;

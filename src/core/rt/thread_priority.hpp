@@ -8,6 +8,7 @@
 // redraw. Only Link's own threads asked Windows for better (MMCSS, "Distribution"). This asks
 // for the model, the tracker and the output thread, and undoes it when the thread is done.
 
+#include <chrono>
 #include <cstdint>
 
 namespace takt4::rt {
@@ -52,6 +53,53 @@ private:
     int previousPriority_ = 0;
     bool fallback_ = false;
     bool raised_ = false;
+};
+
+/// **The whole process at full speed, whatever its window is doing.** Windows' power throttling
+/// opted out of, both kinds: the execution-speed kind, which runs a process whose window is
+/// minimised or hidden on efficient cores at low clocks; and, from Windows 11, the timer kind,
+/// under which a `timeBeginPeriod(1)` from a process whose window is minimised or covered is not
+/// honoured — so every millisecond round of the output thread became 15.6 ms, the MIDI clock's
+/// ticks went in 15.6 and 31.2 ms gaps, and Art-Net fell to about 32 frames a second. Once, early,
+/// by the program (`ui::run`, the console).
+///
+/// Returns whether Windows took both. One too old to know the timer kind is asked for the other
+/// alone, and one that knows neither throttles nothing, so the answer is something to know, not
+/// a reason to stop.
+bool keepFullSpeed() noexcept;
+
+/// The output thread's wait between rounds: a round every millisecond, a thousand a second.
+///
+/// **On a grid, not a millisecond from whenever the last round finished.** Every wait Windows
+/// offers ends on a tick of a timer, and after the time asked, not on it: `sleep_for(1ms)` under
+/// `timeBeginPeriod(1)` was measured on the rig at a round every 1.47 ms, 682 a second, and a
+/// high-resolution waitable timer asked for 1 ms at 1.50 (the rig's system timer at 0.5 ms; a
+/// tick late, every time). Asked for what is left until the next millisecond of the grid, a wait
+/// that ends a tick late is a round a tick late, not a round a tick longer — and the rounds come a
+/// thousand a second. A round more than one period behind starts the grid again from where it is,
+/// so a stall is not made up for with a burst.
+///
+/// The high-resolution timer (Windows 10 1803 and later) because from Windows 11 a process whose
+/// window is minimised or covered may not be given the timer resolution it asked for, and it is
+/// not used by that timer. Where one cannot be made, the wait is a sleep until the same moment.
+class RoundTimer {
+public:
+    RoundTimer() noexcept;
+    ~RoundTimer();
+
+    RoundTimer(const RoundTimer&) = delete;
+    RoundTimer& operator=(const RoundTimer&) = delete;
+
+    /// Waits until the next round is due: `period` after the last one was.
+    void wait(std::chrono::microseconds period) noexcept;
+    /// Whether the waits are the high-resolution timer's.
+    bool precise() const noexcept { return timer_ != nullptr; }
+
+private:
+    void* timer_ = nullptr;
+    /// When the round being waited for is due; unset before the first wait.
+    std::chrono::steady_clock::time_point next_{};
+    bool started_ = false;
 };
 
 /// Flush-to-zero and denormals-are-zero on the calling thread, for as long as it lives, and

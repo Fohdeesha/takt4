@@ -171,6 +171,7 @@ add_library(takt4_core STATIC
   output/output_target.hpp
   output/output_runner.cpp
   output/output_runner.hpp
+  output/rtmidi_errors.hpp
   output/rule_sink.cpp
   output/rule_sink.hpp
   output/transports.cpp

@@ -73,6 +73,15 @@ struct Command {
     static Command holdTempo(double bpm) noexcept { return Command{Kind::HoldTempo, {}, bpm, false}; }
 };
 
+/// **A setting, not a press**: what the operator has set up rather than something done to the
+/// tracker at a moment — the settings (`SetTempoOptions`) and the tempo hold named directly
+/// (`HoldTempo`, which the console sets before it starts). The rest — ÷2, ×2, DOWNBEAT, a tap, a
+/// pin — act on what the tracker is hearing at the press, and mean nothing to a tracker that is
+/// stopped.
+constexpr bool isSetting(Command::Kind kind) noexcept {
+    return kind == Command::Kind::SetTempoOptions || kind == Command::Kind::HoldTempo;
+}
+
 /// The road into the inference thread: many writers, one reader, bounded, no allocation
 /// once it is warm.
 ///
@@ -96,7 +105,17 @@ public:
     /// Any thread but the audio one. False when the queue is full, and then `dropped()`
     /// counts it. A SetTempoOptions supersedes any already waiting rather than queueing
     /// behind it, so a slider dragged while nothing is draining cannot fill this.
+    ///
+    /// **A setting is never refused** (`isSetting`): a queue full of presses — 64 of them posted
+    /// while nothing drained, a stopped tracker and a control surface — gives up the oldest press
+    /// for it, counted as dropped. It used to refuse the setting, so the latency and BPM window
+    /// sliders moved on screen and reached nothing.
     bool post(const Command& command);
+
+    /// Drops every press waiting (`isSetting`), keeping the settings in their order. What START
+    /// does before it applies what was posted while the tracker was stopped: a ÷2, a pin or a
+    /// DOWNBEAT pressed on a control surface between sets would otherwise land on the next run.
+    void dropPresses();
 
     /// The consumer. Takes everything waiting, in the order it was posted, and leaves the
     /// queue empty. `out` is cleared first. Keep the same vector across calls, **reserved to

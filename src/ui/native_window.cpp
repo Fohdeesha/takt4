@@ -44,6 +44,7 @@ void fitWindowsToScreen(bool fit) noexcept {
 #include <windows.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace takt4::ui {
@@ -190,6 +191,44 @@ bool bringWindowToFront(std::string_view titleContains) {
     return false;
 }
 
+namespace {
+
+/// What each thread timer of `pumpThroughModalLoops` calls. Thread timers belong to the thread
+/// that set them, and so does this.
+struct Pumped {
+    DragPump pump = nullptr;
+    void* user = nullptr;
+};
+thread_local std::vector<std::pair<UINT_PTR, Pumped>> g_pumped;
+
+void CALLBACK pumpedTimerProc(HWND, UINT, UINT_PTR id, DWORD) {
+    for (const auto& [timer, pumped] : g_pumped) {
+        if (timer == id) {
+            const Pumped call = pumped; // the list may change under the call
+            call.pump(call.user);
+            return;
+        }
+    }
+}
+
+} // namespace
+
+std::uintptr_t pumpThroughModalLoops(DragPump pump, void* user, unsigned periodMs) {
+    const UINT_PTR id = SetTimer(nullptr, 0, periodMs, &pumpedTimerProc);
+    if (id != 0) {
+        g_pumped.emplace_back(id, Pumped{pump, user});
+    }
+    return id;
+}
+
+void stopPumping(std::uintptr_t handle) {
+    if (handle == 0) {
+        return;
+    }
+    KillTimer(nullptr, handle);
+    std::erase_if(g_pumped, [handle](const auto& pumped) { return pumped.first == handle; });
+}
+
 void keepPaintingWhileDragged(DragPump pump, void* user) {
     g_pump = pump;
     g_pumpUser = user;
@@ -268,6 +307,12 @@ bool bringWindowToFront(std::string_view) {
 }
 
 void keepPaintingWhileDragged(DragPump, void*) {}
+
+std::uintptr_t pumpThroughModalLoops(DragPump, void*, unsigned) {
+    return 0;
+}
+
+void stopPumping(std::uintptr_t) {}
 
 void reportFatal(std::string_view message) {
     std::cerr << "takt4: " << message << '\n';
