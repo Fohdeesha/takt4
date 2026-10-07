@@ -135,6 +135,14 @@ struct OutputTarget {
 inline constexpr double kMaxOutputDelaySeconds = 1.0;
 inline constexpr double kMinOutputDelaySeconds = -1.0;
 
+/// **A release goes before a press it shares a moment with**, and "the same moment" is this
+/// close: the jitter between a moment predicted and one heard, and between a release timed to
+/// the beat spacing it was fired at and the beat that then came. A release a hair after the next
+/// press on its target goes with it, ahead of it, never more than this early — so "release after
+/// one beat" ends the note it started rather than the one after it. `OutputRunner` hands such a
+/// release over first; `RuleSink` and `OscPublisher` keep it first.
+inline constexpr double kReleaseFirstSeconds = 0.010;
+
 /// How many targets a rule can be routed to by id.
 ///
 /// A rule carries its routing as a bit per target (`trigger::Message::outputs`), which is

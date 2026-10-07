@@ -90,18 +90,91 @@ void RuleSink::send(const trigger::Message& message) {
     }
 }
 
-void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload) {
+void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at) {
     // So "delivered" means something different for this kind than for the other two: it means
     // the effect reached at least one real channel, not that a datagram left. That is the
     // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
     // message routed to a target that is switched off, and looks the same from outside.
     const std::uint64_t before = transports_.dmx().missed();
-    transports_.dmx().start(fixtures, payload, now_);
+    // **At `at`**: an effect held for its moment runs from that moment, not from the round that
+    // got to it a millisecond or so later.
+    transports_.dmx().start(fixtures, payload, at);
     if (transports_.dmx().missed() != before) {
         ++undeliverable_;
         return;
     }
     ++delivered_;
+    // A node sent the lighting late sees this its lag on: the Art-Net side keeps it clear then.
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
+    for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+        if (fixtures.test(i)) {
+            transports_.artnet().cueStarted(patch[i].universe, at);
+        }
+    }
+}
+
+double RuleSink::dueOf(const HeldMidi& held) const noexcept {
+    const std::vector<OutputTarget>& targets = transports_.outputs();
+    const double delay =
+        held.target < targets.size()
+            ? std::clamp(targets[held.target].delaySeconds, kMinOutputDelaySeconds,
+                         kMaxOutputDelaySeconds)
+            : 0.0;
+    return held.moment + transports_.latencySeconds() + delay;
+}
+
+double RuleSink::dueOf(const HeldDmx& held) const noexcept {
+    return held.moment + transports_.latencySeconds() - transports_.lightingLeadSeconds();
+}
+
+void RuleSink::sendHeldMidi(std::size_t target, double until) {
+    std::erase_if(midiQueue_, [&](const HeldMidi& held) {
+        if (held.target != target || dueOf(held) > until) {
+            return false;
+        }
+        if (MidiOutput* const port = transports_.midiTarget(held.target)) {
+            port->send(std::span<const unsigned char>(held.bytes.data(), held.length));
+        }
+        return true;
+    });
+}
+
+void RuleSink::startHeldDmx(double until) {
+    std::vector<HeldDmx> going;
+    std::erase_if(dmxQueue_, [&](const HeldDmx& held) {
+        if (dueOf(held) > until) {
+            return false;
+        }
+        going.push_back(held);
+        return true;
+    });
+    for (const HeldDmx& held : going) {
+        startDmx(held.fixtures, held.payload, std::min(now_, dueOf(held)));
+    }
+}
+
+void RuleSink::sayUpcomingCues() {
+    // The earliest cue held for each universe it reaches. A handful of cues and of fixtures, so
+    // the plain walk is the cheap one.
+    upcoming_.clear();
+    const std::vector<dmx::Fixture>& patch = transports_.patch();
+    for (const HeldDmx& held : dmxQueue_) {
+        const double due = dueOf(held);
+        for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
+            if (!held.fixtures.test(i)) {
+                continue;
+            }
+            const auto known = std::find_if(upcoming_.begin(), upcoming_.end(), [&](const auto& cue) {
+                return cue.first == patch[i].universe;
+            });
+            if (known == upcoming_.end()) {
+                upcoming_.emplace_back(patch[i].universe, due);
+            } else {
+                known->second = std::min(known->second, due);
+            }
+        }
+    }
+    transports_.artnet().setUpcomingCues(upcoming_);
 }
 
 void RuleSink::sendDmx(const trigger::Message& message) {
@@ -115,27 +188,42 @@ void RuleSink::sendDmx(const trigger::Message& message) {
     // which each node's own delay then takes back from the frames it is sent (see
     // `OutputTarget::delaySeconds` and `dmx::ArtNetPublisher`). With no node set early that
     // lead is nothing, and the start is where it always was.
-    const double due =
-        message.moment + transports_.latencySeconds() - transports_.lightingLeadSeconds();
-    if (due <= now_) {
-        startDmx(message.fixtures, message.payload);
+    const HeldDmx held{message.moment, message.fixtures, message.payload};
+    if (dueOf(held) <= now_) {
+        // Whatever was held to go a hair after this goes first: see `kReleaseFirstSeconds`.
+        startHeldDmx(now_ + kReleaseFirstSeconds);
+        startDmx(message.fixtures, message.payload, now_);
         return;
     }
     if (dmxQueue_.size() >= kMaxQueued) {
         ++dropped_;
         return;
     }
-    dmxQueue_.push_back(HeldDmx{due, message.fixtures, message.payload});
+    dmxQueue_.push_back(held);
 }
 
 void RuleSink::releaseDue(double now) {
     setNow(now);
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    // Per target, the last message held for it that is due now: anything held before it for the
+    // same target, due within `kReleaseFirstSeconds` after it, goes with it and ahead of it — a
+    // release a hair after the next press — rather than a round after.
+    std::array<std::size_t, kMaxRoutableTargets> lastDue{};
+    lastDue.fill(kNone);
+    for (std::size_t i = 0; i < midiQueue_.size(); ++i) {
+        if (midiQueue_[i].target < kMaxRoutableTargets && dueOf(midiQueue_[i]) <= now) {
+            lastDue[midiQueue_[i].target] = i;
+        }
+    }
     // Partitioned rather than erased one at a time, as `OscPublisher::flushDue` does and for
     // the same reason: a round can retire a whole beat's worth.
     std::size_t kept = 0;
     for (std::size_t i = 0; i < midiQueue_.size(); ++i) {
         HeldMidi& held = midiQueue_[i];
-        if (held.due > now) {
+        const double due = dueOf(held);
+        const bool ahead = held.target < kMaxRoutableTargets && lastDue[held.target] != kNone &&
+                           i < lastDue[held.target] && due <= now + kReleaseFirstSeconds;
+        if (due > now && !ahead) {
             if (kept != i) {
                 midiQueue_[kept] = held;
             }
@@ -148,19 +236,35 @@ void RuleSink::releaseDue(double now) {
     }
     midiQueue_.resize(kept);
 
+    // The lighting likewise, one queue for the one engine. Started at its own moment's due time,
+    // which this round has just passed.
+    std::size_t lastLighting = kNone;
+    for (std::size_t i = 0; i < dmxQueue_.size(); ++i) {
+        if (dueOf(dmxQueue_[i]) <= now) {
+            lastLighting = i;
+        }
+    }
+    std::vector<HeldDmx> going;
     kept = 0;
     for (std::size_t i = 0; i < dmxQueue_.size(); ++i) {
         HeldDmx& held = dmxQueue_[i];
-        if (held.due > now) {
+        const double due = dueOf(held);
+        const bool ahead = lastLighting != kNone && i < lastLighting && due <= now + kReleaseFirstSeconds;
+        if (due > now && !ahead) {
             if (kept != i) {
                 dmxQueue_[kept] = held;
             }
             ++kept;
             continue;
         }
-        startDmx(held.fixtures, held.payload);
+        going.push_back(held);
     }
     dmxQueue_.resize(kept);
+    for (const HeldDmx& held : going) {
+        startDmx(held.fixtures, held.payload, std::min(now, dueOf(held)));
+    }
+    // And what is still held, for the Art-Net side to keep clear for.
+    sayUpcomingCues();
 }
 
 void RuleSink::flushQueued() {
@@ -171,7 +275,7 @@ void RuleSink::flushQueued() {
     }
     midiQueue_.clear();
     for (const HeldDmx& held : dmxQueue_) {
-        startDmx(held.fixtures, held.payload);
+        startDmx(held.fixtures, held.payload, now_);
     }
     dmxQueue_.clear();
 }
@@ -268,6 +372,9 @@ void RuleSink::sendMidi(const trigger::Message& message) {
             std::clamp(targets[i].delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
         const double due = message.moment + latency + delay;
         if (due <= now_) {
+            // Whatever was held for this target to go a hair after this goes first: see
+            // `kReleaseFirstSeconds`.
+            sendHeldMidi(i, now_ + kReleaseFirstSeconds);
             port->send(std::span<const unsigned char>(bytes.data(), length));
             continue;
         }
@@ -275,7 +382,7 @@ void RuleSink::sendMidi(const trigger::Message& message) {
             ++dropped_;
             continue;
         }
-        midiQueue_.push_back(HeldMidi{due, i, bytes, length});
+        midiQueue_.push_back(HeldMidi{message.moment, i, bytes, length});
     }
     if (sent) {
         ++delivered_;

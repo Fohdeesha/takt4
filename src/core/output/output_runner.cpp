@@ -896,6 +896,9 @@ void OutputRunner::apply(const OutputCommand& command) {
                 triggers_.setListening(true);
                 scheduler_.reset();
                 transports_.startClock(now);
+                // And Link put under the first locked beat again, not nudged onto it: see
+                // `Transports::resnapLink`.
+                transports_.resnapLink();
             } else {
                 // **STOP: nothing fires after it** (the audit of 2026-09-25, H3, and the
                 // operator's answer to its Q3). Up to two predicted beats went on firing their
@@ -1120,6 +1123,9 @@ trigger::Context OutputRunner::contextAt(double now) const {
 }
 
 void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
+    // The releases owed about this beat first, and those owed a hair after it: see
+    // `kReleaseFirstSeconds`.
+    triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds);
     transports_.publishBeat(beat.event, beat.moment, now);
     // §5.8's beat-counting triggers, off the state *at this beat* rather than off the engine's
     // newest: a round can fire several beats, and a rule counting bars has to see each of them
@@ -1206,6 +1212,10 @@ void OutputRunner::drainOnce(double now) {
             fireBeat(*next, now);
         }
     });
+    // What the sink held for now — its MIDI, and the start of its lighting — before this round's
+    // Art-Net frames are made from the lighting: a cue held for its moment used to start a round
+    // after it, and went out with the frame after that.
+    guarded("the held messages", [&] { sink_.releaseDue(now); });
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
     guarded("the outputs", [&] { transports_.advance(now, engine_.state()); });
@@ -1228,6 +1238,8 @@ void OutputRunner::drainOnce(double now) {
         noSignalSeen_ = state.noSignal;
         if (state.noSignal) {
             guarded("disarming the lasers", [&] {
+                // Link snaps under the first locked beat after it, as after a START.
+                transports_.resnapLink();
                 transports_.dmx().disarm(now);
                 forgetZones();
                 // And the same for what MIDI holds on — a note on is a Liberation clip too, on a
@@ -1247,11 +1259,10 @@ void OutputRunner::drainOnce(double now) {
             triggers_.onBarDeclared(declared);
         });
     }
-    // Last: the triggers that do not wait for a beat, and any follow-up now due.
+    // Last: the triggers that do not wait for a beat, and any follow-up now due. A message they
+    // send with nothing to wait for goes at once; one held for a later moment is released by a
+    // later round, before its frames are made.
     guarded("the rules", [&] { triggers_.advance(context); });
-    // Then whatever MIDI and lighting a rule sent this round or earlier that has come due — after
-    // the triggers, so a message with nothing to wait for goes in the round it was sent.
-    guarded("the held messages", [&] { sink_.releaseDue(now); });
     // And a copy of the lighting frames for anything watching at redraw rate. After the
     // triggers, so a fade started this round is in the very frame that is mirrored.
     guarded("the lighting readout", [&] { mirrorLevels(now); });

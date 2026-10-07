@@ -232,6 +232,12 @@ public:
     void stopClock() noexcept;
     bool clockRunning() const noexcept { return clockRunning_; }
 
+    /// Puts Link's phase under the music on the next locked beat — a snap, not a nudge. What a
+    /// START does, and the input going quiet: the beats after either are a new run, whatever the
+    /// session did meanwhile, and a lock found again used to be nudged onto them at two per cent a
+    /// beat — up to fifteen seconds with a peer's tempo off by a couple of BPM the while.
+    void resnapLink() noexcept { linkSnapped_ = false; }
+
     /// Ticks the MIDI clock up to `now` and republishes any OSC state that moved. Called
     /// every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one.
     void advance(double now, const tracking::TempoState& state);
@@ -258,15 +264,22 @@ public:
     /// of its own: `takt4-cli`'s file mode, and the tests.
     void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double beatTime);
 
-    /// How far ahead of a beat's own moment it must be fired for the earliest output to have
-    /// it on time: the rig's offset plus the most negative delay of any OSC, MIDI or Art-Net
-    /// output, and never later than the beat itself. Zero or negative. See `OutputRunner`. A
-    /// MIDI clock and Link are grids that run on from a beat already heard, so they ask for
-    /// nothing here whatever their delay.
+    /// When, against a beat's own moment, a locked beat is fired on a prediction if it has not
+    /// been heard by then: the rig's offset plus the earliest delay of any OSC, MIDI or Art-Net
+    /// output. Negative is ahead of the beat, for a rig that needs its cues early. Positive — every
+    /// output that far behind the beat — is waiting for the measured beat, which is used whenever it
+    /// comes in time, less `kPredictionMargin` so a prediction that is needed still reaches the
+    /// earliest output on time. See `OutputRunner` and `BeatScheduler`. A MIDI clock and Link are
+    /// grids that run on from a beat already heard, so they ask for nothing here whatever their
+    /// delay.
     double leadSeconds() const noexcept;
+    /// How long a prediction fired in place of a beat not yet heard has, before the earliest
+    /// output needs it: a round of the output thread and the sink's hold, with room to spare.
+    static constexpr double kPredictionMargin = 0.005;
     /// How long after a beat's own moment the latest output still wants it: the rig's offset
-    /// plus the largest delay, and never less than zero. What tells a beat heard late from one
-    /// so stale that firing it would be a burst of cues for music long gone.
+    /// plus the largest delay of any OSC, MIDI or Art-Net output, and never less than zero. What
+    /// tells a beat heard late from one so stale that firing it would be a burst of cues for
+    /// music long gone.
     double tailSeconds() const noexcept;
 
     /// Follows §5.5's latency offset when the operator moves it. The tracker applies it

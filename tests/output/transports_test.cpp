@@ -148,27 +148,30 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
         CHECK(transports.osc().pending() == 0);
     }
 
-    SECTION("and moving it mid-set leaves what is already queued where it was") {
-        // A held message keeps the deadline it was given: rewriting deadlines under a queue
-        // would reorder a rig in the middle of a bar.
+    SECTION("and moving it mid-set moves what is already queued with it, in its order") {
+        // A held message keeps its beat's moment, and goes when the offset as it now is says.
+        // A deadline fixed as it was queued let a move send a release held after its press ahead
+        // of it, a note left on; every message for a target moves together, so none passes
+        // another.
         transports.publishBeat(beatAt(2.0, 2, 120.0), 2.0, 1.7);
         const std::size_t queued = transports.osc().pending();
         REQUIRE(queued > 0);
 
         transports.setLatencySeconds(0.0);
-        transports.advance(1.75, steady); // before the 1.8 those are due at
+        transports.advance(1.85, steady); // past the 1.8 the old offset gave them
         CHECK(transports.osc().pending() == queued);
 
-        // The next beat feels the new offset: at its own moment, which is now.
+        // The next beat feels the new offset: at its own moment, which is now — and it does not
+        // wait behind the ones held for a later moment.
         const std::uint64_t before = transports.osc().messagesSent();
-        transports.publish(beatAt(1.76, 3, 120.0), 0, 1.76);
+        transports.publish(beatAt(1.86, 3, 120.0), 0, 1.86);
         CHECK(transports.osc().messagesSent() > before);
         CHECK(transports.osc().pending() == queued);
 
-        // And the held ones go at the 1.8 they were given — not at 2.0, where the new offset
-        // would have put them. The check above was before both, so it held either way (the
-        // audit of 2026-09-25, T13).
-        transports.advance(1.85, steady);
+        // And the held ones go at 2.0, where the new offset puts their beat.
+        transports.advance(1.9999, steady);
+        CHECK(transports.osc().pending() == queued);
+        transports.advance(2.0001, steady);
         CHECK(transports.osc().pending() == 0);
     }
 
@@ -1883,5 +1886,490 @@ TEST_CASE("a times-two puts Link at twice the beats, the tracker's downbeat on a
         apart -= 4.0 * std::floor(apart / 4.0 + 0.5);
         CHECK(std::abs(apart) < 0.05);
     }
+    transports.stopOutputs();
+}
+
+TEST_CASE("a locked beat waits for the measured beat when every output is behind it",
+          "[output]") {
+    // Every output later than the beat leaves time to wait for the beat the tracker measures, so
+    // a locked beat's messages go on that beat — as Link and the MIDI clock are given it — rather
+    // than on the one predicted from the beat before. The lead is that slack, less a margin; an
+    // output ahead of the beat still has it fired ahead, on the prediction.
+    LoopbackReceiver media;
+    LoopbackReceiver node;
+    Transports::Config config;
+    takt4::output::OutputTarget osc;
+    osc.id = "o-05c0";
+    osc.name = "media";
+    osc.host = "127.0.0.1";
+    osc.port = media.port();
+    osc.delaySeconds = 0.050;
+    config.outputs.push_back(osc);
+    takt4::output::OutputTarget artnet;
+    artnet.id = "o-a0";
+    artnet.name = "truss";
+    artnet.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    artnet.host = "127.0.0.1";
+    artnet.port = node.port();
+    artnet.delaySeconds = 0.400;
+    config.outputs.push_back(artnet);
+    config.latencySeconds = 0.100;
+    Transports transports(config);
+    CHECK_THAT(transports.leadSeconds(),
+               WithinAbs(0.150 - Transports::kPredictionMargin, 1e-12));
+    // And a beat heard as late as the latest output still wants it is still worth firing: the
+    // Art-Net node's delay counts. It was left out, so a beat a node set late still wanted could
+    // be dropped as stale.
+    CHECK_THAT(transports.tailSeconds(), WithinAbs(0.500, 1e-12));
+
+    SECTION("an output ahead of the beat has it fired ahead, as before") {
+        transports.setLatencySeconds(-0.100);
+        CHECK_THAT(transports.leadSeconds(), WithinAbs(-0.050, 1e-12));
+    }
+    SECTION("a switched-off output asks for nothing") {
+        REQUIRE(transports.setOutputDelay("o-05c0", 0.300));
+        CHECK_THAT(transports.leadSeconds(),
+                   WithinAbs(0.400 - Transports::kPredictionMargin, 1e-12));
+    }
+}
+
+TEST_CASE("a beat's lighting goes out on its moment through a fade that keeps the universe busy",
+          "[output][dmx][trigger]") {
+    // End to end: a colour rule on every beat, with the rig 150 ms behind the audio so each beat's
+    // cue is held for its moment, and a hue sweep on a second fixture in the same universe that
+    // changes it every 44 Hz period. A held cue used to start a round late and then wait behind
+    // the sweep's frames — up to 23 ms, a different amount each beat. Now the sink says what it
+    // holds, the Art-Net side keeps the period before it clear, and the cue starts and goes in
+    // the round it is due. In the order the output thread runs a round.
+    takt4::testing::ArtNetNodes nodes(1);
+    Transports::Config config;
+    takt4::dmx::Fixture par = takt4::dmx::fixtureFromMode("par", 1, 0, 1);
+    par.id = "par";
+    takt4::dmx::Fixture wash = takt4::dmx::fixtureFromMode("wash", 1, 0, 10);
+    wash.id = "wash";
+    config.patch = {par, wash};
+    takt4::output::OutputTarget node;
+    node.id = "o-a0";
+    node.name = "truss";
+    node.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    node.host = "127.0.0.1";
+    node.port = nodes.port(0);
+    config.outputs.push_back(node);
+    config.latencySeconds = 0.150;
+    Transports transports(config);
+
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "red";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.fixtures = {"par"};
+    rule.dmx.effect = takt4::dmx::EffectKind::Color;
+    rule.dmx.color.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.color.fixed = takt4::trigger::Value::ofText("#ff0000");
+    rule.dmx.level.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.dmx.level.fixed = takt4::trigger::Value::ofInt(255);
+    rule.dmx.durationBeats = 0.0;
+    // Dark again 100 ms on, so every beat's red is a change on the wire.
+    takt4::trigger::FollowUp dim;
+    dim.unit = takt4::trigger::DelayUnit::Milliseconds;
+    dim.delaySeconds = 0.100;
+    rule.followUps.push_back(dim);
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+    triggers.rule(0).setFixtureMask(0b1);
+
+    takt4::dmx::Payload sweep;
+    sweep.kind = takt4::dmx::EffectKind::HueSweep;
+    sweep.color = takt4::dmx::Color{255, 0, 0};
+    sweep.durationSeconds = 60.0f;
+    sweep.cycles = 60.0f;
+    transports.dmx().start(0b10, sweep, 0.0);
+
+    // Twenty beats at 128 BPM, each heard 60 ms after its moment, between two milliseconds.
+    const double period = 60.0 / 128.0;
+    std::vector<double> moments;
+    for (int k = 0; k < 20; ++k) {
+        moments.push_back(0.5003 + k * period);
+    }
+    std::size_t next = 0;
+    const TempoState state;
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    const auto round = [&](double now) {
+        sink.setNow(now);
+        while (next < moments.size() && moments[next] + 0.060 <= now) {
+            context.now = now;
+            context.moment = moments[next];
+            context.beats = next + 1;
+            context.beatInBar = static_cast<std::uint32_t>(next % 4) + 1;
+            context.bars = next / 4 + 1;
+            triggers.onBeat(context);
+            ++next;
+        }
+        sink.releaseDue(now);
+        const std::uint64_t before = transports.artnet().sent();
+        transports.advance(now, state);
+        takt4::trigger::Context later = context;
+        later.now = now;
+        later.moment.reset();
+        triggers.advance(later);
+        return static_cast<std::size_t>(transports.artnet().sent() - before);
+    };
+    nodes.run(round, 0, static_cast<int>(moments.back() * 1000.0) + 400);
+    for (std::size_t k = 0; k < moments.size(); ++k) {
+        const double due = moments[k] + 0.150;
+        INFO("beat " << k << ", its lighting due at " << due);
+        const double lit = nodes.first(0, 255, due - 0.0005);
+        CHECK(lit >= due);
+        CHECK(lit < due + 0.0011);
+    }
+    CHECK(nodes.heard(0).size() > 300); // the sweep went on round them
+}
+
+TEST_CASE("a note released after one beat is let go before the next beat's note",
+          "[output][midi][trigger][release]") {
+    // "Release after 1 beat", the editor's own follow-up row, on a rule firing every beat. Its
+    // release is about the moment of the next press, and the two come from different stamps — a
+    // beat predicted and a beat heard — so jitter put either first. The press going first was a
+    // fixed note cut the instant it started. A release goes before a press it shares a moment
+    // with, to within `kReleaseFirstSeconds`: the output thread hands it over first
+    // (`TriggerEngine::sendFollowUpsAbout`, as `OutputRunner::fireBeat` calls it), and the sink
+    // keeps it first. Through a device on time, and one set later that holds both.
+    const double delay = GENERATE(0.0, 0.120);
+    INFO("the device " << delay * 1000.0 << " ms late");
+    auto wire = std::make_shared<Wire>();
+    Transports::Config config;
+    takt4::output::OutputTarget desk;
+    desk.id = "o-de5c";
+    desk.name = "desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "desk";
+    desk.delaySeconds = delay;
+    config.outputs = {desk};
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<RecordingPort>(name, wire));
+    };
+    Transports transports(config);
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "every";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Beats;
+    release.delayBeats = 1.0;
+    rule.followUps.push_back(release);
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+
+    // Sixty-four beats at 128 BPM, each a few milliseconds either side of a beat after the last.
+    const double period = 60.0 / 128.0;
+    std::mt19937 random(20261007);
+    std::vector<double> moments;
+    for (std::size_t k = 0; k < 64; ++k) {
+        const double jitter = (static_cast<double>(random()) / 4294967296.0 * 2.0 - 1.0) * 0.004;
+        moments.push_back(10.0 + static_cast<double>(k) * period + jitter);
+    }
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    std::size_t next = 0;
+    const double end = moments.back() + 2.0 * period;
+    for (int step = 0; 10.0 + 0.001 * step < end; ++step) {
+        const double now = 10.0 + 0.001 * step;
+        wire->now = now;
+        sink.setNow(now);
+        // The beats due this round, fired the way the output thread fires one: what is owed about
+        // the beat first, then the beat.
+        while (next < moments.size() && moments[next] <= now) {
+            context.now = now;
+            context.moment = moments[next];
+            context.beats = next + 1;
+            context.beatInBar = static_cast<std::uint32_t>(next % 4) + 1;
+            context.bars = next / 4 + 1;
+            triggers.sendFollowUpsAbout(moments[next] + takt4::output::kReleaseFirstSeconds);
+            triggers.onBeat(context);
+            ++next;
+        }
+        sink.releaseDue(now);
+        takt4::trigger::Context later = context;
+        later.now = now;
+        later.moment.reset();
+        triggers.advance(later);
+    }
+
+    // On the wire: on, off, on, off — every note on after the first follows the note off before
+    // it, and that note off is not more than the tolerance early.
+    std::size_t ons = 0;
+    std::size_t cut = 0;
+    bool sounding = false;
+    double offAt = -1.0;
+    for (const auto& [heard, at] : wire->heard) {
+        if (heard == "desk on") {
+            if (sounding) {
+                ++cut;
+            }
+            if (offAt >= 0.0) {
+                INFO("a note off at " << offAt << ", the next note on at " << at);
+                CHECK(at - offAt <= takt4::output::kReleaseFirstSeconds + 0.0011);
+            }
+            sounding = true;
+            ++ons;
+        } else {
+            sounding = false;
+            offAt = at;
+        }
+    }
+    CHECK(ons == 64);
+    CHECK(cut == 0);
+}
+
+TEST_CASE("a MIDI delay dragged shorter while a note is held keeps its note off after its note on",
+          "[output][midi][trigger]") {
+    // A note held for a device set 120 ms late, and the delay dragged to nothing within the note's
+    // 50 ms. A due time fixed as each was held left the note on at 10.12 and gave the note off,
+    // held after the drag, 10.05: Note Off, then Note On, and the note stuck on. A held message
+    // keeps its moment now, and goes when the offset as it is says.
+    auto wire = std::make_shared<Wire>();
+    Transports::Config config;
+    takt4::output::OutputTarget desk;
+    desk.id = "o-de5c";
+    desk.name = "desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "desk";
+    desk.delaySeconds = 0.120;
+    config.outputs = {desk};
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(
+            name, std::make_unique<RecordingPort>(name, wire));
+    };
+    Transports transports(config);
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "hit";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 0.050;
+    rule.followUps.push_back(release);
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    context.beatInBar = 1;
+    context.beats = 1;
+    context.bars = 1;
+    context.now = 10.0;
+    context.moment = 10.0; // fired on its prediction, as the output thread does
+    wire->now = 10.0;
+    sink.setNow(10.0);
+    triggers.onBeat(context);
+    REQUIRE(sink.queued() == 1);
+
+    takt4::trigger::Context round = context;
+    round.moment.reset();
+    for (int step = 1; step <= 300; ++step) {
+        const double now = 10.0 + 0.001 * step;
+        if (step == 20) {
+            REQUIRE(transports.setOutputDelay("o-de5c", 0.0));
+        }
+        wire->now = now;
+        sink.setNow(now);
+        sink.releaseDue(now);
+        round.now = now;
+        triggers.advance(round);
+    }
+    REQUIRE(wire->heard.size() == 2);
+    CHECK(wire->heard[0].first == "desk on");
+    CHECK(wire->heard[1].first == "desk off");
+    // On as soon as the drag made it due, and off its 50 ms after the beat, as the device now is.
+    CHECK_THAT(wire->heard[0].second, WithinAbs(10.020, 0.0011));
+    CHECK_THAT(wire->heard[1].second, WithinAbs(10.050, 0.0011));
+    CHECK(sink.queued() == 0);
+}
+
+TEST_CASE("an OSC delay dragged shorter while a press is held keeps its release after it",
+          "[output][osc][trigger]") {
+    // The same for OSC: a press and its release to a media server set 120 ms late, the delay
+    // dragged to nothing between them. The release used to arrive first, and the clip stayed on.
+    LoopbackReceiver media;
+    Transports::Config config;
+    config.outputs = takt4::output::oscOutputs({{"127.0.0.1", media.port()}});
+    REQUIRE(config.outputs.size() == 1);
+    config.outputs[0].id = "o-0cc0";
+    config.outputs[0].delaySeconds = 0.120;
+    Transports transports(config);
+    transports.startOutputs(10.0);
+    takt4::output::RuleSink sink(transports);
+    takt4::trigger::TriggerEngine triggers(sink);
+    takt4::trigger::Rule::Config rule;
+    rule.id = "clip";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/clip";
+    rule.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.value.fixed = takt4::trigger::Value::ofInt(1);
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Milliseconds;
+    release.delaySeconds = 0.050;
+    release.value = takt4::trigger::Value::ofInt(0);
+    rule.followUps.push_back(release);
+    triggers.setRules({rule});
+    REQUIRE(triggers.rule(0).valid());
+
+    takt4::trigger::Context context;
+    context.bpm = 128.0;
+    context.locked = true;
+    context.meter = 4;
+    context.beatInBar = 1;
+    context.beats = 1;
+    context.bars = 1;
+    context.now = 10.0;
+    context.moment = 10.0;
+    sink.setNow(10.0);
+    triggers.onBeat(context);
+
+    const TempoState state;
+    takt4::trigger::Context round = context;
+    round.moment.reset();
+    for (int step = 1; step <= 300; ++step) {
+        const double now = 10.0 + 0.001 * step;
+        if (step == 20) {
+            REQUIRE(transports.setOutputDelay("o-0cc0", 0.0));
+        }
+        sink.setNow(now);
+        round.now = now;
+        triggers.advance(round);
+        transports.advance(now, state);
+    }
+    // The rule's two, in the order they were made, whatever else the namespace sent meanwhile.
+    std::vector<int> values;
+    for (int i = 0; i < 64; ++i) {
+        const std::string datagram = media.receive();
+        if (datagram.empty()) {
+            break;
+        }
+        if (datagram.rfind("/clip", 0) == 0 && datagram.size() >= 4) {
+            const auto byte = [&datagram](std::size_t at) {
+                return static_cast<int>(static_cast<std::uint8_t>(datagram[at]));
+            };
+            const std::size_t at = datagram.size() - 4;
+            values.push_back((byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) |
+                             byte(at + 3));
+        }
+    }
+    CHECK(values == std::vector<int>{1, 0});
+    transports.stopOutputs();
+}
+
+TEST_CASE("after a START Link is put under the first locked beat, not nudged onto it",
+          "[output][link]") {
+    // A START, and the input going quiet, begin a new run: its beats are wherever the music is
+    // now, whatever the session did meanwhile. Link was snapped only on the first locked beat
+    // after launch, so a lock found after a STOP and START was nudged onto the beats two per cent
+    // a beat at a time — up to fifteen seconds, with every peer's tempo off meanwhile.
+    // `Transports::resnapLink` is what the output thread calls on both.
+    LocalLink link;
+    link.beat(0, 1);
+    link.beat(1, 2);
+    REQUIRE(link.transports.link().beatRequests() == 1);
+
+    link.transports.resnapLink();
+    // The new run's first locked beat, 0.3 of a beat off the old grid, numbered 3 of its bar.
+    link.beat(2, 3, 0.3);
+    CHECK(link.transports.link().beatRequests() == 2);
+    const auto at = std::chrono::microseconds{
+        link.origin + static_cast<std::int64_t>(2.3 * LocalLink::kPeriodMicros)};
+    CHECK_THAT(link.transports.link().phaseAtTime(at, 4.0), WithinAbs(2.0, 1e-6));
+    CHECK_THAT(link.transports.link().tempoBpm(), WithinAbs(LocalLink::kBpm, 1e-6));
+}
+
+TEST_CASE("MIDI Start puts a receiver's bar 1 on the downbeat wherever START was pressed",
+          "[output][midi]") {
+    // START is pressed wherever the operator's finger falls, and the clock ticks from there so a
+    // receiver has a tempo. Start waited for a pulse 0 within a quarter of a beat of a downbeat,
+    // steering there half the way a beat, so a receiver's bar 1 began up to a quarter of a beat
+    // off the music — 117 ms at 128 — and its bars stayed off until the steering pulled them in.
+    // With nobody counting before Start, the clock's pulse 0 goes onto the first beat at once.
+    const double latency = GENERATE(0.0, -0.040, 0.150);
+    const double pressed = GENERATE(0.0, 0.05, 0.11, 0.2, 0.31, 0.4);
+    INFO("latency " << latency * 1000.0 << " ms, START pressed at " << pressed);
+    auto wire = std::make_shared<TimedWire>();
+    Transports::Config config;
+    config.midiClockPort = "Clock";
+    config.openMidi = [wire](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<TimedPort>(wire));
+    };
+    Transports transports(config);
+    transports.setLatencySeconds(latency);
+    transports.startOutputs(0.0);
+
+    constexpr double kBpm = 128.0;
+    constexpr double kPipeline = 0.060;
+    const double beat = 60.0 / kBpm;
+    std::vector<double> beats;
+    for (std::size_t k = 0; k < 40; ++k) {
+        beats.push_back(1.0 + static_cast<double>(k) * beat);
+    }
+    const TempoState state;
+    std::size_t next = 0;
+    bool started = false;
+    for (int ms = 0; ms < 21000; ++ms) {
+        const double now = static_cast<double>(ms) / 1000.0;
+        wire->now = now;
+        if (!started && now >= pressed) {
+            transports.startClock(now);
+            started = true;
+        }
+        while (next < beats.size() && beats[next] + kPipeline <= now) {
+            transports.publish(beatAt(beats[next], static_cast<std::uint32_t>(next % 4) + 1, kBpm),
+                               0, beats[next]);
+            ++next;
+        }
+        transports.advance(now, state);
+    }
+
+    std::size_t start = wire->messages.size();
+    for (std::size_t i = 0; i < wire->messages.size(); ++i) {
+        if (wire->messages[i].bytes[0] == takt4::output::MidiClock::kStart) {
+            start = i;
+            break;
+        }
+    }
+    REQUIRE(start < wire->messages.size());
+    std::vector<double> ticks;
+    for (std::size_t i = start + 1; i < wire->messages.size(); ++i) {
+        if (wire->messages[i].bytes[0] == takt4::output::MidiClock::kTick) {
+            ticks.push_back(wire->messages[i].at);
+        }
+    }
+    // Bar 1 on the first downbeat the first beat heard could still reach, and every bar after it on
+    // a downbeat — within the round the output thread sends it in.
+    const double heard = beats[0] + kPipeline;
+    std::size_t first = 0;
+    while (beats[first] + latency < heard) {
+        first += 4;
+    }
+    std::size_t bars = 0;
+    for (std::size_t n = 0, k = first; n < ticks.size() && k < beats.size(); n += 96, k += 4) {
+        const double downbeat = beats[k] + latency;
+        INFO("the receiver's bar " << bars + 1 << " at " << ticks[n] << ", the downbeat at "
+                                   << downbeat);
+        CHECK(ticks[n] - downbeat >= -1e-9);
+        CHECK(ticks[n] - downbeat <= 0.0011);
+        ++bars;
+    }
+    CHECK(bars >= 8);
     transports.stopOutputs();
 }

@@ -139,7 +139,8 @@ public:
 
     /// A burst longer than this many ticks is not sent: something stalled, and flooding
     /// the port with catch-up ticks would be worse than skipping them. Two seconds at
-    /// 120 BPM.
+    /// 120 BPM. What is skipped is whole quarter notes, so the receiver's count of pulses and
+    /// this clock's stay one.
     static constexpr std::size_t kMaxBurst = 96;
 
     /// How much of the phase error one beat's steering takes out. A half: a clock 40 ms off
@@ -216,6 +217,10 @@ public:
     /// is given — at the current tempo. Called on each beat the tracker reports, so the clock
     /// follows the audio rather than drifting from it.
     ///
+    /// **Before Start**, with nobody counting the pulses, the next pulse 0 is put on the beat in
+    /// one step — the ticks before it renumbered, and respaced by no more than half a tick each —
+    /// so Start lands on its downbeat.
+    ///
     /// The pulse 0 that is steered is the next one at least a tick away, and it is moved
     /// `kSteerGain` of the way to the nearest beat of the grid `beatTime` sits on. Nothing is
     /// emitted and nothing is skipped: the ticks in between are respaced, within `kSteerMin`
@@ -242,6 +247,8 @@ private:
     /// Sends Song Position 0 and Start if one is waiting and the next tick is the pulse 0 on
     /// its downbeat. See `startOnDownbeat`.
     void startIfDue() noexcept;
+    /// `syncToBeat` before Start: the next pulse 0 put on the beat in one step.
+    void aimBeforeStart(double beatTime, double tick, double beat) noexcept;
 
     MidiSink* sink_;
     double bpm_;

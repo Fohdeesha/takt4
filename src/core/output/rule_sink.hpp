@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace takt4::output {
@@ -108,8 +109,9 @@ private:
     void sendOsc(const trigger::Message& message);
     void sendMidi(const trigger::Message& message);
     void sendDmx(const trigger::Message& message);
-    /// Starts one effect now, counting whether it reached a real channel.
-    void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload);
+    /// Starts one effect at `at` — now, or the moment it was held for — counting whether it
+    /// reached a real channel.
+    void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at);
 
     Transports& transports_;
     /// See `setNow`. Zero until the first round, which only matters offline: an effect started
@@ -123,22 +125,42 @@ private:
     /// One MIDI message held for one target. The target's index rather than its port: the
     /// port is looked up again when it goes, and `flushQueued` runs before the list changes,
     /// so the index still names the device it was meant for.
+    ///
+    /// **Its moment, not a time it is due**: when it goes is worked out as it is looked at, from
+    /// the rig's offset and the target's delay as they are then. A due time fixed as it was held
+    /// let a delay dragged shorter send a note off held after it ahead of the note on held
+    /// before — Note Off, then Note On, and the note stuck on past PANIC, which had nothing left
+    /// to release. Two messages about two moments now go in that order whatever the delay does.
     struct HeldMidi {
-        double due = 0.0;
+        double moment = 0.0;
         std::size_t target = 0;
         std::array<unsigned char, 3> bytes{};
         std::size_t length = 0;
     };
-    /// One lighting effect held until its start.
+    /// One lighting effect held until its start, by its moment for the same reason.
     struct HeldDmx {
-        double due = 0.0;
+        double moment = 0.0;
         dmx::FixtureSet fixtures{};
         dmx::Payload payload;
     };
+    /// When each goes, as things are now.
+    double dueOf(const HeldMidi& held) const noexcept;
+    double dueOf(const HeldDmx& held) const noexcept;
+    /// Sends now every MIDI message held for `target` due by `until`, in the order held — before
+    /// a message for it that is going at once, so it cannot overtake them.
+    void sendHeldMidi(std::size_t target, double until);
+    /// The same for the lighting held.
+    void startHeldDmx(double until);
+    /// Tells the Art-Net nodes which universes have a cue held, and when it starts.
+    void sayUpcomingCues();
     /// In the order queued, and released in that order among whatever has come due — the rule
-    /// `OscPublisher` keeps for its own queue, for the same reason.
+    /// `OscPublisher` keeps for its own queue, for the same reason — with whatever was held
+    /// before a message for its target, due within `kReleaseFirstSeconds` after it, going ahead
+    /// of it.
     std::vector<HeldMidi> midiQueue_;
     std::vector<HeldDmx> dmxQueue_;
+    /// Reused for `sayUpcomingCues`.
+    std::vector<std::pair<dmx::PortAddress, double>> upcoming_;
 };
 
 } // namespace takt4::output

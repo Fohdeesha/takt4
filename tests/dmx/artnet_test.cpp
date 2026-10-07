@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -683,4 +684,114 @@ TEST_CASE("the same node given again keeps its sender, its sequence and its paci
         REQUIRE(datagram.size() == takt4::dmx::kArtDmxMaxSize);
         CHECK(static_cast<std::uint8_t>(datagram[12]) == 1);
     }
+}
+
+TEST_CASE("a cue said to be coming goes out when it is due, through a fade that keeps its "
+          "universe busy",
+          "[dmx][artnet]") {
+    // The 44 Hz ceiling was counted from wherever the last frame happened to go, so in a universe
+    // a fade kept busy — a colour rule fading over a beat keeps it so for good — a cue waited
+    // anything from nothing to 23 ms behind the fade's last frame, a different amount every beat.
+    // A cue held for its moment is said to be coming, as `output::RuleSink` says it every round,
+    // and no frame goes in the period before it: the cue's own frame goes the round it is due, and
+    // never more than 44 a second. A node set 100 ms late is held clear for each cue the same way,
+    // from when it started (`cueStarted`), and has it 100 ms after.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("cue", 0, 1), rgbAt("wash", 0, 10)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 0.100});
+    // The wash round the colour wheel once a second, for a minute: a new frame every period.
+    takt4::dmx::Payload sweep;
+    sweep.kind = takt4::dmx::EffectKind::HueSweep;
+    sweep.color = takt4::dmx::Color{255, 0, 0};
+    sweep.durationSeconds = 60.0f;
+    sweep.cycles = 60.0f;
+    engine.start(0b10, sweep, 0.0);
+    // A cue a beat at 128 BPM on the other fixture, lit and dark in turn, on whole milliseconds so
+    // the round it is due in is the one it is due at.
+    std::vector<double> cues;
+    for (int k = 0; k < 24; ++k) {
+        cues.push_back(std::round((0.5 + k * 60.0 / 128.0) * 1000.0) / 1000.0);
+    }
+    std::size_t next = 0;
+    std::vector<std::pair<PortAddress, double>> upcoming;
+    const auto round = [&](double now) {
+        // What the output thread does each round: start what has come due, say what is still to
+        // come, then make the frames.
+        while (next < cues.size() && cues[next] <= now + 1e-9) {
+            paint(engine, static_cast<std::uint8_t>(next % 2 == 0 ? 255 : 0), cues[next]);
+            publisher.cueStarted(PortAddress{0}, cues[next]);
+            ++next;
+        }
+        upcoming.clear();
+        if (next < cues.size()) {
+            upcoming.emplace_back(PortAddress{0}, cues[next]);
+        }
+        publisher.setUpcomingCues(upcoming);
+        engine.tick(now);
+        return publisher.publish(engine, now);
+    };
+    nodes.run(round, 0, static_cast<int>(cues.back() * 1000.0) + 200);
+    for (std::size_t k = 0; k < cues.size(); ++k) {
+        INFO("cue " << k << " due at " << cues[k]);
+        const auto level = static_cast<std::uint8_t>(k % 2 == 0 ? 255 : 0);
+        CHECK_THAT(nodes.first(0, level, cues[k] - 0.0005), WithinAbs(cues[k], 1e-9));
+        // The late node's lighting is a history kept every couple of milliseconds.
+        const double late = nodes.first(1, level, cues[k] + 0.100 - 0.0005);
+        CHECK(late >= cues[k] + 0.100 - 1e-9);
+        CHECK(late <= cues[k] + 0.100 + 0.0031);
+    }
+    // The wash went on being sent at the ceiling round them, and never faster.
+    for (std::size_t node = 0; node < 2; ++node) {
+        INFO("node " << node);
+        const auto& heard = nodes.heard(node);
+        CHECK(heard.size() > 400);
+        for (std::size_t i = 1; i < heard.size(); ++i) {
+            INFO("frames at " << heard[i - 1].at << " and " << heard[i].at);
+            CHECK(heard[i].at - heard[i - 1].at >= kArtNetFrame - 1e-9);
+        }
+    }
+}
+
+TEST_CASE("a delay raised while the lighting runs never shows a node a flash twice",
+          "[dmx][artnet]") {
+    // A node's delay is a lag through the lighting's history. Taken at once, a delay dragged later
+    // sent the node the stretch it had just been sent over again — a flash it had shown, shown a
+    // second time. It grows no faster than time passes now: the node holds what it shows while it
+    // does, and then plays on the new delay behind. Lowered, it is taken at once, which skips the
+    // stretch between: that cannot be helped.
+    using takt4::testing::kArtNetFrame;
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    feed(publisher, nodes, {0.0, 0.100});
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+    // A flash at 0.2, gone at 0.25: the late node shows it from 0.3 to 0.35.
+    nodes.run(round, 0, 200);
+    paint(engine, 255, 0.200);
+    nodes.run(round, 200, 250);
+    paint(engine, 0, 0.250);
+    nodes.run(round, 250, 400);
+    REQUIRE(nodes.first(1, 255) >= 0.300);
+    REQUIRE(nodes.first(1, 0, 0.300) >= 0.350);
+
+    // The delay dragged from 100 ms to 400 at 0.4.
+    REQUIRE(publisher.setDelay(1, 0.400));
+    nodes.run(round, 400, 1000);
+    for (const auto& heard : nodes.heard(1)) {
+        if (heard.at >= 0.400) {
+            INFO("sent at " << heard.at);
+            CHECK(heard.channel1 == 0);
+        }
+    }
+    // And from then on the lighting reaches it the new delay late.
+    paint(engine, 255, 1.000);
+    nodes.run(round, 1000, 1600);
+    CHECK(nodes.first(0, 255, 1.0) >= 1.000);
+    CHECK(nodes.first(0, 255, 1.0) < 1.000 + kArtNetFrame);
+    CHECK(nodes.first(1, 255, 1.0) >= 1.400);
+    CHECK(nodes.first(1, 255, 1.0) < 1.400 + kArtNetFrame);
 }

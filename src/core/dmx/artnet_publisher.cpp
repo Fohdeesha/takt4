@@ -85,8 +85,11 @@ void ArtNetPublisher::record(const DmxEngine& engine, double now) {
         if (history->count > 0) {
             const Frame& newest = history->ring[history->newest];
             // Unchanged, or changed again sooner than the history needs: the next round looks
-            // again, so a change is never missed, only kept at most every `kHistoryStep`.
-            if (revision == history->lastRevision || now - newest.at < kHistoryStep) {
+            // again, so a change is never missed, only kept at most every `kHistoryStep` — but a
+            // cue started this round is kept this round, so a node sent the lighting late is
+            // sent it on its own moment and not a step after, behind the 44 Hz pacing.
+            if (revision == history->lastRevision ||
+                (!cueThisRound_ && now - newest.at < kHistoryStep)) {
                 continue;
             }
         }
@@ -241,22 +244,73 @@ ArtNetPublisher::Paced& ArtNetPublisher::pacedFor(Target& target, PortAddress un
     return target.paced.back();
 }
 
+void ArtNetPublisher::setUpcomingCues(std::span<const std::pair<PortAddress, double>> cues) {
+    upcoming_.assign(cues.begin(), cues.end());
+}
+
+void ArtNetPublisher::cueStarted(PortAddress universe, double at) {
+    // Only a node sent the lighting late sees a cue after it has started; with every node on time
+    // there is nothing to keep, and a cue reaching many fixtures in a universe is kept once.
+    if (!lagging_) {
+        return;
+    }
+    const bool known = std::any_of(started_.begin(), started_.end(), [&](const auto& cue) {
+        return cue.first == universe && cue.second == at;
+    });
+    if (!known) {
+        started_.emplace_back(universe, at);
+    }
+    cueThisRound_ = true;
+}
+
+bool ArtNetPublisher::cueSoon(PortAddress universe, double lag, double now) const noexcept {
+    const auto soon = [lag, now](double at) {
+        const double seen = at + lag;
+        return seen > now && seen <= now + kMinFramePeriod;
+    };
+    for (const auto& [cued, at] : upcoming_) {
+        if (cued == universe && soon(at)) {
+            return true;
+        }
+    }
+    for (const auto& [cued, at] : started_) {
+        if (cued == universe && soon(at)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     std::size_t datagrams = 0;
-    // The history, only while a node is sent the lighting later than it is made; with every
+    const double step = lastPublish_ < 0.0 ? 0.0 : std::max(0.0, now - lastPublish_);
+    lastPublish_ = now;
+    std::erase_if(started_, [now](const auto& cue) { return now - cue.second > kHistorySpan; });
+    // **A node's lag grows no faster than time passes** — what it is sent stands still while it
+    // does — and shrinks at once. Taken at once both ways, a delay dragged later sent a node the
+    // last stretch of lighting a second time, so a flash it had shown was shown again; one dragged
+    // earlier skips the stretch between, which cannot be helped.
+    //
+    // And the history, only while a node is sent the lighting later than it is made; with every
     // node on time it would be half a megabyte a universe for nothing.
     bool lagging = false;
     for (std::size_t i = 0; i < targets_.size(); ++i) {
-        lagging = lagging || lagOf(i) > 0.0;
+        Target& target = targets_[i];
+        const double wanted = lagOf(i);
+        target.lag = target.lag < 0.0 || wanted < target.lag ? wanted
+                                                              : std::min(wanted, target.lag + step);
+        lagging = lagging || target.lag > 0.0;
     }
+    lagging_ = lagging;
     if (lagging) {
         record(engine, now);
     } else {
         history_.clear();
+        started_.clear();
     }
-    for (std::size_t index = 0; index < targets_.size(); ++index) {
-        Target& target = targets_[index];
-        const double lag = lagOf(index);
+    cueThisRound_ = false;
+    for (Target& target : targets_) {
+        const double lag = target.lag;
         // The patch's universes, and then those it has just dropped, which are sent their zeros
         // like any other frame (the audit of 2026-09-25, H4 — see `DmxEngine::released`).
         const std::size_t patched = engine.universes().size();
@@ -272,6 +326,10 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
                 known != nullptr && known->everSent && now - known->lastSentAt < kMinFramePeriod) {
                 continue;
             }
+            // Nothing in the period before a cue this node will see — see the header.
+            if (!released && cueSoon(universe, lag, now)) {
+                continue;
+            }
             std::span<const std::uint8_t> levels = engine.levels(universe);
             std::uint64_t revision = engine.revision(universe);
             // Not a released one: its history still holds the lit frames from before it was
@@ -279,7 +337,9 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             if (lag > 0.0 && !released) {
                 // What this universe was `lag` ago. Before the history reaches that far back —
                 // a delay just set — the oldest it has, which is the nearest thing to it.
-                if (const Frame* const past = frameAt(universe, now - lag)) {
+                // A nanosecond's grace: the frame kept at the very instant asked for is that
+                // instant's, whichever way the subtraction rounded.
+                if (const Frame* const past = frameAt(universe, now - lag + 1e-9)) {
                     levels = std::span<const std::uint8_t>(past->levels);
                     revision = past->revision;
                 }

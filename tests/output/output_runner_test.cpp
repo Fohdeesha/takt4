@@ -1360,6 +1360,23 @@ std::int64_t heardMicros(std::chrono::steady_clock::time_point began, std::size_
     return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count();
 }
 
+/// Feeds `samples` through a running engine in real time, each hop a buffer of its own as the
+/// input's callback hands them over: its first sample heard a hop before it arrived
+/// (`audio::HopProcessor::beginBuffer`). `first` is where in the run's samples it begins.
+void playInRealTime(BeatEngine& engine, const std::vector<float>& samples, std::size_t first = 0) {
+    const std::size_t hops = samples.size() / kHopSize;
+    const double hopSeconds = static_cast<double>(kHopSize) / takt4::audio::kInternalSampleRate;
+    const auto began = std::chrono::steady_clock::now();
+    for (std::size_t hop = 0; hop < hops; ++hop) {
+        std::this_thread::sleep_until(
+            began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
+        engine.beginBuffer(static_cast<double>(first + hop * kHopSize),
+                           heardMicros(began, hop, hopSeconds), 0.0);
+        engine.processHop(samples.data() + hop * kHopSize, first / kHopSize + hop);
+    }
+}
+
 } // namespace
 
 TEST_CASE("a negative offset lands a beat's cue before that beat from live audio",
@@ -1433,20 +1450,7 @@ TEST_CASE("a negative offset lands a beat's cue before that beat from live audio
 
     runner.start();
     engine->start();
-    const std::vector<float>& samples = excerpt();
-    const std::size_t hops = samples.size() / kHopSize;
-    const double hopSeconds = static_cast<double>(kHopSize) / takt4::audio::kInternalSampleRate;
-    const auto began = std::chrono::steady_clock::now();
-    for (std::size_t hop = 0; hop < hops; ++hop) {
-        std::this_thread::sleep_until(
-            began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
-        // Each hop a buffer of its own, as the input's callback hands them over: its first
-        // sample heard a hop before it arrived (`audio::HopProcessor::beginBuffer`).
-        engine->beginBuffer(static_cast<double>(hop * kHopSize), heardMicros(began, hop, hopSeconds),
-                            0.0);
-        engine->processHop(samples.data() + hop * kHopSize, hop);
-    }
+    playInRealTime(*engine, excerpt());
     std::this_thread::sleep_for(std::chrono::milliseconds{600});
     engine->stop();
     runner.stop();
@@ -1485,6 +1489,262 @@ TEST_CASE("a negative offset lands a beat's cue before that beat from live audio
     CHECK(onTime + 1 >= predictable);
     CHECK(beforeItsBeat >= onTime);
     CHECK(runner.scheduler().predictedFires() >= predictable);
+}
+
+TEST_CASE("a positive offset sends each beat's cue on the beat as it was heard",
+          "[output][trigger][slow]") {
+    // The other side of the one above: a rig whose every output is later than the beat, here a
+    // media server set 200 ms late. There is time to wait for the beat the tracker measures, so
+    // each cue goes on that beat, the offset after it — the beat Link and the MIDI clock are
+    // given — and not on the one predicted from the beat before, which put a phase correction on
+    // the lights a beat after it reached Link.
+    LoopbackReceiver media;
+    Transports::Config config;
+    takt4::output::OutputTarget server;
+    server.name = "media";
+    server.host = "127.0.0.1";
+    server.port = media.port();
+    server.delaySeconds = 0.200;
+    config.outputs = {server};
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, config);
+    engine->setHostTimeSource(&runner.hostTimeClock());
+
+    Rule::Config rule;
+    rule.id = "position";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.address = "/cue";
+    rule.value = takt4::trigger::Generator::Config{};
+    rule.value.kind = takt4::trigger::GeneratorKind::Live;
+    rule.value.source = takt4::trigger::LiveSource::BeatInBar;
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().rule(0).valid());
+
+    struct Heard {
+        double moment = 0.0;
+        double at = 0.0;
+        std::uint32_t beatInBar = 0;
+        bool acquired = false;
+    };
+    std::mutex mutex;
+    std::vector<Heard> heard;
+    runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
+        const double now = runner.elapsed();
+        const double moment =
+            now - static_cast<double>(runner.transports().link().now().count() - beat.hostMicros) /
+                      1e6;
+        const std::lock_guard<std::mutex> lock(mutex);
+        heard.push_back({moment, now, beat.event.beatInBar, beat.event.acquired});
+    });
+    struct Cue {
+        double at = 0.0;
+        int value = 0;
+    };
+    std::vector<Cue> cues;
+    std::atomic<bool> listening{true};
+    std::thread listener([&] {
+        while (listening.load(std::memory_order_acquire)) {
+            const std::string datagram = media.receive();
+            if (datagram.rfind("/cue", 0) == 0) {
+                const double at = runner.elapsed();
+                const std::lock_guard<std::mutex> lock(mutex);
+                cues.push_back({at, lastInt(datagram)});
+            }
+        }
+    });
+
+    runner.start();
+    engine->start();
+    playInRealTime(*engine, excerpt());
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    engine->stop();
+    runner.stop();
+    listening.store(false, std::memory_order_release);
+    listener.join();
+
+    // Every beat that reached the rig, heard in time to wait for, has its own cue the offset after
+    // its moment.
+    std::size_t sent = 0;
+    std::size_t inTime = 0;
+    std::size_t onTime = 0;
+    double latest = 0.0;
+    for (const Heard& beat : heard) {
+        if (!beat.acquired || beat.beatInBar == 0) {
+            continue;
+        }
+        ++sent;
+        latest = std::max(latest, beat.at - beat.moment);
+        if (beat.at - beat.moment > 0.200 - Transports::kPredictionMargin) {
+            continue;
+        }
+        ++inTime;
+        for (const Cue& cue : cues) {
+            if (cue.value == static_cast<int>(beat.beatInBar) &&
+                std::abs(cue.at - beat.moment - 0.200) < 0.035) {
+                ++onTime;
+                break;
+            }
+        }
+    }
+    INFO(sent << " beats sent, " << inTime << " heard in time, " << onTime
+              << " with their own cue 200 ms after; heard as late as " << latest * 1000.0
+              << " ms; " << runner.scheduler().heardFires() << " fired as heard, "
+              << runner.scheduler().predictedFires() << " on a prediction");
+    CHECK(runner.errors() == 0);
+    CHECK(sent >= 12);
+    CHECK(inTime + 1 >= sent);
+    CHECK(onTime + 1 >= inTime);
+    // Fired as heard, not on the prediction.
+    CHECK(runner.scheduler().heardFires() + 1 >= inTime);
+    CHECK(runner.scheduler().predictedFires() <= sent - inTime + 1);
+}
+
+TEST_CASE("a note released after one beat is let go before the next beat's note, live",
+          "[output][trigger][release][slow]") {
+    // The end of the chain for "release after 1 beat" on a rule firing every beat: the excerpt
+    // played in real time through the real engine and output thread, each beat fired on its
+    // prediction or as it is heard. The next beat's note on used to go before the release owed
+    // about the same moment about half the time, and cut the note it had just started.
+    auto sent = std::make_shared<std::vector<std::vector<unsigned char>>>();
+    Transports::Config config;
+    takt4::output::OutputTarget desk;
+    desk.id = "o-0000de5c";
+    desk.name = "desk";
+    desk.kind = takt4::output::OutputTarget::Kind::Midi;
+    desk.device = "Desk";
+    config.outputs = {desk};
+    config.openMidi = [sent](const std::string& name) {
+        return std::make_unique<takt4::output::MidiOutput>(name, std::make_unique<KeepingPort>(sent));
+    };
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
+    OutputRunner runner(*engine, config);
+    engine->setHostTimeSource(&runner.hostTimeClock());
+
+    Rule::Config rule;
+    rule.id = "every";
+    rule.trigger = takt4::trigger::Trigger::Beat;
+    rule.sendKind = takt4::trigger::Message::Kind::MidiNote;
+    rule.channel = 1;
+    rule.number.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.number.fixed = takt4::trigger::Value::ofInt(60);
+    rule.value.kind = takt4::trigger::GeneratorKind::Fixed;
+    rule.value.fixed = takt4::trigger::Value::ofInt(100);
+    takt4::trigger::FollowUp release;
+    release.unit = takt4::trigger::DelayUnit::Beats;
+    release.delayBeats = 1.0;
+    rule.followUps.push_back(release);
+    runner.post(OutputCommand::rules({rule}));
+    REQUIRE(runner.triggers().rule(0).valid());
+
+    runner.start();
+    engine->start();
+    playInRealTime(*engine, excerpt());
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    engine->stop();
+    runner.stop();
+
+    std::size_t ons = 0;
+    std::size_t cut = 0;
+    bool sounding = false;
+    for (const std::vector<unsigned char>& message : *sent) {
+        if (message.empty()) {
+            continue;
+        }
+        if ((message[0] & 0xF0) == 0x90) {
+            if (sounding) {
+                ++cut;
+            }
+            sounding = true;
+            ++ons;
+        } else if ((message[0] & 0xF0) == 0x80) {
+            sounding = false;
+        }
+    }
+    INFO(ons << " notes, " << cut << " started over the one before, "
+             << runner.scheduler().heardFires() << " beats fired as heard and "
+             << runner.scheduler().predictedFires() << " on a prediction");
+    CHECK(runner.errors() == 0);
+    CHECK(ons >= 12);
+    CHECK(cut == 0);
+    CHECK_FALSE(sounding); // and the last let go by the stop
+}
+
+TEST_CASE("Link is put under the first locked beat after a START and after a silence",
+          "[output][link][network]") {
+    // The output thread's half of `Transports::resnapLink`: a START, and the input going quiet,
+    // each begin a new run, and the first locked beat after either is where Link's bar is put —
+    // not nudged towards at two per cent a beat from wherever the last run left the session.
+    // Joins Link, so `-all` only.
+    Transports::Config config;
+    config.link = true;
+    BeatEngine::Options options;
+    options.noSignalSeconds = 0.5;
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), options);
+    OutputRunner runner(*engine, config);
+    engine->setHostTimeSource(&runner.hostTimeClock());
+
+    // For every locked beat that reached Link, how far Link's bar was from it just after.
+    struct Phased {
+        double at = 0.0;
+        double apart = 0.0;
+    };
+    std::mutex mutex;
+    std::vector<Phased> phased;
+    runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
+        if (!beat.event.acquired || !beat.event.locked || beat.event.beatInBar == 0 ||
+            beat.event.beatsPerBar == 0 || beat.hostMicros == 0) {
+            return;
+        }
+        const double quantum = static_cast<double>(beat.event.beatsPerBar);
+        double apart =
+            runner.transports().link().phaseAtTime(std::chrono::microseconds{beat.hostMicros},
+                                                   quantum) -
+            static_cast<double>(beat.event.beatInBar - 1);
+        apart -= quantum * std::floor(apart / quantum + 0.5);
+        const std::lock_guard<std::mutex> lock(mutex);
+        phased.push_back({runner.elapsed(), apart});
+    });
+    // The first locked beat at or after `from` must be on Link's bar.
+    const auto snappedAfter = [&](double from) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const Phased& beat : phased) {
+            if (beat.at >= from) {
+                INFO("the first locked beat after " << from << " was " << beat.apart
+                                                    << " of a beat from Link's bar");
+                CHECK(std::abs(beat.apart) < 1e-3);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    runner.start();
+    runner.setTracking(true);
+    engine->start();
+    const double first = runner.elapsed();
+    playInRealTime(*engine, excerpt());
+    // A second and a bit of silence, so the music comes back somewhere else on the grid.
+    const std::vector<float> silence(static_cast<std::size_t>(1.13 * takt4::audio::kInternalSampleRate));
+    playInRealTime(*engine, silence, excerpt().size() / kHopSize * kHopSize);
+    const double afterSilence = runner.elapsed();
+    playInRealTime(*engine, excerpt(),
+                   (excerpt().size() / kHopSize + silence.size() / kHopSize) * kHopSize);
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    runner.setTracking(false);
+    engine->stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds{370});
+    runner.setTracking(true);
+    engine->start();
+    const double afterStart = runner.elapsed();
+    playInRealTime(*engine, excerpt());
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    engine->stop();
+    runner.stop();
+
+    CHECK(snappedAfter(first));
+    CHECK(snappedAfter(afterSilence));
+    CHECK(snappedAfter(afterStart));
+    CHECK(runner.errors() == 0);
 }
 
 namespace {
