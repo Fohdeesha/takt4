@@ -15,9 +15,29 @@ InputPipeline::InputPipeline(const ChannelPicker& picker, double inputRate,
       hops_(kHopSize),
       mono_(chunkFrames) {}
 
-void InputPipeline::process(const float* interleaved, std::size_t frames) noexcept {
+void InputPipeline::process(const float* interleaved, std::size_t frames, Arrival arrival) noexcept {
     const auto stride = static_cast<std::size_t>(picker_.streamChannelCount());
     const std::size_t total = frames;
+
+    // Before any hop this buffer completes: where its first sample is on the hop clock, when it
+    // was heard, and what the device has lost so far — so each hop can be stamped with when its
+    // own audio was in the room (`HopProcessor::beginBuffer`).
+    if (arrival.steadyNanos != 0) {
+        const double outputRate = resampler_.outputRate();
+        const double lost = lost_.onBuffer(static_cast<std::uint32_t>(frames),
+                                           resampler_.inputRate(), arrival.steadyNanos);
+        lostSeconds_.store(lost, std::memory_order_relaxed);
+        // The resampler is time-aligned — output sample k stands for input time k / outputRate —
+        // so the first sample of this buffer is, on the hop clock, simply where the frames
+        // delivered so far put it.
+        const double first =
+            static_cast<double>(framesIn_.load(std::memory_order_relaxed)) * outputRate /
+            resampler_.inputRate();
+        const std::int64_t heard =
+            arrival.steadyNanos / 1000 -
+            static_cast<std::int64_t>(std::llround(arrival.inputLatencySeconds * 1e6));
+        processor_.beginBuffer(first, heard, lost * outputRate);
+    }
 
     while (frames > 0) {
         const std::size_t take = std::min(frames, mono_.size());

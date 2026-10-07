@@ -25,4 +25,11 @@ void HopFanout::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
     }
 }
 
+void HopFanout::beginBuffer(double firstSample, std::int64_t steadyMicros,
+                            double lostSamples) noexcept {
+    for (std::size_t i = 0; i < count_; ++i) {
+        processors_[i]->beginBuffer(firstSample, steadyMicros, lostSamples);
+    }
+}
+
 } // namespace takt4::audio

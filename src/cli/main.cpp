@@ -1258,7 +1258,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
               << " ms input buffer + "
               << fixed1(1000.0 * static_cast<double>(stream.resamplerDelayFrames()) /
                         stream.sampleRate())
-              << " ms resampler + 40.0 ms centred framing\n";
+              << " ms resampler + 40.0 ms centred framing, taken out of every beat's time\n";
     std::cout << "outputs:   ";
     if (!args.anyOutput()) {
         std::cout << "none (--link, --osc HOST:PORT, --midi-clock PORT)";

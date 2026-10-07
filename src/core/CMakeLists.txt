@@ -44,12 +44,14 @@ add_library(takt4_core STATIC
   audio/host_apis.cpp
   audio/host_apis.hpp
   audio/host_time.hpp
+  audio/host_time_fit.hpp
   audio/input_pipeline.cpp
   audio/input_pipeline.hpp
   audio/input_stream.cpp
   audio/input_stream.hpp
   audio/input_watchdog.cpp
   audio/input_watchdog.hpp
+  audio/lost_time.hpp
   audio/playback_stream.cpp
   audio/playback_stream.hpp
   audio/portaudio_session.cpp
