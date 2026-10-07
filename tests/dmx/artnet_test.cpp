@@ -826,12 +826,14 @@ TEST_CASE("a delay raised while the lighting runs never shows a node a flash twi
 TEST_CASE("a frame a node failed to take is sent again at the next frame, not the keep-alive",
           "[dmx][artnet]") {
     // A failed send was recorded as the frame sent, so a static look a node missed waited 0.9 s
-    // for the keep-alive. 0.0.0.1 is an address every system refuses to send to.
+    // for the keep-alive. A name the test binaries' sandbox lets nobody look up never has an
+    // address, so every send to it fails, on every system. (0.0.0.1, used first, failed on
+    // Windows only: Linux takes it as a destination, and the sandbox then said it was sent.)
     DmxEngine engine;
     engine.setPatch({rgbAt("par", 0, 1)});
     ArtNetPublisher publisher;
     ArtNetPublisher::TargetConfig config;
-    config.host = "0.0.0.1";
+    config.host = "a-node-nobody-has.invalid";
     config.port = 6454;
     publisher.addTarget(config);
     paint(engine, 255, 0.0);
