@@ -99,24 +99,33 @@ json generatorToJson(const Generator::Config& config) {
         {"kind", std::string(trigger::nameOf(config.kind))},
         {"seed", config.seed},
     };
-    // Only what the kind actually reads, so a preset says what a rule does rather than
-    // every field the struct happens to have. An operator opening this should be able to
-    // see the shape of their own rule in it.
-    if (trigger::takesPool(config.kind)) {
+    // What the kind reads, so a preset says what a rule does rather than every field the struct
+    // happens to have — **and whatever else an operator has filled in**, where it differs from a
+    // fresh generator's. A list built for a shuffle, tried as a ramp and saved, came back empty,
+    // and so did a weighted table, a typed value and a ramp's shape: the editor keeps every half
+    // alive so switching back costs nothing, and the file threw the halves not in use away.
+    const Generator::Config fresh;
+    const trigger::GeneratorKind kind = config.kind;
+    const bool pooled = trigger::takesPool(kind);
+    const bool ramp = kind == trigger::GeneratorKind::Ramp;
+    if (pooled || config.pool != fresh.pool || config.noRepeatWithin != fresh.noRepeatWithin) {
         out["pool"] = std::string(trigger::nameOf(config.pool));
         out["noRepeatWithin"] = config.noRepeatWithin;
-        if (config.pool == trigger::Pool::List) {
-            json values = json::array();
-            for (const Value& value : config.values) {
-                values.push_back(valueToJson(value));
-            }
-            out["values"] = values;
-        } else {
-            out["low"] = config.low;
-            out["high"] = config.high;
-        }
     }
-    if (config.kind == trigger::GeneratorKind::Weighted) {
+    if ((pooled && config.pool == trigger::Pool::List) || !config.values.empty()) {
+        json values = json::array();
+        for (const Value& value : config.values) {
+            values.push_back(valueToJson(value));
+        }
+        out["values"] = values;
+    }
+    // The range a draw picks from and a ramp sweeps.
+    if ((pooled && config.pool == trigger::Pool::Range) || ramp || config.low != fresh.low ||
+        config.high != fresh.high) {
+        out["low"] = config.low;
+        out["high"] = config.high;
+    }
+    if (kind == trigger::GeneratorKind::Weighted || !config.choices.empty()) {
         json choices = json::array();
         for (const trigger::WeightedChoice& choice : config.choices) {
             choices.push_back(
@@ -124,24 +133,23 @@ json generatorToJson(const Generator::Config& config) {
         }
         out["choices"] = choices;
     }
-    if (config.kind == trigger::GeneratorKind::Fixed) {
+    if (kind == trigger::GeneratorKind::Fixed || !(config.fixed == fresh.fixed)) {
         out["fixed"] = valueToJson(config.fixed);
     }
-    if (config.kind == trigger::GeneratorKind::Live) {
+    if (kind == trigger::GeneratorKind::Live || config.source != fresh.source) {
         out["source"] = std::string(trigger::nameOf(config.source));
-        if (config.source == trigger::LiveSource::BpmNormalised) {
-            out["normaliseLow"] = config.normaliseLow;
-            out["normaliseHigh"] = config.normaliseHigh;
-        }
     }
-    if (config.kind == trigger::GeneratorKind::Ramp) {
+    if ((kind == trigger::GeneratorKind::Live &&
+         config.source == trigger::LiveSource::BpmNormalised) ||
+        config.normaliseLow != fresh.normaliseLow || config.normaliseHigh != fresh.normaliseHigh) {
+        out["normaliseLow"] = config.normaliseLow;
+        out["normaliseHigh"] = config.normaliseHigh;
+    }
+    if (ramp || config.shape != fresh.shape || config.rampBars != fresh.rampBars ||
+        config.rampFloat != fresh.rampFloat) {
         out["shape"] = std::string(trigger::nameOf(config.shape));
         out["rampBars"] = config.rampBars;
         out["rampFloat"] = config.rampFloat;
-        // The range a ramp sweeps, which `takesPool` does not cover — a ramp has a range and
-        // no pool, so neither branch above would have written it.
-        out["low"] = config.low;
-        out["high"] = config.high;
     }
     return out;
 }
@@ -258,20 +266,32 @@ json dmxToJson(const trigger::DmxSend& send) {
     }
     out["fixtures"] = std::move(fixtures);
 
-    if (dmx::takesRole(send.effect)) {
+    // What the effect reads — **and whatever else was filled in**, where it differs from a fresh
+    // send's: a colour palette tried as a strobe and saved came back white, and a path's shape
+    // tried as a fade came back a circle. The editor keeps every half alive so switching back
+    // costs nothing, and the file kept only the effect's own.
+    const trigger::DmxSend fresh;
+    const auto differs = [](const Generator::Config& mine, const Generator::Config& theirs) {
+        return generatorToJson(mine) != generatorToJson(theirs);
+    };
+    if (dmx::takesRole(send.effect) || send.role != fresh.role) {
         out["role"] = std::string(dmx::nameOf(send.role));
+    }
+    if (dmx::takesRole(send.effect) || dmx::takesClip(send.effect) ||
+        differs(send.level, fresh.level)) {
         out["level"] = generatorToJson(send.level);
     }
     // A laser clip: which clips, by their place in Liberation's deck order, and the intensity it
     // lands at.
-    if (dmx::takesClip(send.effect)) {
+    if (dmx::takesClip(send.effect) || differs(send.clip, fresh.clip)) {
         out["clip"] = generatorToJson(send.clip);
-        out["level"] = generatorToJson(send.level);
     }
-    if (dmx::takesBase(send.effect)) {
+    if (dmx::takesBase(send.effect) || send.base != fresh.base) {
         out["base"] = send.base;
     }
-    if (dmx::takesColor(send.effect)) {
+    if (dmx::takesColor(send.effect) || send.colorMode != fresh.colorMode ||
+        differs(send.color, fresh.color) || differs(send.red, fresh.red) ||
+        differs(send.green, fresh.green) || differs(send.blue, fresh.blue)) {
         out["colorMode"] = std::string(trigger::nameOf(send.colorMode));
         // **Both, whichever mode is on.** A rule switched from a palette to a mix and saved
         // would otherwise come back with the palette the operator spent a minute building
@@ -282,28 +302,31 @@ json dmxToJson(const trigger::DmxSend& send) {
         out["green"] = generatorToJson(send.green);
         out["blue"] = generatorToJson(send.blue);
     }
-    if (send.effect == dmx::EffectKind::HueSweep) {
+    if (send.effect == dmx::EffectKind::HueSweep || send.hueFrom != fresh.hueFrom ||
+        send.hueTo != fresh.hueTo) {
         out["hueFrom"] = send.hueFrom;
         out["hueTo"] = send.hueTo;
     }
-    if (dmx::takesCycles(send.effect)) {
+    if (dmx::takesCycles(send.effect) || send.cycles != fresh.cycles) {
         out["cycles"] = send.cycles;
     }
-    if (send.effect == dmx::EffectKind::Strobe) {
+    if (send.effect == dmx::EffectKind::Strobe || send.duty != fresh.duty) {
         out["duty"] = send.duty;
     }
-    if (send.effect == dmx::EffectKind::Position) {
+    if (send.effect == dmx::EffectKind::Position || differs(send.pan, fresh.pan) ||
+        differs(send.tilt, fresh.tilt)) {
         out["pan"] = generatorToJson(send.pan);
         out["tilt"] = generatorToJson(send.tilt);
     }
-    if (send.effect == dmx::EffectKind::Path) {
+    if (send.effect == dmx::EffectKind::Path || send.shape != fresh.shape ||
+        send.size != fresh.size) {
         out["shape"] = std::string(dmx::nameOf(send.shape));
         out["size"] = send.size;
     }
     // Only when they name some heads, and only a spread there is: every head, together, is what
     // a rule meant before there was a choice, so a file of movement rules saves as it did. The
-    // heads by their numbers, as the editor shows them.
-    if (dmx::takesMovement(send.effect) && send.heads != 0) {
+    // heads by their numbers, as the editor shows them — whatever the effect, as the rest.
+    if (send.heads != 0) {
         json heads = json::array();
         for (int head = 0; head < 32; ++head) {
             if ((send.heads & (std::uint32_t{1} << head)) != 0) {
@@ -312,7 +335,7 @@ json dmxToJson(const trigger::DmxSend& send) {
         }
         out["heads"] = std::move(heads);
     }
-    if (dmx::takesMovement(send.effect) && send.spread > 0.0) {
+    if (send.spread > 0.0) {
         out["spread"] = send.spread;
     }
     return out;
@@ -406,13 +429,16 @@ json ruleToJson(const Rule::Config& rule) {
         {"sendValue", rule.sendValue},
         {"seed", rule.seed},
     };
-    if (trigger::takesEvery(rule.trigger)) {
+    // What the trigger reads — and what another trigger read, where it was set: a rule on every
+    // 4 bars tried as an onset and saved came back on every bar. See `generatorToJson`.
+    const Rule::Config defaults;
+    if (trigger::takesEvery(rule.trigger) || rule.every != defaults.every) {
         out["every"] = rule.every;
     }
-    if (trigger::takesPulses(rule.trigger)) {
+    if (trigger::takesPulses(rule.trigger) || rule.pulses != defaults.pulses) {
         out["pulses"] = rule.pulses;
     }
-    if (trigger::takesBeatOfBar(rule.trigger)) {
+    if (trigger::takesBeatOfBar(rule.trigger) || rule.onBeat != defaults.onBeat) {
         out["onBeat"] = rule.onBeat;
     }
     // The wait between the trigger and the send: when it is on, and when it holds anything but
@@ -439,7 +465,8 @@ json ruleToJson(const Rule::Config& rule) {
         }
         out["outputs"] = outputs;
     }
-    if (rule.trigger == trigger::Trigger::TempoChange) {
+    if (rule.trigger == trigger::Trigger::TempoChange ||
+        rule.tempoChangeTolerance != defaults.tempoChangeTolerance) {
         out["tempoChangeTolerance"] = rule.tempoChangeTolerance;
     }
     // B's switch, always: a file from before it existed is read by what its conditions exclude

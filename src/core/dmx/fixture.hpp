@@ -334,7 +334,13 @@ void ensureFixtureIds(std::vector<Fixture>& patch);
 /// Re-points what a rule aims at by fixture name at those fixtures' ids: what every settings
 /// file written before fixtures had ids holds. A group label stays a label, an entry that is
 /// already an id stays, and one that matches nothing is kept as it is.
-void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch);
+///
+/// `named`, when given, is which fixtures may be found by name at all — the ones the file gave no
+/// id, which are the only ones a rule can have named. One that already had an id was aimed at by
+/// it by every build that wrote one; its name matching an aim is a coincidence, and a fixture
+/// renamed to a group's label joined that group's rules after a restart.
+void aimByIds(std::vector<std::string>& aims, const std::vector<Fixture>& patch,
+              const std::vector<bool>* named = nullptr);
 
 /// The fixture with this id, or null.
 const Fixture* findFixture(const std::vector<Fixture>& patch, std::string_view id) noexcept;

@@ -1154,6 +1154,42 @@ TEST_CASE("a file routed by name loads routed by id, and a rename afterwards mov
     }
 }
 
+TEST_CASE("a name in a rule is looked for only among what the file gave no id",
+          "[settings][trigger]") {
+    // A file this build wrote holds ids everywhere, and its rules point at them; only a file from
+    // before ids, or a line typed by hand, names things. Names were looked for on every load: a
+    // fixture renamed to a group's label joined that group's rules after a restart, and a rule
+    // still naming a deleted output found the next output given that name.
+    const std::string text = R"({"preset":{
+        "outputs":["deck = 127.0.0.1:7000"],
+        "fixtures":[{"name":"wash L","group":"washes","universe":0,"address":1,"channels":["red"]},
+                    {"name":"wash R","group":"washes","universe":0,"address":2,"channels":["red"]},
+                    {"name":"spot","universe":0,"address":3,"channels":["red"]}],
+        "rules":[
+          {"id":"clips","send":"osc","address":"/clip","outputs":["wall"]},
+          {"id":"fade","send":"dmx","dmx":{"fixtures":["washes"]}}]}})";
+    takt4::settings::Settings session = takt4::settings::fromJson(text);
+    REQUIRE(session.preset.fixtures.size() == 3);
+    // During the session: the spot renamed to the group's label, and an output called "wall"
+    // added — the name the first rule was left holding when the old "wall" went.
+    session.preset.fixtures[2].name = "washes";
+    takt4::output::OutputTarget wall;
+    wall.name = "wall";
+    wall.host = "127.0.0.1";
+    wall.port = 7001;
+    wall.id = takt4::output::newOutputId(session.preset.outputs);
+    session.preset.outputs.push_back(wall);
+
+    const takt4::settings::Settings again =
+        takt4::settings::fromJson(takt4::settings::toJson(session));
+    REQUIRE(again.preset.rules.size() == 2);
+    CHECK(again.preset.rules[1].dmx.fixtures == std::vector<std::string>{"washes"});
+    CHECK(takt4::dmx::resolveFixtures(again.preset.fixtures, again.preset.rules[1].dmx.fixtures) ==
+          0b011);
+    CHECK(again.preset.rules[0].outputs == std::vector<std::string>{"wall"});
+    CHECK(takt4::output::resolveOutputs(again.preset.rules[0].outputs, again.preset.outputs) == 0);
+}
+
 TEST_CASE("a file from before the mono tick is heard as the stereo pair its input is in",
           "[settings]") {
     // 2026-09-28: stereo unless asked otherwise, and a file written before there was a choice

@@ -250,6 +250,13 @@ struct Message {
     /// offset put a message *before* the beat it belongs to (the audit's H4). Stamped by
     /// `TriggerEngine` as it sends; zero before that.
     double moment = 0.0;
+
+    /// **A follow-up that is a gesture of its own** — one with a kind of its own (`FollowUp::kind`:
+    /// a CC a bar after a note, a second note two beats on) rather than the release of what
+    /// fired. PANIC, STOP, a mute or a delete send every release still owed at once, so nothing
+    /// is left latched; a gesture is not a release, and is dropped rather than sent early — a CC
+    /// owed a bar on went out the instant STOP was pressed.
+    bool gesture = false;
 };
 
 /// A routing mask — `Message::outputs` or `Message::fixtures` — after the list it indexes has

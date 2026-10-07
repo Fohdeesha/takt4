@@ -273,6 +273,53 @@ TEST_CASE("a rule switched to another kind and saved keeps the half it is not us
     }
 }
 
+TEST_CASE("a rule tried as another trigger, effect or generator and saved keeps what it set",
+          "[settings][trigger]") {
+    // Only what the trigger, the effect or the generator in force read was written: a rule on
+    // every 4 bars tried as an onset came back on every bar, a palette tried as a strobe came back
+    // white, and a list built for a shuffle tried as a ramp came back empty.
+    SECTION("a trigger") {
+        Rule::Config rule = resolumeClip();
+        rule.trigger = takt4::trigger::Trigger::Bar;
+        rule.every = 4;
+        rule.onBeat = 3;
+        rule.trigger = takt4::trigger::Trigger::Onset;
+        const Rule::Config back = first(rulesToJson({rule}));
+        CHECK(back.every == 4);
+        CHECK(back.onBeat == 3);
+    }
+    SECTION("an effect") {
+        Rule::Config rule;
+        rule.id = "wash";
+        rule.sendKind = Message::Kind::Dmx;
+        rule.dmx.fixtures = {"stage left"};
+        rule.dmx.effect = takt4::dmx::EffectKind::Path;
+        rule.dmx.shape = takt4::dmx::PathShape::Figure8;
+        rule.dmx.size = 0.8;
+        rule.dmx.color.kind = GeneratorKind::Cycle;
+        rule.dmx.color.pool = takt4::trigger::Pool::List;
+        rule.dmx.color.values = {Value::ofText("#ff0000"), Value::ofText("#0000ff")};
+        rule.dmx.effect = takt4::dmx::EffectKind::Strobe;
+        const Rule::Config back = first(rulesToJson({rule}));
+        CHECK(back.dmx.effect == takt4::dmx::EffectKind::Strobe);
+        CHECK(back.dmx.shape == takt4::dmx::PathShape::Figure8);
+        CHECK(back.dmx.size == Approx(0.8));
+        CHECK(back.dmx.color.kind == GeneratorKind::Cycle);
+        CHECK(back.dmx.color.values.size() == 2);
+    }
+    SECTION("a generator") {
+        Rule::Config rule = resolumeClip();
+        rule.value.kind = GeneratorKind::Shuffle;
+        rule.value.pool = takt4::trigger::Pool::List;
+        rule.value.values = {Value::ofInt(3), Value::ofInt(7), Value::ofInt(1)};
+        rule.value.kind = GeneratorKind::Ramp;
+        const Rule::Config back = first(rulesToJson({rule}));
+        CHECK(back.value.kind == GeneratorKind::Ramp);
+        CHECK(back.value.pool == takt4::trigger::Pool::List);
+        CHECK(back.value.values.size() == 3);
+    }
+}
+
 TEST_CASE("a rule that never used another kind does not write that kind's defaults",
           "[settings][trigger]") {
     // The other side of keeping every half: a preset says what was chosen. An OSC rule that was
@@ -310,12 +357,15 @@ TEST_CASE("a movement rule keeps the heads it moves and their spread, and writes
         CHECK(text.find("\"heads\"") == std::string::npos);
         CHECK(text.find("\"spread\"") == std::string::npos);
     }
-    SECTION("nor does an effect that moves nothing") {
+    SECTION("and a rule tried as an effect that moves nothing keeps them for when it moves again") {
+        // Every half an operator filled in is kept, whichever the effect in force (the heads were
+        // written only for a movement, so a path tried as a fade and saved lost them).
         Rule::Config fade = rule;
         fade.dmx.effect = takt4::dmx::EffectKind::Level;
-        const std::string text = rulesToJson({fade});
-        CHECK(text.find("\"heads\"") == std::string::npos);
-        CHECK(text.find("\"spread\"") == std::string::npos);
+        const std::vector<Rule::Config> again = rulesFromJson(rulesToJson({fade}));
+        REQUIRE(again.size() == 1);
+        CHECK(again[0].dmx.heads == 0b101);
+        CHECK(again[0].dmx.spread == Approx(0.25));
     }
     SECTION("a hand-edited list keeps the heads that are heads, and nothing else") {
         // The value after "heads": swapped for what a person might type.

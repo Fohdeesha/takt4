@@ -194,9 +194,10 @@ struct WeightedChoice {
 /// `next()` allocates nothing: the bag and the no-repeat ring are sized once here.
 class Generator {
 public:
-    /// The largest range `Shuffle` and `Random` will span. A bag is drawn without
-    /// replacement and so has to be held, and a clip grid larger than this is not a thing
-    /// anyone has; a range past it is clamped rather than refused.
+    /// The largest range or list `Shuffle` will hold. A bag is drawn without replacement and so
+    /// has to be held, and a clip grid larger than this is not a thing anyone has; a range past
+    /// it is clamped rather than refused. **`Shuffle` alone**: every other kind draws or steps
+    /// through its range without holding it, and a pitch bend over 0 to 16383 was cut to 4095.
     static constexpr std::int32_t kMaxRangeSize = 4096;
     /// The most recent draws the no-repeat guard can be asked to remember.
     static constexpr std::size_t kMaxNoRepeat = 64;
@@ -215,8 +216,10 @@ public:
         /// Where `Shuffle`, `Random` and `Cycle` draw from. Ignored by the other three.
         Pool pool = Pool::Range;
 
-        /// The range for `pool == Range`, inclusive at both ends. Given backwards it is
-        /// swapped; wider than `kMaxRangeSize` it is cut from the top.
+        /// The range for `pool == Range`, inclusive at both ends — and a `Ramp`'s, which goes
+        /// from `low` to `high` whichever is the larger, so a ramp from 100 to 0 falls. For the
+        /// others, given backwards it is swapped; for `Shuffle`, wider than `kMaxRangeSize` it
+        /// is cut from the top.
         std::int32_t low = 1;
         std::int32_t high = 8;
 
@@ -318,7 +321,10 @@ private:
     void refillBag() noexcept;
     bool isRecent(const Value& value) const noexcept;
     void remember(const Value& value) noexcept;
-    std::int32_t rangeSize() const noexcept { return config_.high - config_.low + 1; }
+    /// In 64 bits: a range may span the whole of int32.
+    std::int64_t rangeSize() const noexcept {
+        return static_cast<std::int64_t>(config_.high) - static_cast<std::int64_t>(config_.low) + 1;
+    }
     /// How many values a draw picks between — `choiceCount()`, floored at one so that an
     /// empty list has something to draw. Every index handed to `poolValue` is below this.
     std::size_t drawSize() const noexcept;
@@ -334,7 +340,7 @@ private:
     std::size_t at_ = 0;
     /// `Cycle`'s position, and the no-repeat guard's ring of recent draws. `recentCount_`
     /// is how much of it is filled, so a fresh generator does not guard against zeroes.
-    std::int32_t cycle_ = 0;
+    std::uint64_t cycle_ = 0;
     std::vector<Value> recent_;
     std::size_t recentAt_ = 0;
     std::size_t recentCount_ = 0;

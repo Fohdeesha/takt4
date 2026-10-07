@@ -185,20 +185,23 @@ Generator::Generator() : Generator(Config{}) {}
 Generator::Generator(Config config) : config_(std::move(config)) {
     // Clamped, never rejected — see the class note. Everything here has to leave a
     // configuration that `next()` can serve without checking anything again.
-    if (config_.high < config_.low) {
+    // A ramp's range has a direction — from `low` to `high` — and one from 100 to 0 falls; it used
+    // to be swapped, and rose. For the rest the order is only which end is which.
+    if (config_.kind != GeneratorKind::Ramp && config_.high < config_.low) {
         std::swap(config_.low, config_.high);
     }
-    // In 64 bits so a range spanning the whole of int32 does not overflow while being
-    // measured. Cut from the top: an operator who typed a range too wide meant the low end.
-    const std::int64_t span =
-        static_cast<std::int64_t>(config_.high) - static_cast<std::int64_t>(config_.low) + 1;
-    if (span > kMaxRangeSize) {
-        config_.high = static_cast<std::int32_t>(config_.low + (kMaxRangeSize - 1));
-    }
-    // The same ceiling on a list, and for the same reason: `Shuffle` holds a bag of these.
-    // Cut from the end, which is where an operator who pasted too many meant to stop.
-    if (config_.values.size() > static_cast<std::size_t>(kMaxRangeSize)) {
-        config_.values.resize(static_cast<std::size_t>(kMaxRangeSize));
+    // **Only where a bag is held**: `Shuffle` draws without replacement, so it holds its whole
+    // range or list. Cut from the top: an operator who typed a range too wide meant the low end;
+    // and a list from the end, which is where one who pasted too many meant to stop. Every other
+    // kind draws or steps without holding anything, and was cut too — a pitch bend over 0 to
+    // 16383 to 0 to 4095 — while the editor went on showing what had been typed.
+    if (config_.kind == GeneratorKind::Shuffle) {
+        if (rangeSize() > kMaxRangeSize) {
+            config_.high = static_cast<std::int32_t>(config_.low + (kMaxRangeSize - 1));
+        }
+        if (config_.values.size() > static_cast<std::size_t>(kMaxRangeSize)) {
+            config_.values.resize(static_cast<std::size_t>(kMaxRangeSize));
+        }
     }
     if (!(config_.normaliseHigh > config_.normaliseLow)) {
         // A degenerate host range would divide by zero, and a normalised value with no
@@ -239,7 +242,10 @@ Value Generator::poolValue(std::size_t index) const noexcept {
         // The bound only fails for the empty list `drawSize()` floors at one.
         return index < config_.values.size() ? config_.values[index] : Value{};
     }
-    return Value::ofInt(config_.low + static_cast<std::int32_t>(index));
+    // In 64 bits, for a range spanning the whole of int32; every index is below its size, so the
+    // sum is inside it.
+    return Value::ofInt(static_cast<std::int32_t>(static_cast<std::int64_t>(config_.low) +
+                                                  static_cast<std::int64_t>(index)));
 }
 
 std::size_t Generator::choiceCount() const noexcept {
@@ -340,7 +346,7 @@ Value Generator::nextCycled() noexcept {
     // in the order they wrote it — 3, 7, 1, 12, 3, 7 — which is the thing a range could
     // never say and the reason `Pool` exists.
     const Value drawn = poolValue(static_cast<std::size_t>(cycle_));
-    cycle_ = (cycle_ + 1) % static_cast<std::int32_t>(drawSize());
+    cycle_ = (cycle_ + 1) % static_cast<std::uint64_t>(drawSize());
     return drawn;
 }
 
@@ -457,16 +463,18 @@ Value Generator::nextRamp(const Context& context) const noexcept {
     // Sweeping and rounding gives 1, 2, 3, 3 — the top value appearing only at an instant
     // nothing samples — which is the same off-by-one that makes a stepped sequencer feel
     // wrong. So the range is cut into `high - low + 1` equal slices and the phase picks one.
+    // From `low` to `high`, which may be downwards: see `Config::low`.
     const double low = static_cast<double>(config_.low);
     const double high = static_cast<double>(config_.high);
     if (config_.rampFloat) {
         return Value::ofFloat(static_cast<float>(low + shaped * (high - low)));
     }
-    const double steps = high - low + 1.0;
+    const double steps = std::abs(high - low) + 1.0;
     const double slice = std::floor(shaped * steps);
     // `shaped` reaches exactly 1 at the top of a triangle or a sine, which would index one
     // slice past the end.
-    const double picked = low + std::min(slice, steps - 1.0);
+    const double way = high < low ? -1.0 : 1.0;
+    const double picked = low + way * std::min(slice, steps - 1.0);
     return Value::ofInt(static_cast<std::int32_t>(picked));
 }
 

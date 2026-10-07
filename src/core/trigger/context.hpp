@@ -42,6 +42,13 @@ struct Context {
     double beatSeconds = 0.0;
     double confidence = 0.0;
     bool locked = false;
+    /// **A lock has been earned in this run** (`tracking::TempoState::acquired`): until then
+    /// nothing a rule watches is the music's — the hunt's tempo flips octaves, and an onset or an
+    /// intensity is read off whatever is playing. No trigger fires before it but a hand on a
+    /// button (`TriggerEngine::manual`, `test`); a lock change fires on the lock itself, which is
+    /// when this comes true. True in a context built by hand, a test's, which is about a rig
+    /// that has its lock; the output thread always says.
+    bool acquired = true;
     /// Zero before the filter has an opinion, which is not the same as 4. Nothing here
     /// assumes a meter (§5.5), and a rule counting bars has to cope with not knowing one.
     std::uint32_t meter = 0;

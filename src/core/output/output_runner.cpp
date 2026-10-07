@@ -1212,6 +1212,8 @@ trigger::Context OutputRunner::contextAt(double now) const {
     context.beatSeconds = state.gridBpm > 0.0 ? 60.0 / state.gridBpm : 0.0;
     context.confidence = state.confidence;
     context.locked = state.locked;
+    // Nothing a rule watches fires before a lock has been earned — see `Context::acquired`.
+    context.acquired = state.acquired;
     context.meter = state.beatsPerBar;
     context.beatInBar = state.beatInBar;
     context.beats = state.beats;
@@ -1235,6 +1237,7 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     context.beatSeconds = beat.event.gridBpm > 0.0 ? 60.0 / beat.event.gridBpm : 0.0;
     context.confidence = beat.event.confidence;
     context.locked = beat.event.locked;
+    context.acquired = beat.event.acquired;
     context.meter = beat.event.beatsPerBar;
     context.beatInBar = beat.event.beatInBar;
     context.beats = beat.beats;
