@@ -1245,3 +1245,68 @@ TEST_CASE("a test of a rule that will go on sending is left to it", "[trigger][e
     engine.advance(beatAt(1, 1, 1, 10.0));
     CHECK(sink.sent.size() == 1); // its own rule lets go of it, or does not, as it was built
 }
+
+TEST_CASE("a length in beats is counted in the beats going out, not in the number on screen",
+          "[trigger][engine][relock]") {
+    // A number left at 188 where a lost lock put it, over a record whose beats go out at 94
+    // (`Context::beatSeconds`): "release after one beat" used to last sixty over 188 — half a
+    // beat of the music the rule fires on. And a ×2 is the same: it doubles the number, and the
+    // beats a rule fires on go on at the record's tempo.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("clip", Trigger::Beat);
+    takt4::trigger::FollowUp release = releaseAfterMs(0, 0.0);
+    release.unit = takt4::trigger::DelayUnit::Beats;
+    release.delayBeats = 1.0;
+    config.followUps.push_back(release);
+    engine.setRules({config});
+
+    Context context = beatAt(1, 1, 1, 10.0);
+    context.bpm = 188.0;
+    context.beatSeconds = 60.0 / 94.0;
+    engine.onBeat(context);
+    REQUIRE(sink.sent.size() == 1);
+    context.now = 10.0 + 60.0 / 188.0 + 0.01; // where sixty over the number would have put it
+    engine.advance(context);
+    CHECK(sink.sent.size() == 1);
+    context.now = 10.0 + 60.0 / 94.0 + 0.001;
+    engine.advance(context);
+    CHECK(sink.sent.size() == 2);
+
+    SECTION("and a bar is the meter's worth of those beats") {
+        CHECK(takt4::trigger::musicalSeconds(context, takt4::trigger::DelayUnit::Bars, 0.0, 1.0) ==
+              Approx(4.0 * 60.0 / 94.0));
+        context.beatSeconds = 0.0; // a context that does not say: the number, as before
+        CHECK(takt4::trigger::musicalSeconds(context, takt4::trigger::DelayUnit::Beats, 0.0, 1.0) ==
+              Approx(60.0 / 188.0));
+    }
+}
+
+TEST_CASE("the test button holds a note for a beat of the music, not of the number",
+          "[trigger][engine][relock]") {
+    // TEST holds a note or a clip for a beat, or half a second if that is longer, so the operator
+    // sees it land. The beat is the music's: at 188 on screen and 94 going out, a quarter of a
+    // second of hold would have been cut short at the half-second floor.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("note", Trigger::Manual);
+    config.sendKind = Message::Kind::MidiNote;
+    config.number = fixedAt(36);
+    config.value = fixedAt(100);
+    config.enabled = false; // being built: nothing else will let go of what TEST sends
+    engine.setRules({config});
+    REQUIRE(engine.rule(0).valid());
+
+    Context context = beatAt(1, 1, 1, 5.0);
+    context.bpm = 188.0;
+    context.beatSeconds = 60.0 / 94.0;
+    REQUIRE(engine.test("note", context));
+    REQUIRE(sink.sent.size() == 1);
+    context.now = 5.0 + TriggerEngine::kTestHoldSeconds + 0.01;
+    engine.advance(context);
+    CHECK(sink.sent.size() == 1); // half a second is less than a beat at 94
+    context.now = 5.0 + 60.0 / 94.0 + 0.001;
+    engine.advance(context);
+    REQUIRE(sink.sent.size() == 2);
+    CHECK(sink.sent[1].kind == Message::Kind::MidiNoteOff);
+}

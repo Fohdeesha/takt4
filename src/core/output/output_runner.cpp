@@ -1107,6 +1107,7 @@ trigger::Context OutputRunner::contextAt(double now) const {
     const engine::EngineIntensity intensity = engine_.intensity();
     trigger::Context context;
     context.bpm = state.bpm;
+    context.beatSeconds = state.gridBpm > 0.0 ? 60.0 / state.gridBpm : 0.0;
     context.confidence = state.confidence;
     context.locked = state.locked;
     context.meter = state.beatsPerBar;
@@ -1126,6 +1127,7 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     // then held to — see `trigger::Message::moment`.
     trigger::Context context = contextAt(now);
     context.bpm = beat.event.bpm;
+    context.beatSeconds = beat.event.gridBpm > 0.0 ? 60.0 / beat.event.gridBpm : 0.0;
     context.confidence = beat.event.confidence;
     context.locked = beat.event.locked;
     context.meter = beat.event.beatsPerBar;

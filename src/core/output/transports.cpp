@@ -36,6 +36,19 @@ std::int64_t toMicros(double seconds) noexcept {
     return static_cast<std::int64_t>(seconds * 1e6);
 }
 
+/// How many of the clocks' beats go by in one published beat: one, or two or four under the
+/// operator's ×2 — which doubles the tempo the clocks carry and cannot double the beats
+/// (`TempoState::clockOctaves`).
+std::uint32_t clockBeatsPerBeat(const tracking::BeatEvent& event) noexcept {
+    return std::uint32_t{1} << std::clamp(event.clockOctaves, 0, 2);
+}
+
+/// The rate the published beats are going out at (`TempoState::gridBpm`), or the published tempo
+/// for a beat that does not say — one built by hand.
+double gridBpmOf(const tracking::BeatEvent& event) noexcept {
+    return event.gridBpm > 0.0 ? event.gridBpm : event.bpm;
+}
+
 /// Why `device` would not open, in the words its row shows — from inside the `catch` that
 /// caught what opening it threw. Not on the machine and held by another program are told apart:
 /// they have different fixes, and the first used to be said of both.
@@ -605,9 +618,16 @@ double Transports::tailSeconds() const noexcept {
 void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t hostMicros,
                                double beatTime) {
     const std::int64_t latencyMicros = latencyMicros_.load(std::memory_order_relaxed);
+    // **The beats going out, never the number blind** — `TempoState::gridBpm`. A number frozen at
+    // 188 where a lost lock left it, over beats at 94, ticked a receiver at twice the music and
+    // restarted it every bar, since its quarter notes and the tracker's beats then disagreed two
+    // to one. The operator's ×2 alone runs the clock above the beats, which is what it is for.
+    const double grid = gridBpmOf(event);
+    const std::uint32_t perBeat = clockBeatsPerBeat(event);
+    const double tempo = grid * static_cast<double>(perBeat);
     for (Clock& clock : clocks_) {
         MidiClock& midi = *clock.clock;
-        midi.setTempo(event.bpm);
+        midi.setTempo(tempo);
         // The beat's own time, not the round that drained it: the audio arrived a pipeline's
         // worth of time before the beat was called, and the clock used to be synced to when it
         // was *drained* — late by that pipeline, plus the offset (§5.5). The clock steers
@@ -623,18 +643,24 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         // 2026-09-25, M6). The tracker publishes `beatInBar` 0 before it has found a bar, and
         // that was read as beat 1 — so a receiver's bar 1 could land on beat 2, 3 or 4 and stay
         // there for the run. Link's path already waited for this (`phased`, below).
-        if (event.locked && event.bpm > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0) {
-            const double beat = 60.0 / event.bpm;
+        if (event.locked && grid > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0) {
+            const double beat = 60.0 / grid;
             const std::uint32_t meter = event.beatsPerBar;
             const std::uint32_t inBar = std::clamp<std::uint32_t>(event.beatInBar, 1, meter);
+            // The receiver counts its own quarter notes, `perBeat` of them to a published beat, and
+            // its bars in those: the tracker's downbeat starts one of them, and this beat is the
+            // start of the receiver's quarter note `(inBar - 1) * perBeat` from there.
+            const std::uint32_t receiverBeat = ((inBar - 1) * perBeat) % meter + 1;
             if (midi.waitingToStart()) {
+                // On the tracker's own downbeats, so the receiver's bar 1 is the music's even
+                // where its bar is a part of the tracker's.
                 midi.startOnDownbeat(heardAt - static_cast<double>(inBar - 1) * beat,
                                      static_cast<double>(meter) * beat);
             } else {
                 // And once it has started, its bars follow the tracker's: a DOWNBEAT press, or a
                 // bar found again elsewhere after a break, restarts the receiver on the new
                 // downbeat — Song Position cannot move it while it plays (M19's other half).
-                midi.followBar(heardAt, inBar, meter);
+                midi.followBar(heardAt, receiverBeat, meter);
             }
         }
     }
@@ -682,7 +708,10 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     // the tempo is the hunt's, octave flips and all, and every Start used to overwrite
     // Resolume's tempo with it for a few seconds (the audit's H15). And the next lock snaps
     // again: whatever the session did in between, it is put back under the music then.
-    if (!event.locked || !(event.bpm > 0.0)) {
+    // The beats' rate, and the operator's ×2 over it: see `publishClocks`.
+    const std::uint32_t perBeat = clockBeatsPerBeat(event);
+    const double tempo = gridBpmOf(event) * static_cast<double>(perBeat);
+    if (!event.locked || !(tempo > 0.0)) {
         linkSnapped_ = false;
         return;
     }
@@ -699,7 +728,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     // peer's tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for an operator
     // dragging the delay to line Resolume up. The delay is a place to put the beat, not drift.
     if (linkSnapped_ && std::abs(static_cast<double>(latencyMicros - linkSnappedOffset_)) / 1e6 *
-                                event.bpm / 60.0 >
+                                tempo / 60.0 >
                             kLinkPhaseDeadband) {
         linkSnapped_ = false;
     }
@@ -707,7 +736,11 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     const std::chrono::microseconds at{hostMicros + latencyMicros};
     // Bar phase needs a bar: before the first downbeat only the tempo goes.
     const bool phased = event.beatInBar > 0 && event.beatsPerBar > 0;
-    const double beat = phased ? static_cast<double>(event.beatInBar - 1) : 0.0;
+    // The session's own beat this one falls on: `perBeat` of Link's beats to each published one,
+    // its bar the tracker's meter of them — so under a ×2 the tracker's downbeat starts one of
+    // Link's bars, and the beat after it is Link's beat 3.
+    const double beat =
+        phased ? static_cast<double>(((event.beatInBar - 1) * perBeat) % event.beatsPerBar) : 0.0;
     const double quantum = phased ? static_cast<double>(event.beatsPerBar) : 1.0;
     const auto sendTempo = [&](double bpm) {
         if (std::abs(bpm - lastLinkBpm_) > kLinkTempoEpsilon) {
@@ -726,15 +759,15 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     // *forces* the phase, and so does a DOWNBEAT (§5.6 reserves force for that, and Link's
     // header names bridging an external clock as its legitimate use).
     if (phased && (!linkSnapped_ || event.snapped)) {
-        link_->snap(event.bpm, beat, at, quantum);
-        lastLinkBpm_ = event.bpm;
+        link_->snap(tempo, beat, at, quantum);
+        lastLinkBpm_ = tempo;
         linkSnapped_ = true;
         linkSnappedOffset_ = latencyMicros;
         barsApart_ = 0;
         return;
     }
     if (!phased) {
-        sendTempo(event.bpm);
+        sendTempo(tempo);
         return;
     }
 
@@ -751,8 +784,8 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         // not drift. A tempo nudge would take a hundred beats over a whole beat, so a bar's
         // worth of disagreement in a row is answered the way a DOWNBEAT is.
         if (++barsApart_ >= event.beatsPerBar) {
-            link_->snap(event.bpm, beat, at, quantum);
-            lastLinkBpm_ = event.bpm;
+            link_->snap(tempo, beat, at, quantum);
+            lastLinkBpm_ = tempo;
             linkSnappedOffset_ = latencyMicros;
             barsApart_ = 0;
             return;
@@ -761,7 +794,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         barsApart_ = 0;
     }
     if (std::abs(error) < kLinkPhaseDeadband) {
-        sendTempo(event.bpm);
+        sendTempo(tempo);
         return;
     }
     // A session ahead is slowed and one behind is hurried, by the share of the error a beat
@@ -770,7 +803,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     // share of however long ago `at` was — (now − at) × Δbpm / 60 beats, thousandths of a beat
     // when `at` is a beat's stamp plus a latency that has already gone by.
     const double nudge = std::clamp(error / kLinkNudgeBeats, -kLinkMaxNudge, kLinkMaxNudge);
-    sendTempo(event.bpm * (1.0 - nudge));
+    sendTempo(tempo * (1.0 - nudge));
 }
 
 } // namespace takt4::output

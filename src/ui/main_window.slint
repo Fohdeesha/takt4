@@ -376,6 +376,10 @@ export component MainWindow inherits Window {
   /// that stopped, not a breakdown (`TempoState::noSignal`). The lock readout says "no signal",
   /// and the tempo is the last one, held.
   in-out property <bool> no-signal;
+  /// A lock has been earned since START or the last no signal, so the outputs are firing
+  /// (`TempoState::acquired`) — locked or not: a lock lost mid-track is the tracker being unsure,
+  /// and the beats go on going out.
+  in-out property <bool> acquired;
   /// What went missing between the input and the beats — "3 input overflows", "12 hops
   /// dropped — the model fell behind the audio" — or empty. Shown under the meter, because a
   /// device dropping input, or a machine too busy to keep up, is otherwise visible nowhere.
@@ -922,9 +926,11 @@ export component MainWindow inherits Window {
             // theres not indication why"). Measured from the beats going out rather than inferred
             // from the tracker's state, so it says what is on the wire whatever put it there; a
             // clean octave within 12 %, which a beat let pass or a stray one cannot fake past the
-            // median. Only while locked: a hunting tracker's number is not a claim yet.
+            // median. **Whenever the outputs are live**, locked or not: a lock lost mid-track
+            // leaves the number where it was while the beats go out at the record's tempo, and
+            // that — not a locked state — is where the operator met it.
             property <float> beats-ratio: root.bpm > 0 ? root.beats-bpm / root.bpm : 0;
-            property <bool> beats-apart: root.running && root.locked && !root.no-signal
+            property <bool> beats-apart: root.running && root.acquired && !root.no-signal
               && root.beats-bpm > 0
               && (abs(self.beats-ratio - 0.5) < 0.06 || abs(self.beats-ratio - 2) < 0.24
                   || abs(self.beats-ratio - 0.25) < 0.03 || abs(self.beats-ratio - 4) < 0.48);
@@ -1056,12 +1062,18 @@ export component MainWindow inherits Window {
             // **And when the dots and the number disagree, that above all** — what the beats are
             // going out at, and which button makes the number agree with them. It takes the line
             // from the fold's note, which says the same thing less exactly.
+            //
+            // Which button, only while locked: a ×2 left in force, or a fold the music has not
+            // backed, is a state the buttons undo. Unlocked, the number is held where the last
+            // lock left it while the tracker finds the beats' tempo again — and ÷2 there divides
+            // the beats as well, leaving them an octave from the number still.
             if tempo-sheet.beats-apart: Text {
               x: 22px;
               y: 84px - self.font-metrics.ascent;
               width: tempo-sheet.half - 8px;
               text: "beats going out at " + root.beats-bpm.to-fixed(1) + " BPM — "
-                + (root.beats-bpm < root.bpm ? "÷2" : "×2") + " matches the number to them";
+                + (!root.locked ? "number held from last lock"
+                   : "press " + (root.beats-bpm < root.bpm ? "÷2" : "×2") + " to match");
               color: Wf.holding;
               font-family: Wf.sans;
               font-size: 13px;

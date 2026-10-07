@@ -34,6 +34,12 @@ struct Context {
     /// §5.5's published tempo — the one on screen, after the fold and any ÷2 or ×2, because
     /// that is the number an operator set their "BPM in range" condition against.
     double bpm = 0.0;
+    /// How far apart the beats going out are, in seconds: `tracking::TempoState::gridBpm` as a
+    /// spacing. **What a rule's lengths in beats and bars are counted in** — the beats the rule
+    /// fires on, which are not sixty over `bpm` under a ×2, or when the number has stayed where a
+    /// lock left it and the beats have moved on: a number frozen at 188 over beats at 94 made
+    /// "release after one beat" last half of one. Zero when unknown; see `secondsPerBeat`.
+    double beatSeconds = 0.0;
     double confidence = 0.0;
     bool locked = false;
     /// Zero before the filter has an opinion, which is not the same as 4. Nothing here
@@ -53,5 +59,14 @@ struct Context {
     /// Carried onto every message sent from it; see `Message::moment`.
     std::optional<double> moment;
 };
+
+/// One beat of `context`, in seconds: `Context::beatSeconds`, or sixty over the published tempo
+/// where that is not known. Zero with neither.
+inline double secondsPerBeat(const Context& context) noexcept {
+    if (context.beatSeconds > 0.0) {
+        return context.beatSeconds;
+    }
+    return context.bpm > 0.0 ? 60.0 / context.bpm : 0.0;
+}
 
 } // namespace takt4::trigger

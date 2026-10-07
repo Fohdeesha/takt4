@@ -6,6 +6,11 @@
 namespace takt4::output {
 
 double beatSeconds(const tracking::TempoState& state, double bpm) noexcept {
+    // The tracker's own answer, where it has one: the beats' measured rate whenever the number
+    // has been left behind by them, which no octave of the number can say (`TempoState::gridBpm`).
+    if (state.gridBpm > 0.0) {
+        return 60.0 / state.gridBpm;
+    }
     if (!(bpm > 0.0)) {
         return 0.0;
     }

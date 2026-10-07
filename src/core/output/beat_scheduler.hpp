@@ -131,8 +131,11 @@ private:
 /// published tempo **only when the beats are on the published grid**. A ×2 doubles the number
 /// and cannot double the beats, and a fold the music has not yet backed halves the number and
 /// leaves the beats alone (`TempoState::beatDivisor`); in both the beats are an octave from the
-/// tempo. Worked out from the rate the filter calls beats at and the divisor, snapped to the
-/// octave of the published tempo so the refined tempo's precision is kept. Zero with no tempo.
+/// tempo. `TempoState::gridBpm` is the tracker's answer, and it is used whenever it is set: it
+/// also covers a number left behind by the beats at some other ratio — a lock lost at 176 over a
+/// record at 130 — which no octave of the number reaches. Without one (a state built by hand),
+/// worked out from the rate the filter calls beats at and the divisor, snapped to the octave of
+/// the published tempo so the refined tempo's precision is kept. Zero with no tempo.
 double beatSeconds(const tracking::TempoState& state, double bpm) noexcept;
 
 } // namespace takt4::output

@@ -345,7 +345,9 @@ double musicalSeconds(const Context& context, DelayUnit unit, double clockSecond
     if (unit == DelayUnit::Milliseconds) {
         return fixed;
     }
-    if (!(context.bpm > 0.0)) {
+    // The beats going out, not sixty over the number on screen: see `Context::beatSeconds`.
+    const double beat = secondsPerBeat(context);
+    if (!(beat > 0.0)) {
         return fixed; // nothing tracked to count beats of; see the header
     }
     double counted = std::max(0.0, beats);
@@ -355,7 +357,7 @@ double musicalSeconds(const Context& context, DelayUnit unit, double clockSecond
         // meter and holding a clip for four beats of a waltz.
         counted *= static_cast<double>(std::max<std::uint32_t>(1, context.meter));
     }
-    return counted * 60.0 / context.bpm;
+    return counted * beat;
 }
 
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept {

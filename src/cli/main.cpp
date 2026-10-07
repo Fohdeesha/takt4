@@ -1068,7 +1068,8 @@ public:
         // the first of them a trace cannot tell that story at all.
         out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
                 "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
-                "\temitted\tpublished\tflux\tintensity\tonset\tinterp\tacquired\tno_signal\n"
+                "\temitted\tpublished\tflux\tintensity\tonset\tinterp\tacquired\tno_signal"
+                "\tbeats_bpm\tgrid_bpm\n"
              << std::fixed << std::setprecision(6);
     }
 
@@ -1088,7 +1089,8 @@ public:
              << static_cast<int>(tracked.emitted) << '\t' << (frame.beat ? 1 : 0) << '\t'
              << frame.activation.flux << '\t' << static_cast<int>(frame.activation.intensity)
              << '\t' << (frame.activation.onset ? 1 : 0) << '\t' << (frame.interpolated ? 1 : 0)
-             << '\t' << (state.acquired ? 1 : 0) << '\t' << (state.noSignal ? 1 : 0) << '\n';
+             << '\t' << (state.acquired ? 1 : 0) << '\t' << (state.noSignal ? 1 : 0) << '\t'
+             << state.beatsBpm << '\t' << state.gridBpm << '\n';
     }
 
 private:

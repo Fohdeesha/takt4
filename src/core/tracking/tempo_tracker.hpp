@@ -76,6 +76,25 @@ struct TempoState {
     /// 2026-10-06: *"the beat dots advance at the right bpm ... but the bpm display shows twice
     /// that. theres not indication why"*).
     double beatsBpm = 0.0;
+    /// **The rate the published beats are going out at, as precisely as it is known** — what a
+    /// rule's beats and bars are counted in, what the beat scheduler predicts from, and what the
+    /// MIDI clock and Link run at (times `clockOctaves`).
+    ///
+    /// The published tempo moved onto the octave the beats are on, which is the refined number
+    /// to a fraction of a BPM, **while that agrees with `beatsBpm`** within the lock's own band.
+    /// When it does not, `beatsBpm` itself: a number that has stayed where a lock left it while
+    /// the beats moved on — a lock lost and not yet replaced, or one on its way out — or an
+    /// octave the decoder has stopped calling beats on. Never the number blind: a number frozen
+    /// at 188 over beats at 94 made "release after one beat" half a beat, and ran the MIDI clock
+    /// at twice the music. Zero with no tempo.
+    double gridBpm = 0.0;
+    /// How many octaves above the published beats the MIDI clock and Link run: **the operator's
+    /// ×2**, which doubles the number and cannot double the beats, and is pressed so that what
+    /// follows the tempo — Resolume on Link, a drum machine on the clock — runs at the doubled
+    /// one. Zero otherwise, whatever else puts the number off the beats: a fold the music has not
+    /// backed, a frozen lock or a stale octave are not instructions, and the clocks follow the
+    /// beats through them.
+    std::int32_t clockOctaves = 0;
 };
 
 /// One beat, as the output transports want it.
@@ -86,6 +105,10 @@ struct BeatEvent {
     std::uint32_t beatInBar = 0;
     std::uint32_t beatsPerBar = 0;
     double bpm = 0.0;
+    /// `TempoState::gridBpm` and `clockOctaves` at this beat: the rate the beats are going out
+    /// at, which is what the clocks and a rule's lengths in beats follow — never `bpm` blind.
+    double gridBpm = 0.0;
+    std::int32_t clockOctaves = 0;
     bool locked = false;
     /// `TempoState::acquired` at this beat: whether it may fire the rig.
     bool acquired = false;
@@ -418,10 +441,30 @@ public:
         /// accuracy 1 from 0.769 to 0.734. A lock two seconds old has earned nothing and is
         /// replaced for `lockAfter`; one that has run a whole track has earned all of this.
         ///
-        /// The cost, at full price, is that a real change — a DJ blending into the next
-        /// record — is followed `unlockAfter + relockAfter` frames after the cloud settles
-        /// on it, 4.5 s rather than 2. A blend takes longer than that. A breakdown does not.
+        /// **The full price can never be paid on most records**, and that is why this is not the
+        /// only way a lock is replaced. The decoder's whole-frame tempo dips for two to four
+        /// frames as each beat arrives, more than the lock's band, so a run of agreement is
+        /// broken on every beat — 46 to 65 frames apart at 100 Hz, short of the 300 asked for.
+        /// A wrong lock lost on such a record left the number frozen there while the beats went
+        /// out at the record's real tempo, for minutes (31.8 of 715 live minutes over a 12-hour
+        /// playlist, measured 2026-10-07). `relockOnBeats` is the other way, and with it a real
+        /// change — a DJ blending into the next record — is followed about `unlockAfter` plus
+        /// `kRelockWaitSeconds` after the beats settle on it, four and a half seconds.
         std::size_t relockAfter = 150;
+        /// **A lock lost to a different tempo is taken back on the beats' own evidence**, when
+        /// the run above cannot be had. Unlocked after a lock, the published tempo stays where
+        /// that lock left it; once it has been unlocked `kRelockWaitSeconds`, the last eight
+        /// published beats are steady — their gaps' interquartile range under `kRelockSpread` of
+        /// the median — and the decoder's tempo over the last beat agrees with them in the beats'
+        /// octave within `sameTempoTolerance`, the lock moves to the rate the beats are going out
+        /// at.
+        ///
+        /// Judged over a beat rather than per frame, because the per-frame dip is exactly what
+        /// makes the run impossible. **Only a replacement**: a first lock, and a lock coming
+        /// back to the tempo still published, are earned as before — tolerating the dip on a
+        /// first lock was measured to lock wrong tempi half as often again (the operator's
+        /// strict-lock ruling of 2026-10-03), and nothing here is a first lock.
+        bool relockOnBeats = true;
         /// How close two estimates have to be to count as the same *value*. The state space
         /// is discrete, so in practice this means "the same tempo interval". Used where an
         /// exact comparison is wanted — did a tap really move the tempo — rather than for
@@ -713,6 +756,24 @@ private:
     bool onPublishedGrid(const TrackedFrame& frame) noexcept;
 
     void updateLock(double folded) noexcept;
+    /// Takes the lock on `candidate_`: what `updateLock` does once a tempo has earned one, and
+    /// `relockOnBeats` once the beats have. `replacing` a tempo already published; `nextRecord`
+    /// when it is the next record of a set, whose octave shift goes (see `tempoLetGo_`).
+    void takeLock(bool replacing, bool nextRecord) noexcept;
+    /// `Options::relockOnBeats`, on a frame that published a beat.
+    void relockOnBeats(bool confident) noexcept;
+    /// The median and the interquartile range of the last `kBeatRateGaps` gaps between published
+    /// beats, in frames. False until there are that many.
+    bool publishedSpacing(double& median, double& spread) const noexcept;
+    /// Puts `beatOctave_` at `octave` and carries the lock and its candidate across, so the
+    /// published number does not move unless the beats did. See `weighBeatOctave`.
+    void moveBeatOctave(std::int64_t octave) noexcept;
+    /// Whether the filter's last few beats are still `beatOctave_` from its cloud, by the median
+    /// of their gaps — false only when they cleanly show another octave, or none. What a lock
+    /// move keeps the octave on.
+    bool beatsShowOctave() const noexcept;
+    /// `TempoState::gridBpm` and `clockOctaves`, from what is published now.
+    void publishGrid() noexcept;
     /// Whether the decoder is calling beats at the tempo it reports: `Options::lockBeats`.
     bool beatsAtTempo() const noexcept;
     void rememberBeat(std::uint64_t frameIndex) noexcept;
@@ -801,6 +862,9 @@ private:
     std::int64_t beatOctave_ = 0;
     std::int64_t beatOctaveCandidate_ = 0;
     std::size_t beatOctaveRun_ = 0;
+    /// The input went quiet since `beatOctave_` was last confirmed, so the next lock keeps it only
+    /// if the beats show it — see `takeLock`.
+    bool beatOctaveUnconfirmed_ = false;
 
     /// The most the fold will divide the beat grid by. Two octaves: a filter reading four
     /// times the published tempo is already a tracking failure rather than an octave
@@ -893,6 +957,34 @@ private:
     std::size_t publishedCount_ = 0;
     /// `TempoState::beatsBpm` from the ring, and zero once the next beat is overdue.
     void measureBeatRate() noexcept;
+    /// How steady the published beats must be for `Options::relockOnBeats` to take the lock
+    /// back on them — the interquartile range of their last eight gaps under this share of the
+    /// median — and how long the lock must have been gone first.
+    ///
+    /// Both against the wrong locks a looser rule took. Most of those were the decoder going to
+    /// double time for a passage — its beats already steady there before the old lock let go,
+    /// so a lock taken the moment it did followed the excursion, and Link with it. Measured on
+    /// 2026-10-07 over the 23 tracks of `references/audio` (window off) and the twenty worst of
+    /// the operator's 109-g playlist: 8 % and no wait locked a wrong tempo for 294 s of the
+    /// agreed fifteen (260 before any of this) and left the number off the beats for 69 s of
+    /// the twenty (1057 before); 5 % and three seconds, 261 s and 106 s.
+    static constexpr double kRelockSpread = 0.05;
+    static constexpr double kRelockWaitSeconds = 3.0;
+
+    /// **The decoder's tempo judged over a beat**, for `Options::relockOnBeats`: its whole-frame
+    /// interval on every frame since the filter last called a beat, and the median of those at
+    /// that beat — which the two-to-four-frame dip as each beat arrives moves by nothing. A
+    /// beat is at most `kBeatIntervals` frames here (2.56 s at 100 Hz); a longer one keeps its
+    /// last frames.
+    static constexpr std::size_t kBeatIntervals = 256;
+    std::array<float, kBeatIntervals> beatIntervals_{};
+    std::array<float, kBeatIntervals> intervalScratch_{};
+    std::size_t beatIntervalCount_ = 0;
+    /// Frames since the lock was last held, for `kRelockWaitSeconds`.
+    std::size_t unlockedFrames_ = 0;
+    /// The median of the last beat's intervals, in frames, on the cloud's octave; zero before
+    /// one has been measured. Also what `beatsShowOctave` measures the filter's beats against.
+    double decoderBeatPeriod_ = 0.0;
 
     /// The frames the last few beats were called on, oldest first. Bounded by
     /// `refineOverBeats + 1`, so this allocates once and never grows.

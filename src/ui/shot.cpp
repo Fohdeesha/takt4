@@ -831,6 +831,7 @@ void fillAsMockup(MainWindow& window) {
     window.set_raw_bpm(128.29f);
     window.set_refined(true);
     window.set_locked(true);
+    window.set_acquired(true);
     window.set_holding(false);
     window.set_input_lost(false);
     window.set_confidence(0.62f);
@@ -1013,6 +1014,12 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         } else if (options.state == "apart") {
             window->set_bpm(180.0f);
             window->set_beats_bpm(90.1f);
+        } else if (options.state == "frozen") {
+            // A lock lost mid-track over a record the tracker had locked at double: the number
+            // held where the lock left it, the dots at the record's tempo, the outputs live.
+            window->set_locked(false);
+            window->set_bpm(187.7f);
+            window->set_beats_bpm(93.8f);
         } else if (options.state == "doubled" || options.state == "doubled-before") {
             // A ×2 left in force: the number doubled, the grid not, so the dots go on at the
             // music's tempo — the operator's report of 2026-10-06, as the window shows it now and
