@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -163,6 +164,18 @@ std::size_t childrenRunning() {
     return count;
 }
 
+/// Whether this process's children are back to `before` within a few seconds. A child that was
+/// ended — fell over, or was killed for hanging — can still be listed for a moment after the scan
+/// that ended it has returned: seen on a CI machine, one still there as the scan came back. What
+/// is claimed is that none is left running, not that it is gone at that very instant.
+bool childrenBackTo(std::size_t before) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (childrenRunning() != before && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return childrenRunning() == before;
+}
+
 std::size_t asioDevicesListed() {
     const PaHostApiIndex api = Pa_HostApiTypeIdToHostApiIndex(paASIO);
     const PaHostApiInfo* info = api >= 0 ? Pa_GetHostApiInfo(api) : nullptr;
@@ -199,7 +212,7 @@ TEST_CASE("an ASIO driver falling over while it is asked costs the ASIO devices 
         // And with no scan to go on, PortAudio loaded no driver to find out for itself.
         CHECK(asioDriversLoadedHere().empty());
     }
-    CHECK(childrenRunning() == childrenBefore);
+    CHECK(childrenBackTo(childrenBefore));
 }
 
 TEST_CASE("an ASIO driver that never answers is given up on in time", "[audio]") {
@@ -218,7 +231,7 @@ TEST_CASE("an ASIO driver that never answers is given up on in time", "[audio]")
     CHECK(took >= 2.0);
     CHECK(took < 3.5);
     // The hung process was ended rather than left behind.
-    CHECK(childrenRunning() == childrenBefore);
+    CHECK(childrenBackTo(childrenBefore));
 }
 
 TEST_CASE("an ASIO scan is done when it has answered, though a process it started holds the pipe",
@@ -247,7 +260,7 @@ TEST_CASE("an ASIO scan that answered and then hung keeps its answer", "[audio]"
     const AsioScan scan = takt4::audio::scanAsio(std::chrono::milliseconds(1500));
     INFO("the problem: " << scan.problem);
     CHECK(scan.problem.empty());
-    CHECK(childrenRunning() == childrenBefore); // and the process was still ended
+    CHECK(childrenBackTo(childrenBefore)); // and the process was still ended
 }
 
 TEST_CASE("ASIO devices are listed as their drivers describe them with none loaded here",

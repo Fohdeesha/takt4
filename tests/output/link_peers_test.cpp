@@ -153,7 +153,15 @@ TEST_CASE("a peer that was there first is put on the music's phase", "[output][l
     REQUIRE(eventually([&] { return std::abs(ours.tempoBpm() - peer.tempoBpm()) < 1e-6; }));
     ours.setTempo(128.0, ours.now());
     REQUIRE(eventually([&] { return std::abs(peer.tempoBpm() - 128.0) < 1e-6; }));
-    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    // **And on one timeline**, which a joined session reaches some time after it agrees on the
+    // tempo: waited for rather than assumed after a fixed 300 ms, which now and then was not long
+    // enough and left the two a few beats apart before the music had been heard at all.
+    REQUIRE(eventually([&] {
+        const std::chrono::microseconds at = ours.now() + std::chrono::seconds{2};
+        double apart = std::fmod(ours.phaseAtTime(at, 4.0) - peer.phaseAtTime(at, 4.0) + 8.0, 4.0);
+        apart = std::min(apart, 4.0 - apart);
+        return apart < 0.005;
+    }));
 
     // The music: 128 BPM, its bar starting 180 ms after the peer's.
     const double beat = 60.0 / 128.0;
