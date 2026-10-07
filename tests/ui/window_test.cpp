@@ -5329,7 +5329,7 @@ TEST_CASE("IDENTIFY lights a par without a dimmer that a rule left at nothing", 
     WindowController controller(tracker, settings);
     const auto frame = [&node] {
         const std::string datagram = node.receive();
-        return datagram.size() >= 21 && datagram.compare(0, 8, std::string("Art-Net ", 8)) == 0
+        return datagram.size() >= 21 && datagram.compare(0, 8, std::string("Art-Net\0", 8)) == 0
                    ? std::array<int, 3>{static_cast<std::uint8_t>(datagram[18]),
                                         static_cast<std::uint8_t>(datagram[19]),
                                         static_cast<std::uint8_t>(datagram[20])}
