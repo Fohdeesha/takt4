@@ -59,8 +59,9 @@ public:
     /// `isValidOscPrefix`, which is the test this throws on.
     explicit OscPublisher(std::string prefix = "/takt4");
 
-    /// Adds a target, at the next routing bit. Throws std::runtime_error if the host
-    /// cannot be resolved.
+    /// Adds a target, at the next routing bit. Throws std::runtime_error only when a literal
+    /// address cannot have a socket at all (`OscSender`): a name is looked up on a thread of its
+    /// own, and one that does not resolve is the target's `problem()`, not a throw.
     ///
     /// `bit` is which bit of a rule's `Message::outputs` mask selects this one — the index
     /// of the target in `Transports`' own list, so that a rig with an OSC target, a MIDI
