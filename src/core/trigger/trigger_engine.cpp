@@ -303,6 +303,28 @@ void TriggerEngine::drainDue(double now) {
     }
 }
 
+void TriggerEngine::sendFollowUpsAbout(double moment) {
+    if (pending_.empty()) {
+        return;
+    }
+    std::vector<Pending> owed;
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        if (!pending_[i].press && pending_[i].message.moment <= moment) {
+            owed.push_back(std::move(pending_[i]));
+            continue;
+        }
+        if (kept != i) {
+            pending_[kept] = std::move(pending_[i]);
+        }
+        ++kept;
+    }
+    pending_.resize(kept);
+    for (const Pending& waiting : owed) {
+        deliver(waiting.message, waiting.ruleId, true, {});
+    }
+}
+
 void TriggerEngine::flushPending() {
     // Every follow-up, now; a fire held for its rule's delay is a press, and goes nowhere.
     std::vector<Pending> owed;

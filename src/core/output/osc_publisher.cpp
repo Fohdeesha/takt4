@@ -199,9 +199,38 @@ void OscPublisher::flushTo(std::uint64_t outputs) {
     pending_.resize(kept);
 }
 
+double OscPublisher::dueOf(const Pending& item) const noexcept {
+    const double delay = item.target < targets_.size() ? targets_[item.target].delaySeconds : 0.0;
+    return item.moment + offsetSeconds_ + delay;
+}
+
+void OscPublisher::sendHeld(std::size_t index, double until) {
+    std::erase_if(pending_, [&](const Pending& item) {
+        if (item.target != index || dueOf(item) > until) {
+            return false;
+        }
+        if (targets_[item.target].sender->send(item.packet)) {
+            ++sent_;
+        } else {
+            ++failed_;
+        }
+        return true;
+    });
+}
+
 void OscPublisher::flushDue() {
     if (pending_.empty()) {
         return;
+    }
+    // Per target, the last datagram held for it that is due now: anything held before it for
+    // the same target, due within `kReleaseFirstSeconds` after it, goes with it and ahead of it.
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    std::vector<std::size_t>& lastDue = lastDue_;
+    lastDue.assign(targets_.size(), kNone);
+    for (std::size_t i = 0; i < pending_.size(); ++i) {
+        if (pending_[i].target < targets_.size() && dueOf(pending_[i]) <= now_) {
+            lastDue[pending_[i].target] = i;
+        }
     }
     // Everything due, in the order it was queued. Partitioned rather than scanned-and-erased
     // per item: one round can retire a whole beat's worth, and erasing from the front of a
@@ -209,7 +238,10 @@ void OscPublisher::flushDue() {
     std::size_t kept = 0;
     for (std::size_t i = 0; i < pending_.size(); ++i) {
         Pending& item = pending_[i];
-        if (item.due > now_) {
+        const double due = dueOf(item);
+        const bool ahead = item.target < targets_.size() && lastDue[item.target] != kNone &&
+                           i < lastDue[item.target] && due <= now_ + kReleaseFirstSeconds;
+        if (due > now_ && !ahead) {
             if (kept != i) {
                 pending_[kept] = std::move(item);
             }
@@ -305,6 +337,9 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double
         // be the moment it is sent.
         const double due = moment + offsetSeconds_ + target.delaySeconds;
         if (due <= now_) {
+            // Whatever was held for it to go a hair after this goes first: see
+            // `kReleaseFirstSeconds`.
+            sendHeld(i, now_ + kReleaseFirstSeconds);
             if (target.sender->send(packet)) {
                 ++sent_;
             } else {
@@ -320,7 +355,7 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double
             continue;
         }
         pending_.push_back(
-            Pending{due, i, std::vector<std::byte>(packet.begin(), packet.end()), own});
+            Pending{moment, i, std::vector<std::byte>(packet.begin(), packet.end()), own});
     }
 }
 

@@ -113,6 +113,18 @@ public:
     /// One beat the tracker called, with the state at it.
     void onBeat(const Context& context);
 
+    /// **A release goes before the press it shares a moment with.** Every follow-up owed about a
+    /// moment at or before `moment` is handed to the sink now, in the order it was owed, whatever
+    /// the round it would otherwise have come due in — and before a beat about `moment` fires.
+    ///
+    /// "Release after one beat", the editor's default follow-up, is due about the moment of the
+    /// next press, and it used to come due a round after the press had already gone, about half
+    /// the time: its round was the one its own press fired in plus a beat, and the next press
+    /// fires as it is heard or ahead of it on a prediction, so jitter decided which went first. A
+    /// fixed MIDI note was cut the instant it started, and a DMX clip went to nothing. The sink
+    /// still holds each for its own moment; this only puts the release in the queue first.
+    void sendFollowUpsAbout(double moment);
+
     /// One round of the output thread: the triggers that do not wait for a beat, then any
     /// follow-up that has come due. Call it every round even when nothing has happened —
     /// that is what makes a follow-up delay mean milliseconds rather than beats.

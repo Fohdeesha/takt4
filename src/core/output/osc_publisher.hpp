@@ -257,19 +257,30 @@ private:
     /// One datagram waiting for its target's delay to run out. The bytes are copied rather
     /// than the message kept, because `OscMessage`'s buffer is reused by the next send and a
     /// held span would be rewritten under the queue.
+    ///
+    /// **Its moment, not a time it is due**: when it goes is worked out as it is looked at, from
+    /// the rig's offset and the target's delay as they are then — so a delay dragged shorter
+    /// cannot send a release held after its press ahead of it. See `RuleSink::HeldMidi`.
     struct Pending {
-        double due = 0.0;
+        double moment = 0.0;
         std::size_t target = 0;
         std::vector<std::byte> packet;
         /// One of the namespace's, dropped if its target stops taking the namespace first.
         bool own = false;
     };
+    /// When `item` goes, as things are now; never for a target that is gone.
+    double dueOf(const Pending& item) const noexcept;
+    /// Sends now everything held for target `index` due by `until`, in the order held — before a
+    /// datagram for it that is going at once, so it cannot overtake them.
+    void sendHeld(std::size_t index, double until);
     /// Kept in the order queued, and sent in that order among whatever has come due. Two
     /// messages about the same moment to one target — a beat's state and then the beat —
     /// keep their order, which is the whole point of delaying rather than dropping. A message
     /// about *now* can overtake one about a beat still to come, and should: the beat has not
     /// happened yet.
     std::vector<Pending> pending_;
+    /// Reused by `flushDue`.
+    std::vector<std::size_t> lastDue_;
     double now_ = 0.0;
     double offsetSeconds_ = 0.0;
     std::uint64_t dropped_ = 0;

@@ -63,6 +63,14 @@ public:
     /// The share of a beat within which a beat heard is the beat already fired. A beat's stamp
     /// jitters by a few milliseconds; a third of a beat is a hundred and fifty at 128 BPM.
     static constexpr double kSameBeat = 0.35;
+    /// The same after a beat fired **on a prediction**, which the beat heard may correct by more
+    /// than a stamp's jitter: the tracker moving its phase, by as much as a third of a beat and
+    /// more. Inside half a beat of the prediction it is the beat predicted, its phase corrected
+    /// — taken as the next anchor and not fired again. Past a third it used to be fired as a beat
+    /// of its own: two fires for one beat, and every count after it one ahead for the run, so a
+    /// euclidean pattern and a rule on every few beats moved a step. Short of half: a jump of
+    /// half a beat is the beat between, not this one moved.
+    static constexpr double kCorrection = 0.45;
 
     /// A beat the tracker called, which was in the music at `moment` on the output thread's
     /// clock. Returns it to fire now — or nothing when a prediction has already fired it, or
@@ -114,9 +122,11 @@ private:
     bool holding_ = false;
     /// Predictions fired from this anchor.
     std::uint32_t ahead_ = 0;
-    /// The latest moment fired, and the counts it carried.
+    /// The latest moment fired, and the counts it carried — and whether it was fired on a
+    /// prediction, which a beat heard may correct (`kCorrection`).
     double firedMoment_ = 0.0;
     bool firedAny_ = false;
+    bool firedPredicted_ = false;
     std::uint64_t firedBeats_ = 0;
     std::uint64_t firedBars_ = 0;
     /// The tracker's own count at the last beat heard, which is what tells a restart of it.

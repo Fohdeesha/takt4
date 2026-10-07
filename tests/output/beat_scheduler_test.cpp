@@ -428,3 +428,55 @@ TEST_CASE("the beats are predicted at the rate they go out at when the number is
     REQUIRE(next.has_value());
     CHECK(next->moment == Approx(1.0 + 60.0 / 130.0));
 }
+
+TEST_CASE("a predicted beat the heard one corrects is not fired again", "[output][scheduler]") {
+    // A beat fired on a prediction, then heard 0.4 of a beat later: the tracker moving its phase
+    // by more than a stamp's jitter. It is the beat predicted, its phase corrected — not fired a
+    // second time, and the counts go on as the tracker's. Past a third of a beat it used to be
+    // fired as a beat of its own, and every count after it was one ahead for the run.
+    BeatScheduler scheduler;
+    const double period = 60.0 / 128.0;
+    const double first = 1.0;
+    REQUIRE(scheduler.heard(beat(1, 128.0), first, first + 0.06, 0.35).has_value());
+    const auto predicted = scheduler.due(first + period, 0.0, 0.35);
+    REQUIRE(predicted.has_value());
+    CHECK(predicted->beats == 2);
+    const double corrected = first + period + 0.4 * period;
+    CHECK_FALSE(scheduler.heard(beat(2, 128.0), corrected, corrected + 0.06, 0.35).has_value());
+    // The next is predicted from the corrected beat, and counted as the tracker's third.
+    CHECK_FALSE(scheduler.due(corrected + 0.06, 0.0, 0.35).has_value());
+    const auto next = scheduler.due(corrected + period, 0.0, 0.35);
+    REQUIRE(next.has_value());
+    CHECK(next->beats == 3);
+    CHECK(next->moment == Approx(corrected + period));
+}
+
+TEST_CASE("with every output behind the beat a locked beat goes out as it was heard",
+          "[output][scheduler]") {
+    // A positive lead — the rig's offset and every output later than the beat — waits for the
+    // measured beat, so the lights go out on the beat heard as Link and the MIDI clock do, and a
+    // phase correction reaches all of them in the same beat. They used to go out on the beat
+    // predicted from the one before, whatever slack the offset left.
+    SECTION("heard in time, every beat goes as heard") {
+        // (The one past the end would be predicted the lead after its moment, which the run does
+        // not wait for.)
+        const std::vector<Fire> fires = run(128.0, 0.150, 32, 0.060, 0.004);
+        REQUIRE(fires.size() == 32);
+        for (std::size_t i = 0; i < fires.size(); ++i) {
+            INFO("fire " << i);
+            CHECK_FALSE(fires[i].beat.predicted);
+            CHECK(fires[i].sentAt == Approx(fires[i].beat.moment + 0.060).margin(0.0011));
+        }
+    }
+    SECTION("heard too late, the prediction stands in, the lead after its moment") {
+        const std::vector<Fire> fires = run(128.0, 0.150, 32, 0.200, 0.004);
+        REQUIRE(fires.size() == 32);
+        CHECK_FALSE(fires.front().beat.predicted);
+        for (std::size_t i = 1; i < fires.size(); ++i) {
+            INFO("fire " << i);
+            CHECK(fires[i].beat.predicted);
+            CHECK(fires[i].sentAt == Approx(fires[i].beat.moment + 0.150).margin(0.0011));
+            CHECK(fires[i].beat.beats == fires[i - 1].beat.beats + 1);
+        }
+    }
+}

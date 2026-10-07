@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -133,7 +134,22 @@ public:
     static constexpr double kHistorySpan = 2.05;
 
     /// Sends every frame that is due, and says how many datagrams left. Call every round.
+    ///
+    /// **No frame goes in the 44 Hz period before a lighting cue that is known to be coming**
+    /// (`setUpcomingCues`, `cueStarted`), so the cue's own frame goes the round it is due. The
+    /// pacing used to run free: the period was counted from wherever the last frame happened to
+    /// go, so in a universe a fade kept busy — a colour rule fading over a beat keeps it so for
+    /// good — every cue waited anything from nothing to 23 ms behind the fade's last frame, a
+    /// different amount every beat. Never more than 44 frames a second either way.
     std::size_t publish(const DmxEngine& engine, double now);
+
+    /// Lighting cues held for a moment still to come, as the universe each reaches and when it
+    /// starts — `output::RuleSink` says so every round, before the frames are made. Replaces what
+    /// was said before.
+    void setUpcomingCues(std::span<const std::pair<PortAddress, double>> cues);
+    /// A lighting cue started at `at` on `universe`. A node sent the lighting late sees it its lag
+    /// later, so it is held clear for the cue then, as an on-time node is for one still to come.
+    void cueStarted(PortAddress universe, double at);
 
     /// Sends every universe's current frame to every node **now**, whatever the pacing says —
     /// the last thing takt4 transmits on the way out. A frame changed a millisecond after the
@@ -190,6 +206,10 @@ private:
     struct Target {
         std::unique_ptr<ArtNetSender> sender;
         double delay = 0.0;
+        /// The lag this node is sent the lighting at now: `lagOf`, eased towards it no faster than
+        /// time passes when it grows, and taken at once when it shrinks — see `publish`. Negative
+        /// until its first frame.
+        double lag = -1.0;
         std::size_t bit = 0;
         std::string id;
         /// One per universe actually being fed, found or made on the first frame. Held per
@@ -214,6 +234,17 @@ private:
     /// patch has no such universe, patched or released.
     bool sendFarewell(const DmxEngine& engine, Target& target, PortAddress universe, double now);
     std::vector<History> history_;
+    /// Whether a cue is seen by a node `lag` behind within the period from `now`.
+    bool cueSoon(PortAddress universe, double lag, double now) const noexcept;
+    /// See `setUpcomingCues` and `cueStarted`; the cues started are kept as long as a lag can be.
+    std::vector<std::pair<PortAddress, double>> upcoming_;
+    std::vector<std::pair<PortAddress, double>> started_;
+    /// The last `publish`, for easing a lag that grew; negative before the first.
+    double lastPublish_ = -1.0;
+    /// Whether any node is sent the lighting late, as the last `publish` found.
+    bool lagging_ = false;
+    /// A cue started since the last `publish`: the history keeps this round's frame.
+    bool cueThisRound_ = false;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
     mutable std::uint64_t lookups_ = 0;

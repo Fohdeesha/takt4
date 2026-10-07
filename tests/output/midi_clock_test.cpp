@@ -514,22 +514,107 @@ TEST_CASE("the clock follows a tempo change without adding or dropping a tick",
 }
 
 TEST_CASE("a long stall is skipped rather than flooded", "[output][midi]") {
-    Recorder recorder;
-    MidiClock clock(recorder, 120.0);
+    Wire wire;
+    MidiClock clock(wire, 120.0); // a tick every 1/48 s, a beat every half second
     clock.start(0.0);
+    // A third of the way into a quarter note.
+    runTo(clock, wire, 0.16);
+    REQUIRE(clock.ticksSent() == 8);
+    REQUIRE(clock.pulseInQuarter() == 8);
 
     // Nothing advanced the clock for a minute. Sending the 2880 ticks that were missed
     // would be worse for the receiver than skipping them.
-    const std::size_t emitted = clock.advance(60.0);
+    wire.now = 60.01;
+    const std::size_t emitted = clock.advance(wire.now);
     CHECK(emitted == MidiClock::kMaxBurst);
     CHECK(clock.ticksSkipped() > 2000);
-
-    // ...and it carries on from where it gave up, at the right rate.
-    const std::uint64_t after = clock.ticksSent();
-    CHECK(clock.advance(61.0) == 48);
-    CHECK(clock.ticksSent() == after + 48);
     // Nothing was lost: the ticks sent plus the ones skipped are the whole minute.
     CHECK(clock.ticksSent() + clock.ticksSkipped() >= 60 * 48);
+
+    // **Skipped in whole quarter notes**, so the pulse this clock counts is still the one the
+    // receiver does: it counts every tick it is sent. A part of a quarter skipped moved the
+    // clock's pulse 0 — where it puts the beat, and Start — off the receiver's for the rest of
+    // the run.
+    CHECK(clock.ticksSkipped() % 24 == 0);
+    CHECK(clock.pulseInQuarter() == clock.ticksSent() % 24);
+
+    // ...and it carries on from where it gave up, at the right rate and on the grid its ticks
+    // were on: every 24th tick the receiver counts on a beat of it.
+    const std::size_t from = wire.messages.size();
+    const std::uint64_t counted = clock.ticksSent();
+    runTo(clock, wire, 62.0);
+    std::size_t inSecond = 0;
+    std::size_t beats = 0;
+    std::uint64_t index = counted;
+    for (std::size_t i = from; i < wire.messages.size(); ++i) {
+        REQUIRE(wire.messages[i].bytes == std::vector<unsigned char>{MidiClock::kTick});
+        const double at = wire.messages[i].at;
+        if (at >= 60.6 && at < 61.6) {
+            ++inSecond;
+        }
+        if (index % 24 == 0) {
+            INFO("the receiver's beat at " << at);
+            const double beat = 0.5 * std::round(at / 0.5);
+            CHECK(at - beat >= -1e-9);
+            CHECK(at - beat <= 0.0011); // the round the output thread drains it in
+            ++beats;
+        }
+        ++index;
+    }
+    CHECK(inSecond == 48);
+    CHECK(beats >= 3);
+}
+
+TEST_CASE("a clock started off the beat starts its receiver on the downbeat", "[output][midi]") {
+    // START is pressed wherever the operator's finger falls, and the clock ticks from there so a
+    // receiver has a tempo. Start then waits for a pulse 0 within a quarter of a beat of the
+    // tracker's downbeat — and the pulse 0 used to be steered there half the way each beat, so
+    // the receiver's bar 1 began up to a quarter of a beat off the music (117 ms at 128). Before
+    // Start nobody is counting the pulses, so the clock puts its pulse 0 on the beat in one step.
+    // From every phase of a beat, so the press that leaves the next tick a pulse 0 is in it.
+    constexpr int kPhases = 96;
+    for (int i = 0; i < kPhases; ++i) {
+        const double pressed = 0.003 + 0.5 * static_cast<double>(i) / kPhases;
+        INFO("START pressed at " << pressed);
+        Wire wire;
+        MidiClock clock(wire, 120.0); // a tick every 1/48 s
+        wire.now = pressed;
+        clock.startTicking(pressed);
+        // Beats every half second from 1.0, bars of four from 0, each drained 10 ms after it, as
+        // the output thread gives them to the clock.
+        for (int k = 2; k < 24 && !clock.started(); ++k) {
+            const double at = 0.5 * k;
+            runTo(clock, wire, at + 0.01);
+            clock.syncToBeat(at);
+            const int inBar = k % 4 + 1;
+            if (clock.waitingToStart()) {
+                clock.startOnDownbeat(at - 0.5 * (inBar - 1), 2.0);
+            }
+        }
+        runTo(clock, wire, wire.now + 0.1);
+        const std::size_t start = wire.find(MidiClock::kStart);
+        REQUIRE(start + 1 < wire.messages.size());
+        // The receiver's bar 1, the tick after Start, on the first downbeat after the first beat
+        // it was given — within the round the output thread sends it in.
+        REQUIRE(wire.messages[start + 1].bytes == std::vector<unsigned char>{MidiClock::kTick});
+        const double bar1 = wire.messages[start + 1].at;
+        CHECK(bar1 - 2.0 >= -1e-9);
+        CHECK(bar1 - 2.0 <= 0.0011);
+        // And no tick before it closer than half the tempo's spacing, or further than half again:
+        // nothing counted them, but a burst would read to a receiver as a tempo.
+        double previous = -1.0;
+        for (std::size_t m = 0; m < start; ++m) {
+            if (wire.messages[m].bytes[0] != MidiClock::kTick) {
+                continue;
+            }
+            if (previous >= 0.0) {
+                const double gap = wire.messages[m].at - previous;
+                CHECK(gap >= 0.5 / 48.0 - 0.0011);
+                CHECK(gap <= 1.5 / 48.0 + 0.0011);
+            }
+            previous = wire.messages[m].at;
+        }
+    }
 }
 
 TEST_CASE("a MIDI port that is not there fails with something worth reading", "[output][midi]") {

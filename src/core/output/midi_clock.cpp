@@ -342,6 +342,10 @@ void MidiClock::syncToBeat(double beatTime) noexcept {
     }
     const double tick = tickSeconds();
     const double beat = tick * static_cast<double>(kPulsesPerQuarterNote);
+    if (!started_) {
+        aimBeforeStart(beatTime, tick, beat);
+        return;
+    }
     // The pulse 0 to steer: the next one at least a tick away. When the next tick *is* a
     // pulse 0 it is left alone — it is due within one tick, and moving it would mean moving
     // a tick that is about to go — and the one after it is steered instead.
@@ -362,6 +366,34 @@ void MidiClock::syncToBeat(double beatTime) noexcept {
     steering_ = remaining;
 }
 
+void MidiClock::aimBeforeStart(double beatTime, double tick, double beat) noexcept {
+    // **Not started, so nobody is counting** — the pulses are this clock's own to number, and a
+    // pulse 0 can go onto the beat in one step rather than half the way. A receiver starts its
+    // bar 1 on the first tick after Start, and Start waits for a pulse 0 within a quarter of a
+    // beat of a downbeat: a clock steered there from wherever START found it started its
+    // receivers up to a quarter of a beat off the music, 117 ms at 128, and steered them in over
+    // the beats after.
+    //
+    // The beat of the grid nearest after the next tick, no more than half a tick before it, and
+    // how many ticks short of it that tick is: the ticks between are respaced by no more than half
+    // a tick each, and the next pulse 0 is that beat.
+    const double next = nextTick();
+    const double target = beatTime + std::ceil((next - 0.5 * tick - beatTime) / beat) * beat;
+    const auto ahead = static_cast<std::size_t>(
+        std::clamp<long long>(std::llround((target - next) / tick), 0,
+                              static_cast<long long>(kPulsesPerQuarterNote) - 1));
+    if (ahead == 0) {
+        // The next tick is the pulse 0, moved onto the beat by under half a tick.
+        anchor(target, tick);
+        pulse_ = 0;
+        steering_ = 0;
+        return;
+    }
+    anchor(next, (target - next) / static_cast<double>(ahead));
+    pulse_ = kPulsesPerQuarterNote - ahead;
+    steering_ = ahead;
+}
+
 std::size_t MidiClock::advance(double now) noexcept {
     if (!running_) {
         return 0;
@@ -372,12 +404,19 @@ std::size_t MidiClock::advance(double now) noexcept {
             // Something stalled for longer than the burst allows. Skip the backlog and
             // start again from here rather than flooding the port. The only place a tick is
             // ever dropped, and it is counted.
+            //
+            // **In whole quarter notes**, so the next tick sent is the pulse the receiver counts
+            // it as. A receiver counts every tick it is sent, 24 to its quarter note, and skipping
+            // a part of a quarter moved this clock's pulse 0 off the receiver's for the rest of
+            // the run — Start, and every bar `followBar` judged, a part of a beat out.
             const double interval = tickSeconds();
-            const auto behind = static_cast<std::uint64_t>((now - nextTick()) / interval) + 1;
+            const std::uint64_t quarter = kPulsesPerQuarterNote;
+            const auto late = static_cast<std::uint64_t>((now - nextTick()) / interval) + 1;
+            const std::uint64_t behind = (late + quarter - 1) / quarter * quarter;
             skipped_ += behind;
-            pulse_ = (pulse_ + behind) % kPulsesPerQuarterNote;
             steering_ = 0;
-            anchor(now + interval, interval);
+            // The tick the skip lands on, on the grid the ticks were on.
+            anchor(nextTick() + static_cast<double>(behind) * interval, interval);
             break;
         }
         emit(kTick);

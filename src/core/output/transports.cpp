@@ -588,26 +588,44 @@ void Transports::setOscOffset() noexcept {
 }
 
 double Transports::leadSeconds() const noexcept {
+    // The earliest output of the kinds a beat's messages are held for: OSC and MIDI, and
+    // Art-Net, whose lighting starts early by the earliest node's lead. A switched-off output
+    // sends nothing, so its delay asks for nothing either; with none on, there is nothing to be
+    // early for, and the beat is the rig's offset away like any other.
+    bool any = false;
     double earliest = 0.0;
     for (const OutputTarget& target : outputs_) {
-        // The kinds a beat's messages are held for: OSC and MIDI, and Art-Net, whose lighting
-        // starts early by the earliest node's lead. A switched-off output sends nothing, so its
-        // delay asks for nothing either.
         if (target.enabled &&
             (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi ||
              target.kind == OutputTarget::Kind::ArtNet)) {
-            earliest = std::min(earliest, std::clamp(target.delaySeconds, kMinOutputDelaySeconds,
-                                                     kMaxOutputDelaySeconds));
+            const double delay =
+                std::clamp(target.delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
+            earliest = any ? std::min(earliest, delay) : delay;
+            any = true;
         }
     }
-    return std::min(0.0, latencySeconds() + earliest);
+    const double slack = latencySeconds() + earliest;
+    if (slack <= 0.0) {
+        return slack; // ahead of the beat, on a prediction: as it always was
+    }
+    // **Positive: the measured beat is waited for.** Every output is that much behind the beat,
+    // so a locked beat's messages can go out on the beat as it was heard rather than on the one
+    // predicted from the beat before — which is what Link and the MIDI clock are given — and
+    // lights, Link and the clocks then agree on a phase correction in the same beat. The
+    // prediction stands by: if the heard beat is later than this, it fires, `kPredictionMargin`
+    // before the earliest output needs it.
+    return std::max(0.0, slack - kPredictionMargin);
 }
 
 double Transports::tailSeconds() const noexcept {
     double latest = 0.0;
     for (const OutputTarget& target : outputs_) {
+        // Every kind a beat's messages are held for — Art-Net too: a node set late still wants
+        // the lighting a beat heard late starts, and leaving its delay out made a beat stale on a
+        // rig with a long Art-Net delay that every node still wanted.
         if (target.enabled &&
-            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi)) {
+            (target.kind == OutputTarget::Kind::Osc || target.kind == OutputTarget::Kind::Midi ||
+             target.kind == OutputTarget::Kind::ArtNet)) {
             latest = std::max(latest, std::clamp(target.delaySeconds, kMinOutputDelaySeconds,
                                                  kMaxOutputDelaySeconds));
         }

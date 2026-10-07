@@ -65,6 +65,7 @@ ScheduledBeat BeatScheduler::fire(ScheduledBeat beat) noexcept {
         beat.bars = std::max(beat.bars, firedBars_);
     }
     firedAny_ = true;
+    firedPredicted_ = beat.predicted;
     firedMoment_ = beat.moment;
     firedBeats_ = beat.beats;
     firedBars_ = beat.bars;
@@ -94,8 +95,10 @@ std::optional<ScheduledBeat> BeatScheduler::heard(const engine::EngineBeat& beat
     const double moment = *stamped;
 
     const double period = beatSeconds(beat.state, beat.event.bpm);
-    // Fired already: this is the beat a prediction sent, or one older than it.
-    const bool fired = firedAny_ && period > 0.0 && moment <= firedMoment_ + kSameBeat * period;
+    // Fired already: this is the beat a prediction sent — its phase corrected, by up to half a
+    // beat after one fired on a prediction (`kCorrection`) — or one older than it.
+    const double same = firedPredicted_ ? kCorrection : kSameBeat;
+    const bool fired = firedAny_ && period > 0.0 && moment <= firedMoment_ + same * period;
 
     anchor_ = heard;
     period_ = period;
