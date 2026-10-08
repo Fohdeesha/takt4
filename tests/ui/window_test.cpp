@@ -2543,8 +2543,17 @@ TEST_CASE("the test binary never opens a file dialog", "[ui]") {
     // Save dialog on the rig's desktop, again and again. REQUIRE, so that a broken guard stops
     // here rather than going on to press EXPORT itself.
     REQUIRE_FALSE(takt4::ui::fileDialogsAllowed());
-    REQUIRE(takt4::ui::askSaveFile("takt4 test", "never.json").empty());
-    REQUIRE(takt4::ui::askOpenFile("takt4 test", "").empty());
+    takt4::ui::FileDialogs dialogs;
+    int answers = 0;
+    const auto cancelled = [&answers](const takt4::ui::FileChoice& choice) {
+        ++answers;
+        CHECK(choice.path.empty());
+        CHECK(choice.problem.empty()); // a cancel, not a problem to report
+    };
+    dialogs.save("takt4 test", "never.json", cancelled);
+    dialogs.open("takt4 test", takt4::ui::FileKind::Preset, cancelled);
+    REQUIRE(answers == 2); // at once: nothing was shown to wait for
+    CHECK_FALSE(dialogs.waiting());
 
     // And EXPORT and IMPORT pressed are a cancel: nothing written, nothing said.
     LiveTracker tracker(kWeights, kStateSpace);

@@ -50,8 +50,8 @@ public:
 
 private:
     void* task_ = nullptr;
-    int previousPriority_ = 0;
-    bool fallback_ = false;
+    [[maybe_unused]] int previousPriority_ = 0; // Windows' alone, as is the next
+    [[maybe_unused]] bool fallback_ = false;
     bool raised_ = false;
 };
 
@@ -126,7 +126,7 @@ public:
     static bool active() noexcept;
 
 private:
-    std::uint32_t previous_ = 0;
+    [[maybe_unused]] std::uint32_t previous_ = 0; // x86's alone: Arm keeps the mode itself
 };
 
 } // namespace takt4::rt

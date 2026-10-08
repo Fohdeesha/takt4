@@ -610,12 +610,30 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         [this](int index, int device) { setTargetDevice(index, device); });
     window_->on_output_added([this] { addTarget(); });
     window_->on_save_now([this] { saveNow(); });
+    // The answer comes on the UI thread — at once on Windows and macOS, a moment later on Linux,
+    // where the dialog is another program (`FileDialogs`) — so what is exported is the settings
+    // as they are when it comes. An empty path is a cancel, which `exportTo` and `importFrom`
+    // do nothing with; a dialog that could not be shown says why.
     window_->on_export_settings([this] {
-        // The dialog runs its own message loop, so this must be the UI thread — which a
-        // Slint callback is. An empty path is a cancel and `exportTo` does nothing with it.
-        exportTo(askSaveFile("Export takt4 settings", "takt4-settings.json"));
+        fileDialogs_.save("Export takt4 settings", "takt4-settings.json",
+                          [this](const FileChoice& choice) {
+                              if (!choice.problem.empty()) {
+                                  setStatus(choice.problem, true);
+                                  return;
+                              }
+                              exportTo(choice.path);
+                          });
     });
-    window_->on_import_settings([this] { importFrom(askOpenFile("Import takt4 settings", "")); });
+    window_->on_import_settings([this] {
+        fileDialogs_.open("Import takt4 settings", FileKind::Preset,
+                          [this](const FileChoice& choice) {
+                              if (!choice.problem.empty()) {
+                                  setStatus(choice.problem, true);
+                                  return;
+                              }
+                              importFrom(choice.path);
+                          });
+    });
     // A double-click on × is one deletion: the row below moves up under the pointer and
     // would take the second click (`DeleteGuard`, the audit of 2026-09-25, L10).
     window_->on_output_removed([this](int index) {

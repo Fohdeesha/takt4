@@ -12,6 +12,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# macOS's open and save panels are Objective-C++ (src/ui/file_dialog_mac.mm). Enabled here, in
+# the directory every target that links the UI has in common, as CMake asks.
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 # Third-party sub-builds declare their own option()s. These two policies make them
 # honour the plain variables set for them in cmake/deps.cmake instead of the cache.
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
