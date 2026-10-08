@@ -258,6 +258,9 @@ TEST_CASE("an Art-Net sender puts a real datagram on the loopback", "[dmx][artne
 TEST_CASE("a node aimed at a name follows the name to a new address", "[dmx][artnet][net]") {
     // As an OSC output: the name is looked up again, and the node is sent to where it now is
     // rather than where it was when the socket opened.
+    if (!LoopbackReceiver::canBind(0x7F000002u)) {
+        SKIP("127.0.0.2 is not a loopback address on this machine (macOS has 127.0.0.1 alone)");
+    }
     LoopbackReceiver before(0x7F000001u, 0);
     LoopbackReceiver after(0x7F000002u, before.port());
     takt4::net::AsyncAddress::answerForTests("node.test", "127.0.0.1");
@@ -322,6 +325,12 @@ TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][
     const std::array<std::uint8_t, 3> levels{0, 0, 0};
     const bool sent = node.sendDmx(0, levels);
     INFO(node.problem());
+#if defined(__APPLE__)
+    // A permission refused would say "permission denied", which is what this is here to catch.
+    if (!sent && node.problem().find("no route") != std::string::npos) {
+        SKIP("this Mac's network has no route for the limited broadcast: " + node.problem());
+    }
+#endif
     CHECK(sent);
     CHECK(node.failed() == 0);
     CHECK(node.problem().empty());

@@ -18,6 +18,7 @@
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
 #include "ui/file_dialog.hpp"
+#include "ui/keys.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/native_window.hpp"
 #include "ui/nothing_real.hpp"
@@ -4860,7 +4861,7 @@ TEST_CASE("typing a host and then removing the row above it keeps the host on it
     // B's host box, typed into and not entered; then A's ×.
     clickAt(window, 300.0f, at[2]);
     settle();
-    press(window, "\xEF\x9C\xAB"); // Key.End, U+F72B
+    takt4::tests::endOfText(window);
     for (int i = 0; i < 20; ++i) {
         press(window, "\b");
     }
@@ -7159,7 +7160,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     }
     REQUIRE(portX > 0.0f);
     click(portX, oscRow);
-    press(handle, "\xEF\x9C\xAB"); // End
+    takt4::tests::endOfText(handle);
     key("2");
     key("\n");
     expect({"osc-port-key", "osc-port 70012"}, "the OSC port box: a keystroke, then Enter");
@@ -7188,17 +7189,17 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     click(41.0f, deckRow);
     expect({"on 1 0"}, "the deck's on box");
     click(107.0f, deckRow);
-    press(handle, "\xEF\x9C\xAB");
+    takt4::tests::endOfText(handle);
     key("2");
     key("\n");
     expect({"name-key", "name 1 deck2"}, "the deck's name box");
     click(352.0f, deckRow);
-    press(handle, "\xEF\x9C\xAB");
+    takt4::tests::endOfText(handle);
     key("1");
     key("\n");
     expect({"host-key", "host 1 10.0.0.401"}, "the deck's host box");
     click(470.0f, deckRow);
-    press(handle, "\xEF\x9C\xAB");
+    takt4::tests::endOfText(handle);
     key("9");
     key("\n");
     expect({"port-key", "port 1 70009"}, "the deck's port box");
@@ -7744,7 +7745,7 @@ TEST_CASE("folding a section while one of its boxes is being typed in keeps the 
     REQUIRE(portX > 0.0f);
     clickAt(handle, portX, static_cast<float>(oscRow));
     settle();
-    press(handle, "\xEF\x9C\xAB"); // End
+    takt4::tests::endOfText(handle);
     press(handle, "5");
     settle();
     // The arrow, and the edit is not lost with the section.
@@ -7763,7 +7764,7 @@ TEST_CASE("folding a section while one of its boxes is being typed in keeps the 
     const int deckRow = after[5].first + 10 + 28 + 8 + 18 + 8 + 17;
     clickAt(handle, 352.0f, static_cast<float>(deckRow));
     settle();
-    press(handle, "\xEF\x9C\xAB");
+    takt4::tests::endOfText(handle);
     press(handle, "7");
     settle();
     clickAt(handle, static_cast<float>(kWidth - 40), static_cast<float>(after[5].first + 24));

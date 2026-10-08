@@ -86,7 +86,8 @@ private:
     struct State;
     /// The thread itself: jobs as they come, and messages between them.
     static void loop(const std::shared_ptr<State>& state);
-    bool enqueue(const char* what, std::function<void()> job, std::chrono::milliseconds limit,
+    /// Takes `job` by swapping it out, which leaves the caller holding nothing — see there.
+    bool enqueue(const char* what, std::function<void()>& job, std::chrono::milliseconds limit,
                  bool refuseWhenStuck);
 
     std::shared_ptr<State> state_;

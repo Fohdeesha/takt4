@@ -178,10 +178,14 @@ struct Bench {
     /// fields do (the first macOS run, 2026-10-08). Slint gives Command as its `control`.
     void endOfText() {
 #if defined(__APPLE__)
+        // The modifier on its own is not the box's and goes on to the window's own key log; it
+        // is no keystroke a test wrote, so the log is left as it was.
+        const slint::SharedString seen = ui->get_keys_seen();
         window().dispatch_key_press_event(slint::SharedString("\x11"));
         key(kRight);
         window().dispatch_key_release_event(slint::SharedString("\x11"));
         settle();
+        ui->set_keys_seen(seen);
 #else
         key(kEnd);
 #endif
