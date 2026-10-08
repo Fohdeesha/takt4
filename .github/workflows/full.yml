@@ -135,12 +135,14 @@ jobs:
           - os: macos-26
             name: macos-arm64
             preset: macos
+            launch: true
             app: build/macos/bin/takt4.app/Contents/MacOS/takt4
             cli: build/macos/bin/takt4-cli
             cargo: build/macos/cargo
           - os: macos-26-intel
             name: macos-x64
             preset: macos
+            launch: true
             app: build/macos/bin/takt4.app/Contents/MacOS/takt4
             cli: build/macos/bin/takt4-cli
             cargo: build/macos/cargo
@@ -149,6 +151,10 @@ jobs:
           # with, so GCC 12, which 22.04 also ships.
           - os: ubuntu-22.04
             preset: linux
+            launch: true
+            # What the launch below needs: a screen to draw on, something to photograph it with,
+            # and the X libraries Slint opens when it starts, which the runner image may lack.
+            apt: xvfb imagemagick libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 libegl1 libgl1 libgl1-mesa-dri
             cc: gcc-12
             cxx: g++-12
             app: build/linux/bin/takt4
@@ -175,7 +181,8 @@ jobs:
           for try in 1 2 3; do
             if sudo timeout 240 apt-get "${apt[@]}" update &&
                sudo timeout 300 apt-get "${apt[@]}" install -y --no-install-recommends \
-                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev                  ${{ matrix.cxx }}; then
+                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev \
+                 ${{ matrix.cxx }} ${{ matrix.apt }}; then
               exit 0
             fi
             echo "apt did not finish (try $try of 3)"
@@ -318,6 +325,76 @@ jobs:
           ${{ matrix.cli }} --version
           ${{ matrix.cli }} devices
 
+      # **Does it open?** The real app, started as a person would and left running for fifteen
+      # seconds, then photographed — with the tests' sandbox on, so it opens no device and reaches
+      # nothing on the network. macOS runners have a screen; Linux gets a virtual one. What no test
+      # shows: the window drawing on this system. The pictures are kept with the run.
+      - name: Launch
+        if: matrix.launch
+        env:
+          TAKT4_TEST_SANDBOX: '1'
+          TAKT4_NO_CRASH_DIALOG: '1'
+        run: |
+          mkdir -p shots launch
+          export TAKT4_SETTINGS_DIR="$PWD/launch"
+          shot="shots/${{ matrix.name || matrix.preset }}.png"
+          if [ "$RUNNER_OS" = macOS ]; then
+            "${{ matrix.app }}" > launch/out.txt 2>&1 &
+            pid=$!
+            sleep 15
+            screencapture -x "$shot" || echo "no screenshot"
+          else
+            xvfb-run -a -s "-screen 0 1280x1000x24" bash -c '
+              "$1" > launch/out.txt 2>&1 &
+              pid=$!
+              sleep 15
+              import -window root "$2" || echo "no screenshot"
+              if kill -0 $pid; then kill $pid; echo running > launch/state; fi
+            ' launch "${{ matrix.app }}" "$shot"
+          fi
+          if [ "$RUNNER_OS" = macOS ] && kill -0 $pid 2>/dev/null; then
+            kill $pid
+            echo running > launch/state
+          fi
+          cat launch/out.txt || true
+          test "$(cat launch/state 2>/dev/null)" = running
+
+      - name: Keep the launch pictures
+        if: matrix.launch && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shots-${{ matrix.name || matrix.preset }}
+          path: shots/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # **The downloads.** Each Mac's app, zipped with ditto so the bundle and its permissions come
+      # through the upload whole, for `macos-universal` to make one app of. The Linux program,
+      # tarred for the same reason, with what it needs from the system said here: the libraries it
+      # links, and the newest glibc and libstdc++ versions it asks for — the oldest a system can
+      # have and still run it.
+      - name: Package
+        if: matrix.launch
+        run: |
+          mkdir -p dist
+          if [ "$RUNNER_OS" = macOS ]; then
+            ditto -c -k --keepParent build/macos/bin/takt4.app "dist/takt4-${{ matrix.name }}.app.zip"
+          else
+            tar -C build/linux/bin -czf dist/takt4-linux-x86_64.tar.gz takt4
+            ldd build/linux/bin/takt4
+            echo "newest glibc asked for:     $(objdump -T build/linux/bin/takt4 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+            echo "newest libstdc++ asked for: $(objdump -T build/linux/bin/takt4 | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)"
+          fi
+          ls -l dist
+
+      - name: Keep the downloads
+        if: matrix.launch
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ runner.os == 'macOS' && format('app-{0}', matrix.name) || 'release-linux' }}
+          path: dist/
+          retention-days: 7
+
       # **A release's file**, on a commit a `v*` tag points at, pushed or dispatched — never a pull
       # request. The tag must be the version in CMakeLists.txt, and takt4.exe must say it is exactly
       # that tag: not "-dirty", not a commit after it. takt4.exe alone: takt4-cli is the development
@@ -350,6 +427,42 @@ jobs:
           name: release
           path: dist/
           retention-days: 3
+
+  # **One app for both kinds of Mac**: the two builds' executables put into one with lipo, the
+  # bundle signed again — ad hoc, since there is no developer account; Apple Silicon will not run
+  # an executable without a signature, and changing the executable broke the linker's — and
+  # checked, then zipped for the Release.
+  macos-universal:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: app-macos-*
+          path: in
+      - name: One app
+        run: |
+          set -e
+          mkdir arm x64 out dist
+          ditto -x -k in/app-macos-arm64/takt4-macos-arm64.app.zip arm
+          ditto -x -k in/app-macos-x64/takt4-macos-x64.app.zip x64
+          cp -R arm/takt4.app out/
+          lipo -create arm/takt4.app/Contents/MacOS/takt4 x64/takt4.app/Contents/MacOS/takt4 \
+            -output out/takt4.app/Contents/MacOS/takt4
+          lipo -info out/takt4.app/Contents/MacOS/takt4
+          lipo -info out/takt4.app/Contents/MacOS/takt4 | grep -q 'x86_64 arm64\|arm64 x86_64'
+          codesign --force --deep --sign - out/takt4.app
+          codesign --verify --deep --strict --verbose=2 out/takt4.app
+          out/takt4.app/Contents/MacOS/takt4 --version
+          arch -x86_64 out/takt4.app/Contents/MacOS/takt4 --version || echo "(no Rosetta here to try the Intel half)"
+          ditto -c -k --keepParent out/takt4.app dist/takt4-macos.zip
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos
+          path: dist/
+          retention-days: 7
 
   # Attaches the windows-msvc job's files to the tag's Release — created from the tag's message if
   # there is none yet, the files replaced if one was made by hand — once all three jobs passed.
