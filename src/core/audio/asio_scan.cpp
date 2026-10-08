@@ -1,5 +1,7 @@
 #include "core/audio/asio_scan.hpp"
 
+#include "core/io/chars.hpp"
+
 #include <charconv>
 #include <cstdlib>
 #include <mutex>
@@ -20,7 +22,6 @@
 #include <pa_asio.h>
 
 #include "core/audio/asio_probe.h"
-#include "core/io/chars.hpp"
 
 #include <cstdio>
 #endif

@@ -58,11 +58,13 @@ TEST_CASE("a number is read from text the same way on every system", "[io]") {
         CHECK(hex.value == 0.0);
         CHECK(hex.used == 1);
     }
-    SECTION("too large is said, and the value left alone") {
+    SECTION("too large is said") {
+        // What is left in the value then is not the same everywhere — MSVC's from_chars does not
+        // leave it alone, as this test first assumed (the first Windows run, 2026-10-08) — so
+        // nothing reads it after one.
         const Read huge = read("1e400");
         CHECK(huge.error == std::errc::result_out_of_range);
         CHECK(huge.used == 5);
-        CHECK(huge.value == -7.0);
     }
 }
 

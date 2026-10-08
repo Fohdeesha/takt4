@@ -82,7 +82,12 @@ if(TAKT4_BUILD_UI)
       MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.fohdeesha.takt4"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_ICON_FILE "takt4.icns"
     )
+    # The Dock's and the Finder's icon, in the bundle's Resources (tools/make_icon.py).
+    set(takt4_icns "${PROJECT_SOURCE_DIR}/assets/icon/takt4.icns")
+    target_sources(takt4 PRIVATE "${takt4_icns}")
+    set_source_files_properties("${takt4_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   endif()
 
   # takt4-shot: renders the window to an image with no display involved (src/ui/shot.cpp).

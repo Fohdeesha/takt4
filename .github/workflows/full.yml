@@ -309,6 +309,8 @@ jobs:
           test "$(plutil -extract CFBundleExecutable raw "$plist")" = takt4
           plutil -extract NSMicrophoneUsageDescription raw "$plist"
           plutil -extract NSLocalNetworkUsageDescription raw "$plist"
+          test "$(plutil -extract CFBundleIconFile raw "$plist")" = takt4.icns
+          test -s build/macos/bin/takt4.app/Contents/Resources/takt4.icns
           codesign -dv build/macos/bin/takt4.app 2>&1 || true
 
       - name: Console tool

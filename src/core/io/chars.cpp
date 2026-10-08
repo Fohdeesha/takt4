@@ -49,7 +49,7 @@ std::from_chars_result fromChars(const char* first, const char* last, double& va
     }
     const char* const stop = first + (end - text.c_str());
     if (errno == ERANGE) {
-        return {stop, std::errc::result_out_of_range}; // and `value` left alone, as from_chars does
+        return {stop, std::errc::result_out_of_range}; // `value` left alone, as the standard asks
     }
     value = parsed;
     return {stop, std::errc{}};
