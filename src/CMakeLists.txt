@@ -68,6 +68,23 @@ if(TAKT4_BUILD_UI)
     target_sources(takt4 PRIVATE utf8.manifest)
   endif()
 
+  if(APPLE)
+    # **An app bundle, takt4.app, not a bare executable**, and not only for the Finder. macOS ends
+    # a program that opens an audio input without saying why (NSMicrophoneUsageDescription), and
+    # only a bundle's Info.plist can say it; the network sentence is what macOS shows when it asks
+    # whether takt4 may reach the local network (Link, OSC, Art-Net). The identifier is what
+    # macOS files the operator's answer to both under. Settings are kept beside the bundle, not in
+    # it: see `settings::programFolder`.
+    set_target_properties(takt4 PROPERTIES
+      MACOSX_BUNDLE ON
+      MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+      MACOSX_BUNDLE_BUNDLE_NAME "takt4"
+      MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.fohdeesha.takt4"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    )
+  endif()
+
   # takt4-shot: renders the window to an image with no display involved (src/ui/shot.cpp).
   # A bench tool like takt4-cli, never packaged.
   add_executable(takt4-shot shot_main.cpp)
