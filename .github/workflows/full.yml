@@ -15,8 +15,9 @@ name: full
 # **A release:** push the bump commit and its annotated tag together —
 # `git push --atomic origin main vX.Y.Z` — so the tag is there when this checks out, and every
 # binary built here names it. When every build job passes on a commit a `v*` tag points at, the
-# windows-msvc job's files are attached to that tag's GitHub Release (the `publish` job below),
-# with the tag's message as the notes. A tag pushed after its commit's run: rerun that run
+# downloads are attached to that tag's GitHub Release (the `publish` job below), with the tag's
+# message as the notes: takt4.exe from windows-msvc, takt4-macos.zip from `macos-universal`, and
+# takt4-linux-x86_64.tar.gz from the linux job. A tag pushed after its commit's run: rerun that run
 # (`gh run rerun <id>`); its checkout then has the tag. A push to main while a release run is
 # building cancels it (the concurrency group below): rerun it the same way.
 #
@@ -264,10 +265,7 @@ jobs:
       - name: Configure
         run: |
           src="$(pwd -W 2>/dev/null || pwd)/build/slint-src"
-          # Line tables on macOS while it is being ported, for the backtraces below. TEMPORARY.
-          extra=""
-          if [ "$RUNNER_OS" = macOS ]; then extra="-DCMAKE_CXX_FLAGS=-gline-tables-only"; fi
-          cmake --preset ${{ matrix.preset }} -DFETCHCONTENT_SOURCE_DIR_SLINT="$src" $extra
+          cmake --preset ${{ matrix.preset }} -DFETCHCONTENT_SOURCE_DIR_SLINT="$src"
 
       # **Slint on its own first**, so it reaches the cache below even when takt4's own code then
       # fails to compile — which, on a system nothing has built for a while, is most runs: without
@@ -490,11 +488,11 @@ jobs:
           path: dist/
           retention-days: 7
 
-  # Attaches the windows-msvc job's files to the tag's Release — created from the tag's message if
-  # there is none yet, the files replaced if one was made by hand — once all three jobs passed.
-  # Nothing to do on a commit no `v*` tag points at.
+  # Attaches the downloads to the tag's Release — created from the tag's message if there is none
+  # yet, the files replaced if one was made by hand — once every job has passed. Nothing to do on
+  # a commit no `v*` tag points at.
   publish:
-    needs: build
+    needs: [build, macos-universal]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -514,12 +512,14 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ -z "$tag" ]; then echo "No v* tag on $GITHUB_SHA: nothing to publish."; fi
 
+      # `release` (takt4.exe), `release-macos` and `release-linux`, into one folder.
       - name: The release files
         if: steps.tag.outputs.tag != ''
         uses: actions/download-artifact@v8
         with:
-          name: release
+          pattern: release*
           path: dist
+          merge-multiple: true
 
       - name: Attach to the release
         if: steps.tag.outputs.tag != ''
