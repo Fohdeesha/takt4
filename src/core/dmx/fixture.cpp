@@ -92,7 +92,7 @@ constexpr std::array<FixtureMode, 8> kModes{{
     {"LED par (6ch)", kParChannels, kParParked},
     {"moving head 8-bit (8ch)", kHead8Channels, kHead8Parked},
     {"moving head 16-bit (12ch)", kHead16Channels, kHead16Parked},
-    // Not a lamp: one zone of Pangolin Liberation's DMX Input, the laser software's own profile.
+    // Not a lamp: one zone of Liberation's DMX Input, the laser software's own profile.
     // See `liberation::kZoneRoles` for its channels and why each is parked where it is.
     {liberation::kZoneModeName, liberation::kZoneRoles, liberation::kZoneParked,
      liberation::kZoneLabels},

@@ -77,7 +77,7 @@ enum class EffectKind : std::uint8_t {
     /// is seen to fade before the zone stops rendering. A laser left armed and dark would light
     /// again on the next level rule, which for a laser is not "ready", it is a beam waiting.
     Blackout,
-    /// **One clip of a Pangolin Liberation zone's deck**, by its place in deck order
+    /// **One clip of a Liberation zone's deck**, by its place in deck order
     /// (`Payload::clip`, `liberation::indexOf`): the zone armed, its intensity at `level`, and
     /// its Gobo Bank and Gobo Select set to the clip — all four at once, because Liberation
     /// renders a zone only when all of them say so (the operator, 2026-10-05: "it must be armed,

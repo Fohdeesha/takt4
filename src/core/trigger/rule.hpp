@@ -170,7 +170,7 @@ struct Message {
     /// **Note On and Note Off are separate kinds, and that is not tidiness.** Until
     /// 2026-09-12 the only note status on the wire was `0x90`, and a release was that with
     /// velocity zero — which `rule_sink.cpp` justified as "a note-off on every device made
-    /// since 1983". It is not: the operator's laser controller (Pangolin Liberation) holds
+    /// since 1983". It is not: the operator's laser controller (Liberation) holds
     /// its clip until a real `0x80` arrives, so a rig built on the velocity-zero convention
     /// never released. The convention is common, not universal, and a sender cannot tell
     /// which end it has. So takt4 sends what the standard says, and a release of a `MidiNote`

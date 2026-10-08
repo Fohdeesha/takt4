@@ -11,8 +11,9 @@
 #include <string_view>
 #include <utility>
 
-// Pangolin Liberation's DMX Input, as one of its zones sees it: what a Liberation zone is in the
-// patch, and how a clip of its deck becomes the two channels that select it.
+// Liberation's DMX Input (Liberation, the laser show software: https://liberationlaser.com/), as
+// one of its zones sees it: what a Liberation zone is in the patch, and how a clip of its deck
+// becomes the two channels that select it.
 //
 // **The source of truth is Liberation's own "DMX Input Fixture Profiles" document** (dated
 // 2026-05-14, shipped with Liberation 1.2.1 Build 96 and unchanged through 1.4.0 Build 103). A

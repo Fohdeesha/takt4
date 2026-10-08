@@ -109,7 +109,7 @@ address                       send           does
 - A fixture with several heads moves them all. In a rule, tick which **heads** move, and slide **spread** to stagger them; a second rule can move the others.
 - **panic** freezes the lights where they are; **stop** and quitting black them out.
 
-## Lasers (Pangolin Liberation)
+## Lasers ([Liberation](https://liberationlaser.com/))
 
 1. Open the rules (**add a rule** or **edit rules** in the triggers row), then **select a preset** > **Liberation: lasers…**.
 2. Fill in the prompt: how many **lasers** (1 to 4), **Liberation's IP** (127.0.0.1 on this computer) and **port** (6454 unless you changed it in Liberation), where the **first zone** is in Liberation's universe numbering, and each laser's **clips from** and **to** as Liberation names them (`21-1`). Every clip between the two, in Liberation's deck order, is shuffled.

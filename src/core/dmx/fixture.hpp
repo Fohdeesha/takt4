@@ -75,7 +75,7 @@ enum class Role : std::uint8_t {
     Cyan,
     Magenta,
     Yellow,
-    /// **A laser zone's safety gate** — Pangolin Liberation's DMX Input renders a zone only while
+    /// **A laser zone's safety gate** — Liberation's DMX Input renders a zone only while
     /// this is at 250 or more (`dmx::liberation`). Not aimable: a clip effect raises it with the
     /// clip it selects, and Stop, quit, a blackout, PANIC and the input going quiet take it back to
     /// 0 (the operator, 2026-10-05) — so nothing can leave a laser armed on a level of its own.
