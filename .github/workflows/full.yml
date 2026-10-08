@@ -310,11 +310,15 @@ jobs:
             echo "===== $b"
             nm -m "build/macos/bin/$b" | grep -E '__ZTI(St9exception|St13runtime_error|St12length_error)$|___cxa_throw$|___gxx_personality_v0$' || true
           done
-          echo "===== static libraries that define them"
-          find build/macos -name '*.a' -size +50k | while read -r a; do
-            hits=$(nm -A "$a" 2>/dev/null | grep -E ' [DSRT] __ZTI(St9exception|St13runtime_error)$|( T ___cxa_throw$)|( T ___gxx_personality_v0$)' | head -4)
+          echo "===== static libraries and objects that define them"
+          find build/macos \( -name '*.a' -o -name '*.o' -o -name '*.rlib' \) -size +20k | while read -r a; do
+            hits=$(nm -A -m "$a" 2>/dev/null | grep -E '__ZTISt9exception$|__ZTISt12length_error$' | grep -v undefined | head -4)
             if [ -n "$hits" ]; then echo "--- $a"; echo "$hits"; fi
           done
+          echo "===== the linker's own answer"
+          cd build/macos && ninja -t commands takt4_ui_tests | tail -1 > link.sh && \
+            sed -i '' 's|$| -Wl,-y__ZTISt9exception -Wl,-y__ZTISt12length_error|' link.sh && \
+            sh link.sh 2>&1 | grep -E 'ZTISt' | head -20
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
