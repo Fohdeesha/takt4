@@ -11,10 +11,11 @@
 #if defined(_WIN32)
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include <ifaddrs.h>
 #include <net/if.h>
-
+#endif
+#if defined(__linux__)
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -152,7 +153,7 @@ std::vector<in_addr> interfaceAddresses() {
             }
         }
     }
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     ifaddrs* list = nullptr;
     if (::getifaddrs(&list) != 0) {
         return addresses;
