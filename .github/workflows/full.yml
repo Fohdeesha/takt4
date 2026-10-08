@@ -298,19 +298,22 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os != 'Windows' && '-- -k 0' || '' }}
 
-      # **TEMPORARY, for the macOS port**: every C++ throw in two tests that abort on a Mac, with
-      # where it was thrown from — one throws a MidiPortMissing nothing catches, one an RtMidiError
-      # through a function that may not throw.
-      - name: Backtraces
+      # **TEMPORARY, for the macOS port**: which copy of the C++ runtime's type information each
+      # binary uses. A `catch (const std::exception&)` missed a MidiPortMissing in takt4_ui_tests
+      # alone — the binary that links Slint — so: is `typeinfo for std::exception` defined inside
+      # one of the static libraries, beside libc++abi's own?
+      - name: C++ runtime symbols
         if: runner.os == 'macOS'
         continue-on-error: true
-        timeout-minutes: 10
         run: |
-          for t in "a MIDI target is a row like any other" "an import restores this machine's half too, and a file without one leaves it alone"; do
-            echo "===== $t"
-            lldb --batch -o "breakpoint set -E c++" -o "process launch" \
-              -o "bt 30" -o "c" -o "bt 30" -o "c" -o "bt 30" -o "c" -o "bt 30" -o "c" -o "bt 30" \
-              -k "bt 40" -k "quit" -- build/macos/bin/takt4_ui_tests "$t" 2>&1 | grep -v '^\s*$' | tail -260
+          for b in takt4_tests takt4_ui_tests takt4.app/Contents/MacOS/takt4; do
+            echo "===== $b"
+            nm -m "build/macos/bin/$b" | grep -E '__ZTI(St9exception|St13runtime_error|St12length_error)$|___cxa_throw$|___gxx_personality_v0$' || true
+          done
+          echo "===== static libraries that define them"
+          find build/macos -name '*.a' -size +50k | while read -r a; do
+            hits=$(nm -A "$a" 2>/dev/null | grep -E ' [DSRT] __ZTI(St9exception|St13runtime_error)$|( T ___cxa_throw$)|( T ___gxx_personality_v0$)' | head -4)
+            if [ -n "$hits" ]; then echo "--- $a"; echo "$hits"; fi
           done
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
