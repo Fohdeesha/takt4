@@ -6719,12 +6719,19 @@ TEST_CASE("the About box names its author, links to the source, and its words ca
     };
     CHECK(has("takt4"));
     CHECK(has("Author: Jon Sands (Fohdeesha)"));
-    // The version, beside the name: found by a click to the name's right.
+    // The version, beside the name: found along the row to the name's right. As a release says
+    // it — the bare number, a few characters wide — which is what the first release run met: a
+    // build of a commit after a tag says far more, and a click at one spot that hit the long one
+    // on the rig missed the short one on every runner (1.3.6).
+    about.set_version(slint::SharedString("1.3.6"));
+    slint::platform::update_timers_and_animations();
     bool versionCopied = false;
     for (float y = 14.0f; y < 70.0f && !versionCopied; y += 4.0f) {
-        clickAt(window, 200.0f, y);
-        slint::platform::update_timers_and_animations();
-        versionCopied = copyWhatWasClicked() == std::string(about.get_version());
+        for (float x = 100.0f; x < 400.0f && !versionCopied; x += 6.0f) {
+            clickAt(window, x, y);
+            slint::platform::update_timers_and_animations();
+            versionCopied = copyWhatWasClicked() == "1.3.6";
+        }
     }
     CHECK(versionCopied);
 
