@@ -32,9 +32,14 @@ enum class ThreadWork : std::uint8_t {
 /// For as long as it lives, the calling thread is scheduled as `work` asks. Construct it at
 /// the top of the thread's own function; it must be destroyed on the same thread.
 ///
-/// Where the platform will not — the MMCSS service stopped, or not Windows — it falls back to
-/// a raised ordinary priority, and failing that does nothing: a thread at the default priority
-/// is what takt4 always was, so none of this is worth refusing to run over.
+/// On macOS the output thread takes Mach's time-constraint policy — what Core Audio's own
+/// threads run under, and no privilege asked — and the model and the tracker the user-interactive
+/// quality of service, which keeps them on an Apple Silicon Mac's performance cores.
+///
+/// Where the platform will not — the MMCSS service stopped, or Linux, where it needs a privilege
+/// an application has not got — it falls back to a raised ordinary priority, and failing that
+/// does nothing: a thread at the default priority is what takt4 always was, so none of this is
+/// worth refusing to run over.
 class PriorityScope {
 public:
     explicit PriorityScope(ThreadWork work) noexcept;
@@ -50,8 +55,12 @@ public:
 
 private:
     void* task_ = nullptr;
-    [[maybe_unused]] int previousPriority_ = 0; // Windows' alone, as is the next
+    /// Windows: the priority before a fallback, and whether there was one. macOS: the quality of
+    /// service before, and whether it was raised. Unused on Linux.
+    [[maybe_unused]] int previousPriority_ = 0;
     [[maybe_unused]] bool fallback_ = false;
+    /// macOS: the time-constraint policy taken.
+    [[maybe_unused]] bool timeConstrained_ = false;
     bool raised_ = false;
 };
 

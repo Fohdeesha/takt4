@@ -6693,12 +6693,9 @@ TEST_CASE("the About box names its author, links to the source, and its words ca
     slint::platform::update_timers_and_animations();
     const takt4::tests::NothingReal nothingReal;
 
-    // Select all and copy, with the system's own shortcut key: Command on a Mac.
-#if defined(__APPLE__)
-    const slint::SharedString shortcut("\x17");
-#else
+    // Select all and copy, with the system's own shortcut key: Control, which Slint also gives
+    // for Command on a Mac — Meta there is the Control key (the first macOS run, 2026-10-08).
     const slint::SharedString shortcut("\x11");
-#endif
     const auto copyWhatWasClicked = [&] {
         for (const char* key : {"a", "c"}) {
             window.dispatch_key_press_event(shortcut);
