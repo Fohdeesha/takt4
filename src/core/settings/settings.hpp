@@ -256,7 +256,9 @@ std::filesystem::path scratchDirectory();
 
 /// **Where to read**: `settingsFile()`, which `load` reports as the defaults when it is not
 /// there. Never the file a build before 2026-09-07 left under `userSettingsDirectory()`: that
-/// was read, for the move, until 2026-10-08 — see the .cpp.
+/// was read, for the move, until 2026-10-08 — see the .cpp. **On macOS the per-user file is read
+/// while nothing is beside the app**: it is where `settingsDirectory` kept the rig while the app
+/// could not write beside itself.
 std::filesystem::path existingSettingsFile();
 
 /// Reads `path`. **Never throws, and never fails**: a file that is missing, unreadable,

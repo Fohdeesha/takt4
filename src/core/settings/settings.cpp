@@ -386,6 +386,19 @@ std::filesystem::path existingSettingsFile() {
     // kept its outputs across the move. A month on, all it still did was hand every copy started
     // in a new folder the rig as it stood that September — "keep BPM in" switched on with its
     // window among it, which the operator met on each fresh build. A new folder is a new rig.
+#if defined(__APPLE__)
+    // **Except on a Mac, where the per-user folder is where an app that could not write beside
+    // itself kept its rig** (`settingsDirectory`): a download opened where it landed runs from a
+    // read-only copy of itself until it is moved. Read from there while nothing is beside the
+    // moved app, the first save there takes the rig with it (the operator, 2026-10-08). Never in
+    // a process given a folder of its own.
+    if (namedSettingsDirectory().empty()) {
+        const std::filesystem::path user = userSettingsDirectory() / "settings.json";
+        if (user != beside && std::filesystem::exists(user, code)) {
+            return user;
+        }
+    }
+#endif
     return beside;
 }
 

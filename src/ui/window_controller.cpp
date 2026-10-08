@@ -37,6 +37,15 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <shellapi.h> // ShellExecuteW, which WIN32_LEAN_AND_MEAN leaves out of windows.h
+#else
+#include <spawn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include <thread>
+#include <vector>
+
+extern char** environ; // the process's environment, which <unistd.h> leaves undeclared
 #endif
 
 namespace takt4::ui {
@@ -2453,6 +2462,31 @@ std::string_view textOf(std::span<const std::byte> bytes) {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
+#if !defined(_WIN32)
+/// Hands a file or an address to the desktop's own opener — `open` on macOS, `xdg-open`
+/// elsewhere — as a double click in the file manager would. Not waited for on this thread: an
+/// opener can take its time, and the window must go on drawing; a thread of its own reaps it.
+/// True when the opener started, which is as much as can be known without waiting.
+bool openWithDesktop(const std::string& target) {
+#if defined(__APPLE__)
+    std::string program = "open";
+#else
+    std::string program = "xdg-open";
+#endif
+    std::string argument = target;
+    std::vector<char*> argv{program.data(), argument.data(), nullptr};
+    pid_t started = -1;
+    if (::posix_spawnp(&started, program.c_str(), nullptr, nullptr, argv.data(), environ) != 0) {
+        return false;
+    }
+    std::thread([started] {
+        int status = 0;
+        (void)::waitpid(started, &status, 0);
+    }).detach();
+    return true;
+}
+#endif
+
 /// The machine's own viewer for a text file. **Never in a test process**: on 2026-10-08 a test
 /// whose click sweep crossed the About box's two OPEN buttons, with no file opener of its own,
 /// opened the licence in the rig's text editor once per click — 140 Notepad++ windows, until the
@@ -2467,8 +2501,7 @@ bool openInViewer(const std::filesystem::path& path) {
         ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
     return result > 32; // ShellExecute's own convention: anything above 32 is success
 #else
-    (void)path;
-    return false; // said on screen as "written to", which is still somewhere to look
+    return openWithDesktop(path.string());
 #endif
 }
 
@@ -2487,8 +2520,7 @@ bool openInBrowser(const std::string& address) {
         ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
     return result > 32;
 #else
-    (void)address;
-    return false;
+    return openWithDesktop(address);
 #endif
 }
 
