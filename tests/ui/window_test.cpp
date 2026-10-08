@@ -2055,6 +2055,11 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     device.maxInputChannels = 12;
     double now = 100.0;
     controller.assumeRunningOn({device, takt4::audio::ChannelSelection::pair(10, 11)}, now);
+    // Past the first seconds: until then what the window met starting is held on the status
+    // line and anything else joins it (`report`) — a CI runner, with no audio input at all, starts
+    // with one. SAVE says something of its own, which ends the hold, as anything the operator
+    // does would. The held case has a test of its own below.
+    controller.window().invoke_save_now();
 
     takt4::audio::StereoSums sums;
     const auto play = [&](double seconds, double both) {
@@ -2070,6 +2075,8 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     };
     play(4.0, 0.009); // in phase, correlation 0.9
     CHECK(std::string(controller.window().get_input_trouble()).empty());
+    const std::string before(controller.window().get_status());
+    const bool beforeError = controller.statusIsError();
 
     play(4.0, -0.009); // a leg flipped
     const std::string trouble(controller.window().get_input_trouble());
@@ -2091,6 +2098,15 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     CHECK(after.find("out of phase") == std::string::npos);
     CHECK(after.find("In 11 and In 12 are fine again") != std::string::npos);
     CHECK_FALSE(controller.statusIsError());
+
+    // And "fine again" does not stick either: after ten seconds of the pair staying fine, the
+    // status line has back what it said before the warning (the operator, 2026-10-08).
+    play(5.0, 0.009);
+    CHECK(std::string(controller.window().get_status()).find("are fine again") !=
+          std::string::npos);
+    play(6.0, 0.009);
+    CHECK(std::string(controller.window().get_status()) == before);
+    CHECK(controller.statusIsError() == beforeError);
 }
 
 TEST_CASE("a stereo warning that has passed leaves the status line, and only its own", "[ui]") {
@@ -2105,6 +2121,11 @@ TEST_CASE("a stereo warning that has passed leaves the status line, and only its
     device.maxInputChannels = 2;
     double now = 100.0;
     controller.assumeRunningOn({device, takt4::audio::ChannelSelection::pair(0, 1)}, now);
+    // Past the first seconds: until then what the window met starting is held on the status
+    // line and anything else joins it (`report`) — a CI runner, with no audio input at all, starts
+    // with one. SAVE says something of its own, which ends the hold, as anything the operator
+    // does would. The held case has a test of its own below.
+    controller.window().invoke_save_now();
 
     takt4::audio::StereoSums sums;
     const auto play = [&](double seconds, double both) {
@@ -2138,6 +2159,45 @@ TEST_CASE("a stereo warning that has passed leaves the status line, and only its
     CHECK(std::string(controller.window().get_status()) == news);
 }
 
+TEST_CASE("a stereo warning in the first seconds joins what the window met starting, and leaves it",
+          "[ui]") {
+    // In the first seconds what the window met starting is held on the status line, and what it
+    // finds out on its own joins it rather than replacing it (`report`). A stereo warning then is
+    // joined to it, and taken back out of it when it passes — the held notice stays, alone.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    InputDevice device;
+    device.name = "takt4 test stereo";
+    device.hostApi = takt4::audio::HostApiKind::Wasapi;
+    device.maxInputChannels = 2;
+    double now = 100.0;
+    controller.assumeRunningOn({device, takt4::audio::ChannelSelection::pair(0, 1)}, now);
+    controller.showNotice("A notice held at startup.");
+    const std::string held(controller.window().get_status());
+    REQUIRE(held.find("A notice held at startup.") != std::string::npos);
+
+    takt4::audio::StereoSums sums;
+    const auto play = [&](double seconds, double both) {
+        for (double t = 0.0; t < seconds; t += 0.033) {
+            sums.frames += 1584;
+            sums.left += 1584 * 0.01;
+            sums.right += 1584 * 0.01;
+            sums.both += 1584 * both;
+            now += 0.033;
+            controller.superviseStereo(sums, now);
+            controller.superviseInput({}, {}, now);
+        }
+    };
+    play(4.0, 0.009);
+    play(4.0, -0.009); // a leg flipped
+    const std::string joined(controller.window().get_status());
+    INFO(joined);
+    CHECK(joined.find("A notice held at startup.") != std::string::npos);
+    CHECK(joined.find("are out of phase") != std::string::npos);
+    play(4.0, 0.009); // wired back
+    CHECK(std::string(controller.window().get_status()) == held);
+}
+
 TEST_CASE("the beat dots move when the rig plays the beat, not when the window hears of it",
           "[ui]") {
     // The operator, 2026-10-08: the red dots looked about 50 ms behind outputs that were on time.
@@ -2164,11 +2224,11 @@ TEST_CASE("the beat dots move when the rig plays the beat, not when the window h
     CHECK(heard == static_cast<int>(state.beatInBar));
 
     const auto next = [](int beat) { return beat % 4 + 1; };
-    const auto clock = [&controller] { return controller.outputs().elapsed(); };
+    const auto runnerNow = [&controller] { return controller.outputs().elapsed(); };
     // Redraws, as the window's timer makes them, for `seconds` of wall clock.
     const auto redrawFor = [&](double seconds) {
-        const double until = clock() + seconds;
-        while (clock() < until) {
+        const double until = runnerNow() + seconds;
+        while (runnerNow() < until) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             slint::platform::update_timers_and_animations();
             redraw(state);
@@ -2176,7 +2236,7 @@ TEST_CASE("the beat dots move when the rig plays the beat, not when the window h
     };
 
     // Fired 300 ms before the rig plays it.
-    const double firedAt = clock();
+    const double firedAt = runnerNow();
     shown = Shown{firedAt, firedAt + 0.3, static_cast<std::uint32_t>(next(heard)), 42, 1};
     redraw(state);
     CHECK(controller.window().get_beat_in_bar() == heard); // not yet
@@ -2187,7 +2247,7 @@ TEST_CASE("the beat dots move when the rig plays the beat, not when the window h
     CHECK(controller.window().get_bars() == 42);
 
     // Its time already come — a beat heard late, before the tempo locks: shown at once.
-    const double lateAt = clock();
+    const double lateAt = runnerNow();
     shown = Shown{lateAt - 0.1, lateAt - 0.05, static_cast<std::uint32_t>(next(next(heard))), 43, 2};
     redraw(state);
     CHECK(controller.window().get_beat_in_bar() == next(next(heard)));

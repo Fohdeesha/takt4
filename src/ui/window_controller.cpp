@@ -1315,12 +1315,29 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
                                                inputName(input_->selection.channels[0]),
                                                inputName(input_->selection.channels[1]));
     }
+    // **"Fine again" goes too**, once the pair has stayed fine this long: the status line gets back
+    // what it said before the warning, unless something else has been said since (the operator,
+    // 2026-10-08: it should not stick as the warning did).
+    constexpr double kStereoFineSeconds = 10.0;
+    if (problem.empty() && stereoStatus_ && !stereoStatus_->fine.empty() &&
+        now - stereoStatus_->fineSince >= kStereoFineSeconds) {
+        if (std::string(window_->get_status()) == stereoStatus_->fine) {
+            setStatus(stereoStatus_->before, stereoStatus_->beforeError);
+        }
+        stereoStatus_.reset();
+    }
     if (problem == stereoProblem_) {
         return;
     }
     // On the status line when it starts, under the meter for as long as it lasts (the input's
     // trouble line, which `superviseInput` writes).
     if (!problem.empty()) {
+        // What it replaces, to give back — unless that is this check's own, from a warning
+        // or a "fine again" a moment ago, whose own "before" still stands.
+        if (!stereoStatus_) {
+            stereoStatus_ = StereoStatus{std::string(window_->get_status()), statusIsError_, {}, 0.0};
+        }
+        stereoStatus_->fine.clear();
         report(problem + ".", true);
     } else {
         // **And off the status line when it ends.** It stayed there, amber, until something else
@@ -1342,12 +1359,18 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
             }
             startupMessage_.erase(from, length);
             showStatus(startupMessage_, !startupMessage_.empty());
-        } else if (std::string(window_->get_status()) == sentence) {
-            setStatus(input_ && input_->selection.count == 2
-                          ? inputName(input_->selection.channels[0]) + " and " +
-                                inputName(input_->selection.channels[1]) + " are fine again."
-                          : std::string(),
-                      false);
+            stereoStatus_.reset();
+        } else if (std::string(window_->get_status()) == sentence && input_ &&
+                   input_->selection.count == 2) {
+            const std::string fine = inputName(input_->selection.channels[0]) + " and " +
+                                     inputName(input_->selection.channels[1]) + " are fine again.";
+            setStatus(fine, false);
+            if (stereoStatus_) {
+                stereoStatus_->fine = fine;
+                stereoStatus_->fineSince = now;
+            }
+        } else {
+            stereoStatus_.reset(); // the status line has moved on: nothing of ours to give back
         }
     }
     stereoProblem_ = problem;
@@ -1388,6 +1411,7 @@ void WindowController::toggleRun() {
         nothingPlaying_ = false;
         input_.reset();
         stereoProblem_.clear();
+        stereoStatus_.reset();
         window_->set_input_lost(false);
         window_->set_input_trouble(shared(""));
         // **The runner first**, then the tracker. The runner goes on — it runs for the
@@ -1453,6 +1477,7 @@ void WindowController::watchOpenedInput() {
     watchdog_.reset(tracker_.stream()->sampleRate(), nowSeconds());
     stereoCheck_.reset();
     stereoProblem_.clear();
+    stereoStatus_.reset();
     // What the driver said while it was being opened belongs to that open, not to the stream it
     // made. Left for the next redraw, a driver that says anything as it starts was answered with
     // another reopen, and so on every tick (the audit of 2026-09-25, L22).

@@ -660,6 +660,15 @@ private:
     /// See `superviseStereo`: its check, and what it last said — empty while the pair is fine.
     audio::StereoCheck stereoCheck_;
     std::string stereoProblem_;
+    /// What the status line said before a stereo warning took it, given back once the pair has
+    /// been fine for `kStereoFineSeconds`; and the "fine again" it says meanwhile, with when.
+    struct StereoStatus {
+        std::string before;
+        bool beforeError = false;
+        std::string fine; ///< empty unless "… are fine again" is what was said
+        double fineSince = 0.0;
+    };
+    std::optional<StereoStatus> stereoStatus_;
 
     /// The machine half as the last run left it, kept for the whole session — see
     /// `deviceFallback_` for why a fallback must not overwrite it.
