@@ -179,11 +179,15 @@ AudioThread::~AudioThread() {
     }
 }
 
-bool AudioThread::enqueue(const char* what, std::function<void()> fn,
+bool AudioThread::enqueue(const char* what, std::function<void()>& fn,
                           std::chrono::milliseconds limit, bool refuseWhenStuck) {
     auto job = std::make_shared<State::Job>();
     job->what = what;
-    job->fn = std::move(fn);
+    // **Swapped in, not moved.** libc++'s `std::function` copies a callable small enough to keep
+    // inside itself when it is moved, so the moved-from one went on holding a copy — and a
+    // stream handed over to be closed was let go of by that copy, on the caller's thread, after
+    // the job had run (the first macOS runs, 2026-10-08). A swap leaves the caller nothing.
+    job->fn.swap(fn);
     job->refuseLate = refuseWhenStuck;
     std::unique_lock<std::mutex> lock(state_->mutex);
     if (refuseWhenStuck && state_->running && state_->running->abandoned) {
@@ -214,12 +218,12 @@ bool AudioThread::enqueue(const char* what, std::function<void()> fn,
 
 bool AudioThread::run(const char* what, std::function<void()> job,
                       std::chrono::milliseconds limit) {
-    return enqueue(what, std::move(job), limit, true);
+    return enqueue(what, job, limit, true);
 }
 
 bool AudioThread::handOver(const char* what, std::function<void()> job,
                            std::chrono::milliseconds limit) {
-    return enqueue(what, std::move(job), limit, false);
+    return enqueue(what, job, limit, false);
 }
 
 bool AudioThread::stuck() const {

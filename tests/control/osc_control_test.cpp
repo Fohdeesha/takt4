@@ -143,7 +143,11 @@ TEST_CASE("taps over OSC make the tempo they were tapped at", "[control]") {
                       << "the slowest bounce came " << rhythm.longestBounce()
                       << " s after its press");
     REQUIRE(rhythm.longestBounce() < 0.1);
-    REQUIRE(heard == Approx(150.0).margin(8.0)); // the sleeps did roughly what was asked
+    // The sleeps did roughly what was asked: an octave either way would be another test. Not to
+    // within 8 BPM — a macOS runner's 400 ms sleeps ran 450 to 470 (127 and 134 BPM, the first
+    // macOS runs, 2026-10-08) — since what follows is checked against the tempo really tapped.
+    REQUIRE(heard > 110.0);
+    REQUIRE(heard < 190.0);
 
     (void)engine->step();
     CHECK(engine->commandsDropped() == 0);

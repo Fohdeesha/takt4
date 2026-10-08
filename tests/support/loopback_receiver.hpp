@@ -77,6 +77,39 @@ public:
     /// output whose name moves from the one to the other. The whole of 127/8 is the loopback.
     LoopbackReceiver(std::uint32_t ipv4, std::uint16_t port) { open(ipv4, port, true); }
 
+    /// Whether a socket can be bound to `ipv4` (in host order) here. Linux and Windows answer for
+    /// the whole of 127/8; macOS has 127.0.0.1 alone unless another is aliased, so a test that
+    /// moves an output from one loopback address to another skips there.
+    static bool canBind(std::uint32_t ipv4) {
+#if defined(_WIN32)
+        WSADATA data{};
+        if (::WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+            return false;
+        }
+        const SOCKET probe = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        const bool opened = probe != INVALID_SOCKET;
+#else
+        const int probe = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        const bool opened = probe >= 0;
+#endif
+        bool bound = false;
+        if (opened) {
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(ipv4);
+            bound = ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+#if defined(_WIN32)
+            ::closesocket(probe);
+#else
+            ::close(probe);
+#endif
+        }
+#if defined(_WIN32)
+        ::WSACleanup();
+#endif
+        return bound;
+    }
+
     ~LoopbackReceiver() {
 #if defined(_WIN32)
         if (socket_ != INVALID_SOCKET) {

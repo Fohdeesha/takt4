@@ -250,6 +250,7 @@ if(TAKT4_BUILD_UI)
     ui/fixtures_test.cpp
     ui/import_test.cpp
     ui/main.cpp
+    ui/keys.hpp
     ui/model_watch.hpp
     ui/nothing_real.hpp
     ui/rule_text_test.cpp

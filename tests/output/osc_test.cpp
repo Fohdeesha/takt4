@@ -170,6 +170,9 @@ TEST_CASE("an output aimed at a name follows the name to a new address", "[outpu
     // asking once its socket was open, and went on sending to the old address with no error
     // until the output was edited. Here the name is the test's own, moved from one loopback
     // address to another on the same port, and looked up again a twentieth of a second apart.
+    if (!LoopbackReceiver::canBind(0x7F000002u)) {
+        SKIP("127.0.0.2 is not a loopback address on this machine (macOS has 127.0.0.1 alone)");
+    }
     LoopbackReceiver before(0x7F000001u, 0);
     LoopbackReceiver after(0x7F000002u, before.port());
     takt4::net::AsyncAddress::answerForTests("media-server.test", "127.0.0.1");
@@ -245,6 +248,12 @@ TEST_CASE("an OSC target at a broadcast address really sends", "[output][osc][ne
     message.addFloat(128.0f);
     const bool sent = sender.send(message.packet());
     INFO(sender.problem());
+#if defined(__APPLE__)
+    // A permission refused would say "permission denied", which is what this is here to catch.
+    if (!sent && sender.problem().find("no route") != std::string::npos) {
+        SKIP("this Mac's network has no route for the limited broadcast: " + sender.problem());
+    }
+#endif
     CHECK(sent);
     CHECK(sender.failed() == 0);
     CHECK(sender.problem().empty());

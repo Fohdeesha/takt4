@@ -444,7 +444,11 @@ TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[c
                       << "the slowest bounce came " << rhythm.longestBounce()
                       << " s after its press");
     REQUIRE(rhythm.longestBounce() < 0.1);
-    REQUIRE(heard == Approx(150.0).margin(8.0));
+    // The sleeps did roughly what was asked: an octave either way would be another test. Not to
+    // within 8 BPM — a macOS runner's 400 ms sleeps ran 450 to 470 (127 and 134 BPM, the first
+    // macOS runs, 2026-10-08) — since what follows is checked against the tempo really tapped.
+    REQUIRE(heard > 110.0);
+    REQUIRE(heard < 190.0);
 
     // Every press was understood, the bounces included: a bounce is ignored, not refused.
     CHECK(control.handled() == 6);

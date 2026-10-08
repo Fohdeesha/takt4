@@ -215,10 +215,16 @@ bool LinkPeerWatch::open(std::string& problem) {
         problem = "cannot open a socket (" + std::to_string(net::lastSocketError()) + ")";
         return false;
     }
-    // Shared with Link's own socket on the same port, which asks for the same.
+    // Shared with Link's own socket on the same port, which asks for the same. On macOS, as on
+    // every BSD, a second socket on a port takes SO_REUSEPORT as well, from both — and Link's own
+    // asks for it there; without it this one could not listen beside it (the first macOS runs,
+    // 2026-10-08). Linux shares a multicast port on SO_REUSEADDR alone.
     const int reuse = 1;
     ::setsockopt(socket->handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
                  sizeof reuse);
+#if defined(__APPLE__)
+    ::setsockopt(socket->handle, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof reuse);
+#endif
 #if defined(_WIN32)
     u_long nonBlocking = 1;
     ::ioctlsocket(socket->handle, FIONBIO, &nonBlocking);
