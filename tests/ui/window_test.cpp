@@ -3635,7 +3635,7 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK_FALSE(controller.statusIsError());
     // And the latency figures with it, which a reopen can change — they were said after START
     // alone, so a buffer size changed in the driver's panel went on showing the old ones.
-    CHECK(std::string(controller.window().get_status()).find("latency taken out of the beat times") !=
+    CHECK(std::string(controller.window().get_status()).find("ms centred framing") !=
           std::string::npos);
 
     // A clock moved by another program: reopened at once, and said.
@@ -3645,7 +3645,7 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     controller.superviseInput(moved, nothing, 102.0);
     CHECK(tracker.running());
     CHECK(std::string(controller.window().get_status()).find("moved from") != std::string::npos);
-    CHECK(std::string(controller.window().get_status()).find("latency taken out of the beat times") !=
+    CHECK(std::string(controller.window().get_status()).find("ms centred framing") !=
           std::string::npos);
     CHECK_FALSE(controller.statusIsError());
 
@@ -4467,9 +4467,10 @@ TEST_CASE("the keep for the next track box is ticked by a click", "[ui]") {
     run.applyPosted();
     CHECK_FALSE(tracker.engine().tempoOptions().keepOctaveShift);
 
-    // And the box itself, left of its words and right of DOWNBEAT.
+    // And the box itself, left of its words and right of DOWNBEAT — anywhere between the two,
+    // since 2026-10-08: it starts where "latency" starts under it, which moves with the width.
     bool ticked = false;
-    for (float x = 572.0f; x < 620.0f && !ticked; x += 3.0f) {
+    for (float x = 440.0f; x < kWords && !ticked; x += 3.0f) {
         clickAt(window, x, boxY);
         ticked = controller.window().get_keep_shift();
     }
@@ -6513,6 +6514,111 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     nothingReal.check();
 }
 
+TEST_CASE("a test process starts no text viewer and no browser, even with no opener of its own",
+          "[ui]") {
+    // 2026-10-08: a test that forgot `setFileOpener` swept its clicks over the About box's OPEN
+    // buttons and opened the licence in the rig's text editor 140 times, until the desktop froze.
+    // The sandbox refuses it now: pressed once each, with nothing replaced, nothing opens.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.openAbout();
+    REQUIRE(controller.about() != nullptr);
+    AboutWindow& about = *controller.about();
+    about.invoke_licence_opened();
+    const std::string licence(about.get_opened());
+    INFO(licence);
+    CHECK(licence.rfind("Opened ", 0) == std::string::npos);
+    about.invoke_source_opened();
+    CHECK(std::string(about.get_opened()).rfind("No browser opened", 0) == 0);
+}
+
+TEST_CASE("the About box names its author, links to the source, and its words can be copied",
+          "[ui]") {
+    // The operator, 2026-10-08: the source's address looked like a link and did nothing, and no
+    // word in the window could be selected — the version included, which is what a bug report
+    // wants. Driven as a person would: a click into the words, select all, copy; a click on the
+    // link. The browser is replaced, as the text viewer is above.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    std::vector<std::string> links;
+    controller.setLinkOpener([&links](const std::string& address) {
+        links.push_back(address);
+        return true;
+    });
+    // The sweep below crosses the two OPEN buttons: their files go nowhere. Without this, each
+    // click opened the licence in the rig's text editor (2026-10-08, 140 windows).
+    std::size_t files = 0;
+    controller.setFileOpener([&files](const std::filesystem::path&) {
+        ++files;
+        return true;
+    });
+    controller.openAbout();
+    REQUIRE(controller.about() != nullptr);
+    AboutWindow& about = *controller.about();
+    auto& window = about.window();
+    window.dispatch_scale_factor_change_event(1.0f);
+    window.dispatch_resize_event(slint::LogicalSize({580.0f, 640.0f}));
+    window.dispatch_window_active_changed_event(true);
+    slint::platform::update_timers_and_animations();
+    const takt4::tests::NothingReal nothingReal;
+
+    // Select all and copy, with the system's own shortcut key: Command on a Mac.
+#if defined(__APPLE__)
+    const slint::SharedString shortcut("\x17");
+#else
+    const slint::SharedString shortcut("\x11");
+#endif
+    const auto copyWhatWasClicked = [&] {
+        for (const char* key : {"a", "c"}) {
+            window.dispatch_key_press_event(shortcut);
+            window.dispatch_key_press_event(slint::SharedString(key));
+            window.dispatch_key_release_event(slint::SharedString(key));
+            window.dispatch_key_release_event(shortcut);
+        }
+        slint::platform::update_timers_and_animations();
+        return takt4::ui::headlessClipboard();
+    };
+    std::vector<std::string> copied;
+    for (float y = 14.0f; y < 200.0f; y += 4.0f) {
+        clickAt(window, 60.0f, y);
+        slint::platform::update_timers_and_animations();
+        const std::string got = copyWhatWasClicked();
+        if (!got.empty() && (copied.empty() || copied.back() != got)) {
+            copied.push_back(got);
+        }
+    }
+    std::string seen;
+    for (const std::string& one : copied) {
+        seen += "[" + one + "] ";
+    }
+    INFO("copied: " << seen);
+    const auto has = [&copied](const std::string& text) {
+        return std::find(copied.begin(), copied.end(), text) != copied.end();
+    };
+    CHECK(has("takt4"));
+    CHECK(has("Author: Jon Sands (Fohdeesha)"));
+    // The version, beside the name: found by a click to the name's right.
+    bool versionCopied = false;
+    for (float y = 14.0f; y < 70.0f && !versionCopied; y += 4.0f) {
+        clickAt(window, 200.0f, y);
+        slint::platform::update_timers_and_animations();
+        versionCopied = copyWhatWasClicked() == std::string(about.get_version());
+    }
+    CHECK(versionCopied);
+
+    // The link: found by the click that opens it, and nothing else in the window opens it.
+    for (float y = 150.0f; y < 460.0f && links.empty(); y += 4.0f) {
+        for (float x = 20.0f; x < 400.0f && links.empty(); x += 8.0f) {
+            clickAt(window, x, y);
+            slint::platform::update_timers_and_animations();
+        }
+    }
+    REQUIRE(links.size() == 1);
+    CHECK(links.front() == "https://github.com/Fohdeesha/takt4");
+    CHECK(std::string(about.get_opened()).rfind("No browser", 0) == std::string::npos);
+    nothingReal.check();
+}
+
 #if defined(_WIN32)
 TEST_CASE("SAVE in a test process writes to a folder of its own, not over the rig's",
           "[ui][settings]") {
@@ -7113,7 +7219,11 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
     // with the window then made the size the controller asked for, as a window manager would; and
     // every height checked against the sheets measured off a render, not the controller's figures.
     LiveTracker tracker(kWeights, kStateSpace);
-    WindowController controller(tracker);
+    // Both sections open to start with, which a fresh install no longer is: it folds Inputs
+    // (the operator, 2026-10-08; see the test after this one).
+    takt4::settings::Settings bothOpen;
+    bothOpen.machine.inputsFolded = false;
+    WindowController controller(tracker, bothOpen);
     const takt4::testing::LoopbackReceiver added;
     controller.setNewOutputPort(added.port());
     // Outputs tall enough that folding them would take the window above their own heading.
@@ -7264,7 +7374,9 @@ TEST_CASE("a window opens folded as it was left, shorter for it, and opening giv
     int foldedHeight = 0;
     {
         LiveTracker tracker(kWeights, kStateSpace);
-        WindowController first(tracker);
+        takt4::settings::Settings bothOpen; // a fresh install folds Inputs: see the test after
+        bothOpen.machine.inputsFolded = false;
+        WindowController first(tracker, bothOpen);
         first.setNewOutputPort(added.port());
         for (int i = 0; i < 4; ++i) {
             first.addTarget();
@@ -7316,6 +7428,18 @@ TEST_CASE("a window opens folded as it was left, shorter for it, and opening giv
     // And what the next launch is told is what the window is now.
     CHECK_FALSE(second.currentSettings().machine.inputsFolded);
     CHECK_FALSE(second.currentSettings().machine.outputsFolded);
+}
+
+
+TEST_CASE("a fresh window opens with the control inputs folded and the outputs open", "[ui]") {
+    // The operator, 2026-10-08: MIDI and OSC control are set once for a rig and then only looked
+    // at, so a fresh install opens with that section folded to its heading, which still says what
+    // each is doing. Outputs, which an operator works in, stay open.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    CHECK(controller.window().get_inputs_folded());
+    CHECK_FALSE(controller.window().get_outputs_folded());
+    CHECK(controller.currentSettings().machine.inputsFolded);
 }
 
 TEST_CASE("the rule editor opens folded as it was left, with its log as it was",

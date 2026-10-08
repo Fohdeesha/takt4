@@ -1151,7 +1151,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
             slint::SharedString("/composition/layers/3/clips/7/connect 1"));
         window->set_status(slint::SharedString(
             "In 7 of MOTU Pro Audio \xC2\xB7 48000 Hz \xE2\x86\x92 22050 Hz \xC2\xB7 native pick\n"
-            "latency 12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
+            "12.0 ms input + 16.4 ms resampler + 40.0 ms centred framing"));
         if (options.trouble) {
             // What each thing that cannot be reached says under itself, in the words the window
             // really uses (`output::midiPortBusyMessage`, `net::bindFailure`): a drum machine's

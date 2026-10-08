@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace takt4::ui {
@@ -13,6 +15,12 @@ namespace {
 std::vector<HeadlessWindow*>& made() {
     static std::vector<HeadlessWindow*> adapters;
     return adapters;
+}
+
+/// What Ctrl+C last put on the clipboard. The same thread only, as `made`.
+std::optional<slint::SharedString>& copied() {
+    static std::optional<slint::SharedString> text;
+    return text;
 }
 
 /// The platform the runtime is given instead of winit. It never runs an event loop:
@@ -26,6 +34,17 @@ public:
         auto adapter = std::make_unique<HeadlessWindow>(size_);
         window = adapter.get();
         return adapter;
+    }
+
+    /// A clipboard of the process's own, so a test can copy and read back what it got: without
+    /// one, Ctrl+C went nowhere and "this text can be copied" could not be tested.
+    void set_clipboard_text(const slint::SharedString& text, Clipboard which) override {
+        if (which == Clipboard::DefaultClipboard) {
+            copied() = text;
+        }
+    }
+    std::optional<slint::SharedString> clipboard_text(Clipboard which) override {
+        return which == Clipboard::DefaultClipboard ? copied() : std::nullopt;
     }
 
     /// The most recent adapter the runtime asked for. Owned by the runtime, not by this.
@@ -55,6 +74,10 @@ HeadlessWindow* const* installHeadlessPlatform(std::uint32_t width, std::uint32_
     HeadlessWindow* const* latest = &platform->window;
     slint::platform::set_platform(std::move(platform));
     return latest;
+}
+
+std::string headlessClipboard() {
+    return copied() ? std::string(*copied()) : std::string();
 }
 
 HeadlessWindow* headlessAdapterFor(const slint::Window& window) {

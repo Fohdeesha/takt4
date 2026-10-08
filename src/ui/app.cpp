@@ -73,10 +73,8 @@ int run() {
     // so the engine is built with it and the window's sliders show it from the first
     // frame instead of jumping a moment later.
     //
-    // Read from wherever the settings currently are and written back beside the executable,
-    // which are the same place on every run but the first one after the move — that run
-    // reads the old per-user file and, on the way out, leaves a settings.json next to
-    // takt4.exe. See `settings::existingSettingsFile`.
+    // Read from beside the executable and written back there. See `settings::existingSettingsFile`
+    // for why the old per-user file is not read any more.
     const std::filesystem::path settingsPath = settings::settingsFile();
     const std::filesystem::path readFrom = settings::existingSettingsFile();
     // **Through `openAtStartup`, never `load` alone.** `load` gives the defaults for a file it
@@ -90,21 +88,11 @@ int run() {
     // the file there could be neither read nor moved aside, because a save would replace it.
     const bool writable = !settingsPath.empty() && startup.writable;
 
-    // **A read from the old per-user file is a migration, so it is finished here rather than
-    // on the way out.** `existingSettingsFile` falls back to `%APPDATA%\takt4\settings.json`
-    // when there is none beside the executable, and until this the fallback was live: every
-    // build into a fresh tree, and every session that ended in a crash rather than a clean
-    // exit, read that file again. On this machine it was five days stale and had the octave
-    // fold switched on with a window a tap had set — so "keep BPM in range" kept coming back
-    // on with a window nobody had chosen, which is exactly what a rig reported on 2026-09-16.
-    //
-    // Writing it here means the fallback is taken once per install location and never again.
-    // Nothing is moved or deleted: the old file stays where an older build still finds it,
-    // which is the decision `existingSettingsFile` already documents.
-    //
-    // A recovery is written straight away for the same reason: the damaged file has been moved
-    // aside, and the settings takt4 is now running on — the backup's, or the defaults — should
-    // be what a crash in the next minute leaves behind.
+    // **A recovery is written straight away**: the damaged file has been moved aside, and the
+    // settings takt4 is now running on — the backup's, or the defaults — should be what a crash
+    // in the next minute leaves behind. (`readFrom` was the old per-user file on a folder's
+    // first run until 2026-10-08, and this finished that move at once; it is always
+    // `settingsPath` now.)
     if (writable && (readFrom != settingsPath || !startup.notice.empty())) {
         (void)settings::save(saved, settingsPath);
     }

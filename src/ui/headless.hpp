@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace takt4::ui {
 
@@ -71,5 +72,8 @@ HeadlessWindow* const* installHeadlessPlatform(std::uint32_t width, std::uint32_
 /// controller makes the rule editor, the patch editor and the About box after its main window,
 /// so a test rendering the main window, or reading the size it asked for, has to find its own.
 HeadlessWindow* headlessAdapterFor(const slint::Window& window);
+
+/// What was last copied to the headless platform's clipboard (Ctrl+C in a text box), or empty.
+std::string headlessClipboard();
 
 } // namespace takt4::ui
