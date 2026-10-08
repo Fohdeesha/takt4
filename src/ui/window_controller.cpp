@@ -3840,11 +3840,48 @@ void WindowController::publishTrace() {
 }
 
 void WindowController::publishState() {
-    publishTempoState(*window_, tracker_.engine().state());
+    const tracking::TempoState state = tracker_.engine().state();
+    publishTempoState(*window_, state);
+    publishBeatDots(state);
     // After it: publishTempoState shows what the engine has, and this is the one property
     // the window may legitimately be showing ahead of it.
     publishPin();
     publishOptions();
+}
+
+void WindowController::publishBeatDots(const tracking::TempoState& state) {
+    if (state.beatInBar == 0) {
+        // Stopped, reset, or no beat yet: nothing fired before this holds.
+        dotBeatInBar_ = 0;
+        dotTimer_.stop();
+        return;
+    }
+    const output::OutputRunner::ShownBeat shown =
+        shownBeatSource_ ? shownBeatSource_() : runner_.shownBeat();
+    if (shown.serial != dotSerial_) {
+        dotSerial_ = shown.serial;
+        const auto show = [this](std::uint32_t beatInBar, std::uint64_t bars) {
+            dotBeatInBar_ = beatInBar;
+            dotBars_ = bars;
+            window_->set_beat_in_bar(static_cast<int>(beatInBar));
+            window_->set_bars(static_cast<int>(bars));
+        };
+        // Ahead of its time, as a locked beat is whenever the latency leaves room: lit when it is
+        // played, by a timer of its own rather than on whichever redraw comes after.
+        const double wait = shown.due - runner_.elapsed();
+        if (wait > 0.001) {
+            dotTimer_.start(slint::TimerMode::SingleShot,
+                            std::chrono::milliseconds(std::llround(wait * 1000.0)),
+                            [show, shown] { show(shown.beatInBar, shown.bars); });
+        } else {
+            dotTimer_.stop();
+            show(shown.beatInBar, shown.bars);
+        }
+    }
+    if (dotBeatInBar_ != 0) {
+        window_->set_beat_in_bar(static_cast<int>(dotBeatInBar_));
+        window_->set_bars(static_cast<int>(dotBars_));
+    }
 }
 
 void WindowController::publishLevels() {
