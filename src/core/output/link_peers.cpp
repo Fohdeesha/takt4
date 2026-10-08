@@ -20,6 +20,14 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#elif defined(__APPLE__)
+#include <libproc.h>
+#include <netinet/in.h>
+#include <sys/proc_info.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cstring>
 #endif
 
 namespace takt4::output {
@@ -420,6 +428,55 @@ bool portOwnedHere(std::uint16_t port) {
             if (std::stoul(local.substr(colon + 1), nullptr, 16) == port) {
                 return true;
             }
+        }
+    }
+    return false;
+#elif defined(__APPLE__)
+    // Every descriptor this process holds, from the kernel (libproc, which is what lsof asks);
+    // then whether one of them is a UDP socket bound to `port`, from the socket itself. A
+    // descriptor closed between the two questions fails the second, and is not ours any more.
+    const pid_t self = ::getpid();
+    const int wanted = ::proc_pidinfo(self, PROC_PIDLISTFDS, 0, nullptr, 0);
+    if (wanted <= 0) {
+        return false;
+    }
+    // Room for a few opened in between.
+    std::vector<proc_fdinfo> held(static_cast<std::size_t>(wanted) / sizeof(proc_fdinfo) + 16);
+    const int filled = ::proc_pidinfo(self, PROC_PIDLISTFDS, 0, held.data(),
+                                      static_cast<int>(held.size() * sizeof(proc_fdinfo)));
+    if (filled <= 0) {
+        return false;
+    }
+    held.resize(static_cast<std::size_t>(filled) / sizeof(proc_fdinfo));
+    for (const proc_fdinfo& one : held) {
+        if (one.proc_fdtype != PROX_FDTYPE_SOCKET) {
+            continue;
+        }
+        int type = 0;
+        socklen_t typeSize = sizeof type;
+        if (::getsockopt(one.proc_fd, SOL_SOCKET, SO_TYPE, &type, &typeSize) != 0 ||
+            type != SOCK_DGRAM) {
+            continue;
+        }
+        sockaddr_storage local{};
+        socklen_t size = sizeof local;
+        if (::getsockname(one.proc_fd, reinterpret_cast<sockaddr*>(&local), &size) != 0) {
+            continue;
+        }
+        in_port_t bound = 0;
+        if (local.ss_family == AF_INET) {
+            sockaddr_in v4{};
+            std::memcpy(&v4, &local, sizeof v4);
+            bound = v4.sin_port;
+        } else if (local.ss_family == AF_INET6) {
+            sockaddr_in6 v6{};
+            std::memcpy(&v6, &local, sizeof v6);
+            bound = v6.sin6_port;
+        } else {
+            continue;
+        }
+        if (ntohs(bound) == port) {
+            return true;
         }
     }
     return false;

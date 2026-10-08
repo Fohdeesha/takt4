@@ -25,6 +25,7 @@
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <unistd.h>
 #endif
 
 namespace takt4::settings {
@@ -306,7 +307,31 @@ std::filesystem::path settingsDirectory() {
         return named;
     }
     const std::filesystem::path exe = executablePath();
-    return exe.empty() ? userSettingsDirectory() : exe.parent_path();
+    if (exe.empty()) {
+        return userSettingsDirectory();
+    }
+#if defined(__APPLE__)
+    // `access` answers for a read-only volume too (EROFS), which is what a translocated app
+    // runs from: see the header.
+    const std::filesystem::path folder = programFolder(exe);
+    if (::access(folder.c_str(), W_OK) != 0) {
+        return userSettingsDirectory();
+    }
+    return folder;
+#else
+    return exe.parent_path();
+#endif
+}
+
+std::filesystem::path programFolder(const std::filesystem::path& executable) {
+    const std::filesystem::path folder = executable.parent_path();
+    const std::filesystem::path contents = folder.parent_path();
+    const std::filesystem::path bundle = contents.parent_path();
+    if (folder.filename() == "MacOS" && contents.filename() == "Contents" &&
+        bundle.extension() == ".app") {
+        return bundle.parent_path();
+    }
+    return folder;
 }
 
 std::filesystem::path userSettingsDirectory() {
