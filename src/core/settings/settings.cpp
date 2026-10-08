@@ -25,6 +25,7 @@
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <unistd.h>
 #endif
 
 namespace takt4::settings {
@@ -306,7 +307,31 @@ std::filesystem::path settingsDirectory() {
         return named;
     }
     const std::filesystem::path exe = executablePath();
-    return exe.empty() ? userSettingsDirectory() : exe.parent_path();
+    if (exe.empty()) {
+        return userSettingsDirectory();
+    }
+#if defined(__APPLE__)
+    // `access` answers for a read-only volume too (EROFS), which is what a translocated app
+    // runs from: see the header.
+    const std::filesystem::path folder = programFolder(exe);
+    if (::access(folder.c_str(), W_OK) != 0) {
+        return userSettingsDirectory();
+    }
+    return folder;
+#else
+    return exe.parent_path();
+#endif
+}
+
+std::filesystem::path programFolder(const std::filesystem::path& executable) {
+    const std::filesystem::path folder = executable.parent_path();
+    const std::filesystem::path contents = folder.parent_path();
+    const std::filesystem::path bundle = contents.parent_path();
+    if (folder.filename() == "MacOS" && contents.filename() == "Contents" &&
+        bundle.extension() == ".app") {
+        return bundle.parent_path();
+    }
+    return folder;
 }
 
 std::filesystem::path userSettingsDirectory() {
@@ -361,6 +386,19 @@ std::filesystem::path existingSettingsFile() {
     // kept its outputs across the move. A month on, all it still did was hand every copy started
     // in a new folder the rig as it stood that September — "keep BPM in" switched on with its
     // window among it, which the operator met on each fresh build. A new folder is a new rig.
+#if defined(__APPLE__)
+    // **Except on a Mac, where the per-user folder is where an app that could not write beside
+    // itself kept its rig** (`settingsDirectory`): a download opened where it landed runs from a
+    // read-only copy of itself until it is moved. Read from there while nothing is beside the
+    // moved app, the first save there takes the rig with it (the operator, 2026-10-08). Never in
+    // a process given a folder of its own.
+    if (namedSettingsDirectory().empty()) {
+        const std::filesystem::path user = userSettingsDirectory() / "settings.json";
+        if (user != beside && std::filesystem::exists(user, code)) {
+            return user;
+        }
+    }
+#endif
     return beside;
 }
 

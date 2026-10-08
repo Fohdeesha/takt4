@@ -744,6 +744,21 @@ TEST_CASE("the settings file lives beside the program", "[settings]") {
     CHECK(foundAnExecutable);
 }
 
+TEST_CASE("a macOS app counts as being in the folder its bundle is in", "[settings]") {
+    // On a Mac takt4 is takt4.app, and the executable sits three folders inside it. The folder
+    // the operator put the app in is the one beside it; inside the bundle is not theirs to keep
+    // a rig in, and writing there breaks the app's signature.
+    using takt4::settings::programFolder;
+    const std::filesystem::path stick = std::filesystem::path("Volumes") / "SHOW";
+    CHECK(programFolder(stick / "takt4.app" / "Contents" / "MacOS" / "takt4") == stick);
+    // Anything else is its own folder: a bare executable, and a folder that only looks partly
+    // like a bundle.
+    CHECK(programFolder(stick / "takt4") == stick);
+    CHECK(programFolder(stick / "takt4.app" / "MacOS" / "takt4") == stick / "takt4.app" / "MacOS");
+    CHECK(programFolder(stick / "takt4" / "Contents" / "MacOS" / "takt4") ==
+          stick / "takt4" / "Contents" / "MacOS");
+}
+
 #if defined(_WIN32)
 TEST_CASE("a folder named for the settings holds them, and the texts ABOUT opens", "[settings]") {
     // What every test process relies on to keep off the show's settings.json — and set the way

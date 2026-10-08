@@ -13,6 +13,7 @@
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/delete_guard.hpp"
+#include "ui/file_dialog.hpp"
 #include "ui/fixtures_controller.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
@@ -977,6 +978,9 @@ private:
     std::optional<slint::ComponentHandle<AboutWindow>> about_;
     std::function<bool(const std::filesystem::path&)> openFile_;
     std::function<bool(const std::string&)> openLink_;
+    /// EXPORT's and IMPORT's dialogs. Last, so it goes first: a dialog program still up when the
+    /// window goes is closed before anything its answer would have reached (`FileDialogs`).
+    FileDialogs fileDialogs_;
 };
 
 } // namespace takt4::ui

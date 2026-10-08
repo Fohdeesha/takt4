@@ -14,9 +14,10 @@ name: full
 #
 # **A release:** push the bump commit and its annotated tag together —
 # `git push --atomic origin main vX.Y.Z` — so the tag is there when this checks out, and every
-# binary built here names it. When all three jobs pass on a commit a `v*` tag points at, the
-# windows-msvc job's files are attached to that tag's GitHub Release (the `publish` job below),
-# with the tag's message as the notes. A tag pushed after its commit's run: rerun that run
+# binary built here names it. When every build job passes on a commit a `v*` tag points at, the
+# downloads are attached to that tag's GitHub Release (the `publish` job below), with the tag's
+# message as the notes: takt4.exe from windows-msvc, takt4-macos.zip from `macos-universal`, and
+# takt4-linux-x86_64.tar.gz from the linux job. A tag pushed after its commit's run: rerun that run
 # (`gh run rerun <id>`); its checkout then has the tag. A push to main while a release run is
 # building cancels it (the concurrency group below): rerun it the same way.
 #
@@ -29,10 +30,12 @@ name: full
 # — a release whose every changed file was under src/ui/ — and the answer was to turn this back
 # on rather than to keep dispatching it by hand and forgetting to.
 #
-# WINDOWS ONLY, by the user, 2026-09-06: it used to cost ≈150 billable minutes because macOS is
-# billed at 10× and Slint takes 7–25 minutes to build. The macOS and Linux app entries are
-# commented out rather than deleted so bringing them back is uncommenting — but bring them back
-# knowing what they used to cost.
+# **macOS and Linux are built again, by the user on 2026-10-08**, with the repo public: GitHub's
+# standard runners cost a public repo nothing, macOS included. They had been left out since
+# 2026-09-06, when a private repo paid 10× for every macOS minute. macOS is built twice, on an
+# Apple Silicon runner and on an Intel one, because takt4 has to run on both; `linux` is the
+# release build, on Ubuntu 22.04 so the binary runs on any glibc from 2.35 up, where
+# `linux-tsan` (24.04) is the sanitizer.
 #
 # **Plus the sanitizers, on every push the path filter below lets through (every push that
 # touches the code), by the user on 2026-09-23** (the audit's T4, which
@@ -96,7 +99,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.name || matrix.preset }}
     runs-on: ${{ matrix.os }}
     # The ASan job builds the whole tree instrumented and runs every test under it.
     timeout-minutes: 180
@@ -128,15 +131,36 @@ jobs:
             app: build/linux-tsan/bin/takt4
             cli: build/linux-tsan/bin/takt4-cli
             cargo: build/linux-tsan/cargo
-          # Windows only for now; see the note at the top of this file.
-          # - os: macos-latest
-          #   preset: macos
-          #   app: build/macos/bin/takt4
-          #   cli: build/macos/bin/takt4-cli
-          # - os: ubuntu-24.04
-          #   preset: linux
-          #   app: build/linux/bin/takt4
-          #   cli: build/linux/bin/takt4-cli
+          # macOS on both kinds of Mac, from the same preset. `name` tells the two jobs, and their
+          # Slint caches, apart: the runner image's name is the same on both.
+          - os: macos-26
+            name: macos-arm64
+            preset: macos
+            launch: true
+            app: build/macos/bin/takt4.app/Contents/MacOS/takt4
+            cli: build/macos/bin/takt4-cli
+            cargo: build/macos/cargo
+          - os: macos-26-intel
+            name: macos-x64
+            preset: macos
+            launch: true
+            app: build/macos/bin/takt4.app/Contents/MacOS/takt4
+            cli: build/macos/bin/takt4-cli
+            cargo: build/macos/cargo
+          # The Linux release: the oldest supported Ubuntu, since a binary needs at least the
+          # glibc it was built against. Its own GCC 11 is older than anything else here builds
+          # with, so GCC 12, which 22.04 also ships.
+          - os: ubuntu-22.04
+            preset: linux
+            launch: true
+            # What the launch below needs: a screen to draw on, something to photograph it with,
+            # and the X libraries Slint opens when it starts, which the runner image may lack.
+            apt: xvfb imagemagick libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 libegl1 libgl1 libgl1-mesa-dri
+            cc: gcc-12
+            cxx: g++-12
+            app: build/linux/bin/takt4
+            cli: build/linux/bin/takt4-cli
+            cargo: build/linux/cargo
 
     steps:
       - uses: actions/checkout@v7
@@ -158,7 +182,8 @@ jobs:
           for try in 1 2 3; do
             if sudo timeout 240 apt-get "${apt[@]}" update &&
                sudo timeout 300 apt-get "${apt[@]}" install -y --no-install-recommends \
-                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev; then
+                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev \
+                 ${{ matrix.cxx }} ${{ matrix.apt }}; then
               exit 0
             fi
             echo "apt did not finish (try $try of 3)"
@@ -167,14 +192,29 @@ jobs:
           done
           exit 1
 
-      # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
-      # requirements in README.md. Record what was actually used.
+      # A job that names its compiler has every later step use it: CMake reads CC and CXX once, at
+      # configure, but the C++ inside Slint's cargo build is compiled by the cc crate, which reads
+      # them when cargo runs.
+      - name: The compiler
+        if: matrix.cxx
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      # The macOS presets build with Ninja, which not every macOS image ships.
+      - name: Ninja
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+
+      # The hosted images ship CMake and a Rust toolchain that satisfy the requirements in
+      # README.md. Record what was actually used.
       - name: Toolchain versions
         run: |
           cmake --version
           ninja --version || true
           rustc --version || true
           cargo --version || true
+          ${CXX:-c++} --version || true
 
       # **Slint, from the cache**: its source and everything cargo built from it, so a run builds
       # only takt4 itself. Both are needed — cargo judges Slint's own crates stale by their
@@ -201,7 +241,7 @@ jobs:
         id: slint
         uses: actions/cache/restore@v6
         with:
-          key: slint-v2-${{ matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
+          key: slint-v2-${{ matrix.name || matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
           path: |
             build/slint-src
             build/${{ matrix.preset }}/_deps/slint-build
@@ -227,11 +267,12 @@ jobs:
           src="$(pwd -W 2>/dev/null || pwd)/build/slint-src"
           cmake --preset ${{ matrix.preset }} -DFETCHCONTENT_SOURCE_DIR_SLINT="$src"
 
-      # Linux goes on past the first error (Ninja's -k 0), so a run reports every file GCC
-      # refuses rather than one per run: GCC warns about things MSVC does not, and this tree
-      # builds with warnings as errors.
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os == 'Linux' && '-- -k 0' || '' }}
+      # **Slint on its own first**, so it reaches the cache below even when takt4's own code then
+      # fails to compile — which, on a system nothing has built for a while, is most runs: without
+      # this, every one of those runs built Slint again from cold.
+      - name: Build Slint
+        if: steps.slint.outputs.cache-hit != 'true'
+        run: cmake --build --preset ${{ matrix.preset }} --parallel --target cargo-build_slint_cpp cargo-build_slint-compiler
 
       # Saved as soon as Slint is built, not at the end: a test that fails must not cost the next
       # run the build. Two runs missing at once both try; the second is refused, harmlessly.
@@ -249,6 +290,32 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
 
+      # Ninja goes on past the first error (-k 0), so a run reports every file GCC or clang
+      # refuses rather than one per run: each warns about things MSVC does not, and this tree
+      # builds with warnings as errors.
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os != 'Windows' && '-- -k 0' || '' }}
+
+      # **One std::exception** (macOS): the app and the UI tests use libc++abi's typeinfo, not a
+      # copy of their own. Skia's prebuilt bindings bring one, and with it every
+      # `catch (const std::exception&)` missed takt4's own exceptions — a MIDI port that was not
+      # there ended the program (2026-10-08; cmake/apple_skia_typeinfo.cmake keeps it to Skia).
+      - name: One std::exception
+        if: runner.os == 'macOS'
+        run: |
+          bad=0
+          for b in takt4_ui_tests takt4.app/Contents/MacOS/takt4; do
+            echo "===== $b: the standard library's type information it defines"
+            nm -m "build/macos/bin/$b" | grep -E '__ZT[IS]St[0-9]' | grep -v undefined || true
+            # A copy Skia keeps to itself is local from the start ("non-external"); one every
+            # object bound to was hidden and global ("was a private external").
+            if nm -m "build/macos/bin/$b" | grep -E 'was a private external\) __ZT[IS]St[0-9]'; then
+              echo "$b binds to a copy of the C++ runtime's type information of its own"
+              bad=1
+            fi
+          done
+          exit $bad
+
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
       - name: Test
@@ -259,10 +326,98 @@ jobs:
       - name: Version banner
         run: ${{ matrix.app }} --version
 
+      # The bundle macOS reads: an Info.plist it can parse, naming the executable that is there, and
+      # the two sentences it shows when it asks for the microphone and the local network.
+      - name: The app bundle
+        if: runner.os == 'macOS'
+        run: |
+          plist=build/macos/bin/takt4.app/Contents/Info.plist
+          plutil -lint "$plist"
+          plutil -p "$plist"
+          test "$(plutil -extract CFBundleExecutable raw "$plist")" = takt4
+          plutil -extract NSMicrophoneUsageDescription raw "$plist"
+          plutil -extract NSLocalNetworkUsageDescription raw "$plist"
+          test "$(plutil -extract CFBundleIconFile raw "$plist")" = takt4.icns
+          test -s build/macos/bin/takt4.app/Contents/Resources/takt4.icns
+          codesign -dv build/macos/bin/takt4.app 2>&1 || true
+
       - name: Console tool
         run: |
           ${{ matrix.cli }} --version
           ${{ matrix.cli }} devices
+
+      # **Does it open?** The real app, started as a person would and left running for fifteen
+      # seconds, then photographed — with the tests' sandbox on, so it opens no device and reaches
+      # nothing on the network. macOS runners have a screen; Linux gets a virtual one. What no test
+      # shows: the window drawing on this system. The pictures are kept with the run.
+      - name: Launch
+        if: matrix.launch
+        env:
+          TAKT4_TEST_SANDBOX: '1'
+          TAKT4_NO_CRASH_DIALOG: '1'
+        run: |
+          mkdir -p shots launch
+          export TAKT4_SETTINGS_DIR="$PWD/launch"
+          shot="shots/${{ matrix.name || matrix.preset }}.png"
+          if [ "$RUNNER_OS" = macOS ]; then
+            "${{ matrix.app }}" > launch/out.txt 2>&1 &
+            pid=$!
+            sleep 15
+            screencapture -x "$shot" || echo "no screenshot"
+          else
+            xvfb-run -a -s "-screen 0 1280x1000x24" bash -c '
+              "$1" > launch/out.txt 2>&1 &
+              pid=$!
+              sleep 15
+              import -window root "$2" || echo "no screenshot"
+              if kill -0 $pid; then kill $pid; echo running > launch/state; fi
+            ' launch "${{ matrix.app }}" "$shot"
+          fi
+          if [ "$RUNNER_OS" = macOS ] && kill -0 $pid 2>/dev/null; then
+            kill $pid
+            echo running > launch/state
+          fi
+          cat launch/out.txt || true
+          test "$(cat launch/state 2>/dev/null)" = running
+
+      - name: Keep the launch pictures
+        if: matrix.launch && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shots-${{ matrix.name || matrix.preset }}
+          path: shots/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # **The downloads.** Each Mac's app, zipped with ditto so the bundle and its permissions come
+      # through the upload whole, for `macos-universal` to make one app of. The Linux program,
+      # tarred for the same reason, with what it needs from the system said here: the libraries it
+      # links, and the newest glibc and libstdc++ versions it asks for — the oldest a system can
+      # have and still run it.
+      - name: Package
+        if: matrix.launch
+        run: |
+          mkdir -p dist
+          if [ "$RUNNER_OS" = macOS ]; then
+            ditto -c -k --keepParent build/macos/bin/takt4.app "dist/takt4-${{ matrix.name }}.app.zip"
+          else
+            # Without its symbols: no crash report reads them (the Windows release has none either),
+            # and they were most of a 60 MB download.
+            strip build/linux/bin/takt4
+            tar -C build/linux/bin -czf dist/takt4-linux-x86_64.tar.gz takt4
+            ldd build/linux/bin/takt4
+            echo "newest glibc asked for:     $(objdump -T build/linux/bin/takt4 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+            echo "newest libstdc++ asked for: $(objdump -T build/linux/bin/takt4 | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)"
+          fi
+          ls -l dist
+
+      - name: Keep the downloads
+        if: matrix.launch
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ runner.os == 'macOS' && format('app-{0}', matrix.name) || 'release-linux' }}
+          path: dist/
+          retention-days: 7
 
       # **A release's file**, on a commit a `v*` tag points at, pushed or dispatched — never a pull
       # request. The tag must be the version in CMakeLists.txt, and takt4.exe must say it is exactly
@@ -297,11 +452,47 @@ jobs:
           path: dist/
           retention-days: 3
 
-  # Attaches the windows-msvc job's files to the tag's Release — created from the tag's message if
-  # there is none yet, the files replaced if one was made by hand — once all three jobs passed.
-  # Nothing to do on a commit no `v*` tag points at.
-  publish:
+  # **One app for both kinds of Mac**: the two builds' executables put into one with lipo, the
+  # bundle signed again — ad hoc, since there is no developer account; Apple Silicon will not run
+  # an executable without a signature, and changing the executable broke the linker's — and
+  # checked, then zipped for the Release.
+  macos-universal:
     needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: app-macos-*
+          path: in
+      - name: One app
+        run: |
+          set -e
+          mkdir arm x64 out dist
+          ditto -x -k in/app-macos-arm64/takt4-macos-arm64.app.zip arm
+          ditto -x -k in/app-macos-x64/takt4-macos-x64.app.zip x64
+          cp -R arm/takt4.app out/
+          lipo -create arm/takt4.app/Contents/MacOS/takt4 x64/takt4.app/Contents/MacOS/takt4 \
+            -output out/takt4.app/Contents/MacOS/takt4
+          lipo -info out/takt4.app/Contents/MacOS/takt4
+          lipo -info out/takt4.app/Contents/MacOS/takt4 | grep -q 'x86_64 arm64\|arm64 x86_64'
+          codesign --force --deep --sign - out/takt4.app
+          codesign --verify --deep --strict --verbose=2 out/takt4.app
+          out/takt4.app/Contents/MacOS/takt4 --version
+          arch -x86_64 out/takt4.app/Contents/MacOS/takt4 --version || echo "(no Rosetta here to try the Intel half)"
+          ditto -c -k --keepParent out/takt4.app dist/takt4-macos.zip
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos
+          path: dist/
+          retention-days: 7
+
+  # Attaches the downloads to the tag's Release — created from the tag's message if there is none
+  # yet, the files replaced if one was made by hand — once every job has passed. Nothing to do on
+  # a commit no `v*` tag points at.
+  publish:
+    needs: [build, macos-universal]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -321,12 +512,14 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ -z "$tag" ]; then echo "No v* tag on $GITHUB_SHA: nothing to publish."; fi
 
+      # `release` (takt4.exe), `release-macos` and `release-linux`, into one folder.
       - name: The release files
         if: steps.tag.outputs.tag != ''
         uses: actions/download-artifact@v8
         with:
-          name: release
+          pattern: release*
           path: dist
+          merge-multiple: true
 
       - name: Attach to the release
         if: steps.tag.outputs.tag != ''

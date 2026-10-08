@@ -15,6 +15,24 @@
 #include <commdlg.h>
 
 #include <cstddef>
+#elif !defined(__APPLE__)
+#include <slint.h>
+
+#include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <cstddef>
+#include <optional>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+extern char** environ; // the process's environment, which <unistd.h> leaves undeclared
 #endif
 
 #include <cstdlib>
@@ -97,14 +115,8 @@ std::wstring bufferWith(const std::string& suggested) {
     return buffer;
 }
 
-} // namespace
-
-std::filesystem::path askOpenFile(const std::string& title, const std::string& suggested,
-                                  FileKind kind) {
-    if (!fileDialogsAllowed()) {
-        return {};
-    }
-    std::wstring buffer = bufferWith(suggested);
+std::filesystem::path showOpen(const std::string& title, FileKind kind) {
+    std::wstring buffer = bufferWith("");
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle, kind);
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -114,10 +126,7 @@ std::filesystem::path askOpenFile(const std::string& title, const std::string& s
     return std::filesystem::path(buffer.c_str());
 }
 
-std::filesystem::path askSaveFile(const std::string& title, const std::string& suggested) {
-    if (!fileDialogsAllowed()) {
-        return {};
-    }
+std::filesystem::path showSave(const std::string& title, const std::string& suggested) {
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle, FileKind::Preset);
@@ -128,17 +137,277 @@ std::filesystem::path askSaveFile(const std::string& title, const std::string& s
     return std::filesystem::path(buffer.c_str());
 }
 
+} // namespace
+
+// A modal dialog answers before it returns, so there is never anything pending.
+struct FileDialogs::Pending {};
+
+FileDialogs::FileDialogs() = default;
+FileDialogs::~FileDialogs() = default;
+
+bool FileDialogs::waiting() const {
+    return false;
+}
+
+void FileDialogs::open(const std::string& title, FileKind kind, Chosen chosen) {
+    chosen(FileChoice{fileDialogsAllowed() ? showOpen(title, kind) : std::filesystem::path{}, {}});
+}
+
+void FileDialogs::save(const std::string& title, const std::string& suggested, Chosen chosen) {
+    chosen(FileChoice{fileDialogsAllowed() ? showSave(title, suggested) : std::filesystem::path{},
+                      {}});
+}
+
+#elif defined(__APPLE__)
+
+// NSOpenPanel and NSSavePanel are Objective-C: see file_dialog_mac.mm.
+
 #else
 
-// Not yet implemented off Windows, and this is deliberately a *silent* empty rather than a
-// stub that writes somewhere guessed: returning empty takes the caller's cancel path, so
-// import and export are simply unavailable rather than wrong. The port (§1's box) will want
-// GTK's chooser or a portal call here; until the UI compiles on those platforms at all,
-// anything written now would be untested.
-std::filesystem::path askOpenFile(const std::string&, const std::string&, FileKind) {
-    return {};
+namespace {
+
+/// `name`'s full path where the PATH finds it, or empty.
+std::string onPath(const std::string& name) {
+    const char* const path = std::getenv("PATH");
+    if (path == nullptr) {
+        return {};
+    }
+    std::string_view rest(path);
+    for (;;) {
+        const std::size_t colon = rest.find(':');
+        const std::string_view folder = rest.substr(0, colon);
+        const std::string candidate =
+            (folder.empty() ? std::string(".") : std::string(folder)) + "/" + name;
+        if (::access(candidate.c_str(), X_OK) == 0) {
+            return candidate;
+        }
+        if (colon == std::string_view::npos) {
+            return {};
+        }
+        rest.remove_prefix(colon + 1);
+    }
 }
-std::filesystem::path askSaveFile(const std::string&, const std::string&) { return {}; }
+
+bool onKde() {
+    const char* const desktop = std::getenv("XDG_CURRENT_DESKTOP");
+    return desktop != nullptr && std::string_view(desktop).find("KDE") != std::string_view::npos;
+}
+
+/// A dialog program and what to tell it.
+struct Command {
+    std::string name; // for a sentence about it
+    std::string program;
+    std::vector<std::string> arguments; // the program's name first, as a process sees it
+};
+
+/// zenity's filters, one argument each: `label | pattern pattern`.
+std::vector<std::string> zenityFilters(FileKind kind) {
+    if (kind == FileKind::FixtureDefinition) {
+        return {"--file-filter=fixture definitions (*.gdtf, *.json) | *.gdtf *.json",
+                "--file-filter=GDTF (*.gdtf) | *.gdtf",
+                "--file-filter=Open Fixture Library (*.json) | *.json",
+                "--file-filter=all files | *"};
+    }
+    return {"--file-filter=presets (*.json) | *.json", "--file-filter=all files | *"};
+}
+
+/// kdialog's filter, one argument: `pattern pattern|label` per line.
+std::string kdialogFilter(FileKind kind) {
+    if (kind == FileKind::FixtureDefinition) {
+        return "*.gdtf *.json|fixture definitions (*.gdtf, *.json)\n*.gdtf|GDTF (*.gdtf)\n"
+               "*.json|Open Fixture Library (*.json)\n*|all files";
+    }
+    return "*.json|presets (*.json)\n*|all files";
+}
+
+/// The dialog to run, or none when neither program is installed. KDE's own first on KDE, where
+/// zenity is a GTK program in a Qt desktop; zenity first everywhere else.
+std::optional<Command> dialogCommand(bool saving, const std::string& title,
+                                     const std::string& suggested, FileKind kind) {
+    const std::string zenity = onPath("zenity");
+    const std::string kdialog = onPath("kdialog");
+    const bool useKdialog = !kdialog.empty() && (zenity.empty() || onKde());
+    if (useKdialog) {
+        Command command{"kdialog", kdialog, {"kdialog", "--title", title}};
+        command.arguments.push_back(saving ? "--getsavefilename" : "--getopenfilename");
+        command.arguments.push_back(saving ? suggested : std::string("."));
+        command.arguments.push_back(kdialogFilter(kind));
+        return command;
+    }
+    if (zenity.empty()) {
+        return std::nullopt;
+    }
+    Command command{"zenity", zenity, {"zenity", "--file-selection", "--title=" + title}};
+    if (saving) {
+        command.arguments.push_back("--save");
+        // Asked for, since zenity 3 replaces a file without asking. zenity 4 always asks and
+        // takes this as a no-op.
+        command.arguments.push_back("--confirm-overwrite");
+        command.arguments.push_back("--filename=" + suggested);
+    }
+    for (std::string& filter : zenityFilters(kind)) {
+        command.arguments.push_back(std::move(filter));
+    }
+    return command;
+}
+
+constexpr auto kPollEvery = std::chrono::milliseconds(100);
+
+} // namespace
+
+/// The dialog program while it is up: its process, the pipe its answer comes down, and who
+/// to give the answer to. Read by a timer on the UI thread, so nothing here is shared with
+/// another thread.
+struct FileDialogs::Pending {
+    pid_t child = -1;
+    int output = -1; // the read end of the child's standard output
+    std::string answer;
+    std::string name;
+    Chosen chosen;
+    slint::Timer poll;
+
+    ~Pending() { stop(); }
+
+    bool up() const { return child > 0; }
+
+    /// Starts `command` with its standard output to a pipe this end can read without
+    /// blocking, and its standard input from nothing.
+    bool start(const Command& command) {
+        int ends[2] = {-1, -1};
+        if (::pipe(ends) != 0) {
+            return false;
+        }
+        // Neither end leaks into any other child; the dup onto 1 below is not close-on-exec.
+        (void)::fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+        (void)::fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+        (void)::fcntl(ends[0], F_SETFL, O_NONBLOCK);
+        posix_spawn_file_actions_t actions;
+        ::posix_spawn_file_actions_init(&actions);
+        ::posix_spawn_file_actions_adddup2(&actions, ends[1], STDOUT_FILENO);
+        ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        std::vector<char*> argv;
+        argv.reserve(command.arguments.size() + 1);
+        for (const std::string& argument : command.arguments) {
+            argv.push_back(const_cast<char*>(argument.c_str())); // posix_spawn's own signature
+        }
+        argv.push_back(nullptr);
+        pid_t started = -1;
+        const int result = ::posix_spawn(&started, command.program.c_str(), &actions, nullptr,
+                                         argv.data(), environ);
+        ::posix_spawn_file_actions_destroy(&actions);
+        ::close(ends[1]);
+        if (result != 0) {
+            ::close(ends[0]);
+            return false;
+        }
+        child = started;
+        output = ends[0];
+        answer.clear();
+        name = command.name;
+        return true;
+    }
+
+    void drain() {
+        char buffer[4096];
+        for (;;) {
+            const ssize_t got = ::read(output, buffer, sizeof buffer);
+            if (got <= 0) {
+                return; // nothing more yet, the end of it, or an error: the exit says which
+            }
+            answer.append(buffer, static_cast<std::size_t>(got));
+        }
+    }
+
+    /// The child's answer once it has gone, or nothing while it is still up.
+    std::optional<FileChoice> check() {
+        drain();
+        int status = 0;
+        const pid_t gone = ::waitpid(child, &status, WNOHANG);
+        if (gone == 0) {
+            return std::nullopt;
+        }
+        drain(); // whatever it wrote just before it went
+        ::close(output);
+        output = -1;
+        child = -1;
+        poll.stop();
+        FileChoice choice;
+        if (gone > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            const std::size_t end = answer.find('\n');
+            choice.path = std::filesystem::path(answer.substr(0, end));
+        } else if (gone < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 1) {
+            // 1 is both programs' cancel; anything else is a dialog that never showed.
+            choice.problem = name + " could not show a file dialog.";
+        }
+        return choice;
+    }
+
+    /// Shows `command`'s dialog and has the timer hand its answer to `then`; or answers at once
+    /// when there is to be no dialog, or no dialog can be shown.
+    void ask(std::optional<Command> command, Chosen then) {
+        if (!fileDialogsAllowed()) {
+            then(FileChoice{});
+            return;
+        }
+        if (up()) {
+            then(FileChoice{{}, "A file dialog is already open."});
+            return;
+        }
+        if (!command) {
+            then(FileChoice{{}, "Choosing a file needs zenity, or kdialog on KDE: install one."});
+            return;
+        }
+        if (!start(*command)) {
+            then(FileChoice{{}, command->name + " could not be started."});
+            return;
+        }
+        chosen = std::move(then);
+        poll.start(slint::TimerMode::Repeated, kPollEvery, [this] {
+            if (std::optional<FileChoice> choice = check()) {
+                // Taken out before it is called, so a caller that asks again from inside finds
+                // nothing pending.
+                Chosen waiting = std::move(chosen);
+                chosen = nullptr;
+                if (waiting) {
+                    waiting(*choice);
+                }
+            }
+        });
+    }
+
+    /// Closes the dialog, if one is up, and forgets whoever was waiting for it.
+    void stop() {
+        poll.stop();
+        if (child > 0) {
+            // A dialog has nothing to save, and a blocking wait on one that ignored a polite
+            // signal would hang the window closing.
+            ::kill(child, SIGKILL);
+            int status = 0;
+            (void)::waitpid(child, &status, 0);
+            child = -1;
+        }
+        if (output >= 0) {
+            ::close(output);
+            output = -1;
+        }
+        chosen = nullptr;
+    }
+};
+
+FileDialogs::FileDialogs() : pending_(std::make_unique<Pending>()) {}
+FileDialogs::~FileDialogs() = default;
+
+bool FileDialogs::waiting() const {
+    return pending_->up();
+}
+
+void FileDialogs::open(const std::string& title, FileKind kind, Chosen chosen) {
+    pending_->ask(dialogCommand(false, title, "", kind), std::move(chosen));
+}
+
+void FileDialogs::save(const std::string& title, const std::string& suggested, Chosen chosen) {
+    pending_->ask(dialogCommand(true, title, suggested, FileKind::Preset), std::move(chosen));
+}
 
 #endif
 

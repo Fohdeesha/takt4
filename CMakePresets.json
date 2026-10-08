@@ -16,10 +16,10 @@
     },
     {
       "name": "macos",
-      "displayName": "macOS — Ninja, Release",
+      "displayName": "macOS — Ninja, Release, for macOS 12 and later",
       "inherits": "base",
       "generator": "Ninja",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     },
     {

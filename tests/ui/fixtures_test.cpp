@@ -23,6 +23,7 @@
 #include "core/trigger/rule.hpp"
 #include "ui/delete_guard.hpp"
 #include "ui/fixtures_controller.hpp"
+#include "ui/keys.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/nothing_real.hpp"
 #include "ui/shot.hpp"
@@ -982,7 +983,7 @@ struct Patching {
     void enter() const { type("\n"); }
     /// Everything in the box with the keyboard gone, wherever the click left the caret.
     void clearBox() const {
-        pressKey(window, slint::SharedString(u8"")); // Key.End
+        takt4::tests::endOfText(window);
         type(std::string(40, '\b'));
     }
     FixturesController& patch;
@@ -1169,7 +1170,6 @@ constexpr float kIdentifyX = 931.0f;
 constexpr float kFoldX = 960.0f;
 constexpr float kWhereY = 120.0f;
 constexpr float kChannelsY = 264.0f;
-constexpr float kMovesY = 1022.0f;
 // A.
 constexpr float kWhereRowY = 159.0f;
 constexpr float kUniverseX = 460.0f;
