@@ -3,7 +3,7 @@
 ![takt4's main window, tracking a track at 128 BPM and sending it to Link, two MIDI clocks and OSC, beside the rule editor with a Resolume clip rule open](docs/screenshot.png)
 
 takt4 listens to incoming audio (WASAPI, ASIO, etc), finds the beat, downbeat and tempo, and sends them to the rest of
-your rig: **Ableton Link, MIDI clock, OSC, MIDI notes and Art-Net (DMX)**. Plus optional built in triggers to fire clips,
+your rig: **Ableton Link, OSC, MIDI clock, MIDI notes and Art-Net (DMX)**. Plus optional built in triggers to fire clips,
 cues, notes, lights, lasers etc exactly on time with whatever audio you feed it. No manual tapping, locks on to new songs automatically
 
 ## Get it
@@ -28,9 +28,10 @@ cues, notes, lights, lasers etc exactly on time with whatever audio you feed it.
 - **tap** (or **T**) to tap it in
 - **latency** moves everything earlier or later to compensate for input, output, and overall rig latency
 
-## Rules
+## Triggering stuff from the tracked audio (Rules)
 
-The rule editor (the **triggers** window). **+** adds a rule. Each rule has four sections:
+If you just need a solid BPM feed for an Ableton Link session, DJ equipment, or similar, you're done. However takt4 has a powerful built in triggering system if you want to drive gear from your music feed (lighting, lasers, video, samplers, etc).
+Enter the rule editor (the **triggers** window). **+** adds a rule. Each rule has four sections:
 
 - **A when**: every N beats or bars, the downbeat, an onset, a tempo change,an intensity change, etc
   - Bars fire **on beat** 1 to 16 of the bar
