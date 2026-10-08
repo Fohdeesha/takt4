@@ -20,6 +20,7 @@
 #include <pa_asio.h>
 
 #include "core/audio/asio_probe.h"
+#include "core/io/chars.hpp"
 
 #include <cstdio>
 #endif
@@ -60,7 +61,7 @@ void appendField(std::string& out, std::string_view text) {
 
 void appendNumber(std::string& out, double value) {
     char buffer[64];
-    const auto [end, error] = std::to_chars(buffer, buffer + sizeof buffer, value);
+    const auto [end, error] = io::toChars(buffer, buffer + sizeof buffer, value);
     out += '\t';
     out.append(buffer, error == std::errc{} ? end : buffer);
 }
@@ -110,7 +111,7 @@ std::vector<std::string_view> fields(std::string_view line) {
 
 template <typename T>
 bool number(std::string_view text, T& value) {
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    const auto [end, error] = io::fromChars(text.data(), text.data() + text.size(), value);
     return error == std::errc{} && end == text.data() + text.size();
 }
 

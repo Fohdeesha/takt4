@@ -4,6 +4,7 @@
 #include "core/dmx/fixture.hpp"
 #include "core/dmx/liberation.hpp"
 #include "core/features/intensity.hpp"
+#include "core/io/chars.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -49,7 +50,7 @@ std::optional<double> readNumber(std::string_view text) noexcept {
     double value = 0.0;
     const char* const begin = text.data();
     const char* const end = begin + text.size();
-    const std::from_chars_result result = std::from_chars(begin, end, value);
+    const std::from_chars_result result = io::fromChars(begin, end, value);
     if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(value)) {
         return std::nullopt;
     }

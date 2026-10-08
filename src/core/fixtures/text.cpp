@@ -1,5 +1,6 @@
 #include "core/fixtures/text.hpp"
 
+#include "core/io/chars.hpp"
 #include "core/io/utf8.hpp"
 
 #include <charconv>
@@ -122,7 +123,7 @@ std::optional<double> parseNumber(std::string_view text) noexcept {
     }
     double value = 0.0;
     const char* end = text.data() + text.size();
-    const auto [stop, error] = std::from_chars(text.data(), end, value);
+    const auto [stop, error] = io::fromChars(text.data(), end, value);
     if (error != std::errc{} || stop != end) {
         return std::nullopt;
     }

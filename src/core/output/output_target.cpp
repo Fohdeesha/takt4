@@ -1,4 +1,5 @@
 #include "core/output/output_target.hpp"
+#include "core/io/chars.hpp"
 
 #include <charconv>
 #include <cstdio>
@@ -64,7 +65,7 @@ std::string_view takeDelay(std::string_view body, double& seconds) noexcept {
     double value = 0.0;
     const char* const begin = number.data();
     const char* const end = begin + number.size();
-    const std::from_chars_result result = std::from_chars(begin, end, value);
+    const std::from_chars_result result = io::fromChars(begin, end, value);
     if (result.ec != std::errc{} || result.ptr != end ||
         !(value >= kMinOutputDelaySeconds * 1000.0) ||
         !(value <= kMaxOutputDelaySeconds * 1000.0)) {

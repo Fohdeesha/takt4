@@ -62,6 +62,13 @@ add_library(takt4_ui STATIC
 )
 add_library(takt4::ui ALIAS takt4_ui)
 
+# macOS's open and save panels are Objective-C (file_dialog_mac.mm); file_dialog.cpp holds the
+# other systems'.
+if(APPLE)
+  target_sources(takt4_ui PRIVATE file_dialog_mac.mm) # OBJCXX is enabled in the top directory
+  target_link_libraries(takt4_ui PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
+endif()
+
 target_include_directories(takt4_ui PUBLIC "${PROJECT_SOURCE_DIR}/src")
 
 # takt4_ui_slint is PUBLIC because window_controller.hpp — a header consumers include —

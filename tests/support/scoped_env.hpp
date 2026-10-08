@@ -46,4 +46,41 @@ private:
 
 } // namespace takt4::test
 
+#else
+
+#include <cstdlib>
+#include <string>
+
+namespace takt4::test {
+
+/// Sets an environment variable for one test and puts back what was there on the way out.
+/// Null removes it. One environment here, which `getenv` reads and a child process inherits.
+class ScopedVariable {
+public:
+    ScopedVariable(const char* name, const char* value) : name_(name) {
+        const char* const previous = std::getenv(name);
+        had_ = previous != nullptr;
+        previous_ = had_ ? std::string(previous) : std::string();
+        set(value);
+    }
+    ScopedVariable(const ScopedVariable&) = delete;
+    ScopedVariable& operator=(const ScopedVariable&) = delete;
+    ~ScopedVariable() { set(had_ ? previous_.c_str() : nullptr); }
+
+private:
+    void set(const char* value) {
+        if (value != nullptr) {
+            ::setenv(name_, value, 1);
+        } else {
+            ::unsetenv(name_);
+        }
+    }
+
+    const char* name_;
+    bool had_ = false;
+    std::string previous_;
+};
+
+} // namespace takt4::test
+
 #endif
