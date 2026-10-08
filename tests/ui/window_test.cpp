@@ -2080,9 +2080,62 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     CHECK(status.find("out of phase") != std::string::npos);
     CHECK(controller.statusIsError());
 
-    // Wired back: the line goes.
+    // Wired back: the line goes — and so does the warning on the status line, which said it when
+    // it started. It stayed there, amber, until something else was said, so a rig that had been
+    // put right went on reading "out of phase" until its input was stopped and started again
+    // (the operator, 2026-10-08).
     play(4.0, 0.009);
     CHECK(std::string(controller.window().get_input_trouble()).empty());
+    const std::string after(controller.window().get_status());
+    INFO(after);
+    CHECK(after.find("out of phase") == std::string::npos);
+    CHECK(after.find("In 11 and In 12 are fine again") != std::string::npos);
+    CHECK_FALSE(controller.statusIsError());
+}
+
+TEST_CASE("a stereo warning that has passed leaves the status line, and only its own", "[ui]") {
+    // Two sides that share nothing, then music: the "share almost nothing" warning goes from the
+    // status line as it goes from under the meter. But a status line that has said something
+    // else since is the operator's news, not the warning's, and is left as it is.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    InputDevice device;
+    device.name = "takt4 test stereo";
+    device.hostApi = takt4::audio::HostApiKind::Wasapi;
+    device.maxInputChannels = 2;
+    double now = 100.0;
+    controller.assumeRunningOn({device, takt4::audio::ChannelSelection::pair(0, 1)}, now);
+
+    takt4::audio::StereoSums sums;
+    const auto play = [&](double seconds, double both) {
+        for (double t = 0.0; t < seconds; t += 0.033) {
+            sums.frames += 1584;
+            sums.left += 1584 * 0.01;
+            sums.right += 1584 * 0.01;
+            sums.both += 1584 * both;
+            now += 0.033;
+            controller.superviseStereo(sums, now);
+            controller.superviseInput({}, {}, now);
+        }
+    };
+    play(10.0, 0.0); // nothing in common
+    CHECK(std::string(controller.window().get_status()).find("share almost nothing") !=
+          std::string::npos);
+    play(10.0, 0.009); // the music, on both
+    const std::string cleared(controller.window().get_status());
+    INFO(cleared);
+    CHECK(cleared.find("share almost nothing") == std::string::npos);
+    CHECK_FALSE(controller.statusIsError());
+
+    // Again, with news in between: that stays.
+    play(10.0, 0.0);
+    REQUIRE(std::string(controller.window().get_status()).find("share almost nothing") !=
+            std::string::npos);
+    controller.window().invoke_save_now();
+    const std::string news(controller.window().get_status());
+    REQUIRE(news.find("share almost nothing") == std::string::npos);
+    play(10.0, 0.009);
+    CHECK(std::string(controller.window().get_status()) == news);
 }
 
 TEST_CASE("a settings file from before the mono tick opens on the stereo pair and says so",

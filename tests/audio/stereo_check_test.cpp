@@ -116,6 +116,34 @@ TEST_CASE("a stereo pair is judged by how its two sides go together", "[audio][s
         CHECK(play(check, 6.0, strangers, sums, now).verdict == Verdict::Unrelated);
     }
 
+    SECTION("a leg wired back is never called unrelated on the way to fine") {
+        // 2026-10-08, the operator: "share almost nothing" came up once a flipped pair had been
+        // put right, and stayed. On the way from −0.9 to +0.9 the short window passes through
+        // zero while the long one straddles both — and that is no stranger, it is the same music.
+        const auto flipped = [&](std::size_t) {
+            const float shared = noise(random);
+            return std::pair<float, float>{shared + 0.3f * noise(random),
+                                           -(shared + 0.3f * noise(random))};
+        };
+        const auto music = [&](std::size_t) {
+            const float shared = noise(random);
+            return std::pair<float, float>{shared + 0.3f * noise(random),
+                                           shared + 0.3f * noise(random)};
+        };
+        // In phase, then a stretch flipped, then in phase again: so a long window can hold as
+        // much of one as of the other, and add up to nothing.
+        CHECK(play(check, 6.0, music, sums, now).verdict == Verdict::Fine);
+        CHECK(play(check, 4.0, flipped, sums, now).verdict == Verdict::OutOfPhase);
+        int unrelated = 0;
+        StereoCheck::Reading reading;
+        for (int look = 0; look < 400; ++look) { // 13 s, every look the window makes
+            reading = play(check, 0.033, music, sums, now);
+            unrelated += reading.verdict == Verdict::Unrelated ? 1 : 0;
+        }
+        CHECK(unrelated == 0);
+        CHECK(reading.verdict == Verdict::Fine);
+    }
+
     SECTION("nothing playing is not judged") {
         const auto silence = [](std::size_t) { return std::pair<float, float>{0.0f, 0.0f}; };
         CHECK(play(check, 5.0, silence, sums, now).verdict == Verdict::Quiet);
