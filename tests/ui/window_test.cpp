@@ -2138,6 +2138,68 @@ TEST_CASE("a stereo warning that has passed leaves the status line, and only its
     CHECK(std::string(controller.window().get_status()) == news);
 }
 
+TEST_CASE("the beat dots move when the rig plays the beat, not when the window hears of it",
+          "[ui]") {
+    // The operator, 2026-10-08: the red dots looked about 50 ms behind outputs that were on time.
+    // They moved when the tracker's state showed a beat, a detection and a redraw after its
+    // moment, while every output fires at the moment plus the latency. Now they follow the beats
+    // the output thread fires, on its clock: a beat fired ahead of its time is shown at that time,
+    // by a timer, and not before; one whose time has come is shown at once.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+    const takt4::tracking::TempoState state = tracker.engine().state();
+    REQUIRE(state.beatInBar >= 1);
+    using Shown = takt4::output::OutputRunner::ShownBeat;
+    Shown shown; // nothing fired yet: the dots are the state's
+    controller.setShownBeatSource([&shown] { return shown; });
+    // What the window's redraw does: the state, then the dots over it.
+    const auto redraw = [&controller](const takt4::tracking::TempoState& drawn) {
+        takt4::ui::publishTempoState(controller.window(), drawn);
+        controller.publishBeatDots(drawn);
+    };
+    redraw(state);
+    const int heard = controller.window().get_beat_in_bar();
+    CHECK(heard == static_cast<int>(state.beatInBar));
+
+    const auto next = [](int beat) { return beat % 4 + 1; };
+    const auto clock = [&controller] { return controller.outputs().elapsed(); };
+    // Redraws, as the window's timer makes them, for `seconds` of wall clock.
+    const auto redrawFor = [&](double seconds) {
+        const double until = clock() + seconds;
+        while (clock() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            slint::platform::update_timers_and_animations();
+            redraw(state);
+        }
+    };
+
+    // Fired 300 ms before the rig plays it.
+    const double firedAt = clock();
+    shown = Shown{firedAt, firedAt + 0.3, static_cast<std::uint32_t>(next(heard)), 42, 1};
+    redraw(state);
+    CHECK(controller.window().get_beat_in_bar() == heard); // not yet
+    redrawFor(0.2);
+    CHECK(controller.window().get_beat_in_bar() == heard); // nor on the redraws before its time
+    redrawFor(0.15);
+    CHECK(controller.window().get_beat_in_bar() == next(heard)); // and then, by its own timer
+    CHECK(controller.window().get_bars() == 42);
+
+    // Its time already come — a beat heard late, before the tempo locks: shown at once.
+    const double lateAt = clock();
+    shown = Shown{lateAt - 0.1, lateAt - 0.05, static_cast<std::uint32_t>(next(next(heard))), 43, 2};
+    redraw(state);
+    CHECK(controller.window().get_beat_in_bar() == next(next(heard)));
+
+    // A state with no beat — stopped, reset — clears them; and what was fired before is not
+    // brought back by the next state that has a beat: the state's shows until another fires.
+    redraw(takt4::tracking::TempoState{});
+    CHECK(controller.window().get_beat_in_bar() == 0);
+    redraw(state);
+    CHECK(controller.window().get_beat_in_bar() == heard);
+}
+
 TEST_CASE("a settings file from before the mono tick opens on the stereo pair and says so",
           "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);

@@ -14,6 +14,7 @@
 
 #include "support/loopback_receiver.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -225,6 +226,33 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
     CHECK(transports.beats() == kSentBeats); // and the final sweep found nothing left
     CHECK(engine->beatsDropped() == 0);
     CHECK(runner.errors() == 0);
+}
+
+TEST_CASE("each beat fired is handed to the window with when the rig plays it", "[output]") {
+    // The beat dots ran behind outputs that were on time (the operator, 2026-10-08): they moved
+    // when the tracker's state showed a beat, a detection and a redraw after its moment. The
+    // runner says, for every beat it fires, when the rig plays it — its moment plus the latency
+    // every output is moved by — so the window can light the dot then.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, Transports::Config{});
+    runner.setLatencySeconds(0.25);
+    REQUIRE(runner.shownBeat().serial == 0);
+    const Transports& transports = runner.transports();
+
+    runner.start();
+    feedExcerpt(*engine);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < until && transports.beats() < kSentBeats) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    runner.stop();
+
+    const OutputRunner::ShownBeat shown = runner.shownBeat();
+    CHECK(shown.serial == transports.beats()); // one for every beat fired
+    CHECK(shown.serial > 0);
+    CHECK(shown.due - shown.moment == Catch::Approx(0.25).margin(1e-9));
+    CHECK(shown.beatInBar >= 1);
+    CHECK(shown.beatInBar <= 4);
 }
 
 TEST_CASE("stopping drains the beats that were still waiting", "[output]") {

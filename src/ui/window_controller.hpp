@@ -132,6 +132,11 @@ public:
     /// What the redraw timer does with the running stream's sums; public so a test can hand it
     /// any pair of sides.
     void superviseStereo(const audio::StereoSums& sums, double now);
+    /// The beat dots and the bar count, moved when the rig plays each beat rather than when the
+    /// tracker's state shows it — see `output::OutputRunner::shownBeat`. Before the output thread
+    /// has fired a beat, and whenever the state has none, they are the state's. What the redraw
+    /// does after drawing `state`; public so a test can hand it a state of its own.
+    void publishBeatDots(const tracking::TempoState& state);
     void toggleRun();
     /// START or STOP as the button presses it: says so on the button, lets the window draw
     /// that, and then `toggleRun` — refusing another press until a moment after it is done
@@ -464,6 +469,11 @@ public:
     /// What is being sent, for the row that draws it. The runner is running for as long as
     /// this window exists, so its rules and transports are read through `inspect` — see there.
     const output::OutputRunner& outputs() const noexcept { return runner_; }
+    /// Where the beat dots read the newest fired beat. The output thread by default; a test
+    /// replaces it to hand the window a beat at a time of its choosing.
+    void setShownBeatSource(std::function<output::OutputRunner::ShownBeat()> source) {
+        shownBeatSource_ = std::move(source);
+    }
     /// Waits until the output thread has taken every change posted to it so far. What a test
     /// calls between a gesture and reading what it did.
     bool settleOutputs() { return runner_.sync(); }
@@ -924,6 +934,14 @@ private:
     /// could still be touching goes away. Nothing it holds today reaches back into this
     /// class, but a beat observer is the obvious next thing to give it.
     output::OutputRunner runner_;
+    /// The beat dots on the rig's clock (`publishBeatDots`): the newest fired beat taken, the
+    /// beat the dots show while it is the latest the rig has played, and the timer that moves
+    /// them on at the next one's due time.
+    std::function<output::OutputRunner::ShownBeat()> shownBeatSource_;
+    std::uint64_t dotSerial_ = 0;
+    std::uint32_t dotBeatInBar_ = 0;
+    std::uint64_t dotBars_ = 0;
+    slint::Timer dotTimer_;
 
     /// §5.7's two control surfaces. **Both after `runner_`, so both are destroyed first**,
     /// and that ordering is load-bearing rather than a preference: since §5.7's `panic` and

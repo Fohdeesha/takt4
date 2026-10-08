@@ -6,6 +6,7 @@
 #include "core/output/beat_scheduler.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/rt/published.hpp"
 #include "core/trigger/trigger_engine.hpp"
 
 #include <atomic>
@@ -389,6 +390,23 @@ public:
     /// a different origin is what made §5.9's "12s ago" read minutes wrong. Safe from any
     /// thread, because nothing writes the origin after construction.
     double elapsed() const noexcept;
+
+    /// The newest beat the output thread has fired, for the window's beat dots. `due` is when the
+    /// rig plays it: the beat's moment plus the latency every output is moved by, on `elapsed`'s
+    /// clock — the instant an output with no delay of its own sends it. A locked beat is fired
+    /// before that whenever the latency leaves room, so the window can light its dot then, rather
+    /// than when the tracker's state reaches it a detection and a redraw later: the dots ran
+    /// behind outputs that were on time (the operator, 2026-10-08). `serial` counts the beats
+    /// fired; 0 before the first.
+    struct ShownBeat {
+        double moment = 0.0;
+        double due = 0.0;
+        std::uint32_t beatInBar = 0;
+        std::uint64_t bars = 0;
+        std::uint64_t serial = 0;
+    };
+    /// Any thread.
+    ShownBeat shownBeat() const noexcept { return shown_.load(); }
 
     /// The transports, for reading their **counters** and Link's own state, which are atomic
     /// and thread-safe respectively.
@@ -872,6 +890,9 @@ private:
     const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
     /// Whether this runner is the one holding the platform's timer resolution up.
     bool raisedTimer_ = false;
+    /// See `shownBeat`. Written by the output thread alone, in `fireBeat`.
+    rt::Published<ShownBeat> shown_;
+    std::uint64_t shownSerial_ = 0;
 };
 
 } // namespace takt4::output

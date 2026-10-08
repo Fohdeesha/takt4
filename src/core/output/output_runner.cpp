@@ -1233,6 +1233,9 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     // `kReleaseFirstSeconds`.
     triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds);
     transports_.publishBeat(beat.event, beat.moment, now);
+    // For the window's dots: when the rig plays this beat (see `shownBeat`).
+    shown_.publish(ShownBeat{beat.moment, beat.moment + transports_.latencySeconds(),
+                             beat.event.beatInBar, beat.bars, ++shownSerial_});
     // §5.8's beat-counting triggers, off the state *at this beat* rather than off the engine's
     // newest: a round can fire several beats, and a rule counting bars has to see each of them
     // where it happened. And *about* the beat's own moment, which every message it sends is
