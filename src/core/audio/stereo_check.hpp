@@ -65,6 +65,12 @@ public:
         double unrelatedSeconds = 8.0;
         double outOfPhaseBelow = -0.3;
         double unrelatedWithin = 0.1;
+        /// A short window at least this far from zero, either way, shows the two sides belong
+        /// together — in phase or flipped — and "unrelated" waits a whole `unrelatedSeconds` after
+        /// the last one. Without it, a flipped leg wired back read as two strangers: on the way
+        /// from −0.9 to +0.9 the short window passes through zero while the long one straddles
+        /// both and sums to nothing (2026-10-08, the operator: the warning would not go).
+        double relatedBeyond = 0.3;
         /// Below this, a side is nothing — and if both are, nothing is judged.
         double silentBelowDb = -60.0;
         /// A side has to be at least this loud for its correlation with the other to mean
@@ -95,6 +101,9 @@ private:
 
     Options options_;
     std::deque<Sample> samples_;
+    /// When a short window last showed the two sides related (`Options::relatedBeyond`), or
+    /// −∞ for not since the stream opened.
+    double relatedAt_;
 };
 
 } // namespace takt4::audio

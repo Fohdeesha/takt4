@@ -1321,6 +1321,33 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
     // trouble line, which `superviseInput` writes).
     if (!problem.empty()) {
         report(problem + ".", true);
+    } else {
+        // **And off the status line when it ends.** It stayed there, amber, until something else
+        // was said, so a pair that had been put right went on reading "out of phase" until its
+        // input was stopped and started again (the operator, 2026-10-08). Only its own sentence
+        // goes: a status line that has said something since is the operator's news.
+        const std::string sentence = stereoProblem_ + ".";
+        if (const std::size_t at = startupMessage_.find(sentence); at != std::string::npos) {
+            // Joined to what the window met starting (`report`): taken back out of it.
+            const std::string joint = "  \xC2\xB7  ";
+            std::size_t from = at;
+            std::size_t length = sentence.size();
+            if (from >= joint.size() && startupMessage_.compare(from - joint.size(), joint.size(),
+                                                                joint) == 0) {
+                from -= joint.size();
+                length += joint.size();
+            } else if (startupMessage_.compare(at + length, joint.size(), joint) == 0) {
+                length += joint.size();
+            }
+            startupMessage_.erase(from, length);
+            showStatus(startupMessage_, !startupMessage_.empty());
+        } else if (std::string(window_->get_status()) == sentence) {
+            setStatus(input_ && input_->selection.count == 2
+                          ? inputName(input_->selection.channels[0]) + " and " +
+                                inputName(input_->selection.channels[1]) + " are fine again."
+                          : std::string(),
+                      false);
+        }
     }
     stereoProblem_ = problem;
 }

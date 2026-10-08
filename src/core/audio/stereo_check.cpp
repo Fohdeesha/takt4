@@ -1,6 +1,7 @@
 #include "core/audio/stereo_check.hpp"
 
 #include <cmath>
+#include <limits>
 
 namespace takt4::audio {
 
@@ -28,10 +29,12 @@ double correlation(const StereoSums& sums) {
 
 StereoCheck::StereoCheck() : StereoCheck(Options{}) {}
 
-StereoCheck::StereoCheck(Options options) : options_(options) {}
+StereoCheck::StereoCheck(Options options)
+    : options_(options), relatedAt_(-std::numeric_limits<double>::infinity()) {}
 
 void StereoCheck::reset() {
     samples_.clear();
+    relatedAt_ = -std::numeric_limits<double>::infinity();
 }
 
 bool StereoCheck::over(double seconds, StereoSums& out) const {
@@ -51,7 +54,7 @@ bool StereoCheck::over(double seconds, StereoSums& out) const {
 StereoCheck::Reading StereoCheck::observe(const StereoSums& sums, double now) {
     // Sums that went backwards belong to a stream opened since: start again with it.
     if (!samples_.empty() && sums.frames < samples_.back().sums.frames) {
-        samples_.clear();
+        reset();
     }
     if (samples_.empty() || sums.frames != samples_.back().sums.frames) {
         samples_.push_back(Sample{now, sums});
@@ -87,15 +90,20 @@ StereoCheck::Reading StereoCheck::observe(const StereoSums& sums, double now) {
     if (!leftLive || !rightLive) {
         return reading; // quiet on a side: its correlation with the other says little
     }
+    if (std::abs(reading.correlation) >= options_.relatedBeyond) {
+        relatedAt_ = now;
+    }
     if (reading.correlation < options_.outOfPhaseBelow) {
         reading.verdict = Verdict::OutOfPhase;
         return reading;
     }
-    // Unrelated over the short window as well as the long one: a pair that has just been put
-    // right — a flipped leg wired back — has a long window that straddles both and sums to
-    // nothing, and it is not two strangers.
+    // Unrelated over the short window as well as the long one, and only once no short window
+    // in the long one has shown the two related: a pair that has just been put right — a
+    // flipped leg wired back — has a long window that straddles both and sums to nothing, and
+    // a short one that passes through nothing on the way, and it is not two strangers.
     StereoSums longer;
     if (std::abs(reading.correlation) < options_.unrelatedWithin &&
+        now - relatedAt_ >= options_.unrelatedSeconds &&
         over(options_.unrelatedSeconds, longer) &&
         std::abs(correlation(longer)) < options_.unrelatedWithin &&
         levelDb(longer.left, longer.frames) >= options_.judgedAboveDb &&
