@@ -14,7 +14,7 @@ name: full
 #
 # **A release:** push the bump commit and its annotated tag together —
 # `git push --atomic origin main vX.Y.Z` — so the tag is there when this checks out, and every
-# binary built here names it. When all three jobs pass on a commit a `v*` tag points at, the
+# binary built here names it. When every build job passes on a commit a `v*` tag points at, the
 # windows-msvc job's files are attached to that tag's GitHub Release (the `publish` job below),
 # with the tag's message as the notes. A tag pushed after its commit's run: rerun that run
 # (`gh run rerun <id>`); its checkout then has the tag. A push to main while a release run is
@@ -29,10 +29,12 @@ name: full
 # — a release whose every changed file was under src/ui/ — and the answer was to turn this back
 # on rather than to keep dispatching it by hand and forgetting to.
 #
-# WINDOWS ONLY, by the user, 2026-09-06: it used to cost ≈150 billable minutes because macOS is
-# billed at 10× and Slint takes 7–25 minutes to build. The macOS and Linux app entries are
-# commented out rather than deleted so bringing them back is uncommenting — but bring them back
-# knowing what they used to cost.
+# **macOS and Linux are built again, by the user on 2026-10-08**, with the repo public: GitHub's
+# standard runners cost a public repo nothing, macOS included. They had been left out since
+# 2026-09-06, when a private repo paid 10× for every macOS minute. macOS is built twice, on an
+# Apple Silicon runner and on an Intel one, because takt4 has to run on both; `linux` is the
+# release build, on Ubuntu 22.04 so the binary runs on any glibc from 2.35 up, where
+# `linux-tsan` (24.04) is the sanitizer.
 #
 # **Plus the sanitizers, on every push the path filter below lets through (every push that
 # touches the code), by the user on 2026-09-23** (the audit's T4, which
@@ -96,7 +98,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.name || matrix.preset }}
     runs-on: ${{ matrix.os }}
     # The ASan job builds the whole tree instrumented and runs every test under it.
     timeout-minutes: 180
@@ -128,15 +130,30 @@ jobs:
             app: build/linux-tsan/bin/takt4
             cli: build/linux-tsan/bin/takt4-cli
             cargo: build/linux-tsan/cargo
-          # Windows only for now; see the note at the top of this file.
-          # - os: macos-latest
-          #   preset: macos
-          #   app: build/macos/bin/takt4
-          #   cli: build/macos/bin/takt4-cli
-          # - os: ubuntu-24.04
-          #   preset: linux
-          #   app: build/linux/bin/takt4
-          #   cli: build/linux/bin/takt4-cli
+          # macOS on both kinds of Mac, from the same preset. `name` tells the two jobs, and their
+          # Slint caches, apart: the runner image's name is the same on both.
+          - os: macos-26
+            name: macos-arm64
+            preset: macos
+            app: build/macos/bin/takt4
+            cli: build/macos/bin/takt4-cli
+            cargo: build/macos/cargo
+          - os: macos-26-intel
+            name: macos-x64
+            preset: macos
+            app: build/macos/bin/takt4
+            cli: build/macos/bin/takt4-cli
+            cargo: build/macos/cargo
+          # The Linux release: the oldest supported Ubuntu, since a binary needs at least the
+          # glibc it was built against. Its own GCC 11 is older than anything else here builds
+          # with, so GCC 12, which 22.04 also ships.
+          - os: ubuntu-22.04
+            preset: linux
+            cc: gcc-12
+            cxx: g++-12
+            app: build/linux/bin/takt4
+            cli: build/linux/bin/takt4-cli
+            cargo: build/linux/cargo
 
     steps:
       - uses: actions/checkout@v7
@@ -158,7 +175,7 @@ jobs:
           for try in 1 2 3; do
             if sudo timeout 240 apt-get "${apt[@]}" update &&
                sudo timeout 300 apt-get "${apt[@]}" install -y --no-install-recommends \
-                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev; then
+                 pkg-config libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev                  ${{ matrix.cxx }}; then
               exit 0
             fi
             echo "apt did not finish (try $try of 3)"
@@ -167,14 +184,29 @@ jobs:
           done
           exit 1
 
-      # The hosted images ship CMake, Ninja and a Rust toolchain that satisfy the
-      # requirements in README.md. Record what was actually used.
+      # A job that names its compiler has every later step use it: CMake reads CC and CXX once, at
+      # configure, but the C++ inside Slint's cargo build is compiled by the cc crate, which reads
+      # them when cargo runs.
+      - name: The compiler
+        if: matrix.cxx
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      # The macOS presets build with Ninja, which not every macOS image ships.
+      - name: Ninja
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+
+      # The hosted images ship CMake and a Rust toolchain that satisfy the requirements in
+      # README.md. Record what was actually used.
       - name: Toolchain versions
         run: |
           cmake --version
           ninja --version || true
           rustc --version || true
           cargo --version || true
+          ${CXX:-c++} --version || true
 
       # **Slint, from the cache**: its source and everything cargo built from it, so a run builds
       # only takt4 itself. Both are needed — cargo judges Slint's own crates stale by their
@@ -201,7 +233,7 @@ jobs:
         id: slint
         uses: actions/cache/restore@v6
         with:
-          key: slint-v2-${{ matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
+          key: slint-v2-${{ matrix.name || matrix.preset }}-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'cmake/deps.cmake') }}
           path: |
             build/slint-src
             build/${{ matrix.preset }}/_deps/slint-build
@@ -227,11 +259,12 @@ jobs:
           src="$(pwd -W 2>/dev/null || pwd)/build/slint-src"
           cmake --preset ${{ matrix.preset }} -DFETCHCONTENT_SOURCE_DIR_SLINT="$src"
 
-      # Linux goes on past the first error (Ninja's -k 0), so a run reports every file GCC
-      # refuses rather than one per run: GCC warns about things MSVC does not, and this tree
-      # builds with warnings as errors.
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os == 'Linux' && '-- -k 0' || '' }}
+      # **Slint on its own first**, so it reaches the cache below even when takt4's own code then
+      # fails to compile — which, on a system nothing has built for a while, is most runs: without
+      # this, every one of those runs built Slint again from cold.
+      - name: Build Slint
+        if: steps.slint.outputs.cache-hit != 'true'
+        run: cmake --build --preset ${{ matrix.preset }} --parallel --target cargo-build_slint_cpp cargo-build_slint-compiler
 
       # Saved as soon as Slint is built, not at the end: a test that fails must not cost the next
       # run the build. Two runs missing at once both try; the second is refused, harmlessly.
@@ -248,6 +281,12 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
+
+      # Ninja goes on past the first error (-k 0), so a run reports every file GCC or clang
+      # refuses rather than one per run: each warns about things MSVC does not, and this tree
+      # builds with warnings as errors.
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os != 'Windows' && '-- -k 0' || '' }}
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
