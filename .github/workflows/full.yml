@@ -305,13 +305,18 @@ jobs:
       - name: One std::exception
         if: runner.os == 'macOS'
         run: |
+          bad=0
           for b in takt4_ui_tests takt4.app/Contents/MacOS/takt4; do
-            if nm -m "build/macos/bin/$b" | grep -E '(non-external|private external).*__ZTISt9exception$'; then
-              echo "$b has a copy of typeinfo for std::exception of its own"
-              exit 1
+            echo "===== $b: the standard library's type information it defines"
+            nm -m "build/macos/bin/$b" | grep -E '__ZT[IS]St[0-9]' | grep -v undefined || true
+            # A copy Skia keeps to itself is local from the start ("non-external"); one every
+            # object bound to was hidden and global ("was a private external").
+            if nm -m "build/macos/bin/$b" | grep -E 'was a private external\) __ZT[IS]St[0-9]'; then
+              echo "$b binds to a copy of the C++ runtime's type information of its own"
+              bad=1
             fi
           done
-          echo "both use libc++abi's"
+          exit $bad
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).

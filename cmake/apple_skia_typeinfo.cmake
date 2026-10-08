@@ -46,9 +46,16 @@ foreach(archive IN LISTS archives)
     endif()
     execute_process(COMMAND nm -m "${work}/${member}" OUTPUT_VARIABLE symbols)
     # The standard library's: typeinfo (_ZTI), its name (_ZTS) and vtables (_ZTV) of std::
-    # classes, defined here as hidden ("private external"), weak or not.
-    string(REGEX MATCHALL "private external (__ZT[ISV]St[0-9A-Za-z_]+)" found "${symbols}")
-    list(TRANSFORM found REPLACE "private external " "")
+    # classes that this object *defines* — in a section, global: hidden ("private external",
+    # the Apple Silicon archive) or not ("external", which the Intel one may have), weak or not.
+    # Not "non-external", which is local already, nor "(undefined)", which is a use.
+    string(REPLACE "\n" ";" symbol_lines "${symbols}")
+    set(found "")
+    foreach(line IN LISTS symbol_lines)
+      if(line MATCHES "\\(__[A-Z_]+,[a-z_]+\\) (weak )?(private )?external (__ZT[ISV]St[0-9A-Za-z_]+)$")
+        list(APPEND found "${CMAKE_MATCH_3}")
+      endif()
+    endforeach()
     list(REMOVE_DUPLICATES found)
     if(NOT found)
       continue() # already patched, or a skia-bindings that no longer does this
@@ -62,7 +69,7 @@ foreach(archive IN LISTS archives)
     endif()
     execute_process(COMMAND nm -m "${work}/${member}" OUTPUT_VARIABLE after)
     foreach(symbol IN LISTS found)
-      string(REGEX MATCH "private external ${symbol}\n" still "${after}")
+      string(REGEX MATCH "\\) (weak )?(private )?external ${symbol}\n" still "${after}")
       if(still)
         message(FATAL_ERROR "apple_skia_typeinfo.cmake: ${symbol} is still global in ${member}")
       endif()
