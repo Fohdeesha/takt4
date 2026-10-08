@@ -91,6 +91,41 @@ takt4_patch_rtmidi("openPort lowers the flag" [==[
   data->closing = false;  // takt4 (cmake/rtmidi_patch.cmake): upstream never clears it
   MMRESULT result = midiInOpen( &data->inHandle,]==])
 
+# **CoreMIDI's client, created where an error may be thrown** (macOS; the first macOS runs,
+# 2026-10-08). `getCoreMidiClientSingleton` is declared `throw()` and reports a client it could
+# not create through `error`, which throws when no error callback is set — and none can be,
+# inside RtMidi's own constructor, where this is called. RtMidi is C++11, so the exception left
+# through the `throw()` into std::unexpected and ended the program: on a Mac whose MIDI server
+# would not start, every RtMidiIn and RtMidiOut was a crash rather than an RtMidiError takt4
+# reports. Without the `throw()`, it reaches the caller as RtMidi's other errors do.
+takt4_patch_rtmidi("the input's client, declared" [==[
+  std::string getPortName( unsigned int portNumber );
+
+ protected:
+  MIDIClientRef getCoreMidiClientSingleton(const std::string& clientName) throw();]==] [==[
+  std::string getPortName( unsigned int portNumber );
+
+ protected:
+  MIDIClientRef getCoreMidiClientSingleton(const std::string& clientName);  // takt4: no throw()]==])
+
+takt4_patch_rtmidi("the output's client, declared" [==[
+  void sendMessage( const unsigned char *message, size_t size );
+
+ protected:
+  MIDIClientRef getCoreMidiClientSingleton(const std::string& clientName) throw();]==] [==[
+  void sendMessage( const unsigned char *message, size_t size );
+
+ protected:
+  MIDIClientRef getCoreMidiClientSingleton(const std::string& clientName);  // takt4: no throw()]==])
+
+takt4_patch_rtmidi("the input's client, defined" [==[
+MIDIClientRef MidiInCore::getCoreMidiClientSingleton(const std::string& clientName) throw() {]==] [==[
+MIDIClientRef MidiInCore::getCoreMidiClientSingleton(const std::string& clientName) {  // takt4]==])
+
+takt4_patch_rtmidi("the output's client, defined" [==[
+MIDIClientRef MidiOutCore::getCoreMidiClientSingleton(const std::string& clientName) throw() {]==] [==[
+MIDIClientRef MidiOutCore::getCoreMidiClientSingleton(const std::string& clientName) {  // takt4]==])
+
 set(rtmidi_existing "")
 if(EXISTS "${rtmidi_out}")
   file(READ "${rtmidi_out}" rtmidi_existing)
