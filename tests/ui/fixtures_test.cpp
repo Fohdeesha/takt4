@@ -1169,7 +1169,6 @@ constexpr float kIdentifyX = 931.0f;
 constexpr float kFoldX = 960.0f;
 constexpr float kWhereY = 120.0f;
 constexpr float kChannelsY = 264.0f;
-constexpr float kMovesY = 1022.0f;
 // A.
 constexpr float kWhereRowY = 159.0f;
 constexpr float kUniverseX = 460.0f;
