@@ -53,6 +53,9 @@ component Head inherits Copyable {
 }
 
 export component AboutWindow inherits Window {
+  // takt4's icon in the title bar and the taskbar (assets/icon, from tools/make_icon.py). 64 px: four
+  // times the title bar's 16 and twice the taskbar's 32, which the system scales it down to.
+  icon: @image-url("../../assets/icon/takt4-64.png");
   title: "About takt4";
   background: Wf.page;
   default-font-family: Wf.sans;

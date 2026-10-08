@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>takt4</title>
+  <rect width="1024" height="1024" rx="96" fill="#0e0e0e"/>
+  <path d="M128 128L384 128L384 256L256 256L256 384L128 384Z" fill="#d8301f"/>
+  <path d="M896 128L640 128L640 256L768 256L768 384L896 384Z" fill="#efeee9"/>
+  <path d="M896 896L640 896L640 768L768 768L768 640L896 640Z" fill="#efeee9"/>
+  <path d="M128 896L384 896L384 768L256 768L256 640L128 640Z" fill="#efeee9"/>
+  <circle cx="512" cy="512" r="160" fill="#efeee9"/>
+</svg>
