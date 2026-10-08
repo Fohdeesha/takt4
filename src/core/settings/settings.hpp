@@ -86,9 +86,11 @@ struct MachineSettings {
 
     /// The main window's Inputs and Outputs folded down to their headings, as they were left —
     /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
-    /// window a desk's screen has room for is that desk's business, not the music's. Both open
-    /// in a fresh install and in a file from before there was folding.
-    bool inputsFolded = false;
+    /// window a desk's screen has room for is that desk's business, not the music's. Inputs —
+    /// MIDI and OSC control, which a rig sets once — **folded** in a fresh install and in a file
+    /// from before there was folding (the operator, 2026-10-08); its heading still says what
+    /// each is doing. Outputs open.
+    bool inputsFolded = true;
     bool outputsFolded = false;
 
     /// The rule editor's sections folded — A when, B only if, C send, D then send — its event log
@@ -226,7 +228,8 @@ std::filesystem::path settingsDirectory();
 /// Where settings *used* to be kept: `%APPDATA%\takt4` on Windows, `~/Library/Application
 /// Support/takt4` on macOS, `$XDG_CONFIG_HOME/takt4` or `~/.config/takt4` elsewhere. Empty
 /// when the environment says nothing useful, which is a machine where settings cannot be
-/// kept rather than an error. Still read once — see `existingSettingsFile`.
+/// kept rather than an error. Used only where the platform will not name the executable; the
+/// file an older build left there is not read any more — see `existingSettingsFile`.
 std::filesystem::path userSettingsDirectory();
 
 /// `settingsDirectory()/settings.json`, or empty when there is no directory. **Where to
@@ -240,11 +243,9 @@ std::filesystem::path settingsFile();
 /// open (the audit of 2026-09-25, T4).
 std::filesystem::path scratchDirectory();
 
-/// **Where to read.** `settingsFile()` when that exists; otherwise the file under
-/// `userSettingsDirectory()` if a build before this one left one there, so a rig keeps its
-/// outputs, its device and its MIDI bindings across the move; otherwise `settingsFile()`
-/// again, which `load` will report as the defaults. With `TAKT4_SETTINGS_DIR` set there is
-/// no looking in the profile: a process given a folder of its own reads nobody else's.
+/// **Where to read**: `settingsFile()`, which `load` reports as the defaults when it is not
+/// there. Never the file a build before 2026-09-07 left under `userSettingsDirectory()`: that
+/// was read, for the move, until 2026-10-08 — see the .cpp.
 std::filesystem::path existingSettingsFile();
 
 /// Reads `path`. **Never throws, and never fails**: a file that is missing, unreadable,

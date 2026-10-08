@@ -100,6 +100,7 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.machine.outputsFolded);
     // Each on its own, so neither is read from the other's key.
     Settings one;
+    one.machine.inputsFolded = false;
     one.machine.outputsFolded = true;
     CHECK_FALSE(roundTrip(one).machine.inputsFolded);
     CHECK(roundTrip(one).machine.outputsFolded);
@@ -248,13 +249,13 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK_FALSE(out.machine.oscControlEnabled);
     CHECK(out.machine.oscControlPort == defaults.machine.oscControlPort);
     CHECK(out.machine.oscControlLocalOnly);
-    // A file from before folding opens with both sections open; so does a fold that is not a
-    // yes or a no.
-    CHECK_FALSE(out.machine.inputsFolded);
+    // A file from before folding opens as a fresh install does — Inputs folded (the operator,
+    // 2026-10-08), Outputs open — and so does a fold that is not a yes or a no.
+    CHECK(out.machine.inputsFolded);
     CHECK_FALSE(out.machine.outputsFolded);
     const Settings odd =
         takt4::settings::fromJson(R"({"machine": {"inputsFolded": 1, "outputsFolded": "yes"}})");
-    CHECK_FALSE(odd.machine.inputsFolded);
+    CHECK(odd.machine.inputsFolded);
     CHECK_FALSE(odd.machine.outputsFolded);
 }
 
@@ -767,33 +768,26 @@ TEST_CASE("with no folder named, the texts go to takt4's own temp folder", "[set
 }
 #endif
 
-TEST_CASE("settings left by an older build are still read", "[settings]") {
-    // The per-user location is where these used to be kept. A rig that has one there must
-    // not lose its outputs, its device and its MIDI bindings just because the file moved,
-    // so it is read until a save writes one beside the executable.
+TEST_CASE("a copy in a new folder starts from the defaults, whatever the profile holds",
+          "[settings]") {
+    // The per-user location is where settings were kept before 2026-09-07, and a file left
+    // there was read by every copy started in a folder with none of its own — so each fresh
+    // build met that September's rig, "keep BPM in" on among it (2026-10-08). Only the file
+    // beside the program is read now. On a machine with an old profile file, as the rig has,
+    // this is that case; elsewhere it is the plain one.
     const NoSettingsFolder programs;
     const std::filesystem::path beside = takt4::settings::settingsFile();
-    const std::filesystem::path user = takt4::settings::userSettingsDirectory();
     if (beside.empty()) {
         SKIP("this environment names no executable");
     }
-
+    CHECK(takt4::settings::existingSettingsFile() == beside);
     std::error_code code;
-    const bool haveNew = std::filesystem::exists(beside, code);
-    const bool haveOld = !user.empty() && std::filesystem::exists(user / "settings.json", code);
-
-    // Whichever exists, `existingSettingsFile` names one that can be read; and the new
-    // location wins whenever both are there, so the move only ever happens once.
-    if (haveNew) {
-        CHECK(takt4::settings::existingSettingsFile() == beside);
-    } else if (haveOld) {
-        CHECK(takt4::settings::existingSettingsFile() == user / "settings.json");
-    } else {
-        // Neither: it still names where one would be written, and loading it gives defaults
-        // rather than failing.
-        CHECK(takt4::settings::existingSettingsFile() == beside);
-        CHECK(takt4::settings::load(takt4::settings::existingSettingsFile())
-                  .machine.deviceName.empty());
+    if (!std::filesystem::exists(beside, code)) {
+        // Nothing there: the defaults, and "keep BPM in" off among them.
+        const takt4::settings::Settings loaded =
+            takt4::settings::load(takt4::settings::existingSettingsFile());
+        CHECK(loaded.machine.deviceName.empty());
+        CHECK_FALSE(loaded.preset.tempo.octaveFold);
     }
 }
 

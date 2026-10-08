@@ -13,6 +13,7 @@
 #include "core/engine/control.hpp"
 #include "core/io/utf8.hpp"
 #include "core/output/midi_ports.hpp"
+#include "core/sandbox.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
@@ -2409,8 +2410,15 @@ std::string_view textOf(std::span<const std::byte> bytes) {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
-/// The machine's own viewer for a text file.
+/// The machine's own viewer for a text file. **Never in a test process**: on 2026-10-08 a test
+/// whose click sweep crossed the About box's two OPEN buttons, with no file opener of its own,
+/// opened the licence in the rig's text editor once per click — 140 Notepad++ windows, until the
+/// desktop ran out of window resources and froze. A test that wants to see the opening sets its
+/// own opener (`setFileOpener`); one that forgets it now opens nothing.
 bool openInViewer(const std::filesystem::path& path) {
+    if (sandbox::active()) {
+        return false;
+    }
 #if defined(_WIN32)
     const auto result = reinterpret_cast<std::intptr_t>(
         ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
@@ -2421,6 +2429,26 @@ bool openInViewer(const std::filesystem::path& path) {
 #endif
 }
 
+/// Where takt4's source is, as the About box links to it.
+constexpr const char* kSourceAddress = "https://github.com/Fohdeesha/takt4";
+
+/// The machine's browser at `address`. Never in a test process: a click sweep over the About box
+/// would otherwise open one on the rig's desktop (see `sandbox::active`).
+bool openInBrowser(const std::string& address) {
+    if (sandbox::active()) {
+        return false;
+    }
+#if defined(_WIN32)
+    const std::wstring wide(address.begin(), address.end()); // an address is ASCII
+    const auto result = reinterpret_cast<std::intptr_t>(
+        ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    return result > 32;
+#else
+    (void)address;
+    return false;
+#endif
+}
+
 } // namespace
 
 void WindowController::openAbout() {
@@ -2428,6 +2456,14 @@ void WindowController::openAbout() {
         about_ = AboutWindow::create();
         AboutWindow& about = **about_;
         about.set_version(slint::SharedString(versionLabel(buildInfo())));
+        about.on_source_opened([this] {
+            const bool opened =
+                openLink_ ? openLink_(kSourceAddress) : openInBrowser(kSourceAddress);
+            // Said where the click was, as the licence buttons say where their file went.
+            (*about_)->set_opened(slint::SharedString(
+                opened ? std::string()
+                       : std::string("No browser opened. The source is at ") + kSourceAddress));
+        });
         about.on_licence_opened(
             [this] { (void)openEmbeddedText("takt4-LICENSE.txt", textOf(assets::licence())); });
         about.on_notices_opened([this] {
@@ -3521,9 +3557,11 @@ std::string WindowController::latencyLine() const {
         1000.0 * static_cast<double>(stream->resamplerDelayFrames()) / stream->sampleRate();
     // **Taken out of every beat's time**: each beat is stamped with when its audio was at the
     // input, whatever the buffer size, so none of these moves an output — and a buffer size
-    // changed in the driver's panel reopens the input and is said again here.
-    return "latency taken out of the beat times: " + fixed(stream->inputLatencySeconds() * 1000.0, 1) +
-           " ms input + " + fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing";
+    // changed in the driver's panel reopens the input and is said again here. The figures alone:
+    // "latency taken out of the beat times: " before them made the line so long the window had
+    // to be widened a long way to stop it wrapping (the operator, 2026-10-08).
+    return fixed(stream->inputLatencySeconds() * 1000.0, 1) + " ms input + " +
+           fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing";
 }
 
 void WindowController::publishOpenStream(const std::string& said) {

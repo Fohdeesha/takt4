@@ -671,7 +671,8 @@ export component MainWindow inherits Window {
   callback panic-released();
 
   // --- folding (HANDOFF §0.5) --------------------------------------------------------
-  /// Inputs and Outputs fold down to their heading. Both start open. A fold takes the section's
+  /// Inputs and Outputs fold down to their heading, as the settings left them (a fresh install
+  /// folds Inputs: `MachineSettings::inputsFolded`). A fold takes the section's
   /// height off the *window* and the trace keeps its height, so the C++ side resizes the window
   /// on each fold and unfold — `fold-clicked` is the arrow, and the controller sets these.
   in-out property <bool> inputs-folded;
@@ -1332,16 +1333,26 @@ export component MainWindow inherits Window {
             background: Wf.sheet;
             vertical-stretch: 0;
 
-            VerticalLayout {
+            // **Two columns**, so the half/double tick starts where "latency" starts under it, at
+            // any width (the operator, 2026-10-08): two rows of their own lined up only where the
+            // fold slider's stretch happened to put "latency".
+            GridLayout {
               padding-left: 16px;
               padding-right: 16px;
               padding-top: 10px;
               padding-bottom: 10px;
-              spacing: 10px;
+              spacing-horizontal: 12px;
+              spacing-vertical: 10px;
 
+              // The left column takes whatever width is spare, as the fold slider in it always did;
+              // the right one is as wide as the wider of its two, and no wider.
               HorizontalLayout {
+                row: 0;
+                col: 0;
                 height: 32px;
                 spacing: 10px;
+                alignment: start;
+                horizontal-stretch: 1;
 
                 // 18 px so the ÷ does not read as + (HANDOFF §0.5).
                 // Lit while the shift they make is in force, as LOCK is while it holds.
@@ -1397,26 +1408,32 @@ export component MainWindow inherits Window {
                   }
                 }
 
-                Rectangle { width: 4px; }
+              }
 
-                // What ÷2 and ×2 do when the record changes. A setting, so it is live while
-                // stopped; the audit's H2, and the operator's call of 2026-09-23 that the default
-                // is to drop a shift at the next track.
-                keep-shift-box := Tick {
-                  text: "keep half/double settings for next track";
-                  box-size: 16px;
-                  font-size: 14px;
-                  checked: root.keep-shift;
-                  toggled(keep) => {
-                    root.keep-shift = keep;
-                    root.keep-shift-changed(keep);
-                  }
+              // What ÷2 and ×2 do when the record changes. A setting, so it is live while
+              // stopped; the audit's H2, and the operator's call of 2026-09-23 that the default
+              // is to drop a shift at the next track.
+              keep-shift-box := Tick {
+                row: 0;
+                col: 1;
+                height: 32px;
+                horizontal-stretch: 0;
+                text: "keep half/double settings for next track";
+                box-size: 16px;
+                font-size: 14px;
+                checked: root.keep-shift;
+                toggled(keep) => {
+                  root.keep-shift = keep;
+                  root.keep-shift-changed(keep);
                 }
               }
 
               HorizontalLayout {
+                row: 1;
+                col: 0;
                 height: 24px;
                 spacing: 12px;
+                horizontal-stretch: 1;
 
                 // **Not "octave fold"**, which nobody outside the code knows the meaning of: the
                 // label says what the setting does to the number. Read with the reading beside it,
@@ -1476,7 +1493,16 @@ export component MainWindow inherits Window {
                     background: Wf.line;
                   }
                 }
-                Label {
+              }
+
+              HorizontalLayout {
+                row: 1;
+                col: 1;
+                height: 24px;
+                spacing: 12px;
+                horizontal-stretch: 0;
+
+                latency-label := Label {
                   text: "latency";
                   color: Wf.ink;
                 }

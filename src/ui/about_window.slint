@@ -28,18 +28,25 @@ component Sheet inherits Rectangle {
   }
 }
 
-/// Running text in a sheet, wrapping.
-component Words inherits Text {
+/// Words that can be selected and copied — every one in this window (the operator, 2026-10-08:
+/// none of it could be, the version and the source's address included). A read-only `TextInput`,
+/// because Slint never lets a `Text` be selected; selected as the window's boxes are.
+component Copyable inherits TextInput {
+  read-only: true;
   color: Wf.ink;
+  selection-background-color: Wf.ink;
+  selection-foreground-color: Wf.on-primary;
+}
+
+/// Running text in a sheet, wrapping.
+component Words inherits Copyable {
   font-size: 15px;
+  single-line: false;
   wrap: word-wrap;
-  // A little more open than the face's own, nearer the mockup's lines.
-  line-height-factor: 1.13;
 }
 
 /// A sheet's heading.
-component Head inherits Text {
-  color: Wf.ink;
+component Head inherits Copyable {
   font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.36px;
@@ -64,6 +71,8 @@ export component AboutWindow inherits Window {
   in property <string> version;
   /// What the last OPEN did: where the file was written, or why it could not be.
   in property <string> opened;
+  /// The source's address, clicked: the C++ side opens it in the browser.
+  callback source-opened();
   callback licence-opened();
   callback notices-opened();
   callback closed();
@@ -94,23 +103,25 @@ export component AboutWindow inherits Window {
       HorizontalLayout {
         spacing: 12px;
         alignment: start;
-        Text {
+        Copyable {
           text: "takt4";
-          color: Wf.ink;
           font-size: 34px;
           font-weight: 800;
           letter-spacing: -1px;
           vertical-alignment: bottom;
         }
-        Text {
+        Copyable {
           text: root.version;
           color: Wf.ink2;
           font-family: Wf.code;
           font-size: 15px;
           vertical-alignment: bottom;
           horizontal-stretch: 1;
-          overflow: elide;
         }
+      }
+      Words {
+        text: "Author: Jon Sands (Fohdeesha)";
+        color: Wf.ink2;
       }
       Words {
         text: "Beat, downbeat, tempo and meter from the audio coming in, sent to the rest of the rig over Ableton Link, OSC, MIDI and Art-Net.";
@@ -127,23 +138,36 @@ export component AboutWindow inherits Window {
       Words {
         text: "takt4 is free software: you can pass it on and change it under the terms of the GNU General Public License, version 3. It comes with ABSOLUTELY NO WARRANTY. You are entitled to its complete source code under that licence.";
       }
-      // Not a link — nothing here opens a browser — so not drawn as one.
+      // **A link**, drawn as the window's links are and opened in the browser: it read as one and
+      // did nothing when clicked (the operator, 2026-10-08). The one thing here a click opens
+      // rather than selects; the browser it opens shows the address to copy.
       HorizontalLayout {
         spacing: 8px;
         alignment: start;
-        Text {
+        Copyable {
           text: "source";
-          color: Wf.ink;
           font-size: 15px;
-        }
-        Text {
-          text: "github.com/Fohdeesha/takt4";
-          color: Wf.ink;
-          font-family: Wf.code;
-          font-size: 14px;
           vertical-alignment: center;
-          horizontal-stretch: 1;
-          overflow: elide;
+        }
+        // Sized to its words: in a row laid out from the start, a bare Rectangle is given its
+        // preferred width, which with nothing laid out inside it is none — the words still drew,
+        // and the click area under them was zero wide (found by the test below, 2026-10-08).
+        Rectangle {
+          width: source-link.preferred-width;
+          source-link := Text {
+            text: "github.com/Fohdeesha/takt4";
+            color: source-touch.has-hover ? Wf.link-hover : Wf.link;
+            font-family: Wf.code;
+            font-size: 14px;
+            vertical-alignment: center;
+            height: parent.height;
+          }
+          source-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+              root.source-opened();
+            }
+          }
         }
       }
       Words {
@@ -180,11 +204,12 @@ export component AboutWindow inherits Window {
       // character, so a path fills its lines evenly. (Word-wrapped it stays on the sheet too:
       // Slint 1.18 breaks a word too long for its line — measured 2026-10-01 against a review
       // that said otherwise.)
-      if root.opened != "": Text {
+      if root.opened != "": Copyable {
         text: root.opened;
         color: Wf.ink2;
         font-family: Wf.code;
         font-size: 13px;
+        single-line: false;
         wrap: char-wrap;
       }
     }

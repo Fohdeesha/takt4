@@ -29,6 +29,9 @@
 ///   lighting desk and synths — and Windows' GS Wavetable Synth plays through the speakers.
 /// - **No Link session is joined**, and no Link announcements are listened for.
 /// - **No audio device is opened.**
+/// - **No other program is started on the desktop**: the About box's text viewer and browser
+///   open nothing (`ui::WindowController`). On 2026-10-08 a click sweep over the About box
+///   opened the licence in the rig's text editor 140 times and froze the desktop.
 /// - **No name is looked up**, apart from `localhost`: a host typed as a name would send a DNS
 ///   query out of the rig's network card (the audit of 2026-09-25, T4). It fails the way a name
 ///   nobody knows fails — "cannot resolve" — so the tests of that path still see it.

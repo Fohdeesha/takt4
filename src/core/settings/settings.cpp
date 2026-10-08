@@ -356,18 +356,11 @@ std::filesystem::path existingSettingsFile() {
     if (!beside.empty() && std::filesystem::exists(beside, code)) {
         return beside;
     }
-    if (!namedSettingsDirectory().empty()) {
-        return beside; // a folder of its own, and nobody else's file read instead
-    }
-    // A build before this one kept the file under the user's profile. With none beside the
-    // executable yet, that one is still this machine's settings, and reading it is how a rig
-    // keeps its outputs, its device and its MIDI bindings across the change. It is read and
-    // not moved: the next save writes beside the executable, so the copy left behind is what
-    // an older build — or another copy of this one — still finds.
-    const std::filesystem::path user = userSettingsDirectory();
-    if (!user.empty() && std::filesystem::exists(user / "settings.json", code)) {
-        return user / "settings.json";
-    }
+    // **Nothing else, the per-user file included.** Builds before 2026-09-07 kept settings there,
+    // and until 2026-10-08 one was read whenever nothing was beside the executable, so a rig
+    // kept its outputs across the move. A month on, all it still did was hand every copy started
+    // in a new folder the rig as it stood that September — "keep BPM in" switched on with its
+    // window among it, which the operator met on each fresh build. A new folder is a new rig.
     return beside;
 }
 

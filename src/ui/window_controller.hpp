@@ -390,6 +390,11 @@ public:
     void setFileOpener(std::function<bool(const std::filesystem::path&)> opener) {
         openFile_ = std::move(opener);
     }
+    /// What the About box's source link does with its address. The default hands it to the
+    /// machine's browser — never while the test sandbox is on — and takt4_ui_tests replaces it.
+    void setLinkOpener(std::function<bool(const std::string&)> opener) {
+        openLink_ = std::move(opener);
+    }
     /// Writes `text` to `name` under the temp directory and opens it: what the About box's two
     /// buttons do, the licence and the notices being built in. The file written, or empty.
     std::filesystem::path openEmbeddedText(const std::string& name, std::string_view text);
@@ -944,6 +949,7 @@ private:
     /// The About box, built the first time ABOUT is pressed.
     std::optional<slint::ComponentHandle<AboutWindow>> about_;
     std::function<bool(const std::filesystem::path&)> openFile_;
+    std::function<bool(const std::string&)> openLink_;
 };
 
 } // namespace takt4::ui
