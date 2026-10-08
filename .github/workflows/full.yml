@@ -298,32 +298,20 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os != 'Windows' && '-- -k 0' || '' }}
 
-      # **TEMPORARY, for the macOS port**: which copy of the C++ runtime's type information each
-      # binary uses. A `catch (const std::exception&)` missed a MidiPortMissing in takt4_ui_tests
-      # alone — the binary that links Slint — so: is `typeinfo for std::exception` defined inside
-      # one of the static libraries, beside libc++abi's own?
-      - name: C++ runtime symbols
+      # **One std::exception** (macOS): the app and the UI tests use libc++abi's typeinfo, not a
+      # copy of their own. Skia's prebuilt bindings bring one, and with it every
+      # `catch (const std::exception&)` missed takt4's own exceptions — a MIDI port that was not
+      # there ended the program (2026-10-08; cmake/apple_skia_typeinfo.cmake keeps it to Skia).
+      - name: One std::exception
         if: runner.os == 'macOS'
-        continue-on-error: true
         run: |
-          for b in takt4_tests takt4_ui_tests takt4.app/Contents/MacOS/takt4; do
-            echo "===== $b"
-            nm -m "build/macos/bin/$b" | grep -E '__ZTI(St9exception|St13runtime_error|St12length_error)$|___cxa_throw$|___gxx_personality_v0$' || true
+          for b in takt4_ui_tests takt4.app/Contents/MacOS/takt4; do
+            if nm -m "build/macos/bin/$b" | grep -E '(non-external|private external).*__ZTISt9exception$'; then
+              echo "$b has a copy of typeinfo for std::exception of its own"
+              exit 1
+            fi
           done
-          echo "===== static libraries and objects that define them"
-          set +e
-          find build/macos \( -name '*.a' -o -name '*.o' -o -name '*.rlib' \) -size +20k > candidates.txt
-          wc -l candidates.txt
-          while read -r a; do
-            hits=$(nm -A -m "$a" 2>/dev/null | grep -E '__ZTISt9exception$|__ZTISt12length_error$' | grep -v undefined | head -4)
-            if [ -n "$hits" ]; then echo "--- $a"; echo "$hits"; fi
-          done < candidates.txt
-          echo "===== the linker's own answer"
-          cd build/macos
-          ninja -t commands takt4_ui_tests | tail -1 > link.sh
-          sed -i '' 's|$| -Wl,-y__ZTISt9exception -Wl,-y__ZTISt12length_error|' link.sh
-          sh link.sh 2>&1 | grep -E 'ZTISt' | head -20
-          exit 0
+          echo "both use libc++abi's"
 
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
