@@ -827,6 +827,9 @@ component PickerBody inherits Rectangle {
 }
 
 export component RulesWindow inherits Window {
+  // takt4's icon in the title bar and the taskbar (assets/icon, from tools/make_icon.py). 64 px: four
+  // times the title bar's 16 and twice the taskbar's 32, which the system scales it down to.
+  icon: @image-url("../../assets/icon/takt4-64.png");
   title: "takt4 — triggers";
   // **These do not decide what the window opens at.** Slint's winit backend sizes a window from
   // what its content asks for, so `ui::kRulesWindowWidth` is the size used; `RulesController` sets

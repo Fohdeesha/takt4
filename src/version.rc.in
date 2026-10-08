@@ -10,6 +10,10 @@
 
 #include "core/git_describe.hpp"
 
+// takt4's icon: what Explorer shows for the file, and a shortcut or the taskbar for the program.
+// The windows set their own as well (`icon` in src/ui/*.slint). From tools/make_icon.py.
+1 ICON "@TAKT4_RC_ICON@"
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
  PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
