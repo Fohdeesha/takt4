@@ -217,7 +217,8 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
     window_->on_rule_muted_at(finishing([this](int index, bool on) { setMutedAt(index, on); }));
     window_->on_fold_clicked(finishing([this](int which) { toggleFold(which); }));
-    window_->on_rule_rate_changed(finishing([this](float factor) { nudgeRate(factor); }));
+    window_->on_rule_rate_changed(
+        finishing([this](float factor) { nudgeRate(static_cast<double>(factor)); }));
     // The name commits on every keystroke, so there is never anything of its own to carry.
     window_->on_rule_renamed([this](const slint::SharedString& n) { rename(std::string(n)); });
     window_->on_rule_tested(finishing([this] { test(); }));
