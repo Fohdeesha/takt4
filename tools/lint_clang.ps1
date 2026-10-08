@@ -17,10 +17,11 @@
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1
 #   powershell -ExecutionPolicy Bypass -File tools/lint_clang.ps1 src/core/control
 #
-# `src/core`, `src/cli` and `tests` by default — the engine, the console and their tests, which
-# CI compiles with -Werror. `src/ui` and `tests/ui` are left out, by name: they need Slint's
-# headers and the generated `main_window.h`, which this script does not reconstruct. full.yml
-# builds them on every push, with GCC as well since the linux-tsan job.
+# `src/core`, `src/cli`, `src/ui` and `tests` by default — everything CI compiles with -Werror.
+# **The windows too**: `src/ui` and `tests/ui` need Slint's headers and the generated
+# `main_window.h`, and take them from the `local` preset's tree (`build\windows-msvc`), so build
+# that first. They were left out until 2026-10-08, and 1.3.3 was lost to what that hid: a NUL
+# byte inside a string literal in tests/ui, which MSVC accepts and GCC refuses.
 #
 # **A file clang could not parse is not a clean file.** It stops at the first header it cannot
 # find and then says nothing — which this script used to count as clean, for four tests/ui
@@ -30,8 +31,8 @@
 # Exits 1 if clang reports anything, 3 if a file could not be checked, 0 only if every file
 # was checked and nothing was found.
 
-param([string[]]$Paths = @('src/core', 'src/cli', 'tests'))
-$Exclude = @('src\ui\', 'tests\ui\')
+param([string[]]$Paths = @('src/core', 'src/cli', 'src/ui', 'tests'))
+$Exclude = @()
 
 # NOT 'Stop': Windows PowerShell wraps a native command's stderr in ErrorRecords, and
 # clang-tidy writes its "N warnings generated" summary there — which under 'Stop' aborts
@@ -48,6 +49,9 @@ if (-not (Test-Path "$build\generated")) {
     Write-Error "configure the local-core preset first: no $build\generated"
     exit 2
 }
+# The windows' Slint headers and generated components, from the `local` preset's tree.
+$app = Join-Path $repo 'build\windows-msvc'
+$appBuilt = Test-Path "$app\src\ui\main_window.h"
 
 # The include roots and defines takt4_tests is compiled with, from src/CMakeLists.txt and
 # tests/CMakeLists.txt. Kept by hand; if a target grows a dependency, add it here.
@@ -67,6 +71,9 @@ $flags = @(
     "-isystem$build\_deps\pugixml-src\src",
     "-isystem$build\_deps\miniz-src",
     '-DPUGIXML_NO_XPATH', '-DMINIZ_NO_STDIO', '-DMINIZ_NO_TIME', '-DMINIZ_NO_ZLIB_COMPATIBLE_NAMES',
+    "-I$app\src\ui",
+    "-isystem$app\_deps\slint-src\api\cpp\include",
+    "-isystem$app\_deps\slint-build\generated_include",
     "-isystem$repo\third_party\portaudio\include",
     "-isystem$repo\third_party\link\include",
     "-isystem$repo\third_party\link\modules\asio-standalone\asio\include",
@@ -150,6 +157,9 @@ if ($skipped.Count -gt 0) {
 if ($unchecked.Count -gt 0) {
     Write-Output "`n$($unchecked.Count) file(s) not checked - a header clang could not find, which is this script's include list, not the code:"
     $unchecked | ForEach-Object { Write-Output "  $_" }
+    if (-not $appBuilt) {
+        Write-Output "  (src/ui and tests/ui take Slint's headers from build\windows-msvc: build the local preset)"
+    }
 }
 if ($found -gt 0) { Write-Output "`n$found file(s) with findings"; exit 1 }
 if ($unchecked.Count -gt 0) { Write-Output "`nnothing found in the files that were checked, but not every file was"; exit 3 }

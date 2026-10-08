@@ -88,7 +88,7 @@ trigger::Value parseValue(std::string_view text) {
             return trigger::Value::ofInt(static_cast<std::int32_t>(*number));
         }
         // Clamped to what a float holds, which converting past is undefined behaviour (L5).
-        const double most = std::numeric_limits<float>::max();
+        const double most = static_cast<double>(std::numeric_limits<float>::max());
         return trigger::Value::ofFloat(static_cast<float>(std::clamp(*number, -most, most)));
     }
     return trigger::Value::ofText(trimmed);

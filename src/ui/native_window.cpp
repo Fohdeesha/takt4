@@ -274,8 +274,9 @@ LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
     UINT dpi = 0;
     if (const HMODULE shcore = LoadLibraryW(L"shcore.dll"); shcore != nullptr) {
         using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
-        const auto getDpi =
-            reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor"));
+        // Through `void (*)()`, as `CrashReport::install` casts what GetProcAddress returns.
+        const auto getDpi = reinterpret_cast<GetDpiForMonitorFn>(
+            reinterpret_cast<void (*)()>(GetProcAddress(shcore, "GetDpiForMonitor")));
         UINT x = 0;
         UINT y = 0;
         constexpr int kEffectiveDpi = 0; // MDT_EFFECTIVE_DPI

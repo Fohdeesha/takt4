@@ -262,8 +262,10 @@ void CrashReport::install(const std::filesystem::path& directory, std::string_vi
     // Looked up now, while the process is healthy: loading a DLL from inside a crash is how a
     // crash handler becomes a hang.
     if (const HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll")) {
-        g_writeDump =
-            reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
+        // Through `void (*)()`, the one function type any other is cast to and from without a
+        // compiler saying the two do not match: GetProcAddress hands back one that does not.
+        g_writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(
+            reinterpret_cast<void (*)()>(GetProcAddress(dbghelp, "MiniDumpWriteDump")));
     }
 
     redirectStderr();
@@ -362,10 +364,11 @@ namespace {
 
 /// Deeper until the stack runs out. Each frame writes an array of its own and adds to what the
 /// next returns, so the optimiser can neither drop the frames nor turn the calls into a loop.
-int deeper(volatile int depth) {
+int deeper(int depth) {
+    volatile int here = depth; // a volatile parameter is deprecated since C++20; a local is not
     volatile char frame[1024];
-    frame[0] = static_cast<char>(depth);
-    return depth < 0 ? frame[0] : deeper(depth + 1) + frame[0];
+    frame[0] = static_cast<char>(here);
+    return here < 0 ? frame[0] : deeper(here + 1) + frame[0];
 }
 
 } // namespace
