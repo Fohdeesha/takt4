@@ -4,7 +4,7 @@
 
 takt4 listens to incoming audio (WASAPI, ASIO, etc), finds the beat, downbeat and tempo, and sends them to the rest of
 your rig: **Ableton Link, MIDI clock, OSC, MIDI notes and Art-Net (DMX)**. Plus optional built in triggers to fire clips,
-cues, notes, lights, lasers etc exactly on time with whatever audio you feed it. No manual tapping, locks on to new songs automatically.
+cues, notes, lights, lasers etc exactly on time with whatever audio you feed it. No manual tapping, locks on to new songs automatically
 
 ## Get it
 
@@ -14,15 +14,15 @@ cues, notes, lights, lasers etc exactly on time with whatever audio you feed it.
 
 ## Quick start
 
-1. Pick your interface under **audio in** and the inputs under **channels** (a stereo pair; tick **mono** for one input). Click **start**
+1. Pick your device and input channels at the top (a stereo pair; tick **mono** if you have one input). Click **start**
 2. Give it a few bars. It says **locked** when it's sure, and nothing goes out to the rig until then
-3. Under **outputs**, tick **Link**, or click **+ add output** and pick its **protocol**: OSC, MIDI, MIDI clock or Art-Net (DMX)
+3. Under **outputs**, tick **Link**, or click **add output** and pick its **protocol**: OSC, MIDI, MIDI clock or Art-Net (DMX)
 4. In the **triggers** row, click **add a rule**. Pick a ready-made set from **select a preset**, or build your own.
 
 ## If the beat is wrong (rare)
 
 - BPM correct, but start of the count/downbeat isn't: press **downbeat** (or **D**) on the one
-- Half or double speed: **÷2** or **×2**. The button stays lit and the tempo says **÷2 applied** while it's in force. They reset on the next track unless **keep half/double settings for next track** is ticked
+- Half or double speed: **÷2** or **×2**. The button stays lit and the tempo says **÷2 applied** while it's in effect
 - If the number and the beat dots disagree, the line under the tempo says what the beats are going out at and which of **÷2** / **×2** matches them
 - Keep it in a range: tick **keep BPM in** and set a rough range
 - **tap** (or **T**) to tap it in
@@ -91,14 +91,14 @@ address                       send           does
 
 - Send the value as the first argument: an OSC **int** (`i`), **float** (`f`) or **boolean** (`T` is 1, `F` is 0). A string counts as nothing; any other type and the message is ignored
 - **nothing or 1**: a button. Any number but 0 presses it too; a 0 is its release and does nothing, so a push button that sends 1 then 0 presses once. **panic** engages on anything, 0 included
-- **1 or 0**: a switch, never a toggle, so a missed message can't leave one backwards. Anything but 0 is on; with no value it's ignored.
+- **1 or 0**: a switch, never a toggle, so a missed message can't leave one backwards. Anything but 0 is on; with no value it's ignored
 - `<id>` is the rule's id, shown beside its name in the rule editor, or `all`
 
 **MIDI control**: on the MIDI row under **inputs**, pick your controller and an action, click **learn**, hit the midi button you want to use. Available actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held
 
-## Lights
+## Lights / DMX
 
-1. **+ add output**, set its **protocol** to Art-Net and type the node's IP
+1. **add output**, set its **protocol** to Art-Net and type the node's IP
 2. Click **patch lights** in the triggers row, then **+** to add a fixture: name, group (optional), universe, **start address** (the one on the fixture), and the nearest **mode** (dimmer, RGB, RGBW, dimmer + RGB, LED par, 8- or 16-bit moving head, Liberation zone). Or click **import** and pick a GDTF (`.gdtf`) or Open Fixture Library (`.json`) file: choose its mode, how many and where, and they arrive with every channel named and set up
 3. **identify** flashes the fixture; a channel's **test** holds it at the **test sends** level for 3 s
 4. In a rule, set **send as** to DMX / Art-Net and pick an effect: level / fade, color, flash, pulse, strobe, hue sweep, position, path, home, blackout, Liberation clip
@@ -139,9 +139,9 @@ Multiple training sets, bolstered on off-kilter electronic music that trackers u
 
 You don't need to, but if you want to:
 
-- CMake 3.28+, Visual Studio 2022 (C++20), `git clone --recurse-submodules`.
-- For the UI: rustup (version pinned in `rust-toolchain.toml`), `curl` on `PATH`, Python 3. The `windows-core` preset builds the engine, `takt4-cli` and the tests without them.
-- Network access on the first build, for the pinned, hash-checked dependencies.
+- CMake 3.28+, Visual Studio 2022 (C++20), `git clone --recurse-submodules`
+- For the UI: rustup (version pinned in `rust-toolchain.toml`), `curl` on `PATH`, Python 3. The `windows-core` preset builds the engine, `takt4-cli` and the tests without them
+- Network access on the first build, for the pinned, hash-checked dependencies
 
 ```sh
 cmake --preset windows-msvc
@@ -149,13 +149,13 @@ cmake --build --preset windows-msvc
 ctest --preset windows-msvc
 ```
 
-- The default tests stay off your audio, MIDI and network. `windows-msvc-all` runs everything: close anything using your interface first.
+- The default tests stay off your audio, MIDI and network. `windows-msvc-all` runs everything: close anything using your interface first
 - `windows-asan` runs the suite under AddressSanitizer; `linux-tsan` (Linux only) under ThreadSanitizer
 
 ## License
 
-- GPLv3: [LICENSE](LICENSE). Third-party licences: [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), also inside the app under **about**.
-- BeatNet+'s weights, which the shipped model is fine-tuned from, come with no licence stated upstream.
-- The tests use seventeen ten-second excerpts of commercial recordings, never built into takt4: [tests/data/features/](tests/data/features/README.md) lists them and how to have one removed.
+- GPLv3: [LICENSE](LICENSE). Third-party licences: [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), also inside the app under **about**
+- BeatNet+'s weights, which the shipped model is fine-tuned from, come with no licence stated upstream
+- The tests use seventeen ten-second excerpts of commercial recordings, never built into takt4: [tests/data/features/](tests/data/features/README.md) lists them and how to have one removed
 
 *Art-Net™ Designed by and Copyright Artistic Licence. ASIO is a trademark and software of Steinberg Media Technologies GmbH.*
