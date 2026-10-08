@@ -5,6 +5,7 @@
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
 #include "ui/delete_guard.hpp"
+#include "ui/file_dialog.hpp"
 
 #include "main_window.h" // generated; holds FixturesWindow too — see src/ui/CMakeLists.txt
 
@@ -345,6 +346,9 @@ private:
     /// does wants the answer to be unmistakable.
     int testLevel_ = 255;
     std::string status_;
+    /// IMPORT's dialog. Last, so it goes first: a dialog program still up when the editor goes
+    /// is closed before anything its answer would have reached (`FileDialogs`).
+    FileDialogs fileDialogs_;
 };
 
 } // namespace takt4::ui

@@ -83,8 +83,8 @@ struct TestProcess {
         }
         // **No file dialogs.** A window test drives real clicks, and one that lands on EXPORT or
         // IMPORT would open a real modal dialog on this desktop — the rig's — and leave it for
-        // somebody to dismiss (2026-09-25, repeatedly). `ui::askSaveFile` and `askOpenFile`
-        // return a cancel instead while this is set.
+        // somebody to dismiss (2026-09-25, repeatedly). `ui::FileDialogs` answers with a cancel
+        // instead while this is set.
         set("TAKT4_NO_FILE_DIALOGS", "1");
         // **The sandbox: nothing a test does reaches the rig** (src/core/sandbox.hpp). On for
         // every test and for every process a test starts; tests/support/rig_sandbox.cpp lifts it

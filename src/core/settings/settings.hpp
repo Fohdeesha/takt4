@@ -209,21 +209,32 @@ struct Settings {
     Preset preset;
 };
 
-/// Where settings are kept: **the directory the running executable is in**.
+/// Where settings are kept: **the directory the running executable is in** — on macOS, the one
+/// `takt4.app` is in (`programFolder`).
 ///
 /// takt4 is a program somebody copies onto a stick and carries to a venue, so its settings
 /// belong beside it rather than in a profile on one machine. Two copies in two folders are
 /// two rigs, which is what an operator with a rehearsal setup and a show setup wants; and a
 /// machine that is not theirs keeps none of their configuration after they unplug.
 ///
-/// Falls back to `userSettingsDirectory()` only where the platform will not name the
-/// executable at all.
+/// Falls back to `userSettingsDirectory()` where the platform will not name the executable at
+/// all, and **on macOS where that folder cannot be written**: an app downloaded and opened
+/// where it landed is run by macOS from a read-only copy of itself in a random place until it
+/// is moved ("App Translocation"), and a stick can be locked. The operator chose this on
+/// 2026-10-08 over keeping nothing until the app is moved. Once the folder can be written, the
+/// first save there takes what was kept in the profile with it — see `existingSettingsFile`.
 ///
 /// **Unless `TAKT4_SETTINGS_DIR` names another.** The test binaries set it (tests/support/
 /// crt_dialogs.cpp): they are built into the same folder as takt4.exe, and on a rig the
 /// settings.json there is a real show's — a test whose click landed on SAVE would have
 /// written over it. Nothing else is expected to set it.
 std::filesystem::path settingsDirectory();
+
+/// The folder a program at `executable` counts as being in: the folder holding the bundle for a
+/// macOS app's executable (`…/takt4.app/Contents/MacOS/takt4` is in `…`), which is the folder the
+/// operator put it in; the executable's own folder for anything else. A pure function of the
+/// path, so it is tested on every system; `settingsDirectory` uses it on macOS only.
+std::filesystem::path programFolder(const std::filesystem::path& executable);
 
 /// Where settings *used* to be kept: `%APPDATA%\takt4` on Windows, `~/Library/Application
 /// Support/takt4` on macOS, `$XDG_CONFIG_HOME/takt4` or `~/.config/takt4` elsewhere. Empty
@@ -245,7 +256,9 @@ std::filesystem::path scratchDirectory();
 
 /// **Where to read**: `settingsFile()`, which `load` reports as the defaults when it is not
 /// there. Never the file a build before 2026-09-07 left under `userSettingsDirectory()`: that
-/// was read, for the move, until 2026-10-08 — see the .cpp.
+/// was read, for the move, until 2026-10-08 — see the .cpp. **On macOS the per-user file is read
+/// while nothing is beside the app**: it is where `settingsDirectory` kept the rig while the app
+/// could not write beside itself.
 std::filesystem::path existingSettingsFile();
 
 /// Reads `path`. **Never throws, and never fails**: a file that is missing, unreadable,

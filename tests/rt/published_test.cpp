@@ -168,8 +168,14 @@ TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt]") 
     std::thread reader([&] {
         SetThreadAffinityMask(GetCurrentThread(), core);
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        while (std::chrono::steady_clock::now() < until) {
+        // **Two seconds, and on until there are enough loads to mean something**: on a two-core
+        // runner under AddressSanitizer a 1 ms sleep could take 60, and two seconds alone gave 34
+        // loads where 50 were wanted (four runs of six, 2026-10-08). Ten seconds at most.
+        const auto start = std::chrono::steady_clock::now();
+        const auto atLeast = start + std::chrono::seconds{2};
+        const auto atMost = start + std::chrono::seconds{10};
+        for (auto now = start; (now < atLeast || loads < 100) && now < atMost;
+             now = std::chrono::steady_clock::now()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
             const auto from = std::chrono::steady_clock::now();
             const Wide got = published.load();

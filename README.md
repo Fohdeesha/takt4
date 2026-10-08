@@ -2,15 +2,18 @@
 
 ![takt4's main window, tracking a track at 128 BPM and sending it to Link, two MIDI clocks and OSC, beside the rule editor with a Resolume clip rule open](docs/screenshot.png)
 
-takt4 listens to incoming audio (WASAPI, ASIO, etc), finds the beat, downbeat and tempo, and sends them to the rest of
+takt4 listens to incoming audio (WASAPI, ASIO, Core Audio, ALSA, JACK), finds the beat, downbeat and tempo, and sends them to the rest of
 your rig: **Ableton Link, OSC, MIDI clock, MIDI notes and Art-Net (DMX)**. Plus optional built in triggers to fire clips,
 cues, notes, lights, lasers etc exactly on time with whatever audio you feed it. No manual tapping, locks on to new songs automatically
 
 ## Get it
 
-- Download `takt4.exe` from the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)**
-- Windows 10 or 11, plus the latest [Visual C++ Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe)
-- Not code-signed: if Windows "protected your PC", click **More info**, then **Run anyway**
+From the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)**:
+
+- **Windows 10 or 11**: `takt4.exe`, plus the latest [Visual C++ Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe). Not code-signed: if Windows "protected your PC", click **More info**, then **Run anyway**
+- **macOS 12 or later**, Intel or Apple Silicon: `takt4-macos.zip`. Unzip and open **takt4**. Not notarized: the first time, macOS won't open it. Go to **System Settings > Privacy & Security** and click **Open Anyway**. Allow the microphone (your audio input) and the local network (Link, OSC, Art-Net) when asked
+- **Linux x86_64**, Ubuntu 22.04, Debian 12 or newer: `takt4-linux-x86_64.tar.gz`. Unpack and run `takt4`. Needs `sudo apt install libasound2 libjack-jackd2-0 libfontconfig1 libfreetype6` (or your distro's equivalent; PipeWire's JACK works). **import** and **export** need `zenity`, or `kdialog` on KDE
+- The Mac and Linux builds are new and haven't been tried on real hardware yet
 
 ## Quick start
 
@@ -122,7 +125,7 @@ address                       send           does
 
 ## Saving
 
-- Everything saves by itself to `settings.json` next to `takt4.exe`
+- Everything saves by itself to `settings.json` next to `takt4.exe` (next to `takt4.app` on a Mac, or in `~/Library/Application Support/takt4` until the app is moved out of the folder it was downloaded to)
 - **export** / **import** carry everything: rules, outputs, lights, tempo settings, the audio input, MIDI and OSC control with what was learned, and which sections are folded. Import replaces it all. An input that isn't on this machine stays the one saved; **rescan** or the next launch finds it once it's plugged in
 - A rule's mute and its ÷2 / ×2 status aren't saved
 
@@ -140,12 +143,12 @@ Multiple training sets, bolstered on off-kilter electronic music that trackers u
 
 You don't need to, but if you want to:
 
-- CMake 3.28+, Visual Studio 2022 (C++20), `git clone --recurse-submodules`
-- For the UI: rustup (version pinned in `rust-toolchain.toml`), `curl` on `PATH`, Python 3. The `windows-core` preset builds the engine, `takt4-cli` and the tests without them
+- CMake 3.28+, `git clone --recurse-submodules`, and Visual Studio 2022 (C++20) on Windows, Xcode's command line tools and Ninja on macOS, GCC 12+ and Ninja on Linux (with `libasound2-dev libjack-jackd2-dev libfontconfig-dev libfreetype-dev`)
+- For the UI: rustup (version pinned in `rust-toolchain.toml`), `curl` on `PATH`, Python 3. The `*-core` presets build the engine, `takt4-cli` and the tests without them
 - Network access on the first build, for the pinned, hash-checked dependencies
 
 ```sh
-cmake --preset windows-msvc
+cmake --preset windows-msvc        # or macos, or linux
 cmake --build --preset windows-msvc
 ctest --preset windows-msvc
 ```

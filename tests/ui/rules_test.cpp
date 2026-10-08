@@ -15,6 +15,7 @@
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
 #include "ui/delete_guard.hpp"
+#include "ui/keys.hpp"
 #include "ui/model_watch.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/shot.hpp"
@@ -2306,7 +2307,8 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
         // Emptied and typed into, so what it holds is known: End, then Backspace until it is
         // empty, then 7.
         click(boxX, boxY);
-        type("\xEF\x9C\xAB"); // Key.End, U+F72B
+        takt4::tests::endOfText(window.window());
+        slint::platform::update_timers_and_animations();
         for (int i = 0; i < 12; ++i) {
             type("\b");
         }
@@ -3141,7 +3143,8 @@ struct Shown {
     /// Everything in the box that has the keyboard gone — End, then Backspace until it is empty
     /// — so what is typed next is all it holds, wherever the click left the caret.
     void clearBox() const {
-        key(u8""); // Key.End
+        takt4::tests::endOfText(window.window());
+        settle();
         type(std::string(40, '\b'));
     }
     /// A key by its Slint name — `Key.UpArrow` is U+F700, `Key.DownArrow` U+F701.

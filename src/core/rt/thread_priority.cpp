@@ -15,6 +15,12 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
+#include <pthread/qos.h>
 #endif
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -56,9 +62,44 @@ PriorityScope::PriorityScope(ThreadWork work) noexcept {
         fallback_ = true;
         raised_ = true;
     }
+#elif defined(__APPLE__)
+    // The first macOS runs (2026-10-08): at the default, the output thread made 154 rounds a
+    // second where it is meant to make a thousand, and a MIDI clock's ticks went with them.
+    if (work == ThreadWork::Output) {
+        mach_timebase_info_data_t timebase{};
+        if (::mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer != 0) {
+            const auto ticks = [&timebase](double milliseconds) {
+                return static_cast<std::uint32_t>(milliseconds * 1e6 *
+                                                  static_cast<double>(timebase.denom) /
+                                                  static_cast<double>(timebase.numer));
+            };
+            // A round every millisecond, a quarter of it to work in, done within the millisecond.
+            thread_time_constraint_policy_data_t policy{};
+            policy.period = ticks(1.0);
+            policy.computation = ticks(0.25);
+            policy.constraint = ticks(1.0);
+            policy.preemptible = TRUE;
+            if (::thread_policy_set(::pthread_mach_thread_np(::pthread_self()),
+                                    THREAD_TIME_CONSTRAINT_POLICY,
+                                    reinterpret_cast<thread_policy_t>(&policy),
+                                    THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS) {
+                timeConstrained_ = true;
+                raised_ = true;
+                return;
+            }
+        }
+    }
+    qos_class_t before = QOS_CLASS_UNSPECIFIED;
+    int relative = 0;
+    (void)::pthread_get_qos_class_np(::pthread_self(), &before, &relative);
+    if (::pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0) {
+        previousPriority_ = static_cast<int>(before);
+        fallback_ = true;
+        raised_ = true;
+    }
 #else
-    // Raising a thread's priority on Linux or macOS needs a privilege an application does not
-    // have; the default is what it has always run at.
+    // Raising a thread's priority on Linux needs a privilege an application does not have; the
+    // default is what it has always run at.
     (void)work;
 #endif
 }
@@ -69,6 +110,18 @@ PriorityScope::~PriorityScope() {
         ::AvRevertMmThreadCharacteristics(static_cast<HANDLE>(task_));
     } else if (fallback_) {
         ::SetThreadPriority(::GetCurrentThread(), previousPriority_);
+    }
+#elif defined(__APPLE__)
+    if (timeConstrained_) {
+        thread_standard_policy_data_t standard{};
+        (void)::thread_policy_set(::pthread_mach_thread_np(::pthread_self()),
+                                  THREAD_STANDARD_POLICY,
+                                  reinterpret_cast<thread_policy_t>(&standard),
+                                  THREAD_STANDARD_POLICY_COUNT);
+    } else if (fallback_) {
+        const auto before = static_cast<qos_class_t>(previousPriority_);
+        (void)::pthread_set_qos_class_self_np(
+            before == QOS_CLASS_UNSPECIFIED ? QOS_CLASS_DEFAULT : before, 0);
     }
 #endif
 }

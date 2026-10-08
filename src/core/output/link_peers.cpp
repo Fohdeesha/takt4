@@ -11,14 +11,23 @@
 #if defined(_WIN32)
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include <ifaddrs.h>
 #include <net/if.h>
-
+#endif
+#if defined(__linux__)
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
+#elif defined(__APPLE__)
+#include <libproc.h>
+#include <netinet/in.h>
+#include <sys/proc_info.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cstring>
 #endif
 
 namespace takt4::output {
@@ -152,7 +161,7 @@ std::vector<in_addr> interfaceAddresses() {
             }
         }
     }
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     ifaddrs* list = nullptr;
     if (::getifaddrs(&list) != 0) {
         return addresses;
@@ -206,10 +215,16 @@ bool LinkPeerWatch::open(std::string& problem) {
         problem = "cannot open a socket (" + std::to_string(net::lastSocketError()) + ")";
         return false;
     }
-    // Shared with Link's own socket on the same port, which asks for the same.
+    // Shared with Link's own socket on the same port, which asks for the same. On macOS, as on
+    // every BSD, a second socket on a port takes SO_REUSEPORT as well, from both — and Link's own
+    // asks for it there; without it this one could not listen beside it (the first macOS runs,
+    // 2026-10-08). Linux shares a multicast port on SO_REUSEADDR alone.
     const int reuse = 1;
     ::setsockopt(socket->handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
                  sizeof reuse);
+#if defined(__APPLE__)
+    ::setsockopt(socket->handle, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof reuse);
+#endif
 #if defined(_WIN32)
     u_long nonBlocking = 1;
     ::ioctlsocket(socket->handle, FIONBIO, &nonBlocking);
@@ -419,6 +434,55 @@ bool portOwnedHere(std::uint16_t port) {
             if (std::stoul(local.substr(colon + 1), nullptr, 16) == port) {
                 return true;
             }
+        }
+    }
+    return false;
+#elif defined(__APPLE__)
+    // Every descriptor this process holds, from the kernel (libproc, which is what lsof asks);
+    // then whether one of them is a UDP socket bound to `port`, from the socket itself. A
+    // descriptor closed between the two questions fails the second, and is not ours any more.
+    const pid_t self = ::getpid();
+    const int wanted = ::proc_pidinfo(self, PROC_PIDLISTFDS, 0, nullptr, 0);
+    if (wanted <= 0) {
+        return false;
+    }
+    // Room for a few opened in between.
+    std::vector<proc_fdinfo> held(static_cast<std::size_t>(wanted) / sizeof(proc_fdinfo) + 16);
+    const int filled = ::proc_pidinfo(self, PROC_PIDLISTFDS, 0, held.data(),
+                                      static_cast<int>(held.size() * sizeof(proc_fdinfo)));
+    if (filled <= 0) {
+        return false;
+    }
+    held.resize(static_cast<std::size_t>(filled) / sizeof(proc_fdinfo));
+    for (const proc_fdinfo& one : held) {
+        if (one.proc_fdtype != PROX_FDTYPE_SOCKET) {
+            continue;
+        }
+        int type = 0;
+        socklen_t typeSize = sizeof type;
+        if (::getsockopt(one.proc_fd, SOL_SOCKET, SO_TYPE, &type, &typeSize) != 0 ||
+            type != SOCK_DGRAM) {
+            continue;
+        }
+        sockaddr_storage local{};
+        socklen_t size = sizeof local;
+        if (::getsockname(one.proc_fd, reinterpret_cast<sockaddr*>(&local), &size) != 0) {
+            continue;
+        }
+        in_port_t bound = 0;
+        if (local.ss_family == AF_INET) {
+            sockaddr_in v4{};
+            std::memcpy(&v4, &local, sizeof v4);
+            bound = v4.sin_port;
+        } else if (local.ss_family == AF_INET6) {
+            sockaddr_in6 v6{};
+            std::memcpy(&v6, &local, sizeof v6);
+            bound = v6.sin6_port;
+        } else {
+            continue;
+        }
+        if (ntohs(bound) == port) {
+            return true;
         }
     }
     return false;

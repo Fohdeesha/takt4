@@ -1,6 +1,7 @@
 #include "ui/window_state.hpp"
 
 #include "core/audio/hop_meter.hpp"
+#include "core/io/chars.hpp"
 #include "core/output/output_target.hpp"
 #include "core/settings/settings.hpp"
 
@@ -39,7 +40,7 @@ std::optional<double> readMilliseconds(std::string_view text) {
     double value = 0.0;
     const char* const begin = text.data();
     const char* const end = begin + text.size();
-    const std::from_chars_result result = std::from_chars(begin, end, value);
+    const std::from_chars_result result = io::fromChars(begin, end, value);
     if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(value)) {
         return std::nullopt;
     }

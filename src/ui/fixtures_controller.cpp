@@ -1342,12 +1342,16 @@ void FixturesController::chooseImportFile() {
     if (!import_.open) {
         return;
     }
-    const std::filesystem::path path =
-        askOpenFile("Import a fixture's definition", "", FileKind::FixtureDefinition);
-    if (path.empty()) {
-        return; // cancelled
-    }
-    importFile(path);
+    fileDialogs_.open("Import a fixture's definition", FileKind::FixtureDefinition,
+                      [this](const FileChoice& choice) {
+                          if (!choice.problem.empty()) {
+                              setStatus(choice.problem, true);
+                              return;
+                          }
+                          if (!choice.path.empty()) { // empty is a cancel
+                              importFile(choice.path);
+                          }
+                      });
 }
 
 void FixturesController::importFile(const std::filesystem::path& path) {

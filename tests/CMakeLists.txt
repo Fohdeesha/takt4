@@ -52,6 +52,7 @@ add_executable(takt4_tests
   features/filterbank_test.cpp
   features/intensity_test.cpp
   io/blob_file_test.cpp
+  io/chars_test.cpp
   io/npy_file_test.cpp
   io/utf8_test.cpp
   io/wav_file_test.cpp
@@ -245,9 +246,11 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
 if(TAKT4_BUILD_UI)
   add_executable(takt4_ui_tests
     ui/crash_report_test.cpp
+    ui/file_dialog_test.cpp
     ui/fixtures_test.cpp
     ui/import_test.cpp
     ui/main.cpp
+    ui/keys.hpp
     ui/model_watch.hpp
     ui/nothing_real.hpp
     ui/rule_text_test.cpp

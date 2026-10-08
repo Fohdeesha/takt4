@@ -27,6 +27,19 @@ else()
   target_compile_options(takt4_ui_slint PRIVATE -w)
 endif()
 target_link_libraries(takt4_ui_slint PUBLIC Slint::Slint)
+# **macOS: Slint's library patched before anything links it.** Skia's prebuilt bindings define
+# their own hidden typeinfo for std::exception, which took every `catch (const std::exception&)`
+# in takt4 away from takt4's own exceptions on a Mac — see cmake/apple_skia_typeinfo.cmake. Here
+# rather than in cmake/deps.cmake, whose every change costs CI a cold Slint build.
+if(APPLE)
+  add_custom_target(takt4_skia_typeinfo
+    COMMAND "${CMAKE_COMMAND}" "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
+            -P "${PROJECT_SOURCE_DIR}/cmake/apple_skia_typeinfo.cmake"
+    COMMENT "Keeping Skia's copy of the C++ runtime's type information to Skia"
+    VERBATIM)
+  add_dependencies(takt4_skia_typeinfo cargo-build_slint_cpp)
+  add_dependencies(takt4_ui_slint takt4_skia_typeinfo)
+endif()
 
 add_library(takt4_ui STATIC
   app.cpp
@@ -61,6 +74,13 @@ add_library(takt4_ui STATIC
   window_state.hpp
 )
 add_library(takt4::ui ALIAS takt4_ui)
+
+# macOS's open and save panels are Objective-C (file_dialog_mac.mm); file_dialog.cpp holds the
+# other systems'.
+if(APPLE)
+  target_sources(takt4_ui PRIVATE file_dialog_mac.mm) # OBJCXX is enabled in the top directory
+  target_link_libraries(takt4_ui PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
+endif()
 
 target_include_directories(takt4_ui PUBLIC "${PROJECT_SOURCE_DIR}/src")
 

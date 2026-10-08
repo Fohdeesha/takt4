@@ -264,7 +264,7 @@ TEST_CASE("the peers list is every Link peer but this process's own", "[output][
 TEST_CASE("a port this process holds is known to be its own", "[output][link]") {
     // What tells takt4's own Link apart from a peer: the socket an announcement leaves from is
     // one this process opened. Asked of a socket this test opens, and again once it is closed.
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
     std::uint16_t port = 0;
     {
         takt4::testing::LoopbackReceiver socket;
