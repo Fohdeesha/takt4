@@ -295,6 +295,18 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ runner.os != 'Windows' && '-- -k 0' || '' }}
 
+      # **TEMPORARY, for the macOS port**: where the two kinds of abort the first macOS runs met
+      # happen — an exception no handler took, and one thrown through a function that may not throw.
+      - name: Backtraces
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          for t in "a MIDI target is a row like any other" "the keep for the next track box is ticked by a click"; do
+            echo "===== $t"
+            lldb --batch -o "process launch" -k "bt 40" -k "quit" -- build/macos/bin/takt4_ui_tests "$t" 2>&1 | tail -90
+          done
+
       # `-all`: a runner has no show on it to disturb, so it runs the [network] and [hardware]
       # tests the default presets leave out on a rig (the audit's T2).
       - name: Test

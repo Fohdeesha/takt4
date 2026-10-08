@@ -320,7 +320,9 @@ TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][
     // One frame to the limited broadcast, on a port nothing uses.
     ArtNetSender node("255.255.255.255", 57092);
     const std::array<std::uint8_t, 3> levels{0, 0, 0};
-    CHECK(node.sendDmx(0, levels));
+    const bool sent = node.sendDmx(0, levels);
+    INFO(node.problem());
+    CHECK(sent);
     CHECK(node.failed() == 0);
     CHECK(node.problem().empty());
 }

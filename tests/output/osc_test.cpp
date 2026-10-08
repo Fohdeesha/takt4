@@ -243,7 +243,9 @@ TEST_CASE("an OSC target at a broadcast address really sends", "[output][osc][ne
     OscSender sender("255.255.255.255", 57091);
     OscMessage message("/takt4/bpm");
     message.addFloat(128.0f);
-    CHECK(sender.send(message.packet()));
+    const bool sent = sender.send(message.packet());
+    INFO(sender.problem());
+    CHECK(sent);
     CHECK(sender.failed() == 0);
     CHECK(sender.problem().empty());
 }

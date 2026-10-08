@@ -9,6 +9,11 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
+#include <pthread/qos.h>
 #endif
 
 using takt4::rt::DenormalsAsZero;
@@ -31,6 +36,27 @@ float plusZero(float value) {
     return in + zero;
 }
 
+#if defined(__APPLE__)
+/// The calling thread's quality of service.
+int qosNow() {
+    qos_class_t now = QOS_CLASS_UNSPECIFIED;
+    int relative = 0;
+    (void)pthread_get_qos_class_np(pthread_self(), &now, &relative);
+    return static_cast<int>(now);
+}
+
+/// Whether the calling thread runs under Mach's time-constraint policy.
+bool timeConstrainedNow() {
+    thread_time_constraint_policy_data_t policy{};
+    mach_msg_type_number_t count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+    boolean_t isDefault = FALSE;
+    return thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+                             reinterpret_cast<thread_policy_t>(&policy), &count,
+                             &isDefault) == KERN_SUCCESS &&
+           !isDefault;
+}
+#endif
+
 } // namespace
 
 TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]") {
@@ -47,6 +73,9 @@ TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]"
         std::thread([&] {
 #if defined(_WIN32)
             before = ::GetThreadPriority(::GetCurrentThread());
+#elif defined(__APPLE__)
+            // The output thread: whether it is time-constrained. The others: their QoS class.
+            before = work == ThreadWork::Output ? int{timeConstrainedNow()} : qosNow();
 #endif
             {
                 const PriorityScope scope(work);
@@ -64,10 +93,14 @@ TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]"
                     std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     during = (std::max)(during, ::GetThreadPriority(::GetCurrentThread()));
                 }
+#elif defined(__APPLE__)
+                during = work == ThreadWork::Output ? int{timeConstrainedNow()} : qosNow();
 #endif
             }
 #if defined(_WIN32)
             after = ::GetThreadPriority(::GetCurrentThread());
+#elif defined(__APPLE__)
+            after = work == ThreadWork::Output ? int{timeConstrainedNow()} : qosNow();
 #endif
         }).join();
         INFO((work == ThreadWork::Output ? "output" : "compute")
@@ -77,6 +110,17 @@ TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]"
         CHECK(raised);
         CHECK(during > before);
         CHECK(after == before);
+#elif defined(__APPLE__)
+        // macOS asks no privilege for either (2026-10-08).
+        CHECK(raised);
+        if (work == ThreadWork::Output) {
+            CHECK(before == 0);
+            CHECK(during == 1);
+            CHECK(after == 0);
+        } else {
+            CHECK(during == static_cast<int>(QOS_CLASS_USER_INTERACTIVE));
+            CHECK(after != static_cast<int>(QOS_CLASS_USER_INTERACTIVE));
+        }
 #else
         CHECK_FALSE(raised);
 #endif

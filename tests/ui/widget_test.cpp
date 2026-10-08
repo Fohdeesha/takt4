@@ -173,6 +173,19 @@ struct Bench {
             key(std::string(1, c));
         }
     }
+    /// To the end of the text in the box being typed in, as the system does it: End on Windows
+    /// and Linux; Command+Right on a Mac, whose boxes leave End to the window as its own text
+    /// fields do (the first macOS run, 2026-10-08). Slint gives Command as its `control`.
+    void endOfText() {
+#if defined(__APPLE__)
+        window().dispatch_key_press_event(slint::SharedString("\x11"));
+        key(kRight);
+        window().dispatch_key_release_event(slint::SharedString("\x11"));
+        settle();
+#else
+        key(kEnd);
+#endif
+    }
     void wheel(float x, float y, float dy) {
         window().dispatch_pointer_scroll_event(slint::LogicalPosition({x, y}), 0.0f, dy);
         settle();
@@ -244,7 +257,7 @@ TEST_CASE("a button click finishes what was being typed, once", "[ui][widgets]")
     Bench b;
     b.click(120.0f, kEntryY);
     REQUIRE(b.ui->get_entry_focused());
-    b.key(kEnd);
+    b.endOfText();
     b.type("x");
     CHECK(b.committed.empty());
     b.click(buttonX(0), kButtonY);
@@ -307,7 +320,7 @@ TEST_CASE("Space ticks a tick box that has the keyboard, and other keys pass up"
 TEST_CASE("a tick box click finishes what was being typed", "[ui][widgets]") {
     Bench b;
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("y");
     b.click(30.0f, 90.0f);
     settle();
@@ -468,7 +481,7 @@ TEST_CASE("a long list opens on the entry picked and scrolls to reach the rest",
 TEST_CASE("a text box says every keystroke and commits once, on Enter", "[ui][widgets]") {
     Bench b;
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     for (int i = 0; i < 4; ++i) {
         b.key(kBackspace);
     }
@@ -492,7 +505,7 @@ TEST_CASE("a text box says every keystroke and commits once, on Enter", "[ui][wi
 TEST_CASE("a text box commits on a click away, once", "[ui][widgets]") {
     Bench b;
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("s");
     b.clickAway();
     settle();
@@ -504,7 +517,7 @@ TEST_CASE("a text box commits on a click away, once", "[ui][widgets]") {
 TEST_CASE("Escape in a text box finishes the edit and is never PANIC", "[ui][widgets]") {
     Bench b;
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("q");
     b.key(kEscape);
     settle();
@@ -520,7 +533,7 @@ TEST_CASE("Escape in a text box finishes the edit and is never PANIC", "[ui][wid
 TEST_CASE("Escape in a box that puts back what it held commits nothing", "[ui][widgets]") {
     Bench b;
     b.click(300.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("9");
     CHECK(std::string(b.ui->get_revert_shown()) == "70019");
     b.key(kEscape);
@@ -545,7 +558,7 @@ TEST_CASE("a text box follows its value while not typed in, and never over what 
     settle();
     CHECK(std::string(b.ui->get_entry_shown()) == "wall");
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("s");
     b.ui->set_entry_value("robot"); // the owner changes it under the typing
     settle();
@@ -565,13 +578,13 @@ TEST_CASE("a text box follows its value while not typed in, and never over what 
 TEST_CASE("clicking from one box into another commits the first to itself", "[ui][widgets]") {
     Bench b;
     b.click(120.0f, kEntryY);
-    b.key(kEnd);
+    b.endOfText();
     b.type("1");
     b.click(300.0f, kEntryY);
     settle();
     CHECK(b.committed == std::vector<std::pair<int, std::string>>{{0, "deck1"}});
     CHECK(b.ui->get_revert_focused());
-    b.key(kEnd);
+    b.endOfText();
     b.type("2");
     b.key(kEnter);
     settle();
@@ -688,7 +701,7 @@ TEST_CASE("a slider steps with the arrows and goes to its ends with Home and End
     b.key(kRight);
     b.key(kLeft);
     CHECK(b.ui->get_track_value() == 1.0f);
-    b.key(kEnd);
+    b.key(kEnd); // the slider's own End, on every system
     CHECK(b.ui->get_track_value() == 100.0f);
     b.key(kHome);
     CHECK(b.ui->get_track_value() == -100.0f);
@@ -975,7 +988,7 @@ TEST_CASE("a row's box being typed in keeps what is typed while its row changes,
     Bench b;
     const auto rows = benchRows(b);
     b.click(456.0f, kRow0Y);
-    b.key(kEnd);
+    b.endOfText();
     b.type("x");
     BenchRow row = *rows->row_data(0);
     row.name = slint::SharedString("renamed from outside");
@@ -1034,7 +1047,7 @@ TEST_CASE("a count takes a whole number, clamped to its range, and never sets it
     const auto retype = [&b](const std::string& text) {
         b.click(70.0f, kCountY);
         REQUIRE(b.ui->get_count_focused());
-        b.key(kEnd);
+        b.endOfText();
         b.key(kBackspace);
         b.key(kBackspace);
         b.type(text);
@@ -1114,7 +1127,7 @@ TEST_CASE("a dashed box is still a box: it takes the keyboard, and draws solid w
     CHECK(count(typing.first, typing.first.front()) ==
           static_cast<std::ptrdiff_t>(typing.first.size()));
     CHECK_FALSE(same(typing.first.front(), typing.second));
-    b.key(kEnd);
+    b.endOfText();
     for (int i = 0; i < 3; ++i) {
         b.key(kBackspace);
     }
