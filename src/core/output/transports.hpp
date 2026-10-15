@@ -133,6 +133,16 @@ public:
     /// session off, which must not land after the follower has switched it on.
     void setLinkFollowing(bool following);
     bool linkFollowing() const noexcept { return linkFollowing_; }
+
+    /// **The MIDI input a clock is being followed from** (`timing::MidiClockFollower`), or empty
+    /// for none. A MIDI clock sent to that same device could come straight back round — through
+    /// its MIDI thru, or a virtual port's own loop — and be followed: so while this is set, a MIDI
+    /// clock output to it is not opened, and its row says why (`problems`). The device is the
+    /// port's name without the number Windows gives it (`midiPortBaseName`). Re-applies the
+    /// outputs when it changes, and throws as `setOutputs` does.
+    void setClockInput(std::string_view port);
+    /// The device set above, without its number.
+    const std::string& clockInput() const noexcept { return clockInput_; }
     /// The Link output's delay: the timeline is put under each beat this much later.
     double linkDelaySeconds() const noexcept { return linkDelay_; }
 
@@ -329,6 +339,8 @@ private:
     MidiOutput* openDevice(const std::string& device);
     /// Closes every device nothing names any more — the clock's or a target's.
     void closeUnusedDevices() noexcept;
+    /// A MIDI clock output to the device the clock is followed from (`setClockInput`).
+    bool loopsBack(const OutputTarget& target) const noexcept;
     /// Tries to bring back every lost MIDI device, at most once per `kMidiReconnectSeconds`.
     void maintainMidi(double now) noexcept;
     /// Joins or leaves Link's session, and starts its phase afresh.
@@ -369,6 +381,8 @@ private:
     bool linkEnabled_ = false;
     /// See `setLinkFollowing`.
     bool linkFollowing_ = false;
+    /// See `setClockInput`.
+    std::string clockInput_;
     double linkDelay_ = 0.0;
     bool started_ = false;
     /// Whether the MIDI clock is meant to be ticking — see `startClock`.

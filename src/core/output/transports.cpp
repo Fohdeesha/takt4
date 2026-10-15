@@ -175,6 +175,22 @@ void Transports::setLinkFollowing(bool following) {
     barsApart_ = 0;
 }
 
+void Transports::setClockInput(std::string_view port) {
+    std::string device(midiPortBaseName(port));
+    if (device == clockInput_) {
+        return;
+    }
+    clockInput_ = std::move(device);
+    // Which clocks may be opened has changed, and nothing else: every output keeps its place.
+    const std::vector<OutputTarget> targets = outputs_;
+    setOutputs(targets);
+}
+
+bool Transports::loopsBack(const OutputTarget& target) const noexcept {
+    return target.kind == OutputTarget::Kind::MidiClock && !clockInput_.empty() &&
+           midiPortBaseName(target.device) == clockInput_;
+}
+
 MidiClock* Transports::midiClock() const noexcept {
     return clocks_.empty() ? nullptr : clocks_.front().clock.get();
 }
@@ -235,7 +251,7 @@ void Transports::closeUnusedDevices() noexcept {
             if (target.enabled &&
                 (target.kind == OutputTarget::Kind::Midi ||
                  target.kind == OutputTarget::Kind::MidiClock) &&
-                target.device == entry->first) {
+                target.device == entry->first && !loopsBack(target)) {
                 wanted = true;
                 break;
             }
@@ -309,6 +325,12 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
             }
             break;
         case OutputTarget::Kind::MidiClock: {
+            // Never to the device the clock is followed from (`setClockInput`).
+            if (loopsBack(target)) {
+                clockProblems_[i] = "not sent — the MIDI clock is followed from this device, "
+                                    "and could come straight back round";
+                break;
+            }
             // One clock a device: two would tick it twice as fast.
             const auto ticking = std::find_if(clocks_.begin(), clocks_.end(), [&](const Clock& c) {
                 return c.device == target.device;

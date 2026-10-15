@@ -1150,6 +1150,44 @@ TEST_CASE("a second MIDI clock on a device already clocked is refused, and says 
     transports.stopOutputs();
 }
 
+TEST_CASE("no MIDI clock is sent to the device the clock is followed from, and says why",
+          "[output][midi][follow]") {
+    // A clock sent back to the mixer it comes in from could come straight back round — through
+    // the mixer's MIDI thru, or a virtual port's own loop — and be followed. So that clock is not
+    // built while the mixer is followed, and its row says why; another device's ticks on.
+    Wires wires;
+    Transports::Config config;
+    config.outputs = {clockTo("mixer", "DJM-A9 2", 0.0), clockTo("drums", "drums", 0.0)};
+    config.openMidi = wires.opener();
+    Transports transports(config);
+    REQUIRE(transports.clockCount() == 2);
+    // Followed from the mixer's input, which Windows lists at another number than its output.
+    transports.setClockInput("DJM-A9 1");
+    CHECK(transports.clockInput() == "DJM-A9");
+    CHECK(transports.clockCount() == 1);
+    const std::vector<Transports::Problem> problems = transports.problems();
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.front().id == config.outputs[0].id);
+    CHECK(problems.front().why == "not sent — the MIDI clock is followed from this device, and "
+                                  "could come straight back round");
+
+    transports.startOutputs(0.0);
+    transports.startClock(0.0);
+    const TempoState state;
+    for (int ms = 1; ms <= 1000; ++ms) {
+        wires.setNow(ms / 1000.0);
+        transports.advance(ms / 1000.0, state);
+    }
+    CHECK(wires.count("DJM-A9 2", takt4::output::MidiClock::kTick) == 0);
+    CHECK(wires.count("drums", takt4::output::MidiClock::kTick) >= 47);
+    transports.stopOutputs();
+
+    // Followed no longer: the mixer has its clock back.
+    transports.setClockInput("");
+    CHECK(transports.clockCount() == 2);
+    CHECK(transports.problems().empty());
+}
+
 TEST_CASE("editing the outputs keeps every clock running, and one taken away is stopped",
           "[output][midi]") {
     // A receiver that is sent Stop and Start stops playing and starts again from bar 1. Renaming

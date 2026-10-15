@@ -163,6 +163,7 @@ bool changesSnapshot(OutputCommand::Kind kind) noexcept {
     switch (kind) {
     case OutputCommand::Kind::LinkEnabled:
     case OutputCommand::Kind::LinkFollowing:
+    case OutputCommand::Kind::ClockInput:
     case OutputCommand::Kind::OscTargets:
     case OutputCommand::Kind::Outputs:
     case OutputCommand::Kind::MidiClockPort:
@@ -832,6 +833,9 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::LinkFollowing:
             transports_.setLinkFollowing(command.enabled);
+            break;
+        case OutputCommand::Kind::ClockInput:
+            transports_.setClockInput(command.port.value_or(""));
             break;
         case OutputCommand::Kind::OscTargets:
             setTargets(oscOutputs(command.targets), now);

@@ -90,6 +90,9 @@ struct OutputCommand {
         /// The beats come from Link itself, or no longer do: the outputs stop leading Link, or
         /// lead it again. See `Transports::setLinkFollowing`.
         LinkFollowing,
+        /// The MIDI input a clock is followed from, in `port`, or none: no MIDI clock is sent back
+        /// to it. See `Transports::setClockInput`.
+        ClockInput,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -192,6 +195,13 @@ struct OutputCommand {
         OutputCommand command;
         command.kind = Kind::LinkFollowing;
         command.enabled = following;
+        return command;
+    }
+    /// `port` empty for none.
+    static OutputCommand clockInput(std::string port) {
+        OutputCommand command;
+        command.kind = Kind::ClockInput;
+        command.port = std::move(port);
         return command;
     }
     static OutputCommand outputDelay(std::string outputId, double seconds) {
