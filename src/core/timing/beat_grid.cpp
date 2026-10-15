@@ -67,7 +67,7 @@ std::optional<BeatGrid::Grid> BeatGrid::follow(const GridReading& reading) noexc
         state_.locked = true;
         state_.acquired = true;
         state_.noSignal = false;
-        return Grid{reading.bpm, reading.beat, reading.anchored};
+        return Grid{reading.bpm, reading.beat, reading.anchored, reading.placements};
     }
     if (!state_.locked || !haveGood_) {
         return std::nullopt; // nothing heard since START, or gone quiet since
@@ -80,7 +80,7 @@ std::optional<BeatGrid::Grid> BeatGrid::follow(const GridReading& reading) noexc
     // Gone, and run on at its last tempo and phase: the lock stays, as the tracker's does while
     // it flywheels.
     coasting_ = true;
-    return Grid{good_.bpm, good_.beat + gone * good_.bpm / 60.0, good_.anchored};
+    return Grid{good_.bpm, good_.beat + gone * good_.bpm / 60.0, good_.anchored, good_.placements};
 }
 
 void BeatGrid::goQuiet() noexcept {
@@ -213,14 +213,19 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
         publish(reading.at);
         return std::nullopt;
     }
-    // A source that has just said where its bars are — a MIDI Start — takes its own bar back,
-    // and is followed from there.
-    if (grid->anchored && !wasAnchored_) {
+    // A source that has just said where its bars are — a MIDI Start, or another — takes its own
+    // bar back, from any DOWNBEAT before it, and is followed from there.
+    if (grid->anchored && (!wasAnchored_ || grid->placements != placements_)) {
+        // A bar that was somewhere else has moved, which a bridging Link output has to be told
+        // at once, as it is told of a DOWNBEAT.
+        snapUnsent_ = snapUnsent_ || barSet_;
         anchor_ = 0.0;
         barSet_ = true;
         haveLast_ = false;
+        placedUncrossed_ = true;
     }
     wasAnchored_ = grid->anchored;
+    placements_ = grid->placements;
 
     const double scaled = scale();
     const double bpm = grid->bpm * scaled;
@@ -252,7 +257,14 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
                 reading.at - std::llround((p - static_cast<double>(now)) * period);
             if (!sent_ || static_cast<double>(moment - lastSentAt_) >= kSameBeat * period) {
                 beat = send(now, moment, now - before);
+            } else if (placedUncrossed_ && beatInBarOf(now) == 1) {
+                // The source has just placed its bar, and the bar's first beat comes too soon
+                // after the beat just sent to go out as another. The bar is declared on its
+                // moment instead — as a DOWNBEAT pressed just after a beat declares one — so its
+                // rules fire on time, and the beat's do not fire twice.
+                declareBar();
             }
+            placedUncrossed_ = false;
         }
     }
     haveLast_ = true;

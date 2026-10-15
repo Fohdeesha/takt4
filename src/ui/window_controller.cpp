@@ -504,12 +504,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
       runner_(source_, transportConfig(settings, tracker.engine().tempoOptions())),
+      // Every MIDI input message stamped on Link's clock, which the runner owns.
+      inputs_([this] { return runner_.transports().link().now().count(); }),
       // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
       // a port, so a machine with a controller plugged in is not listened to — and no
       // socket is bound — until somebody says to. The runner is each one's second
       // destination: the `panic` and `rule/<id>/enable` are questions for the rules,
       // which live on the output thread behind that queue.
-      control_(source_, control::MidiControl::Config{}, &runner_),
+      control_(source_, inputs_, control::MidiControl::Config{}, &runner_),
       oscControl_(source_, oscControlConfig(settings), &runner_),
       // the editor, built with the window and shown on demand. It is given the rules
       // straight from the preset rather than through `setRules`, because the runner has

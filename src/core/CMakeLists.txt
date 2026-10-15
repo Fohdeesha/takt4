@@ -144,6 +144,8 @@ add_library(takt4_core STATIC
   io/utf8.hpp
   io/wav_file.cpp
   io/wav_file.hpp
+  midi/midi_input_hub.cpp
+  midi/midi_input_hub.hpp
   model/activation_engine.cpp
   model/activation_engine.hpp
   model/beat_model.cpp
@@ -197,6 +199,10 @@ add_library(takt4_core STATIC
   timing/link_follower.cpp
   timing/link_follower.hpp
   timing/link_reader.hpp
+  timing/midi_clock_follower.cpp
+  timing/midi_clock_follower.hpp
+  timing/tick_fit.cpp
+  timing/tick_fit.hpp
   tracking/annotation.cpp
   tracking/annotation.hpp
   tracking/beat_decoder.hpp

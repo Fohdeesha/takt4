@@ -31,6 +31,10 @@ struct GridReading {
     /// had neither, whose ticks carry a tempo and no phase at all: its whole numbers are nobody's
     /// beats until the operator presses DOWNBEAT on one.
     bool anchored = false;
+    /// How many times the source has placed its bar afresh — a MIDI Start, Continue or Song
+    /// Position. Each one takes the bar back from a DOWNBEAT pressed before it, since that is what
+    /// they mean. Link places its bar once and for all, and leaves this at zero.
+    std::uint32_t placements = 0;
 };
 
 /// A beat grid followed from somewhere else — what `ExternalBeats` reads every round on its own

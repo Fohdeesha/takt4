@@ -3,6 +3,7 @@
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
 #include "core/engine/beat_source.hpp"
+#include "core/midi/midi_input_hub.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -30,11 +31,15 @@ namespace takt4::control {
 /// than duplicated — an operator pressing the same pad twice while assigning two actions
 /// has changed their mind, not asked for both.
 ///
+/// **It opens no device itself**: it listens to one through `midi::MidiInputHub`, which opens
+/// each MIDI input once, so the control input and a MIDI clock follower on the same device — a
+/// mixer that sends both — share it. It is never handed a clock's messages.
+///
 /// Messages arrive on RtMidi's own callback thread, which is not the audio thread and not
 /// the inference thread. Everything it touches is either atomic or under `mutex_`, and the
 /// only thing it does to the beats is post to their source (`engine::BeatSource::post`), which
 /// is built for exactly this: many producers, one consumer, applied between frames.
-class MidiControl {
+class MidiControl final : public midi::MidiInputListener {
 public:
     struct Config {
         /// Off unless an operator asks for it, and a port has to be named — opening
@@ -45,22 +50,24 @@ public:
         std::string port;
     };
 
-    /// The beat source must outlive this. Nothing is opened until `start()`.
+    /// The beat source and the hub must outlive this. Nothing is listened to until `start()`.
     ///
     /// `rules` is where the `panic` and `rule/<id>/enable` go — `output::OutputRunner`
     /// in an app, null where there is none, in which case a binding to either is refused
     /// rather than silently doing nothing. It must outlive this where it is not null;
     /// `setRuleControl` exists because an owner usually builds the runner second.
-    MidiControl(engine::BeatSource& beats, Config config, RuleControl* rules = nullptr);
-    ~MidiControl();
+    MidiControl(engine::BeatSource& beats, midi::MidiInputHub& inputs, Config config,
+                RuleControl* rules = nullptr);
+    ~MidiControl() override;
 
     MidiControl(const MidiControl&) = delete;
     MidiControl& operator=(const MidiControl&) = delete;
 
-    /// Opens the port and begins listening. Throws `std::runtime_error` when there is no
-    /// such port or no usable MIDI API — an operator has to be told, because a control
-    /// surface that silently does nothing is worse than one that will not start. Does
-    /// nothing when the config says disabled, and nothing when already running.
+    /// Begins listening to the port, which the hub opens unless something else already
+    /// listens to it. Throws what `midi::MidiInputHub::listen` throws — no such port, another
+    /// program holding it, no usable MIDI API — because an operator has to be told: a control
+    /// surface that silently does nothing is worse than one that will not start. Does nothing
+    /// when the config says disabled, and nothing when already running.
     void start();
     void stop() noexcept;
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
@@ -122,6 +129,8 @@ public:
     /// begun, and counted while it is being handled, so that `stop` can wait for it. For a test
     /// that plays that thread; RtMidi's own callback calls nothing else.
     void deliver(std::span<const unsigned char> message) noexcept;
+    /// What the hub hands over: `deliver`.
+    void onMidi(std::span<const unsigned char> message, std::int64_t atMicros) noexcept override;
     /// For the tests: listening as far as `deliver` and `stop` can tell, with no port behind it —
     /// the test sandbox opens none, and a message on its way when `stop` begins cannot be arranged
     /// with a real one.
@@ -146,9 +155,8 @@ public:
 private:
     Config config_;
     ControlSurface surface_;
+    midi::MidiInputHub& inputs_;
 
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
     std::atomic<bool> running_{false};
     /// Messages past `running_` and not yet handled — what `stop` waits for. See `deliver`.
     std::atomic<int> inFlight_{0};

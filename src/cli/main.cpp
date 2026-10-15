@@ -7,6 +7,7 @@
 #include "cli/args.hpp"
 #include "cli/console.hpp"
 #include "cli/follow.hpp"
+#include "cli/midi_in.hpp"
 #include "core/audio/asio_scan.hpp"
 #include "core/audio/channel_meter.hpp"
 #include "core/audio/channel_picker.hpp"
@@ -182,6 +183,7 @@ void printUsage(std::ostream& out) {
         << "      The other options are the meter's and `beats`', and mean the same.\n"
         << "\n";
     takt4::cli::printFollowUsage(out);
+    takt4::cli::printMidiInUsage(out);
     takt4::cli::printAnnotateUsage(out);
     out << "  takt4-cli --version\n";
 }
@@ -1501,6 +1503,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "follow") {
             return takt4::cli::runFollow({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "midi-in") {
+            return takt4::cli::runMidiIn({args.begin() + 1, args.end()});
         }
         if (args[0] == "annotate") {
             return takt4::cli::runAnnotate({args.begin() + 1, args.end()});

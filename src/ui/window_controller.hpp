@@ -8,6 +8,7 @@
 #include "core/control/osc_control.hpp"
 #include "core/engine/beat_source.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/midi/midi_input_hub.hpp"
 #include "core/output/link_peers.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
@@ -958,6 +959,12 @@ private:
     std::uint32_t dotBeatInBar_ = 0;
     std::uint64_t dotBars_ = 0;
     slint::Timer dotTimer_;
+
+    /// The machine's MIDI inputs, each opened once however many things listen to it — the control
+    /// input below, and a MIDI clock being followed. **After `runner_`**, whose Link clock stamps
+    /// every message it hands over, and **before the control input**, which lets go of it as it is
+    /// destroyed.
+    midi::MidiInputHub inputs_;
 
     /// the two control surfaces. **Both after `runner_`, so both are destroyed first**,
     /// and that ordering is load-bearing rather than a preference: since the `panic` and

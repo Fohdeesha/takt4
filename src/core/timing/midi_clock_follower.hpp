@@ -1,0 +1,154 @@
+#pragma once
+
+#include "core/midi/midi_input_hub.hpp"
+#include "core/rt/published.hpp"
+#include "core/rt/spsc_ring.hpp"
+#include "core/timing/grid_source.hpp"
+#include "core/timing/tick_fit.hpp"
+
+#include <atomic>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace takt4::timing {
+
+/// **Following a MIDI clock** — a DJ mixer's, a DAW's — as a `GridSource`.
+///
+/// A MIDI clock gives its tempo by spacing alone, 24 Timing Clock messages to the beat, and says
+/// where the beats are only with Start (the next tick is the first of the song), Continue (the
+/// song goes on from where it stopped) and Song Position (where it will go on from, in sixteenths).
+/// So:
+///
+///   * **The tempo, and when each tick was**, come from a line through the moments the ticks
+///     arrived (`TickFit`), each stamped by the hub as it came in — never from when this thread
+///     got round to it.
+///   * **The beat** is the ticks counted since the last Start, Continue or Song Position, over 24.
+///     Until one of those, they are counted from the first tick heard, and their whole numbers are
+///     nobody's beats (`GridReading::anchored` false): a DJ mixer's clock runs from power-on with
+///     no Start, and the operator's DOWNBEAT gives the beats their phase.
+///   * **Each Start, Continue and Song Position places bar 1** (`GridReading::placements`), over
+///     any DOWNBEAT pressed before it: that is what they mean.
+///   * **Stop** halts the beats at once when the operator has asked for that (`setObeyStartStop`),
+///     until a Start or Continue. Otherwise it is let pass — which the MIDI specification does not
+///     do and a DJ mixer needs: a DJM keeps its clock running after its Stop button, and a stray
+///     press must not black out the rig.
+///   * **Present** while ticks keep coming — one within the last `kAbsentTicks` tick gaps, or
+///     `kAbsentMicros`, whichever is longer — once `kSettledTicks` have come without a break: two
+///     beats to measure the tempo by. A clock that stops is coasted by `BeatGrid`.
+///
+/// The messages arrive on the driver's thread (`midi::MidiInputListener`) and are passed through a
+/// lock-free ring to `ExternalBeats`' thread, which does everything else (`GridSource`). The port
+/// is opened and closed by whoever owns this (`listen`, `stopListening`), on their own thread, so
+/// a port that cannot be opened is said there.
+class MidiClockFollower final : public GridSource, public midi::MidiInputListener {
+public:
+    /// Ticks without a break before the tempo is believed: two beats.
+    static constexpr std::uint64_t kSettledTicks = 48;
+    /// A clock is gone when no tick has come for this many of its tick gaps...
+    static constexpr double kAbsentTicks = 4.0;
+    /// ...or this long, whichever is longer.
+    static constexpr std::int64_t kAbsentMicros = 100'000;
+    /// Messages the ring holds: a minute of ticks at 174 BPM, where the worker takes them every
+    /// millisecond.
+    static constexpr std::size_t kRingCapacity = 4096;
+
+    /// What the clock is doing, for the window and the console. Published by the worker; any
+    /// thread.
+    struct Status {
+        /// Ticks arriving.
+        bool ticking = false;
+        /// The tempo they say, once they have said it for `kSettledTicks`; zero before.
+        double bpm = 0.0;
+        /// Whether a Start, Continue or Song Position has said where the beats are. Until one has,
+        /// the beats are wherever the ticks were first counted from, and DOWNBEAT is what puts
+        /// them on the beat.
+        bool placed = false;
+        /// A Stop has come since the last Start or Continue.
+        bool stopped = false;
+        /// Ticks this run, ticks held back as deliveries held up, and how many times the tempo
+        /// was taken to have moved (`TickFit`).
+        std::uint64_t ticks = 0;
+        std::uint64_t heldBack = 0;
+        std::uint64_t tempoChanges = 0;
+        /// Messages lost because the ring was full.
+        std::uint64_t dropped = 0;
+    };
+
+    /// Listens through `inputs`, and reads the present on its clock.
+    explicit MidiClockFollower(midi::MidiInputHub& inputs);
+    ~MidiClockFollower() override;
+
+    /// Starts listening to the input `port` names (`midi::MidiInputHub::listen`), and returns its
+    /// full name. Throws as that does, saying "MIDI clock: " first. The owner's thread.
+    std::string listen(std::string_view port);
+    /// Stops listening. The owner's thread; safe when not listening.
+    void stopListening() noexcept;
+    /// The full name of the input listened to, or empty.
+    std::string port() const;
+
+    /// Whether a Stop halts the beats. Any thread, any time: switched on while the clock is
+    /// stopped, the beats halt at once.
+    void setObeyStartStop(bool obey) noexcept { obey_.store(obey, std::memory_order_relaxed); }
+    bool obeyStartStop() const noexcept { return obey_.load(std::memory_order_relaxed); }
+
+    Status status() const noexcept { return status_.load(); }
+
+    // --- GridSource: `ExternalBeats`' thread -------------------------------------------------
+    void begin(std::uint32_t beatsPerBar) noexcept override;
+    GridReading read() noexcept override;
+    void end() noexcept override;
+
+    // --- midi::MidiInputListener: the driver's thread ------------------------------------------
+    void onMidi(std::span<const unsigned char> message, std::int64_t atMicros) noexcept override;
+    bool wantsClock() const noexcept override { return true; }
+
+private:
+    /// A clock's message as it came: its status byte, Song Position's two data bytes, and when.
+    struct Message {
+        std::int64_t at = 0;
+        unsigned char status = 0;
+        unsigned char data1 = 0;
+        unsigned char data2 = 0;
+    };
+
+    void handle(const Message& message) noexcept;
+    void tick(std::int64_t at) noexcept;
+    /// The next tick is song tick `songTick`: the bar is placed afresh.
+    void placeNextTick(std::int64_t songTick) noexcept;
+    /// How long without a tick before the clock is gone.
+    double absentAfter() const noexcept;
+    bool ticking(std::int64_t now) const noexcept;
+    void publish(std::int64_t now) noexcept;
+
+    midi::MidiInputHub& inputs_;
+    std::atomic<bool> obey_{false};
+    rt::SpscRing<Message, kRingCapacity> messages_;
+    std::atomic<std::uint64_t> dropped_{0};
+    rt::Published<Status> status_;
+
+    // Everything below is the worker's alone, from `begin` to `end`.
+    TickFit fit_;
+    /// Ticks counted this run; the next tick's number. The fit's numbering.
+    std::int64_t ticks_ = 0;
+    bool heardTick_ = false;
+    std::int64_t lastTickAt_ = 0;
+    /// Ticks since the clock last came (back): what `kSettledTicks` counts.
+    std::uint64_t unbroken_ = 0;
+    /// Song tick = tick number + this.
+    std::int64_t songOffset_ = 0;
+    bool placed_ = false;
+    std::uint32_t placements_ = 0;
+    /// Between a Start or Continue and a Stop: the song position moves on with each tick.
+    bool playing_ = false;
+    /// A Stop since the last Start or Continue.
+    bool stopSeen_ = false;
+    /// The song tick of the last tick counted while playing: where a Continue goes on from.
+    std::int64_t lastSongTick_ = -1;
+    /// A Song Position that came while stopped, for the next Continue.
+    bool songPositionPending_ = false;
+    std::int64_t pendingSongTick_ = 0;
+};
+
+} // namespace takt4::timing

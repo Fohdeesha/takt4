@@ -540,6 +540,40 @@ TEST_CASE("a source that comes to say where its bars are takes its own bar", "[t
     CHECK(afterStart >= 8);
 }
 
+TEST_CASE("a source that places its bar again takes it back from a DOWNBEAT", "[timing][follow]") {
+    // A MIDI clock running from a Start, a DOWNBEAT that moves the bar, then the DJ's Start again:
+    // Start means bar 1, whatever was pressed before it.
+    const double bpm = 120.0;
+    const double period = periodOf(bpm);
+    const double zero = static_cast<double>(kStart) + 250.0;
+    const double againAt = zero + 12.6 * period;
+    const Source source = [&](std::int64_t at) {
+        const bool again = static_cast<double>(at) >= againAt;
+        GridReading reading = onGrid(at, bpm, again ? againAt : zero);
+        reading.placements = again ? 2U : 1U;
+        return reading;
+    };
+    BeatGrid grid;
+    std::int64_t at = kStart;
+    (void)drive(grid, source, at, static_cast<std::int64_t>(zero + 6.8 * period));
+    // Beat 7, the fourth of its bar, made bar 1.
+    grid.snapDownbeat();
+    const std::vector<Sent> moved = drive(grid, source, at, static_cast<std::int64_t>(againAt));
+    REQUIRE(moved.size() >= 5);
+    CHECK(moved[0].beat.event.beatInBar == 1);
+    CHECK(positionOf(moved[0].beat, bpm, zero) == Approx(7.0).margin(1e-5));
+    CHECK(moved[4].beat.event.beatInBar == 1); // beat 11
+
+    const std::vector<Sent> after = drive(grid, source, at, at + 6 * kSecond);
+    REQUIRE(after.size() >= 8);
+    for (const Sent& one : after) {
+        const double position = positionOf(one.beat, bpm, againAt);
+        const auto whole = std::llround(position);
+        CHECK(position == Approx(static_cast<double>(whole)).margin(1e-5));
+        CHECK(one.beat.event.beatInBar == static_cast<std::uint32_t>(whole % 4 + 1));
+    }
+}
+
 TEST_CASE("the rate the followed beats go out at is measured as the tracker measures its own",
           "[timing][follow]") {
     const double bpm = 140.0;

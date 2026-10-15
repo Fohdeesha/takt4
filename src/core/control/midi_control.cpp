@@ -1,46 +1,14 @@
 #include "core/control/midi_control.hpp"
 
-#include "core/output/midi_ports.hpp"
-#include "core/output/rtmidi_errors.hpp"
-#include "core/sandbox.hpp"
-
-#include <RtMidi.h>
-
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <thread>
-#include <stdexcept>
 #include <utility>
 
 namespace takt4::control {
 namespace {
-
-/// A port specification is an index or a name, as `output::MidiOutput` takes — see
-/// `output::findMidiPort`. Throws with the list of what was actually there, which is the useful
-/// message when a controller is unplugged or named differently than the operator expected.
-unsigned int findPort(RtMidiIn& in, std::string_view spec) {
-    const unsigned int count = in.getPortCount();
-    std::vector<std::string> names;
-    names.reserve(count);
-    for (unsigned int i = 0; i < count; ++i) {
-        names.push_back(in.getPortName(i));
-    }
-    if (const std::optional<std::size_t> found = output::findMidiPort(names, spec)) {
-        return static_cast<unsigned int>(*found);
-    }
-
-    std::string message = "MIDI control: no input port matching \"" + std::string(spec) + "\"; ";
-    if (names.empty()) {
-        message += "there are none";
-    } else {
-        message += "there are " + std::to_string(names.size()) + ":";
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            message += "\n  " + std::to_string(i) + ": " + names[i];
-        }
-    }
-    throw output::MidiPortMissing(message);
-}
 
 /// The end of a press: a note at 0 (`readMidiEvent`), or a CC below the switch threshold
 /// `argumentOf` reads as off.
@@ -50,14 +18,9 @@ bool isRelease(const MidiEvent& event) noexcept {
 
 } // namespace
 
-struct MidiControl::Impl {
-    /// Before `in`, which reports to it and so must go first.
-    output::RtMidiErrors errors;
-    RtMidiIn in;
-};
-
-MidiControl::MidiControl(engine::BeatSource& beats, Config config, RuleControl* rules)
-    : config_(std::move(config)), surface_(beats, rules) {}
+MidiControl::MidiControl(engine::BeatSource& beats, midi::MidiInputHub& inputs, Config config,
+                         RuleControl* rules)
+    : config_(std::move(config)), surface_(beats, rules), inputs_(inputs) {}
 
 MidiControl::~MidiControl() {
     stop();
@@ -67,92 +30,38 @@ void MidiControl::start() {
     if (!config_.enabled || running()) {
         return;
     }
-
-    std::unique_ptr<Impl> impl;
-    try {
-        impl = std::make_unique<Impl>();
-    } catch (const RtMidiError& error) {
-        // RtMidi reports "no usable MIDI API on this machine" by throwing from its own
-        // constructor rather than offering an empty port list. A headless Linux box
-        // without an ALSA sequencer is the ordinary case, and CI runs on one.
-        throw std::runtime_error("MIDI control: cannot open \"" + config_.port +
-                                 "\": no usable MIDI API on this machine (" +
-                                 error.getMessage() + ")");
-    }
-
-    impl->errors.watch(impl->in);
-    unsigned int index = 0;
-    std::string name;
-    try {
-        index = findPort(impl->in, config_.port); // output::MidiPortMissing: not here
-        name = impl->in.getPortName(index);
-        impl->errors.raise();
-    } catch (const RtMidiError& error) {
-        throw std::runtime_error("MIDI control: " + error.getMessage());
-    }
-    if (sandbox::active()) {
-        // The test binaries' sandbox: this controller is the rig's. See `sandbox.hpp`.
-        sandbox::refuse(sandbox::Refused::Midi);
-        throw std::runtime_error("MIDI control: \"" + name + "\" is not opened in the test sandbox");
-    }
-    try {
-        impl->in.openPort(index, "takt4 control");
-        impl->errors.raise();
-    } catch (const RtMidiError& error) {
-        // Listed and refused: a WinMM input is one program's at a time, and a DAW that opened
-        // every input it saw is the usual holder. Not "no such port" — the operator can see it.
-        throw output::MidiPortBusy("MIDI control: ", name, error.getMessage());
-    }
-    // A controller's clock and active-sensing streams are not control gestures, and letting
-    // them through would spend a callback per tick doing nothing.
-    impl->in.ignoreTypes(/*sysex=*/true, /*time=*/true, /*sense=*/true);
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        portName_ = name;
-    }
-
     // A set of taps does not span a stop.
     surface_.resetTaps();
-    impl_ = std::move(impl);
-    // Last, so the callback cannot see a half-built object: RtMidi begins delivering the
-    // moment this returns.
-    running_.store(true, std::memory_order_release);
-    impl_->in.setCallback(
-        [](double, std::vector<unsigned char>* message, void* self) {
-            if (message != nullptr && self != nullptr) {
-                static_cast<MidiControl*>(self)->deliver(
-                    std::span<const unsigned char>(message->data(), message->size()));
-            }
-        },
-        this);
+    // Listening before the port is: the hub hands messages over from the moment `listen`
+    // returns, and one turned away at `deliver`'s door would be a press lost.
+    running_.store(true, std::memory_order_seq_cst);
+    std::string name;
+    try {
+        name = inputs_.listen(config_.port, *this, "MIDI control: ");
+    } catch (...) {
+        running_.store(false, std::memory_order_seq_cst);
+        throw;
+    }
+    const std::lock_guard<std::mutex> lock(mutex_);
+    portName_ = std::move(name);
 }
 
 void MidiControl::stop() noexcept {
     // The flag first, so a message arriving from here on is turned away at `deliver`'s door —
     // and **then every message already past it, waited for**.
-    // RtMidi's `cancelCallback` joins nothing: it forgets the callback, and the WinMM backend has
-    // no thread of its own to join, messages arriving on WinMM's. So a message that had passed
-    // the flag when this began went on being handled after it — a tap or a PANIC acted on by a
-    // surface that had been switched off, and on the way out, a dispatch into an object being
-    // destroyed. Both sides are sequentially consistent: `deliver` raises the count and then
-    // reads the flag, this lowers the flag and then reads the count, and only with both orders
-    // total does one always see the other. Handling a message never waits on this thread, so the
-    // wait is one message's length.
+    // A message that had passed the flag when this began used to go on being handled after it — a
+    // tap or a PANIC acted on by a surface that had been switched off, and on the way out, a
+    // dispatch into an object being destroyed. Both sides are sequentially consistent: `deliver`
+    // raises the count and then reads the flag, this lowers the flag and then reads the count, and
+    // only with both orders total does one always see the other. Handling a message never waits on
+    // this thread, so the wait is one message's length.
     running_.store(false, std::memory_order_seq_cst);
     while (inFlight_.load(std::memory_order_seq_cst) != 0) {
         std::this_thread::yield();
     }
-    if (impl_) {
-        try {
-            impl_->in.cancelCallback();
-            impl_->in.closePort();
-            impl_->errors.raise();
-        } catch (const RtMidiError&) {
-            // Closing a port that is already gone — an unplugged controller — is not
-            // something a stop path can usefully report.
-        }
-        impl_.reset();
-    }
+    // And off the hub, which closes the device unless something else still listens to it. When
+    // that returns nothing more is handed over.
+    inputs_.stopListening(*this);
     const std::lock_guard<std::mutex> lock(mutex_);
     portName_.clear();
     learning_.reset();
@@ -305,6 +214,10 @@ bool MidiControl::dispatch(const MidiEvent& event) {
     }
     handled_.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+void MidiControl::onMidi(std::span<const unsigned char> message, std::int64_t) noexcept {
+    deliver(message);
 }
 
 void MidiControl::deliver(std::span<const unsigned char> message) noexcept {

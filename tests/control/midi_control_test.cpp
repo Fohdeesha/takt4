@@ -5,13 +5,13 @@
 #include "core/control/rule_control.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/midi/midi_input_hub.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/midi_ports.hpp"
 #include "core/tracking/state_space.hpp"
 
 #include "support/recording_rules.hpp"
 #include "support/tap_rhythm.hpp"
-#include "support/virtual_midi.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -32,16 +32,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 using Catch::Approx;
 using Catch::Matchers::WithinAbs;
@@ -106,11 +96,22 @@ MidiControl::Config offline() {
     return MidiControl::Config{};
 }
 
+/// The MIDI inputs, as the application shares them between the control input and a clock
+/// follower. One for the whole file: a control lets go of it when it is destroyed.
+takt4::midi::MidiInputHub& inputs() {
+    static takt4::midi::MidiInputHub hub([] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    });
+    return hub;
+}
+
 } // namespace
 
 TEST_CASE("learn mode binds the next control that moves", "[control][midi]") {
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     CHECK_FALSE(control.learning().has_value());
     control.learn(ControlAction::Downbeat);
@@ -156,7 +157,7 @@ TEST_CASE("learn mode binds the next control that moves", "[control][midi]") {
 
 TEST_CASE("a bound control reaches the tracker", "[control][midi]") {
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
 
@@ -194,7 +195,7 @@ TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them o
     // itself. RtMidi delivering them needs a MIDI loopback this machine has not got; everything
     // after that is here.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
     MidiBinding halve;
@@ -253,7 +254,7 @@ TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them o
 
 TEST_CASE("a switch bound to the lock pins with its own position", "[control][midi]") {
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
     REQUIRE_FALSE(engine->state().pinned);
@@ -328,7 +329,7 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
     // tracker, and they take a different route out of the surface to get there.
     auto engine = makeEngine();
     takt4::testing::RecordingRules rules;
-    MidiControl control(*engine, offline(), &rules);
+    MidiControl control(*engine, inputs(), offline(), &rules);
 
     SECTION("a pad bound to panic is a panic button, and stays one") {
         // Every press engages, and neither a second press nor lifting the finger lets go: a
@@ -399,7 +400,7 @@ TEST_CASE("a rule control that is not there refuses rather than swallows", "[con
     // did nothing, which is what puts "your panic button is not wired" in front of somebody
     // at the bench rather than during a set.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     MidiBinding pad;
     pad.number = 36;
@@ -429,7 +430,7 @@ TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[c
     // 5 ms later the way a worn pad does, and where the tracker's tempo window ends up: centred
     // on the tempo tapped (a seed, the design) — which, without the bounce guard, it is not.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     MidiBinding tap;
     tap.number = 36;
@@ -463,7 +464,7 @@ TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[c
 
 TEST_CASE("the binding table is restored the way it was saved", "[control][midi]") {
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     std::vector<MidiBinding> saved;
     for (const ControlAction action : takt4::control::kControlActions) {
@@ -521,7 +522,7 @@ TEST_CASE("what arrived is visible even when nothing is bound to it", "[control]
     // A controller on the wrong channel looks exactly like a broken one until somebody can
     // see that its messages are arriving.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     CHECK_FALSE(control.lastEvent().has_value());
     CHECK_FALSE(control.dispatch(cc(7, 64, /*channel=*/11)));
@@ -540,7 +541,7 @@ TEST_CASE("a control that was never enabled opens no port", "[control][midi]") {
     // Off unless asked for, and a port has to be named: opening whatever MIDI input
     // happens to be first would bind a DAW's clock stream to somebody's tap button.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     control.start();
     CHECK_FALSE(control.running());
@@ -556,7 +557,7 @@ TEST_CASE("changing the port keeps what was learned", "[control][midi]") {
     // operator moving from one controller to another is not asking to forget their
     // bindings, and in a picker those two are one keystroke apart.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
 
     MidiBinding tap;
     tap.number = 36;
@@ -583,7 +584,7 @@ TEST_CASE("a port that is not there is reported rather than silently dead",
     MidiControl::Config config;
     config.enabled = true;
     config.port = "no such port exists on any machine";
-    MidiControl control(*engine, config);
+    MidiControl control(*engine, inputs(), config);
 
     // Either there is no MIDI API at all on this box or there is no such port; both are
     // errors an operator has to be told about, and both come back as one.
@@ -607,7 +608,7 @@ TEST_CASE("a real MIDI input opens and closes again and again", "[control][midi]
     MidiControl::Config config;
     config.enabled = true;
     config.port = ports.front();
-    MidiControl control(*engine, config);
+    MidiControl control(*engine, inputs(), config);
     INFO("port " << ports.front());
     for (int round = 0; round < 5; ++round) {
         INFO("round " << round);
@@ -636,7 +637,7 @@ TEST_CASE("a CC pad's release is not a second press", "[control][midi]") {
     // CC value used to be dispatched — so ÷2 halved twice, a tap button tapped twice about
     // 120 ms apart, and a downbeat snapped again, late, on the release.
     auto engine = makeEngine();
-    MidiControl control(*engine, offline());
+    MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
     REQUIRE(engine->state().locked);
 
@@ -661,7 +662,7 @@ TEST_CASE("learning a CC fires it neither on the press nor on the release", "[co
     // operator had muted, unmuted it on the way up.
     auto engine = makeEngine();
     takt4::testing::RecordingRules rules;
-    MidiControl control(*engine, offline(), &rules);
+    MidiControl control(*engine, inputs(), offline(), &rules);
 
     control.learn(takt4::control::ControlTarget(ControlAction::RuleMute, "stabs"));
     CHECK(control.dispatch(cc(21, 127)));
@@ -758,7 +759,7 @@ TEST_CASE("a message already on its way when the control input stops is finished
     // on a thread of its own as RtMidi's would.
     auto engine = makeEngine();
     HeldPanic rules;
-    MidiControl control(*engine, MidiControl::Config{}, &rules);
+    MidiControl control(*engine, inputs(), MidiControl::Config{}, &rules);
     MidiBinding pad;
     pad.number = 36;
     pad.target = ControlAction::Panic;
@@ -791,80 +792,3 @@ TEST_CASE("a message already on its way when the control input stops is finished
     CHECK(rules.panics == 1);
     CHECK_FALSE(control.running());
 }
-
-#if defined(_WIN32)
-
-namespace {
-
-using takt4::testing::VirtualMidi;
-
-void CALLBACK ignoreData(VirtualMidi::Port, LPBYTE, DWORD, DWORD_PTR) {}
-
-} // namespace
-
-TEST_CASE("a MIDI input closed while SysEx pours into it closes, every time",
-          "[control][midi][hardware]") {
-    // an earlier review. RtMidi 6.0.0's WinMM `closePort` takes its lock and, holding
-    // it, calls `midiInReset`, which hands back every SysEx buffer being filled through the input
-    // callback — and the callback took the same lock to queue the buffer again: a close that
-    // never returned, on STOP, on a port change and on the way out. cmake/rtmidi_patch.cmake
-    // applies upstream's fix. Its own test could not arrange SysEx arriving at the moment of a
-    // close, and passed with or without the patch; a virtual port this test makes and floods
-    // arranges exactly that.
-    VirtualMidi virtualMidi;
-    if (!virtualMidi.usable()) {
-        SKIP("teVirtualMIDI is not installed here (rtpMIDI and loopMIDI both bring it)");
-    }
-    const VirtualMidi::Port port = virtualMidi.create(L"takt4 test sysex", &ignoreData, 0, 65535,
-                                                      VirtualMidi::kParseRx);
-    REQUIRE(port != nullptr);
-
-    std::atomic<bool> pouring{true};
-    std::thread flood([&] {
-        std::vector<BYTE> sysex(512, 0x11);
-        sysex.front() = 0xF0;
-        sysex[1] = 0x7D; // non-commercial / educational
-        sysex.back() = 0xF7;
-        while (pouring) {
-            (void)virtualMidi.send(port, sysex.data(), static_cast<DWORD>(sysex.size()));
-        }
-    });
-
-    auto engine = makeEngine();
-    int closes = 0;
-    for (int round = 0; round < 40; ++round) {
-        MidiControl::Config config;
-        config.enabled = true;
-        config.port = "takt4 test sysex";
-        MidiControl control(*engine, config);
-        control.start();
-        REQUIRE(control.running());
-        std::this_thread::sleep_for(std::chrono::milliseconds(15 + (round % 5) * 7));
-        std::atomic<bool> closed{false};
-        std::thread closing([&] {
-            control.stop();
-            closed = true;
-        });
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!closed && std::chrono::steady_clock::now() < until) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        if (!closed) {
-            // A close that does not return cannot be joined or unwound: say so, and end here
-            // rather than hang the run.
-            FAIL_CHECK("closing the input deadlocked on round " << round);
-            std::cerr << "a MIDI input close deadlocked with SysEx arriving (round " << round
-                      << "); ending the test process\n"
-                      << std::flush;
-            ::TerminateProcess(::GetCurrentProcess(), 3);
-        }
-        closing.join();
-        ++closes;
-    }
-    pouring = false;
-    flood.join();
-    virtualMidi.close(port);
-    CHECK(closes == 40);
-}
-
-#endif

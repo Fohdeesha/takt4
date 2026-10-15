@@ -20,7 +20,8 @@ endfunction()
 # including UI-less ones, and attached to every release beside the app. Its allocation guard
 # is on in Debug so a real-time violation found on the bench aborts rather than hides.
 add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/args.hpp cli/console.hpp
-                         cli/follow.cpp cli/follow.hpp cli/main.cpp)
+                         cli/follow.cpp cli/follow.hpp cli/main.cpp cli/midi_in.cpp
+                         cli/midi_in.hpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
 if(WIN32)
   # UTF-8 as the process code page, so a WAV named outside the machine's code page opens. See

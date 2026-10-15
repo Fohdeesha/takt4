@@ -57,6 +57,7 @@ add_executable(takt4_tests
   io/npy_file_test.cpp
   io/utf8_test.cpp
   io/wav_file_test.cpp
+  midi/midi_input_hub_test.cpp
   model/activation_engine_test.cpp
   model/beat_model_test.cpp
   model/weights_test.cpp
@@ -81,6 +82,8 @@ add_executable(takt4_tests
   timing/external_beats_test.cpp
   timing/follow_runner_test.cpp
   timing/link_follower_test.cpp
+  timing/midi_clock_follower_test.cpp
+  timing/tick_fit_test.cpp
   tracking/annotation_test.cpp
   tracking/forward_filter_test.cpp
   tracking/particle_filter_test.cpp

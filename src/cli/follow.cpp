@@ -2,21 +2,28 @@
 
 #include "core/engine/beat_source.hpp"
 #include "core/engine/control.hpp"
+#include "core/midi/midi_input_hub.hpp"
 #include "core/output/link_peers.hpp"
 #include "core/output/midi_clock.hpp"
+#include "core/output/midi_ports.hpp"
 #include "core/output/osc_publisher.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/output/output_target.hpp"
 #include "core/output/transports.hpp"
 #include "core/timing/beat_grid.hpp"
 #include "core/timing/external_beats.hpp"
+#include "core/timing/grid_source.hpp"
 #include "core/timing/link_follower.hpp"
+#include "core/timing/link_reader.hpp"
+#include "core/timing/midi_clock_follower.hpp"
 
 #include "cli/args.hpp"
 #include "cli/console.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -31,8 +38,9 @@
 namespace takt4::cli {
 
 void printFollowUsage(std::ostream& out) {
-    out << "  takt4-cli follow --link [--beats-per-bar N] [--latency MS]\n"
-        << "                   [--osc HOST:PORT] [--osc-prefix /NAME] [--midi-clock-out PORT]\n"
+    out << "  takt4-cli follow (--link | --midi-clock PORT [--obey-start-stop] | --metronome BPM)\n"
+        << "                   [--beats-per-bar N] [--latency MS] [--osc HOST:PORT]\n"
+        << "                   [--osc-prefix /NAME] [--midi-clock-out PORT] [--out FILE]\n"
         << "                   [--seconds S]\n"
         << "      Take the beats from somewhere else instead of from audio, and send them on\n"
         << "      through the same outputs as `track`. Prints a line per beat.\n"
@@ -41,12 +49,25 @@ void printFollowUsage(std::ostream& out) {
         << "                      second, then joins it as its youngest peer, so it never\n"
         << "                      hands the session a tempo of its own; it leaves the moment\n"
         << "                      the last peer does, and the beats coast for four seconds\n"
-        << "      --beats-per-bar N  the bar, default 4, and Link's quantum: Link carries no\n"
-        << "                      meter, and peers align their bars at the same quantum\n"
+        << "      --midi-clock P  follow the MIDI clock arriving on input port P (part of its\n"
+        << "                      name, or its index: `midi-in` lists them). Its tempo is\n"
+        << "                      measured from two beats of ticks; Start, Continue and Song\n"
+        << "                      Position say where bar 1 is, and until one comes d puts the\n"
+        << "                      beat under the key\n"
+        << "      --obey-start-stop  a MIDI Stop halts the beats at once, until Start or\n"
+        << "                      Continue. Without it a Stop is let pass, as a DJ mixer's\n"
+        << "                      clock runs on after its Stop button\n"
+        << "      --metronome BPM  follow a steady grid at BPM on this machine's clock: a\n"
+        << "                      reference to measure the outputs by, a MIDI clock above all\n"
+        << "      --beats-per-bar N  the bar, default 4, and Link's quantum: neither Link nor a\n"
+        << "                      MIDI clock carries a meter\n"
         << "      --latency MS    move every output by this much; negative fires early\n"
         << "      --osc, --osc-prefix  as `track`\n"
         << "      --midi-clock-out P  24 PPQN to the MIDI output port named P, regenerated\n"
-        << "                      from the followed beats\n"
+        << "                      from the followed beats; refused to the device a followed\n"
+        << "                      MIDI clock comes from, which could send it back round\n"
+        << "      --out FILE      every beat sent, one a line: its moment in microseconds on\n"
+        << "                      Link's clock, a tab, its place in the bar, a tab, the tempo\n"
         << "      --seconds S     stop after S seconds instead of on Ctrl-C\n"
         << "      Keys, in a console: d snaps the bar to the nearest beat, h and x halve and\n"
         << "      double the followed grid, p is PANIC, q stops.\n"
@@ -57,8 +78,15 @@ namespace {
 
 using namespace std::chrono_literals;
 
+/// What `follow` takes its beats from.
+enum class Followed { None, Link, MidiClock, Metronome };
+
 struct FollowArgs {
-    bool link = false;
+    Followed followed = Followed::None;
+    std::string midiClockIn;
+    bool obeyStartStop = false;
+    double metronomeBpm = 0.0;
+    std::optional<std::string> out;
     std::uint32_t beatsPerBar = 4;
     double latencySeconds = 0.0;
     std::string oscPrefix = "/takt4";
@@ -77,8 +105,27 @@ FollowArgs parseFollowArgs(const std::vector<std::string_view>& args) {
             }
             return args[++i];
         };
+        const auto follow = [&out](Followed followed) {
+            if (out.followed != Followed::None) {
+                throw std::invalid_argument("follow takes its beats from one source at a time");
+            }
+            out.followed = followed;
+        };
         if (arg == "--link") {
-            out.link = true;
+            follow(Followed::Link);
+        } else if (arg == "--midi-clock") {
+            follow(Followed::MidiClock);
+            out.midiClockIn = std::string(value());
+        } else if (arg == "--obey-start-stop") {
+            out.obeyStartStop = true;
+        } else if (arg == "--out") {
+            out.out = std::string(value());
+        } else if (arg == "--metronome") {
+            follow(Followed::Metronome);
+            out.metronomeBpm = parseDouble(value(), arg);
+            if (!(out.metronomeBpm >= 20.0 && out.metronomeBpm <= 400.0)) {
+                throw std::invalid_argument("--metronome expects 20 to 400 BPM");
+            }
         } else if (arg == "--beats-per-bar") {
             const int beats = parseInt(value(), arg);
             if (beats < 1 || beats > 16) {
@@ -102,8 +149,12 @@ FollowArgs parseFollowArgs(const std::vector<std::string_view>& args) {
             throw std::invalid_argument("unknown option: " + std::string(arg));
         }
     }
-    if (!out.link) {
-        throw std::invalid_argument("follow: say what to follow — --link");
+    if (out.followed == Followed::None) {
+        throw std::invalid_argument(
+            "follow: say what to follow — --link, --midi-clock PORT or --metronome BPM");
+    }
+    if (out.obeyStartStop && out.followed != Followed::MidiClock) {
+        throw std::invalid_argument("--obey-start-stop is for a followed MIDI clock");
     }
     return out;
 }
@@ -139,9 +190,31 @@ std::string beatLine(const engine::EngineBeat& beat, bool coasting) {
     return line.str();
 }
 
-std::string statusOf(const timing::LinkFollower& follower, const timing::ExternalBeats& beats) {
+/// A grid at one tempo, from the moment a run begins, on Link's clock: what takt4's outputs are
+/// measured against — nothing it is following can be steadier.
+class Metronome final : public timing::GridSource {
+public:
+    Metronome(const timing::LinkReader& clock, double bpm) : clock_(clock), bpm_(bpm) {}
+    void begin(std::uint32_t) noexcept override { startedAt_ = clock_.now().count(); }
+    timing::GridReading read() noexcept override {
+        timing::GridReading reading;
+        reading.at = clock_.now().count();
+        reading.present = true;
+        reading.bpm = bpm_;
+        reading.beat = static_cast<double>(reading.at - startedAt_) * bpm_ / 60e6;
+        reading.anchored = true;
+        return reading;
+    }
+    void end() noexcept override {}
+
+private:
+    const timing::LinkReader& clock_;
+    double bpm_;
+    std::int64_t startedAt_ = 0;
+};
+
+std::string linkStatus(const timing::LinkFollower& follower) {
     const timing::LinkFollower::Status status = follower.status();
-    const tracking::TempoState state = beats.state();
     std::ostringstream line;
     switch (status.phase) {
     case timing::LinkFollower::Phase::Listening:
@@ -162,6 +235,52 @@ std::string statusOf(const timing::LinkFollower& follower, const timing::Externa
              << " in the session, at " << fixed(status.bpm, 2) << " BPM";
         break;
     }
+    return line.str();
+}
+
+/// Without the tempo, which a measured clock moves in its last decimal from one look to the next:
+/// the beat lines carry it.
+std::string midiClockStatus(const timing::MidiClockFollower& follower, const std::string& port) {
+    const timing::MidiClockFollower::Status status = follower.status();
+    std::ostringstream line;
+    line << "MIDI clock on \"" << port << "\": ";
+    if (!status.ticking) {
+        line << "no ticks arriving";
+    } else if (status.bpm == 0.0) {
+        line << "ticking, measuring the tempo";
+    } else {
+        line << "following";
+    }
+    if (status.stopped) {
+        line << (follower.obeyStartStop() ? ", stopped: waiting for Start or Continue"
+                                          : ", Stop received and let pass");
+    } else if (status.ticking && !status.placed) {
+        line << ", no Start received: press d on the beat";
+    }
+    return line.str();
+}
+
+/// A MIDI clock sent to the device the clock is followed from could come straight back round —
+/// through its MIDI thru, or a virtual port's own loop — and be followed: refused, before
+/// anything is opened. The device is the port's name without the number Windows gives it.
+void refuseClockLoop(const std::string& inputSpec, const std::string& outputSpec) {
+    const std::vector<std::string> inputs = output::listMidiInputPorts();
+    const std::vector<std::string> outputs = output::listMidiOutputPorts();
+    const std::optional<std::size_t> in = output::findMidiPort(inputs, inputSpec);
+    const std::optional<std::size_t> out = output::findMidiPort(outputs, outputSpec);
+    if (in && out &&
+        output::midiPortBaseName(inputs[*in]) == output::midiPortBaseName(outputs[*out])) {
+        throw std::invalid_argument("--midi-clock-out \"" + outputs[*out] +
+                                    "\" is the device the followed clock comes from (\"" +
+                                    inputs[*in] + "\"), and could send it straight back round");
+    }
+}
+
+/// What the source is doing, and then what the beats are.
+std::string statusOf(const std::string& source, const timing::ExternalBeats& beats) {
+    const tracking::TempoState state = beats.state();
+    std::ostringstream line;
+    line << source;
     if (state.noSignal) {
         line << " — no signal: the outputs let go";
     } else if (beats.coasting()) {
@@ -182,6 +301,16 @@ void printKeys(std::ostream& out, bool available) {
 
 int runFollow(const std::vector<std::string_view>& args) {
     const FollowArgs parsed = parseFollowArgs(args);
+    if (parsed.followed == Followed::MidiClock && parsed.midiClockOut) {
+        refuseClockLoop(parsed.midiClockIn, *parsed.midiClockOut);
+    }
+    std::ofstream out;
+    if (parsed.out) {
+        out.open(*parsed.out, std::ios::trunc);
+        if (!out) {
+            throw std::runtime_error(*parsed.out + ": cannot create");
+        }
+    }
     output::Transports::Config config;
     config.oscPrefix = parsed.oscPrefix;
     config.outputs = output::oscOutputs(parsed.oscTargets);
@@ -198,23 +327,74 @@ int runFollow(const std::vector<std::string_view>& args) {
     std::vector<engine::EngineBeat> published;
     output::OutputRunner runner(beats, config);
     const output::Transports& transports = runner.transports();
-    // Following Link, the outputs do not lead it: the session is handed over switched off before
-    // anything follows it. The runner is not running yet, so this takes effect here and now.
-    runner.post(output::OutputCommand::linkFollowing(true));
-    // The follower reads the outputs' own session — two Link instances in one process would be
-    // two peers — and listens to Link's discovery traffic for one to join.
-    output::LinkPeerWatch listener;
-    timing::LinkFollower follower(runner.transports().link(), listener);
-    // And the timing worker, which reads the follower, stopped before either goes.
+    // Then the source, which the timing worker reads. Link is followed through the outputs' own
+    // session — two Link instances in one process would be two peers — and its discovery
+    // traffic is listened to for a session to join. A MIDI clock's messages are stamped on
+    // Link's clock as they arrive, as everything followed is; the metronome only reads it.
+    std::optional<output::LinkPeerWatch> listener;
+    std::optional<timing::LinkFollower> linkFollower;
+    std::optional<midi::MidiInputHub> inputs;
+    std::optional<timing::MidiClockFollower> clockFollower;
+    std::string clockPort;
+    std::optional<Metronome> metronome;
+    timing::GridSource* source = nullptr;
+    switch (parsed.followed) {
+    case Followed::Link:
+        // Following Link, the outputs do not lead it: the session is handed over switched off
+        // before anything follows it. The runner is not running yet, so this takes effect here
+        // and now.
+        runner.post(output::OutputCommand::linkFollowing(true));
+        listener.emplace();
+        linkFollower.emplace(runner.transports().link(), *listener);
+        source = &*linkFollower;
+        break;
+    case Followed::MidiClock:
+        inputs.emplace([&transports] { return transports.link().now().count(); });
+        clockFollower.emplace(*inputs);
+        clockFollower->setObeyStartStop(parsed.obeyStartStop);
+        clockPort = clockFollower->listen(parsed.midiClockIn);
+        source = &*clockFollower;
+        break;
+    case Followed::Metronome:
+    case Followed::None:
+        metronome.emplace(runner.transports().link(), parsed.metronomeBpm);
+        source = &*metronome;
+        break;
+    }
+    // And the timing worker, which reads the source, stopped before it goes.
     struct StopFirst {
         timing::ExternalBeats& beats;
         ~StopFirst() { beats.stop(); }
     } stopFirst{beats};
+    const auto sourceStatus = [&]() -> std::string {
+        if (linkFollower) {
+            return linkStatus(*linkFollower);
+        }
+        if (clockFollower) {
+            return midiClockStatus(*clockFollower, clockPort);
+        }
+        return "metronome at " + fixed(parsed.metronomeBpm, 2) + " BPM";
+    };
 
-    std::cout << "following: Ableton Link — Link stays off until a session has been heard for a\n"
-              << "           second, so takt4 joins it and never hands it a tempo of its own\n"
-              << "bar:       " << parsed.beatsPerBar << " beats, which is Link's quantum\n"
-              << "latency:   " << fixed(parsed.latencySeconds * 1000.0, 1)
+    if (parsed.followed == Followed::Link) {
+        std::cout
+            << "following: Ableton Link — Link stays off until a session has been heard for a\n"
+            << "           second, so takt4 joins it and never hands it a tempo of its own\n"
+            << "bar:       " << parsed.beatsPerBar << " beats, which is Link's quantum\n";
+    } else if (parsed.followed == Followed::MidiClock) {
+        std::cout << "following: the MIDI clock on \"" << clockPort << "\" — the tempo from two\n"
+                  << "           beats of ticks, bar 1 from Start, Continue or Song Position\n"
+                  << "stop:      "
+                  << (parsed.obeyStartStop ? "a MIDI Stop halts the beats until Start or Continue"
+                                           : "a MIDI Stop is let pass (--obey-start-stop to obey)")
+                  << '\n'
+                  << "bar:       " << parsed.beatsPerBar << " beats\n";
+    } else {
+        std::cout << "following: a metronome at " << fixed(parsed.metronomeBpm, 3)
+                  << " BPM on this machine's clock\n"
+                  << "bar:       " << parsed.beatsPerBar << " beats\n";
+    }
+    std::cout << "latency:   " << fixed(parsed.latencySeconds * 1000.0, 1)
               << " ms on every output\n"
               << "outputs:   ";
     if (transports.osc().targetCount() == 0 && transports.midiPort() == nullptr) {
@@ -238,7 +418,7 @@ int runFollow(const std::vector<std::string_view>& args) {
     runner.start();
     // Listening from the start, which is what gives the MIDI clock its Start.
     runner.setTracking(true);
-    beats.start(follower, timing::BeatGrid::Options{parsed.beatsPerBar, 4.0});
+    beats.start(*source, timing::BeatGrid::Options{parsed.beatsPerBar, 4.0});
 
     const auto start = std::chrono::steady_clock::now();
     const auto elapsed = [&start] {
@@ -286,6 +466,10 @@ int runFollow(const std::vector<std::string_view>& args) {
         }
         for (const engine::EngineBeat& beat : toPrint) {
             std::cout << beatLine(beat, beats.coasting()) << '\n';
+            if (out.is_open()) {
+                out << beat.hostMicros << '\t' << beat.event.beatInBar << '\t'
+                    << fixed(beat.event.bpm, 4) << '\n';
+            }
         }
         toPrint.clear();
     };
@@ -296,9 +480,9 @@ int runFollow(const std::vector<std::string_view>& args) {
             onKey(key);
         }
         printBeats();
-        // What the follower is doing, whenever it changes, and every few seconds while it waits
+        // What the source is doing, whenever it changes, and every few seconds while it waits
         // for a session — a console with nothing on it looks like a console that has hung.
-        const std::string status = statusOf(follower, beats);
+        const std::string status = statusOf(sourceStatus(), beats);
         if (status != lastStatus || (!beats.state().locked && elapsed() - lastStatusAt >= 5.0)) {
             std::cout << "  " << fixed(elapsed(), 1, 8) << "s  " << status << '\n';
             lastStatus = status;
@@ -306,7 +490,7 @@ int runFollow(const std::vector<std::string_view>& args) {
         }
         std::cout << std::flush;
     }
-    beats.stop();  // Link off, and the listening stopped
+    beats.stop();  // Link off, and the listening stopped, if it was Link
     runner.stop(); // the last beats, the releases owed, a MIDI clock's Stop
     printBeats();
     std::cout << "stopped after " << fixed(elapsed(), 1) << " s: " << transports.beats()
