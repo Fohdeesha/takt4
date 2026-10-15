@@ -189,6 +189,45 @@ void readMeters(const json& preset, std::array<std::uint8_t, 4>& meters) {
     }
 }
 
+/// A latency offset as a file gives it: refused when a second or more either way — no offset
+/// anybody set — and held to the slider's ends short of that, as beat detection's is.
+double latencyFrom(double seconds) noexcept {
+    if (!(seconds > -1.0) || !(seconds < 1.0)) {
+        return 0.0;
+    }
+    return std::clamp(seconds, -kMaxLatencyOffsetSeconds, kMaxLatencyOffsetSeconds);
+}
+
+/// The preset's half of the timing input: beats to the bar and each source's latency.
+json timingToJson(const Preset& preset) {
+    return json{
+        {"beatsPerBar", preset.externalBeatsPerBar},
+        {"latencySeconds",
+         json{{"link", preset.timingLatency.link}, {"midiClock", preset.timingLatency.midiClock}}},
+    };
+}
+
+void timingFromJson(const json& object, Preset& preset) {
+    if (!object.is_object()) {
+        return;
+    }
+    // A whole number of beats, 1 to 16 — the bar indicator's own range; a fraction, a string or a
+    // bar of 99 is no meter and leaves four.
+    if (object.contains("beatsPerBar") && object.at("beatsPerBar").is_number_integer()) {
+        const std::int64_t beats = object.at("beatsPerBar").get<std::int64_t>();
+        if (beats >= 1 && beats <= 16) {
+            preset.externalBeatsPerBar = static_cast<std::uint32_t>(beats);
+        }
+    }
+    if (object.contains("latencySeconds") && object.at("latencySeconds").is_object()) {
+        const json& latency = object.at("latencySeconds");
+        read(latency, "link", preset.timingLatency.link);
+        read(latency, "midiClock", preset.timingLatency.midiClock);
+        preset.timingLatency.link = latencyFrom(preset.timingLatency.link);
+        preset.timingLatency.midiClock = latencyFrom(preset.timingLatency.midiClock);
+    }
+}
+
 json tempoToJson(const tracking::TempoTracker::Options& tempo) {
     return json{
         {"minBpm", tempo.minBpm},
@@ -544,6 +583,7 @@ std::string toJson(const Settings& settings) {
         {"meters", metersToJson(settings.preset.meters)},
         {"link", link},
         {"oscPrefix", settings.preset.oscPrefix},
+        {"timing", timingToJson(settings.preset)},
         {"outputs", targets},
         {"fixtures", patch},
         // Through `rule_json`, which owns the shape of a rule, and back through
@@ -571,6 +611,9 @@ std::string toJson(const Settings& settings) {
              {"oscControlEnabled", settings.machine.oscControlEnabled},
              {"oscControlPort", settings.machine.oscControlPort},
              {"oscControlLocalOnly", settings.machine.oscControlLocalOnly},
+             {"timingSource", settings.machine.timingSource},
+             {"midiClockInPort", settings.machine.midiClockInPort},
+             {"midiClockObeyStartStop", settings.machine.midiClockObeyStartStop},
              {"inputsFolded", settings.machine.inputsFolded},
              {"outputsFolded", settings.machine.outputsFolded},
              {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
@@ -612,6 +655,15 @@ Settings fromDocument(const json& document) {
         read(machine, "midiControlPort", settings.machine.midiControlPort);
         read(machine, "oscControlEnabled", settings.machine.oscControlEnabled);
         read(machine, "oscControlLocalOnly", settings.machine.oscControlLocalOnly);
+        read(machine, "timingSource", settings.machine.timingSource);
+        // A source this build cannot follow — a newer build's, or a typo — is the audio: the
+        // tracker is always there to fall back on, and a picker showing nothing helps nobody.
+        if (settings.machine.timingSource != kTimingLink &&
+            settings.machine.timingSource != kTimingMidiClock) {
+            settings.machine.timingSource = std::string(kTimingAudio);
+        }
+        read(machine, "midiClockInPort", settings.machine.midiClockInPort);
+        read(machine, "midiClockObeyStartStop", settings.machine.midiClockObeyStartStop);
         read(machine, "inputsFolded", settings.machine.inputsFolded);
         read(machine, "outputsFolded", settings.machine.outputsFolded);
         // The rule editor's folds, four booleans in A-to-D order; anything else keeps the default.
@@ -698,6 +750,9 @@ Settings fromDocument(const json& document) {
         readMeters(preset, settings.preset.meters);
         if (preset.is_object() && preset.contains("tempo")) {
             settings.preset.tempo = tempoFromJson(preset.at("tempo"));
+        }
+        if (preset.is_object() && preset.contains("timing")) {
+            timingFromJson(preset.at("timing"), settings.preset);
         }
         if (preset.is_object() && preset.contains("rules")) {
             settings.preset.rules = rulesFromJson(preset.at("rules").dump());

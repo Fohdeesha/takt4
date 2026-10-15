@@ -259,6 +259,58 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK_FALSE(odd.machine.outputsFolded);
 }
 
+TEST_CASE("where the beats come from is kept, with how each source is followed", "[settings]") {
+    // The source and its port are the desk's; beats to the bar and each source's latency travel
+    // with the preset, beside the tracker's own latency.
+    Settings in;
+    in.machine.timingSource = std::string(takt4::settings::kTimingMidiClock);
+    in.machine.midiClockInPort = "DJM-A9 2";
+    in.machine.midiClockObeyStartStop = true;
+    in.preset.externalBeatsPerBar = 3;
+    in.preset.timingLatency.link = -0.012;
+    in.preset.timingLatency.midiClock = 0.031;
+    in.preset.tempo.latencyOffsetSeconds = -0.040;
+    const Settings out = takt4::settings::fromJson(takt4::settings::toJson(in));
+    CHECK(out.machine.timingSource == "midi-clock");
+    CHECK(out.machine.midiClockInPort == "DJM-A9 2");
+    CHECK(out.machine.midiClockObeyStartStop);
+    CHECK(out.preset.externalBeatsPerBar == 3);
+    CHECK_THAT(out.preset.timingLatency.link, WithinAbs(-0.012, 1e-9));
+    CHECK_THAT(out.preset.timingLatency.midiClock, WithinAbs(0.031, 1e-9));
+    CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.040, 1e-9));
+    in.machine.timingSource = std::string(takt4::settings::kTimingLink);
+    CHECK(takt4::settings::fromJson(takt4::settings::toJson(in)).machine.timingSource == "link");
+
+    // A file from before there was a choice — or a fresh install — listens to the audio, opens
+    // no clock and follows nothing.
+    const Settings before = takt4::settings::fromJson(R"({"machine": {"channel": 3}})");
+    CHECK(before.machine.timingSource == "audio");
+    CHECK(Settings{}.machine.timingSource == "audio");
+    CHECK(before.machine.midiClockInPort.empty());
+    CHECK_FALSE(before.machine.midiClockObeyStartStop);
+    CHECK(before.preset.externalBeatsPerBar == 4);
+    CHECK(before.preset.timingLatency == Settings{}.preset.timingLatency);
+
+    // A source this build does not know is the audio; a meter that is no meter is four; a
+    // latency past the slider's end is its end, and one of a second or more is no offset.
+    const Settings odd = takt4::settings::fromJson(R"({
+        "machine": {"timingSource": "prolink"},
+        "preset": {"timing": {"beatsPerBar": 99, "latencySeconds": {"link": 0.4, "midiClock": 2.0}}}
+    })");
+    CHECK(odd.machine.timingSource == "audio");
+    CHECK(odd.preset.externalBeatsPerBar == 4);
+    CHECK_THAT(odd.preset.timingLatency.link, WithinAbs(0.25, 1e-9));
+    CHECK_THAT(odd.preset.timingLatency.midiClock, WithinAbs(0.0, 1e-9));
+    for (const char* meter : {R"(0)", R"(3.5)", R"("4")", R"(-3)"}) {
+        INFO(meter);
+        const std::string text =
+            std::string(R"({"preset": {"timing": {"beatsPerBar": )") + meter + "}}}";
+        CHECK(takt4::settings::fromJson(text).preset.externalBeatsPerBar == 4);
+    }
+    CHECK(takt4::settings::fromJson(R"({"preset": {"timing": {"beatsPerBar": 7}}})")
+              .preset.externalBeatsPerBar == 7);
+}
+
 TEST_CASE("a control port a file could not have meant is refused", "[settings]") {
     // A hand-edited file is exactly where "port 99999" comes from, and reading it into a
     // uint16_t would take the low bits — 33465, a port nobody meant and nobody can guess.

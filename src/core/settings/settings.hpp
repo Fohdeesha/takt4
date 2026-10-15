@@ -32,6 +32,12 @@ namespace takt4::settings {
 /// alone.
 
 /// What only means anything on the machine it was saved on.
+/// Where the beats come from, as `MachineSettings::timingSource` names it: the audio, heard by
+/// the tracker, or a source followed instead of it.
+inline constexpr std::string_view kTimingAudio = "audio";
+inline constexpr std::string_view kTimingLink = "link";
+inline constexpr std::string_view kTimingMidiClock = "midi-clock";
+
 struct MachineSettings {
     /// By name, never by index: a device index moves the moment something else is plugged
     /// in, and restoring the wrong interface is worse than restoring none.
@@ -83,6 +89,18 @@ struct MachineSettings {
     bool oscControlEnabled = false;
     std::uint16_t oscControlPort = 7001;
     bool oscControlLocalOnly = true;
+
+    /// **Where the beats come from** — `kTimingAudio`, or a source followed instead of the
+    /// audio: `kTimingLink`, `kTimingMidiClock`. Machine-local, as the audio device is: which DJ
+    /// network or mixer this desk is cabled to is a fact about the desk. The last one used is
+    /// picked again at launch, and not started — START is pressed as ever. A file that does not
+    /// say, or names a source this build does not know, is the audio, as a fresh install is.
+    std::string timingSource{kTimingAudio};
+    /// The MIDI input a MIDI clock is followed from, by name, as `midiControlPort` is.
+    std::string midiClockInPort;
+    /// Whether a followed MIDI clock's Stop halts the beats. **Off unless asked for**: a DJ
+    /// mixer's Stop button keeps its clock running, and a stray press must not black out the rig.
+    bool midiClockObeyStartStop = false;
 
     /// The main window's Inputs and Outputs folded down to their headings, as they were left —
     /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
@@ -156,6 +174,20 @@ struct Preset {
     /// older build given the file.
     bool link = false;
     std::string oscPrefix = "/takt4";
+
+    /// Beats to the bar while a source is followed: neither Link nor a MIDI clock carries a
+    /// meter, so it is the operator's, and it is Link's quantum too. 1 to 16; a file that says
+    /// anything else, or nothing, is a bar of four.
+    std::uint32_t externalBeatsPerBar = 4;
+    /// The latency offset while each source is followed, in seconds, as
+    /// `tempo.latencyOffsetSeconds` is beat detection's: the rig's lag behind the audio is not
+    /// its lag behind a Link session or a mixer's clock. Held to the same range.
+    struct TimingLatency {
+        double link = 0.0;
+        double midiClock = 0.0;
+        friend bool operator==(const TimingLatency&, const TimingLatency&) = default;
+    };
+    TimingLatency timingLatency;
 
     /// the *"multiple simultaneous targets, each with its own host, port, enabled state
     /// and rule subset"* — the named outputs a rule routes to.
