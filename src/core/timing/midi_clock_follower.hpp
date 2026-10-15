@@ -37,6 +37,14 @@ namespace takt4::timing {
 ///   * **Present** while ticks keep coming — one within the last `kAbsentTicks` tick gaps, or
 ///     `kAbsentMicros`, whichever is longer — once `kSettledTicks` have come without a break: two
 ///     beats to measure the tempo by. A clock that stops is coasted by `BeatGrid`.
+///   * **A clock that starts again on a Start or Continue** — a DAW's, which ticks only while its
+///     song plays — is present from its first tick, taken to be at the tempo it last ran at until
+///     it has ticked enough to measure its own (`TickFit::startAgainAt`). So the song's first
+///     downbeat goes out on the tick that begins it, not two beats on. A clock that comes back
+///     with no Start, or with no tempo known from before, has two beats to show first, so a stray
+///     tick never sets the rig going. The tempo is kept from one run to the next: a known tempo
+///     that is wrong is only the line's slope for the first `TickFit::Options::firstTaken` ticks,
+///     a quarter of a beat, and the beat the first tick begins is on that tick whatever it is.
 ///
 /// The messages arrive on the driver's thread (`midi::MidiInputListener`) and are passed through a
 /// lock-free ring to `ExternalBeats`' thread, which does everything else (`GridSource`). The port
@@ -44,7 +52,8 @@ namespace takt4::timing {
 /// a port that cannot be opened is said there.
 class MidiClockFollower final : public GridSource, public midi::MidiInputListener {
 public:
-    /// Ticks without a break before the tempo is believed: two beats.
+    /// Ticks without a break before the tempo is believed: two beats — or the first, when the
+    /// clock starts again on a Start or Continue at a tempo known from before.
     static constexpr std::uint64_t kSettledTicks = 48;
     /// A clock is gone when no tick has come for this many of its tick gaps...
     static constexpr double kAbsentTicks = 4.0;
@@ -59,7 +68,7 @@ public:
     struct Status {
         /// Ticks arriving.
         bool ticking = false;
-        /// The tempo they say, once they have said it for `kSettledTicks`; zero before.
+        /// The tempo they say, once they are followed (`kSettledTicks`); zero before.
         double bpm = 0.0;
         /// Whether a Start, Continue or Song Position has said where the beats are. Until one has,
         /// the beats are wherever the ticks were first counted from, and DOWNBEAT is what puts
@@ -117,6 +126,10 @@ private:
     void tick(std::int64_t at) noexcept;
     /// The next tick is song tick `songTick`: the bar is placed afresh.
     void placeNextTick(std::int64_t songTick) noexcept;
+    /// Keeps the tempo of the run of ticks so far, if it was followed, to start the next at.
+    void rememberTempo() noexcept;
+    /// Whether this run of ticks is followed: enough of them without a break to go on.
+    bool followed() const noexcept;
     /// How long without a tick before the clock is gone.
     double absentAfter() const noexcept;
     bool ticking(std::int64_t now) const noexcept;
@@ -140,6 +153,15 @@ private:
     std::int64_t songOffset_ = 0;
     bool placed_ = false;
     std::uint32_t placements_ = 0;
+    /// Where the last placement put the song, in beats (`GridReading::placedAt`).
+    double placedAt_ = 0.0;
+    /// The tempo the clock last ran at while followed, in microseconds a tick: what it is taken to
+    /// start again at. Kept from run to run; zero until one has been followed.
+    double knownMicrosPerTick_ = 0.0;
+    /// A Start or Continue since the last tick: the next run of ticks is a song starting.
+    bool startedSinceTick_ = false;
+    /// This run of ticks began on one, at a tempo known from before: followed from its first tick.
+    bool resumed_ = false;
     /// Between a Start or Continue and a Stop: the song position moves on with each tick.
     bool playing_ = false;
     /// A Stop since the last Start or Continue.

@@ -67,7 +67,8 @@ std::optional<BeatGrid::Grid> BeatGrid::follow(const GridReading& reading) noexc
         state_.locked = true;
         state_.acquired = true;
         state_.noSignal = false;
-        return Grid{reading.bpm, reading.beat, reading.anchored, reading.placements};
+        return Grid{reading.bpm, reading.beat, reading.anchored, reading.placements,
+                    reading.placedAt};
     }
     if (!state_.locked || !haveGood_) {
         return std::nullopt; // nothing heard since START, or gone quiet since
@@ -80,7 +81,8 @@ std::optional<BeatGrid::Grid> BeatGrid::follow(const GridReading& reading) noexc
     // Gone, and run on at its last tempo and phase: the lock stays, as the tracker's does while
     // it flywheels.
     coasting_ = true;
-    return Grid{good_.bpm, good_.beat + gone * good_.bpm / 60.0, good_.anchored, good_.placements};
+    return Grid{good_.bpm, good_.beat + gone * good_.bpm / 60.0, good_.anchored, good_.placements,
+                good_.placedAt};
 }
 
 void BeatGrid::goQuiet() noexcept {
@@ -215,7 +217,8 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
     }
     // A source that has just said where its bars are — a MIDI Start, or another — takes its own
     // bar back, from any DOWNBEAT before it, and is followed from there.
-    if (grid->anchored && (!wasAnchored_ || grid->placements != placements_)) {
+    const bool placedNow = grid->placements != placements_;
+    if (grid->anchored && (!wasAnchored_ || placedNow)) {
         // A bar that was somewhere else has moved, which a bridging Link output has to be told
         // at once, as it is told of a DOWNBEAT.
         snapUnsent_ = snapUnsent_ || barSet_;
@@ -242,30 +245,38 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
     }
 
     const double p = (grid->beat - anchor_) * scaled;
-    std::optional<engine::EngineBeat> beat;
+    const std::int64_t now = wholeBelow(p);
     // A beat is a whole number of the published position passed since the last reading — unless
     // the grid jumped there rather than ran (`kJumpBeats`), or the beat is the one just sent,
     // moved a little (`kSameBeat`).
+    std::int64_t crossed = 0;
     if (haveLast_ &&
         std::abs((p - lastP_) - static_cast<double>(reading.at - lastAt_) / period) <= kJumpBeats) {
-        const std::int64_t before = wholeBelow(lastP_);
-        const std::int64_t now = wholeBelow(p);
-        if (now > before) {
-            // Its own moment, worked back from the reading by the tempo: when it was, not when it
-            // was noticed.
-            const std::int64_t moment =
-                reading.at - std::llround((p - static_cast<double>(now)) * period);
-            if (!sent_ || static_cast<double>(moment - lastSentAt_) >= kSameBeat * period) {
-                beat = send(now, moment, now - before);
-            } else if (placedUncrossed_ && beatInBarOf(now) == 1) {
-                // The source has just placed its bar, and the bar's first beat comes too soon
-                // after the beat just sent to go out as another. The bar is declared on its
-                // moment instead — as a DOWNBEAT pressed just after a beat declares one — so its
-                // rules fire on time, and the beat's do not fire twice.
-                declareBar();
-            }
-            placedUncrossed_ = false;
+        crossed = std::max<std::int64_t>(now - wholeBelow(lastP_), 0);
+    } else if (placedNow && grid->anchored && static_cast<double>(now) >= grid->placedAt * scaled &&
+               p - static_cast<double>(now) <= kJumpBeats) {
+        // The first reading of a bar the source has just placed has no reading before it on this
+        // grid to have crossed a beat since. A beat at or after where the source placed it, only
+        // just passed, is the placing tick's own: a Start's downbeat, read together with its
+        // first tick — as a DAW that starts its clock with its song sends them.
+        crossed = 1;
+    }
+    std::optional<engine::EngineBeat> beat;
+    if (crossed > 0) {
+        // Its own moment, worked back from the reading by the tempo: when it was, not when it was
+        // noticed.
+        const std::int64_t moment =
+            reading.at - std::llround((p - static_cast<double>(now)) * period);
+        if (!sent_ || static_cast<double>(moment - lastSentAt_) >= kSameBeat * period) {
+            beat = send(now, moment, crossed);
+        } else if (placedUncrossed_ && beatInBarOf(now) == 1) {
+            // The source has just placed its bar, and the bar's first beat comes too soon after
+            // the beat just sent to go out as another. The bar is declared on its moment instead
+            // — as a DOWNBEAT pressed just after a beat declares one — so its rules fire on time,
+            // and the beat's do not fire twice.
+            declareBar();
         }
+        placedUncrossed_ = false;
     }
     haveLast_ = true;
     lastP_ = p;

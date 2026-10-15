@@ -79,11 +79,17 @@ public:
     /// Forgets every tick, keeping the counts: a clock that stopped and started again is a new
     /// run of ticks, at whatever tempo and phase it starts with.
     void startAgain() noexcept;
+    /// The same, for a clock taken to have started again at a tempo it has had before: until
+    /// `Options::firstTaken` ticks have come to measure it by, the ticks are taken to be
+    /// `microsPerTick` apart, and the line is there from the first of them.
+    void startAgainAt(double microsPerTick) noexcept;
     /// Forgets everything, the counts too.
     void reset() noexcept;
 
-    /// Whether there is a line: two ticks taken.
-    bool fitted() const noexcept { return line_.points() >= 2; }
+    /// Whether there is a line: two ticks taken, or one at a tempo known from before.
+    bool fitted() const noexcept {
+        return line_.points() >= 2 || (assumed_ && line_.points() >= 1);
+    }
     /// When tick `index` was or will be on the line, in microseconds. Fitted lines only.
     double momentOf(double index) const noexcept { return line_.at(index); }
     /// Which tick the line is at at `atMicros`, fractionally. Fitted lines only.
@@ -116,6 +122,8 @@ private:
     /// The ticks held back in a row on one side, newest last, up to `giveUpAfter`.
     std::vector<Tick> run_;
     int runSide_ = 0;
+    /// The line's slope is a tempo known from before until it has ticks to measure its own by.
+    bool assumed_ = false;
     std::int64_t lastIndex_ = 0;
     std::uint64_t heldBack_ = 0;
     std::uint64_t tempoChanges_ = 0;

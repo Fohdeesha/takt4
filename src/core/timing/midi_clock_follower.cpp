@@ -76,11 +76,16 @@ void MidiClockFollower::begin(std::uint32_t) noexcept {
     songOffset_ = 0;
     placed_ = false;
     placements_ = 0;
+    placedAt_ = 0.0;
     playing_ = false;
     stopSeen_ = false;
     lastSongTick_ = -1;
     songPositionPending_ = false;
     pendingSongTick_ = 0;
+    // The tempo the clock last ran at is kept: the song this run starts may well be at it, and
+    // until the ticks have measured their own it is only the line's slope.
+    startedSinceTick_ = false;
+    resumed_ = false;
     publish(inputs_.now());
 }
 
@@ -93,18 +98,20 @@ GridReading MidiClockFollower::read() noexcept {
     GridReading reading;
     reading.at = now;
     reading.stopped = stopSeen_ && obey_.load(std::memory_order_relaxed);
-    if (!reading.stopped && ticking(now) && unbroken_ >= kSettledTicks && fit_.fitted()) {
+    if (!reading.stopped && ticking(now) && followed()) {
         reading.present = true;
         reading.bpm = 60e6 / (fit_.microsPerTick() * kTicksPerBeat);
         reading.beat = (fit_.indexAt(now) + static_cast<double>(songOffset_)) / kTicksPerBeat;
         reading.anchored = placed_;
         reading.placements = placements_;
+        reading.placedAt = placedAt_;
     }
     publish(now);
     return reading;
 }
 
 void MidiClockFollower::end() noexcept {
+    rememberTempo();
     publish(inputs_.now());
 }
 
@@ -117,6 +124,7 @@ void MidiClockFollower::handle(const Message& message) noexcept {
         // "Sequencing begins at song-position 0 when the next Timing Clock message is received."
         playing_ = true;
         stopSeen_ = false;
+        startedSinceTick_ = true;
         songPositionPending_ = false;
         placeNextTick(0);
         break;
@@ -125,6 +133,7 @@ void MidiClockFollower::handle(const Message& message) noexcept {
         // never placed has no song position to go on from, and stays unplaced.
         playing_ = true;
         stopSeen_ = false;
+        startedSinceTick_ = true;
         if (songPositionPending_) {
             songPositionPending_ = false;
             placeNextTick(pendingSongTick_);
@@ -155,12 +164,21 @@ void MidiClockFollower::handle(const Message& message) noexcept {
 }
 
 void MidiClockFollower::tick(std::int64_t at) noexcept {
-    if (heardTick_ && static_cast<double>(at - lastTickAt_) > absentAfter()) {
-        // The clock stopped and has started again: a new run of ticks, at whatever tempo and
-        // phase it started with, measured afresh.
-        fit_.startAgain();
+    if (!heardTick_ || static_cast<double>(at - lastTickAt_) > absentAfter()) {
+        // A new run of ticks — the run's first, or the clock stopped and has started again — at
+        // whatever tempo and phase it starts with, measured afresh. Unless a Start or Continue
+        // has just said it is a song starting: then it is taken to be at the tempo it last ran
+        // at, and followed from this tick, until it has ticked enough to say.
+        rememberTempo();
+        resumed_ = startedSinceTick_ && knownMicrosPerTick_ > 0.0;
+        if (resumed_) {
+            fit_.startAgainAt(knownMicrosPerTick_);
+        } else {
+            fit_.startAgain();
+        }
         unbroken_ = 0;
     }
+    startedSinceTick_ = false;
     fit_.add(ticks_, at);
     heardTick_ = true;
     lastTickAt_ = at;
@@ -177,6 +195,17 @@ void MidiClockFollower::placeNextTick(std::int64_t songTick) noexcept {
     lastSongTick_ = songTick - 1;
     placed_ = true;
     ++placements_;
+    placedAt_ = static_cast<double>(songTick) / kTicksPerBeat;
+}
+
+void MidiClockFollower::rememberTempo() noexcept {
+    if (followed()) {
+        knownMicrosPerTick_ = fit_.microsPerTick();
+    }
+}
+
+bool MidiClockFollower::followed() const noexcept {
+    return unbroken_ >= (resumed_ ? 1U : kSettledTicks) && fit_.fitted();
 }
 
 double MidiClockFollower::absentAfter() const noexcept {
@@ -191,7 +220,7 @@ bool MidiClockFollower::ticking(std::int64_t now) const noexcept {
 void MidiClockFollower::publish(std::int64_t now) noexcept {
     Status status;
     status.ticking = ticking(now);
-    if (status.ticking && unbroken_ >= kSettledTicks && fit_.fitted()) {
+    if (status.ticking && followed()) {
         status.bpm = 60e6 / (fit_.microsPerTick() * kTicksPerBeat);
     }
     status.placed = placed_;

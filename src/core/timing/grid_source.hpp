@@ -35,6 +35,10 @@ struct GridReading {
     /// Position. Each one takes the bar back from a DOWNBEAT pressed before it, since that is what
     /// they mean. Link places its bar once and for all, and leaves this at zero.
     std::uint32_t placements = 0;
+    /// Where on its own grid the last of them put the song, in beats: 0 for a Start, a Song
+    /// Position's sixteenths over four. A beat there or after it that the first reading of the
+    /// placed grid has only just passed is the placing tick's own, and is sent (`BeatGrid`).
+    double placedAt = 0.0;
 };
 
 /// A beat grid followed from somewhere else — what `ExternalBeats` reads every round on its own

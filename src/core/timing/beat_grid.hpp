@@ -26,7 +26,9 @@ namespace takt4::timing {
 ///     source that says where its bars are puts it at 0. DOWNBEAT moves it to the published beat
 ///     nearest the press — and, for a source with no phase of its own, to the press itself — until
 ///     the source places its bar again (`GridReading::placements`: a MIDI Start), which puts it
-///     back.
+///     back. The beat a placement puts there is sent even when the reading that first sees the
+///     placed grid is already a little past it (`GridReading::placedAt`): a Start read together
+///     with its first tick.
 ///   * **÷2 and ×2** scale the grid about the anchor: the published position is
 ///     `(beat - anchor) * 2^shift`, and a beat is every whole number of it. So ÷2 keeps every
 ///     second beat counted from a downbeat, and the downbeat survives; ×2 adds one half-way.
@@ -105,6 +107,7 @@ private:
         double beat = 0.0;
         bool anchored = false;
         std::uint32_t placements = 0;
+        double placedAt = 0.0;
     };
 
     double scale() const noexcept;

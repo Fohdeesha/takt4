@@ -5,6 +5,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cmath>
 #include <cstdint>
@@ -68,6 +69,13 @@ public:
     }
 
     void setTempo(double bpm) { gap_ = 60e6 / (bpm * 24.0); }
+
+    /// takt4's STOP and START: the run ends, and another begins.
+    void restart() {
+        follower_.end();
+        follower_.begin(4);
+        grid_.reset(BeatGrid::Options{});
+    }
 
     MidiClockFollower& follower() { return follower_; }
     BeatGrid& grid() { return grid_; }
@@ -278,7 +286,8 @@ TEST_CASE("a MIDI clock that stops is gone, and comes back measured afresh",
     (void)rig.run(0.02, false);
     CHECK_FALSE(rig.last().present);
     CHECK_FALSE(rig.follower().status().ticking);
-    // Back at another tempo, from another phase: two beats of it before it is believed.
+    // Back at another tempo, from another phase, with no Start: two beats of it before it is
+    // believed, though a tempo is known from before.
     rig.setTempo(140.0);
     (void)rig.run(46.5 * 60.0 / (140.0 * 24.0));
     CHECK_FALSE(rig.last().present);
@@ -312,4 +321,72 @@ TEST_CASE("a MIDI clock follower takes only a clock's messages, and none from be
     CHECK(follower.port() == "Pads");
     follower.stopListening();
     CHECK(follower.port().empty());
+}
+
+TEST_CASE(
+    "a MIDI clock that ticks only while its song plays is followed from the song's first tick",
+    "[timing][midi][follow]") {
+    // A DAW's clock: Start and the first tick together, ticks while the song plays, then Stop and
+    // nothing. Once a song has been followed its tempo is known, and the next song is followed
+    // from its first tick — bar 1's downbeat on it — rather than two beats on.
+    const double played = 128.0;
+    const double period = 60e6 / played;
+    Rig rig(played);
+    rig.send({kStart});
+    const std::vector<EngineBeat> first = rig.run(3.0);
+    REQUIRE_FALSE(first.empty());
+    rig.send({kStop});
+    // Stopped half a beat after a beat — coasted still, or let go of — so the song's downbeat is a
+    // beat of its own, not one declared just after a coasted one.
+    const int beatsStopped = GENERATE(2, 12);
+    const double resumeAt = static_cast<double>(first.back().hostMicros) +
+                            (static_cast<double>(beatsStopped) + 0.5) * period;
+    (void)rig.run((resumeAt - static_cast<double>(rig.now())) / 1e6, false);
+    CHECK(rig.grid().state().noSignal == (beatsStopped > 10));
+    // At the tempo it stopped at, or one set while it was stopped.
+    const double bpm = GENERATE(128.0, 133.0);
+    INFO(beatsStopped << " beats stopped, then " << bpm << " BPM");
+    rig.setTempo(bpm);
+    rig.send({kStart});
+    const std::size_t song = rig.ticks().size();
+    const std::vector<EngineBeat> beats = rig.run(2.5);
+    std::vector<EngineBeat> after;
+    for (const EngineBeat& beat : beats) {
+        if (beat.hostMicros >= rig.ticks()[song] - 1000) {
+            after.push_back(beat);
+        }
+    }
+    REQUIRE(after.size() >= 4);
+    for (std::size_t i = 0; i < after.size(); ++i) {
+        INFO("beat " << i);
+        CHECK(static_cast<double>(after[i].hostMicros) ==
+              Approx(static_cast<double>(rig.ticks()[song + 24 * i])).margin(1000.0));
+        CHECK(after[i].event.beatInBar == static_cast<std::uint32_t>(i % 4 + 1));
+        CHECK(after[i].event.acquired);
+    }
+    CHECK(rig.last().bpm == Approx(bpm).margin(0.01));
+}
+
+TEST_CASE("a MIDI clock's tempo is known from one run of takt4 to the next, and not before",
+          "[timing][midi][follow]") {
+    Rig rig(120.0);
+    // Nothing known: the first song waits two beats, and its first beat sent is the third.
+    rig.send({kStart});
+    std::size_t song = rig.ticks().size();
+    std::vector<EngineBeat> beats = rig.run(3.0);
+    REQUIRE_FALSE(beats.empty());
+    CHECK(static_cast<double>(beats[0].hostMicros) ==
+          Approx(static_cast<double>(rig.ticks()[song + 48])).margin(1000.0));
+    CHECK(beats[0].event.beatInBar == 3);
+    rig.send({kStop});
+    (void)rig.run(1.0, false);
+    // takt4 stopped and started again, then the next song: on its first tick.
+    rig.restart();
+    rig.send({kStart});
+    song = rig.ticks().size();
+    beats = rig.run(1.0);
+    REQUIRE_FALSE(beats.empty());
+    CHECK(static_cast<double>(beats[0].hostMicros) ==
+          Approx(static_cast<double>(rig.ticks()[song])).margin(1000.0));
+    CHECK(beats[0].event.beatInBar == 1);
 }

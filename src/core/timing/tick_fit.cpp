@@ -28,9 +28,16 @@ TickFit::TickFit(Options options)
 }
 
 void TickFit::startAgain() noexcept {
-    line_.reset();
+    line_.reset(kNominalMicrosPerTick, 2);
+    assumed_ = false;
     run_.clear();
     runSide_ = 0;
+}
+
+void TickFit::startAgainAt(double microsPerTick) noexcept {
+    startAgain();
+    line_.reset(microsPerTick, options_.firstTaken);
+    assumed_ = true;
 }
 
 void TickFit::reset() noexcept {
@@ -94,8 +101,9 @@ bool TickFit::isNewTempo(std::size_t count, double spread) noexcept {
 
 void TickFit::startFromRun(std::size_t count) noexcept {
     // The run is the tempo now: the line starts again from it, and those ticks were not held back
-    // after all.
-    line_.reset();
+    // after all. Its own slope from its first two: nothing from before is known about it.
+    line_.reset(kNominalMicrosPerTick, 2);
+    assumed_ = false;
     for (auto tick = run_.end() - static_cast<std::ptrdiff_t>(count); tick != run_.end(); ++tick) {
         take(*tick);
     }

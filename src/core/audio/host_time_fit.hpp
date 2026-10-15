@@ -75,6 +75,14 @@ public:
         next_ = 0;
     }
 
+    /// Forgets every observation, and from now on takes `nominalSlope` as the slope until
+    /// `settled` points are in (two at the least) — a rate known from before, say.
+    void reset(double nominalSlope, std::size_t settled) noexcept {
+        nominalSlope_ = nominalSlope;
+        settled_ = std::max<std::size_t>(settled, 2);
+        reset();
+    }
+
     std::size_t points() const noexcept { return count_; }
     /// The fitted slope, host time per unit of sample time.
     double slope() const noexcept { return slope_; }

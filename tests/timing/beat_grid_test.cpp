@@ -622,3 +622,59 @@ TEST_CASE("a DOWNBEAT pressed with nothing to follow is dropped, not kept for la
     }
     CHECK(grid.state().barsDeclared == 0);
 }
+
+TEST_CASE("a bar placed a little behind the reading that first sees it still has its downbeat sent",
+          "[timing][follow]") {
+    // A MIDI clock ticking with no Start, then a placement read only once the grid is already past
+    // where it put the song: a Start and its first tick, which a DAW sends together.
+    const double bpm = 120.0;
+    const double period = periodOf(bpm);
+    // Between two readings, as a tick lands: the first reading of the placed grid is 0.6 ms on.
+    const double placedMoment = static_cast<double>(kStart) + 3.3 * kSecond + 400.0;
+    struct Placement {
+        double placedAt;
+        double readLate; // how far past the placing tick the first reading is, in beats
+        bool sent;
+    };
+    const Placement placement = GENERATE(Placement{0.0, 0.0, true}, // Start
+                                         Placement{2.0, 0.0, true}, // Continue on a beat
+                                         // A Song Position a quarter into beat 1: beat 1 was
+                                         // before it, and is nobody's to send.
+                                         Placement{1.25, 0.0, false},
+                                         // Read a third of a beat late: long gone.
+                                         Placement{0.0, 0.33, false});
+    INFO("placed at " << placement.placedAt << ", read " << placement.readLate << " beat late");
+    const double readFrom = placedMoment + placement.readLate * period;
+    // The placed grid: song beat `placedAt` at `placedMoment`.
+    const double zero = placedMoment - placement.placedAt * period;
+    const Source source = [&](std::int64_t at) {
+        if (static_cast<double>(at) < readFrom) {
+            // Its last beat over half a beat before the placement: the placed beat is one of its
+            // own, not one declared just after it.
+            return onGrid(at, bpm, placedMoment - 0.55 * period, false);
+        }
+        GridReading reading = onGrid(at, bpm, zero);
+        reading.placements = 1;
+        reading.placedAt = placement.placedAt;
+        return reading;
+    };
+    BeatGrid grid;
+    std::int64_t at = kStart;
+    (void)drive(grid, source, at, static_cast<std::int64_t>(placedMoment) - 1000);
+    const std::vector<Sent> sent = drive(grid, source, at, at + 3 * kSecond);
+    REQUIRE_FALSE(sent.empty());
+    const double first = positionOf(sent[0].beat, bpm, zero);
+    if (placement.sent) {
+        // On its own moment, worked back from the reading, and the bar's first.
+        CHECK(first == Approx(placement.placedAt).margin(1e-5));
+        CHECK(sent[0].beat.event.beatInBar ==
+              static_cast<std::uint32_t>(std::llround(placement.placedAt)) % 4 + 1);
+    } else {
+        CHECK(first == Approx(std::floor(placement.placedAt) + 1.0).margin(1e-5));
+    }
+    // Every beat after it once, on the placed grid.
+    for (std::size_t i = 1; i < sent.size(); ++i) {
+        CHECK(positionOf(sent[i].beat, bpm, zero) ==
+              Approx(first + static_cast<double>(i)).margin(1e-5));
+    }
+}
