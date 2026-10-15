@@ -500,17 +500,17 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       traceModel_(
           std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength))),
       targetModel_(std::make_shared<slint::VectorModel<OutputRow>>()),
-      peerModel_(std::make_shared<slint::VectorModel<LinkPeer>>()),
+      peerModel_(std::make_shared<slint::VectorModel<LinkPeer>>()), source_(tracker.engine()),
       // Whatever the last run was sending, switched back on. With no settings that is
       // nothing, which is what an app nobody has configured should send.
-      runner_(tracker.engine(), transportConfig(settings, tracker.engine().tempoOptions())),
+      runner_(source_, transportConfig(settings, tracker.engine().tempoOptions())),
       // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
       // a port, so a machine with a controller plugged in is not listened to — and no
       // socket is bound — until somebody says to. The runner is each one's second
       // destination: the `panic` and `rule/<id>/enable` are questions for the rules,
       // which live on the output thread behind that queue.
-      control_(tracker.engine(), control::MidiControl::Config{}, &runner_),
-      oscControl_(tracker.engine(), oscControlConfig(settings), &runner_),
+      control_(source_, control::MidiControl::Config{}, &runner_),
+      oscControl_(source_, oscControlConfig(settings), &runner_),
       // the editor, built with the window and shown on demand. It is given the rules
       // straight from the preset rather than through `setRules`, because the runner has
       // not been told about them yet — the constructor body does that below, once.
@@ -2916,15 +2916,15 @@ double WindowController::nowSeconds() const {
 }
 
 void WindowController::halve() {
-    (void)tracker_.engine().post(engine::Command::halve());
+    (void)source_.post(engine::Command::halve());
 }
 
 void WindowController::redouble() {
-    (void)tracker_.engine().post(engine::Command::redouble());
+    (void)source_.post(engine::Command::redouble());
 }
 
 void WindowController::snapDownbeat() {
-    if (!tracker_.engine().post(engine::Command::snapDownbeat())) {
+    if (!source_.post(engine::Command::snapDownbeat())) {
         return; // queue full; nothing is coming, so do not light the button
     }
     // The snap's correction reaches the outputs on the next beat the tracker calls, which
@@ -2933,7 +2933,7 @@ void WindowController::snapDownbeat() {
     // now so the redraw can tell when it has landed, and light the button until then: a
     // press between beats is otherwise entirely invisible, and a bar phase shifting is hard
     // to see moving even once it does.
-    snapAwaitingBeat_ = tracker_.engine().state().beats;
+    snapAwaitingBeat_ = source_.state().beats;
     window_->set_snap_pending(true);
 }
 
@@ -2945,14 +2945,14 @@ void WindowController::publishSnap() {
     // the inference thread draining it — about two milliseconds against a beat period of
     // hundreds — and clear this a beat early; that is a light going out slightly too soon,
     // which is not worth a second counter through the engine to prevent.
-    if (tracker_.engine().state().beats != *snapAwaitingBeat_) {
+    if (source_.state().beats != *snapAwaitingBeat_) {
         snapAwaitingBeat_.reset();
         window_->set_snap_pending(false);
     }
 }
 
 void WindowController::setPinned(bool pinned) {
-    if (!tracker_.engine().post(engine::Command::setLockPinned(pinned))) {
+    if (!source_.post(engine::Command::setLockPinned(pinned))) {
         // The queue is full, which takes 3200 posts a second. Nothing was sent, so nothing
         // is in flight and the button goes back to telling the truth.
         pinPosted_.reset();
@@ -2977,7 +2977,7 @@ void WindowController::tap(double seconds) {
         // tracker keeps tracking (the locked decisions). It moves `minBpm`/`maxBpm` under
         // this window, which is why nothing here holds a copy of them — and why a settings
         // change in flight is dropped, since the tap has just superseded it.
-        (void)tracker_.engine().post(engine::Command::seedTempo(*tapped));
+        (void)source_.post(engine::Command::seedTempo(*tapped));
         posted_.reset();
     }
     publishTaps();
@@ -3691,7 +3691,7 @@ void WindowController::publishOptions() {
 }
 
 void WindowController::publishPin() {
-    const bool live = tracker_.engine().state().pinned;
+    const bool live = source_.state().pinned;
     if (pinPosted_) {
         if (live != *pinPosted_) {
             // The race `publishOptions` guards, for the same reason and on the same
@@ -3915,7 +3915,7 @@ void WindowController::publishTrace() {
 }
 
 void WindowController::publishState() {
-    const tracking::TempoState state = tracker_.engine().state();
+    const tracking::TempoState state = source_.state();
     publishTempoState(*window_, state);
     publishBeatDots(state);
     // After it: publishTempoState shows what the engine has, and this is the one property

@@ -6,6 +6,7 @@
 #include "core/audio/stereo_check.hpp"
 #include "core/control/midi_control.hpp"
 #include "core/control/osc_control.hpp"
+#include "core/engine/beat_source.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/output/link_peers.hpp"
 #include "core/output/output_runner.hpp"
@@ -937,7 +938,12 @@ private:
     /// ones that need a rule named too, which a gesture cannot supply. See the constructor.
     std::vector<control::ControlAction> learnActions_;
 
-    /// the output thread, and the single consumer of the engine's beat ring — which is
+    /// Where the beats come from — the tracker's engine — as the output thread, the two control
+    /// surfaces and this window's own buttons hold it (`engine::BeatSourceSwitch`). **Before
+    /// `runner_`**, so it outlives everything that holds it.
+    engine::BeatSourceSwitch source_;
+
+    /// the output thread, and the single consumer of the source's beat ring — which is
     /// why `tick()` no longer drains it.
     ///
     /// Its destructor joins the thread, and that has to happen before anything the thread

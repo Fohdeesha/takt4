@@ -40,6 +40,7 @@ add_executable(takt4_tests
   dmx/liberation_test.cpp
   dsp/real_fft_test.cpp
   engine/beat_engine_test.cpp
+  engine/beat_source_test.cpp
   engine/control_test.cpp
   engine/live_tracker_test.cpp
   fixtures/corpus_test.cpp
@@ -89,6 +90,7 @@ add_executable(takt4_tests
   deps/json_smoke_test.cpp
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
+  support/fake_beat_source.hpp
   support/loopback_receiver.hpp
   support/rig_sandbox.cpp
   support/scoped_env.hpp

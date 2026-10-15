@@ -157,8 +157,8 @@ std::string_view labelOf(ControlAction action) noexcept {
     return {};
 }
 
-ControlSurface::ControlSurface(engine::BeatEngine& engine, RuleControl* rules) noexcept
-    : engine_(engine), rules_(rules) {}
+ControlSurface::ControlSurface(engine::BeatSource& beats, RuleControl* rules) noexcept
+    : beats_(beats), rules_(rules) {}
 
 double ControlSurface::nowSeconds() const noexcept {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
@@ -203,26 +203,26 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         if (tapped) {
             // A seed, not an override — the locked decision, and the same thing the
             // window's TAP and the console's space bar do.
-            (void)engine_.post(Command::seedTempo(*tapped));
+            (void)beats_.post(Command::seedTempo(*tapped));
         }
         // The taps before the third say nothing, which is not the same as failing.
         return true;
     }
     case ControlAction::Downbeat:
-        (void)engine_.post(Command::snapDownbeat());
+        (void)beats_.post(Command::snapDownbeat());
         return true;
     case ControlAction::TempoHalve:
-        (void)engine_.post(Command::halve());
+        (void)beats_.post(Command::halve());
         return true;
     case ControlAction::TempoDouble:
-        (void)engine_.post(Command::redouble());
+        (void)beats_.post(Command::redouble());
         return true;
     case ControlAction::Lock:
         // Anything a surface spells "true" with: OSC booleans arrive as 1 and 0, a fader
         // sends 1.0, and a MIDI pad sends 1 while held and 0 on its release (`argumentOf`),
         // so a pad pins while it is down — it used to send 1 and nothing, and pinned for good
         //.
-        (void)engine_.post(Command::setLockPinned(*argument != 0.0));
+        (void)beats_.post(Command::setLockPinned(*argument != 0.0));
         return true;
 
     // The two that are not the tracker's. Refused outright where nothing is wired to the

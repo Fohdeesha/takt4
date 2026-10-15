@@ -368,9 +368,10 @@ struct ClockRun {
 
 /// What the output thread does, round by round: beats reach it a pipeline after they were in
 /// the music, with their stamps jittered, and it syncs the clock to each one — offset by the
-/// latency — then advances it.
+/// latency — then advances it. By default the tracker's case: a 60 ms pipeline and stamps
+/// ±10 ms, which is more than a real beat's jitter.
 ClockRun runClock(double bpm, double latency, std::size_t count, double changeTo = 0.0,
-                  std::size_t changeAt = 0) {
+                  std::size_t changeAt = 0, double pipeline = 0.060, double jitter = 0.010) {
     TimedRecorder recorder;
     MidiClock clock(recorder, bpm);
     ClockRun run;
@@ -380,25 +381,23 @@ ClockRun runClock(double bpm, double latency, std::size_t count, double changeTo
         run.beats.push_back(at);
         at += 60.0 / (changeTo > 0.0 && k >= changeAt ? changeTo : bpm);
     }
-    // A fixed generator, so the run is the same every time: stamps ±10 ms, which is more
-    // than a real beat's jitter, and a pipeline of 60 ms.
+    // A fixed generator, so the run is the same every time.
     std::mt19937 random(20260923);
     std::vector<double> stamps;
     stamps.reserve(count);
     for (std::size_t k = 0; k < count; ++k) {
         stamps.push_back(run.beats[k] +
-                         (static_cast<double>(random()) / 4294967296.0) * 0.020 - 0.010);
+                         (static_cast<double>(random()) / 4294967296.0) * (2.0 * jitter) - jitter);
     }
-    constexpr double kPipeline = 0.060;
     clock.start(0.0);
     std::size_t next = 0;
-    const double end = run.beats.back() + kPipeline + 0.5;
+    const double end = run.beats.back() + pipeline + 0.5;
     for (std::size_t round = 0;; ++round) {
         const double now = static_cast<double>(round) * 0.001;
         if (now >= end) {
             break;
         }
-        while (next < count && run.beats[next] + kPipeline <= now) {
+        while (next < count && run.beats[next] + pipeline <= now) {
             clock.setTempo(changeTo > 0.0 && next >= changeAt ? changeTo : bpm);
             clock.syncToBeat(stamps[next] + latency);
             ++next;
@@ -489,6 +488,27 @@ TEST_CASE("the clock sends exactly 24 ticks a beat against jittered beats", "[ou
             }
             CHECK(narrowest >= tick * MidiClock::kSteerMin - 0.0011);
             CHECK(widest <= tick * MidiClock::kSteerMax + 0.0011);
+        }
+    }
+}
+
+TEST_CASE("the clock lands its beat ticks on an exact grid heard on its own moment",
+          "[output][midi][follow]") {
+    // A timing source that follows Link, a MIDI clock or a CDJ: an exact period, and every beat
+    // heard as its moment passes rather than a pipeline later. Steering halves the error on each
+    // beat, so once it has pulled in the beat tick is on the beat — late only by the round the
+    // output thread advances the clock in — and every beat is 24 ticks, whatever the latency.
+    for (const double latency : {0.0, -0.040, 0.030}) {
+        for (const double bpm : {90.0, 128.0, 174.0}) {
+            INFO("latency " << latency * 1000.0 << " ms at " << bpm << " BPM");
+            const ClockRun run = runClock(bpm, latency, 600, 0.0, 0, 0.0, 0.0);
+            CHECK(run.skipped == 0);
+            const Landing landed = landing(run, latency, 16);
+            INFO("worst beat-tick error " << landed.worst * 1000.0 << " ms over " << landed.beats
+                                          << " beats");
+            CHECK(landed.beats > 560);
+            CHECK(landed.slips == 0);
+            CHECK(landed.worst < 0.0011);
         }
     }
 }

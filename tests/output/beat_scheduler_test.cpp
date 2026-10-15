@@ -451,6 +451,111 @@ TEST_CASE("a predicted beat the heard one corrects is not fired again", "[output
     CHECK(next->moment == Approx(corrected + period));
 }
 
+namespace {
+
+/// A beat from an external grid — Link, a MIDI clock, a CDJ — as a timing source publishes it:
+/// locked and believed from the start, allowed to fire, and its spacing named outright
+/// (`gridBpm`) with nothing folded or divided.
+EngineBeat gridBeat(std::uint64_t n, double bpm) {
+    EngineBeat out = beat(n, bpm);
+    out.event.gridBpm = bpm;
+    out.event.acquired = true;
+    out.event.confidence = 1.0;
+    out.state.gridBpm = bpm;
+    out.state.acquired = true;
+    out.state.confidence = 1.0;
+    return out;
+}
+
+/// The output thread's loop over such a source. The grid is exact, and each beat is heard
+/// `heardAfter` its own moment: none at all for a source that pushes a beat as its moment passes
+/// and is drained in that round, or the millisecond or two a round of its own worker and one of
+/// the output thread can add between them.
+std::vector<Fire> runGrid(double bpm, double lead, std::size_t count, double heardAfter) {
+    BeatScheduler scheduler;
+    std::vector<Fire> fires;
+    const double period = 60.0 / bpm;
+    // Off the round boundaries, so no beat's moment and no round are the same instant.
+    const double origin = 1.00037;
+    std::size_t next = 0;
+    // Half a beat past the last: long enough for it to be heard, and for the prediction past it
+    // only where the lead puts that prediction inside the half beat.
+    const double end = origin + (static_cast<double>(count) - 0.5) * period;
+    for (std::size_t round = 0;; ++round) {
+        const double now = static_cast<double>(round) * 0.001;
+        if (now > end) {
+            break;
+        }
+        while (next < count && origin + static_cast<double>(next) * period + heardAfter <= now) {
+            const double moment = origin + static_cast<double>(next) * period;
+            if (auto heard = scheduler.heard(gridBeat(next + 1, bpm), moment, now, 0.35)) {
+                fires.push_back({*heard, now});
+            }
+            ++next;
+        }
+        while (auto due = scheduler.due(now, lead, 0.35)) {
+            fires.push_back({*due, now});
+        }
+    }
+    return fires;
+}
+
+} // namespace
+
+TEST_CASE("an external grid heard on its own moment fires each beat once, on the beat",
+          "[output][scheduler][follow]") {
+    // What a timing source that follows Link, a MIDI clock or a CDJ hands the output thread: no
+    // pipeline between a beat and its being heard, because the source pushes each beat as its
+    // moment passes, and a period that is exact. Every lead `Transports::leadSeconds` can give —
+    // a rig ahead of the beat, one on it, one a hair behind once the prediction margin is taken,
+    // and one wholly behind. Each beat of the grid has to go out exactly once, at its own moment
+    // — the predictions land on the beats they stand in for, to the microsecond — and when the
+    // lead says, never later than when it was heard.
+    const double bpm = GENERATE(90.0, 128.0, 174.0);
+    const double lead = GENERATE(-0.200, -0.050, -0.001, 0.0, 0.0005, 0.150);
+    const double heardAfter = GENERATE(0.0, 0.0015);
+    INFO(bpm << " BPM, lead " << lead * 1000.0 << " ms, heard " << heardAfter * 1000.0
+             << " ms after its moment");
+    constexpr std::size_t kBeats = 48;
+    const double period = 60.0 / bpm;
+    const double origin = 1.00037;
+    const double last = origin + static_cast<double>(kBeats - 1) * period;
+    const std::vector<Fire> fires = runGrid(bpm, lead, kBeats, heardAfter);
+
+    std::size_t onGrid = 0;
+    std::size_t pastTheEnd = 0;
+    for (std::size_t i = 0; i < fires.size(); ++i) {
+        INFO("fire " << i << " at " << fires[i].beat.moment);
+        const Fire& fire = fires[i];
+        if (fire.beat.moment > last + 0.5 * period) {
+            // The one prediction past the last beat, as at the end of a record: one beat on.
+            CHECK(fire.beat.moment == Approx(last + period).margin(1e-9));
+            ++pastTheEnd;
+            continue;
+        }
+        // On a beat of the grid, and on the next one after the last fire's: none twice, none
+        // skipped.
+        const auto k = static_cast<std::size_t>(std::llround((fire.beat.moment - origin) / period));
+        CHECK(k == onGrid);
+        CHECK(fire.beat.moment == Approx(origin + static_cast<double>(k) * period).margin(1e-9));
+        ++onGrid;
+        // Sent when the lead says, or when it was heard if that came first — and the first beat,
+        // with nothing before it to predict from, when it was heard.
+        const double heardAt = fire.beat.moment + heardAfter;
+        const double sendAt = k == 0 ? heardAt : std::min(fire.beat.moment + lead, heardAt);
+        CHECK(fire.sentAt >= sendAt - 1e-9);
+        CHECK(fire.sentAt < sendAt + 0.0011);
+        // Counted on as the source counts them.
+        if (i > 0) {
+            CHECK(fire.beat.beats == fires[i - 1].beat.beats + 1);
+            CHECK(fire.beat.event.beatInBar == fires[i - 1].beat.event.beatInBar % 4 + 1);
+        }
+        CHECK(fire.beat.event.downbeat == (fire.beat.event.beatInBar == 1));
+    }
+    CHECK(onGrid == kBeats);
+    CHECK(pastTheEnd <= 1);
+}
+
 TEST_CASE("with every output behind the beat a locked beat goes out as it was heard",
           "[output][scheduler]") {
     // A positive lead — the rig's offset and every output later than the beat — waits for the

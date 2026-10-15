@@ -2,7 +2,7 @@
 
 #include "core/control/control_action.hpp"
 #include "core/control/midi_binding.hpp"
-#include "core/engine/beat_engine.hpp"
+#include "core/engine/beat_source.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -32,8 +32,8 @@ namespace takt4::control {
 ///
 /// Messages arrive on RtMidi's own callback thread, which is not the audio thread and not
 /// the inference thread. Everything it touches is either atomic or under `mutex_`, and the
-/// only thing it does to the tracker is `BeatEngine::post`, which is built for exactly
-/// this: many producers, one consumer, applied between frames.
+/// only thing it does to the beats is post to their source (`engine::BeatSource::post`), which
+/// is built for exactly this: many producers, one consumer, applied between frames.
 class MidiControl {
 public:
     struct Config {
@@ -45,13 +45,13 @@ public:
         std::string port;
     };
 
-    /// The engine must outlive this. Nothing is opened until `start()`.
+    /// The beat source must outlive this. Nothing is opened until `start()`.
     ///
     /// `rules` is where the `panic` and `rule/<id>/enable` go — `output::OutputRunner`
     /// in an app, null where there is none, in which case a binding to either is refused
     /// rather than silently doing nothing. It must outlive this where it is not null;
     /// `setRuleControl` exists because an owner usually builds the runner second.
-    MidiControl(engine::BeatEngine& engine, Config config, RuleControl* rules = nullptr);
+    MidiControl(engine::BeatSource& beats, Config config, RuleControl* rules = nullptr);
     ~MidiControl();
 
     MidiControl(const MidiControl&) = delete;

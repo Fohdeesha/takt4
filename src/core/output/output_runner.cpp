@@ -301,8 +301,8 @@ std::string describe(const trigger::Message& message) {
 
 } // namespace
 
-OutputRunner::OutputRunner(engine::BeatEngine& engine, const Transports::Config& config)
-    : engine_(engine), transports_(config), sink_(transports_), triggers_(sink_) {
+OutputRunner::OutputRunner(engine::BeatSource& source, const Transports::Config& config)
+    : source_(source), transports_(config), sink_(transports_), triggers_(sink_) {
     // the last-fired line and event log. Copied out of the output thread and into a
     // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
     triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
@@ -662,10 +662,11 @@ void OutputRunner::start() {
     // it too. `started_` is taken once, at construction, and nothing writes it again — which
     // also takes the reader on the UI thread out of a race with `start()`.
     raisedTimer_ = raiseTimerResolution();
-    // A count from the run that just ended means nothing to the run beginning: `BeatEngine::
-    // start` zeroes its own, so a stale one here made the first round after a restart see a
-    // count that had "moved" and fire every onset rule once for nothing. (The tracker also
-    // restarts under a runner that keeps going — see `countMoved`, which is what handles that.)
+    // A count from the run that just ended means nothing to the run beginning: a source's start
+    // zeroes its own (`BeatEngine::start`), so a stale one here made the first round after a
+    // restart see a count that had "moved" and fire every onset rule once for nothing. (The
+    // tracker also restarts under a runner that keeps going — see `countMoved`, which is what
+    // handles that.)
     onsetsSeen_ = 0;
     barsDeclaredSeen_ = 0;
     // And nothing predicted from the last run's beats.
@@ -996,7 +997,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 triggers_.setListening(false);
                 scheduler_.reset();
                 engine::EngineBeat late;
-                while (engine_.popBeat(late)) {
+                while (source_.popBeat(late)) {
                 }
                 // every MIDI and OSC release owed goes out now, as it does on quit, so no clip
                 // or laser is left latched — and every lighting one is dropped, which would
@@ -1210,8 +1211,8 @@ void OutputRunner::run() noexcept {
 }
 
 trigger::Context OutputRunner::contextAt(double now) const {
-    const tracking::TempoState state = engine_.state();
-    const engine::EngineIntensity intensity = engine_.intensity();
+    const tracking::TempoState state = source_.state();
+    const engine::EngineIntensity intensity = source_.intensity();
     trigger::Context context;
     context.bpm = state.bpm;
     context.beatSeconds = state.gridBpm > 0.0 ? 60.0 / state.gridBpm : 0.0;
@@ -1287,13 +1288,14 @@ void OutputRunner::drainOnce(double now) {
     // have taken the rules, the lighting and the held releases with it. A stage that throws is
     // counted and named now — `Snapshot::Trouble` — and the round carries on past it.
     engine::EngineBeat beat;
-    while (engine_.popBeat(beat)) {
+    while (source_.popBeat(beat)) {
         if (quiet_) {
             continue; // stopped: see `Tracking` in `apply`
         }
-        // A beat the last run left in the ring, which `BeatEngine::start` no longer drains
-        // from the UI thread: from a run that is over.
-        if (beat.run != engine_.runNumber()) {
+        // A beat the last run left in the ring, which a source's start no longer drains from
+        // the UI thread (`BeatEngine::start`; an earlier review, L42): from a run that is
+        // over.
+        if (beat.run != source_.runNumber()) {
             continue;
         }
         // Offline, and in the tests that feed audio faster than it plays, there is no host
@@ -1332,7 +1334,7 @@ void OutputRunner::drainOnce(double now) {
         if (quiet_) {
             return;
         }
-        scheduler_.restate(engine_.state());
+        scheduler_.restate(source_.state());
         while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
             fireBeat(*next, now);
         }
@@ -1343,19 +1345,19 @@ void OutputRunner::drainOnce(double now) {
     guarded("the held messages", [&] { sink_.releaseDue(now); });
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
-    guarded("the outputs", [&] { transports_.advance(now, engine_.state()); });
+    guarded("the outputs", [&] { transports_.advance(now, source_.state()); });
 
     const trigger::Context context = contextAt(now);
     // The output thread never sees a frame, so an onset reaches it as a count that moved.
     // Coalesced to one call however far it moved: two onsets inside one millisecond would
     // be one hit as far as anything downstream is concerned, and the classifier's own
     // minimum gap is sixty.
-    if (countMoved(engine_.intensity().onsets, onsetsSeen_) && !quiet_) {
+    if (countMoved(source_.intensity().onsets, onsetsSeen_) && !quiet_) {
         guarded("the onset rules", [&] { triggers_.onOnset(context); });
     }
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
     //: its bar and downbeat rules fire now, as that bar's.
-    const tracking::TempoState state = engine_.state();
+    const tracking::TempoState state = source_.state();
     // **The input gone quiet disarms the lasers** (the operator, 2026-10-05). Nothing fires until
     // the next lock, so a laser zone would otherwise hold its last clip through the silence — a
     // beam nobody is driving. Once, as it goes quiet: the next clip a rule fires arms it again.

@@ -15,8 +15,8 @@ constexpr std::chrono::milliseconds kPoll{100};
 
 } // namespace
 
-OscControl::OscControl(engine::BeatEngine& engine, Config config, RuleControl* rules)
-    : config_(std::move(config)), surface_(engine, rules) {}
+OscControl::OscControl(engine::BeatSource& beats, Config config, RuleControl* rules)
+    : config_(std::move(config)), surface_(beats, rules) {}
 
 OscControl::~OscControl() {
     stop();

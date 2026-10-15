@@ -2,6 +2,7 @@
 
 #include "core/audio/hop_processor.hpp"
 #include "core/audio/host_time.hpp"
+#include "core/engine/beat_source.hpp"
 #include "core/engine/control.hpp"
 #include "core/model/activation_engine.hpp"
 #include "core/model/weights.hpp"
@@ -43,41 +44,6 @@ struct EngineFrame {
     bool interpolated = false;
 };
 
-/// One beat, with everything an output transport needs and nothing it has to look up.
-///
-/// The state as it stood at *this* beat, so a consumer draining only beats never has to
-/// pair them against the frame ring — and the host time of the audio the beat was found
-/// in, which `tracking::BeatEvent` cannot carry because the tempo state machine
-/// knows nothing about a host clock. Zero when no HostTimeSource is installed.
-struct EngineBeat {
-    tracking::BeatEvent event;
-    tracking::TempoState state;
-    std::int64_t hostMicros = 0;
-    /// The run of the engine that called it (`BeatEngine::runNumber`). A beat an earlier run left in
-    /// the ring is its consumer's to drop: nothing else may drain the ring (`start`).
-    std::uint64_t run = 0;
-};
-
-/// the intensity, as the *output* thread can read it.
-///
-/// It is computed per frame (`features::IntensityClassifier`, on the model worker) and rides
-/// each `model::FrameActivation` — but the frame ring has exactly one consumer and that is
-/// the trace, so the output thread cannot have it that way. This is published instead,
-/// like the tempo state beside it.
-///
-/// It is **not** part of `tracking::TempoState`, deliberately. That is what the tempo state
-/// machine is saying, and intensity is not a tracking quantity; folding it in would make
-/// `core/tracking` depend on the features and would put a number in the Phase 4 gate's
-/// neighbourhood that has no business there.
-struct EngineIntensity {
-    features::Intensity level = features::Intensity::Normal;
-    /// Onsets seen since the engine was reset. The output thread has no frames, so a count
-    /// that moved is how it learns one happened — the *"on onset"*.
-    std::uint64_t onsets = 0;
-    /// The raw flux, for a diagnostic readout. See `FrameActivation::flux`.
-    float flux = 0.0f;
-};
-
 /// the inference thread, and the thing both the UI and the console drive.
 ///
 /// The chain from a hop of audio to a beat, in one object:
@@ -108,8 +74,13 @@ struct EngineIntensity {
 /// One producer and one consumer per ring, which is SpscRing's contract: the inference
 /// thread fills both, and exactly one thread may drain each.
 ///
+/// **It is one `BeatSource`**: the beats an audio input yields. The output thread and the
+/// window hold the source rather than the engine, so that a beat grid followed from elsewhere
+/// can stand in for it. What only the tracker has — the frames, its settings, the decoder —
+/// is reached through this class.
+///
 /// About a quarter of a megabyte of rings and weights, so it belongs on the heap.
-class BeatEngine final : public audio::HopProcessor {
+class BeatEngine final : public audio::HopProcessor, public BeatSource {
 public:
     /// Frames a consumer may fall behind by: 10 s at 50 Hz, as ActivationEngine's own,
     /// and 5 s at the forward filter's 100.
@@ -170,7 +141,9 @@ public:
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
     /// Which run this is: one more at every `start`, and what each beat it calls is stamped
     /// with. Any thread.
-    std::uint64_t runNumber() const noexcept { return run_.load(std::memory_order_acquire); }
+    std::uint64_t runNumber() const noexcept override {
+        return run_.load(std::memory_order_acquire);
+    }
 
     /// Audio thread. Hands the hop to the model worker and returns.
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
@@ -181,15 +154,15 @@ public:
     /// Consumer thread. Every frame, for the trace and the readouts.
     bool popFrame(EngineFrame& out) noexcept { return frames_.tryPop(out); }
     /// Output thread. Only the beats.
-    bool popBeat(EngineBeat& out) noexcept { return beats_.tryPop(out); }
+    bool popBeat(EngineBeat& out) noexcept override { return beats_.tryPop(out); }
 
     /// The latest tempo, lock and meter, consistently, without draining anything — for
     /// a status line or a UI that redraws on its own clock.
-    tracking::TempoState state() const noexcept { return state_.load(); }
+    tracking::TempoState state() const noexcept override { return state_.load(); }
 
     /// the intensity and onset count, for the output thread's rules and the design's
     /// `/takt4/intensity`. See `EngineIntensity` for why it is published separately.
-    EngineIntensity intensity() const noexcept { return intensity_.load(); }
+    EngineIntensity intensity() const noexcept override { return intensity_.load(); }
 
     /// The tracker's settings as they now stand, safely, from any thread.
     ///
@@ -210,7 +183,7 @@ public:
     /// before the next frame it tracks, so nothing here disturbs the lock or the filter.
     ///
     /// False when the queue is full; see ControlQueue for when that can happen.
-    bool post(const Command& command) { return controls_.post(command); }
+    bool post(const Command& command) override { return controls_.post(command); }
     std::uint64_t commandsDropped() const { return controls_.dropped(); }
 
     /// The tempo state machine, for reading its settings. Changing them on a running

@@ -7,7 +7,7 @@ namespace takt4::control {
 /// What a control surface can ask of the rules.
 ///
 /// the table has seven addresses. Five of them are questions for the tracker and reach it
-/// through `engine::BeatEngine::post`; two are questions for the *rules*, which live on
+/// through `engine::BeatSource::post`; two are questions for the *rules*, which live on
 /// the output thread behind `output::OutputRunner`'s own queue. So a surface needs two
 /// destinations rather than one, and this is the second.
 ///

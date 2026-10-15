@@ -56,8 +56,8 @@ struct MidiControl::Impl {
     RtMidiIn in;
 };
 
-MidiControl::MidiControl(engine::BeatEngine& engine, Config config, RuleControl* rules)
-    : config_(std::move(config)), surface_(engine, rules) {}
+MidiControl::MidiControl(engine::BeatSource& beats, Config config, RuleControl* rules)
+    : config_(std::move(config)), surface_(beats, rules) {}
 
 MidiControl::~MidiControl() {
     stop();

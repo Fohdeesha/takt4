@@ -96,6 +96,7 @@ add_library(takt4_core STATIC
   dsp/real_fft.hpp
   engine/beat_engine.cpp
   engine/beat_engine.hpp
+  engine/beat_source.hpp
   engine/control.cpp
   engine/control.hpp
   engine/live_tracker.cpp

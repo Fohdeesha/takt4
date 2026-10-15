@@ -2,7 +2,7 @@
 
 #include "core/audio/host_time.hpp"
 #include "core/control/rule_control.hpp"
-#include "core/engine/beat_engine.hpp"
+#include "core/engine/beat_source.hpp"
 #include "core/output/beat_scheduler.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
@@ -249,15 +249,16 @@ inline constexpr std::string_view kAllRules = "all";
 /// audio's pace — so what this buys is punctuality: a MIDI clock tick is 19 ms apart at
 /// 130 BPM, and a window that redraws at 30 Hz would hand it 33 ms of jitter.
 ///
-/// **This is the single consumer of `BeatEngine::popBeat`.** That ring is single-consumer
-/// by `rt::SpscRing`'s contract, so nothing else may drain it while this runs. The *frame*
-/// ring is a different ring with a different consumer — the activation trace — and is
-/// not touched here.
+/// **This is the single consumer of its source's `popBeat`** — the tracker's beat ring, or a
+/// followed grid's (`engine::BeatSource`). That ring is single-consumer by `rt::SpscRing`'s
+/// contract, so nothing else may drain it while this runs. The tracker's *frame* ring is a
+/// different ring with a different consumer — the activation trace — and is not touched here.
 ///
 /// The window owns one of these and reads beats only through it. `takt4-cli track`
 /// drains the ring itself and runs no runner, which is the same rule kept the other way.
 ///
-/// The caller still owns two things that have to happen around it:
+/// With the tracker as its source, the caller still owns two things that have to happen
+/// around it:
 ///
 ///   * `engine.setHostTimeSource(&runner.hostTimeClock())` **before the audio stream is
 ///     opened**, because the stamp is taken on the audio thread and there has to be a
@@ -288,13 +289,13 @@ public:
     /// burst of cues for music already gone. The clocks still take it.
     static constexpr double kStaleSeconds = 0.35;
 
-    /// The engine must outlive this. The transports are built here and owned here, which
+    /// The source must outlive this. The transports are built here and owned here, which
     /// is what makes "one thread touches them" structural rather than a comment: nothing
     /// else can reach a mutating member of them. Changes go through `post`.
     ///
     /// Throws whatever `Transports` throws — a MIDI port that is not on the machine.
     /// Nothing is sent until `start()`.
-    OutputRunner(engine::BeatEngine& engine, const Transports::Config& config);
+    OutputRunner(engine::BeatSource& source, const Transports::Config& config);
     ~OutputRunner() override;
 
     OutputRunner(const OutputRunner&) = delete;
@@ -356,8 +357,8 @@ public:
     /// the rest of the round with it: see `guarded`, and `Snapshot::Trouble` for what is said.
     std::uint64_t errors() const noexcept { return errors_.load(std::memory_order_relaxed); }
 
-    /// Beats taken from the engine and sent nowhere, because no lock had been earned yet
-    /// (`TempoState::acquired`). With what the transports counted, every beat the tracker called.
+    /// Beats taken from the source and sent nowhere, because no lock had been earned yet
+    /// (`TempoState::acquired`). With what the transports counted, every beat the source called.
     std::uint64_t beatsUnsent() const noexcept {
         return beatsUnsent_.load(std::memory_order_relaxed);
     }
@@ -763,7 +764,9 @@ private:
     /// otherwise hold its last clip through the silence — a beam nobody is driving.
     void letGoOfTheRig(double now);
 
-    engine::BeatEngine& engine_;
+    /// Where the beats come from: the tracker, or a grid followed from elsewhere — whichever the
+    /// window's `engine::BeatSourceSwitch` has selected.
+    engine::BeatSource& source_;
     Transports transports_;
     /// Declared after the transports it holds a reference to, and before the engine that
     /// holds a reference to it: destruction runs in reverse, so this is the order that keeps
@@ -777,7 +780,7 @@ private:
     /// and no onset. False until told, so a runner nobody tells —
     /// the console's, the tests' — fires what it hears. The output thread's own.
     bool quiet_ = false;
-    /// The onset count last seen from the engine. The output thread has no frames of its
+    /// The onset count last seen from the source. The output thread has no frames of its
     /// own, so a count that moved is how it learns one happened.
     std::uint64_t onsetsSeen_ = 0;
     /// `TempoState::barsDeclared` last seen, likewise.

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/engine/beat_engine.hpp"
+#include "core/engine/beat_source.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include <cstdint>

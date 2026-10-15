@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/control/rule_control.hpp"
-#include "core/engine/beat_engine.hpp"
+#include "core/engine/beat_source.hpp"
 #include "core/tracking/tap_tempo.hpp"
 
 #include <array>
@@ -24,7 +24,7 @@ namespace takt4::control {
 /// string it had to manufacture would not even be constant.
 ///
 /// **Five of these ask the tracker and two ask the rules.** That is the whole of why a
-/// surface has two destinations: `engine::BeatEngine::post` for the first five, and
+/// surface has two destinations: `engine::BeatSource::post` for the first five, and
 /// `RuleControl` for `Panic` and `RuleEnable`, whose subject lives on the output thread.
 ///
 /// New actions go on the **end**: a binding is stored as a verb, so the order is not part of
@@ -136,8 +136,8 @@ std::string_view labelOf(ControlAction action) noexcept;
 
 /// One control surface's route in: the actions it can ask for, and nothing else.
 ///
-/// the five tracker actions reach `BeatEngine::post`, so they are applied between frames
-/// on the inference thread exactly as the window's buttons and the console's keys are. Its
+/// the five tracker actions reach the beat source's `post`, so they are applied by its own
+/// thread exactly as the window's buttons and the console's keys are. Its
 /// two rule actions reach `RuleControl`, which is the output thread's queue for the same
 /// reason. Neither destination is touched directly; that is what makes a surface safe to run
 /// on RtMidi's callback thread or a socket's.
@@ -149,11 +149,11 @@ std::string_view labelOf(ControlAction action) noexcept;
 /// every other respect — that one reason is enough.
 class ControlSurface {
 public:
-    /// The engine must outlive this. `rules` may be null — an app with no output runner
+    /// The beat source must outlive this. `rules` may be null — an app with no output runner
     /// still taps and snaps, and the two rule addresses are then refused rather than
     /// silently accepted, which is what tells an operator their panic button is not wired.
     /// It must outlive this too where it is not.
-    explicit ControlSurface(engine::BeatEngine& engine, RuleControl* rules = nullptr) noexcept;
+    explicit ControlSurface(engine::BeatSource& beats, RuleControl* rules = nullptr) noexcept;
 
     /// Where the `panic` and `rule/<id>/enable` go, or null for nowhere.
     ///
@@ -180,7 +180,7 @@ public:
     void resetTaps() noexcept { taps_.reset(); }
 
 private:
-    engine::BeatEngine& engine_;
+    engine::BeatSource& beats_;
     RuleControl* rules_ = nullptr;
     tracking::TapTempo taps_;
     const std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
