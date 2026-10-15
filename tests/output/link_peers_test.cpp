@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <vector>
@@ -308,6 +309,9 @@ TEST_CASE("Link's older session wins when two meet, so a follower left alone tak
         SKIP("a Link session is already on this network, which would join the merge measured "
              "here and have its tempo moved by it");
     }
+    // Link sends a tempo between peers as whole microseconds a beat, so a peer reads 126.5 BPM as
+    // 474308 microseconds: 126.50008. Agreeing to a thousandth of a BPM is agreeing.
+    constexpr double kSameTempo = 1e-3;
 
     SECTION("a follower switched on first, and alone, is the older session") {
         LinkSession follower(120.0); // a tempo nobody playing has chosen
@@ -320,9 +324,10 @@ TEST_CASE("Link's older session wins when two meet, so a follower left alone tak
         if (!eventually([&] { return follower.numPeers() >= 1 && dj.numPeers() >= 1; })) {
             SKIP("two Link sessions in one process never found each other: multicast is blocked");
         }
-        REQUIRE(eventually([&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < 1e-6; }));
+        REQUIRE(eventually(
+            [&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < kSameTempo; }));
         // The DJ's app now runs at the follower's tempo, not its own.
-        CHECK_THAT(dj.tempoBpm(), WithinAbs(120.0, 1e-6));
+        CHECK_THAT(dj.tempoBpm(), WithinAbs(120.0, kSameTempo));
         dj.enable(false);
         follower.enable(false);
     }
@@ -338,9 +343,13 @@ TEST_CASE("Link's older session wins when two meet, so a follower left alone tak
         if (!eventually([&] { return follower.numPeers() >= 1 && dj.numPeers() >= 1; })) {
             SKIP("two Link sessions in one process never found each other: multicast is blocked");
         }
-        REQUIRE(eventually([&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < 1e-6; }));
-        CHECK_THAT(dj.tempoBpm(), WithinAbs(126.5, 1e-6));
-        CHECK_THAT(follower.tempoBpm(), WithinAbs(126.5, 1e-6));
+        const bool agreed = eventually(
+            [&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < kSameTempo; });
+        INFO("the DJ's app at " << std::setprecision(10) << dj.tempoBpm() << " BPM, the follower at "
+                                << follower.tempoBpm());
+        REQUIRE(agreed);
+        CHECK_THAT(dj.tempoBpm(), WithinAbs(126.5, kSameTempo));
+        CHECK_THAT(follower.tempoBpm(), WithinAbs(126.5, kSameTempo));
         follower.enable(false);
         dj.enable(false);
     }
