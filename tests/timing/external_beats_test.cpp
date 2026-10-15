@@ -162,6 +162,45 @@ TEST_CASE("each start of a followed grid is a run of its own", "[timing][follow]
     CHECK(source.ended() == 2);
 }
 
+TEST_CASE("the window has every beat sent on a ring of its own, which the outputs' does not share",
+          "[timing][follow]") {
+    // The timing plot draws the beats as they come in. Taken from the output thread's ring it
+    // would take them from the output thread: the window has a copy of each, on a ring only it
+    // takes from, saying when each was and where in the bar.
+    const double zero = static_cast<double>(steadyMicros()) + 50'000.0;
+    FakeGridSource source(steadyMicros, 600.0, zero); // ten beats a second
+    ExternalBeats beats;
+    beats.start(source, BeatGrid::Options{});
+    REQUIRE(waitFor([&] { return beats.beatsSent() >= 9; }));
+    beats.stop();
+
+    std::vector<ExternalBeats::DisplayBeat> shown;
+    ExternalBeats::DisplayBeat one;
+    while (beats.popDisplayBeat(one)) {
+        shown.push_back(one);
+    }
+    std::vector<EngineBeat> sent;
+    EngineBeat beat;
+    while (beats.popBeat(beat)) {
+        sent.push_back(beat);
+    }
+    REQUIRE(sent.size() == beats.beatsSent());
+    REQUIRE(shown.size() == sent.size());
+    CHECK(beats.displayDropped() == 0);
+    bool downbeat = false;
+    for (std::size_t i = 0; i < sent.size(); ++i) {
+        INFO("beat " << i);
+        CHECK(shown[i].hostMicros == sent[i].hostMicros);
+        CHECK(shown[i].beatInBar == sent[i].event.beatInBar);
+        CHECK(shown[i].beatInBar >= 1);
+        CHECK(shown[i].downbeat == sent[i].event.downbeat);
+        CHECK(shown[i].run == beats.runNumber());
+        CHECK_FALSE(shown[i].coasted);
+        downbeat = downbeat || shown[i].downbeat;
+    }
+    CHECK(downbeat);
+}
+
 TEST_CASE("a followed grid that goes is coasted on the timing thread too", "[timing][follow]") {
     const double zero = static_cast<double>(steadyMicros());
     FakeGridSource source(steadyMicros, 120.0, zero);

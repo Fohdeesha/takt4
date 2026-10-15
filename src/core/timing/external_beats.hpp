@@ -40,6 +40,23 @@ class ExternalBeats final : public engine::BeatSource {
 public:
     /// Beats a consumer may fall behind by — as many as the tracker's ring holds.
     static constexpr std::size_t kBeatQueueCapacity = 256;
+    /// Beats the window may fall behind by: half a minute of them at 128 BPM, where it takes
+    /// them fifty times a second.
+    static constexpr std::size_t kDisplayCapacity = 64;
+
+    /// **A beat as the window draws it** — on a ring of its own (`popDisplayBeat`), so the output
+    /// thread's ring keeps its one consumer: when it was, and where in the bar.
+    struct DisplayBeat {
+        /// Its moment on Link's clock, as `engine::EngineBeat::hostMicros`.
+        std::int64_t hostMicros = 0;
+        /// 1 to beats per bar, or 0 while nothing has said where the bar is.
+        std::uint32_t beatInBar = 0;
+        bool downbeat = false;
+        /// Run on at the last tempo, the source having gone (`BeatGrid::coasting`).
+        bool coasted = false;
+        /// The run it belongs to (`runNumber`): one from before the last START is not this run's.
+        std::uint64_t run = 0;
+    };
     /// How often the source is read — the output thread's own round.
     static constexpr std::chrono::milliseconds kPeriod{1};
 
@@ -62,6 +79,13 @@ public:
 
     // --- engine::BeatSource -----------------------------------------------------------------
     bool popBeat(engine::EngineBeat& out) noexcept override { return beats_.tryPop(out); }
+    /// The next beat sent, for the window: every one `popBeat` hands the output thread, in
+    /// order, on a ring the window alone takes from. A window that falls behind by more than
+    /// `kDisplayCapacity` loses the newest (`displayDropped`).
+    bool popDisplayBeat(DisplayBeat& out) noexcept { return display_.tryPop(out); }
+    std::uint64_t displayDropped() const noexcept {
+        return displayDropped_.load(std::memory_order_relaxed);
+    }
     tracking::TempoState state() const noexcept override { return state_.load(); }
     engine::EngineIntensity intensity() const noexcept override { return {}; }
     std::uint64_t runNumber() const noexcept override {
@@ -95,6 +119,7 @@ private:
     /// The worker's alone while it runs; reset by `start` before the worker exists.
     BeatGrid grid_;
     rt::SpscRing<engine::EngineBeat, kBeatQueueCapacity> beats_;
+    rt::SpscRing<DisplayBeat, kDisplayCapacity> display_;
     rt::Published<tracking::TempoState> state_;
     engine::ControlQueue controls_;
     /// Drained into and reused, so a round allocates nothing after the first.
@@ -107,6 +132,7 @@ private:
     std::atomic<std::uint64_t> rounds_{0};
     std::atomic<std::uint64_t> sent_{0};
     std::atomic<std::uint64_t> dropped_{0};
+    std::atomic<std::uint64_t> displayDropped_{0};
     std::atomic<bool> workerRaised_{false};
     std::atomic<bool> coasting_{false};
 };

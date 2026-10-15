@@ -296,6 +296,39 @@ TEST_CASE("a MIDI clock that stops is gone, and comes back measured afresh",
     CHECK(rig.last().bpm == Approx(140.0).margin(0.01));
 }
 
+TEST_CASE("a MIDI clock says where in its beat the last tick was, counted from Start once there "
+          "is one",
+          "[timing][midi][follow]") {
+    // What the window's strip lights: a beat's 24 ticks, as far as they have come.
+    std::int64_t now = 1'000'000;
+    MidiInputHub hub([&now] { return now; });
+    MidiClockFollower follower(hub);
+    hub.attachWithoutPort("Mixer", follower);
+    const auto send = [&](std::vector<unsigned char> message) {
+        hub.deliver("Mixer", std::span<const unsigned char>(message.data(), message.size()));
+    };
+    const auto ticks = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            now += 20'833;
+            send({kTick});
+        }
+        (void)follower.read();
+    };
+    follower.begin(4);
+    CHECK(follower.status().tickInBeat == 0);
+    // Counted from the first tick heard: the 50th is the second of a beat.
+    ticks(50);
+    CHECK(follower.status().tickInBeat == 1);
+    // Start: the next tick is the song's first, and 30 ticks in is a quarter past its second beat.
+    send({kStart});
+    ticks(30);
+    CHECK(follower.status().tickInBeat == 5);
+    // A Song Position while playing: sixteenth 3 is tick 18 of the song's first beat.
+    send({0xF2, 3, 0});
+    ticks(1);
+    CHECK(follower.status().tickInBeat == 18);
+}
+
 TEST_CASE("a MIDI clock follower takes only a clock's messages, and none from before its run",
           "[timing][midi][follow]") {
     std::int64_t now = 1'000'000;

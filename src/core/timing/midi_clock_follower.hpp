@@ -76,6 +76,9 @@ public:
         bool placed = false;
         /// A Stop has come since the last Start or Continue.
         bool stopped = false;
+        /// Where in its beat the last tick was, 0 to 23 — the song's own count once a Start,
+        /// Continue or Song Position has placed it, the ticks' count from the first before.
+        std::uint32_t tickInBeat = 0;
         /// Ticks this run, ticks held back as deliveries held up, and how many times the tempo
         /// was taken to have moved (`TickFit`).
         std::uint64_t ticks = 0;

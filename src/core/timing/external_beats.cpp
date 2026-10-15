@@ -52,6 +52,7 @@ void ExternalBeats::start(GridSource& source, const BeatGrid::Options& options) 
     rounds_.store(0, std::memory_order_relaxed);
     sent_.store(0, std::memory_order_relaxed);
     dropped_.store(0, std::memory_order_relaxed);
+    displayDropped_.store(0, std::memory_order_relaxed);
     coasting_.store(false, std::memory_order_relaxed);
     workerRaised_.store(false, std::memory_order_relaxed);
     running_.store(true, std::memory_order_release);
@@ -115,6 +116,15 @@ void ExternalBeats::round(GridSource& source) noexcept {
         sent_.fetch_add(1, std::memory_order_relaxed);
     } else {
         dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+    DisplayBeat shown;
+    shown.hostMicros = beat->hostMicros;
+    shown.beatInBar = beat->event.beatInBar;
+    shown.downbeat = beat->event.downbeat;
+    shown.coasted = grid_.coasting();
+    shown.run = beat->run;
+    if (!display_.tryPush(shown)) {
+        displayDropped_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 

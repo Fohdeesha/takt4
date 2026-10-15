@@ -225,6 +225,12 @@ void MidiClockFollower::publish(std::int64_t now) noexcept {
     }
     status.placed = placed_;
     status.stopped = stopSeen_;
+    if (heardTick_) {
+        const auto ticksPerBeat = static_cast<std::int64_t>(kTicksPerBeat);
+        const std::int64_t songTick = ticks_ - 1 + songOffset_;
+        status.tickInBeat =
+            static_cast<std::uint32_t>(((songTick % ticksPerBeat) + ticksPerBeat) % ticksPerBeat);
+    }
     status.ticks = static_cast<std::uint64_t>(ticks_);
     status.heldBack = fit_.heldBack();
     status.tempoChanges = fit_.tempoChanges();
