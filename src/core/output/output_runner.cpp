@@ -162,6 +162,7 @@ bool droppable(const OutputCommand& command) noexcept {
 bool changesSnapshot(OutputCommand::Kind kind) noexcept {
     switch (kind) {
     case OutputCommand::Kind::LinkEnabled:
+    case OutputCommand::Kind::LinkFollowing:
     case OutputCommand::Kind::OscTargets:
     case OutputCommand::Kind::Outputs:
     case OutputCommand::Kind::MidiClockPort:
@@ -336,6 +337,7 @@ void OutputRunner::takeSnapshot() {
     Snapshot taken;
     taken.outputs = transports_.outputs();
     taken.link = transports_.linkEnabled();
+    taken.linkFollowing = transports_.linkFollowing();
     taken.midiClockPort = transports_.midiClockPort();
     taken.midiClockOpen = transports_.midiClock() != nullptr;
     taken.oscPrefix = transports_.oscPrefix();
@@ -827,6 +829,9 @@ void OutputRunner::apply(const OutputCommand& command) {
         switch (command.kind) {
         case OutputCommand::Kind::LinkEnabled:
             transports_.setLinkEnabled(command.enabled);
+            break;
+        case OutputCommand::Kind::LinkFollowing:
+            transports_.setLinkFollowing(command.enabled);
             break;
         case OutputCommand::Kind::OscTargets:
             setTargets(oscOutputs(command.targets), now);

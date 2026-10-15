@@ -19,7 +19,8 @@ endfunction()
 # takt4-cli: the development console (the design Phase 1). Built in every configuration
 # including UI-less ones, and attached to every release beside the app. Its allocation guard
 # is on in Debug so a real-time violation found on the bench aborts rather than hides.
-add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/console.hpp cli/main.cpp)
+add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/args.hpp cli/console.hpp
+                         cli/follow.cpp cli/follow.hpp cli/main.cpp)
 target_link_libraries(takt4-cli PRIVATE takt4::core takt4::warnings)
 if(WIN32)
   # UTF-8 as the process code page, so a WAV named outside the machine's code page opens. See

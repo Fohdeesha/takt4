@@ -4,7 +4,9 @@
 // the build has them; attached to every release beside the app.
 
 #include "cli/annotate.hpp"
+#include "cli/args.hpp"
 #include "cli/console.hpp"
+#include "cli/follow.hpp"
 #include "core/audio/asio_scan.hpp"
 #include "core/audio/channel_meter.hpp"
 #include "core/audio/channel_picker.hpp"
@@ -75,6 +77,8 @@ namespace {
 
 using namespace std::chrono_literals;
 using takt4::cli::KeyReader;
+using takt4::cli::parseDouble;
+using takt4::cli::parseInt;
 
 std::atomic<bool> g_interrupted{false};
 
@@ -177,6 +181,7 @@ void printUsage(std::ostream& out) {
         << "      so when the keys are unavailable.\n"
         << "      The other options are the meter's and `beats`', and mean the same.\n"
         << "\n";
+    takt4::cli::printFollowUsage(out);
     takt4::cli::printAnnotateUsage(out);
     out << "  takt4-cli --version\n";
 }
@@ -190,40 +195,6 @@ struct MeterArgs {
     double rate = 0.0;
     double seconds = 0.0; // 0: until interrupted
 };
-
-int parseInt(std::string_view text, std::string_view what) {
-    std::size_t consumed = 0;
-    const std::string s(text);
-    int value = 0;
-    try {
-        value = std::stoi(s, &consumed);
-    } catch (const std::exception&) {
-        consumed = 0;
-    }
-    // An empty value consumed all of its nothing, and used to come back as 0: `--device ""`
-    // opened device 0.
-    if (s.empty() || consumed != s.size()) {
-        throw std::invalid_argument(std::string(what) + ": not a number: \"" + s + "\"");
-    }
-    return value;
-}
-
-double parseDouble(std::string_view text, std::string_view what) {
-    std::size_t consumed = 0;
-    const std::string s(text);
-    double value = 0.0;
-    try {
-        value = std::stod(s, &consumed);
-    } catch (const std::exception&) {
-        consumed = 0;
-    }
-    // Empty, as for parseInt; and `stod` reads "nan" and "inf" as numbers, which no option
-    // here can mean.
-    if (s.empty() || consumed != s.size() || !std::isfinite(value)) {
-        throw std::invalid_argument(std::string(what) + ": not a number: \"" + s + "\"");
-    }
-    return value;
-}
 
 int channelNumber(std::string_view text, std::string_view what) {
     const int number = parseInt(text, what);
@@ -892,18 +863,7 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
         } else if (arg == "--trace") {
             out.traceOut = std::filesystem::path(value());
         } else if (arg == "--osc") {
-            const std::string_view target = value();
-            // The last colon separates the port, so a bare IPv6 address is still usable.
-            const std::size_t colon = target.rfind(':');
-            if (colon == std::string_view::npos || colon == 0) {
-                throw std::invalid_argument("--osc expects HOST:PORT");
-            }
-            const int port = parseInt(target.substr(colon + 1), arg);
-            if (port < 1 || port > 65535) {
-                throw std::invalid_argument("--osc: the port must be 1 to 65535");
-            }
-            out.oscTargets.emplace_back(std::string(target.substr(0, colon)),
-                                        static_cast<std::uint16_t>(port));
+            out.oscTargets.push_back(takt4::cli::parseOscTarget(value(), arg));
         } else if (arg == "--osc-prefix") {
             out.oscPrefix = std::string(value());
         } else if (arg == "--midi-clock") {
@@ -1538,6 +1498,9 @@ int main(int argc, char** argv) {
             // because its thread is the only thing here that needs a millisecond to mean
             // one — and it holds it for exactly as long as the outputs are running.
             return runTrack({args.begin() + 1, args.end()});
+        }
+        if (args[0] == "follow") {
+            return takt4::cli::runFollow({args.begin() + 1, args.end()});
         }
         if (args[0] == "annotate") {
             return takt4::cli::runAnnotate({args.begin() + 1, args.end()});

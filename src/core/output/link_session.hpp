@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/audio/host_time.hpp"
+#include "core/timing/link_reader.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -9,26 +10,31 @@
 
 namespace takt4::output {
 
-/// Owns an Ableton Link instance and drives it from the tracker.
+/// Owns takt4's one Ableton Link instance: the session the outputs lead, and
+/// the session a Link follower reads. One instance, because two in one process are two peers.
 ///
 /// Construction starts Link's service thread but does not touch the network; nothing is
 /// visible to peers until the session is enabled.
 ///
-/// **takt4 is always tempo master.** the design: "Link follow is explicitly out of scope." So
-/// the session only ever writes, and what `Transports` writes is: `snap` — the tempo and a
-/// forced beat in one commit — on the first locked beat and on a DOWNBEAT, and after that
-/// `setTempo`, nudged by how far `phaseAtTime` says the session has drifted.
-/// `requestBeat`, `forceBeat`, `beatAtTime` and start/stop sync are the tests' — some of them
-/// play the part of other peers with these — and nothing in the application calls them (the
-/// review of 2026-09-25's stale-comment list). Start/stop sync is off by default.
+/// **Leading or following, never both.** Leading — the Link output switched on, the beats the
+/// tracker's or a source's other than Link — `Transports` writes: `snap` (the tempo and a forced
+/// beat in one commit) on the first locked beat and on a DOWNBEAT, and after that `setTempo`,
+/// nudged by how far `phaseAtTime` says the session has drifted. Following
+/// Link — this as the `timing::LinkReader` a `timing::LinkFollower` reads — it is only ever read,
+/// the follower alone switches it on and off, and the outputs commit nothing
+/// (`Transports::setLinkFollowing`). `requestBeat`, `forceBeat`, `beatAtTime` and start/stop sync
+/// are the tests' — some of them play the part of other peers with these — and nothing in the
+/// application calls them. Start/stop sync is off by default.
 ///
 /// Timing goes through HostTimeSource: the audio thread tells `observe` where each
 /// buffer's first sample is and when it was heard, and reads every hop's moment off the line
 /// through the last 512 of those (`audio::HostTimeFit`) with `hostMicrosForSample` — on Link's
 /// own clock, which is what the outputs measure a beat's moment on. Those two are the only
 /// methods here that may be called from the audio thread, and only from that one thread.
-/// Everything else belongs to the output thread.
-class LinkSession final : public audio::HostTimeSource {
+/// Everything else belongs to the output thread — but for what `timing::LinkReader` offers, which
+/// is Link's own thread-safe API and is what a follower's thread calls while the outputs leave
+/// Link alone.
+class LinkSession final : public audio::HostTimeSource, public timing::LinkReader {
 public:
     explicit LinkSession(double initialTempoBpm);
     ~LinkSession() override;
@@ -37,19 +43,23 @@ public:
     LinkSession& operator=(const LinkSession&) = delete;
 
     /// Joins or leaves the Link network. Off until this is called.
-    void enable(bool on);
-    bool enabled() const;
+    void enable(bool on) override;
+    bool enabled() const override;
 
     /// the design: start/stop sync off by default, because a VJ rig's transport is not the
     /// tracker's business.
     void enableStartStopSync(bool on);
     bool startStopSyncEnabled() const;
 
-    std::size_t numPeers() const;
+    std::size_t numPeers() const override;
     double tempoBpm() const;
 
     /// Link's own clock, for a caller with no sample counter of its own.
-    std::chrono::microseconds now() const;
+    std::chrono::microseconds now() const override;
+
+    /// The session's tempo and its beat at `at` for `quantum`, from one capture — what a Link
+    /// follower reads every round.
+    Timeline timelineAt(std::chrono::microseconds at, double quantum) const override;
 
     /// **Audio thread.** One buffer's first sample, and when it was heard on the steady clock;
     /// see HostTimeSource.

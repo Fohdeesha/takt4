@@ -77,6 +77,10 @@ add_executable(takt4_tests
   rt/published_test.cpp
   rt/spsc_ring_test.cpp
   rt/thread_priority_test.cpp
+  timing/beat_grid_test.cpp
+  timing/external_beats_test.cpp
+  timing/follow_runner_test.cpp
+  timing/link_follower_test.cpp
   tracking/annotation_test.cpp
   tracking/forward_filter_test.cpp
   tracking/particle_filter_test.cpp
@@ -91,6 +95,8 @@ add_executable(takt4_tests
   deps/rtneural_smoke_test.cpp
   support/crt_dialogs.cpp
   support/fake_beat_source.hpp
+  support/fake_grid_source.hpp
+  support/link_network.hpp
   support/loopback_receiver.hpp
   support/rig_sandbox.cpp
   support/scoped_env.hpp

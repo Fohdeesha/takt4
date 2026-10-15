@@ -1,6 +1,13 @@
+#include "core/engine/beat_source.hpp"
+#include "core/output/link_peers.hpp"
 #include "core/output/link_session.hpp"
 #include "core/output/transports.hpp"
+#include "core/timing/beat_grid.hpp"
+#include "core/timing/external_beats.hpp"
+#include "core/timing/link_follower.hpp"
 #include "core/tracking/tempo_tracker.hpp"
+
+#include "support/link_network.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -9,7 +16,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <thread>
+#include <vector>
 
 using Catch::Matchers::WithinAbs;
 using takt4::output::LinkSession;
@@ -47,6 +56,8 @@ bool eventually(Predicate predicate, std::chrono::milliseconds limit = std::chro
 }
 
 } // namespace
+
+using takt4::testing::anyLinkHeard;
 
 TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link][network]") {
     LinkSession tracker(120.0); // takt4, driving
@@ -274,4 +285,138 @@ TEST_CASE("a peer that joins after the snap is put on the music's phase too",
 
     app.stopOutputs();
     peer.enable(false);
+}
+
+TEST_CASE("Link's older session wins when two meet, so a follower left alone takes the DJ's tempo",
+          "[output][link][network][follow]") {
+    // The rule a Link follower has to be built round, measured on Link itself. Enabling founds a
+    // new session (`Controller::updateEnabled`, "always reset when first enabling"), and when two
+    // sessions meet the older one wins (`Sessions::sawSessionTimeline`: the larger ghost time,
+    // with session-id order only inside half a second). So an app that follows Link by switching
+    // it on and waiting is, after a few seconds alone, the older session when the DJ's app
+    // arrives — and the DJ's app adopts its timeline: a tempo nobody chose, and its phase.
+    //
+    // Listened for first, and never run beside another session: any Link app on this network —
+    // Live or Resolume here, a device elsewhere — would be a third party to the merge, and would
+    // have its own tempo moved by it.
+    std::string problem;
+    const bool other = anyLinkHeard(2.0, problem);
+    if (!problem.empty()) {
+        SKIP("cannot listen for Link sessions on this network: " + problem);
+    }
+    if (other) {
+        SKIP("a Link session is already on this network, which would join the merge measured "
+             "here and have its tempo moved by it");
+    }
+
+    SECTION("a follower switched on first, and alone, is the older session") {
+        LinkSession follower(120.0); // a tempo nobody playing has chosen
+        follower.enable(true);
+        // Older than the DJ's session by far more than Link's half-second tie band.
+        std::this_thread::sleep_for(std::chrono::seconds{3});
+        REQUIRE(follower.numPeers() == 0);
+        LinkSession dj(126.5);
+        dj.enable(true);
+        if (!eventually([&] { return follower.numPeers() >= 1 && dj.numPeers() >= 1; })) {
+            SKIP("two Link sessions in one process never found each other: multicast is blocked");
+        }
+        REQUIRE(eventually([&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < 1e-6; }));
+        // The DJ's app now runs at the follower's tempo, not its own.
+        CHECK_THAT(dj.tempoBpm(), WithinAbs(120.0, 1e-6));
+        dj.enable(false);
+        follower.enable(false);
+    }
+
+    SECTION("a follower switched on after the DJ's app is the younger, and joins it") {
+        LinkSession dj(126.5);
+        dj.enable(true);
+        // Older than the follower will be by more than the tie band — what waiting to hear a
+        // session for a second before switching on buys.
+        std::this_thread::sleep_for(std::chrono::seconds{2});
+        LinkSession follower(120.0);
+        follower.enable(true);
+        if (!eventually([&] { return follower.numPeers() >= 1 && dj.numPeers() >= 1; })) {
+            SKIP("two Link sessions in one process never found each other: multicast is blocked");
+        }
+        REQUIRE(eventually([&] { return std::abs(dj.tempoBpm() - follower.tempoBpm()) < 1e-6; }));
+        CHECK_THAT(dj.tempoBpm(), WithinAbs(126.5, 1e-6));
+        CHECK_THAT(follower.tempoBpm(), WithinAbs(126.5, 1e-6));
+        follower.enable(false);
+        dj.enable(false);
+    }
+}
+
+TEST_CASE("a Link follower alone takes no session over, and follows the DJ's when it comes",
+          "[output][link][network][follow]") {
+    // The answer to the test above, on Link itself. takt4 follows by listening — Link switched off
+    // — until a session has been heard for a second, and only then switches on, as the youngest
+    // session there is: so the DJ's app keeps its own tempo however long takt4 waited first, and
+    // takt4's beats are the DJ's, on its beats and in its bar.
+    std::string problem;
+    const bool other = anyLinkHeard(2.0, problem);
+    if (!problem.empty()) {
+        SKIP("cannot listen for Link sessions on this network: " + problem);
+    }
+    if (other) {
+        SKIP("a Link session is already on this network, which the follower would join instead");
+    }
+
+    // takt4's session, read by a follower listening to the network. The DJ's app is in this same
+    // process here, so nothing is taken for this process's own, as the default would take it.
+    LinkSession session(120.0);
+    takt4::output::LinkPeerWatch watch([](const std::string&, std::uint16_t) { return false; });
+    takt4::timing::LinkFollower follower(session, watch);
+    takt4::timing::ExternalBeats beats;
+    beats.start(follower, takt4::timing::BeatGrid::Options{});
+    // Alone, for longer than a session of its own would need to win: nothing joined, nothing
+    // founded.
+    std::this_thread::sleep_for(std::chrono::seconds{3});
+    CHECK_FALSE(session.enabled());
+    CHECK(follower.status().phase == takt4::timing::LinkFollower::Phase::Listening);
+    CHECK_FALSE(beats.state().locked);
+
+    LinkSession dj(126.5);
+    dj.enable(true);
+    if (!eventually(
+            [&] {
+                return follower.status().phase == takt4::timing::LinkFollower::Phase::Following;
+            },
+            std::chrono::seconds{10})) {
+        dj.enable(false);
+        beats.stop();
+        SKIP("the follower never joined the session in this process: multicast is blocked");
+    }
+    REQUIRE(eventually([&] { return beats.state().locked; }));
+    // The DJ's tempo, kept: the follower joined it, not the other way round.
+    CHECK_THAT(dj.tempoBpm(), WithinAbs(126.5, 1e-6));
+    CHECK_THAT(beats.state().bpm, WithinAbs(126.5, 0.01));
+
+    // Every beat on one of the DJ's, in its place in the DJ's bar: the phase at the DJ's own
+    // quantum of four — Link's alignment between peers — within a millisecond.
+    std::vector<takt4::engine::EngineBeat> taken;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (std::chrono::steady_clock::now() < until) {
+        takt4::engine::EngineBeat beat;
+        while (beats.popBeat(beat)) {
+            taken.push_back(beat);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(taken.size() >= 5);
+    const double millisecond = 126.5 / 60000.0; // in beats
+    for (const takt4::engine::EngineBeat& beat : taken) {
+        const double phase = dj.phaseAtTime(std::chrono::microseconds{beat.hostMicros}, 4.0);
+        double apart = std::fmod(phase - static_cast<double>(beat.event.beatInBar - 1) + 8.0, 4.0);
+        apart = std::min(apart, 4.0 - apart);
+        INFO("beat " << beat.state.beats << ", " << beat.event.beatInBar << " of 4, at the DJ's "
+                     << phase);
+        CHECK(apart < millisecond);
+    }
+
+    // The DJ's app leaves: Link off at once, and the beats coast and then stop.
+    dj.enable(false);
+    CHECK(eventually([&] { return !session.enabled(); }, std::chrono::seconds{10}));
+    CHECK(eventually([&] { return beats.state().noSignal; }, std::chrono::seconds{10}));
+    beats.stop();
+    CHECK_FALSE(session.enabled());
 }

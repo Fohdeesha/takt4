@@ -105,7 +105,7 @@ void Transports::startOutputs(double now) {
     // A session joined now may already be somebody else's, with their phase; the first locked
     // beat has to put it under the music again. See `publishToLink`.
     linkSnapped_ = false;
-    if (linkEnabled_) {
+    if (linkEnabled_ && !linkFollowing_) {
         link_->enable(true);
     }
 }
@@ -147,13 +147,32 @@ void Transports::setLinkEnabled(bool on) {
 void Transports::applyLinkEnabled(bool on) {
     linkEnabled_ = on;
     // Only actually joined while the outputs are running: switching Link on before Start
-    // says what to do, not to do it now.
-    link_->enable(on && started_);
+    // says what to do, not to do it now. And never while following Link, when the session is the
+    // follower's to switch (`setLinkFollowing`): the switch is kept for when following stops.
+    if (!linkFollowing_) {
+        link_->enable(on && started_);
+    }
     // A session joined or rejoined starts from nothing — or from a peer's timeline, which is
     // older than ours and wins on join — so the next locked beat snaps it and resends the tempo
     // rather than finding it unchanged.
     lastLinkBpm_ = -1.0;
     linkSnapped_ = false;
+}
+
+void Transports::setLinkFollowing(bool following) {
+    if (following == linkFollowing_) {
+        return;
+    }
+    linkFollowing_ = following;
+    // The session changes hands either way: to the follower switched off, and back to the Link
+    // output's switch.
+    link_->enable(!following && linkEnabled_ && started_);
+    // And leading again starts afresh, as a session joined does: the next locked beat snaps it
+    // and sends the tempo, whatever the session did while it was followed.
+    lastLinkBpm_ = -1.0;
+    linkSnapped_ = false;
+    linkPeers_ = 0;
+    barsApart_ = 0;
 }
 
 MidiClock* Transports::midiClock() const noexcept {
@@ -717,6 +736,11 @@ double Transports::latencySeconds() const noexcept {
 
 void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t hostMicros,
                                std::int64_t latencyMicros) {
+    // Following Link, the beats are Link's own: committing them back would be leading the session
+    // being followed. See `setLinkFollowing`.
+    if (linkFollowing_) {
+        return;
+    }
     // Without a host time source — the offline path — there is nothing meaningful to
     // align to, so Link is left alone.
     if (hostMicros == 0) {

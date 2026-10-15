@@ -2373,3 +2373,38 @@ TEST_CASE("MIDI Start puts a receiver's bar 1 on the downbeat wherever START was
     CHECK(bars >= 8);
     transports.stopOutputs();
 }
+
+TEST_CASE("following Link, a beat commits nothing to it, and leading again snaps it afresh",
+          "[output][link][follow]") {
+    // The Link output switched on — and the outputs never started, so nothing joins a session:
+    // what is under test is what the transports would commit, which Link counts either way.
+    Transports::Config config;
+    config.link = true;
+    Transports transports(config);
+    REQUIRE(transports.linkEnabled());
+    const std::int64_t origin = transports.link().now().count();
+    const auto micros = [origin](double beats) {
+        return origin + static_cast<std::int64_t>(beats * 60.0e6 / 128.0);
+    };
+
+    // The beats are Link's own: committing them back would be leading the session followed.
+    transports.setLinkFollowing(true);
+    CHECK(transports.linkFollowing());
+    for (std::uint32_t k = 0; k < 8; ++k) {
+        transports.publish(beatAt(0.5 * k, k % 4 + 1, 128.0), micros(k), 0.5 * k);
+    }
+    CHECK(transports.link().tempoUpdates() == 0);
+    CHECK(transports.link().beatRequests() == 0);
+    // The switch is the operator's, and is kept while following.
+    transports.setLinkEnabled(false);
+    transports.setLinkEnabled(true);
+    CHECK(transports.linkEnabled());
+    CHECK(transports.link().tempoUpdates() == 0);
+
+    // Leading again: the next locked beat with a bar puts the session under it, as after a START.
+    transports.setLinkFollowing(false);
+    CHECK_FALSE(transports.linkFollowing());
+    transports.publish(beatAt(4.0, 1, 128.0), micros(8), 4.0);
+    CHECK(transports.link().beatRequests() == 1);
+    CHECK(transports.link().tempoUpdates() == 1);
+}

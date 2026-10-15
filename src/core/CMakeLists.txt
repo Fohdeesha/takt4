@@ -189,6 +189,14 @@ add_library(takt4_core STATIC
   settings/rule_json.hpp
   settings/settings.cpp
   settings/settings.hpp
+  timing/beat_grid.cpp
+  timing/beat_grid.hpp
+  timing/external_beats.cpp
+  timing/external_beats.hpp
+  timing/grid_source.hpp
+  timing/link_follower.cpp
+  timing/link_follower.hpp
+  timing/link_reader.hpp
   tracking/annotation.cpp
   tracking/annotation.hpp
   tracking/beat_decoder.hpp

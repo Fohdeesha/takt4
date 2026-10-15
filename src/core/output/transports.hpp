@@ -121,6 +121,18 @@ public:
     /// Switches Link on or off — the Link output's switch, when there is one, and the session
     /// either way. What `takt4-cli --link` and the control surfaces set.
     void setLinkEnabled(bool on);
+
+    /// **The beats come from Link itself** (`timing::LinkFollower`), so the outputs must not lead
+    /// it: a follower cannot also lead. Following, nothing is committed to the session on any
+    /// beat, and the session is not switched on or off from here — it is handed over switched
+    /// off, and the follower switches it on once it has heard a session to join. The Link
+    /// output's switch is kept, and comes back into force when following stops: then the session
+    /// is the switch's again, and the next locked beat snaps it under the music.
+    ///
+    /// **Set while the follower is not running**, and before it starts: the hand-over switches the
+    /// session off, which must not land after the follower has switched it on.
+    void setLinkFollowing(bool following);
+    bool linkFollowing() const noexcept { return linkFollowing_; }
     /// The Link output's delay: the timeline is put under each beat this much later.
     double linkDelaySeconds() const noexcept { return linkDelay_; }
 
@@ -355,6 +367,8 @@ private:
     /// faults with different fixes, and this used to say the first of both.
     std::map<std::size_t, std::string> deviceProblems_;
     bool linkEnabled_ = false;
+    /// See `setLinkFollowing`.
+    bool linkFollowing_ = false;
     double linkDelay_ = 0.0;
     bool started_ = false;
     /// Whether the MIDI clock is meant to be ticking — see `startClock`.

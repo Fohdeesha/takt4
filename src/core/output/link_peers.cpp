@@ -314,6 +314,7 @@ void LinkPeerWatch::take(std::span<const std::uint8_t> datagram, const std::stri
         Node made;
         made.id = announcement.node;
         made.own = ownPort_ && ownPort_(address, port);
+        made.firstHeard = now;
         nodes_.push_back(std::move(made));
         node = &nodes_.back();
     }
@@ -329,6 +330,7 @@ void LinkPeerWatch::take(std::span<const std::uint8_t> datagram, const std::stri
     }
     node->playing = announcement.playing;
     node->expires = now + static_cast<double>(announcement.ttl);
+    node->lastHeard = now;
 }
 
 std::optional<LinkAnnouncement::Id> LinkPeerWatch::ownSession() const {
@@ -356,6 +358,16 @@ std::vector<LinkPeer> LinkPeerWatch::peers() const {
         peers.push_back(std::move(peer));
     }
     return peers;
+}
+
+std::vector<timing::LinkListener::Heard> LinkPeerWatch::heard() const {
+    std::vector<timing::LinkListener::Heard> heard;
+    for (const Node& node : nodes_) {
+        if (!node.own) {
+            heard.push_back({node.firstHeard, node.lastHeard, node.bpm});
+        }
+    }
+    return heard;
 }
 
 // --- whose port --------------------------------------------------------------------------------

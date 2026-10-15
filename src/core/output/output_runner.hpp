@@ -87,6 +87,9 @@ struct OutputCommand {
         /// The input has stopped delivering audio at all — an interface unplugged, a driver
         /// gone. See `OutputRunner::letGoOfTheRig`.
         InputLost,
+        /// The beats come from Link itself, or no longer do: the outputs stop leading Link, or
+        /// lead it again. See `Transports::setLinkFollowing`.
+        LinkFollowing,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -183,6 +186,12 @@ struct OutputCommand {
     static OutputCommand inputLost() {
         OutputCommand command;
         command.kind = Kind::InputLost;
+        return command;
+    }
+    static OutputCommand linkFollowing(bool following) {
+        OutputCommand command;
+        command.kind = Kind::LinkFollowing;
+        command.enabled = following;
         return command;
     }
     static OutputCommand outputDelay(std::string outputId, double seconds) {
@@ -430,6 +439,9 @@ public:
         /// the targets, in the order a rule's routing mask indexes them.
         std::vector<OutputTarget> outputs;
         bool link = false;
+        /// The beats are Link's own, so Link is followed and not led, whatever its switch says —
+        /// `Transports::linkFollowing`.
+        bool linkFollowing = false;
         /// The port MIDI clock is going down, and whether it is actually open. The two differ
         /// exactly when a device has been named that this machine has not got, which is the
         /// one failure an operator has to be told about.

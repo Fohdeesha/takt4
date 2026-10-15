@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/timing/link_reader.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -61,9 +63,10 @@ struct LinkPeer {
 /// process.
 ///
 /// **Passive**: it joins the multicast group Link announces on and sends nothing, so it cannot
-/// disturb a session, and it is opened only while its list is on screen. Link's own sockets
-/// share the port (both ask for address reuse), and a multicast datagram is delivered to every
-/// socket joined to the group.
+/// disturb a session. It is opened only while its list is on screen, and — as the
+/// `timing::LinkListener` a Link follower listens through — while takt4 is waiting to hear a
+/// session it may join. Link's own sockets share the port (both ask for address reuse), and a
+/// multicast datagram is delivered to every socket joined to the group.
 ///
 /// **This process's own Link is told apart by where it sends from.** Link's node id is random,
 /// made afresh each time it is switched on, and not in its API; but each announcement leaves
@@ -72,27 +75,27 @@ struct LinkPeer {
 /// heard. The address as well as the port: a peer on another machine whose announcements
 /// happened to leave from a port number one of takt4's sockets has here was hidden from the
 /// list.
-class LinkPeerWatch {
+class LinkPeerWatch final : public timing::LinkListener {
 public:
     /// Whether an announcement from `address`:`port` left from a socket of this process. Empty
     /// is the operating system's answer, `sentFromHere`; a test hands in its own.
     using OwnPort = std::function<bool(const std::string& address, std::uint16_t port)>;
 
     explicit LinkPeerWatch(OwnPort ownPort = {});
-    ~LinkPeerWatch();
+    ~LinkPeerWatch() override;
     LinkPeerWatch(const LinkPeerWatch&) = delete;
     LinkPeerWatch& operator=(const LinkPeerWatch&) = delete;
 
     /// Joins the discovery group on every IPv4 interface there is. False, with why, when it
     /// cannot — the port refused, or no interface would join. Opening an open watch is a no-op.
-    bool open(std::string& problem);
+    bool open(std::string& problem) override;
     /// Leaves the group and forgets every peer.
-    void close() noexcept;
+    void close() noexcept override;
     bool isOpen() const noexcept;
 
     /// Reads every announcement waiting, and forgets each peer whose ttl has run out. `now` is
     /// any steady clock, in seconds. Never blocks.
-    void poll(double now);
+    void poll(double now) override;
     /// One announcement from `address`:`port` — what `poll` does with each datagram, and how a
     /// test feeds one without a network.
     void take(std::span<const std::uint8_t> datagram, const std::string& address,
@@ -100,6 +103,8 @@ public:
 
     /// The peers heard from and not yet gone, other than this process, in the order first heard.
     std::vector<LinkPeer> peers() const;
+    /// The same, as a follower asks: when each was first and last heard, and its tempo.
+    std::vector<timing::LinkListener::Heard> heard() const override;
     /// This process's own Link's session, once one of its announcements has been heard.
     std::optional<LinkAnnouncement::Id> ownSession() const;
 
@@ -112,6 +117,9 @@ private:
         std::optional<LinkAnnouncement::Id> session;
         std::optional<bool> playing;
         double expires = 0.0;
+        /// When it was first heard and when last, on `poll`'s clock.
+        double firstHeard = 0.0;
+        double lastHeard = 0.0;
     };
     struct Socket;
 

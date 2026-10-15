@@ -112,6 +112,12 @@ void LinkSession::snap(double bpm, double beat, std::chrono::microseconds at, do
     ++beatRequests_;
 }
 
+timing::LinkReader::Timeline LinkSession::timelineAt(std::chrono::microseconds at,
+                                                     double quantum) const {
+    const auto state = impl_->link.captureAppSessionState();
+    return Timeline{state.tempo(), state.beatAtTime(at, quantum)};
+}
+
 double LinkSession::beatAtTime(std::chrono::microseconds at, double quantum) const {
     return impl_->link.captureAppSessionState().beatAtTime(at, quantum);
 }
