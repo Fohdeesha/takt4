@@ -967,6 +967,9 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     facts.placed = !unplaced;
     facts.tickInBeat = 13;
     publishTimingView(window, describeTiming(facts));
+    // One of the three rules fires on onsets, which nothing is heard to make while following.
+    window.set_rules_active(1);
+    window.set_rules_need_audio(1);
     // The clock's inputs as the window lists them, the mixer among them.
     std::vector<std::string> inputs = output::listMidiInputPorts();
     inputs.push_back(mixer);

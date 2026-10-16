@@ -92,6 +92,37 @@ std::uint64_t RulesController::firesOf(std::string_view ruleId) const {
     return at == firesSeen_.end() ? 0 : at->second;
 }
 
+void RulesController::setTimingSource(std::string name) {
+    if (name == timingSource_) {
+        return;
+    }
+    timingSource_ = std::move(name);
+    publishTriggerNames();
+    publishList();
+}
+
+std::string RulesController::problemOf(const Rule::Config& config) const {
+    std::string problem = Rule(config).problem();
+    if (problem.empty() && !timingSource_.empty() && trigger::needsBeatDetection(config)) {
+        problem = "timing comes from " + timingSource_ + " \xE2\x80\x94 needs beat detection";
+    }
+    return problem;
+}
+
+void RulesController::publishTriggerNames() {
+    auto triggers = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const trigger::Trigger which : trigger::kTriggers) {
+        std::string label(trigger::labelOf(which));
+        // Offered still — a rule set up for the next audio set is worth having — and said.
+        if (!timingSource_.empty() &&
+            (which == trigger::Trigger::Onset || which == trigger::Trigger::IntensityChange)) {
+            label += " (needs beat detection)";
+        }
+        triggers->push_back(shared(label));
+    }
+    window_->set_trigger_names(triggers);
+}
+
 void RulesController::publishList() {
     std::vector<RuleRow> rows;
     rows.reserve(rules_.size());
@@ -99,11 +130,10 @@ void RulesController::publishList() {
         // Built rather than read from the runner: `OutputRunner::triggers()` is the output
         // thread's and is safe to read only while it is stopped. A `Rule` costs a few
         // generators to construct and this runs on a list of a handful, once per edit.
-        const Rule rule(config);
         RuleRow row{};
         row.name = shared(config.name);
         row.enabled = config.enabled;
-        row.problem = shared(rule.problem());
+        row.problem = shared(problemOf(config));
         // By id, so a rule deleted from the middle does not hand its count to the one that
         // moves up into its place. See `firesSeen_`.
         row.fires = static_cast<int>(firesOf(config.id));
@@ -148,7 +178,7 @@ void RulesController::publishSelected() {
     window_->set_rule_name(shared(rule->name));
     window_->set_rule_id(shared(rule->id));
     window_->set_rule_enabled(rule->enabled);
-    window_->set_rule_problem(shared(Rule(*rule).problem()));
+    window_->set_rule_problem(shared(problemOf(*rule)));
 
     const auto triggerIndex =
         std::find(trigger::kTriggers.begin(), trigger::kTriggers.end(), rule->trigger) -

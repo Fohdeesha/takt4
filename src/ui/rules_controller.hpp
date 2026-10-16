@@ -130,6 +130,16 @@ public:
     /// Replaces the set from outside — a preset load. Keeps the selection where it can.
     void setRules(std::vector<trigger::Rule::Config> rules);
 
+    /// **Where the beats come from**, by the name the window gives it — "Ableton Link", "MIDI
+    /// clock" — or empty for the audio. While a source is followed nothing is heard, so a rule
+    /// that fires only on what the audio says (`trigger::needsBeatDetection`) will not fire, and
+    /// says so where a rule says why it will not; and the WHEN list says which of its entries
+    /// need beat detection.
+    void setTimingSource(std::string name);
+    /// Why `config` will not fire: its own problem, or — while a source is followed — that it
+    /// needs beat detection. Empty when it will.
+    std::string problemOf(const trigger::Rule::Config& config) const;
+
     /// Which rule the editor is on, or -1 when the set is empty. Always one of `chosen()`.
     int selected() const noexcept { return selected_; }
     /// Every rule the next duplicate or delete would act on, in row order.
@@ -444,6 +454,8 @@ private:
     void matchSegmentsToAddress(trigger::Rule::Config& rule);
 
     void publishAll();
+    /// The WHEN list: every trigger, each marked while a source is followed if it needs the audio.
+    void publishTriggerNames();
     void publishList();
     void publishSelected();
     /// The "send to" list: every output this rig has, ticked where the rule names it, plus
@@ -496,6 +508,8 @@ private:
 
     output::OutputRunner& runner_;
     std::vector<trigger::Rule::Config> rules_;
+    /// See `setTimingSource`: empty while the audio is listened to.
+    std::string timingSource_;
     int selected_ = -1;
     /// One flag per rule, parallel to `rules_` — see `chosen()`. `selected_` is the row the
     /// editor shows and is always one of these; `anchor_` is the last row picked *without*

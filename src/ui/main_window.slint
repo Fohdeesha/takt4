@@ -623,6 +623,9 @@ export component MainWindow inherits Window {
   /// anything, because it is pressed in a hurry.
   in-out property <int> rules-active;
   in-out property <int> rules-total;
+  /// Of them, switched on, how many fire only on what the audio says and so will not while a
+  /// source is followed — "1 needs beat detection" after the count.
+  in-out property <int> rules-need-audio;
   in-out property <string> rules-last-fired;
   in-out property <bool> panicked;
 
@@ -2623,6 +2626,7 @@ export component MainWindow inherits Window {
               VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 0;
+                min-width: rules-button.preferred-width;
                 rules-button := Btn {
                   text: root.rules-total == 0 ? "add a rule" : "edit rules";
                   font-size: 14px;
@@ -2632,12 +2636,25 @@ export component MainWindow inherits Window {
                   }
                 }
               }
-              if root.rules-total > 0: Text {
-                text: root.rules-active + " of " + root.rules-total + " active";
-                color: Wf.ink2;
-                font-size: 14px;
-                vertical-alignment: center;
+              // The count, and under it — while a source is followed — how many of the rules
+              // switched on need the audio, which then never fire: the editor says which.
+              if root.rules-total > 0: VerticalLayout {
+                alignment: center;
                 horizontal-stretch: 0;
+                Text {
+                  text: root.rules-active + " of " + root.rules-total + " active";
+                  color: Wf.ink2;
+                  font-size: 14px;
+                  overflow: elide;
+                }
+                if root.rules-need-audio > 0: Text {
+                  height: 16px;
+                  text: root.rules-need-audio + (root.rules-need-audio == 1 ? " needs" : " need")
+                    + " beat detection";
+                  color: Wf.holding;
+                  font-size: 13px;
+                  overflow: elide;
+                }
               }
 
               // The lighting patch, beside the rules because a DMX rule is meaningless without one.
@@ -2645,6 +2662,7 @@ export component MainWindow inherits Window {
               VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 0;
+                min-width: fixtures-button.preferred-width;
                 fixtures-button := Btn {
                   text: "patch lights";
                   font-size: 14px;
@@ -2660,6 +2678,7 @@ export component MainWindow inherits Window {
                 font-size: 14px;
                 vertical-alignment: center;
                 horizontal-stretch: 0;
+                overflow: elide;
               }
 
               // What just went out, so the main window says whether the rig is being driven
@@ -2670,7 +2689,8 @@ export component MainWindow inherits Window {
                 font-family: Wf.mono;
                 font-size: 14px;
                 horizontal-stretch: 1;
-                min-width: 40px;
+                // Nothing at the least: the buttons and PANIC keep their places and their words.
+                min-width: 0px;
                 vertical-alignment: center;
                 overflow: elide;
               }
@@ -2678,32 +2698,45 @@ export component MainWindow inherits Window {
               // **PANIC only ever engages; RELEASE is its own button** — an earlier review. It
               // appears to the *left*, so PANIC does not move when it does: the second click of
               // a double-click lands on PANIC again, which is already engaged, and does nothing.
-              if root.panicked: Btn {
-                text: "release";
-                height: 46px;
-                font-size: 19px;
-                pad: 16px;
-                clicked => {
-                  // The keyboard back to the window first, because this button goes the moment
-                  // it works and would take the focus with it — and the next Escape, the one
-                  // that matters, would then reach nothing.
-                  keys.focus();
-                  root.panic-released();
+              //
+              // **Both keep their words**, whatever else on the row has to give way for them — the
+              // counts and the last message elide first. Engaged, PANIC says "panicked" and grows to
+              // the left for it, so its right edge, where a double-click's second click lands, stays.
+              if root.panicked: VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                min-width: release-button.preferred-width;
+                release-button := Btn {
+                  text: "release";
+                  height: 46px;
+                  font-size: 19px;
+                  pad: 16px;
+                  clicked => {
+                    // The keyboard back to the window first, because this button goes the moment
+                    // it works and would take the focus with it — and the next Escape, the one
+                    // that matters, would then reach nothing.
+                    keys.focus();
+                    root.panic-released();
+                  }
                 }
               }
 
-              panic-button := Btn {
-                text: root.panicked ? "panicked" : "panic";
-                hint: "Esc";
-                danger: true;
-                engaged: root.panicked;
-                height: 46px;
-                min-width: 160px;
-                font-size: 22px;
-                pad: 16px;
-                keycap-size: 20px;
-                clicked => {
-                  root.panic-clicked();
+              VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                min-width: max(160px, panic-button.preferred-width);
+                panic-button := Btn {
+                  text: root.panicked ? "panicked" : "panic";
+                  hint: "Esc";
+                  danger: true;
+                  engaged: root.panicked;
+                  height: 46px;
+                  font-size: 22px;
+                  pad: 16px;
+                  keycap-size: 20px;
+                  clicked => {
+                    root.panic-clicked();
+                  }
                 }
               }
             }

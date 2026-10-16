@@ -53,11 +53,7 @@ RulesController::RulesController(output::OutputRunner& runner,
 
     // The dropdowns, filled from the enums themselves so a kind added to `core/trigger`
     // appears here without anyone remembering to add it.
-    auto triggers = std::make_shared<slint::VectorModel<slint::SharedString>>();
-    for (const trigger::Trigger which : trigger::kTriggers) {
-        triggers->push_back(shared(std::string(trigger::labelOf(which))));
-    }
-    window_->set_trigger_names(triggers);
+    publishTriggerNames();
 
     auto sends = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const trigger::Message::Kind kind : trigger::kMessageKinds) {

@@ -1020,4 +1020,11 @@ const Generator::Config& slotGenerator(const Rule::Config& config, const Slot& s
     return slotGenerator(const_cast<Rule::Config&>(config), slot);
 }
 
+bool needsBeatDetection(const Rule::Config& config) noexcept {
+    if ((config.trigger == Trigger::Onset || config.trigger == Trigger::IntensityChange)) {
+        return true;
+    }
+    return config.conditionsOn && !config.conditions.allows(features::Intensity::Normal);
+}
+
 } // namespace takt4::trigger

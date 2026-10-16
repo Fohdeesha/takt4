@@ -454,15 +454,29 @@ std::string counted(std::uint64_t n, const char* one, const char* many, const st
 
 /// How many of `rules` would fire if their moment came, which is what "active" means to an
 /// operator. A rule switched off and one that cannot fire are both not going to, and counting
-/// them would make the TRIGGERS row lie in the direction that matters.
-int activeRules(const std::vector<trigger::Rule::Config>& rules) {
+/// them would make the TRIGGERS row lie in the direction that matters — and so is one that fires
+/// only on what the audio says, while a source is `following`.
+int activeRules(const std::vector<trigger::Rule::Config>& rules, bool following) {
     int active = 0;
     for (const trigger::Rule::Config& config : rules) {
-        if (config.enabled && trigger::Rule(config).valid()) {
+        if (config.enabled && trigger::Rule(config).valid() &&
+            !(following && trigger::needsBeatDetection(config))) {
             ++active;
         }
     }
     return active;
+}
+
+/// How many of `rules`, switched on and otherwise able to fire, fire only on what the audio says.
+int rulesNeedingAudio(const std::vector<trigger::Rule::Config>& rules) {
+    int need = 0;
+    for (const trigger::Rule::Config& config : rules) {
+        if (config.enabled && trigger::Rule(config).valid() &&
+            trigger::needsBeatDetection(config)) {
+            ++need;
+        }
+    }
+    return need;
 }
 
 /// The counters that are not zero, joined for one line of the window.
@@ -708,7 +722,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // here rather than the editor knowing where settings live.
     editor_.setRulesChanged([this](const std::vector<trigger::Rule::Config>& rules) {
         rules_ = rules;
-        rulesActive_ = activeRules(rules_);
+        countRules();
     });
     // The same for the patch — and one more thing: the rule editor's "lights" list shows every
     // fixture and group by name, so it has to be rebuilt whenever the patch changes or it will
@@ -2667,9 +2681,14 @@ void WindowController::releasePanic() {
     publishTriggers();
 }
 
+void WindowController::countRules() {
+    rulesActive_ = activeRules(rules_, following());
+    rulesNeedAudio_ = following() ? rulesNeedingAudio(rules_) : 0;
+}
+
 void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
     rules_ = std::move(rules);
-    rulesActive_ = activeRules(rules_);
+    countRules();
     // The editor's copy too, or it would go on showing the set it was built with — and the
     // next edit there would post that stale set back over this one.
     editor_.setRules(rules_);
@@ -2907,6 +2926,7 @@ void WindowController::publishTriggers() {
     // a whole `Rule` per rule to ask whether it is valid was that many times the work for a
     // number that moves only when somebody edits.
     window_->set_rules_active(rulesActive_);
+    window_->set_rules_need_audio(rulesNeedAudio_);
     window_->set_rules_total(static_cast<int>(rules_.size()));
     window_->set_fixtures_total(static_cast<int>(fixtures_.size()));
     window_->set_panicked(runner_.panicked());
@@ -4154,6 +4174,9 @@ void WindowController::applyTiming() {
     runner_.post(output::OutputCommand::clockInput(timing_ == Timing::MidiClock ? clockPort_
                                                                                 : std::string()));
     runner_.setLatencySeconds(activeLatencySeconds());
+    // The rules that fire only on what the audio says: said in the editor, and not counted active.
+    editor_.setTimingSource(following() ? timingName() : std::string());
+    countRules();
     // Listened to while Link is picked and stopped, for the row's "3 peers seen"; the follower
     // takes it over at START. Nothing is joined or sent.
     if (timing_ == Timing::Link) {

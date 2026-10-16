@@ -8699,3 +8699,58 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     facts.state.locked = false;
     CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one on DJM-A9");
 }
+
+TEST_CASE("while a source is followed, a rule that needs the audio says it will not fire and is "
+          "not counted active",
+          "[ui][follow][trigger]") {
+    // Nothing is heard while a source is followed, so a rule on onsets never fires: the editor
+    // says why where a rule says why it will not, its WHEN list marks the triggers that need the
+    // audio, and the TRIGGERS row counts it apart — and all of it goes once the audio is back.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::trigger::Rule::Config clips;
+    clips.id = "clips";
+    clips.address = "/clips";
+    takt4::trigger::Rule::Config hits = clips;
+    hits.id = "hits";
+    hits.trigger = takt4::trigger::Trigger::Onset;
+    controller.setRules({clips, hits});
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 2);
+    CHECK(controller.window().get_rules_need_audio() == 0);
+    const auto problemOf = [&controller](std::size_t row) {
+        return std::string(controller.editor().window().get_rules()->row_data(row)->problem);
+    };
+    const auto whenList = [&controller] {
+        std::vector<std::string> names;
+        const auto model = controller.editor().window().get_trigger_names();
+        for (std::size_t i = 0; i < model->row_count(); ++i) {
+            names.push_back(std::string(*model->row_data(i)));
+        }
+        return names;
+    };
+    CHECK(problemOf(1).empty());
+
+    controller.pickTiming(2);
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 1);
+    CHECK(controller.window().get_rules_need_audio() == 1);
+    CHECK(problemOf(0).empty());
+    CHECK(problemOf(1) == "timing comes from MIDI clock \xE2\x80\x94 needs beat detection");
+    controller.editor().pick(1);
+    CHECK(std::string(controller.editor().window().get_rule_problem()) == problemOf(1));
+    const std::vector<std::string> marked = whenList();
+    CHECK(std::count_if(marked.begin(), marked.end(), [](const std::string& name) {
+              return name.ends_with(" (needs beat detection)");
+          }) == 2);
+
+    controller.pickTiming(0);
+    controller.tick();
+    CHECK(controller.window().get_rules_active() == 2);
+    CHECK(controller.window().get_rules_need_audio() == 0);
+    CHECK(problemOf(1).empty());
+    const std::vector<std::string> plain = whenList();
+    CHECK(std::none_of(plain.begin(), plain.end(), [](const std::string& name) {
+        return name.find("needs beat detection") != std::string::npos;
+    }));
+}

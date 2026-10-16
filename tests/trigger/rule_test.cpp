@@ -840,3 +840,29 @@ TEST_CASE("the slot layout is the order a fire records its slots in, for every k
     // The walk covered something: segments, values, numbers, levels, colors and positions.
     CHECK(checked > 30);
 }
+
+TEST_CASE(
+    "a rule that fires only on what the audio says is known by its trigger and its conditions",
+    "[trigger][rule][follow]") {
+    // A source followed instead of the audio hears nothing: no onset is counted, and the
+    // intensity is held at normal. These are the rules that then never fire.
+    using takt4::trigger::needsBeatDetection;
+    using takt4::trigger::Trigger;
+    Rule::Config config;
+    config.trigger = Trigger::Beat;
+    CHECK_FALSE(needsBeatDetection(config));
+    config.trigger = Trigger::Onset;
+    CHECK(needsBeatDetection(config));
+    config.trigger = Trigger::IntensityChange;
+    CHECK(needsBeatDetection(config));
+
+    // On the beat, but only when it is intense: never, without the audio — once B is on.
+    config.trigger = Trigger::Beat;
+    config.conditions.intensities = {false, false, true};
+    CHECK_FALSE(needsBeatDetection(config)); // B off: the conditions do not apply
+    config.conditionsOn = true;
+    CHECK(needsBeatDetection(config));
+    // Normal among them: it fires, followed or not.
+    config.conditions.intensities = {false, true, true};
+    CHECK_FALSE(needsBeatDetection(config));
+}

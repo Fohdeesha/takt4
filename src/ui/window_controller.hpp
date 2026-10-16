@@ -995,8 +995,13 @@ private:
 
     /// the rules as this window has them; see `rules()`.
     std::vector<trigger::Rule::Config> rules_;
-    /// How many of them are active, counted whenever they change. See `publishTriggers`.
+    /// How many of them are active, counted whenever they or where the beats come from change; and
+    /// how many, switched on, need the audio and will not fire while a source is followed. See
+    /// `publishTriggers`.
     int rulesActive_ = 0;
+    int rulesNeedAudio_ = 0;
+    /// Counts the two above.
+    void countRules();
     /// The lighting patch, as this class has it for saving. `patch_` owns the editing; this is
     /// the copy that goes into a settings file, kept in step by its changed callback.
     std::vector<dmx::Fixture> fixtures_;

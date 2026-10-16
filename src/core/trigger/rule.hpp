@@ -1003,4 +1003,11 @@ std::vector<Slot> slotLayout(const Rule::Config& config);
 Generator::Config& slotGenerator(Rule::Config& config, const Slot& slot) noexcept;
 const Generator::Config& slotGenerator(const Rule::Config& config, const Slot& slot) noexcept;
 
+/// **Whether a rule fires only on what the audio says** — an onset, a change of intensity, or
+/// conditions that leave out the normal intensity — and so never while the beats come from a
+/// source followed instead of the audio, which hears nothing: `timing::ExternalBeats` counts no
+/// onsets and holds the intensity at Normal. A rule drawing a value from the intensity still
+/// fires, and draws Normal every time; its confidence is 1 whenever the source is followed.
+bool needsBeatDetection(const Rule::Config& config) noexcept;
+
 } // namespace takt4::trigger
