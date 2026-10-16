@@ -39,6 +39,14 @@ if(APPLE)
     VERBATIM)
   add_dependencies(takt4_skia_typeinfo cargo-build_slint_cpp)
   add_dependencies(takt4_ui_slint takt4_skia_typeinfo)
+  # **And the system libraries from the SDK the compiler is using.** Corrosion gives every Rust
+  # library the Command Line Tools SDK's usr/lib as a link directory on a Mac, whichever SDK the
+  # build compiles against. On GitHub's macOS image of 2026-10-13 that SDK is 27.0, newer than the
+  # selected Xcode's linker can read, and everything linking Slint failed with "tapi error:
+  # malformed file". Without it the compiler driver finds libSystem, libc and libobjc in its own.
+  if(TARGET slint_cpp-static)
+    set_property(TARGET slint_cpp-static PROPERTY INTERFACE_LINK_DIRECTORIES "")
+  endif()
 endif()
 
 add_library(takt4_ui STATIC
