@@ -201,6 +201,14 @@ add_library(takt4_core STATIC
   timing/link_reader.hpp
   timing/midi_clock_follower.cpp
   timing/midi_clock_follower.hpp
+  timing/prolink/network.cpp
+  timing/prolink/network.hpp
+  timing/prolink/packets.cpp
+  timing/prolink/packets.hpp
+  timing/prolink/virtual_player.cpp
+  timing/prolink/virtual_player.hpp
+  timing/prolink_follower.cpp
+  timing/prolink_follower.hpp
   timing/tick_fit.cpp
   timing/tick_fit.hpp
   tracking/annotation.cpp

@@ -83,6 +83,10 @@ add_executable(takt4_tests
   timing/follow_runner_test.cpp
   timing/link_follower_test.cpp
   timing/midi_clock_follower_test.cpp
+  timing/prolink_follower_test.cpp
+  timing/prolink_network_test.cpp
+  timing/prolink_packets_test.cpp
+  timing/prolink_player_test.cpp
   timing/tick_fit_test.cpp
   tracking/annotation_test.cpp
   tracking/forward_filter_test.cpp
@@ -101,6 +105,9 @@ add_executable(takt4_tests
   support/fake_grid_source.hpp
   support/link_network.hpp
   support/loopback_receiver.hpp
+  support/prolink_capture.hpp
+  support/prolink_peer.hpp
+  support/prolink_sim.hpp
   support/rig_sandbox.cpp
   support/scoped_env.hpp
   support/temp_dir.hpp

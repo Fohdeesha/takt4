@@ -16,9 +16,13 @@
 #include "core/timing/link_follower.hpp"
 #include "core/timing/link_reader.hpp"
 #include "core/timing/midi_clock_follower.hpp"
+#include "core/timing/prolink/network.hpp"
+#include "core/timing/prolink/virtual_player.hpp"
+#include "core/timing/prolink_follower.hpp"
 
 #include "cli/args.hpp"
 #include "cli/console.hpp"
+#include "cli/prolink_watch.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -38,7 +42,8 @@
 namespace takt4::cli {
 
 void printFollowUsage(std::ostream& out) {
-    out << "  takt4-cli follow (--link | --midi-clock PORT [--obey-start-stop] | --metronome BPM)\n"
+    out << "  takt4-cli follow (--link | --midi-clock PORT [--obey-start-stop] | --metronome BPM\n"
+        << "                   | --prolink [--follow master|N] [--interface ADDRESS])\n"
         << "                   [--beats-per-bar N] [--latency MS] [--osc HOST:PORT]\n"
         << "                   [--osc-prefix /NAME] [--midi-clock-out PORT] [--out FILE]\n"
         << "                   [--seconds S]\n"
@@ -57,6 +62,13 @@ void printFollowUsage(std::ostream& out) {
         << "      --obey-start-stop  a MIDI Stop halts the beats at once, until Start or\n"
         << "                      Continue. Without it a Stop is let pass, as a DJ mixer's\n"
         << "                      clock runs on after its Stop button\n"
+        << "      --prolink       follow the CDJs on this network (Pro DJ Link; experimental,\n"
+        << "                      not yet tried on real CDJs): takt4 joins as player 7 to 15\n"
+        << "                      and takes each beat the tempo master sends, its bar the\n"
+        << "                      DJ's beat grid's, four to the bar. Cue presses are not\n"
+        << "                      beats. rekordbox on this computer holds the same ports\n"
+        << "      --follow WHO    with --prolink: `master` (the default) or a player's number\n"
+        << "      --interface A   with --prolink: join on the network card with address A\n"
         << "      --metronome BPM  follow a steady grid at BPM on this machine's clock: a\n"
         << "                      reference to measure the outputs by, a MIDI clock above all\n"
         << "      --beats-per-bar N  the bar, default 4, and Link's quantum: neither Link nor a\n"
@@ -79,13 +91,16 @@ namespace {
 using namespace std::chrono_literals;
 
 /// What `follow` takes its beats from.
-enum class Followed { None, Link, MidiClock, Metronome };
+enum class Followed { None, Link, MidiClock, Metronome, ProLink };
 
 struct FollowArgs {
     Followed followed = Followed::None;
     std::string midiClockIn;
     bool obeyStartStop = false;
     double metronomeBpm = 0.0;
+    std::uint8_t proLinkFollow = timing::prolink::VirtualPlayer::kFollowMaster;
+    bool proLinkFollowGiven = false;
+    std::optional<std::uint32_t> proLinkInterface;
     std::optional<std::string> out;
     std::uint32_t beatsPerBar = 4;
     double latencySeconds = 0.0;
@@ -118,6 +133,18 @@ FollowArgs parseFollowArgs(const std::vector<std::string_view>& args) {
             out.midiClockIn = std::string(value());
         } else if (arg == "--obey-start-stop") {
             out.obeyStartStop = true;
+        } else if (arg == "--prolink") {
+            follow(Followed::ProLink);
+        } else if (arg == "--follow") {
+            out.proLinkFollow = parseProLinkFollow(value());
+            out.proLinkFollowGiven = true;
+        } else if (arg == "--interface") {
+            const std::string text(value());
+            out.proLinkInterface = timing::prolink::parseAddress(text);
+            if (!out.proLinkInterface) {
+                throw std::invalid_argument("--interface expects an IPv4 address: \"" + text +
+                                            "\"");
+            }
         } else if (arg == "--out") {
             out.out = std::string(value());
         } else if (arg == "--metronome") {
@@ -150,8 +177,14 @@ FollowArgs parseFollowArgs(const std::vector<std::string_view>& args) {
         }
     }
     if (out.followed == Followed::None) {
-        throw std::invalid_argument(
-            "follow: say what to follow — --link, --midi-clock PORT or --metronome BPM");
+        throw std::invalid_argument("follow: say what to follow — --link, --midi-clock PORT, "
+                                    "--prolink or --metronome BPM");
+    }
+    if ((out.proLinkFollowGiven || out.proLinkInterface) && out.followed != Followed::ProLink) {
+        throw std::invalid_argument("--follow and --interface are for --prolink");
+    }
+    if (out.followed == Followed::ProLink && out.beatsPerBar != 4) {
+        throw std::invalid_argument("--beats-per-bar: the CDJs count four to the bar");
     }
     if (out.obeyStartStop && out.followed != Followed::MidiClock) {
         throw std::invalid_argument("--obey-start-stop is for a followed MIDI clock");
@@ -337,6 +370,8 @@ int runFollow(const std::vector<std::string_view>& args) {
     std::optional<timing::MidiClockFollower> clockFollower;
     std::string clockPort;
     std::optional<Metronome> metronome;
+    std::optional<timing::prolink::Network> cdjs;
+    std::optional<timing::ProLinkFollower> cdjFollower;
     timing::GridSource* source = nullptr;
     switch (parsed.followed) {
     case Followed::Link:
@@ -355,6 +390,20 @@ int runFollow(const std::vector<std::string_view>& args) {
         clockPort = clockFollower->listen(parsed.midiClockIn);
         source = &*clockFollower;
         break;
+    case Followed::ProLink: {
+        timing::prolink::Network::Config cdjConfig;
+        cdjConfig.clock = [&transports] { return transports.link().now().count(); };
+        cdjConfig.interfaceAddress = parsed.proLinkInterface;
+        cdjs.emplace(cdjConfig);
+        cdjs->setFollow(parsed.proLinkFollow);
+        std::string problem;
+        if (!cdjs->open(problem)) {
+            throw std::runtime_error(problem);
+        }
+        cdjFollower.emplace(*cdjs);
+        source = &*cdjFollower;
+        break;
+    }
     case Followed::Metronome:
     case Followed::None:
         metronome.emplace(runner.transports().link(), parsed.metronomeBpm);
@@ -373,6 +422,9 @@ int runFollow(const std::vector<std::string_view>& args) {
         if (clockFollower) {
             return midiClockStatus(*clockFollower, clockPort);
         }
+        if (cdjs) {
+            return proLinkStatus(cdjs->snapshot());
+        }
         return "metronome at " + fixed(parsed.metronomeBpm, 2) + " BPM";
     };
 
@@ -389,6 +441,13 @@ int runFollow(const std::vector<std::string_view>& args) {
                                            : "a MIDI Stop is let pass (--obey-start-stop to obey)")
                   << '\n'
                   << "bar:       " << parsed.beatsPerBar << " beats\n";
+    } else if (parsed.followed == Followed::ProLink) {
+        std::cout << "following: the CDJs (Pro DJ Link, experimental) — "
+                  << (parsed.proLinkFollow == timing::prolink::VirtualPlayer::kFollowMaster
+                          ? std::string("the tempo master")
+                          : "player " + std::to_string(parsed.proLinkFollow))
+                  << ", takt4 joining as a player\n"
+                  << "bar:       4 beats, the DJ's beat grid's\n";
     } else {
         std::cout << "following: a metronome at " << fixed(parsed.metronomeBpm, 3)
                   << " BPM on this machine's clock\n"
