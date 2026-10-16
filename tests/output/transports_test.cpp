@@ -5,6 +5,7 @@
 #include "core/trigger/trigger_engine.hpp"
 
 #include "support/artnet_nodes.hpp"
+#include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1895,6 +1896,18 @@ TEST_CASE("a times-two puts Link at twice the beats, the tracker's downbeat on a
     // The same for Link: the session's tempo twice the beats going out, and its phase two of its
     // beats on for each of them, so the tracker's downbeat starts a bar of Link's and the beat
     // after it is Link's beat 3 — rather than a whole beat apart, three beats in four.
+    // Measured against takt4's own session: one already on this network — the rig has a Link
+    // device of its own — is the older, wins the merge and moves what is measured here.
+    {
+        std::string problem;
+        const bool other = takt4::testing::anyLinkHeard(2.0, problem);
+        if (!problem.empty()) {
+            SKIP("cannot listen for Link sessions on this network: " + problem);
+        }
+        if (other) {
+            SKIP("a Link session is already on this network, which would take this one over");
+        }
+    }
     Transports transports(Transports::Config{});
     transports.setLinkEnabled(true);
     transports.startOutputs(0.0);

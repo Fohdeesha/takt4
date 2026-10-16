@@ -228,6 +228,18 @@ TEST_CASE("a peer that joins after the snap is put on the music's phase too",
     // an earlier review, coverage gap 7. takt4 snaps the session once and then only nudges
     // it — and a peer that joins later can bring a timeline of its own. So a new peer is a reason
     // to snap again, on the next beat, and only on that one.
+    // Measured against takt4's own session: one already on this network — the rig has a Link
+    // device of its own — is the older, wins the merge and moves what is measured here.
+    {
+        std::string problem;
+        const bool other = takt4::testing::anyLinkHeard(2.0, problem);
+        if (!problem.empty()) {
+            SKIP("cannot listen for Link sessions on this network: " + problem);
+        }
+        if (other) {
+            SKIP("a Link session is already on this network, which would take this one over");
+        }
+    }
     takt4::output::Transports::Config config;
     config.link = true;
     takt4::output::Transports app(config);
