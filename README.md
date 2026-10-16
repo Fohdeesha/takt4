@@ -2,7 +2,7 @@
 
 ![takt4's main window, tracking a track at 128 BPM and sending it to Link, two MIDI clocks and OSC, beside the rule editor with a Resolume clip rule open](docs/screenshot.png)
 
-takt4 listens to incoming audio (WASAPI, ASIO, Core Audio, ALSA, JACK), finds the beat, downbeat and tempo, and sends them to the rest of
+takt4 listens to incoming audio (WASAPI, ASIO, Core Audio, ALSA, JACK), finds the beat, downbeat and tempo (or takes them from an Ableton Link session or a MIDI clock), and sends them to the rest of
 your rig: **Ableton Link, OSC, MIDI clock, MIDI notes and Art-Net (DMX)**. Plus optional built in triggers to fire clips,
 cues, notes, lights, lasers etc exactly on time with whatever audio you feed it. No manual tapping, locks on to new songs automatically
 
@@ -30,6 +30,20 @@ From the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)*
 - Keep it in a range: tick **keep BPM in** and set a rough range
 - **tap** (or **T**) to tap it in
 - **latency** moves everything earlier or later to compensate for input, output, and overall rig latency
+
+## Taking the beat from Link or a MIDI clock
+
+If the DJ already has the tempo, takt4 can take it from there instead of listening: an Ableton Link session (rekordbox, Traktor, Serato, Engine DJ, Live) or a MIDI clock (a DJ mixer, a DAW).
+
+- Open **inputs**, and in the **timing** row pick **from**: **Ableton Link** or **MIDI clock** (then its **port**). Only while stopped. Click **start**
+- The audio isn't used at all: the top says **timing from Ableton Link** and **audio not in use**, and **01 timing** shows the beats as they come in
+- **Link**: takt4 joins the session as one more peer and never changes its tempo. The **Link** output says **following — not sending**
+- **MIDI clock**: the bar starts on the clock's **Start**. A DJ mixer sends none until its start button is pressed; until then, press **downbeat** (or **D**) on the one
+- **obey start/stop**: tick it for a DAW, so its Stop stops the beats. Leave it off for a mixer, whose stray Stop shouldn't black out the rig
+- A clock that stops and starts again on a Start picks up on its first tick, at the tempo it had
+- If the source goes, the beats carry on for 4 seconds, then stop, as they do when the audio goes quiet
+- **÷2**, **×2** and **downbeat** work; **tap** and **lock** are off. **latency** is kept separately for each source
+- Rules on onsets or intensity can't fire without the audio. The rule editor says which
 
 ## Triggering stuff from the tracked audio (Rules)
 
