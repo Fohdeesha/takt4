@@ -2,6 +2,7 @@
 
 #include "core/audio/hop_meter.hpp"
 #include "core/io/chars.hpp"
+#include "core/output/midi_ports.hpp"
 #include "core/output/output_target.hpp"
 #include "core/settings/settings.hpp"
 
@@ -89,12 +90,119 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_beats_bpm(static_cast<float>(state.beatsBpm));
 }
 
-void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options) {
+void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options,
+                         std::optional<double> followedLatency) {
     window.set_fold_on(options.octaveFold);
     window.set_fold_min(static_cast<float>(options.minBpm));
     window.set_fold_max(static_cast<float>(options.maxBpm));
-    window.set_latency_ms(static_cast<float>(options.latencyOffsetSeconds * 1000.0));
+    window.set_latency_ms(
+        static_cast<float>(followedLatency.value_or(options.latencyOffsetSeconds) * 1000.0));
     window.set_keep_shift(options.keepOctaveShift);
+}
+
+TimingView describeTiming(const TimingFacts& facts) {
+    TimingView view;
+    view.index = facts.index;
+    view.beatsPerBar = static_cast<int>(facts.beatsPerBar);
+    view.obey = facts.obey;
+    view.ready = facts.ready;
+    if (facts.index != 1 && facts.index != 2) {
+        return view; // beat detection: the tracker's own readouts say it all
+    }
+    const bool link = facts.index == 1;
+    view.name = link ? "Ableton Link" : "MIDI clock";
+    view.shortName = link ? "Link" : "MIDI";
+    if (!facts.running) {
+        // Nothing joined or opened before START; Link's peers are heard all the same.
+        if (link) {
+            view.reading = !facts.canListen ? "cannot listen for Link sessions on this network"
+                           : facts.peersHeard == 0
+                               ? "no Link session heard"
+                               : std::to_string(facts.peersHeard) +
+                                     (facts.peersHeard == 1 ? " peer" : " peers") +
+                                     " seen \xC2\xB7 " + fixed(facts.heardBpm, 2) + " BPM";
+        }
+        return view;
+    }
+    view.coasting = facts.coasting;
+    // Waiting for the source: started, and nothing to follow — never heard since START, or gone
+    // for longer than the coast.
+    view.waiting = !facts.state.locked && !facts.coasting;
+    view.stripBeat = static_cast<int>(facts.state.beatInBar);
+    const std::string bpm = fixed(facts.state.rawBpm, 2) + " BPM";
+    if (link) {
+        const std::string peers =
+            facts.peers == 1 ? std::string("1 peer") : std::to_string(facts.peers) + " peers";
+        view.reading = view.waiting ? "no peers \xE2\x80\x94 waiting for a Link session"
+                                    : peers + " \xC2\xB7 " + bpm;
+        view.detail = view.waiting ? "waiting for a Link session"
+                                   : peers + " \xC2\xB7 " + std::to_string(facts.beatsPerBar) +
+                                         " beats to the bar";
+        return view;
+    }
+    const std::string port = facts.port.empty() ? std::string("no port") : facts.port;
+    if (facts.stopObeyed) {
+        view.reading = "stopped \xE2\x80\x94 waiting for Start or Continue";
+        view.detail = port + " \xC2\xB7 stopped";
+    } else if (facts.coasting) {
+        view.reading = "no clock \xE2\x80\x94 coasting at " + bpm;
+        view.detail = port + " \xC2\xB7 clock stopped";
+    } else if (view.waiting) {
+        view.reading = facts.ticking ? "ticking \xE2\x80\x94 measuring the tempo"
+                                     : "no clock \xE2\x80\x94 waiting for one on " + port;
+        view.detail = port + (facts.ticking ? " \xC2\xB7 measuring" : " \xC2\xB7 no clock");
+    } else {
+        view.reading = "ticking \xC2\xB7 " + bpm;
+        view.detail = port + (facts.placed ? " \xC2\xB7 started" : " \xC2\xB7 no start yet");
+        if (!facts.placed) {
+            // A DJ mixer's clock gives the tempo and no beat: until a Start, the beats are
+            // nobody's, and DOWNBEAT is what puts them on the music.
+            view.note = "no start received \xE2\x80\x94 press downbeat on the beat";
+        }
+    }
+    view.stripTicks = facts.ticking && !facts.coasting ? static_cast<int>(facts.tickInBeat) + 1 : 0;
+    return view;
+}
+
+void publishTimingView(MainWindow& window, const TimingView& view) {
+    window.set_timing_index(view.index);
+    window.set_timing_name(slint::SharedString(view.name));
+    window.set_timing_short(slint::SharedString(view.shortName));
+    window.set_timing_reading(slint::SharedString(view.reading));
+    window.set_timing_detail(slint::SharedString(view.detail));
+    window.set_timing_note(slint::SharedString(view.note));
+    window.set_timing_waiting(view.waiting);
+    window.set_timing_coasting(view.coasting);
+    window.set_strip_beat(view.stripBeat);
+    window.set_strip_ticks(view.stripTicks);
+    window.set_timing_beats_per_bar(view.beatsPerBar);
+    window.set_clock_obey(view.obey);
+    window.set_timing_ready(view.ready);
+}
+
+void publishClockPorts(MainWindow& window, const std::vector<std::string>& inputs,
+                       const std::string& wanted) {
+    std::vector<std::string> choices = inputs;
+    int picked = 0;
+    if (!wanted.empty()) {
+        // By the rule the clock finds its port by, so a name saved from another numbering of the
+        // same device is that device; one not on this machine stays on the list, said to be gone.
+        if (const std::optional<std::size_t> found = output::findMidiPort(inputs, wanted)) {
+            picked = static_cast<int>(*found) + 1;
+        } else {
+            choices.push_back(wanted);
+            picked = static_cast<int>(choices.size());
+        }
+    }
+    auto ports = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    ports->push_back(
+        slint::SharedString(inputs.empty() ? "no MIDI inputs on this machine" : "select input"));
+    for (std::size_t i = 0; i < choices.size(); ++i) {
+        ports->push_back(slint::SharedString(
+            i < inputs.size() ? choices[i] : choices[i] + " \xE2\x80\x94 not plugged in"));
+    }
+    window.set_clock_in_ports(ports);
+    window.set_clock_in_port_index(picked);
 }
 
 void publishControlLimits(MainWindow& window) {

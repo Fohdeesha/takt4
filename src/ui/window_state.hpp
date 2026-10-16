@@ -8,6 +8,7 @@
 #include "main_window.h" // generated from main_window.slint
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -88,8 +89,69 @@ TracePoint tracePoint(const engine::EngineFrame& frame);
 void publishTempoState(MainWindow& window, const tracking::TempoState& state);
 
 /// the settings. Read these from `BeatEngine::tempoOptions()` every time and never
-/// from a copy: a tap moves the octave-fold window (the design deviation 8).
-void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options);
+/// from a copy: a tap moves the octave-fold window (the design deviation 8). While a source is followed
+/// the latency slider is that source's own (`followedLatency`, in seconds), not the tracker's.
+void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options,
+                         std::optional<double> followedLatency = std::nullopt);
+
+/// **Where the beats come from, as the window says it** — the source, what it is saying, what
+/// the operator has to do about it, and where in its bar it is. `describeTiming` works it out from
+/// the source's own readings and `publishTimingView` puts it on the window; the live window and
+/// `takt4-shot` both go through the two, so a picture cannot say what the window would not.
+struct TimingFacts {
+    /// 0 beat detection, 1 Ableton Link, 2 MIDI clock — `timing-sources`' order.
+    int index = 0;
+    /// Started: the follower running.
+    bool running = false;
+    tracking::TempoState state;
+    bool coasting = false;
+    /// The settings on the rows under the picker, and whether START has what it needs: a MIDI
+    /// clock its port.
+    std::uint32_t beatsPerBar = 4;
+    bool obey = false;
+    bool ready = true;
+    /// Link, stopped: what its discovery traffic says — whether it can be heard at all, how many
+    /// peers there are, and the tempo the first announces.
+    bool canListen = true;
+    std::size_t peersHeard = 0;
+    double heardBpm = 0.0;
+    /// Link, running: peers in the session.
+    std::uint32_t peers = 0;
+    /// MIDI clock: its port, by name, and what its ticks are doing (`MidiClockFollower::Status`).
+    std::string port;
+    bool ticking = false;
+    bool placed = false;
+    bool stopObeyed = false;
+    std::uint32_t tickInBeat = 0;
+};
+
+struct TimingView {
+    int index = 0;
+    /// "Ableton Link", "MIDI clock" — empty for beat detection — and short, where it labels
+    /// something else: "Link", "MIDI".
+    std::string name;
+    std::string shortName;
+    /// The timing row's reading; the tempo sheet's line under "source"; what to do, in amber.
+    std::string reading;
+    std::string detail;
+    std::string note;
+    bool waiting = false;
+    bool coasting = false;
+    int stripBeat = 0;
+    int stripTicks = 0;
+    int beatsPerBar = 4;
+    bool obey = false;
+    bool ready = true;
+};
+
+TimingView describeTiming(const TimingFacts& facts);
+void publishTimingView(MainWindow& window, const TimingView& view);
+
+/// The MIDI clock's input list, as the control input's is: "select input" first, this machine's
+/// inputs, and `wanted` after them, said not to be plugged in, when it is not one of them — found
+/// by the rule a port is found by (`output::findMidiPort`). `wanted` is picked.
+void publishClockPorts(MainWindow& window, const std::vector<std::string>& inputs,
+                       const std::string& wanted);
 
 /// How far the settings above can be dragged, from the constants the caller also clamps
 /// against — so a slider cannot offer a value the controller would refuse. Once, at

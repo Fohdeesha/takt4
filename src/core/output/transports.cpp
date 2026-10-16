@@ -327,8 +327,7 @@ void Transports::setOutputs(const std::vector<OutputTarget>& targets) {
         case OutputTarget::Kind::MidiClock: {
             // Never to the device the clock is followed from (`setClockInput`).
             if (loopsBack(target)) {
-                clockProblems_[i] = "not sent — the MIDI clock is followed from this device, "
-                                    "and could come straight back round";
+                clockProblems_[i] = std::string(kClockLoopProblem);
                 break;
             }
             // One clock a device: two would tick it twice as fast.

@@ -12,6 +12,10 @@
 #include "core/output/link_peers.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
+#include "core/timing/external_beats.hpp"
+#include "core/timing/grid_source.hpp"
+#include "core/timing/link_follower.hpp"
+#include "core/timing/midi_clock_follower.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/delete_guard.hpp"
@@ -26,6 +30,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -241,6 +246,34 @@ public:
 
     /// Taps counted so far in the set being tapped in, for the button's own label.
     std::size_t taps() const noexcept { return taps_.taps(); }
+
+    /// **Where the beats come from** — the timing input. 0 is the audio, heard by the tracker;
+    /// 1 an Ableton Link session followed (`timing::LinkFollower`); 2 a MIDI clock followed
+    /// (`timing::MidiClockFollower`). Picked only while stopped, as the audio pickers are: two
+    /// sources racing for the output thread's ring is not a state worth having. Following, the
+    /// audio is not opened at all, START starts the follower instead, and Link is handed to the
+    /// follower the moment it is picked — so a session of takt4's own, alone and ageing, can
+    /// never be the older one when the DJ's app arrives. A MIDI clock output to the clock's own
+    /// device is not sent from the moment that is picked (`output::Transports::setClockInput`).
+    void pickTiming(int index);
+    int timingIndex() const noexcept { return static_cast<int>(timing_); }
+    /// Following a source rather than the audio, picked — whether or not it has been started.
+    bool following() const noexcept { return timing_ != Timing::Audio; }
+    /// The MIDI clock's input, as an index into `clock-in-ports` — 0 being its "select input"
+    /// entry — and by name. Opened at START, never before.
+    void pickClockPort(int index);
+    void setClockPort(const std::string& name);
+    /// Whether a followed MIDI clock's Stop halts the beats. Any time: it takes effect at once.
+    void setClockObey(bool obey);
+    /// Beats to the bar while following, 1 to 16. Only while stopped: it is fixed for a run.
+    void setExternalBeatsPerBar(int beats);
+    /// For the tests: what the next START follows in place of Link or the MIDI clock, whichever
+    /// is picked — the tests' sandbox joins no Link session and opens no MIDI port. Null puts the
+    /// real ones back. It has to outlive the run it is started for.
+    void followForTests(timing::GridSource* source) noexcept { testSource_ = source; }
+    /// The beats a followed source is sending, as the timing input's own engine has them —
+    /// for a test to read what the window was given.
+    const timing::ExternalBeats& followed() const noexcept { return followed_; }
 
     /// SHOW PEERS / HIDE PEERS: the list of Link peers under the Link row, and the listener
     /// behind it (`output::LinkPeerWatch`), which is open only while the list is.
@@ -616,6 +649,32 @@ private:
     void writeTickProbe();
     /// Sends a whole `Options` and remembers it until the engine is seen to have it.
     void postOptions(const tracking::TempoTracker::Options& options);
+
+    /// See `pickTiming`. What the source picked asks of everything else, applied: the switch the
+    /// output thread and the control surfaces read pointed at it, Link handed to the follower or
+    /// back to the Link output, the MIDI clock output to the clock's own device stopped or let
+    /// go, the latency that source keeps, and the window told.
+    void applyTiming();
+    /// START, following the source picked rather than the audio: the follower begun on its
+    /// own thread. False, with the status line saying why, when it could not be — no MIDI port
+    /// picked, or one that would not open.
+    bool startFollowing();
+    /// STOP of the same.
+    void stopFollowing() noexcept;
+    /// The source's readings, its strip and its note: each round, running or not.
+    void publishTiming();
+    /// The beats a followed source sent since the last round, into the timing plot: a column
+    /// lit full height for each, at its own moment, 50 columns to the second.
+    void publishFollowedTrace();
+    /// The MIDI clock's input list, built as the control input's is.
+    void publishClockPortList();
+    /// The latency the outputs are given: beat detection's own, or the source followed's.
+    double activeLatencySeconds() const;
+    /// The source's name, for the status line.
+    std::string timingName() const;
+    /// The latency the slider shows while a source is followed — that source's own — or nothing,
+    /// for beat detection's (`publishTempoOptions`).
+    std::optional<double> followedLatency() const;
     /// One look at whether the settings need writing — see `enableAutosave`. `now` is
     /// `nowSeconds()`.
     void autosave(double now);
@@ -684,6 +743,25 @@ private:
     bool deviceFallback_ = false;
     /// The operator picked a device or a channel from the pickers this session.
     bool deviceChosen_ = false;
+
+    /// See `pickTiming`, in `timing-sources` order.
+    enum class Timing : int { Audio = 0, Link = 1, MidiClock = 2 };
+    /// A settings file's `timingSource`, as the picker's entry.
+    static Timing timingOf(std::string_view source) noexcept;
+    Timing timing_ = Timing::Audio;
+    /// The MIDI clock's input, by name — saved as it was asked for, plugged in or not.
+    std::string clockPort_;
+    bool clockObey_ = false;
+    std::uint32_t externalBeatsPerBar_ = 4;
+    /// Each followed source's own latency, which `activeLatencySeconds` hands the outputs while
+    /// it is picked; beat detection's is the tracker's (`settings().latencyOffsetSeconds`).
+    settings::Preset::TimingLatency timingLatency_;
+    /// See `followForTests`.
+    timing::GridSource* testSource_ = nullptr;
+    /// The source started, for the strip and the readings: null while stopped.
+    timing::GridSource* runningSource_ = nullptr;
+    /// The followed beats of the last four seconds, newest last — what the timing plot draws.
+    std::deque<timing::ExternalBeats::DisplayBeat> shownBeats_;
     /// OSC control asked for — by the settings or by its switch — whether or not its port
     /// bound. Saved as it is, so a port that was taken at one launch is still wanted at the
     /// next.
@@ -939,6 +1017,12 @@ private:
     /// ones that need a rule named too, which a gesture cannot supply. See the constructor.
     std::vector<control::ControlAction> learnActions_;
 
+    /// A source followed instead of the audio, as beats (`timing::ExternalBeats`): what `source_`
+    /// is pointed at while one is picked. **Before `source_` and `runner_`**, so the output thread
+    /// is gone before it is; its own thread is stopped in the destructor's body, before the
+    /// followers it reads go.
+    timing::ExternalBeats followed_;
+
     /// Where the beats come from — the tracker's engine — as the output thread, the two control
     /// surfaces and this window's own buttons hold it (`engine::BeatSourceSwitch`). **Before
     /// `runner_`**, so it outlives everything that holds it.
@@ -965,6 +1049,15 @@ private:
     /// every message it hands over, and **before the control input**, which lets go of it as it is
     /// destroyed.
     midi::MidiInputHub inputs_;
+
+    /// The followers. Link's listens to the discovery traffic (`linkWatch_`) — while it is picked
+    /// and stopped, for the timing row's "3 peers seen", and during a run for a session to join —
+    /// and reads the outputs' own session, built when Link is first picked: two Link instances
+    /// in one process would be two peers. The MIDI clock's listens through `inputs_`, opened at
+    /// START. After `inputs_` and `runner_`, which both outlive them.
+    output::LinkPeerWatch linkWatch_;
+    std::optional<timing::LinkFollower> linkFollower_;
+    timing::MidiClockFollower clockFollower_;
 
     /// the two control surfaces. **Both after `runner_`, so both are destroyed first**,
     /// and that ordering is load-bearing rather than a preference: since the `panic` and

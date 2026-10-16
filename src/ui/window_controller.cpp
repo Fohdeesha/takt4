@@ -506,6 +506,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       runner_(source_, transportConfig(settings, tracker.engine().tempoOptions())),
       // Every MIDI input message stamped on Link's clock, which the runner owns.
       inputs_([this] { return runner_.transports().link().now().count(); }),
+      // A MIDI clock, if one is picked, listens through the same hub; it opens nothing until
+      // START.
+      clockFollower_(inputs_),
       // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
       // a port, so a machine with a controller plugged in is not listened to — and no
       // socket is bound — until somebody says to. The runner is each one's second
@@ -665,6 +668,16 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     });
 
     window_->on_midi_in_picked([this](int index) { pickMidiControlPort(index); });
+    window_->on_timing_picked([this](int index) { pickTiming(index); });
+    window_->on_clock_in_picked([this](int index) { pickClockPort(index); });
+    window_->on_clock_obey_toggled([this](bool obey) { setClockObey(obey); });
+    window_->on_timing_beats_per_bar_edited([this](int beats) { setExternalBeatsPerBar(beats); });
+    // The banner's CHANGE: the timing row, which is in "02 inputs", folded or not.
+    window_->on_timing_change_clicked([this] {
+        if (window_->get_inputs_folded()) {
+            toggleFold(0);
+        }
+    });
     window_->on_learn_action_picked([this](int index) { pickLearnAction(index); });
     window_->on_learn_clicked([this] { toggleLearn(); });
     window_->on_forget_clicked([this] { forgetLearned(); });
@@ -800,6 +813,15 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     fixtures_ = settings.preset.fixtures;
     library_ = settings.preset.library;
     editor_.setPatch(fixtures_);
+    // **Where the beats come from**, as the last run left it — picked, and not started: START is
+    // pressed as ever. After the outputs, which Link's hand-over and the clock's refusal act on.
+    clockPort_ = settings.machine.midiClockInPort;
+    clockObey_ = settings.machine.midiClockObeyStartStop;
+    clockFollower_.setObeyStartStop(clockObey_);
+    externalBeatsPerBar_ = settings.preset.externalBeatsPerBar;
+    timingLatency_ = settings.preset.timingLatency;
+    timing_ = timingOf(settings.machine.timingSource);
+    applyTiming();
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
         // reason the MIDI port is: a port another application has taken throws, and by now
@@ -894,6 +916,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
 WindowController::~WindowController() {
     // Nothing may call back into this from Windows' timer once it starts to go.
     stopPumping(modalPump_);
+    // The timing input's thread reads a follower that goes before it does: stopped first.
+    stopFollowing();
     // Before any member goes: `runner_` owns the clock the audio thread reads on every hop,
     // and it is destroyed long before `tracker_`, which is not this class's. `ui::run` stops
     // the tracker itself before letting go of the window; a test that fails half-way through a
@@ -936,7 +960,7 @@ void WindowController::run() {
     window_->hide();
     // Quiet before `ui::run` stops the tracker on the way out, as STOP is: that stop can wait on
     // the driver, and the outputs would go on firing the beats they predict meanwhile.
-    if (wantRunning_) {
+    if (wantRunning_ || followed_.running()) {
         runner_.setTracking(false);
     }
 }
@@ -1059,6 +1083,26 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
 
 std::string WindowController::applyMachine(const settings::MachineSettings& machine) {
     std::string said;
+    // **Where the beats come from**, first: a file that follows a source does not want the audio
+    // started again below. Another source than the one in use is stopped and picked, as STOP and
+    // a pick would — and said, since START is the operator's to press.
+    setClockObey(machine.midiClockObeyStartStop);
+    const Timing wanted = timingOf(machine.timingSource);
+    if (wanted != timing_ || machine.midiClockInPort != clockPort_) {
+        const bool running = followed_.running() || wantRunning_ || tracker_.running();
+        if (running && (wanted != timing_ || timing_ == Timing::MidiClock)) {
+            toggleRun();
+            timing_ = wanted;
+            clockPort_ = machine.midiClockInPort;
+            said = "Stopped: the file takes the beats from " + timingName() +
+                   " "
+                   "\xE2\x80\x94"
+                   " press START.";
+        }
+        timing_ = wanted;
+        clockPort_ = machine.midiClockInPort;
+        applyTiming();
+    }
     // **The input**, found by name as a launch finds it — and left alone when it is the one in
     // use, so importing this rig's own file interrupts nothing. Another one, while listening, is
     // listened to instead: stopped, switched, started again on it, as STOP, a pick and START would.
@@ -1085,7 +1129,9 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
         // Started again only on an input there is: with none at all — the list empty, the file
         // naming none — it says so rather than that it is listening to nothing.
         const bool picked = device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size();
-        if (listening && !deviceFallback_ && picked) {
+        if (listening && following()) {
+            // Taken off the audio by the source above, and said there.
+        } else if (listening && !deviceFallback_ && picked) {
             requestToggleRun();
             said = "Now listening to " + devices_[static_cast<std::size_t>(device_)].name +
                    ", as the file has it.";
@@ -1158,6 +1204,7 @@ void WindowController::publishPortLists() {
     window_->set_output_devices(devices);
 
     publishMidiInputList();
+    publishClockPortList();
 }
 
 std::vector<std::string> WindowController::midiInputChoices() const {
@@ -1202,7 +1249,7 @@ bool WindowController::listDevicesFor(const std::vector<output::OutputTarget>& t
 }
 
 void WindowController::rescanDevices() {
-    if (wantRunning_ || tracker_.running()) {
+    if (wantRunning_ || tracker_.running() || followed_.running()) {
         setStatus("Stop first: devices can only be looked for again while nothing is open.", true);
         return;
     }
@@ -1415,7 +1462,7 @@ void WindowController::requestToggleRun() {
     if (runPending_ || window_->get_run_busy()) {
         return;
     }
-    const bool stopping = wantRunning_ || tracker_.running();
+    const bool stopping = wantRunning_ || tracker_.running() || followed_.running();
     runPending_ = true;
     window_->set_run_busy(true);
     window_->set_run_busy_text(shared(stopping ? "STOPPING\xE2\x80\xA6" : "OPENING\xE2\x80\xA6"));
@@ -1431,6 +1478,30 @@ void WindowController::toggleRun() {
     // What an import said, for the START it asked for and no other: one that fails says why
     // instead, and the next one says what it opened. See `importFrom`.
     const std::string importSaid = std::exchange(importSaid_, std::string{});
+    // **Following a source**, nothing about the audio is touched, START or STOP: no stream, no
+    // outage, no supervision — `wantRunning_` is the audio's.
+    if (followed_.running()) {
+        runner_.setTracking(false);
+        stopFollowing();
+        publishStopped();
+        return;
+    }
+    if (following()) {
+        if (!startFollowing()) {
+            publishStopped();
+            return;
+        }
+        std::fill(trace_.begin(), trace_.end(), TracePoint{});
+        publishTrace();
+        // After the follower, so nothing ticks for a run that would not start.
+        runner_.setTracking(true);
+        window_->set_running(true);
+        setStatus(importSaid.empty()
+                      ? "following " + timingName() + " " + "\xE2\x80\x94" + " audio not in use."
+                      : importSaid,
+                  false);
+        return;
+    }
     // By what was asked for, not by whether a stream is open: during an outage the tracker is
     // stopped between attempts to reopen it, and STOP has to mean stop — not "start".
     if (wantRunning_ || tracker_.running()) {
@@ -3009,6 +3080,14 @@ void WindowController::setFoldMax(double bpm) {
 }
 
 void WindowController::setLatencyMs(double milliseconds) {
+    // Following, the slider is the source's own latency, kept apart from beat detection's.
+    if (following()) {
+        const double seconds = std::clamp(milliseconds, -kLatencyLimitMs, kLatencyLimitMs) / 1000.0;
+        (timing_ == Timing::Link ? timingLatency_.link : timingLatency_.midiClock) = seconds;
+        runner_.setLatencySeconds(seconds);
+        publishTempoOptions(*window_, settings(), followedLatency());
+        return;
+    }
     Options options = settings();
     options.latencyOffsetSeconds =
         std::clamp(milliseconds, -kLatencyLimitMs, kLatencyLimitMs) / 1000.0;
@@ -3018,11 +3097,11 @@ void WindowController::setLatencyMs(double milliseconds) {
 void WindowController::setLatencyTyped(const std::string& text) {
     const std::optional<double> ms = readMilliseconds(text);
     if (!ms) {
-        setStatus("\"" + text + "\" is not a number of milliseconds, so the latency was left at " +
-                      std::to_string(
-                          static_cast<int>(std::lround(settings().latencyOffsetSeconds * 1000.0))) +
-                      " ms.",
-                  true);
+        setStatus(
+            "\"" + text + "\" is not a number of milliseconds, so the latency was left at " +
+                std::to_string(static_cast<int>(std::lround(activeLatencySeconds() * 1000.0))) +
+                " ms.",
+            true);
         return;
     }
     // `postOptions` writes the clamped value back into the window, which moves the slider.
@@ -3058,10 +3137,11 @@ void WindowController::postOptions(const Options& options) {
     // launch, offsetting a later show by an amount nobody chose that night. One atomic,
     // safe from this thread; every way a setting changes comes through here, the slider and
     // an import alike.
-    runner_.setLatencySeconds(options.latencyOffsetSeconds);
+    // Beat detection's — unless a source is followed, which has its own.
+    runner_.setLatencySeconds(following() ? activeLatencySeconds() : options.latencyOffsetSeconds);
     posted_ = options;
     settling_ = 0;
-    publishTempoOptions(*window_, options);
+    publishTempoOptions(*window_, options, followedLatency());
 }
 
 void WindowController::publishTaps() {
@@ -3125,6 +3205,12 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
     out.machine.inputsFolded = window_->get_inputs_folded();
     out.machine.outputsFolded = window_->get_outputs_folded();
+    out.machine.timingSource =
+        std::string(timing_ == Timing::Link        ? settings::kTimingLink
+                    : timing_ == Timing::MidiClock ? settings::kTimingMidiClock
+                                                   : settings::kTimingAudio);
+    out.machine.midiClockInPort = clockPort_;
+    out.machine.midiClockObeyStartStop = clockObey_;
     editor_.layoutInto(out.machine);
     patch_.layoutInto(out.machine);
 
@@ -3147,6 +3233,8 @@ settings::Settings WindowController::currentSettings() const {
     out.preset.rules = rules_;
     out.preset.fixtures = fixtures_;
     out.preset.library = library_;
+    out.preset.externalBeatsPerBar = externalBeatsPerBar_;
+    out.preset.timingLatency = timingLatency_;
     return out;
 }
 
@@ -3328,6 +3416,11 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // outputs since 2026-09-25, so they come with them. The machine half last — see the end.
     setRules(loaded.preset.rules);
     meters_ = loaded.preset.meters;
+    // Each followed source's latency, and its bar, travel with the show as beat detection's do —
+    // before the tracker's options, which hand the outputs whichever latency is in force.
+    timingLatency_ = loaded.preset.timingLatency;
+    externalBeatsPerBar_ = loaded.preset.externalBeatsPerBar;
+    publishTiming();
     postOptions(loaded.preset.tempo);
     // **The lighting patch too**: an import used to leave the patch alone, so every
     // imported lighting rule aimed at fixtures this rig did not have, and reached nothing.
@@ -3618,7 +3711,9 @@ void WindowController::publishStopped() {
     publishTaps();
     publishIdleReadouts(*window_);
     publishOptions();
-    if (!devices_.empty() && !statusIsError_) {
+    if (following() && !statusIsError_) {
+        setStatus("press Start to follow " + timingName() + ".", false);
+    } else if (!devices_.empty() && !statusIsError_) {
         // The version is not repeated here: it is in the title bar and the status bar's
         // corner now, and unlike this line neither of them is spent by the next status.
         setStatus("pick an input and press Start.", false);
@@ -3689,7 +3784,7 @@ void WindowController::publishOptions() {
         // goes back to showing what the tracker has.
         posted_.reset();
     }
-    publishTempoOptions(*window_, live);
+    publishTempoOptions(*window_, live, followedLatency());
 }
 
 void WindowController::publishPin() {
@@ -3860,6 +3955,14 @@ void WindowController::tick() {
     // is open: the tracker is stopped between attempts to bring it back. See `superviseInput`.
     superviseNow(nowSeconds());
     publishDriverState();
+    // The timing input's readings — what a source picked is saying, running or not.
+    publishTiming();
+    if (followed_.running()) {
+        publishFollowedTrace();
+        publishState();
+        publishOutputs();
+        return;
+    }
     if (!tracker_.running()) {
         // The outputs keep going through an outage, so what they are doing is still shown.
         if (runner_.running()) {
@@ -3977,6 +4080,241 @@ void WindowController::publishLevels() {
         return;
     }
     publishInput(*window_, loudest, peak_);
+}
+
+// --- the timing input ----------------------------------------------------------------------
+
+WindowController::Timing WindowController::timingOf(std::string_view source) noexcept {
+    if (source == settings::kTimingLink) {
+        return Timing::Link;
+    }
+    if (source == settings::kTimingMidiClock) {
+        return Timing::MidiClock;
+    }
+    return Timing::Audio;
+}
+
+std::string WindowController::timingName() const {
+    switch (timing_) {
+    case Timing::Link:
+        return "Ableton Link";
+    case Timing::MidiClock:
+        return "MIDI clock";
+    case Timing::Audio:
+        break;
+    }
+    return "beat detection";
+}
+
+std::optional<double> WindowController::followedLatency() const {
+    return following() ? std::optional<double>(activeLatencySeconds()) : std::nullopt;
+}
+
+double WindowController::activeLatencySeconds() const {
+    switch (timing_) {
+    case Timing::Link:
+        return timingLatency_.link;
+    case Timing::MidiClock:
+        return timingLatency_.midiClock;
+    case Timing::Audio:
+        break;
+    }
+    return settings().latencyOffsetSeconds;
+}
+
+void WindowController::pickTiming(int index) {
+    if (index < 0 || index > static_cast<int>(Timing::MidiClock)) {
+        return;
+    }
+    // Only while stopped, as the audio pickers: the box is locked while running, and this is
+    // the way in for a test and an import too.
+    if (wantRunning_ || tracker_.running() || followed_.running()) {
+        publishTiming();
+        setStatus("Stop first: where the beats come from can only be changed while stopped.", true);
+        return;
+    }
+    timing_ = static_cast<Timing>(index);
+    applyTiming();
+    publishStopped();
+}
+
+void WindowController::applyTiming() {
+    // The output thread, the control surfaces and this window's buttons all read the switch.
+    if (following()) {
+        source_.select(followed_);
+    } else {
+        source_.select(tracker_.engine());
+    }
+    // **Link is the follower's from the moment it is picked**, not from START: a session of
+    // takt4's own, switched on and alone while the operator sets up, would be the older one when
+    // the DJ's app arrives and win the merge — the DJ's app would take takt4's tempo.
+    runner_.post(output::OutputCommand::linkFollowing(timing_ == Timing::Link));
+    // And no MIDI clock out to the device the clock comes in from, which could come straight
+    // back round.
+    runner_.post(output::OutputCommand::clockInput(timing_ == Timing::MidiClock ? clockPort_
+                                                                                : std::string()));
+    runner_.setLatencySeconds(activeLatencySeconds());
+    // Listened to while Link is picked and stopped, for the row's "3 peers seen"; the follower
+    // takes it over at START. Nothing is joined or sent.
+    if (timing_ == Timing::Link) {
+        if (!linkWatch_.isOpen()) {
+            std::string problem;
+            (void)linkWatch_.open(problem);
+        }
+    } else {
+        linkWatch_.close();
+    }
+    publishTempoOptions(*window_, settings(), followedLatency());
+    publishClockPortList();
+    publishTiming();
+}
+
+void WindowController::pickClockPort(int index) {
+    if (index <= 0) {
+        setClockPort("");
+        return;
+    }
+    std::vector<std::string> choices = midiInputPorts_;
+    if (!clockPort_.empty() && !output::findMidiPort(midiInputPorts_, clockPort_)) {
+        choices.push_back(clockPort_);
+    }
+    const auto at = static_cast<std::size_t>(index - 1);
+    if (at < choices.size()) {
+        setClockPort(choices[at]);
+    }
+}
+
+void WindowController::setClockPort(const std::string& name) {
+    if (followed_.running()) {
+        publishClockPortList();
+        setStatus("Stop first: the MIDI clock's input can only be changed while stopped.", true);
+        return;
+    }
+    clockPort_ = name;
+    if (timing_ == Timing::MidiClock) {
+        runner_.post(output::OutputCommand::clockInput(clockPort_));
+    }
+    publishClockPortList();
+    publishTiming();
+}
+
+void WindowController::setClockObey(bool obey) {
+    clockObey_ = obey;
+    clockFollower_.setObeyStartStop(obey);
+    publishTiming();
+}
+
+void WindowController::setExternalBeatsPerBar(int beats) {
+    if (!followed_.running()) {
+        externalBeatsPerBar_ = static_cast<std::uint32_t>(std::clamp(beats, 1, 16));
+    }
+    publishTiming();
+}
+
+void WindowController::publishClockPortList() {
+    publishClockPorts(*window_, midiInputPorts_, clockPort_);
+}
+
+bool WindowController::startFollowing() {
+    timing::GridSource* source = testSource_;
+    if (source == nullptr && timing_ == Timing::Link) {
+        // Built the first time it is wanted, on the outputs' own session: two Link instances in
+        // one process would be two peers.
+        if (!linkFollower_) {
+            linkFollower_.emplace(runner_.transports().link(), linkWatch_);
+        }
+        source = &*linkFollower_;
+    } else if (source == nullptr) {
+        if (clockPort_.empty()) {
+            setStatus("Pick the MIDI input the clock comes in on, then press Start.", true);
+            return false;
+        }
+        try {
+            (void)clockFollower_.listen(clockPort_);
+        } catch (const std::exception& e) {
+            setStatus(std::string("Cannot follow the MIDI clock: ") + e.what(), true);
+            return false;
+        }
+        clockFollower_.setObeyStartStop(clockObey_);
+        source = &clockFollower_;
+    }
+    shownBeats_.clear();
+    timing::BeatGrid::Options options;
+    options.beatsPerBar = externalBeatsPerBar_;
+    followed_.start(*source, options);
+    runningSource_ = source;
+    return true;
+}
+
+void WindowController::stopFollowing() noexcept {
+    followed_.stop();
+    clockFollower_.stopListening();
+    runningSource_ = nullptr;
+    shownBeats_.clear();
+}
+
+void WindowController::publishTiming() {
+    TimingFacts facts;
+    facts.index = timingIndex();
+    facts.running = followed_.running();
+    facts.state = followed_.state();
+    facts.coasting = facts.running && followed_.coasting();
+    facts.beatsPerBar = externalBeatsPerBar_;
+    facts.obey = clockObey_;
+    facts.ready = timing_ != Timing::MidiClock || !clockPort_.empty();
+    if (timing_ == Timing::Link) {
+        if (!facts.running) {
+            // Listened to here while stopped: who can be heard, and nothing joined.
+            linkWatch_.poll(nowSeconds());
+            const std::vector<output::LinkPeer> peers = linkWatch_.peers();
+            facts.canListen = linkWatch_.isOpen();
+            facts.peersHeard = peers.size();
+            facts.heardBpm = peers.empty() ? 0.0 : peers.front().bpm;
+        } else if (linkFollower_ && runningSource_ == &*linkFollower_) {
+            facts.peers = linkFollower_->status().peers;
+        }
+    } else if (timing_ == Timing::MidiClock) {
+        facts.port = clockPort_;
+        if (facts.running) {
+            const timing::MidiClockFollower::Status clock = clockFollower_.status();
+            facts.ticking = clock.ticking;
+            facts.placed = clock.placed;
+            facts.stopObeyed = clock.stopped && clockObey_;
+            facts.tickInBeat = clock.tickInBeat;
+        }
+    }
+    publishTimingView(*window_, describeTiming(facts));
+}
+
+void WindowController::publishFollowedTrace() {
+    // What came in since the last round, this run's alone.
+    timing::ExternalBeats::DisplayBeat beat;
+    while (followed_.popDisplayBeat(beat)) {
+        if (beat.run == followed_.runNumber()) {
+            shownBeats_.push_back(beat);
+        }
+    }
+    // Fifty columns to the second, the newest at the right, as the activation trace is drawn;
+    // each beat a column lit full height at its own moment, and the one before it so it reads
+    // at the plot's width.
+    constexpr std::int64_t kColumnMicros = 20'000;
+    const std::int64_t now = runner_.transports().link().now().count();
+    const auto span = static_cast<std::int64_t>(trace_.size()) * kColumnMicros;
+    while (!shownBeats_.empty() && now - shownBeats_.front().hostMicros > span) {
+        shownBeats_.pop_front();
+    }
+    std::fill(trace_.begin(), trace_.end(), TracePoint{});
+    for (const timing::ExternalBeats::DisplayBeat& shown : shownBeats_) {
+        const std::int64_t back = std::max<std::int64_t>(now - shown.hostMicros, 0) / kColumnMicros;
+        const auto last = static_cast<std::int64_t>(trace_.size()) - 1;
+        for (const std::int64_t column : {last - back, last - back - 1}) {
+            if (column >= 0 && column <= last) {
+                trace_[static_cast<std::size_t>(column)] =
+                    TracePoint{1.0f, shown.downbeat ? 1.0f : 0.0f, true};
+            }
+        }
+    }
+    publishTrace();
 }
 
 } // namespace takt4::ui

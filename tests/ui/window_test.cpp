@@ -26,6 +26,7 @@
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
+#include "support/fake_grid_source.hpp"
 #include "support/loopback_receiver.hpp"
 #include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
@@ -689,8 +690,9 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
 
     constexpr int kWidth = 800;
     // Tall enough that the first rows are on screen before anything scrolls, and short enough
-    // that the body still has to: the inputs sit above the outputs.
-    constexpr int kHeight = 900;
+    // that the body still has to: the inputs sit above the outputs — the timing row, then MIDI
+    // and OSC.
+    constexpr int kHeight = 944;
     // The middle of the "×" at the end of each target row.
     constexpr int kRemoveX = kWidth - 26 - 12;
     // The pinned footer: 10 px of page, the 66 px triggers row, the 51 px status bar.
@@ -6872,6 +6874,11 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     window->on_latency_typed(
         [&](const slint::SharedString& t) { note("latency-typed " + std::string(t)); });
     window->on_midi_in_picked([&](int i) { note("midi-in " + std::to_string(i)); });
+    window->on_timing_picked([&](int i) { note("timing " + std::to_string(i)); });
+    window->on_clock_in_picked([&](int i) { note("clock-in " + std::to_string(i)); });
+    window->on_clock_obey_toggled([&](bool on) { note(std::string("obey ") + (on ? "1" : "0")); });
+    window->on_timing_beats_per_bar_edited([&](int n) { note("beats " + std::to_string(n)); });
+    window->on_timing_change_clicked([&] { note("timing-change"); });
     window->on_learn_action_picked([&](int i) { note("action " + std::to_string(i)); });
     window->on_learn_clicked([&] { note("learn"); });
     window->on_forget_clicked([&] { note("forget"); });
@@ -7127,7 +7134,20 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     expect({"latency-typed -7"}, "the latency reading");
 
     // --- inputs ------------------------------------------------------------------------------
-    const int midiRow = sheets[4].first + 73;
+    // The timing row first: where the beats come from, locked while running as the audio pickers
+    // are — then MIDI and OSC under it.
+    const int timingRow = sheets[4].first + 73;
+    const auto timing = occupied(shot, timingRow - 17, timingRow + 16, 20, kWidth - 20, kSheet, 5);
+    INFO("timing: " << spans(timing));
+    // timing, from, its picker, and the words saying the audio input is picked at the top.
+    REQUIRE(timing.size() == 4);
+    click(middleOf(timing[2]), timingRow);
+    key(kDown);
+    key("\n");
+    click(middleOf(timing[3]), timingRow);
+    expect({}, "the timing picker while running, and the words beside it");
+
+    const int midiRow = sheets[4].first + 117;
     const auto midi = occupied(shot, midiRow - 17, midiRow + 16, 20, kWidth - 20, kSheet, 5);
     INFO("MIDI: " << spans(midi));
     // MIDI, port, its picker, action, its picker, learn, forget (and the reading, empty here).
@@ -7144,7 +7164,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     click(middleOf(midi[6]), midiRow);
     expect({"learn", "forget"}, "learn and forget");
 
-    const int oscRow = sheets[4].first + 119;
+    const int oscRow = sheets[4].first + 163;
     const auto osc = occupied(shot, oscRow - 17, oscRow + 17, 20, kWidth - 20, kSheet, 5);
     INFO("OSC: " << spans(osc));
     // OSC, the listen box and its word, port, the port box, the allow box and its words.
@@ -7332,6 +7352,67 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
         click(middleOf(status[status.size() - 1 - i]), statusRow);
     }
     expect({"about", "import", "export", "save"}, "the status bar's buttons");
+
+    // --- following a MIDI clock, stopped: the banner, and the timing rows' own controls -------
+    window->set_panicked(false);
+    window->set_running(false);
+    window->set_timing_index(2);
+    window->set_timing_name(slint::SharedString("MIDI clock"));
+    window->set_clock_in_ports(strings({"select input", "mixer A", "mixer B"}));
+    window->set_clock_in_port_index(1);
+    shot = takt4::tests::render(*window, kWidth, kHeight);
+    sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    handle.dispatch_window_active_changed_event(true);
+    // The audio pickers give way to the banner — a box round the source's name, its words and
+    // CHANGE — and RESCAN and START stay where they were.
+    const auto banner = occupied(shot, topRow - 20, topRow + 20, 20, kWidth - 20, kSheet, 5);
+    INFO("following, top bar: " << spans(banner));
+    REQUIRE(banner.size() == 3);
+    CHECK(banner[1] == top[4]);
+    CHECK(banner[2] == top[5]);
+    // CHANGE, at the box's right end; the source's name and the words, which are not controls.
+    click(banner[0].second - 30, topRow);
+    click(banner[0].first + 50, topRow);
+    click(banner[0].first + 200, topRow);
+    expect({"timing-change"}, "CHANGE, then the words in the banner");
+    click(middleOf(banner[2]), topRow);
+    expect({"toggle-run"}, "START, following");
+
+    // From this picture's own sheets: following, the line under the strip saying the audio is not
+    // in use makes the timing sheet taller, and the rows below it lower.
+    const int followRow = sheets[4].first + 73;
+    const auto picking = occupied(shot, followRow - 17, followRow + 16, 20, kWidth - 20, kSheet, 5);
+    INFO("following, timing row: " << spans(picking));
+    // timing, from, its picker, port, the port's picker — and no reading while stopped.
+    REQUIRE(picking.size() == 5);
+    click(middleOf(picking[4]), followRow);
+    key(kDown);
+    key("\n");
+    expect({"clock-in 2"}, "the MIDI clock's port picker");
+    click(middleOf(picking[2]), followRow);
+    key(kUp);
+    key("\n");
+    expect({"timing 1"}, "the timing picker, stopped");
+    // Put back as it was, as an owner would have it, so the rows below stay where they were drawn.
+    window->set_timing_index(2);
+    settle();
+
+    const int howRow = followRow + 44;
+    const auto how = occupied(shot, howRow - 17, howRow + 16, 20, kWidth - 20, kSheet, 5);
+    INFO("following, the row under it: " << spans(how));
+    // "beats per bar", its box, the obey box and its words.
+    REQUIRE(how.size() == 4);
+    click(middleOf(how[1]), howRow);
+    takt4::tests::endOfText(handle);
+    key("\x08");
+    key("3");
+    key("\n");
+    expect({"beats 3"}, "the beats-per-bar box: a number typed, then Enter");
+    click(middleOf(how[2]), howRow);
+    click(static_cast<float>(how[3].first + 20), howRow);
+    expect({"obey 1", "obey 0"}, "the obey box, then its words");
+    window->set_timing_index(0);
 }
 
 TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
@@ -7734,8 +7815,9 @@ TEST_CASE("folding a section while one of its boxes is being typed in keeps the 
     REQUIRE(sheets.size() == 7);
     handle.dispatch_window_active_changed_event(true);
 
-    // The OSC port box: on the OSC row, the run of ink 70 px wide.
-    const int oscRow = sheets[4].first + 119;
+    // The OSC port box: on the OSC row — under the timing row and the MIDI row — the run of ink
+    // 70 px wide.
+    const int oscRow = sheets[4].first + 163;
     float portX = -1.0f;
     for (const auto& run : inkAlong(shot, oscRow, 20, kWidth - 20, kSheet, 3)) {
         if (run.second - run.first + 1 >= 68 && run.second - run.first + 1 <= 72) {
@@ -8195,4 +8277,425 @@ TEST_CASE("an import naming an input this machine has not got, while stopped, ke
     CHECK(said.find("listening") == std::string::npos);
     // Still the one wanted, for RESCAN and the next launch to find.
     CHECK(controller.currentSettings().machine.deviceName == "An interface that is switched off");
+}
+
+// --- the timing input --------------------------------------------------------------------------
+
+namespace {
+
+/// Link's clock as the window reads it, in microseconds — what a followed beat is stamped on.
+std::int64_t linkNow(const WindowController& controller) {
+    return controller.outputs().transports().link().now().count();
+}
+
+/// The main window laid out at 800 x 1480, nothing scrolled, Inputs open — and the sheets down its
+/// left edge on a render of it.
+std::vector<std::pair<int, int>> laidOutWithInputs(WindowController& controller) {
+    controller.window().set_inputs_folded(false);
+    layOut(controller, 800.0f, 1480.0f);
+    controller.tick();
+    slint::platform::update_timers_and_animations();
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    controller.window().window().dispatch_window_active_changed_event(true);
+    return sheetsDown(shot);
+}
+
+/// What the row `dy` below the inputs sheet's top holds, on a render of the window as it is now.
+std::vector<std::pair<int, int>> inputsRow(WindowController& controller, int dy, int& y) {
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    controller.window().window().dispatch_window_active_changed_event(true);
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    y = sheets[4].first + dy;
+    return occupied(shot, y - 17, y + 16, 20, 780, kSheet, 5);
+}
+
+} // namespace
+
+TEST_CASE("where the beats come from is picked with the pointer, and the window follows it",
+          "[ui][follow]") {
+    // The timing row's picker, opened by a click and stepped with the keys as an operator would —
+    // and what the pick does: the audio pickers give way to the banner, START waits for a port,
+    // and the transports stop any MIDI clock out to the clock's own device.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    REQUIRE(controller.timingIndex() == 0);
+    const takt4::tests::NothingReal nothingReal;
+
+    int y = 0;
+    const auto audio = inputsRow(controller, 73, y);
+    INFO("timing row: " << spans(audio));
+    // timing, from, the picker, and the words saying the audio input is picked at the top.
+    REQUIRE(audio.size() == 4);
+    clickAt(window, middleOf(audio[2]), static_cast<float>(y));
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, kDown);
+    press(window, "\n");
+    settle();
+    CHECK(controller.timingIndex() == 2);
+    CHECK(controller.window().get_following());
+    CHECK(std::string(controller.window().get_timing_name()) == "MIDI clock");
+    // No port yet: START has nothing to start.
+    CHECK_FALSE(controller.window().get_timing_ready());
+
+    // The banner, in the audio pickers' place: one box, then RESCAN and START.
+    {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        const int topRow = sheets[0].first + 48;
+        const auto top = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+        INFO("top bar, following: " << spans(top));
+        CHECK(top.size() == 3);
+    }
+
+    // And back, by the same picker, two steps up: the audio pickers come back.
+    const auto following = inputsRow(controller, 73, y);
+    INFO("timing row, following: " << spans(following));
+    // timing, from, the picker, port, the port's picker.
+    REQUIRE(following.size() == 5);
+    clickAt(window, middleOf(following[2]), static_cast<float>(y));
+    slint::platform::update_timers_and_animations();
+    press(window, kUp);
+    press(window, kUp);
+    press(window, "\n");
+    settle();
+    CHECK(controller.timingIndex() == 0);
+    CHECK_FALSE(controller.window().get_following());
+    {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        const int topRow = sheets[0].first + 48;
+        const auto top = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+        INFO("top bar, back on the audio: " << spans(top));
+        CHECK(top.size() == 6);
+    }
+    // Nothing was opened, listened to or joined: a MIDI clock opens its port at START.
+    nothingReal.check();
+}
+
+TEST_CASE("picking Link hands the session to the follower at once, and picking again gives it back",
+          "[ui][follow][link]") {
+    // A session of takt4's own, switched on and alone while the operator sets up, would be the
+    // older one when the DJ's app arrives — and the DJ's app would take takt4's tempo. So Link is
+    // handed over the moment it is picked, not at START; the Link output's switch is kept.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.preset.link = true;
+    WindowController controller(tracker, saved);
+    const auto linkState = [&controller] {
+        REQUIRE(controller.settleOutputs());
+        return controller.outputs().inspect([](const takt4::trigger::TriggerEngine&,
+                                               const takt4::output::Transports& transports,
+                                               const takt4::output::RuleSink&) {
+            return std::make_pair(transports.linkFollowing(), transports.linkEnabled());
+        });
+    };
+    CHECK(linkState() == std::make_pair(false, true));
+    controller.pickTiming(1);
+    CHECK(linkState() == std::make_pair(true, true));
+    CHECK(std::string(controller.window().get_timing_name()) == "Ableton Link");
+    controller.pickTiming(0);
+    CHECK(linkState() == std::make_pair(false, true));
+    CHECK_FALSE(controller.window().get_following());
+}
+
+TEST_CASE("following, START runs on the source: its beats reach the plot and the outputs, tap and "
+          "lock do nothing, and STOP lets go",
+          "[ui][follow]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    // A source in place of the Link session, which the sandbox will not join: four beats a second
+    // on Link's own clock, its bar starting a tenth of a second from now.
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 240.0,
+                                          static_cast<double>(linkNow(controller)) + 100'000.0);
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    std::vector<std::pair<int, int>> sheets = laidOutWithInputs(controller);
+    REQUIRE(sheets.size() == 7);
+
+    // START, the last thing in the top bar.
+    takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    window.dispatch_window_active_changed_event(true);
+    const int topRow = sheets[0].first + 48;
+    const auto top = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+    INFO("top bar: " << spans(top));
+    REQUIRE(top.size() == 3);
+    clickAt(window, middleOf(top.back()), static_cast<float>(topRow));
+    waitUntil(controller, [&] { return controller.followed().running(); });
+    REQUIRE(controller.followed().running());
+    CHECK(controller.window().get_running());
+    CHECK_FALSE(tracker.running()); // the audio is not opened at all
+    CHECK(source.begun() == 1);
+
+    // A second and a half of it: the beats on the plot, a bar's first in red, and at the outputs.
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 6; });
+    settle();
+    const auto trace = controller.window().get_trace();
+    int beatsDrawn = 0;
+    int downbeatsDrawn = 0;
+    bool inBeat = false;
+    for (std::size_t i = 0; i < trace->row_count(); ++i) {
+        const TracePoint point = *trace->row_data(i);
+        if (point.called && !inBeat) {
+            ++beatsDrawn;
+            downbeatsDrawn += point.downbeat > 0.5f ? 1 : 0;
+        }
+        inBeat = point.called;
+    }
+    CHECK(beatsDrawn >= 5);
+    CHECK(downbeatsDrawn >= 1);
+    CHECK(controller.window().get_bpm() == Catch::Approx(240.0).margin(0.01));
+    CHECK(controller.window().get_acquired());
+    CHECK(controller.window().get_strip_beat() >= 1);
+    CHECK(std::string(controller.window().get_timing_reading()).find("240.00 BPM") !=
+          std::string::npos);
+    waitUntil(controller, [&] { return controller.window().get_beats_sent() > 0; });
+    CHECK(controller.window().get_beats_sent() > 0);
+
+    // The controls: ÷2 halves the followed grid; tap and lock are switched off — clicked, and T
+    // from the keyboard, they send nothing at all.
+    shot = takt4::tests::render(controller.window(), 800, 1480);
+    window.dispatch_window_active_changed_event(true);
+    sheets = sheetsDown(shot);
+    const int buttonsRow = sheets[3].first + 26;
+    const auto buttons = occupied(shot, buttonsRow - 16, buttonsRow + 15, 20, 780, kSheet, 5);
+    INFO("controls: " << spans(buttons));
+    // ÷2, ×2, tap, lock, downbeat, and the words saying tap and lock are off.
+    REQUIRE(buttons.size() == 6);
+    // T from the keyboard first, on its own: a tap clicked a moment before would swallow it as a
+    // bounce, and say nothing about the key.
+    press(window, "t");
+    settle();
+    CHECK(controller.taps() == 0);
+    clickAt(window, middleOf(buttons[2]), static_cast<float>(buttonsRow));
+    clickAt(window, middleOf(buttons[3]), static_cast<float>(buttonsRow));
+    settle();
+    CHECK(controller.taps() == 0);
+    CHECK(controller.followed().commandsRefused() == 0); // nothing was even asked of it
+    clickAt(window, middleOf(buttons[0]), static_cast<float>(buttonsRow));
+    waitUntil(controller, [&] { return controller.followed().state().octaveShift == -1; });
+    CHECK(controller.followed().state().octaveShift == -1);
+    CHECK(controller.followed().state().bpm == Catch::Approx(120.0));
+
+    // STOP: the follower let go of, the run over.
+    clickAt(window, middleOf(top.back()), static_cast<float>(topRow));
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+    CHECK_FALSE(controller.followed().running());
+    settle();
+    CHECK_FALSE(controller.window().get_running());
+    CHECK(source.ended() == 1);
+    controller.followForTests(nullptr);
+}
+
+TEST_CASE("the beats-per-bar box takes a number when it is clicked away from, and the run counts "
+          "in it",
+          "[ui][follow]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 240.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(2);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    const takt4::tests::NothingReal nothingReal;
+
+    int y = 0;
+    const auto how = inputsRow(controller, 73 + 44, y);
+    INFO("the row under the timing row: " << spans(how));
+    // "beats per bar", its box, the obey box and its words.
+    REQUIRE(how.size() == 4);
+    clickAt(window, middleOf(how[1]), static_cast<float>(y));
+    takt4::tests::endOfText(window);
+    press(window, "\x08");
+    press(window, "3");
+    // Clicked away from — on the window's own background, at the right of the inputs heading
+    // row's empty middle — not entered.
+    clickAt(window, 400.0f, static_cast<float>(y - 73 - 44 + 14));
+    controller.tick();
+    slint::platform::update_timers_and_animations();
+    CHECK(controller.window().get_timing_beats_per_bar() == 3);
+    CHECK(controller.currentSettings().preset.externalBeatsPerBar == 3);
+
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 4; });
+    CHECK(controller.followed().state().beatsPerBar == 3);
+    CHECK(source.beatsPerBar() == 3);
+    // Fixed for the run: the box is not live while it runs.
+    controller.setExternalBeatsPerBar(5);
+    CHECK(controller.window().get_timing_beats_per_bar() == 3);
+    controller.toggleRun();
+    CHECK_FALSE(controller.followed().running());
+    controller.followForTests(nullptr);
+    nothingReal.check();
+}
+
+TEST_CASE("where the beats come from, and how, is saved and comes back picked and not started",
+          "[ui][follow][settings]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    {
+        WindowController controller(tracker);
+        controller.pickTiming(2);
+        controller.setClockPort("DJM-A9 1");
+        controller.setClockObey(true);
+        controller.setExternalBeatsPerBar(7);
+        // The slider, following, is the MIDI clock's own latency — beat detection's is left alone.
+        const double detection = controller.settings().latencyOffsetSeconds;
+        controller.setLatencyMs(-12.0);
+        CHECK(controller.window().get_latency_ms() == Catch::Approx(-12.0f));
+        CHECK(controller.outputs().transports().latencySeconds() == Catch::Approx(-0.012));
+        CHECK(controller.settings().latencyOffsetSeconds == Catch::Approx(detection));
+        // Back on the audio, the slider and the outputs have beat detection's again.
+        controller.pickTiming(0);
+        CHECK(controller.outputs().transports().latencySeconds() == Catch::Approx(detection));
+        CHECK(controller.window().get_latency_ms() == Catch::Approx(detection * 1000.0));
+        controller.pickTiming(2);
+        CHECK(controller.window().get_latency_ms() == Catch::Approx(-12.0f));
+        saved = controller.currentSettings();
+    }
+    CHECK(saved.machine.timingSource == "midi-clock");
+    CHECK(saved.machine.midiClockInPort == "DJM-A9 1");
+    CHECK(saved.machine.midiClockObeyStartStop);
+    CHECK(saved.preset.externalBeatsPerBar == 7);
+    CHECK(saved.preset.timingLatency.midiClock == Catch::Approx(-0.012));
+    CHECK(saved.preset.timingLatency.link == Catch::Approx(0.0));
+
+    // Through the file's text, and into a window opened from it.
+    const takt4::settings::Settings loaded =
+        takt4::settings::fromJson(takt4::settings::toJson(saved));
+    WindowController again(tracker, loaded);
+    CHECK(again.timingIndex() == 2);
+    CHECK(again.window().get_following());
+    CHECK(again.window().get_clock_obey());
+    CHECK(again.window().get_timing_beats_per_bar() == 7);
+    CHECK(again.window().get_latency_ms() == Catch::Approx(-12.0f));
+    // The port, not on this machine, still the one picked — and said to be missing.
+    const int picked = again.window().get_clock_in_port_index();
+    const auto ports = again.window().get_clock_in_ports();
+    REQUIRE(picked > 0);
+    REQUIRE(static_cast<std::size_t>(picked) < ports->row_count());
+    CHECK(std::string(*ports->row_data(static_cast<std::size_t>(picked))) ==
+          "DJM-A9 1 \xE2\x80\x94 not plugged in");
+    // Picked, and not started: START is pressed as ever.
+    CHECK_FALSE(again.followed().running());
+    CHECK_FALSE(again.window().get_running());
+}
+
+TEST_CASE("a MIDI clock output to the device the clock is followed from says on its row that it "
+          "is not sent",
+          "[ui][follow][midi]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget back;
+    back.id = "o-d1a9";
+    back.name = "DJM clock";
+    back.kind = takt4::output::OutputTarget::Kind::MidiClock;
+    back.device = "DJM-A9 2";
+    saved.preset.outputs = {back};
+    saved.machine.timingSource = "midi-clock";
+    saved.machine.midiClockInPort = "DJM-A9 1";
+    WindowController controller(tracker, saved);
+    controller.tick();
+    std::optional<OutputRow> row = outputRow(controller, "o-d1a9");
+    REQUIRE(row);
+    CHECK(std::string(row->problem) ==
+          "not sent \xE2\x80\x94 the MIDI clock is followed from this device, and could come "
+          "straight back round");
+    // Followed from somewhere else, the row is only a device that is not on this machine.
+    controller.setClockPort("another mixer");
+    REQUIRE(controller.settleOutputs());
+    controller.tick();
+    row = outputRow(controller, "o-d1a9");
+    REQUIRE(row);
+    CHECK(std::string(row->problem).find("followed from this device") == std::string::npos);
+}
+
+TEST_CASE("what the window says about the source followed, in each state it can be in",
+          "[ui][follow]") {
+    // `describeTiming` is what the window and takt4-shot both say, so the words are pinned here.
+    using takt4::ui::describeTiming;
+    using takt4::ui::TimingFacts;
+    TimingFacts facts;
+    // Beat detection: nothing to say — the tracker's readouts say it all.
+    CHECK(describeTiming(facts).name.empty());
+    CHECK(describeTiming(facts).reading.empty());
+
+    // Link, stopped: heard, not joined.
+    facts.index = 1;
+    facts.peersHeard = 3;
+    facts.heardBpm = 127.98;
+    CHECK(describeTiming(facts).name == "Ableton Link");
+    CHECK(describeTiming(facts).shortName == "Link");
+    CHECK(describeTiming(facts).reading == "3 peers seen \xC2\xB7 127.98 BPM");
+    facts.peersHeard = 0;
+    CHECK(describeTiming(facts).reading == "no Link session heard");
+    facts.canListen = false;
+    CHECK(describeTiming(facts).reading == "cannot listen for Link sessions on this network");
+    CHECK_FALSE(describeTiming(facts).waiting); // stopped is not waiting
+
+    // Link, running: waiting for a session, then following it.
+    facts.running = true;
+    facts.canListen = true;
+    takt4::ui::TimingView view = describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.reading == "no peers \xE2\x80\x94 waiting for a Link session");
+    facts.state.locked = true;
+    facts.state.rawBpm = 128.0;
+    facts.state.beatInBar = 3;
+    facts.peers = 1;
+    view = describeTiming(facts);
+    CHECK_FALSE(view.waiting);
+    CHECK(view.reading == "1 peer \xC2\xB7 128.00 BPM");
+    CHECK(view.detail == "1 peer \xC2\xB7 4 beats to the bar");
+    CHECK(view.stripBeat == 3);
+
+    // A MIDI clock, running: ticking with no Start, started, coasting, stopped, gone.
+    facts = TimingFacts{};
+    facts.index = 2;
+    facts.running = true;
+    facts.port = "DJM-A9";
+    facts.ticking = true;
+    view = describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.reading == "ticking \xE2\x80\x94 measuring the tempo");
+    facts.state.locked = true;
+    facts.state.rawBpm = 127.9;
+    facts.tickInBeat = 13;
+    view = describeTiming(facts);
+    CHECK(view.reading == "ticking \xC2\xB7 127.90 BPM");
+    CHECK(view.detail == "DJM-A9 \xC2\xB7 no start yet");
+    CHECK(view.note == "no start received \xE2\x80\x94 press downbeat on the beat");
+    CHECK(view.stripTicks == 14);
+    facts.placed = true;
+    view = describeTiming(facts);
+    CHECK(view.detail == "DJM-A9 \xC2\xB7 started");
+    CHECK(view.note.empty());
+    facts.coasting = true;
+    facts.ticking = false;
+    view = describeTiming(facts);
+    CHECK(view.coasting);
+    CHECK_FALSE(view.waiting);
+    CHECK(view.reading == "no clock \xE2\x80\x94 coasting at 127.90 BPM");
+    CHECK(view.stripTicks == 0);
+    facts.coasting = false;
+    facts.stopObeyed = true;
+    CHECK(describeTiming(facts).reading == "stopped \xE2\x80\x94 waiting for Start or Continue");
+    facts.stopObeyed = false;
+    facts.state.locked = false;
+    CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one on DJM-A9");
 }

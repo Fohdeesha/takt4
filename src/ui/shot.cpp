@@ -28,6 +28,7 @@
 #include "core/model/weights.hpp"
 #include "core/output/midi_ports.hpp"
 #include "core/output/output_target.hpp"
+#include "core/output/transports.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -900,6 +901,127 @@ void fillAsMockup(MainWindow& window) {
     window.set_rules_total(3);
 }
 
+/// Whether `state` is one of the window's states following a source rather than the audio:
+/// `link`, `link-alone`, `midi`, `midi-nostart`, `midi-coasting`, `midi-gone`.
+bool followingState(const std::string& state) {
+    return state.rfind("link", 0) == 0 || state.rfind("midi", 0) == 0;
+}
+
+/// The window following a source rather than listening to the audio, as the source would leave
+/// it — the timing input's states. Following Link: three peers, or none (`link-alone`). Following
+/// a DJ mixer's MIDI clock: started (`midi`), ticking with no Start yet (`midi-nostart`), gone a
+/// second ago and coasted (`midi-coasting`), and gone for good (`midi-gone`). `running` false is
+/// the source picked and START not yet pressed.
+void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
+                   const std::string& state, bool running) {
+    const bool link = state.rfind("link", 0) == 0;
+    const bool gone = state == "link-alone" || state == "midi-gone";
+    const bool coasting = state == "midi-coasting";
+    const bool unplaced = state == "midi-nostart";
+    const double bpm = link ? 127.98 : 127.90;
+    const char* const mixer = "DJM-A9";
+
+    // The audio is not listened to: no level, nothing to say about it.
+    window.set_input_level(0.0f);
+    window.set_input_peak(0.0f);
+    window.set_input_reading(slint::SharedString(""));
+    window.set_input_trouble(slint::SharedString(""));
+
+    for (std::size_t i = 0; i < trace.row_count(); ++i) {
+        trace.set_row_data(i, TracePoint{0.0f, 0.0f, false});
+    }
+    // The source's own state, as the follower publishes it (`timing::BeatGrid`): locked while it
+    // is there and through a coast, a bar of four — its beat unknown until a Start places it.
+    const bool beating = running && !gone;
+    tracking::TempoState tempo;
+    tempo.beatsPerBar = 4;
+    tempo.refined = true;
+    if (beating) {
+        tempo.bpm = bpm;
+        tempo.rawBpm = bpm;
+        tempo.calledBpm = bpm;
+        tempo.beatsBpm = bpm;
+        tempo.gridBpm = bpm;
+        tempo.locked = true;
+        tempo.acquired = true;
+        tempo.confidence = 1.0;
+        if (!unplaced) {
+            tempo.beatInBar = 2;
+            tempo.bars = 37;
+        }
+    }
+    publishTempoState(window, tempo);
+    window.set_running(running);
+    window.set_input_lost(false);
+    // And what the window says about the source, worked out as the window works it out.
+    TimingFacts facts;
+    facts.index = link ? 1 : 2;
+    facts.running = running;
+    facts.state = tempo;
+    facts.coasting = running && coasting;
+    facts.peersHeard = 3; // Link, before START: heard, not joined
+    facts.heardBpm = bpm;
+    facts.peers = gone ? 0 : 3;
+    facts.port = mixer;
+    facts.ticking = running && !gone && !coasting;
+    facts.placed = !unplaced;
+    facts.tickInBeat = 13;
+    publishTimingView(window, describeTiming(facts));
+    // The clock's inputs as the window lists them, the mixer among them.
+    std::vector<std::string> inputs = output::listMidiInputPorts();
+    inputs.push_back(mixer);
+    publishClockPorts(window, inputs, mixer);
+    window.set_tap_count(0);
+    window.set_status(slint::SharedString(
+        !running
+            ? std::string("press Start to follow ") + (link ? "Ableton Link." : "the MIDI clock.")
+        : link ? std::string("following Ableton Link — audio not in use")
+               : "following the MIDI clock on " + std::string(mixer) + " — audio not in use"));
+    if (!link && running) {
+        // A MIDI clock out to the mixer the clock comes in from, which could go round in a loop:
+        // refused, and the row says why.
+        auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        if (const auto known = window.get_output_devices()) {
+            for (std::size_t i = 0; i < known->row_count(); ++i) {
+                devices->push_back(*known->row_data(i));
+            }
+        }
+        devices->push_back(slint::SharedString(mixer));
+        window.set_output_devices(devices);
+        auto rows = std::make_shared<slint::VectorModel<OutputRow>>();
+        if (const auto known = window.get_outputs_list()) {
+            for (std::size_t i = 0; i < known->row_count(); ++i) {
+                rows->push_back(*known->row_data(i));
+            }
+        }
+        OutputRow back{};
+        back.name = slint::SharedString("DJM clock");
+        back.kind_index = 3;
+        back.device_index = static_cast<int>(devices->row_count()) - 1;
+        back.enabled = true;
+        back.problem = slint::SharedString(std::string(output::Transports::kClockLoopProblem));
+        rows->insert(std::min<std::size_t>(1, rows->row_count()), back);
+        window.set_outputs_list(rows);
+    }
+    if (!beating) {
+        return;
+    }
+
+    // The beats as they came in, at 50 columns a second, the newest at the right: the last one
+    // the bar's second, a tenth of a beat ago — or, coasted, run on past where the clock stopped.
+    const double columnsPerBeat = 50.0 * 60.0 / bpm;
+    const auto columns = static_cast<double>(trace.row_count());
+    double at = columns - 1.0 - 0.6 * columnsPerBeat;
+    for (int k = 0; at >= 0.0; ++k, at -= columnsPerBeat) {
+        // Beat 2 of its bar first, counting back.
+        const bool downbeat = !unplaced && (k % 4) == 1;
+        const auto column = static_cast<std::size_t>(std::lround(at));
+        for (std::size_t c = column; c <= column + 1 && c < trace.row_count(); ++c) {
+            trace.set_row_data(c, TracePoint{1.0f, downbeat ? 1.0f : 0.0f, true});
+        }
+    }
+}
+
 } // namespace
 
 int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
@@ -1230,6 +1352,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_osc_control_reading(slint::SharedString("off"));
         window->set_osc_control_reading_words(true);
         window->set_status(slint::SharedString("pick an input and press Start."));
+    }
+    // The timing input's states: following a source rather than the audio.
+    if (followingState(options.state)) {
+        fillFollowing(*window, *traceModel, options.state, options.running);
     }
     window->set_status_is_error(false);
     if (options.mockup && options.running) {

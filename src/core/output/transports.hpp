@@ -141,6 +141,11 @@ public:
     /// port's name without the number Windows gives it (`midiPortBaseName`). Re-applies the
     /// outputs when it changes, and throws as `setOutputs` does.
     void setClockInput(std::string_view port);
+    /// What a MIDI clock output to that device says on its row.
+    static constexpr std::string_view kClockLoopProblem =
+        "not sent \xE2\x80\x94 the MIDI clock is followed from this device, and could come "
+        "straight back "
+        "round";
     /// The device set above, without its number.
     const std::string& clockInput() const noexcept { return clockInput_; }
     /// The Link output's delay: the timeline is put under each beat this much later.

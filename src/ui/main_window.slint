@@ -20,7 +20,7 @@
 
 import { Palette } from "std-widgets.slint";
 import { FocusSink } from "theme.slint";
-import { Btn, Entry, Keycap, Meter, Pick, Reading, Scroller, SectionHead, SpanTrack, Tick, Track, Wf } from "weltformat.slint";
+import { Btn, Count, Entry, Keycap, Meter, Pick, Reading, Scroller, SectionHead, SpanTrack, Tick, Track, Wf } from "weltformat.slint";
 
 // the rule editor is a window of its own (rules_window.slint), re-exported through here
 // so the Slint compiler produces one generated header for both. See src/ui/CMakeLists.txt.
@@ -391,6 +391,55 @@ export component MainWindow inherits Window {
   /// started, a controller plugged in later. Only while stopped.
   callback rescan-clicked();
 
+  // --- where the beats come from ---------------------------------------------------
+  // The audio, or a source followed instead of it — a DJ's Ableton Link session, a mixer's MIDI
+  // clock — which takt4 then takes its tempo and its beats from, and is used only for its rules.
+  // Picked in "02 inputs", only while stopped, as the audio pickers are.
+  /// What can be picked, beat detection first.
+  in-out property <[string]> timing-sources: ["beat detection (audio)", "Ableton Link", "MIDI clock"];
+  /// 0 is beat detection; 1 Ableton Link; 2 MIDI clock.
+  in-out property <int> timing-index;
+  callback timing-picked(int);
+  /// Following a source rather than listening to the audio, which is then not open at all.
+  out property <bool> following: root.timing-index > 0;
+  /// The source, as the window names it: "Ableton Link", "MIDI clock" — and short, where it
+  /// labels something else: "Link", "MIDI".
+  in-out property <string> timing-name;
+  in-out property <string> timing-short;
+  /// Beats to the bar while following: neither Link nor a MIDI clock carries a meter. Link's
+  /// quantum too.
+  in-out property <int> timing-beats-per-bar: 4;
+  callback timing-beats-per-bar-edited(int);
+  /// The MIDI clock's input, listed as the control port's are — "select input" first.
+  in-out property <[string]> clock-in-ports;
+  in-out property <int> clock-in-port-index;
+  callback clock-in-picked(int);
+  /// Whether a MIDI Stop halts the beats (off: a DJ mixer's Stop button must not black out the
+  /// rig).
+  in-out property <bool> clock-obey;
+  callback clock-obey-toggled(bool);
+  /// What the source is saying — "3 peers · 127.98 BPM", "ticking · 127.90 BPM" — or that it is
+  /// not there: "no peers", "no clock".
+  in-out property <string> timing-reading;
+  /// The source picked is not there: no Link peer, no MIDI clock ticking. The alarm colour.
+  in-out property <bool> timing-waiting;
+  /// Running on what the source last said, the source having gone: a few seconds, then the
+  /// beats stop, as they do when a deck goes silent.
+  in-out property <bool> timing-coasting;
+  /// What the operator has to do about the source, under its row — "no start received — press
+  /// downbeat on the beat" — or empty.
+  in-out property <string> timing-note;
+  /// More about the source, for the tempo sheet: "3 peers · 4 beats to the bar".
+  in-out property <string> timing-detail;
+  /// Where in the bar the source is, 1 to beats per bar, 0 for nowhere yet: the source strip.
+  in-out property <int> strip-beat;
+  /// How many of a beat's 24 MIDI clock ticks have come: the source strip.
+  in-out property <int> strip-ticks;
+  /// The source picked can be started: a MIDI clock with a port chosen. Link always can.
+  in-out property <bool> timing-ready: true;
+  /// The banner's CHANGE: unfolds "02 inputs" and brings the timing row into view.
+  callback timing-change-clicked();
+
   // --- what the tracker says -----------------------------------------------------
   in-out property <float> bpm;
   in-out property <bool> locked;
@@ -730,7 +779,8 @@ export component MainWindow inherits Window {
       // TAP and DOWNBEAT only while running, exactly like their buttons: each corrects a
       // tempo or a bar that is being tracked now.
       if (event.text == "t" || event.text == "T") {
-        if (root.running && !event.repeat) {
+        // Not while following: the tempo is the source's, and TAP is switched off with it.
+        if (root.running && !root.following && !event.repeat) {
           root.tap();
         }
         return accept;
@@ -793,7 +843,7 @@ export component MainWindow inherits Window {
               spacing: 10px;
 
               // Labelled above rather than beside, so the pickers keep the width.
-              VerticalLayout {
+              if !root.following: VerticalLayout {
                 spacing: 3px;
                 horizontal-stretch: 1.25;
                 Label {
@@ -812,7 +862,7 @@ export component MainWindow inherits Window {
                 }
               }
 
-              VerticalLayout {
+              if !root.following: VerticalLayout {
                 spacing: 3px;
                 horizontal-stretch: 1;
                 Label {
@@ -834,7 +884,7 @@ export component MainWindow inherits Window {
               // **Stereo unless asked otherwise** (2026-09-28): the picker offers pairs of
               // inputs — 1 + 2, 11 + 12 — heard as the average of the two. Ticked, it offers
               // single inputs, for a feed that really is on one of them.
-              VerticalLayout {
+              if !root.following: VerticalLayout {
                 alignment: end;
                 horizontal-stretch: 0;
                 mono-check := Tick {
@@ -846,6 +896,59 @@ export component MainWindow inherits Window {
                   toggled(on) => {
                     root.input-mono = on;
                     root.input-mono-toggled(on);
+                  }
+                }
+              }
+
+              // **Following a source, the audio is not listened to at all** — the device is not
+              // open — so its pickers give way to what the beats come from, in the sheet's own
+              // height, so the window does not jump. CHANGE goes to where that is picked.
+              if root.following: VerticalLayout {
+                spacing: 3px;
+                horizontal-stretch: 1;
+                Label {
+                  text: "timing from";
+                  font-size: 13px;
+                  height: 16px;
+                }
+                Rectangle {
+                  height: 34px;
+                  border-width: 1px;
+                  border-color: Wf.line;
+                  HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 4px;
+                    spacing: 12px;
+                    Text {
+                      text: root.timing-name;
+                      color: Wf.ink;
+                      font-size: 17px;
+                      font-weight: 800;
+                      vertical-alignment: center;
+                      horizontal-stretch: 0;
+                    }
+                    Text {
+                      text: "audio not in use";
+                      color: Wf.ink2;
+                      font-size: 14px;
+                      vertical-alignment: center;
+                      horizontal-stretch: 1;
+                      min-width: 40px;
+                      overflow: elide;
+                    }
+                    VerticalLayout {
+                      alignment: center;
+                      horizontal-stretch: 0;
+                      Btn {
+                        text: "change";
+                        height: 26px;
+                        font-size: 13px;
+                        pad: 10px;
+                        clicked => {
+                          root.timing-change-clicked();
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -898,7 +1001,9 @@ export component MainWindow inherits Window {
                   text: root.run-busy-text != "" ? root.run-busy-text.to-lowercase()
                     : root.running ? "stop" : "start";
                   primary: !root.running;
-                  enabled: root.devices.length > 0 && !root.run-busy;
+                  // Following, what has to be there is the source: a MIDI port picked.
+                  enabled: (root.following ? root.timing-ready : root.devices.length > 0)
+                    && !root.run-busy;
                   font-size: 19px;
                   pad: 16px;
                   clicked => {
@@ -925,7 +1030,8 @@ export component MainWindow inherits Window {
             property <length> half: (self.width - 44px) / 2;
             property <length> right-x: 22px + self.half;
             // Whether the fold moved the number: see the line under the tempo.
-            property <bool> folded-note: root.fold-on && root.called-bpm > 0 && root.bpm > 0
+            property <bool> folded-note: !root.following && root.fold-on && root.called-bpm > 0
+              && root.bpm > 0
               && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67);
             // **Whether the dots and the number disagree by an octave** (the operator, 2026-10-06:
             // "the beat dots advance at the right bpm ... but the bpm display shows twice that.
@@ -944,6 +1050,9 @@ export component MainWindow inherits Window {
             // last state, and "locked" at that tempo was the window lying about a rig that had
             // stopped hearing the music.
             property <color> state-color: !root.running ? Wf.tempo-ink2
+              : root.following ? (root.timing-waiting ? Wf.alarm
+                                  : root.timing-coasting ? Wf.holding
+                                  : root.acquired ? Wf.locked : Wf.tempo-ink2)
               : root.input-lost ? Wf.alarm
               : root.no-signal ? Wf.tempo-ink2
               : root.holding ? Wf.holding
@@ -1033,7 +1142,8 @@ export component MainWindow inherits Window {
               truth-value := Text {
                 x: truth-key.width + 4px;
                 y: 0;
-                text: root.refined ? "beat spacing" : "tempo filter";
+                text: root.following ? root.timing-name
+                  : root.refined ? "beat spacing" : "tempo filter";
                 color: Wf.tempo-ink;
                 font-family: Wf.sans;
                 font-size: 13px;
@@ -1087,10 +1197,12 @@ export component MainWindow inherits Window {
             }
 
             // The right half: confidence and the lock, the meter, the bar.
+            // Following, there is nothing to be confident about — the source says where the beats
+            // are — and the half says what the source is doing instead.
             Text {
               x: tempo-sheet.right-x;
               y: 27px - self.font-metrics.ascent;
-              text: "confidence";
+              text: root.following ? "source" : "confidence";
               color: Wf.tempo-ink;
               font-family: Wf.sans;
               font-size: 14px;
@@ -1101,6 +1213,9 @@ export component MainWindow inherits Window {
               x: tempo-sheet.right-x + tempo-sheet.half - self.width;
               y: 27px - self.font-metrics.ascent;
               text: !root.running ? "stopped"
+                : root.following ? (root.timing-waiting ? (root.timing-index == 1 ? "no peers" : "no clock")
+                                    : root.timing-coasting ? "coasting"
+                                    : root.acquired ? "following" : "waiting")
                 : root.input-lost ? "no audio"
                 : root.no-signal ? "no signal"
                 : root.holding ? "holding"
@@ -1121,7 +1236,19 @@ export component MainWindow inherits Window {
               background: tempo-sheet.state-color;
             }
 
-            Meter {
+            // What the operator has to do about the source, before anything else about it: the
+            // inputs section is folded more often than not.
+            if root.following: Text {
+              x: tempo-sheet.right-x;
+              y: 51px - self.font-metrics.ascent;
+              width: tempo-sheet.half;
+              text: root.timing-note != "" ? root.timing-note : root.timing-detail;
+              color: root.timing-note != "" ? Wf.holding : Wf.tempo-ink2;
+              font-family: Wf.sans;
+              font-size: 13px;
+              overflow: elide;
+            }
+            if !root.following: Meter {
               x: tempo-sheet.right-x;
               y: 41px;
               width: tempo-sheet.half - 64px;
@@ -1132,7 +1259,7 @@ export component MainWindow inherits Window {
               // not a fresh reading, and the colour says so.
               fill: root.holding ? Wf.holding : Wf.tempo-ink;
             }
-            Text {
+            if !root.following: Text {
               x: tempo-sheet.right-x + tempo-sheet.half - 52px;
               y: 51px - self.font-metrics.ascent;
               width: 52px;
@@ -1205,11 +1332,15 @@ export component MainWindow inherits Window {
                 spacing: 16px;
                 SectionHead {
                   number: "01";
-                  title: "activation";
+                  // Following, nothing is being heard: the plot shows the beats coming in.
+                  title: root.following ? "timing" : "activation";
                   horizontal-stretch: 1;
                 }
                 // The plot never had a key.
-                for item in [
+                for item in root.following ? [
+                  { label: "beat", swatch: Wf.fill, tall: true },
+                  { label: "downbeat", swatch: Wf.red, tall: true },
+                ] : [
                   { label: "beat likelihood", swatch: Wf.plot-bar, tall: true },
                   { label: "beat called", swatch: Wf.fill, tall: true },
                   { label: "downbeat likelihood", swatch: Wf.red, tall: false },
@@ -1260,15 +1391,20 @@ export component MainWindow inherits Window {
                   height: parent.field;
                   y: 0;
 
-                  if point.beat > 0.005: Rectangle {
+                  if !root.following && point.beat > 0.005: Rectangle {
                     y: parent.height - self.height;
                     height: parent.height * clamp(point.beat, 0.0, 1.0);
                     background: point.called ? Wf.fill : Wf.plot-bar;
                   }
-                  if point.downbeat > 0.02: Rectangle {
+                  if !root.following && point.downbeat > 0.02: Rectangle {
                     y: (parent.height - 3px) * (1.0 - clamp(point.downbeat, 0.0, 1.0));
                     height: 3px;
                     background: Wf.red;
+                  }
+                  // Following: a beat coming in lights its column, the whole height — red for
+                  // the bar's first.
+                  if root.following && point.called: Rectangle {
+                    background: point.downbeat > 0.5 ? Wf.red : Wf.fill;
                   }
                 }
 
@@ -1282,7 +1418,7 @@ export component MainWindow inherits Window {
 
               Rectangle { height: 6px; }
 
-              HorizontalLayout {
+              if !root.following: HorizontalLayout {
                 height: 18px;
                 spacing: 12px;
                 Text {
@@ -1312,10 +1448,68 @@ export component MainWindow inherits Window {
                 }
               }
 
+              // **The source strip**, where the input meter is when there is an input: the source
+              // and where in its bar it is — Link's beats to the bar as segments lit in turn (Link
+              // apps draw the quantum so), a MIDI clock's 24 ticks to the beat as marks.
+              if root.following: HorizontalLayout {
+                height: 18px;
+                spacing: 12px;
+                Text {
+                  text: root.timing-index == 1 ? "LINK" : "MIDI";
+                  width: 64px;
+                  color: Wf.ink;
+                  font-size: 14px;
+                  font-weight: 700;
+                  vertical-alignment: center;
+                }
+                if root.timing-index == 1: HorizontalLayout {
+                  spacing: 4px;
+                  for beat in root.timing-beats-per-bar: Rectangle {
+                    Rectangle {
+                      y: (parent.height - self.height) / 2;
+                      height: 10px;
+                      background: beat + 1 > root.strip-beat ? Wf.meter-track
+                        : beat == 0 ? Wf.red : Wf.fill;
+                    }
+                  }
+                }
+                if root.timing-index == 2: HorizontalLayout {
+                  spacing: 3px;
+                  for tick in 24: Rectangle {
+                    Rectangle {
+                      y: (parent.height - self.height) / 2;
+                      height: tick == 0 ? 14px : 10px;
+                      background: tick < root.strip-ticks ? Wf.fill : Wf.meter-track;
+                    }
+                  }
+                }
+                Text {
+                  text: root.strip-beat > 0 ? "beat " + root.strip-beat + " of " + root.timing-beats-per-bar : "";
+                  width: 110px;
+                  color: Wf.ink;
+                  font-family: Wf.mono;
+                  font-size: 14px;
+                  horizontal-alignment: right;
+                  vertical-alignment: center;
+                }
+              }
+
+              // Following, the input is not in use at all, and the line under the strip says so —
+              // whatever the input was last doing wrong is no longer the question.
+              if root.following: Text {
+                height: 20px;
+                text: "audio not in use — timing comes from " + root.timing-name;
+                color: Wf.ink2;
+                font-size: 13px;
+                horizontal-alignment: right;
+                vertical-alignment: bottom;
+                overflow: elide;
+              }
+
               // The input's own complaints, under the meter they are about. An explicit height,
               // because an `if` row in a vertical layout otherwise takes a share of the spare
               // height — measured: `vertical-stretch: 0` does not stop it.
-              if root.input-trouble != "": Text {
+              if !root.following && root.input-trouble != "": Text {
                 height: 20px;
                 text: root.input-trouble;
                 color: Wf.holding;
@@ -1382,7 +1576,7 @@ export component MainWindow inherits Window {
                 Btn {
                   text: root.tap-count > 0 ? "tap " + root.tap-count + "/" + root.tap-needs : "tap";
                   hint: "T";
-                  enabled: root.running;
+                  enabled: root.running && !root.following;
                   clicked => {
                     root.tap();
                   }
@@ -1392,7 +1586,7 @@ export component MainWindow inherits Window {
                 Btn {
                   text: "lock";
                   active: root.pinned;
-                  enabled: root.running;
+                  enabled: root.running && !root.following;
                   clicked => {
                     root.pin-changed(!root.pinned);
                   }
@@ -1416,18 +1610,30 @@ export component MainWindow inherits Window {
               // What ÷2 and ×2 do when the record changes. A setting, so it is live while
               // stopped; an earlier review, and the operator's call of 2026-09-23 that the default
               // is to drop a shift at the next track.
-              keep-shift-box := Tick {
+              //
+              // **Following, there is no next track to keep them for**, and TAP and LOCK are off:
+              // the tempo is the source's. The cell says so, as the reason the two are grey.
+              HorizontalLayout {
                 row: 0;
                 col: 1;
                 height: 32px;
                 horizontal-stretch: 0;
-                text: "keep half/double settings for next track";
-                box-size: 16px;
-                font-size: 14px;
-                checked: root.keep-shift;
-                toggled(keep) => {
-                  root.keep-shift = keep;
-                  root.keep-shift-changed(keep);
+                if !root.following: keep-shift-box := Tick {
+                  horizontal-stretch: 0;
+                  text: "keep half/double settings for next track";
+                  box-size: 16px;
+                  font-size: 14px;
+                  checked: root.keep-shift;
+                  toggled(keep) => {
+                    root.keep-shift = keep;
+                    root.keep-shift-changed(keep);
+                  }
+                }
+                if root.following: Text {
+                  text: "tap and lock off while following";
+                  color: Wf.ink2;
+                  font-size: 14px;
+                  vertical-alignment: center;
                 }
               }
 
@@ -1451,6 +1657,7 @@ export component MainWindow inherits Window {
                   Tick {
                     box-size: 16px;
                     checked: root.fold-on;
+                    enabled: !root.following;
                     toggled(on) => {
                       root.fold-on = on;
                       root.fold-on-changed(on);
@@ -1467,7 +1674,7 @@ export component MainWindow inherits Window {
                   maximum: root.fold-limit-max;
                   least-span: root.fold-least-span;
                   step: 1;
-                  enabled: root.fold-on;
+                  enabled: root.fold-on && !root.following;
                   has-default: true;
                   default-low: root.fold-default-min;
                   default-high: root.fold-default-max;
@@ -1481,9 +1688,11 @@ export component MainWindow inherits Window {
                   }
                 }
                 Text {
-                  text: round(root.fold-min) + " to " + round(root.fold-max) + " BPM";
-                  color: root.fold-on ? Wf.ink : Wf.ink-off;
-                  font-family: Wf.mono;
+                  // Following, the tempo is the source's, and no window is put on it.
+                  text: root.following ? "not used while following"
+                    : round(root.fold-min) + " to " + round(root.fold-max) + " BPM";
+                  color: root.fold-on && !root.following ? Wf.ink : Wf.ink-off;
+                  font-family: root.following ? Wf.sans : Wf.mono;
                   font-size: 14px;
                   vertical-alignment: center;
                   horizontal-stretch: 0;
@@ -1505,8 +1714,10 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 horizontal-stretch: 0;
 
+                // Each source keeps its own: the rig's lag behind the audio is not its lag behind a
+                // Link session or a mixer's clock. The label names whose it is.
                 latency-label := Label {
-                  text: "latency";
+                  text: root.following ? "latency · " + root.timing-short : "latency";
                   color: Wf.ink;
                 }
                 // The same cell as every output's delay below: the slider, 12 px, and a reading
@@ -1551,8 +1762,13 @@ export component MainWindow inherits Window {
 
             // What the section holds, in one line, for its heading while it is folded — and in
             // the alarm colour when something in it is not working, which a fold must not hide.
-            property <bool> failing: root.control-error || root.osc-control-error;
-            property <string> summary: (root.control-error ? "MIDI: not open"
+            property <bool> failing: root.control-error || root.osc-control-error
+              || (root.following && root.running && root.timing-waiting);
+            property <string> summary: "timing: "
+              + (root.timing-index == 2 && root.clock-in-port-index > 0 && root.clock-in-port-index < root.clock-in-ports.length
+                 ? "MIDI clock on " + root.clock-in-ports[root.clock-in-port-index]
+                 : root.following ? root.timing-name : "audio") + " · "
+              + (root.control-error ? "MIDI: not open"
                 : root.control-on && root.midi-in-port-index > 0 && root.midi-in-port-index < root.midi-in-ports.length
                   ? "MIDI: " + root.midi-in-ports[root.midi-in-port-index]
                 : "MIDI: no port chosen")
@@ -1593,6 +1809,108 @@ export component MainWindow inherits Window {
                 padding-top: 18px;
                 spacing: 10px;
 
+                // **Where the beats come from** (2026-10-15): the audio, or a source followed
+                // instead — a DJ's Link session, a mixer's MIDI clock. Picked only while stopped,
+                // as the audio pickers are. What to pick from first; what the source is saying at
+                // the far right; how it is followed on a line under it.
+                HorizontalLayout {
+                  height: 34px;
+                  spacing: 10px;
+                  Text {
+                    text: "timing";
+                    width: 64px;
+                    color: Wf.ink;
+                    font-size: 18px;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                  }
+                  Label { text: "from"; }
+                  timing-picker := Pick {
+                    model: root.timing-sources;
+                    current-index: root.timing-index;
+                    locked: root.running;
+                    min-width: 150px;
+                    preferred-width: 210px;
+                    max-width: 210px;
+                    selected(index) => {
+                      root.timing-index = index;
+                      root.timing-picked(index);
+                    }
+                  }
+                  if root.timing-index == 2: Label { text: "port"; }
+                  // Built as the control port's list is: "select input" first, and a port saved
+                  // and not here kept on the list, saying so.
+                  if root.timing-index == 2: Pick {
+                    model: root.clock-in-ports;
+                    current-index: root.clock-in-port-index;
+                    locked: root.running;
+                    min-width: 120px;
+                    preferred-width: 190px;
+                    max-width: 190px;
+                    selected(index) => {
+                      root.clock-in-port-index = index;
+                      root.clock-in-picked(index);
+                    }
+                  }
+                  if !root.following: Text {
+                    text: "the audio input is picked at the top";
+                    color: Wf.ink2;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 40px;
+                    overflow: elide;
+                  }
+                  if root.following: Text {
+                    text: root.timing-reading;
+                    color: root.timing-waiting ? Wf.alarm : root.timing-coasting ? Wf.holding : Wf.ink;
+                    font-size: 14px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 40px;
+                    overflow: elide;
+                  }
+                }
+                // How the source is followed, under the picker. Beats to the bar is fixed for a
+                // run; a MIDI clock's Stop can be obeyed or not at any time.
+                if root.following: HorizontalLayout {
+                  height: 34px;
+                  spacing: 10px;
+                  padding-left: 74px;
+                  Label { text: "beats per bar"; }
+                  Count {
+                    width: 56px;
+                    value: root.timing-beats-per-bar;
+                    minimum: 1;
+                    maximum: 16;
+                    enabled: !root.running;
+                    edited(beats) => {
+                      root.timing-beats-per-bar = beats;
+                      root.timing-beats-per-bar-edited(beats);
+                    }
+                  }
+                  if root.timing-index == 2: Tick {
+                    text: "obey start/stop";
+                    checked: root.clock-obey;
+                    horizontal-stretch: 0;
+                    toggled(on) => {
+                      root.clock-obey = on;
+                      root.clock-obey-toggled(on);
+                    }
+                  }
+                  Text {
+                    text: root.timing-note;
+                    color: Wf.holding;
+                    font-size: 13px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 40px;
+                    overflow: elide;
+                  }
+                }
+
                 // MIDI: each control with its word beside it: once
                 // a port is picked the first dropdown shows a device's name and the second an
                 // action's, and nothing said which was which.
@@ -1601,7 +1919,7 @@ export component MainWindow inherits Window {
                   spacing: 10px;
                   Text {
                     text: "MIDI";
-                    width: 42px;
+                    width: 64px;
                     color: Wf.ink;
                     font-size: 18px;
                     font-weight: 800;
@@ -1682,7 +2000,7 @@ export component MainWindow inherits Window {
                   spacing: 10px;
                   Text {
                     text: "OSC";
-                    width: 42px;
+                    width: 64px;
                     color: Wf.ink;
                     font-size: 18px;
                     font-weight: 800;
@@ -1792,7 +2110,8 @@ export component MainWindow inherits Window {
                 ? root.outputs-failing + (root.outputs-failing == 1 ? " output" : " outputs") + " reaching nothing · "
                 : "")
               + root.outputs-on + " of " + root.outputs-list.length + " on · Link: "
-              + (!self.link-on ? "off" : root.link-peers == 1 ? "1 peer" : root.link-peers + " peers")
+              + (root.timing-index == 1 ? "following"
+                 : !self.link-on ? "off" : root.link-peers == 1 ? "1 peer" : root.link-peers + " peers")
               + " · " + root.beats-sent + " beats sent";
 
             VerticalLayout {
@@ -1935,8 +2254,11 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                       width: 30px;
                       alignment: center;
+                      // Following a Link session, the Link output leads nothing whatever it is set
+                      // to, so its switch and its delay are not offered.
                       Tick {
                         checked: target.enabled;
+                        enabled: target.kind-index != 4 || root.timing-index != 1;
                         toggled(on) => {
                           root.output-enabled-changed(index, on);
                         }
@@ -2048,23 +2370,28 @@ export component MainWindow inherits Window {
                       padding-left: 9px;
                       spacing: 10px;
                       alignment: start;
+                      // Following a Link session, takt4 is one of its peers and never leads it.
                       Text {
-                        text: !target.enabled ? "off"
+                        horizontal-stretch: 0;
+                        text: root.timing-index == 1 ? (root.link-peers == 1 ? "1 peer" : root.link-peers + " peers")
+                          : !target.enabled ? "off"
                           : root.link-peers == 0 ? "no peers"
                           : root.link-peers == 1 ? "1 peer"
                           : root.link-peers + " peers";
-                        color: root.link-peers > 0 && target.enabled ? Wf.locked : Wf.ink2;
+                        color: root.link-peers > 0 && (target.enabled || root.timing-index == 1) ? Wf.locked
+                          : Wf.ink2;
                         font-size: 15px;
                         vertical-alignment: center;
-                        horizontal-stretch: 0;
                       }
                       VerticalLayout {
                         alignment: center;
                         horizontal-stretch: 0;
-                        Btn {
+                        min-width: peers-button.preferred-width;
+                        peers-button := Btn {
                           text: root.link-peers-shown ? "hide peers" : "show peers";
                           // Always closable once open, even when the last peer has just left.
-                          enabled: target.enabled && (root.link-peers > 0 || root.link-peers-shown);
+                          enabled: (target.enabled || root.timing-index == 1)
+                            && (root.link-peers > 0 || root.link-peers-shown);
                           height: 28px;
                           font-size: 13px;
                           pad: 10px;
@@ -2083,7 +2410,17 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                       width: 239px;
                       spacing: 12px;
-                      Track {
+                      // Following a Link session, takt4 is one of its peers and leads nothing: no
+                      // delay to set, and the reason where it would be.
+                      if target.kind-index == 4 && root.timing-index == 1: Text {
+                        text: "following — not sending";
+                        color: Wf.ink2;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                      }
+                      if target.kind-index != 4 || root.timing-index != 1: Track {
                         value: target.delay-ms;
                         minimum: -root.output-delay-limit-ms;
                         maximum: root.output-delay-limit-ms;
@@ -2096,7 +2433,7 @@ export component MainWindow inherits Window {
                           root.output-delay-changed(index, v);
                         }
                       }
-                      Reading {
+                      if target.kind-index != 4 || root.timing-index != 1: Reading {
                         width: 59px;
                         text: (target.delay-ms > 0 ? "+" : "") + round(target.delay-ms) + " ms";
                         value-text: round(target.delay-ms);
