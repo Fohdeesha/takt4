@@ -28,6 +28,7 @@
 
 #include "support/fake_grid_source.hpp"
 #include "support/loopback_receiver.hpp"
+#include "support/prolink_peer.hpp"
 #include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
 #include "support/this_machine.hpp"
@@ -8753,4 +8754,315 @@ TEST_CASE("while a source is followed, a rule that needs the audio says it will 
     CHECK(std::none_of(plain.begin(), plain.end(), [](const std::string& name) {
         return name.find("needs beat detection") != std::string::npos;
     }));
+}
+
+// --- the CDJs ------------------------------------------------------------------------------------
+
+TEST_CASE("the CDJs are picked with the pointer: the follow list fills with the players heard, a "
+          "player picked from it is the one followed, and nothing is announced until START",
+          "[ui][follow][prolink]") {
+    namespace peer = takt4::testing::prolink_peer;
+    if (!peer::canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    const takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+
+    // The timing picker, three steps down: the CDJs.
+    int y = 0;
+    const auto audio = inputsRow(controller, 73, y);
+    INFO("timing row: " << spans(audio));
+    REQUIRE(audio.size() == 4);
+    clickAt(window, middleOf(audio[2]), static_cast<float>(y));
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, kDown);
+    press(window, kDown);
+    press(window, "\n");
+    settle();
+    CHECK(controller.timingIndex() == 3);
+    CHECK(controller.window().get_following());
+    CHECK(std::string(controller.window().get_timing_name()) == "CDJs");
+    CHECK(controller.window().get_timing_ready());
+
+    // Listening: the player and the mixer heard, the player on the follow list.
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_follow_choices()->row_count() == 2; });
+    const auto choices = controller.window().get_cdj_follow_choices();
+    REQUIRE(choices->row_count() == 2);
+    CHECK(std::string(*choices->row_data(0)) == "tempo master");
+    CHECK(std::string(*choices->row_data(1)) == "player 2 \xC2\xB7 CDJ-3000");
+    CHECK(std::string(controller.window().get_timing_reading()) ==
+          "1 player, 1 mixer heard \xC2\xB7 not joined until Start");
+    CHECK(std::string(controller.window().get_timing_network()) == "picked when a CDJ is heard");
+
+    // The row: timing, from, the picker, follow, the follow picker, and the reading.
+    const auto row = inputsRow(controller, 73, y);
+    INFO("timing row, the CDJs: " << spans(row));
+    REQUIRE(row.size() == 6);
+    clickAt(window, middleOf(row[4]), static_cast<float>(y));
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, "\n");
+    settle();
+    CHECK(controller.window().get_cdj_follow_index() == 1);
+    CHECK(controller.currentSettings().machine.proLinkFollow == 2);
+    waitUntil(controller, [&] { return controller.cdjNetwork().snapshot().follow == 2; });
+    CHECK(controller.cdjNetwork().snapshot().follow == 2);
+
+    // The list rebuilt while it stands still would take an open picker from under the hand: it
+    // is published again only when it changes.
+    const auto before = controller.window().get_cdj_follow_choices();
+    for (int i = 0; i < 20; ++i) {
+        settle();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(controller.window().get_cdj_follow_choices().get() == before.get());
+
+    // Nothing announced while stopped.
+    CHECK_FALSE(rig.announceSocket().receive(300).has_value());
+    CHECK(controller.cdjNetwork().snapshot().phase ==
+          takt4::timing::prolink::VirtualPlayer::Phase::Listening);
+    rig.stop();
+}
+
+TEST_CASE("following the CDJs, START joins as a player and the master's beats reach the plot and "
+          "the tempo; STOP stops announcing",
+          "[ui][follow][prolink][slow]") {
+    namespace peer = takt4::testing::prolink_peer;
+    if (!peer::canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    const takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    controller.pickTiming(3);
+    std::vector<std::pair<int, int>> sheets = laidOutWithInputs(controller);
+    REQUIRE(sheets.size() == 7);
+    waitUntil(controller, [&] { return !controller.cdjNetwork().snapshot().devices.empty(); });
+
+    // START, the last thing in the top bar.
+    takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    window.dispatch_window_active_changed_event(true);
+    const int topRow = sheets[0].first + 48;
+    const auto top = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+    INFO("top bar: " << spans(top));
+    REQUIRE(top.size() == 3);
+    clickAt(window, middleOf(top.back()), static_cast<float>(topRow));
+    waitUntil(controller, [&] { return controller.followed().running(); });
+    REQUIRE(controller.followed().running());
+    CHECK_FALSE(tracker.running()); // the audio is not opened at all
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase ==
+               takt4::timing::prolink::VirtualPlayer::Phase::Joined;
+    });
+    CHECK(controller.cdjNetwork().snapshot().number == 7);
+    settle(); // the window's next round, which reads what the network now says
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "loopback \xC2\xB7 127.0.0.1 \xC2\xB7 takt4 is player 7");
+
+    // The player plays, and is master: its beats on the plot, its tempo the window's.
+    rig.setPlaying(true);
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 5; });
+    settle();
+    const auto trace = controller.window().get_trace();
+    int beatsDrawn = 0;
+    bool inBeat = false;
+    for (std::size_t i = 0; i < trace->row_count(); ++i) {
+        const TracePoint point = *trace->row_data(i);
+        beatsDrawn += point.called && !inBeat ? 1 : 0;
+        inBeat = point.called;
+    }
+    CHECK(beatsDrawn >= 4);
+    CHECK(controller.window().get_bpm() == Catch::Approx(128.0).margin(0.05));
+    const std::string reading(controller.window().get_timing_reading());
+    INFO(reading);
+    CHECK(reading.rfind("following player 2 (master) \xC2\xB7 128.00 BPM", 0) == 0);
+    CHECK(std::string(controller.window().get_strip_label()).rfind("player 2 \xC2\xB7 ", 0) == 0);
+    CHECK_FALSE(controller.window().get_timing_waiting());
+
+    // STOP: the run over, the keep-alives stopped.
+    rig.setPlaying(false);
+    shot = takt4::tests::render(controller.window(), 800, 1480);
+    window.dispatch_window_active_changed_event(true);
+    const auto running = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+    REQUIRE_FALSE(running.empty());
+    clickAt(window, middleOf(running.back()), static_cast<float>(topRow));
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+    CHECK_FALSE(controller.followed().running());
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase ==
+               takt4::timing::prolink::VirtualPlayer::Phase::Listening;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    while (rig.announceSocket().receive(10).has_value()) {
+    }
+    CHECK_FALSE(rig.announceSocket().receive(500).has_value());
+    rig.stop();
+}
+
+TEST_CASE("the CDJs' port held by another program is said on the timing row in the alarm colour, "
+          "and START says why it cannot follow them",
+          "[ui][follow][prolink]") {
+    namespace peer = takt4::testing::prolink_peer;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+
+    SECTION("in the test sandbox, Pro DJ Link's own port") {
+        controller.pickTiming(3);
+        controller.tick();
+        const std::string reading(controller.window().get_timing_reading());
+        INFO(reading);
+        CHECK(reading == "cannot listen for CDJs: not listening for CDJs in the test sandbox");
+        CHECK(controller.window().get_timing_waiting());
+    }
+    SECTION("a port another program has") {
+        peer::UdpPeer holder(0);
+        takt4::timing::prolink::Network::Config config =
+            peer::testConfig(1, [&controller] { return linkNow(controller); });
+        config.own.announce = holder.port();
+        controller.useCdjNetworkForTests(config);
+        controller.pickTiming(3);
+        controller.tick();
+        const std::string reading(controller.window().get_timing_reading());
+        INFO(reading);
+        CHECK(reading.find("is in use by another program") != std::string::npos);
+        CHECK(reading.find("rekordbox") != std::string::npos);
+        CHECK(controller.window().get_timing_waiting());
+        controller.toggleRun();
+        CHECK_FALSE(controller.followed().running());
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.rfind("Cannot follow the CDJs: cannot listen for CDJs: ", 0) == 0);
+        CHECK(controller.window().get_status_is_error());
+    }
+}
+
+TEST_CASE("the CDJs keep a latency of their own, and whom to follow and the card are saved with "
+          "the desk",
+          "[ui][follow][prolink][settings]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.machine.timingSource = std::string(takt4::settings::kTimingProLink);
+    saved.machine.proLinkFollow = 4;
+    saved.machine.proLinkInterface = "169.254.30.1";
+    saved.preset.timingLatency.link = -0.010;
+    saved.preset.timingLatency.proLink = 0.022;
+    WindowController controller(tracker, saved);
+    CHECK(controller.timingIndex() == 3);
+    // The latency slider is the CDJs' own while they are picked.
+    CHECK(controller.window().get_latency_ms() == Catch::Approx(22.0));
+    controller.setLatencyMs(-31.0);
+    takt4::settings::Settings out = controller.currentSettings();
+    CHECK(out.preset.timingLatency.proLink == Catch::Approx(-0.031));
+    CHECK(out.preset.timingLatency.link == Catch::Approx(-0.010));
+    CHECK(out.machine.timingSource == "prolink");
+    CHECK(out.machine.proLinkFollow == 4);
+    CHECK(out.machine.proLinkInterface == "169.254.30.1");
+    // Player 4 is not on any network here: kept on the list, said not to be heard.
+    controller.tick();
+    const auto choices = controller.window().get_cdj_follow_choices();
+    REQUIRE(choices->row_count() == 2);
+    CHECK(std::string(*choices->row_data(1)) == "player 4 \xE2\x80\x94 not heard");
+    CHECK(controller.window().get_cdj_follow_index() == 1);
+    // Link picked: its own latency back on the slider.
+    controller.pickTiming(1);
+    CHECK(controller.window().get_latency_ms() == Catch::Approx(-10.0));
+    controller.pickTiming(3);
+    CHECK(controller.window().get_latency_ms() == Catch::Approx(-31.0));
+    // Following the master again, picked from the list: saved as such.
+    controller.pickCdjFollow(0);
+    CHECK(controller.currentSettings().machine.proLinkFollow == 0);
+}
+
+TEST_CASE("what the window says about the CDJs, in each state they can be in", "[ui][follow]") {
+    using takt4::ui::describeTiming;
+    using takt4::ui::TimingFacts;
+    TimingFacts facts;
+    facts.index = 3;
+    facts.beatsPerBar = 7; // the setting is not the CDJs': they count four
+    takt4::ui::TimingView view = describeTiming(facts);
+    CHECK(view.name == "CDJs");
+    CHECK(view.shortName == "CDJ");
+    CHECK(view.beatsPerBar == 4);
+    CHECK(view.reading == "no CDJs heard on this network yet");
+    CHECK(view.network == "picked when a CDJ is heard");
+    CHECK_FALSE(view.waiting);
+    facts.cdjPlayers = 3;
+    facts.cdjMixers = 1;
+    CHECK(describeTiming(facts).reading ==
+          "3 players, 1 mixer heard \xC2\xB7 not joined until Start");
+    facts.cdjPlayers = 1;
+    facts.cdjMixers = 0;
+    CHECK(describeTiming(facts).reading == "1 player heard \xC2\xB7 not joined until Start");
+    facts.cdjProblem = "cannot listen for CDJs: port 50000 is in use by another program";
+    view = describeTiming(facts);
+    CHECK(view.reading == facts.cdjProblem);
+    CHECK(view.waiting); // in the alarm colour, stopped or not
+
+    // Running: joining, then following, coasting, waiting for a master.
+    facts.cdjProblem.clear();
+    facts.running = true;
+    view = describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.waitingWord == "joining");
+    CHECK(view.reading == "joining as a player\xE2\x80\xA6");
+    facts.cdjJoined = true;
+    facts.cdjNumber = 7;
+    facts.cdjMaster = 2;
+    facts.cdjFollowed = 2;
+    facts.cdjInterface = "Ethernet 2 \xC2\xB7 169.254.20.7";
+    facts.state.locked = true;
+    facts.state.rawBpm = 126.0;
+    facts.state.beatInBar = 3;
+    view = describeTiming(facts);
+    CHECK_FALSE(view.waiting);
+    CHECK(view.reading == "following player 2 (master) \xC2\xB7 126.00 BPM");
+    CHECK(view.detail == "player 2 (master) \xC2\xB7 4 beats to the bar");
+    CHECK(view.network == "Ethernet 2 \xC2\xB7 169.254.20.7 \xC2\xB7 takt4 is player 7");
+    CHECK(view.stripBeat == 3);
+    CHECK(view.stripLabel == "player 2 \xC2\xB7 3 of 4");
+    // A player named rather than the master.
+    facts.cdjFollow = 3;
+    facts.cdjFollowed = 3;
+    CHECK(describeTiming(facts).reading == "following player 3 \xC2\xB7 126.00 BPM");
+    facts.coasting = true;
+    view = describeTiming(facts);
+    CHECK(view.coasting);
+    CHECK(view.reading == "beats stopped \xE2\x80\x94 coasting at 126.00 BPM");
+    CHECK(view.detail == "player 3 stopped");
+    facts.coasting = false;
+    facts.state.locked = false;
+    view = describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.waitingWord == "no beats");
+    CHECK(view.reading == "player 3 not playing \xE2\x80\x94 waiting");
+    facts.cdjFollow = 0;
+    facts.cdjFollowed = 0;
+    facts.cdjMasterWithoutBeats = true;
+    view = describeTiming(facts);
+    CHECK(view.waitingWord == "no master");
+    CHECK(view.reading == "no master playing \xE2\x80\x94 waiting");
+    CHECK(view.note == "the master's track has no beat grid, so it sends no beats");
+    CHECK(view.stripLabel.empty());
 }

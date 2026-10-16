@@ -902,23 +902,27 @@ void fillAsMockup(MainWindow& window) {
 }
 
 /// Whether `state` is one of the window's states following a source rather than the audio:
-/// `link`, `link-alone`, `midi`, `midi-nostart`, `midi-coasting`, `midi-gone`.
+/// `link`, `link-alone`, `midi`, `midi-nostart`, `midi-coasting`, `midi-gone`, `cdj`,
+/// `cdj-nomaster`, `cdj-coasting`.
 bool followingState(const std::string& state) {
-    return state.rfind("link", 0) == 0 || state.rfind("midi", 0) == 0;
+    return state.rfind("link", 0) == 0 || state.rfind("midi", 0) == 0 || state.rfind("cdj", 0) == 0;
 }
 
 /// The window following a source rather than listening to the audio, as the source would leave
 /// it — the timing input's states. Following Link: three peers, or none (`link-alone`). Following
 /// a DJ mixer's MIDI clock: started (`midi`), ticking with no Start yet (`midi-nostart`), gone a
-/// second ago and coasted (`midi-coasting`), and gone for good (`midi-gone`). `running` false is
-/// the source picked and START not yet pressed.
+/// second ago and coasted (`midi-coasting`), and gone for good (`midi-gone`). Following the CDJs:
+/// player 2 the master and followed (`cdj`), nobody master and playing (`cdj-nomaster`), and the
+/// master paused a moment ago (`cdj-coasting`). `running` false is the source picked and START not
+/// yet pressed.
 void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
                    const std::string& state, bool running) {
     const bool link = state.rfind("link", 0) == 0;
-    const bool gone = state == "link-alone" || state == "midi-gone";
-    const bool coasting = state == "midi-coasting";
+    const bool cdj = state.rfind("cdj", 0) == 0;
+    const bool gone = state == "link-alone" || state == "midi-gone" || state == "cdj-nomaster";
+    const bool coasting = state == "midi-coasting" || state == "cdj-coasting";
     const bool unplaced = state == "midi-nostart";
-    const double bpm = link ? 127.98 : 127.90;
+    const double bpm = link ? 127.98 : cdj ? 126.00 : 127.90;
     const char* const mixer = "DJM-A9";
 
     // The audio is not listened to: no level, nothing to say about it.
@@ -955,7 +959,7 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     window.set_input_lost(false);
     // And what the window says about the source, worked out as the window works it out.
     TimingFacts facts;
-    facts.index = link ? 1 : 2;
+    facts.index = link ? 1 : cdj ? 3 : 2;
     facts.running = running;
     facts.state = tempo;
     facts.coasting = running && coasting;
@@ -966,7 +970,19 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     facts.ticking = running && !gone && !coasting;
     facts.placed = !unplaced;
     facts.tickInBeat = 13;
+    // The CDJs: three players and a DJM heard, takt4 joined as player 7 once started, player 2
+    // the master.
+    facts.cdjPlayers = 3;
+    facts.cdjMixers = 1;
+    facts.cdjJoined = running;
+    facts.cdjNumber = 7;
+    facts.cdjMaster = gone ? 0 : 2;
+    facts.cdjFollowed = gone ? 0 : 2;
+    facts.cdjInterface = running ? "Ethernet 2 \xC2\xB7 169.254.20.7" : "";
     publishTimingView(window, describeTiming(facts));
+    if (cdj) {
+        (void)publishCdjFollow(window, {{1, "CDJ-3000"}, {2, "CDJ-3000"}, {3, "CDJ-3000"}}, 0);
+    }
     // One of the three rules fires on onsets, which nothing is heard to make while following.
     window.set_rules_active(1);
     window.set_rules_need_audio(1);
@@ -976,11 +992,13 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     publishClockPorts(window, inputs, mixer);
     window.set_tap_count(0);
     window.set_status(slint::SharedString(
-        !running
-            ? std::string("press Start to follow ") + (link ? "Ableton Link." : "the MIDI clock.")
-        : link ? std::string("following Ableton Link — audio not in use")
-               : "following the MIDI clock on " + std::string(mixer) + " — audio not in use"));
-    if (!link && running) {
+        !running ? std::string("press Start to follow ") + (link  ? "Ableton Link."
+                                                            : cdj ? "the CDJs."
+                                                                  : "the MIDI clock.")
+        : link   ? std::string("following Ableton Link — audio not in use")
+        : cdj    ? std::string("following CDJs — audio not in use")
+                 : "following the MIDI clock on " + std::string(mixer) + " — audio not in use"));
+    if (!link && !cdj && running) {
         // A MIDI clock out to the mixer the clock comes in from, which could go round in a loop:
         // refused, and the row says why.
         auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();

@@ -99,7 +99,7 @@ void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Optio
 /// the source's own readings and `publishTimingView` puts it on the window; the live window and
 /// `takt4-shot` both go through the two, so a picture cannot say what the window would not.
 struct TimingFacts {
-    /// 0 beat detection, 1 Ableton Link, 2 MIDI clock — `timing-sources`' order.
+    /// 0 beat detection, 1 Ableton Link, 2 MIDI clock, 3 the CDJs — `timing-sources`' order.
     int index = 0;
     /// Started: the follower running.
     bool running = false;
@@ -123,6 +123,20 @@ struct TimingFacts {
     bool placed = false;
     bool stopObeyed = false;
     std::uint32_t tickInBeat = 0;
+    /// The CDJs: the network as `timing::prolink::Network::snapshot` has it — why it cannot be
+    /// listened to or joined, the players and mixers heard, whether takt4 has joined and as which
+    /// player, the master, whom it follows and whom it was asked to (0 the master), whether the
+    /// master's track is one that sends no beats, and the card joined on.
+    std::string cdjProblem;
+    std::size_t cdjPlayers = 0;
+    std::size_t cdjMixers = 0;
+    bool cdjJoined = false;
+    std::uint8_t cdjNumber = 0;
+    std::uint8_t cdjMaster = 0;
+    std::uint8_t cdjFollowed = 0;
+    std::uint8_t cdjFollow = 0;
+    bool cdjMasterWithoutBeats = false;
+    std::string cdjInterface;
 };
 
 struct TimingView {
@@ -136,9 +150,15 @@ struct TimingView {
     std::string detail;
     std::string note;
     bool waiting = false;
+    /// The tempo sheet's word for waiting: "no peers", "no clock", "no master", "joining".
+    std::string waitingWord;
     bool coasting = false;
     int stripBeat = 0;
     int stripTicks = 0;
+    /// The strip's words at its right: "beat 2 of 4", "player 2 · 3 of 4".
+    std::string stripLabel;
+    /// The CDJs' network card, or what picks it.
+    std::string network;
     int beatsPerBar = 4;
     bool obey = false;
     bool ready = true;
@@ -152,6 +172,19 @@ void publishTimingView(MainWindow& window, const TimingView& view);
 /// by the rule a port is found by (`output::findMidiPort`). `wanted` is picked.
 void publishClockPorts(MainWindow& window, const std::vector<std::string>& inputs,
                        const std::string& wanted);
+
+/// One player the CDJs' "follow" list can name.
+struct CdjPlayer {
+    std::uint8_t number = 0;
+    std::string name;
+};
+
+/// The CDJs' "follow" list: "tempo master" first, then each player heard, by number — and the one
+/// asked for, when it is not among them, said not to be heard. `follow` (0 the master) is picked.
+/// Returns the player numbers in list order, the master's entry as 0, for the controller to
+/// turn a pick back into a player.
+std::vector<std::uint8_t>
+publishCdjFollow(MainWindow& window, const std::vector<CdjPlayer>& players, std::uint8_t follow);
 
 /// How far the settings above can be dragged, from the constants the caller also clamps
 /// against — so a slider cannot offer a value the controller would refuse. Once, at

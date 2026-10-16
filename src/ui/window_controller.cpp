@@ -523,6 +523,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // A MIDI clock, if one is picked, listens through the same hub; it opens nothing until
       // START.
       clockFollower_(inputs_),
+      // The CDJs' network, listened to only once they are picked; on the runner's Link clock.
+      cdjs_(std::make_unique<timing::prolink::Network>(cdjConfig())),
+      cdjFollower_(std::make_unique<timing::ProLinkFollower>(*cdjs_)),
       // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
       // a port, so a machine with a controller plugged in is not listened to — and no
       // socket is bound — until somebody says to. The runner is each one's second
@@ -686,6 +689,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_clock_in_picked([this](int index) { pickClockPort(index); });
     window_->on_clock_obey_toggled([this](bool obey) { setClockObey(obey); });
     window_->on_timing_beats_per_bar_edited([this](int beats) { setExternalBeatsPerBar(beats); });
+    window_->on_cdj_follow_picked([this](int index) { pickCdjFollow(index); });
     // The banner's CHANGE: the timing row, which is in "02 inputs", folded or not.
     window_->on_timing_change_clicked([this] {
         if (window_->get_inputs_folded()) {
@@ -834,6 +838,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     clockFollower_.setObeyStartStop(clockObey_);
     externalBeatsPerBar_ = settings.preset.externalBeatsPerBar;
     timingLatency_ = settings.preset.timingLatency;
+    cdjFollow_ = settings.machine.proLinkFollow;
+    cdjInterface_ = settings.machine.proLinkInterface;
+    cdjs_->setFollow(cdjFollow_);
+    cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
     timing_ = timingOf(settings.machine.timingSource);
     applyTiming();
     if (settings.machine.oscControlEnabled) {
@@ -1101,6 +1109,11 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
     // started again below. Another source than the one in use is stopped and picked, as STOP and
     // a pick would — and said, since START is the operator's to press.
     setClockObey(machine.midiClockObeyStartStop);
+    setCdjFollow(machine.proLinkFollow);
+    if (machine.proLinkInterface != cdjInterface_) {
+        cdjInterface_ = machine.proLinkInterface;
+        cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
+    }
     const Timing wanted = timingOf(machine.timingSource);
     if (wanted != timing_ || machine.midiClockInPort != clockPort_) {
         const bool running = followed_.running() || wantRunning_ || tracker_.running();
@@ -3103,7 +3116,9 @@ void WindowController::setLatencyMs(double milliseconds) {
     // Following, the slider is the source's own latency, kept apart from beat detection's.
     if (following()) {
         const double seconds = std::clamp(milliseconds, -kLatencyLimitMs, kLatencyLimitMs) / 1000.0;
-        (timing_ == Timing::Link ? timingLatency_.link : timingLatency_.midiClock) = seconds;
+        (timing_ == Timing::Link        ? timingLatency_.link
+         : timing_ == Timing::MidiClock ? timingLatency_.midiClock
+                                        : timingLatency_.proLink) = seconds;
         runner_.setLatencySeconds(seconds);
         publishTempoOptions(*window_, settings(), followedLatency());
         return;
@@ -3228,9 +3243,12 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.timingSource =
         std::string(timing_ == Timing::Link        ? settings::kTimingLink
                     : timing_ == Timing::MidiClock ? settings::kTimingMidiClock
+                    : timing_ == Timing::ProLink   ? settings::kTimingProLink
                                                    : settings::kTimingAudio);
     out.machine.midiClockInPort = clockPort_;
     out.machine.midiClockObeyStartStop = clockObey_;
+    out.machine.proLinkFollow = cdjFollow_;
+    out.machine.proLinkInterface = cdjInterface_;
     editor_.layoutInto(out.machine);
     patch_.layoutInto(out.machine);
 
@@ -4111,6 +4129,9 @@ WindowController::Timing WindowController::timingOf(std::string_view source) noe
     if (source == settings::kTimingMidiClock) {
         return Timing::MidiClock;
     }
+    if (source == settings::kTimingProLink) {
+        return Timing::ProLink;
+    }
     return Timing::Audio;
 }
 
@@ -4120,6 +4141,8 @@ std::string WindowController::timingName() const {
         return "Ableton Link";
     case Timing::MidiClock:
         return "MIDI clock";
+    case Timing::ProLink:
+        return "CDJs";
     case Timing::Audio:
         break;
     }
@@ -4136,6 +4159,8 @@ double WindowController::activeLatencySeconds() const {
         return timingLatency_.link;
     case Timing::MidiClock:
         return timingLatency_.midiClock;
+    case Timing::ProLink:
+        return timingLatency_.proLink;
     case Timing::Audio:
         break;
     }
@@ -4143,7 +4168,7 @@ double WindowController::activeLatencySeconds() const {
 }
 
 void WindowController::pickTiming(int index) {
-    if (index < 0 || index > static_cast<int>(Timing::MidiClock)) {
+    if (index < 0 || index > static_cast<int>(Timing::ProLink)) {
         return;
     }
     // Only while stopped, as the audio pickers: the box is locked while running, and this is
@@ -4186,6 +4211,15 @@ void WindowController::applyTiming() {
         }
     } else {
         linkWatch_.close();
+    }
+    // The CDJs' network, listened to while they are picked — which players there are, for the
+    // follow list — and nothing sent until START. A port that cannot be had is said on the row.
+    if (timing_ == Timing::ProLink) {
+        std::string problem;
+        (void)cdjs_->open(problem);
+        publishCdjFollowList(cdjs_->snapshot(), true);
+    } else {
+        cdjs_->close();
     }
     publishTempoOptions(*window_, settings(), followedLatency());
     publishClockPortList();
@@ -4247,6 +4281,13 @@ bool WindowController::startFollowing() {
             linkFollower_.emplace(runner_.transports().link(), linkWatch_);
         }
         source = &*linkFollower_;
+    } else if (source == nullptr && timing_ == Timing::ProLink) {
+        std::string problem;
+        if (!cdjs_->open(problem)) {
+            setStatus("Cannot follow the CDJs: " + problem, true);
+            return false;
+        }
+        source = cdjFollower_.get();
     } else if (source == nullptr) {
         if (clockPort_.empty()) {
             setStatus("Pick the MIDI input the clock comes in on, then press Start.", true);
@@ -4263,7 +4304,8 @@ bool WindowController::startFollowing() {
     }
     shownBeats_.clear();
     timing::BeatGrid::Options options;
-    options.beatsPerBar = externalBeatsPerBar_;
+    // The CDJs count four to the bar themselves.
+    options.beatsPerBar = timing_ == Timing::ProLink ? 4 : externalBeatsPerBar_;
     followed_.start(*source, options);
     runningSource_ = source;
     return true;
@@ -4305,8 +4347,95 @@ void WindowController::publishTiming() {
             facts.stopObeyed = clock.stopped && clockObey_;
             facts.tickInBeat = clock.tickInBeat;
         }
+    } else if (timing_ == Timing::ProLink) {
+        const timing::prolink::Network::Snapshot cdjs = cdjs_->snapshot();
+        facts.cdjProblem = cdjs.problem;
+        for (const timing::prolink::Network::DeviceView& device : cdjs.devices) {
+            facts.cdjPlayers += device.kind == timing::prolink::DeviceKind::Player ? 1u : 0u;
+            facts.cdjMixers += device.kind == timing::prolink::DeviceKind::Mixer ? 1u : 0u;
+            if (device.number == cdjs.master && device.masterWithoutBeats) {
+                facts.cdjMasterWithoutBeats = true;
+            }
+        }
+        facts.cdjJoined = cdjs.phase == timing::prolink::VirtualPlayer::Phase::Joined;
+        facts.cdjNumber = cdjs.number;
+        facts.cdjMaster = cdjs.master;
+        facts.cdjFollowed = cdjs.followed;
+        facts.cdjFollow = cdjFollow_;
+        if (cdjs.interfaceIp != 0) {
+            facts.cdjInterface =
+                (cdjs.interfaceName.empty() ? std::string() : cdjs.interfaceName + " \xC2\xB7 ") +
+                timing::prolink::addressText(cdjs.interfaceIp);
+        }
+        publishCdjFollowList(cdjs, false);
     }
     publishTimingView(*window_, describeTiming(facts));
+}
+
+timing::prolink::Network::Config WindowController::cdjConfig() const {
+    // Built in the member initialisers, before the settings are read: the card asked for is set
+    // once they are (`setInterface`).
+    timing::prolink::Network::Config config;
+    config.clock = [this] { return runner_.transports().link().now().count(); };
+    return config;
+}
+
+void WindowController::useCdjNetworkForTests(timing::prolink::Network::Config config) {
+    if (followed_.running()) {
+        return;
+    }
+    cdjFollower_.reset();
+    cdjs_ = std::make_unique<timing::prolink::Network>(std::move(config));
+    cdjs_->setFollow(cdjFollow_);
+    cdjFollower_ = std::make_unique<timing::ProLinkFollower>(*cdjs_);
+    cdjFollowNumbers_.clear();
+    cdjFollowWords_.clear();
+    if (timing_ == Timing::ProLink) {
+        std::string problem;
+        (void)cdjs_->open(problem);
+        publishCdjFollowList(cdjs_->snapshot(), true);
+    }
+}
+
+void WindowController::publishCdjFollowList(const timing::prolink::Network::Snapshot& snapshot,
+                                            bool force) {
+    std::vector<CdjPlayer> players;
+    for (const timing::prolink::Network::DeviceView& device : snapshot.devices) {
+        if (device.kind == timing::prolink::DeviceKind::Player) {
+            players.push_back({device.number, device.name});
+        }
+    }
+    // What the list would say, compared with what it says: a picker is rebuilt only when its
+    // entries change, never while it stands still under an open popup.
+    std::vector<std::uint8_t> numbers{0};
+    std::vector<std::string> words{"tempo master"};
+    for (const CdjPlayer& player : players) {
+        numbers.push_back(player.number);
+        words.push_back(player.name);
+    }
+    if (cdjFollow_ != 0 && std::find(numbers.begin(), numbers.end(), cdjFollow_) == numbers.end()) {
+        numbers.push_back(cdjFollow_);
+        words.emplace_back(); // the one asked for, not heard
+    }
+    if (!force && numbers == cdjFollowNumbers_ && words == cdjFollowWords_) {
+        return;
+    }
+    cdjFollowNumbers_ = publishCdjFollow(*window_, players, cdjFollow_);
+    cdjFollowWords_ = std::move(words);
+}
+
+void WindowController::pickCdjFollow(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= cdjFollowNumbers_.size()) {
+        return;
+    }
+    setCdjFollow(cdjFollowNumbers_[static_cast<std::size_t>(index)]);
+}
+
+void WindowController::setCdjFollow(std::uint8_t player) {
+    cdjFollow_ = player <= 15 ? player : std::uint8_t{0};
+    cdjs_->setFollow(cdjFollow_);
+    publishCdjFollowList(cdjs_->snapshot(), true);
+    publishTiming();
 }
 
 void WindowController::publishFollowedTrace() {

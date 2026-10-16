@@ -16,6 +16,8 @@
 #include "core/timing/grid_source.hpp"
 #include "core/timing/link_follower.hpp"
 #include "core/timing/midi_clock_follower.hpp"
+#include "core/timing/prolink/network.hpp"
+#include "core/timing/prolink_follower.hpp"
 #include "core/tracking/tap_tempo.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "ui/delete_guard.hpp"
@@ -249,7 +251,9 @@ public:
 
     /// **Where the beats come from** — the timing input. 0 is the audio, heard by the tracker;
     /// 1 an Ableton Link session followed (`timing::LinkFollower`); 2 a MIDI clock followed
-    /// (`timing::MidiClockFollower`). Picked only while stopped, as the audio pickers are: two
+    /// (`timing::MidiClockFollower`); 3 the CDJs (`timing::ProLinkFollower`), whose network is
+    /// listened to — nothing sent — from the moment they are picked, so the "follow" list can name
+    /// the players, and joined at START. Picked only while stopped, as the audio pickers are: two
     /// sources racing for the output thread's ring is not a state worth having. Following, the
     /// audio is not opened at all, START starts the follower instead, and Link is handed to the
     /// follower the moment it is picked — so a session of takt4's own, alone and ageing, can
@@ -267,6 +271,15 @@ public:
     void setClockObey(bool obey);
     /// Beats to the bar while following, 1 to 16. Only while stopped: it is fixed for a run.
     void setExternalBeatsPerBar(int beats);
+    /// Whose beats the CDJs' are, as an index into `cdj-follow-choices` — 0 the tempo master —
+    /// and by player number (0 the master). Any time, running or not: at once.
+    void pickCdjFollow(int index);
+    void setCdjFollow(std::uint8_t player);
+    /// The CDJs' network, for a test to watch; and one of a test's own in its place — ports the
+    /// sandbox lets it have, a card of its choosing — taken the next time the CDJs are picked or
+    /// started. Only while stopped.
+    timing::prolink::Network& cdjNetwork() noexcept { return *cdjs_; }
+    void useCdjNetworkForTests(timing::prolink::Network::Config config);
     /// For the tests: what the next START follows in place of Link or the MIDI clock, whichever
     /// is picked — the tests' sandbox joins no Link session and opens no MIDI port. Null puts the
     /// real ones back. It has to outlive the run it is started for.
@@ -668,6 +681,11 @@ private:
     void publishFollowedTrace();
     /// The MIDI clock's input list, built as the control input's is.
     void publishClockPortList();
+    /// The CDJs' "follow" list from the players heard — republished only when it changes, so a
+    /// picker held open is never rebuilt under the operator's hand.
+    void publishCdjFollowList(const timing::prolink::Network::Snapshot& snapshot, bool force);
+    /// The CDJs' network, as the settings and the clock need it.
+    timing::prolink::Network::Config cdjConfig() const;
     /// The latency the outputs are given: beat detection's own, or the source followed's.
     double activeLatencySeconds() const;
     /// The source's name, for the status line.
@@ -745,7 +763,7 @@ private:
     bool deviceChosen_ = false;
 
     /// See `pickTiming`, in `timing-sources` order.
-    enum class Timing : int { Audio = 0, Link = 1, MidiClock = 2 };
+    enum class Timing : int { Audio = 0, Link = 1, MidiClock = 2, ProLink = 3 };
     /// A settings file's `timingSource`, as the picker's entry.
     static Timing timingOf(std::string_view source) noexcept;
     Timing timing_ = Timing::Audio;
@@ -1063,6 +1081,19 @@ private:
     output::LinkPeerWatch linkWatch_;
     std::optional<timing::LinkFollower> linkFollower_;
     timing::MidiClockFollower clockFollower_;
+    /// The CDJs: the network, listened to while they are picked and joined at START, and the
+    /// follower that reads it. After `runner_`, whose Link clock stamps every datagram, so the
+    /// network's thread is gone before that clock is. Held by pointer so a test can put its own
+    /// in place (`useCdjNetworkForTests`).
+    std::unique_ptr<timing::prolink::Network> cdjs_;
+    std::unique_ptr<timing::ProLinkFollower> cdjFollower_;
+    /// Whose beats: 0 the tempo master, or a player — as asked for, heard or not.
+    std::uint8_t cdjFollow_ = 0;
+    /// The card asked for by the settings, by address; empty for the first device's.
+    std::string cdjInterface_;
+    /// The follow list as last published: each entry's player (0 the master), and its words.
+    std::vector<std::uint8_t> cdjFollowNumbers_;
+    std::vector<std::string> cdjFollowWords_;
 
     /// the two control surfaces. **Both after `runner_`, so both are destroyed first**,
     /// and that ordering is load-bearing rather than a preference: since the `panic` and

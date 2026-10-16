@@ -393,11 +393,11 @@ export component MainWindow inherits Window {
 
   // --- where the beats come from ---------------------------------------------------
   // The audio, or a source followed instead of it — a DJ's Ableton Link session, a mixer's MIDI
-  // clock — which takt4 then takes its tempo and its beats from, and is used only for its rules.
-  // Picked in "02 inputs", only while stopped, as the audio pickers are.
+  // clock, the CDJs — which takt4 then takes its tempo and its beats from, and is used only for
+  // its rules. Picked in "02 inputs", only while stopped, as the audio pickers are.
   /// What can be picked, beat detection first.
-  in-out property <[string]> timing-sources: ["beat detection (audio)", "Ableton Link", "MIDI clock"];
-  /// 0 is beat detection; 1 Ableton Link; 2 MIDI clock.
+  in-out property <[string]> timing-sources: ["beat detection (audio)", "Ableton Link", "MIDI clock", "CDJs (Pro DJ Link)"];
+  /// 0 is beat detection; 1 Ableton Link; 2 MIDI clock; 3 the CDJs.
   in-out property <int> timing-index;
   callback timing-picked(int);
   /// Following a source rather than listening to the audio, which is then not open at all.
@@ -437,6 +437,16 @@ export component MainWindow inherits Window {
   in-out property <int> strip-ticks;
   /// The source picked can be started: a MIDI clock with a port chosen. Link always can.
   in-out property <bool> timing-ready: true;
+  /// The tempo sheet's word while the source is not there: "no peers", "no clock", "no master".
+  in-out property <string> timing-waiting-word: "no peers";
+  /// The strip's words at its right: "beat 2 of 4", or the CDJs' "player 2 · 3 of 4".
+  in-out property <string> strip-label;
+  /// Whose beats the CDJs' are: "tempo master" first, then each player heard.
+  in-out property <[string]> cdj-follow-choices: ["tempo master"];
+  in-out property <int> cdj-follow-index;
+  callback cdj-follow-picked(int);
+  /// The network card the CDJs are joined on, or what picks it.
+  in-out property <string> timing-network;
   /// The banner's CHANGE: unfolds "02 inputs" and brings the timing row into view.
   callback timing-change-clicked();
 
@@ -1216,7 +1226,7 @@ export component MainWindow inherits Window {
               x: tempo-sheet.right-x + tempo-sheet.half - self.width;
               y: 27px - self.font-metrics.ascent;
               text: !root.running ? "stopped"
-                : root.following ? (root.timing-waiting ? (root.timing-index == 1 ? "no peers" : "no clock")
+                : root.following ? (root.timing-waiting ? root.timing-waiting-word
                                     : root.timing-coasting ? "coasting"
                                     : root.acquired ? "following" : "waiting")
                 : root.input-lost ? "no audio"
@@ -1453,19 +1463,20 @@ export component MainWindow inherits Window {
 
               // **The source strip**, where the input meter is when there is an input: the source
               // and where in its bar it is — Link's beats to the bar as segments lit in turn (Link
-              // apps draw the quantum so), a MIDI clock's 24 ticks to the beat as marks.
+              // apps draw the quantum so), a MIDI clock's 24 ticks to the beat as marks, the CDJs'
+              // four beats to the bar as the master player shows them.
               if root.following: HorizontalLayout {
                 height: 18px;
                 spacing: 12px;
                 Text {
-                  text: root.timing-index == 1 ? "LINK" : "MIDI";
+                  text: root.timing-index == 1 ? "LINK" : root.timing-index == 3 ? "CDJ" : "MIDI";
                   width: 64px;
                   color: Wf.ink;
                   font-size: 14px;
                   font-weight: 700;
                   vertical-alignment: center;
                 }
-                if root.timing-index == 1: HorizontalLayout {
+                if root.timing-index == 1 || root.timing-index == 3: HorizontalLayout {
                   spacing: 4px;
                   for beat in root.timing-beats-per-bar: Rectangle {
                     Rectangle {
@@ -1487,8 +1498,8 @@ export component MainWindow inherits Window {
                   }
                 }
                 Text {
-                  text: root.strip-beat > 0 ? "beat " + root.strip-beat + " of " + root.timing-beats-per-bar : "";
-                  width: 110px;
+                  text: root.strip-label;
+                  width: root.timing-index == 3 ? 160px : 110px;
                   color: Wf.ink;
                   font-family: Wf.mono;
                   font-size: 14px;
@@ -1840,6 +1851,20 @@ export component MainWindow inherits Window {
                       root.timing-picked(index);
                     }
                   }
+                  if root.timing-index == 3: Label { text: "follow"; }
+                  // Whose beats: the tempo master, or one player. Changed at any time, running or
+                  // not — a DJ who plays without the master button is followed by naming the deck.
+                  if root.timing-index == 3: Pick {
+                    model: root.cdj-follow-choices;
+                    current-index: root.cdj-follow-index;
+                    min-width: 120px;
+                    preferred-width: 190px;
+                    max-width: 190px;
+                    selected(index) => {
+                      root.cdj-follow-index = index;
+                      root.cdj-follow-picked(index);
+                    }
+                  }
                   if root.timing-index == 2: Label { text: "port"; }
                   // Built as the control port's list is: "select input" first, and a port saved
                   // and not here kept on the list, saying so.
@@ -1881,8 +1906,8 @@ export component MainWindow inherits Window {
                   height: 34px;
                   spacing: 10px;
                   padding-left: 74px;
-                  Label { text: "beats per bar"; }
-                  Count {
+                  if root.timing-index != 3: Label { text: "beats per bar"; }
+                  if root.timing-index != 3: Count {
                     width: 56px;
                     value: root.timing-beats-per-bar;
                     minimum: 1;
@@ -1893,6 +1918,18 @@ export component MainWindow inherits Window {
                       root.timing-beats-per-bar-edited(beats);
                     }
                   }
+                  // The CDJs count four to the bar themselves; what is left to say is which card
+                  // they are reached on.
+                  if root.timing-index == 3: Label { text: "network"; }
+                  if root.timing-index == 3: Text {
+                    text: root.timing-network;
+                    color: Wf.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    min-width: 40px;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                  }
                   if root.timing-index == 2: Tick {
                     text: "obey start/stop";
                     checked: root.clock-obey;
@@ -1902,8 +1939,10 @@ export component MainWindow inherits Window {
                       root.clock-obey-toggled(on);
                     }
                   }
+                  // Until it has been run against real CDJs, the CDJs say so.
                   Text {
-                    text: root.timing-note;
+                    text: root.timing-note != "" ? root.timing-note
+                      : root.timing-index == 3 ? "experimental: not yet tried with real CDJs" : "";
                     color: Wf.holding;
                     font-size: 13px;
                     horizontal-alignment: right;

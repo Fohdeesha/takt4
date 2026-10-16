@@ -280,6 +280,19 @@ TEST_CASE("where the beats come from is kept, with how each source is followed",
     CHECK_THAT(out.preset.tempo.latencyOffsetSeconds, WithinAbs(-0.040, 1e-9));
     in.machine.timingSource = std::string(takt4::settings::kTimingLink);
     CHECK(takt4::settings::fromJson(takt4::settings::toJson(in)).machine.timingSource == "link");
+    // The CDJs: the source, whom to follow, the card, and their own latency.
+    in.machine.timingSource = std::string(takt4::settings::kTimingProLink);
+    in.machine.proLinkFollow = 3;
+    in.machine.proLinkInterface = "169.254.20.7";
+    in.preset.timingLatency.proLink = -0.018;
+    const Settings cdjs = takt4::settings::fromJson(takt4::settings::toJson(in));
+    CHECK(cdjs.machine.timingSource == "prolink");
+    CHECK(cdjs.machine.proLinkFollow == 3);
+    CHECK(cdjs.machine.proLinkInterface == "169.254.20.7");
+    CHECK_THAT(cdjs.preset.timingLatency.proLink, WithinAbs(-0.018, 1e-9));
+    CHECK(takt4::settings::toJson(in).find(R"("proLinkFollow": "player 3")") != std::string::npos);
+    in.machine.proLinkFollow = takt4::settings::kProLinkFollowMaster;
+    CHECK(takt4::settings::toJson(in).find(R"("proLinkFollow": "master")") != std::string::npos);
 
     // A file from before there was a choice — or a fresh install — listens to the audio, opens
     // no clock and follows nothing.
@@ -290,11 +303,13 @@ TEST_CASE("where the beats come from is kept, with how each source is followed",
     CHECK_FALSE(before.machine.midiClockObeyStartStop);
     CHECK(before.preset.externalBeatsPerBar == 4);
     CHECK(before.preset.timingLatency == Settings{}.preset.timingLatency);
+    CHECK(before.machine.proLinkFollow == takt4::settings::kProLinkFollowMaster);
+    CHECK(before.machine.proLinkInterface.empty());
 
     // A source this build does not know is the audio; a meter that is no meter is four; a
     // latency past the slider's end is its end, and one of a second or more is no offset.
     const Settings odd = takt4::settings::fromJson(R"({
-        "machine": {"timingSource": "prolink"},
+        "machine": {"timingSource": "timecode"},
         "preset": {"timing": {"beatsPerBar": 99, "latencySeconds": {"link": 0.4, "midiClock": 2.0}}}
     })");
     CHECK(odd.machine.timingSource == "audio");

@@ -198,12 +198,55 @@ double latencyFrom(double seconds) noexcept {
     return std::clamp(seconds, -kMaxLatencyOffsetSeconds, kMaxLatencyOffsetSeconds);
 }
 
+/// "master", or "player N" for a player 1 to 15.
+std::string proLinkFollowText(std::uint8_t follow) {
+    return follow >= 1 && follow <= 15 ? "player " + std::to_string(follow) : "master";
+}
+
+/// The other way; anything that is not a player 1 to 15 is the master.
+std::uint8_t proLinkFollowFrom(const std::string& text) {
+    constexpr std::string_view kPlayer = "player ";
+    if (text.size() <= kPlayer.size() || text.compare(0, kPlayer.size(), kPlayer) != 0) {
+        return kProLinkFollowMaster;
+    }
+    const std::string number = text.substr(kPlayer.size());
+    if (number.size() > 2 ||
+        !std::all_of(number.begin(), number.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        return kProLinkFollowMaster;
+    }
+    const int player = std::stoi(number);
+    return player >= 1 && player <= 15 ? static_cast<std::uint8_t>(player) : kProLinkFollowMaster;
+}
+
+/// Four numbers 0 to 255 between three dots, and nothing else: an IPv4 address as typed.
+bool isDottedAddress(const std::string& text) {
+    int parts = 0;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t dot = text.find('.', at);
+        const std::string part =
+            text.substr(at, dot == std::string::npos ? std::string::npos : dot - at);
+        if (part.empty() || part.size() > 3 ||
+            !std::all_of(part.begin(), part.end(), [](char c) { return c >= '0' && c <= '9'; }) ||
+            std::stoi(part) > 255) {
+            return false;
+        }
+        ++parts;
+        if (dot == std::string::npos) {
+            break;
+        }
+        at = dot + 1;
+    }
+    return parts == 4;
+}
+
 /// The preset's half of the timing input: beats to the bar and each source's latency.
 json timingToJson(const Preset& preset) {
     return json{
         {"beatsPerBar", preset.externalBeatsPerBar},
-        {"latencySeconds",
-         json{{"link", preset.timingLatency.link}, {"midiClock", preset.timingLatency.midiClock}}},
+        {"latencySeconds", json{{"link", preset.timingLatency.link},
+                                {"midiClock", preset.timingLatency.midiClock},
+                                {"proLink", preset.timingLatency.proLink}}},
     };
 }
 
@@ -223,8 +266,10 @@ void timingFromJson(const json& object, Preset& preset) {
         const json& latency = object.at("latencySeconds");
         read(latency, "link", preset.timingLatency.link);
         read(latency, "midiClock", preset.timingLatency.midiClock);
+        read(latency, "proLink", preset.timingLatency.proLink);
         preset.timingLatency.link = latencyFrom(preset.timingLatency.link);
         preset.timingLatency.midiClock = latencyFrom(preset.timingLatency.midiClock);
+        preset.timingLatency.proLink = latencyFrom(preset.timingLatency.proLink);
     }
 }
 
@@ -614,6 +659,8 @@ std::string toJson(const Settings& settings) {
              {"timingSource", settings.machine.timingSource},
              {"midiClockInPort", settings.machine.midiClockInPort},
              {"midiClockObeyStartStop", settings.machine.midiClockObeyStartStop},
+             {"proLinkFollow", proLinkFollowText(settings.machine.proLinkFollow)},
+             {"proLinkInterface", settings.machine.proLinkInterface},
              {"inputsFolded", settings.machine.inputsFolded},
              {"outputsFolded", settings.machine.outputsFolded},
              {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
@@ -659,11 +706,19 @@ Settings fromDocument(const json& document) {
         // A source this build cannot follow — a newer build's, or a typo — is the audio: the
         // tracker is always there to fall back on, and a picker showing nothing helps nobody.
         if (settings.machine.timingSource != kTimingLink &&
-            settings.machine.timingSource != kTimingMidiClock) {
+            settings.machine.timingSource != kTimingMidiClock &&
+            settings.machine.timingSource != kTimingProLink) {
             settings.machine.timingSource = std::string(kTimingAudio);
         }
         read(machine, "midiClockInPort", settings.machine.midiClockInPort);
         read(machine, "midiClockObeyStartStop", settings.machine.midiClockObeyStartStop);
+        std::string follow;
+        read(machine, "proLinkFollow", follow);
+        settings.machine.proLinkFollow = proLinkFollowFrom(follow);
+        read(machine, "proLinkInterface", settings.machine.proLinkInterface);
+        if (!isDottedAddress(settings.machine.proLinkInterface)) {
+            settings.machine.proLinkInterface.clear();
+        }
         read(machine, "inputsFolded", settings.machine.inputsFolded);
         read(machine, "outputsFolded", settings.machine.outputsFolded);
         // The rule editor's folds, four booleans in A-to-D order; anything else keeps the default.

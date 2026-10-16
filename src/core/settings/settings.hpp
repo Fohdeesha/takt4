@@ -37,6 +37,9 @@ namespace takt4::settings {
 inline constexpr std::string_view kTimingAudio = "audio";
 inline constexpr std::string_view kTimingLink = "link";
 inline constexpr std::string_view kTimingMidiClock = "midi-clock";
+inline constexpr std::string_view kTimingProLink = "prolink";
+/// `MachineSettings::proLinkFollow`'s "the tempo master"; otherwise a player's number.
+inline constexpr std::uint8_t kProLinkFollowMaster = 0;
 
 struct MachineSettings {
     /// By name, never by index: a device index moves the moment something else is plugged
@@ -91,16 +94,23 @@ struct MachineSettings {
     bool oscControlLocalOnly = true;
 
     /// **Where the beats come from** — `kTimingAudio`, or a source followed instead of the
-    /// audio: `kTimingLink`, `kTimingMidiClock`. Machine-local, as the audio device is: which DJ
-    /// network or mixer this desk is cabled to is a fact about the desk. The last one used is
-    /// picked again at launch, and not started — START is pressed as ever. A file that does not
-    /// say, or names a source this build does not know, is the audio, as a fresh install is.
+    /// audio: `kTimingLink`, `kTimingMidiClock`, `kTimingProLink` (the CDJs). Machine-local, as the
+    /// audio device is: which DJ network or mixer this desk is cabled to is a fact about the desk.
+    /// The last one used is picked again at launch, and not started — START is pressed as ever. A
+    /// file that does not say, or names a source this build does not know, is the audio, as a fresh
+    /// install is.
     std::string timingSource{kTimingAudio};
     /// The MIDI input a MIDI clock is followed from, by name, as `midiControlPort` is.
     std::string midiClockInPort;
     /// Whether a followed MIDI clock's Stop halts the beats. **Off unless asked for**: a DJ
     /// mixer's Stop button keeps its clock running, and a stray press must not black out the rig.
     bool midiClockObeyStartStop = false;
+    /// Whose beats the CDJs' are: `kProLinkFollowMaster`, or a player's number, 1 to 15 — saved as
+    /// `"master"` or `"player N"`, and anything else read as the master.
+    std::uint8_t proLinkFollow = kProLinkFollowMaster;
+    /// The network card the CDJs are joined on, by its IPv4 address; empty for the one the first
+    /// device heard is on. Only a dotted address is kept.
+    std::string proLinkInterface;
 
     /// The main window's Inputs and Outputs folded down to their headings, as they were left —
     /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
@@ -185,6 +195,7 @@ struct Preset {
     struct TimingLatency {
         double link = 0.0;
         double midiClock = 0.0;
+        double proLink = 0.0;
         friend bool operator==(const TimingLatency&, const TimingLatency&) = default;
     };
     TimingLatency timingLatency;

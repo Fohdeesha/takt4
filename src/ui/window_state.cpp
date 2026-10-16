@@ -100,12 +100,101 @@ void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Optio
     window.set_keep_shift(options.keepOctaveShift);
 }
 
+namespace {
+
+/// "3 players, 1 mixer".
+std::string devicesHeard(std::size_t players, std::size_t mixers) {
+    std::string text = std::to_string(players) + (players == 1 ? " player" : " players");
+    if (mixers != 0) {
+        text += ", " + std::to_string(mixers) + (mixers == 1 ? " mixer" : " mixers");
+    }
+    return text;
+}
+
+/// See `describeTiming`: the CDJs.
+TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
+    const std::string dot = " \xC2\xB7 ";
+    view.name = "CDJs";
+    view.shortName = "CDJ";
+    // The CDJs count four to the bar, whatever the setting says.
+    view.beatsPerBar = 4;
+    view.network =
+        facts.cdjInterface.empty() ? std::string("picked when a CDJ is heard") : facts.cdjInterface;
+    const bool heard = facts.cdjPlayers + facts.cdjMixers > 0;
+    if (!facts.running) {
+        // Listened to, and nothing announced, until START.
+        if (!facts.cdjProblem.empty()) {
+            view.reading = facts.cdjProblem;
+            view.waiting = true;
+        } else if (!heard) {
+            view.reading = "no CDJs heard on this network yet";
+        } else {
+            view.reading = devicesHeard(facts.cdjPlayers, facts.cdjMixers) + " heard" + dot +
+                           "not joined until Start";
+        }
+        return view;
+    }
+    view.coasting = facts.coasting;
+    view.waiting = !facts.state.locked && !facts.coasting;
+    view.stripBeat = static_cast<int>(facts.state.beatInBar);
+    const std::string bpm = fixed(facts.state.rawBpm, 2) + " BPM";
+    // Which player takt4 is goes with the card it is on: a detail, after what is followed.
+    if (facts.cdjJoined && facts.cdjNumber != 0) {
+        view.network += dot + "takt4 is player " + std::to_string(facts.cdjNumber);
+    }
+    const auto playerName = [&](std::uint8_t number) {
+        std::string text = "player " + std::to_string(number);
+        if (number == facts.cdjMaster) {
+            text += " (master)";
+        }
+        return text;
+    };
+    const std::string waitedFor =
+        facts.cdjFollow == 0 ? std::string("no master playing")
+                             : "player " + std::to_string(facts.cdjFollow) + " not playing";
+    if (!facts.cdjProblem.empty()) {
+        view.waiting = true;
+        view.waitingWord = "no network";
+        view.reading = facts.cdjProblem;
+        view.detail = facts.cdjProblem;
+    } else if (!facts.cdjJoined) {
+        view.waitingWord = "joining";
+        view.reading = heard ? "joining as a player\xE2\x80\xA6"
+                             : "no CDJs heard on this network \xE2\x80\x94 waiting for one";
+        view.detail = heard ? "joining as a player" : "no CDJs heard";
+    } else if (view.coasting) {
+        view.reading = "beats stopped \xE2\x80\x94 coasting at " + bpm;
+        view.detail = playerName(facts.cdjFollowed) + " stopped";
+    } else if (view.waiting) {
+        view.waitingWord = facts.cdjFollow == 0 ? "no master" : "no beats";
+        view.reading = waitedFor + " \xE2\x80\x94 waiting";
+        view.detail = waitedFor;
+        if (facts.cdjFollow == 0 && facts.cdjMasterWithoutBeats) {
+            // A master with a track rekordbox has not analysed, or a CD: it leads nothing.
+            view.note = "the master's track has no beat grid, so it sends no beats";
+        }
+    } else {
+        view.reading = "following " + playerName(facts.cdjFollowed) + dot + bpm;
+        view.detail = playerName(facts.cdjFollowed) + dot + "4 beats to the bar";
+    }
+    if (view.stripBeat > 0 && facts.cdjFollowed != 0) {
+        view.stripLabel = "player " + std::to_string(facts.cdjFollowed) + dot +
+                          std::to_string(view.stripBeat) + " of 4";
+    }
+    return view;
+}
+
+} // namespace
+
 TimingView describeTiming(const TimingFacts& facts) {
     TimingView view;
     view.index = facts.index;
     view.beatsPerBar = static_cast<int>(facts.beatsPerBar);
     view.obey = facts.obey;
     view.ready = facts.ready;
+    if (facts.index == 3) {
+        return describeCdjs(facts, view);
+    }
     if (facts.index != 1 && facts.index != 2) {
         return view; // beat detection: the tracker's own readouts say it all
     }
@@ -128,7 +217,12 @@ TimingView describeTiming(const TimingFacts& facts) {
     // Waiting for the source: started, and nothing to follow — never heard since START, or gone
     // for longer than the coast.
     view.waiting = !facts.state.locked && !facts.coasting;
+    view.waitingWord = link ? "no peers" : "no clock";
     view.stripBeat = static_cast<int>(facts.state.beatInBar);
+    if (view.stripBeat > 0) {
+        view.stripLabel =
+            "beat " + std::to_string(view.stripBeat) + " of " + std::to_string(facts.beatsPerBar);
+    }
     const std::string bpm = fixed(facts.state.rawBpm, 2) + " BPM";
     if (link) {
         const std::string peers =
@@ -172,9 +266,12 @@ void publishTimingView(MainWindow& window, const TimingView& view) {
     window.set_timing_detail(slint::SharedString(view.detail));
     window.set_timing_note(slint::SharedString(view.note));
     window.set_timing_waiting(view.waiting);
+    window.set_timing_waiting_word(slint::SharedString(view.waitingWord));
     window.set_timing_coasting(view.coasting);
     window.set_strip_beat(view.stripBeat);
     window.set_strip_ticks(view.stripTicks);
+    window.set_strip_label(slint::SharedString(view.stripLabel));
+    window.set_timing_network(slint::SharedString(view.network));
     window.set_timing_beats_per_bar(view.beatsPerBar);
     window.set_clock_obey(view.obey);
     window.set_timing_ready(view.ready);
@@ -203,6 +300,35 @@ void publishClockPorts(MainWindow& window, const std::vector<std::string>& input
     }
     window.set_clock_in_ports(ports);
     window.set_clock_in_port_index(picked);
+}
+
+std::vector<std::uint8_t>
+publishCdjFollow(MainWindow& window, const std::vector<CdjPlayer>& players, std::uint8_t follow) {
+    std::vector<std::uint8_t> numbers{0};
+    auto choices = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    choices->push_back(slint::SharedString("tempo master"));
+    int picked = 0;
+    for (const CdjPlayer& player : players) {
+        numbers.push_back(player.number);
+        std::string text = "player " + std::to_string(player.number);
+        if (!player.name.empty()) {
+            text += " \xC2\xB7 " + player.name;
+        }
+        choices->push_back(slint::SharedString(text));
+        if (player.number == follow) {
+            picked = static_cast<int>(numbers.size()) - 1;
+        }
+    }
+    if (follow != 0 && picked == 0) {
+        // Asked for and not on the network now: kept, and said to be missing.
+        numbers.push_back(follow);
+        choices->push_back(
+            slint::SharedString("player " + std::to_string(follow) + " \xE2\x80\x94 not heard"));
+        picked = static_cast<int>(numbers.size()) - 1;
+    }
+    window.set_cdj_follow_choices(choices);
+    window.set_cdj_follow_index(picked);
+    return numbers;
 }
 
 void publishControlLimits(MainWindow& window) {
