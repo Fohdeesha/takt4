@@ -175,7 +175,9 @@ inline Network::Config testConfig(std::uint16_t peerAnnounce, std::function<std:
 /// thread while it runs, and — once `playing` — the player's status and beats at 128 BPM.
 class SimulatedRig {
 public:
-    SimulatedRig() : announce_(kDevices) {}
+    // Both sockets made here, on the test's own thread: a socket's checks are Catch's REQUIREs,
+    // which only that thread may run (ThreadSanitizer, the first linux-tsan run of these).
+    SimulatedRig() : announce_(kDevices), out_(kDevices) {}
     ~SimulatedRig() { stop(); }
 
     std::uint16_t announcePort() const { return announce_.port(); }
@@ -201,7 +203,7 @@ public:
 
 private:
     void run() {
-        UdpPeer out(kDevices);
+        UdpPeer& out = out_;
         const Mac playerMac{0x74, 0x5e, 0x1c, 0, 0, 2};
         const Mac mixerMac{0x00, 0xe0, 0x36, 0, 0, 33};
         const double bpm = 128.0;
@@ -254,6 +256,7 @@ private:
     }
 
     UdpPeer announce_;
+    UdpPeer out_;
     Network::Ports ports_;
     std::thread thread_;
     std::atomic<bool> running_{false};

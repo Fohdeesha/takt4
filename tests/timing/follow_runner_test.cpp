@@ -177,15 +177,21 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
         }
         std::size_t nearby = 0;
         std::size_t own = 0;
+        double nearest = 0.0;
+        int nearestValue = 0;
         for (const Cue& cue : cues) {
             const double off = cue.at - heard[i].moment - delay;
             if (std::abs(off) < 0.45 * period) {
                 ++nearby;
+                nearest = off;
+                nearestValue = cue.value;
                 if (cue.value == static_cast<int>(heard[i].beatInBar) && std::abs(off) < 0.010) {
                     ++own;
                 }
             }
         }
+        // What a miss was by: the cue's place in the bar, and how far off its beat it landed.
+        INFO("its cue said " << nearestValue << ", " << nearest * 1000.0 << " ms off");
         CHECK(nearby == 1); // one cue for each beat, and only one
         CHECK(own == 1);    // and it is this beat's, on time
         onTheirBeat += own;
