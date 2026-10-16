@@ -55,7 +55,9 @@ inline std::uint16_t allowedPort() {
 }
 
 /// A UDP socket of the test's own, at `ip`: what a simulated device sends from and hears on.
-class UdpPeer {
+/// Winsock is held up for the socket's life by the base, which is constructed first; elsewhere it
+/// is an empty struct, which as a member clang calls an unused field.
+class UdpPeer : private takt4::net::WinsockGuard {
 public:
     explicit UdpPeer(std::uint32_t ip, std::uint16_t port = 0) {
         socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -127,7 +129,6 @@ public:
     }
 
 private:
-    takt4::net::WinsockGuard winsock_;
     takt4::net::Socket socket_ = takt4::net::kInvalidSocket;
     std::uint16_t port_ = 0;
 };

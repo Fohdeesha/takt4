@@ -41,11 +41,12 @@ constexpr std::int64_t kRetryJoinMicros = 250'000;
 /// A device that sent a beat this recently is beating, for the screen.
 constexpr std::int64_t kBeatingMicros = 2'000'000;
 
+#if defined(_WIN32)
+/// Windows gives a card's network as a prefix length; the others as a mask.
 std::uint32_t maskOfPrefix(unsigned prefix) noexcept {
     return prefix == 0 ? 0u : prefix >= 32 ? 0xffffffffu : ~((1u << (32 - prefix)) - 1u);
 }
 
-#if defined(_WIN32)
 std::string narrow(const wchar_t* wide) {
     if (wide == nullptr || *wide == L'\0') {
         return {};
