@@ -4,6 +4,7 @@
 #include "core/output/transports.hpp"
 #include "core/timing/beat_grid.hpp"
 #include "core/timing/external_beats.hpp"
+#include "core/timing/prolink_follower.hpp"
 #include "core/trigger/rule.hpp"
 
 #include "support/fake_grid_source.hpp"
@@ -19,6 +20,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -395,4 +398,132 @@ TEST_CASE("following a grid that is not Link, the Link output leads at its tempo
     REQUIRE(runner.sync());
     CHECK(runner.transports().link().enabled());
     runner.stop();
+}
+
+namespace {
+
+/// The CDJs as the follower reads them, played by a test thread: each beat pushed when it comes,
+/// stamped on Link's clock.
+class PushedFeed final : public takt4::timing::CdjFeed {
+public:
+    explicit PushedFeed(std::function<std::int64_t()> clock) : clock_(std::move(clock)) {}
+    std::int64_t now() const noexcept override { return clock_(); }
+    bool popBeat(takt4::timing::prolink::VirtualPlayer::Heard& out) noexcept override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (beats_.empty()) {
+            return false;
+        }
+        out = beats_.front();
+        beats_.pop_front();
+        return true;
+    }
+    void join() noexcept override {}
+    void leave() noexcept override {}
+    /// A beat of player 1 at `bpm`, `beatInBar`, heard now.
+    void push(double bpm, std::uint8_t beatInBar) {
+        takt4::timing::prolink::VirtualPlayer::Heard beat;
+        beat.at = clock_();
+        beat.device = 1;
+        beat.bpm = bpm;
+        beat.beatInBar = beatInBar;
+        beat.pitch = 0x100000;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        beats_.push_back(beat);
+    }
+
+private:
+    std::function<std::int64_t()> clock_;
+    std::mutex mutex_;
+    std::deque<takt4::timing::prolink::VirtualPlayer::Heard> beats_;
+};
+
+} // namespace
+
+TEST_CASE("following the CDJs, a hot cue's downbeat that comes a moment late goes out as the "
+          "bar's first, not as the beat the grid expected",
+          "[output][timing][follow][prolink][slow]") {
+    // A CDJ sends its beats on its own 3 ms step, so a beat can come a moment after the tempo
+    // puts it. The tracker's beats come a pipeline late and are fired on a prediction; a followed
+    // grid's come on time, and a prediction at no lead would race them — and win with the bar
+    // the grid expected. A quantised hot cue keeps the time and restarts the bar: its downbeat,
+    // two milliseconds late, has to reach the wire as 1.
+    LoopbackReceiver media;
+    Transports::Config config;
+    OutputTarget server;
+    server.name = "media";
+    server.host = "127.0.0.1";
+    server.port = media.port();
+    config.outputs = {server};
+    ExternalBeats beats;
+    OutputRunner runner(beats, config);
+    runner.post(OutputCommand::rules({cueOnEveryBeat()}));
+    REQUIRE(runner.triggers().rule(0).valid());
+    const auto linkNow = [&runner] { return runner.transports().link().now().count(); };
+    PushedFeed feed(linkNow);
+    takt4::timing::ProLinkFollower follower(feed);
+    const StopsWhenDone stops{beats};
+
+    struct Cue {
+        std::int64_t at = 0;
+        int value = 0;
+    };
+    std::mutex mutex;
+    std::vector<Cue> cues;
+    std::atomic<bool> listening{true};
+    std::thread listener([&] {
+        while (listening.load(std::memory_order_acquire)) {
+            const std::string datagram = media.receive();
+            if (datagram.rfind("/cue", 0) == 0) {
+                const std::int64_t at = linkNow();
+                const std::lock_guard<std::mutex> lock(mutex);
+                cues.push_back({at, lastInt(datagram)});
+            }
+        }
+    });
+
+    runner.start();
+    beats.start(follower, BeatGrid::Options{4, 4.0});
+    constexpr double kBpm = 125.0;
+    const auto period = static_cast<std::int64_t>(std::llround(60e6 / kBpm));
+    const std::int64_t first = linkNow() + 200'000;
+    // 1 2 3 4 1 2 3, then the hot cue: 1, two milliseconds late, and on from there.
+    const std::vector<std::uint8_t> bars{1, 2, 3, 4, 1, 2, 3, 1, 2, 3, 4, 1};
+    constexpr std::size_t kCue = 7;
+    std::vector<std::int64_t> moments;
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        const std::int64_t due =
+            first + static_cast<std::int64_t>(i) * period + (i == kCue ? 2'000 : 0);
+        while (linkNow() < due - 2'000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        while (linkNow() < due) {
+            std::this_thread::yield();
+        }
+        moments.push_back(linkNow());
+        feed.push(kBpm, bars[i]);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    beats.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    runner.stop();
+    listening.store(false, std::memory_order_release);
+    listener.join();
+
+    // One cue for each beat pushed, on it, with the bar it was pushed with.
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        INFO("beat " << i << ", " << int(bars[i]) << " of 4");
+        std::size_t onIt = 0;
+        int value = 0;
+        for (const Cue& cue : cues) {
+            const std::int64_t after = cue.at - moments[i];
+            if (after > -3'000 && static_cast<double>(after) < 0.4 * static_cast<double>(period)) {
+                ++onIt;
+                value = cue.value;
+            }
+        }
+        CHECK(onIt == 1);
+        CHECK(value == static_cast<int>(bars[i]));
+    }
+    CHECK(runner.scheduler().predictedFires() == 0);
+    CHECK(runner.errors() == 0);
 }

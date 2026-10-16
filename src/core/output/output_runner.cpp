@@ -1344,6 +1344,14 @@ void OutputRunner::drainOnce(double now) {
             return;
         }
         scheduler_.restate(source_.state());
+        // A source whose beats arrive on their moment needs no prediction to be on time, and
+        // gets one only for an output that wants its beat early. Predicted for nothing earlier
+        // than the beat's own moment, it races the beat itself — and wins whenever the beat
+        // comes a moment late, as a CDJ's packet does on its 3 ms step, carrying the bar the
+        // grid expected rather than the one the DJ's hot cue jumped to.
+        if (lead >= 0.0 && source_.beatsOnTime()) {
+            return;
+        }
         while (const std::optional<ScheduledBeat> next = scheduler_.due(now, lead, staleAfter)) {
             fireBeat(*next, now);
         }

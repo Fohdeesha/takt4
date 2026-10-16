@@ -93,6 +93,10 @@ public:
     }
     /// See the class for what is taken and what is refused.
     bool post(const engine::Command& command) override;
+    /// Each beat is pushed as its moment passes — or, from the CDJs, as its packet comes, a
+    /// moment after the tempo puts it — so the output thread has it on time, with its own place
+    /// in the bar.
+    bool beatsOnTime() const noexcept override { return true; }
 
     /// Commands refused because a followed grid cannot carry them out — a tap, a pin, a hold.
     std::uint64_t commandsRefused() const noexcept {

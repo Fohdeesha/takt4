@@ -81,6 +81,11 @@ public:
     /// the settings. Applied by the source's own thread, between whatever it is doing. False
     /// when it was not taken — the queue is full, or this source cannot carry the command out.
     virtual bool post(const Command& command) = 0;
+    /// Whether a beat reaches the output thread on its own moment — a grid followed from
+    /// somewhere else, whose beats are sent as their moment passes — rather than a pipeline after
+    /// it, as the tracker's are. The output thread then fires a beat ahead of being heard only
+    /// for an output that wants it early (`output::BeatScheduler`).
+    virtual bool beatsOnTime() const noexcept { return false; }
 
 protected:
     BeatSource() = default;
@@ -115,6 +120,7 @@ public:
     EngineIntensity intensity() const noexcept override { return selected().intensity(); }
     std::uint64_t runNumber() const noexcept override { return selected().runNumber(); }
     bool post(const Command& command) override { return selected().post(command); }
+    bool beatsOnTime() const noexcept override { return selected().beatsOnTime(); }
 
 private:
     std::atomic<BeatSource*> selected_;
