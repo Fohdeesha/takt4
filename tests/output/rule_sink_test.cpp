@@ -1,4 +1,5 @@
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 #include "core/output/midi_clock.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
@@ -355,6 +356,121 @@ TEST_CASE("held messages stop at the cap, the newest dropped and counted", "[out
         CHECK(lighting.queued() == RuleSink::kMaxQueued);
         CHECK(lighting.dropped() == 88);
     }
+}
+
+TEST_CASE("a full queue refuses a press before a release, and says what it refused",
+          "[output][trigger][midi][release]") {
+    // A Note Off or a clip taken off that a full queue drops is a
+    // note or a beam left on, where a press dropped is a cue missed: so a release has as much
+    // room again past the cap, and one refused even so is said to be (`send` false), so that what
+    // it was letting go of stays held for the next PANIC, Stop or silence.
+    const auto cable = std::make_shared<Cable>();
+    Transports transports(midiRig({midiOutput("desk", 1.0)}, cable));
+    RuleSink sink(transports);
+    sink.setNow(0.0);
+    for (std::size_t i = 0; i < RuleSink::kMaxQueued; ++i) {
+        REQUIRE(sink.send(midi(Message::Kind::MidiNote, 60, 100)));
+    }
+    CHECK_FALSE(sink.send(midi(Message::Kind::MidiNote, 61, 100))); // a press: refused
+    CHECK_FALSE(sink.send(midi(Message::Kind::MidiCc, 7, 0)));      // a controller holds nothing
+    CHECK(sink.send(midi(Message::Kind::MidiNoteOff, 60, 0)));      // a release: room for it
+    CHECK(sink.send(midi(Message::Kind::MidiNote, 60, 0)));         // velocity zero is one too
+    for (std::size_t i = 2; i < RuleSink::kMaxQueued; ++i) {
+        REQUIRE(sink.send(midi(Message::Kind::MidiNoteOff, 60, 0)));
+    }
+    CHECK(sink.queued() == 2 * RuleSink::kMaxQueued);
+    CHECK_FALSE(sink.send(midi(Message::Kind::MidiNoteOff, 60, 0))); // and then even a release
+    CHECK(sink.dropped() == 3);
+    // What was taken goes out in the order it came: every press before every release.
+    sink.releaseDue(1.0);
+    REQUIRE(cable->heard.size() == 2 * RuleSink::kMaxQueued);
+    using Bytes = std::vector<unsigned char>;
+    CHECK(cable->heard.front().second == Bytes{0x94, 60, 100});
+    CHECK(cable->heard[RuleSink::kMaxQueued].second == Bytes{0x84, 60, 0});
+    CHECK(cable->heard.back().second == Bytes{0x84, 60, 0});
+
+    SECTION("and the lighting's: a clip refused at the cap, a clip taken off at twice it") {
+        Transports::Config config;
+        config.patch = {takt4::dmx::liberation::zone("laser", 0, 1)};
+        config.patch[0].id = "laser";
+        Transports lit(config);
+        RuleSink lighting(lit);
+        lighting.setNow(0.0);
+        const auto clip = [](std::uint16_t which) {
+            Message message;
+            message.kind = Message::Kind::Dmx;
+            message.fixtures = 0b1;
+            message.payload.kind = takt4::dmx::EffectKind::Clip;
+            message.payload.clip = which;
+            message.payload.level = 255;
+            message.moment = 1.0;
+            return message;
+        };
+        for (std::size_t i = 0; i < RuleSink::kMaxQueued; ++i) {
+            REQUIRE(lighting.send(clip(5)));
+        }
+        CHECK_FALSE(lighting.send(clip(5)));
+        for (std::size_t i = 0; i < RuleSink::kMaxQueued; ++i) {
+            REQUIRE(lighting.send(clip(0)));
+        }
+        CHECK_FALSE(lighting.send(clip(0)));
+        CHECK(lighting.queued() == 2 * RuleSink::kMaxQueued);
+    }
+}
+
+TEST_CASE("letting go of the rig drops what would put a hold on, and keeps the releases",
+          "[output][trigger][release]") {
+    // Everything still waiting out the latency when the input goes
+    // quiet: the note ons and the laser clips go unsent, since nothing would take them off after;
+    // the note offs, the clip taken off, a controller and a lamp's cue still go at their time.
+    const auto cable = std::make_shared<Cable>();
+    Transports::Config config = midiRig({midiOutput("desk", 0.0)}, cable);
+    config.patch = {takt4::dmx::liberation::zone("laser", 0, 1),
+                    takt4::dmx::fixtureFromMode("lamp", 0, 0, 100)};
+    config.patch[0].id = "laser";
+    config.patch[1].id = "lamp";
+    Transports transports(config);
+    transports.setLatencySeconds(0.150);
+    RuleSink sink(transports);
+    sink.setNow(10.0);
+    const auto at = [](Message message) {
+        message.moment = 10.0;
+        return message;
+    };
+    REQUIRE(sink.send(at(midi(Message::Kind::MidiNote, 60, 100))));
+    REQUIRE(sink.send(at(midi(Message::Kind::MidiNoteOff, 62, 0))));
+    REQUIRE(sink.send(at(midi(Message::Kind::MidiNote, 63, 0))));
+    REQUIRE(sink.send(at(midi(Message::Kind::MidiCc, 7, 127))));
+    Message arm;
+    arm.kind = Message::Kind::Dmx;
+    arm.fixtures = 0b01;
+    arm.payload.kind = takt4::dmx::EffectKind::Clip;
+    arm.payload.clip = 5;
+    arm.payload.level = 255;
+    REQUIRE(sink.send(at(arm)));
+    Message lamp;
+    lamp.kind = Message::Kind::Dmx;
+    lamp.fixtures = 0b10;
+    lamp.payload.kind = takt4::dmx::EffectKind::Level;
+    lamp.payload.role = takt4::dmx::Role::Dimmer;
+    lamp.payload.level = 180;
+    REQUIRE(sink.send(at(lamp)));
+    REQUIRE(sink.queued() == 6);
+    REQUIRE(cable->heard.empty());
+
+    sink.dropQueuedHolds();
+    CHECK(sink.queued() == 4);
+    sink.releaseDue(10.2);
+    using Bytes = std::vector<unsigned char>;
+    std::vector<Bytes> heard;
+    for (const auto& entry : cable->heard) {
+        heard.push_back(entry.second);
+    }
+    CHECK(heard == std::vector<Bytes>{{0x84, 62, 0}, {0x94, 63, 0}, {0xB4, 7, 127}});
+    const auto levels = transports.dmx().levels(0);
+    REQUIRE(levels.size() >= 100);
+    CHECK(levels[0] == 0);    // the zone never armed
+    CHECK(levels[99] == 180); // and the lamp's cue started
 }
 
 TEST_CASE("a CC follow-up stays a CC, because a controller has no off message", "[trigger][midi]") {

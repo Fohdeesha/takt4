@@ -65,8 +65,12 @@ public:
     /// still reaches the observer, and that is the point: a muted rule is running, and an
     /// operator watching the log has to be able to tell "this rule is muted" from "this rule
     /// has stopped triggering", which look identical from outside.
+    ///
+    /// `taken` is what the sink said of it (`Sink::send`): false when some of it was refused,
+    /// a queue being full, and always false for a muted fire. A release that was not taken has
+    /// let go of nothing.
     using FireObserver = std::function<void(std::string_view ruleId, const Message&, bool followUp,
-                                            std::span<const Value> slots, bool muted)>;
+                                            std::span<const Value> slots, bool muted, bool taken)>;
 
     /// The sink must outlive this. Nothing is sent until there are rules.
     explicit TriggerEngine(Sink& sink) noexcept;
@@ -181,6 +185,11 @@ public:
     /// Every fire held for a rule's delay, dropped unsent — for the input going quiet, which
     /// fires nothing new. PANIC and Stop drop them too (`panic`, `flushFollowUps`).
     void dropHeldFires() noexcept;
+    /// Every follow-up owed that is a gesture of its own (`Message::gesture`) — a note on owed a
+    /// beat after the press — dropped unsent, for the same reason: going out into the silence, a
+    /// note on was a note held on with nothing to let go of it.
+    /// Releases stay owed. PANIC and Stop drop gestures as they send the releases.
+    void dropOwedGestures() noexcept;
 
     /// Fires held for their rule's delay — see `Rule::Config::delayOn`.
     std::size_t heldFires() const noexcept;

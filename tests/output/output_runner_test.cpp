@@ -12,6 +12,7 @@
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/rule.hpp"
 
+#include "support/fake_beat_source.hpp"
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -3376,4 +3377,206 @@ TEST_CASE("a node switched back on within its farewell is fed, not fought",
     CHECK(leaving() == 1);
     runner.post(OutputCommand::outputs({target}));
     CHECK(leaving() == 0);
+}
+
+namespace {
+
+/// A beat a source following nothing in particular calls: allowed to fire (`acquired`) and not
+/// locked, so the output thread fires it as heard and predicts nothing from it.
+takt4::engine::EngineBeat lateBeat(std::int64_t hostMicros) {
+    takt4::engine::EngineBeat beat;
+    beat.event.bpm = 128.0;
+    beat.event.gridBpm = 128.0;
+    beat.event.beatsPerBar = 4;
+    beat.event.beatInBar = 1;
+    beat.event.downbeat = true;
+    beat.event.acquired = true;
+    beat.state.bpm = 128.0;
+    beat.state.gridBpm = 128.0;
+    beat.state.acquired = true;
+    beat.state.beatsPerBar = 4;
+    beat.state.beatInBar = 1;
+    beat.state.beats = 1;
+    beat.state.bars = 1;
+    beat.hostMicros = hostMicros;
+    return beat;
+}
+
+/// Whether the zone at channel 1 is armed at any look, taken every millisecond or so for
+/// `seconds` — read between two of the output thread's rounds each time.
+bool armedWithin(const OutputRunner& runner, double seconds) {
+    bool armed = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (std::chrono::steady_clock::now() < until) {
+        armed = armed || zoneAndLamp(runner)[0] != 0;
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    return armed;
+}
+
+} // namespace
+
+TEST_CASE("the input going quiet leaves no laser armed by a clip still on its way",
+          "[output][dmx][liberation][release]") {
+    // The tracker calls beats until the moment it says "no signal",
+    // and its last beat came within 0.17 s of that edge in four excerpts of ten: with a positive
+    // latency, that beat's clip was still held for its moment when the lasers were disarmed, and
+    // armed the zone straight after — with nothing to take it off until STOP or PANIC. Swept over
+    // where the last beat falls before the edge, from on it to a hair inside the latency.
+    constexpr double kLatency = 0.150;
+    int held = 0;
+    for (const double before : {0.0, 0.02, 0.05, 0.08, 0.11, 0.13}) {
+        INFO("the last beat " << before * 1000.0 << " ms before the edge");
+        takt4::testing::FakeBeatSource source;
+        OutputRunner runner(source, zoneBesideLamp());
+        runner.setLatencySeconds(kLatency);
+        Rule::Config clip = heldClip();
+        clip.trigger = takt4::trigger::Trigger::Beat;
+        runner.post(OutputCommand::rules({clip}));
+        runner.start();
+        const std::int64_t linkNow = runner.transports().link().now().count();
+
+        // The last beat, `before` ago, fired — and then at once the edge, while its clip still
+        // waits for its moment.
+        const takt4::engine::EngineBeat beat =
+            lateBeat(linkNow - static_cast<std::int64_t>(before * 1e6));
+        REQUIRE(source.push(beat));
+        REQUIRE(waitForFires(runner, 1) == 1);
+        const bool waiting =
+            runner.inspect([](const auto&, const auto&, const takt4::output::RuleSink& sink) {
+                return sink.queued() == 1;
+            });
+        takt4::tracking::TempoState quiet = beat.state;
+        quiet.noSignal = true;
+        quiet.acquired = false;
+        source.publish(quiet);
+        waitForRounds(runner, 2);
+        // Then the latency, and half a second more: the zone is never armed.
+        CHECK_FALSE(armedWithin(runner, kLatency + 0.5));
+        CHECK(runner.holds().zones == 0);
+        runner.stop();
+        // A machine that stalled long enough to let the clip go before the edge disarms it at the
+        // edge, which proves nothing here: counted, so a run where no phase was met says so.
+        held += waiting ? 1 : 0;
+    }
+    CHECK(held > 0);
+}
+
+TEST_CASE("a beat still on the ring when the rig is let go of is not fired",
+          "[output][dmx][liberation][release]") {
+    // The silence's state is published after the beats called before it, and a round can read it
+    // before it has taken them: the last of them was then fired straight after the let-go, and
+    // its clip armed the zone with nothing to take it off. What is on the ring at the let-go was
+    // called before it, and goes unsent.
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, zoneBesideLamp());
+    Rule::Config clip = heldClip();
+    clip.trigger = takt4::trigger::Trigger::Beat;
+    runner.post(OutputCommand::rules({clip}));
+    const std::int64_t linkNow = runner.transports().link().now().count();
+    REQUIRE(source.push(lateBeat(linkNow)));
+    runner.post(OutputCommand::inputLost()); // stopped: applied here, by the ring's one consumer
+    CHECK(source.waiting() == 0);
+    CHECK(runner.beatsUnsent() == 1);
+    runner.start();
+    CHECK_FALSE(armedWithin(runner, 0.3));
+    CHECK(firesOf(runner) == 0);
+    runner.stop();
+}
+
+TEST_CASE("an input outage drops the clip and the note still on their way, and lets go of both",
+          "[output][dmx][liberation][release]") {
+    // The same on the outage's path, where nothing is timing: a note and a clip fired while the
+    // runner is stopped, both held for the latency, and then the input lost before they go.
+    auto cable = std::make_shared<Bytes>();
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, heldRig(cable));
+    runner.setLatencySeconds(0.150);
+    runner.post(OutputCommand::rules({heldNote(), heldClip()}));
+    runner.post(OutputCommand::testRule("note"));
+    runner.post(OutputCommand::testRule("clip"));
+    REQUIRE(cable->empty());
+    REQUIRE(zoneAndLamp(runner)[0] == 0);
+    REQUIRE(runner.holds().notes == 1);
+    REQUIRE(runner.holds().zones == 1);
+    (void)runner.takeFired();
+
+    runner.post(OutputCommand::inputLost());
+    CHECK(runner.holds().notes == 0);
+    CHECK(runner.holds().zones == 0);
+    // Both let go of beside the rules that held them — the zone's too, which was forgotten before
+    // its release was made.
+    const std::vector<std::string> logged = releasesLogged(runner);
+    REQUIRE(logged.size() == 2);
+    CHECK(logged[0] == "note: note off 60 ch 1");
+    CHECK_THAT(logged[1],
+               Catch::Matchers::StartsWith("clip: ") && Catch::Matchers::EndsWith(" none"));
+
+    // The rounds then send what is due: the Note Off alone, and the zone stays disarmed.
+    runner.start();
+    CHECK_FALSE(armedWithin(runner, 0.150 + 0.5));
+    runner.stop();
+    CHECK(*cable == Bytes{{0x80, 60, 0}});
+}
+
+TEST_CASE("the input going quiet drops a note owed as a gesture of its own",
+          "[output][trigger][release]") {
+    // S1's second path. A follow-up with a kind of its own — a second note a beat after the press
+    // — went out into the silence after the rig had been let go of, a note held on.
+    auto cable = std::make_shared<Bytes>();
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, heldRig(cable));
+    Rule::Config note = heldNote();
+    takt4::trigger::FollowUp again;
+    again.kind = takt4::trigger::Message::Kind::MidiNote;
+    again.number = 61;
+    again.value = takt4::trigger::Value::ofInt(100);
+    again.unit = takt4::trigger::DelayUnit::Milliseconds;
+    again.delaySeconds = 0.3;
+    note.followUps.push_back(again);
+    runner.post(OutputCommand::rules({note}));
+    runner.post(OutputCommand::testRule("note"));
+    REQUIRE(*cable == Bytes{{0x90, 60, 100}});
+    runner.post(OutputCommand::inputLost());
+    runner.start();
+    waitForRounds(runner, 2);
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    runner.stop();
+    CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+}
+
+TEST_CASE("a Note Off a full queue refused leaves the note held, and PANIC still lets go of it",
+          "[output][trigger][release]") {
+    // A release the sink's queue had no room for was counted as let
+    // go of, and nothing would send it again. Every message here waits a second for the desk's
+    // delay: 512 Note Ons fill the room for presses, and 512 Note Offs of another note the room
+    // past it that releases have — so the next release is refused.
+    auto cable = std::make_shared<Bytes>();
+    Transports::Config config = heldRig(cable);
+    config.outputs[0].delaySeconds = 1.0;
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    Rule::Config offs = heldNote();
+    offs.id = "offs";
+    offs.sendKind = takt4::trigger::Message::Kind::MidiNoteOff;
+    offs.number.fixed = takt4::trigger::Value::ofInt(61);
+    runner.post(OutputCommand::rules({heldNote(), offs}));
+    for (std::size_t i = 0; i < takt4::output::RuleSink::kMaxQueued; ++i) {
+        runner.post(OutputCommand::testRule("note"));
+    }
+    for (std::size_t i = 0; i < takt4::output::RuleSink::kMaxQueued; ++i) {
+        runner.post(OutputCommand::testRule("offs"));
+    }
+    REQUIRE(runner.inspect([](const auto&, const auto&, const takt4::output::RuleSink& sink) {
+        return sink.queued();
+    }) == 2 * takt4::output::RuleSink::kMaxQueued);
+    REQUIRE(runner.holds().notes == 1);
+
+    runner.post(OutputCommand::ruleMuted("note", true));
+    CHECK(runner.holds().notes == 1); // its Note Off was refused: the note is still on
+
+    runner.post(OutputCommand::panic(true));
+    CHECK(runner.holds().notes == 0);
+    REQUIRE(cable->size() == 2 * takt4::output::RuleSink::kMaxQueued + 1);
+    CHECK(cable->back() == std::vector<unsigned char>{0x80, 60, 0});
 }

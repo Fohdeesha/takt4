@@ -48,7 +48,10 @@ public:
     /// The transports must outlive this.
     explicit RuleSink(Transports& transports) noexcept;
 
-    void send(const trigger::Message& message) override;
+    /// False when some of it was refused: a queue full (`kMaxQueued`), or lighting held back by
+    /// `holdLighting`. A message that reached no output at all is still taken — it is counted as
+    /// undeliverable, and nothing is waiting to be let go of on an output that is not there.
+    bool send(const trigger::Message& message) override;
 
     /// The output thread's clock, which is what every hold is measured against — and where on
     /// it a lighting effect starts, since an effect **starts** at an instant and runs for a
@@ -80,6 +83,14 @@ public:
     /// lights where they are: an effect started only to be frozen on its first frame would be a
     /// flash held at full.
     void dropQueuedLighting() noexcept { dmxQueue_.clear(); }
+    /// Forgets, unsent, every held message that puts on what only a release takes off: a laser
+    /// clip, and a MIDI Note On — a Liberation clip on a rig that drives it by MIDI. For the input
+    /// going quiet (`OutputRunner::letGoOfTheRig`): the tracker calls beats until the moment it
+    /// says "no signal", so the last beat's clip was often still waiting out the latency, and armed
+    /// its zone after the disarm with nothing left to take it off.
+    /// Releases stay held, and so do the lamps' cues — the lamps keep their levels through a
+    /// silence.
+    void dropQueuedHolds() noexcept;
     /// While true, lighting is not sent: for the moment a PANIC pays out every release it owes,
     /// which it does so that a clip or a laser note lets go. The lights are to be frozen where
     /// they are (the operator's call, 2026-09-16), and a lighting release is the fired effect
@@ -103,12 +114,16 @@ public:
     /// How many held messages may wait at once, of each kind. A second of delay on a rule
     /// firing every 32nd note at 215 BPM is 115; past this something upstream is wrong, and
     /// dropping the newest with a count beats growing a queue on the thread with a MIDI clock.
+    ///
+    /// **A release is refused only at twice this**: a Note Off or a clip taken off dropped is a
+    /// note or a beam left on, where a press dropped is a cue missed. And one refused even so
+    /// leaves its hold in place for the next PANIC, Stop or silence to let go of (`send`).
     static constexpr std::size_t kMaxQueued = 512;
 
 private:
-    void sendOsc(const trigger::Message& message);
-    void sendMidi(const trigger::Message& message);
-    void sendDmx(const trigger::Message& message);
+    bool sendOsc(const trigger::Message& message);
+    bool sendMidi(const trigger::Message& message);
+    bool sendDmx(const trigger::Message& message);
     /// Starts one effect at `at` — now, or the moment it was held for — counting whether it
     /// reached a real channel.
     void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at);

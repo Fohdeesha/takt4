@@ -256,6 +256,11 @@ struct Message {
     /// fired. PANIC, STOP, a mute or a delete send every release still owed at once, so nothing
     /// is left latched; a gesture is not a release, and is dropped rather than sent early — a CC
     /// owed a bar on went out the instant STOP was pressed.
+    ///
+    /// **A kind of its own that sends what a release would is a release** — the same controller,
+    /// the same bend, the fired note's Note Off — however it was spelled (`releasesFired`). The
+    /// editor calls the two spellings the same thing, and a CC 20 back to 0 written with the
+    /// explicit kind was dropped by PANIC as a gesture, leaving the receiver at 127.
     bool gesture = false;
 };
 
@@ -311,6 +316,12 @@ constexpr bool sameNumber(Message::Kind a, Message::Kind b) noexcept {
     };
     return sendsNumber(a) && sendsNumber(b) && family(a) == family(b);
 }
+
+/// Whether `follow`, a follow-up written with a kind of its own, lets go of `fired` exactly as a
+/// release would: the same controller or program, the same bend, or the fired note's Note Off (a
+/// Note On at velocity zero included). A follow-up keeps the fired message's channel and outputs,
+/// so the kind and the number are all there is to compare. See `Message::gesture`.
+bool releasesFired(const Message& fired, const Message& follow) noexcept;
 
 /// Whether the kind puts `Message::value` on the wire. False for program change, which is a
 /// two-byte message and has nowhere to put one.
@@ -597,7 +608,11 @@ constexpr bool followUpFits(Message::Kind kind, Message::Kind sent) noexcept {
 class Sink {
 public:
     virtual ~Sink() = default;
-    virtual void send(const Message& message) = 0;
+    /// Whether the message was taken: sent, or held to be sent at its moment. False when some of
+    /// it was refused, because too many messages were already waiting (`output::RuleSink::
+    /// kMaxQueued`). What a refused release would have let go of is then still held, and has to
+    /// be let go of later.
+    virtual bool send(const Message& message) = 0;
 };
 
 /// One rule: the *when → only if → send*.

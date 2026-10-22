@@ -24,6 +24,26 @@ unsigned char sevenBits(int value) noexcept {
     return static_cast<unsigned char>(std::clamp(value, 0, 127));
 }
 
+/// Whether `message` takes off something a press put on — a Note Off, a Note On at velocity zero,
+/// a laser zone given no clip — which is what a full queue refuses last. See `kMaxQueued`.
+bool letsGo(const trigger::Message& message) noexcept {
+    using Kind = trigger::Message::Kind;
+    return message.kind == Kind::MidiNoteOff ||
+           (message.kind == Kind::MidiNote && message.value == 0) ||
+           (message.kind == Kind::Dmx && message.payload.kind == dmx::EffectKind::Clip &&
+            message.payload.clip == 0);
+}
+
+/// How many may be waiting before `message` is refused.
+std::size_t roomFor(const trigger::Message& message) noexcept {
+    return letsGo(message) ? 2 * RuleSink::kMaxQueued : RuleSink::kMaxQueued;
+}
+
+/// Whether held MIDI bytes are a Note On with a velocity: a note put on.
+bool notePutOn(const std::array<unsigned char, 3>& bytes, std::size_t length) noexcept {
+    return length == 3 && (bytes[0] & 0xF0) == kNoteOn && bytes[2] > 0;
+}
+
 } // namespace
 
 unsigned char midiStatusFor(trigger::Message::Kind kind, int channel) noexcept {
@@ -78,16 +98,22 @@ void RuleSink::setNow(double now) noexcept {
     transports_.osc().setNow(now);
 }
 
-void RuleSink::send(const trigger::Message& message) {
+bool RuleSink::send(const trigger::Message& message) {
     if (message.kind == trigger::Message::Kind::Osc) {
-        sendOsc(message);
-    } else if (message.kind == trigger::Message::Kind::Dmx) {
-        if (!lightingHeld_) {
-            sendDmx(message);
-        }
-    } else {
-        sendMidi(message);
+        return sendOsc(message);
     }
+    if (message.kind == trigger::Message::Kind::Dmx) {
+        return !lightingHeld_ && sendDmx(message);
+    }
+    return sendMidi(message);
+}
+
+void RuleSink::dropQueuedHolds() noexcept {
+    std::erase_if(midiQueue_,
+                  [](const HeldMidi& held) { return notePutOn(held.bytes, held.length); });
+    std::erase_if(dmxQueue_, [](const HeldDmx& held) {
+        return held.payload.kind == dmx::EffectKind::Clip && held.payload.clip != 0;
+    });
 }
 
 void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at) {
@@ -177,7 +203,7 @@ void RuleSink::sayUpcomingCues() {
     transports_.artnet().setUpcomingCues(upcoming_);
 }
 
-void RuleSink::sendDmx(const trigger::Message& message) {
+bool RuleSink::sendDmx(const trigger::Message& message) {
     // **Nothing goes on a wire here, and that is the whole shape of DMX.** The effect is
     // handed to the engine, which owns the universe buffers and spends the next two bars
     // turning "fade to full" into forty frames a second of slightly different levels.
@@ -193,13 +219,14 @@ void RuleSink::sendDmx(const trigger::Message& message) {
         // Whatever was held to go a hair after this goes first: see `kReleaseFirstSeconds`.
         startHeldDmx(now_ + kReleaseFirstSeconds);
         startDmx(message.fixtures, message.payload, now_);
-        return;
+        return true;
     }
-    if (dmxQueue_.size() >= kMaxQueued) {
+    if (dmxQueue_.size() >= roomFor(message)) {
         ++dropped_;
-        return;
+        return false;
     }
     dmxQueue_.push_back(held);
+    return true;
 }
 
 void RuleSink::releaseDue(double now) {
@@ -293,14 +320,14 @@ void RuleSink::flushQueuedTo(std::uint64_t outputs) {
     });
 }
 
-void RuleSink::sendOsc(const trigger::Message& message) {
+bool RuleSink::sendOsc(const trigger::Message& message) {
     OscPublisher& osc = transports_.osc();
     // the rule subset. A rule routed to a target that is switched off, or named one this
     // rig does not have, reaches nothing — which is *undeliverable* rather than sent, and is
     // the difference between "your routing is wrong" and "your rule never fired".
     if (!osc.anyTargetIn(message.outputs)) {
         ++undeliverable_;
-        return;
+        return true;
     }
     // Spelled as an optional so the overload is chosen by the argument before it, never by a
     // double quietly converting to the int one. The publisher holds each target to its own
@@ -326,9 +353,12 @@ void RuleSink::sendOsc(const trigger::Message& message) {
         }
     }
     ++delivered_;
+    // The publisher counts what its own full queue drops (`OscPublisher::dropped`). No OSC
+    // message is a hold, so nothing waits on whether this one went.
+    return true;
 }
 
-void RuleSink::sendMidi(const trigger::Message& message) {
+bool RuleSink::sendMidi(const trigger::Message& message) {
     // the design: "Also send configurable note or CC messages on beat and downbeat for MIDI-learn
     // targets." Down whichever of the targets the rule named, which may be several cables
     // — a rig with a lighting desk and a hardware sequencer on it is two — and which may be
@@ -354,6 +384,7 @@ void RuleSink::sendMidi(const trigger::Message& message) {
         bytes[2] = sevenBits(message.value);
     }
     bool sent = false;
+    bool refused = false;
     const std::vector<OutputTarget>& targets = transports_.outputs();
     const double latency = transports_.latencySeconds();
     for (std::size_t i = 0; i < targets.size() && i < kMaxRoutableTargets; ++i) {
@@ -378,8 +409,9 @@ void RuleSink::sendMidi(const trigger::Message& message) {
             port->send(std::span<const unsigned char>(bytes.data(), length));
             continue;
         }
-        if (midiQueue_.size() >= kMaxQueued) {
+        if (midiQueue_.size() >= roomFor(message)) {
             ++dropped_;
+            refused = true;
             continue;
         }
         midiQueue_.push_back(HeldMidi{message.moment, i, bytes, length});
@@ -391,6 +423,7 @@ void RuleSink::sendMidi(const trigger::Message& message) {
         // silent: a rule firing into nothing looks exactly like a rule that never fires.
         ++undeliverable_;
     }
+    return !refused;
 }
 
 } // namespace takt4::output

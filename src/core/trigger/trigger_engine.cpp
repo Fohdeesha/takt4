@@ -64,6 +64,11 @@ void TriggerEngine::dropHeldFires() noexcept {
     std::erase_if(pending_, [](const Pending& waiting) { return waiting.press; });
 }
 
+void TriggerEngine::dropOwedGestures() noexcept {
+    std::erase_if(pending_,
+                  [](const Pending& waiting) { return !waiting.press && waiting.message.gesture; });
+}
+
 void TriggerEngine::releaseRule(std::string_view id, double now) {
     std::vector<Pending> sending;
     std::size_t kept = 0;
@@ -185,13 +190,13 @@ bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noex
 
 void TriggerEngine::deliver(const Message& message, std::string_view ruleId, bool followUp,
                             std::span<const Value> slots) {
-    sink_.send(message);
+    const bool taken = sink_.send(message);
     ++sent_;
     if (observer_) {
         // After the sink, so what an observer is told about has already gone out. A UI
         // showing a message that then failed to send would be worse than one showing
         // nothing — `RuleSink`'s own counters are where "it went nowhere" is reported.
-        observer_(ruleId, message, followUp, slots, false);
+        observer_(ruleId, message, followUp, slots, false, taken);
     }
 }
 
@@ -216,7 +221,7 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
         // nowhere.
         ++muted_;
         if (observer_) {
-            observer_(rule.id(), *message, false, rule.lastSlots(), true);
+            observer_(rule.id(), *message, false, rule.lastSlots(), true, false);
         }
         return true;
     }
@@ -308,7 +313,7 @@ void TriggerEngine::drainDue(double now) {
         if (rule->muted()) {
             ++muted_;
             if (observer_) {
-                observer_(waiting.ruleId, waiting.message, false, waiting.slots, true);
+                observer_(waiting.ruleId, waiting.message, false, waiting.slots, true, false);
             }
             continue;
         }

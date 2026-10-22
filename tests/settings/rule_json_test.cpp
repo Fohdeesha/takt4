@@ -117,7 +117,10 @@ TEST_CASE("a rule survives being written down and read back", "[settings][trigge
         // still behave differently — a seed read as a default, a pool ignored — so this
         // runs both through the real engine and compares what reached the sink.
         struct Recording final : takt4::trigger::Sink {
-            void send(const Message& message) override { sent.push_back(message.address); }
+            bool send(const Message& message) override {
+                sent.push_back(message.address);
+                return true;
+            }
             std::vector<std::string> sent;
         };
 

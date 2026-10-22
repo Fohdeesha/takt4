@@ -309,10 +309,10 @@ OutputRunner::OutputRunner(engine::BeatSource& source, const Transports::Config&
     // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
     triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
                                      bool followUp, std::span<const trigger::Value> slots,
-                                     bool muted) {
+                                     bool muted, bool taken) {
         // What it put on or took off — only if it went: a muted fire held nothing.
         if (!muted) {
-            noteHolds(ruleId, message);
+            noteHolds(ruleId, message, taken);
         }
         Fired entry;
         entry.ruleId = ruleId;
@@ -430,10 +430,14 @@ OutputRunner::Holds OutputRunner::holds() const {
     return Holds{heldNotes_.size(), heldZones_.size()};
 }
 
-void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& message) {
+void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& message, bool taken) {
     using Kind = trigger::Message::Kind;
     // A note on with a velocity: held until a note off reaches the same note on the same
     // outputs. Velocity zero is a note off by convention, and every receiver reads it as one.
+    //
+    // **Held even when some of it was refused** — a note off owed to an output that never had
+    // the note on is nothing — **and let go of only when the release was taken**: one a full
+    // queue refused never goes, and the note it was for is still on.
     if (message.kind == Kind::MidiNote && message.value > 0) {
         for (HeldNote& held : heldNotes_) {
             if (held.channel == message.channel && held.number == message.number &&
@@ -448,6 +452,9 @@ void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& me
         return;
     }
     if (message.kind == Kind::MidiNoteOff || message.kind == Kind::MidiNote) {
+        if (!taken) {
+            return;
+        }
         // Let go of on the outputs it reached, and held still on any it did not.
         std::erase_if(heldNotes_, [&message](HeldNote& held) {
             if (held.channel != message.channel || held.number != message.number) {
@@ -462,6 +469,10 @@ void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& me
         return;
     }
     // A clip arms the zones it reaches and no clip disarms them; whoever armed one last holds it.
+    // No clip refused disarms nothing.
+    if (message.payload.clip == 0 && !taken) {
+        return;
+    }
     const std::vector<dmx::Fixture>& patch = transports_.patch();
     for (std::size_t i = 0; i < patch.size() && i < dmx::kMaxRoutableFixtures; ++i) {
         if (!message.fixtures.test(i) || !armable(patch[i])) {
@@ -594,6 +605,15 @@ void OutputRunner::releaseStale(bool fresh, double now) {
             return true;
         },
         now);
+}
+
+void OutputRunner::releaseRefused(double now) {
+    if (heldNotes_.empty()) {
+        return;
+    }
+    releaseMatching([](const HeldNote&) { return true; }, [](const HeldZone&) { return false; },
+                    now);
+    sink_.flushQueued();
 }
 
 void OutputRunner::mirrorLevels(double now) {
@@ -742,6 +762,8 @@ void OutputRunner::stop() noexcept {
             // used to sit in the queue until the next Start.
             sink_.flushQueued();
             transports_.osc().flushAll();
+            // And a Note Off a full queue refused, now that the queue is empty.
+            releaseRefused(elapsed());
             // Then the lights out — the operator's call for quit as for Stop — and that
             // frame actually sent. Art-Net only goes out in `advance`, paced at 44 Hz, and there
             // is no round after this one: a node left holding the last frame before it would
@@ -892,6 +914,8 @@ void OutputRunner::apply(const OutputCommand& command) {
                 sink_.dropQueuedLighting();
                 sink_.flushQueued();
                 transports_.osc().flushAll();
+                // A Note Off a full queue refused goes now that the queue is empty.
+                releaseRefused(now);
                 // And the lights stop animating — but keep their levels, and keep being sent.
                 // The operator's own call on 2026-09-16: takt4 may be one source among several
                 // on a rig, and a panic that blacked out the stage would take down lights that
@@ -1019,6 +1043,8 @@ void OutputRunner::apply(const OutputCommand& command) {
                 sink_.dropQueuedLighting();
                 sink_.flushQueued();
                 transports_.osc().flushAll();
+                // a Note Off a full queue refused, now that the queue is empty;
+                releaseRefused(now);
                 // and the lights go out and stay out — sent, because the outputs keep running
                 //. The blackout disarms every laser zone with them.
                 transports_.stopClock();
@@ -1267,13 +1293,30 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
 void OutputRunner::letGoOfTheRig(double now) {
     // Link snaps under the first locked beat after it, as after a START.
     transports_.resnapLink();
+    // **Nothing still on its way may put a hold back on.** The
+    // tracker calls beats until the moment it says "no signal", so the last beat's clip was often
+    // still waiting out the latency here, and armed its zone straight after the disarm below —
+    // with nothing left to take it off until STOP or PANIC. So: the clips and the note ons still
+    // waiting for their moment, unsent; every fire still held for its rule's delay; and every
+    // follow-up that is a gesture of its own, which would go out into the silence as a new note
+    // held on. A note on is a Liberation clip too, on a rig that drives it by MIDI.
+    sink_.dropQueuedHolds();
+    triggers_.dropHeldFires();
+    triggers_.dropOwedGestures();
+    // And every beat still on the ring. The silence's state is published after them, so whatever
+    // is there was called before it — by a tracker calling beats through a silence it had not yet
+    // declared — and would otherwise be fired by the next round, after the rig was let go of. The
+    // ring's one consumer is whoever applies this: the output thread, or the caller while it is
+    // stopped, as at STOP.
+    engine::EngineBeat late;
+    while (source_.popBeat(late)) {
+        beatsUnsent_.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Then every note and zone a rule holds, let go of — **before** the zones are forgotten, so a
+    // zone's release is made, and queued behind anything of its own still on the way.
+    releaseHolds([](const std::string&) { return true; }, now);
     transports_.dmx().disarm(now);
     forgetZones();
-    // And the same for what MIDI holds on — a note on is a Liberation clip too, on a rig that
-    // drives it by MIDI — and for a fire still held for its rule's delay, which would otherwise go
-    // out into the silence (see `holds`).
-    triggers_.dropHeldFires();
-    releaseHolds([](const std::string&) { return true; }, now);
     // And no beat predicted from the last ones heard: an input that is gone says nothing about
     // where the next beat is, and the engine's last locked state stays published through it.
     scheduler_.reset();

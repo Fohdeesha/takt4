@@ -29,7 +29,16 @@ namespace {
 /// the reason `trigger::Sink` is an interface at all.
 class Recorder : public takt4::trigger::Sink {
 public:
-    void send(const Message& message) override { sent.push_back(message); }
+    /// Takes everything, unless told to refuse: then it records nothing and says so, as a sink
+    /// with a full queue does.
+    bool send(const Message& message) override {
+        if (refusing) {
+            return false;
+        }
+        sent.push_back(message);
+        return true;
+    }
+    bool refusing = false;
 
     std::vector<std::string> addresses() const {
         std::vector<std::string> out;
@@ -543,6 +552,168 @@ TEST_CASE("a stop lets go of the releases a rule owes and drops its second gestu
     }
 }
 
+TEST_CASE("a follow-up spelled as what lets go of the press is a release, whatever its kind says",
+          "[trigger][engine][release]") {
+    // "CC 20 = 127, then MIDI CC #20 = 0 after a beat": the editor
+    // calls that the same thing as "release" — "two spellings of the same thing and neither is
+    // wrong" — and PANIC, STOP and a mute dropped it as a gesture of its own, leaving the receiver
+    // at 127. What a follow-up sends decides, not how it was written.
+    struct Case {
+        const char* what;
+        Message::Kind fires;
+        int number;
+        Message::Kind follows;
+        int followNumber;
+        int value;
+        bool release;
+    };
+    using Kind = Message::Kind;
+    const std::vector<Case> cases{
+        {"the same controller back to rest", Kind::MidiCc, 20, Kind::MidiCc, 20, 0, true},
+        {"another controller", Kind::MidiCc, 20, Kind::MidiCc, 21, 0, false},
+        {"the note's own note off", Kind::MidiNote, 60, Kind::MidiNoteOff, 60, 0, true},
+        {"the note again at velocity zero", Kind::MidiNote, 60, Kind::MidiNote, 60, 0, true},
+        {"the note struck again", Kind::MidiNote, 60, Kind::MidiNote, 60, 100, false},
+        {"another note's note off", Kind::MidiNote, 60, Kind::MidiNoteOff, 61, 0, false},
+        {"a controller after a note", Kind::MidiNote, 60, Kind::MidiCc, 60, 0, false},
+        {"the bend back to centre", Kind::MidiPitchBend, 0, Kind::MidiPitchBend, 0, 8192, true},
+        {"the same program", Kind::MidiProgramChange, 5, Kind::MidiProgramChange, 5, 0, true},
+        {"another program", Kind::MidiProgramChange, 5, Kind::MidiProgramChange, 6, 0, false},
+    };
+    // PANIC, STOP, a mute or a delete, and the output switched off: each sends the releases owed
+    // at once and drops the gestures.
+    const std::vector<std::pair<const char*, void (*)(TriggerEngine&)>> ways{
+        {"PANIC", [](TriggerEngine& engine) { engine.panic(beatAt(1, 1, 1, 0.5)); }},
+        {"STOP", [](TriggerEngine& engine) { engine.flushFollowUps(); }},
+        {"a mute", [](TriggerEngine& engine) { engine.releaseRule("rule", 0.5); }},
+        {"the output going",
+         [](TriggerEngine& engine) { engine.flushFollowUpsTo(~std::uint64_t{0}); }},
+    };
+    for (const Case& c : cases) {
+        for (const auto& [way, act] : ways) {
+            INFO(c.what << ", then " << way);
+            Recorder sink;
+            TriggerEngine engine(sink);
+            Rule::Config config = simple("rule", Trigger::Beat);
+            config.address.clear();
+            config.sendKind = c.fires;
+            config.number = fixedAt(c.number);
+            config.value = fixedAt(c.fires == Kind::MidiPitchBend ? 16000 : 127);
+            takt4::trigger::FollowUp follow;
+            follow.kind = c.follows;
+            follow.number = c.followNumber;
+            follow.value = Value::ofInt(c.value);
+            follow.unit = takt4::trigger::DelayUnit::Milliseconds;
+            follow.delaySeconds = 10.0;
+            config.followUps.push_back(follow);
+            engine.setRules({config}, true);
+            engine.onBeat(beatAt(1, 1, 1, 0.0));
+            REQUIRE(sink.sent.size() == 1);
+            REQUIRE(engine.pending() == 1);
+            sink.sent.clear();
+            act(engine);
+            CHECK(engine.pending() == 0);
+            if (c.release) {
+                REQUIRE(sink.sent.size() == 1);
+                CHECK(sink.sent[0].kind == c.follows);
+                CHECK(sink.sent[0].value == c.value);
+            } else {
+                CHECK(sink.sent.empty());
+            }
+        }
+    }
+
+    SECTION("a note drawn afresh is judged on each fire's own note") {
+        // A fixed note off after a note that cycles 60, 61: it lets go of the 60s, and after a 61
+        // it is a second gesture — the note off of a note that is not on.
+        Recorder sink;
+        TriggerEngine engine(sink);
+        Rule::Config config = simple("rule", Trigger::Beat);
+        config.address.clear();
+        config.sendKind = Kind::MidiNote;
+        config.number.kind = GeneratorKind::Cycle;
+        config.number.low = 60;
+        config.number.high = 61;
+        config.value = fixedAt(100);
+        takt4::trigger::FollowUp off;
+        off.kind = Kind::MidiNoteOff;
+        off.number = 60;
+        off.value = Value::ofInt(0);
+        off.unit = takt4::trigger::DelayUnit::Milliseconds;
+        off.delaySeconds = 10.0;
+        config.followUps.push_back(off);
+        engine.setRules({config}, true);
+        std::vector<int> sent;
+        for (int fire = 0; fire < 2; ++fire) {
+            sink.sent.clear();
+            engine.onBeat(beatAt(static_cast<std::uint64_t>(fire) + 1, 1, 1, fire * 0.5));
+            REQUIRE(sink.sent.size() == 1);
+            const int drawn = sink.sent[0].number;
+            sink.sent.clear();
+            engine.flushFollowUps();
+            CHECK(sink.sent.size() == (drawn == 60 ? 1u : 0u));
+            sent.push_back(drawn);
+        }
+        std::sort(sent.begin(), sent.end());
+        CHECK(sent == std::vector<int>{60, 61}); // both cases were met
+    }
+}
+
+TEST_CASE("the observer hears what the sink would not take", "[trigger][engine][release]") {
+    // A release a full queue refused never goes, and what it was
+    // letting go of is still on: whoever keeps the holds has to be told, or it forgets a note that
+    // is still sounding.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("note", Trigger::Beat);
+    config.address.clear();
+    config.sendKind = Message::Kind::MidiNote;
+    config.number = fixedAt(60);
+    config.value = fixedAt(100);
+    config.followUps.push_back(releaseAfterMs(0, 50));
+    engine.setRules({config});
+    std::vector<std::pair<bool, bool>> heard; // (follow-up, taken)
+    engine.setFireObserver([&heard](std::string_view, const Message&, bool followUp,
+                                    std::span<const Value>, bool,
+                                    bool taken) { heard.emplace_back(followUp, taken); });
+    engine.onBeat(beatAt(1, 1, 1, 0.0));
+    sink.refusing = true;
+    engine.advance(beatAt(1, 1, 1, 0.06));
+    CHECK(heard == std::vector<std::pair<bool, bool>>{{false, true}, {true, false}});
+}
+
+TEST_CASE("the input going quiet drops the gestures owed and keeps the releases",
+          "[trigger][engine][release]") {
+    // A note on owed a beat after the press went out
+    // into the silence after the rig had been let go of, and became a note held on.
+    Recorder sink;
+    TriggerEngine engine(sink);
+    Rule::Config config = simple("note", Trigger::Beat);
+    config.address.clear();
+    config.sendKind = Message::Kind::MidiNote;
+    config.number = fixedAt(60);
+    config.value = fixedAt(100);
+    config.followUps.push_back(releaseAfterMs(0, 1000));
+    takt4::trigger::FollowUp again;
+    again.kind = Message::Kind::MidiNote;
+    again.number = 61;
+    again.value = Value::ofInt(100);
+    again.unit = takt4::trigger::DelayUnit::Milliseconds;
+    again.delaySeconds = 0.5;
+    config.followUps.push_back(again);
+    engine.setRules({config});
+    engine.onBeat(beatAt(1, 1, 1, 0.0));
+    REQUIRE(engine.pending() == 2);
+    sink.sent.clear();
+
+    engine.dropOwedGestures();
+    CHECK(engine.pending() == 1);
+    engine.advance(beatAt(1, 1, 1, 2.0));
+    REQUIRE(sink.sent.size() == 1);
+    CHECK(sink.sent[0].kind == Message::Kind::MidiNoteOff);
+    CHECK(sink.sent[0].number == 60);
+}
+
 TEST_CASE("a euclidean pattern counts from beat 1 of the bar, whichever beat came first",
           "[trigger][engine]") {
     // Like `Beat`: the pattern's step 0 is the bar's first beat, so a 3-in-8 is beats 1, 4 and 7
@@ -1043,7 +1214,7 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
     };
     std::vector<Seen> seen;
     engine.setFireObserver([&seen](std::string_view ruleId, const Message&, bool followUp,
-                                   std::span<const Value> slots, bool) {
+                                   std::span<const Value> slots, bool, bool) {
         seen.push_back(
             Seen{std::string(ruleId), followUp, std::vector<Value>(slots.begin(), slots.end())});
     });
@@ -1127,9 +1298,8 @@ TEST_CASE("a rule names which beat of the bar it fires on", "[trigger][engine][b
     std::vector<std::pair<std::string, std::pair<std::uint64_t, std::uint32_t>>> heard;
     std::pair<std::uint64_t, std::uint32_t> now{0, 0};
     engine.setFireObserver([&heard, &now](std::string_view id, const Message&, bool,
-                                          std::span<const Value>, bool) {
-        heard.emplace_back(std::string(id), now);
-    });
+                                          std::span<const Value>, bool,
+                                          bool) { heard.emplace_back(std::string(id), now); });
     std::uint64_t beat = 0;
     std::uint64_t bar = 0;
     for (int i = 0; i < 32; ++i) {

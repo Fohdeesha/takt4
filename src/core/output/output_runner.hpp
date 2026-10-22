@@ -759,9 +759,10 @@ private:
     /// once so that two rules with the same condition cannot disagree about it.
     trigger::Context contextAt(double now) const;
 
-    /// Records what `message`, just sent by `ruleId`, puts on or takes off — see `holds`. The
-    /// fire observer's, on the output thread.
-    void noteHolds(std::string_view ruleId, const trigger::Message& message);
+    /// Records what `message`, just sent by `ruleId`, puts on or takes off — see `holds`. A
+    /// release the sink did not take (`taken`) takes nothing off. The fire observer's, on the
+    /// output thread.
+    void noteHolds(std::string_view ruleId, const trigger::Message& message, bool taken);
     /// Lets go of everything held by a rule `whose` picks — see `holds`. The rule's own owed
     /// releases and held fires are `trigger::TriggerEngine::releaseRule`'s.
     void releaseHolds(const std::function<bool(const std::string&)>& whose, double now);
@@ -777,6 +778,10 @@ private:
     /// itself — gone, switched off, muted, or aimed elsewhere — or of everything, for a set
     /// that was loaded rather than edited.
     void releaseStale(bool fresh, double now);
+    /// Every note still held once the sink's queue has been emptied — its Note Off refused by a
+    /// full queue — let go of again and sent at once. For PANIC,
+    /// Stop and quit, which promise to leave nothing on.
+    void releaseRefused(double now);
     /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
     void forgetZones() noexcept { heldZones_.clear(); }
     /// **The input gone quiet or gone altogether** (the operator, 2026-10-05): the lasers

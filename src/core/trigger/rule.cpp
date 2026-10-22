@@ -536,6 +536,22 @@ dmx::FixtureSet remapBits(const dmx::FixtureSet& mask, const std::vector<int>& m
     return out;
 }
 
+bool releasesFired(const Message& fired, const Message& follow) noexcept {
+    if (!isMidi(fired.kind) || !isMidi(follow.kind)) {
+        return false;
+    }
+    if (fired.kind == Message::Kind::MidiNote) {
+        // A note's release is its Note Off. A Note On again with a velocity is a strike, not one.
+        const bool off = follow.kind == Message::Kind::MidiNoteOff ||
+                         (follow.kind == Message::Kind::MidiNote && follow.value == 0);
+        return off && follow.number == fired.number;
+    }
+    // Everything else lets go as itself, with a new value: the controller back to its rest, the
+    // bend back to centre, the same program again.
+    return follow.kind == fired.kind &&
+           (!sendsNumber(follow.kind) || follow.number == fired.number);
+}
+
 void Rule::carryFrom(const Rule& previous) {
     // A generator is kept whole when its accepted configuration — the seed included — is the
     // one it had, which is exactly when it would have drawn the same sequence from scratch.
@@ -922,6 +938,12 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
                 follow.number = std::clamp(owed.number, 0, kMidiMax);
             }
             follow.value = std::clamp(owed.value.asInt(), 0, valueCeiling(follow.kind));
+            // A kind of its own that lets go of what fired is the release, spelled out: sent by
+            // PANIC, STOP and a mute like one, not dropped as a second gesture. Judged on this
+            // fire's own number, since a drawn note may or may not be the one the row names.
+            if (follow.gesture && releasesFired(fired, follow)) {
+                follow.gesture = false;
+            }
         }
         out.emplace_back(i, std::move(follow));
     }

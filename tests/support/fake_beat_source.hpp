@@ -38,6 +38,9 @@ public:
         state_.publish(beat.state);
         return beats_.tryPush(beat);
     }
+    /// A new state with no beat — the edge of a silence, a lock lost — as a source publishes one
+    /// between beats.
+    void publish(const tracking::TempoState& state) noexcept { state_.publish(state); }
     /// A new run, as a source's own start makes one: what is left on the ring is the last run's.
     void start() noexcept { run_.fetch_add(1, std::memory_order_acq_rel); }
     /// Beats pushed and not yet taken.
