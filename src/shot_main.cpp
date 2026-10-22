@@ -19,7 +19,7 @@ void printUsage(std::ostream& out) {
            "\n"
            "  takt4-shot OUT.bmp [--size WxH] [--scale S] [--stopped | --trouble]\n"
            "                     [--mockup] [--fold inputs,outputs] [--panicked]\n"
-           "                     [--beats N] [--held]\n"
+           "                     [--beats N] [--held] [--remote]\n"
            "                     [--rules [--dmx] [--state NAME] | --fixtures | --about |\n"
            "                      --widgets]\n"
            "\n"
@@ -37,6 +37,7 @@ void printUsage(std::ostream& out) {
            "  --panicked      draw PANIC engaged, with RELEASE beside it\n"
            "  --beats N       N beats to the bar in the tempo banner, 1 to 16\n"
            "  --held          the settings file's autosave held until SAVE, said beside it\n"
+           "  --remote        remote setup ticked under the OSC row, from one address\n"
            "  --rules         draw the rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
            "  --state NAME    with --rules, another of its states: message, onset, beat,\n"
@@ -97,6 +98,8 @@ int main(int argc, char** argv) {
             options.panicked = true;
         } else if (arg == "--held") {
             options.autosaveHeld = true;
+        } else if (arg == "--remote") {
+            options.remote = true;
         } else if (arg == "--beats") {
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --beats needs a number of beats to the bar, 1 to 16\n";

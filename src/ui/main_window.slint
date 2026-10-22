@@ -463,6 +463,10 @@ export component MainWindow inherits Window {
   /// Where the timing row is drawn, from the window's top: what a test of CHANGE reads to see
   /// the row brought into view.
   out property <length> timing-row-y: timing-row.absolute-position.y;
+  /// Where the OSC control row is, for a test that finds the remote setup line under it.
+  out property <length> osc-row-y: osc-row.absolute-position.y;
+  /// What the folded inputs heading says, for a test to read it as it reads the status line.
+  out property <string> inputs-summary: inputs-sheet.summary;
   /// CHANGE: the section the timing row is in unfolded (`timing-change-clicked`), the row
   /// scrolled into view, and its list open. It only unfolded: with the section open, or the
   /// window scrolled, it did nothing at all.
@@ -642,12 +646,35 @@ export component MainWindow inherits Window {
   /// Listening was asked for and the port would not bind: the reading says why, and that it is
   /// being tried again. The tick stays ticked — it is what was asked for, and what is saved.
   in-out property <bool> osc-control-error;
+  /// **Remote setup**: a show controller may START and STOP takt4 and change its input, source and
+  /// outputs through this socket, each change carried out by the window's own functions and said
+  /// on the status line with who asked. Off until ticked, and a decision apart from listening:
+  /// what a sender may change, not whether it is heard.
+  in-out property <bool> osc-remote-setup;
+  /// The word the tempo panel says the state in — "locked", "hunting", "no audio", "coasting" — and
+  /// the remote status says it in too (`/status/state`), so the two cannot say different things.
+  out property <string> lock-word: !root.running ? "stopped"
+    : root.following ? (root.timing-waiting ? root.timing-waiting-word
+                        : root.timing-coasting ? "coasting"
+                        : root.acquired ? "following" : "waiting")
+    : root.input-lost ? "no audio"
+    : root.no-signal ? "no signal"
+    : root.holding ? "holding"
+    : root.locked ? "locked"
+    : "hunting";
+  /// The senders it is allowed from, as the window keeps them ("192.168.1.70, 192.168.1.60"), or
+  /// empty for any that reaches the socket. This machine is never refused.
+  in-out property <string> osc-remote-from;
 
   callback osc-control-toggled(bool);
   callback osc-control-port-edited(string);
   // Each keystroke, held by the window until something finishes the edit — closing it included.
   callback osc-control-port-typed(string);
   callback osc-control-network-toggled(bool);
+  callback osc-remote-setup-toggled(bool);
+  callback osc-remote-from-edited(string);
+  // Each keystroke, held by the window until something finishes the edit, as the port's are.
+  callback osc-remote-from-typed(string);
 
   /// the TRIGGERS row. The editor is a window of its own (rules_window.slint), so what
   /// belongs here is only what an operator needs while watching the tracker: how many rules
@@ -1272,15 +1299,7 @@ export component MainWindow inherits Window {
             lock-state := Text {
               x: tempo-sheet.right-x + tempo-sheet.half - self.width;
               y: 27px - self.font-metrics.ascent;
-              text: !root.running ? "stopped"
-                : root.following ? (root.timing-waiting ? root.timing-waiting-word
-                                    : root.timing-coasting ? "coasting"
-                                    : root.acquired ? "following" : "waiting")
-                : root.input-lost ? "no audio"
-                : root.no-signal ? "no signal"
-                : root.holding ? "holding"
-                : root.locked ? "locked"
-                : "hunting";
+              text: root.lock-word;
               color: tempo-sheet.state-color;
               font-family: Wf.sans;
               font-size: 15px;
@@ -1845,6 +1864,9 @@ export component MainWindow inherits Window {
               + " · "
               + (root.osc-control-error ? "OSC: not listening"
                 : root.osc-control-on ? "OSC: listening on port " + root.osc-control-port
+                  // Said while folded too: a show controller allowed to change takt4 is not a
+                  // setting to find out about by opening the section.
+                  + (root.osc-remote-setup ? ", remote setup on" : "")
                 : "OSC: off");
 
             VerticalLayout {
@@ -2116,7 +2138,7 @@ export component MainWindow inherits Window {
 
                 // OSC: three separate decisions — listen at all, on which port, and whether past
                 // this machine — and what is arriving, at the far right.
-                HorizontalLayout {
+                osc-row := HorizontalLayout {
                   height: 38px;
                   spacing: 10px;
                   Text {
@@ -2210,6 +2232,58 @@ export component MainWindow inherits Window {
                 if root.osc-control-error: Alarm {
                   height: 18px;
                   text: root.osc-control-reading;
+                }
+
+                // **Remote setup**, while listening: whether a show controller may change takt4
+                // from the network, and from whom — set in under the row it belongs to, with what
+                // it allows said beside it.
+                if root.osc-control-on: HorizontalLayout {
+                  height: 38px;
+                  spacing: 10px;
+                  padding-left: 74px;
+                  Tick {
+                    text: "allow remote setup";
+                    checked: root.osc-remote-setup;
+                    horizontal-stretch: 0;
+                    toggled(on) => {
+                      root.osc-remote-setup = on;
+                      root.osc-remote-setup-toggled(on);
+                    }
+                  }
+                  Label { text: "only from"; }
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 120px;
+                    max-width: 250px;
+                    // Addresses only, and committed when finished with. Nothing to say while remote
+                    // setup is off, or while other machines are not allowed at all.
+                    Entry {
+                      value: root.osc-remote-from;
+                      placeholder: "any address";
+                      enabled: root.osc-remote-setup && root.osc-control-network;
+                      font-family: Wf.mono;
+                      typed(text) => {
+                        root.osc-remote-from-typed(text);
+                      }
+                      committed(text) => {
+                        root.osc-remote-from-edited(text);
+                      }
+                    }
+                  }
+                  Text {
+                    // Short enough to be read whole at the window's opening width.
+                    text: !root.osc-remote-setup ? "for a show controller: start, stop, input, outputs"
+                      : !root.osc-control-network ? "this machine only: tick allow other machines above"
+                      : root.osc-remote-from == "" ? "from any machine that reaches the port"
+                      : "from these addresses and this machine only";
+                    color: Wf.ink2;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                  }
                 }
               }
               }

@@ -722,6 +722,13 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         setOscControlPort(readPort(std::string(text)));
     });
     window_->on_osc_control_network_toggled([this](bool on) { setOscControlNetwork(on); });
+    window_->on_osc_remote_setup_toggled([this](bool on) { setRemoteSetup(on); });
+    window_->on_osc_remote_from_typed(
+        [this](const slint::SharedString& text) { remoteFromTyped_ = std::string(text); });
+    window_->on_osc_remote_from_edited([this](const slint::SharedString& text) {
+        remoteFromTyped_.reset();
+        setRemoteFrom(std::string(text));
+    });
 
     window_->on_rules_clicked([this] {
         openEditor();
@@ -857,6 +864,12 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
     timing_ = timingOf(settings.machine.timingSource);
     applyTiming();
+    // **Remote status and control**, before the control socket opens and the output thread
+    // starts: the board this window writes as it redraws — which the heartbeat and the socket's
+    // answers read — the queue commands reach this window on, and the lines it says.
+    oscControl_.setRemote(&remoteBoard_, &remoteCommands_);
+    runner_.setRemote(&remoteBoard_, &remoteLog_);
+    loadRemoteSetup(settings.machine);
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
         // reason the MIDI port is: a port another application has taken throws, and by now
@@ -1216,6 +1229,7 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
     if (machine.oscControlEnabled) {
         setOscControlEnabled(true);
     }
+    loadRemoteSetup(machine);
 
     // **The layout**: the main window's folds, through the arrow's own path so the window's
     // height follows; and the rule editor's and the patch editor's.
@@ -2428,6 +2442,12 @@ void WindowController::applyDrafts() {
         oscPortTyped_.reset();
         setOscControlPort(readPort(typed));
     }
+    // And remote setup's list of senders, for the same reason.
+    if (remoteFromTyped_) {
+        const std::string typed = std::move(*remoteFromTyped_);
+        remoteFromTyped_.reset();
+        setRemoteFrom(typed);
+    }
 }
 
 void WindowController::setTargetDelay(int index, float ms) {
@@ -3432,6 +3452,8 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.oscControlEnabled = oscControlWanted_;
     out.machine.oscControlPort = oscControl_.config().port;
     out.machine.oscControlLocalOnly = oscControl_.config().localOnly;
+    out.machine.oscRemoteSetup = remoteSetupOn_;
+    out.machine.oscRemoteFrom = remoteFrom_;
     out.machine.inputsFolded = window_->get_inputs_folded();
     out.machine.outputsFolded = window_->get_outputs_folded();
     out.machine.timingSource =
@@ -4106,6 +4128,8 @@ void WindowController::setStatus(const std::string& text, bool error) {
     // Whatever the window says now is news the startup message gives way to (M13; see `report`).
     startupMessage_.clear();
     showStatus(text, error);
+    // And to a show controller listening, as `/status/log` (`remote`).
+    remoteLog_.push(remote::LogLine{error ? "warning" : "info", text});
 }
 
 void WindowController::showStatus(const std::string& text, bool error) {
@@ -4184,6 +4208,14 @@ void WindowController::pumpWhileDragged(void* self) {
 }
 
 void WindowController::tick() {
+    redraw();
+    // What takt4 says about itself, for the heartbeat and the control socket's answers: after the
+    // redraw, whichever way it ended, so it says what the window has just shown — a lock with the
+    // word the window put beside it, not the word of the redraw before.
+    remoteBoard_.publish(remoteStatus());
+}
+
+void WindowController::redraw() {
     ++ticks_;
     lastTickAt_ = nowSeconds();
     // START or STOP carried out a moment ago: the button takes presses again. See
@@ -4210,6 +4242,8 @@ void WindowController::tick() {
     // A control input that was asked for and would not open, tried again when it is due — so a
     // port another program lets go of, or a controller plugged back in, is picked up by itself.
     retryControls(nowSeconds());
+    // What a show controller asked for over the network, through this window's own functions.
+    carryOutRemote();
     // And what the output thread made of the last change posted to it. **Here rather than at
     // the post**, because `post` is asynchronous while the tracker runs: the thread applies a
     // command about a millisecond later, so `lastError()` read straight after posting one
@@ -4377,6 +4411,7 @@ void WindowController::publishLevels() {
         window_->set_input_peak(peak_);
         return;
     }
+    lastLevelDb_ = audio::toDbfs(loudest);
     publishInput(*window_, loudest, peak_);
 }
 
@@ -4766,6 +4801,466 @@ void WindowController::publishFollowedTrace() {
         }
     }
     publishTrace();
+}
+
+// --- remote status and control ----------------------------------------------------------------
+
+namespace {
+
+/// The senders in `text` as the window keeps them — "192.168.1.70, 192.168.1.60" — with what was
+/// not an address put in `rejected`.
+std::string keptSenders(std::string_view text, std::vector<std::string>* rejected) {
+    std::string kept;
+    for (const std::uint32_t ip : remote::senderList(text, rejected)) {
+        const std::string one = remote::Endpoint{ip, 0}.text();
+        kept += (kept.empty() ? "" : ", ") + one.substr(0, one.rfind(':'));
+    }
+    return kept;
+}
+
+std::string quotedWords(const std::vector<std::string>& words) {
+    std::string out;
+    for (const std::string& word : words) {
+        out += (out.empty() ? "\"" : ", \"") + word + "\"";
+    }
+    return out;
+}
+
+} // namespace
+
+void WindowController::setRemoteSetup(bool on) {
+    if (on == remoteSetupOn_) {
+        publishRemoteSetup(false);
+        return;
+    }
+    remoteSetupOn_ = on;
+    applyRemoteSetup();
+    setStatus(on ? "Remote setup on: a show controller may start and stop takt4 and change its "
+                   "input, source and outputs over OSC, " +
+                       remoteSendersText()
+                 : std::string("Remote setup off."),
+              false);
+}
+
+void WindowController::setRemoteFrom(const std::string& text) {
+    std::vector<std::string> rejected;
+    const std::string kept = keptSenders(text, &rejected);
+    if (!rejected.empty()) {
+        // **Nothing of a list with a mistake in it is taken**: what is left could be empty, and an
+        // empty list lets any sender in — one typo would open remote setup to the whole network.
+        publishRemoteSetup(true);
+        if (text != remoteFromRefused_) {
+            remoteFromRefused_ = text;
+            setStatus("Remote setup: " + quotedWords(rejected) +
+                          (rejected.size() == 1 ? " is not an address" : " are not addresses") +
+                          " (four numbers, like 192.168.1.60), so the list is as it was.",
+                      true);
+        }
+        return;
+    }
+    remoteFromRefused_.clear();
+    const bool changed = kept != remoteFrom_;
+    remoteFrom_ = kept;
+    applyRemoteSetup();
+    publishRemoteSetup(true);
+    if (changed) {
+        setStatus("Remote setup " + remoteSendersText(), false);
+    }
+}
+
+void WindowController::loadRemoteSetup(const settings::MachineSettings& machine) {
+    std::vector<std::string> rejected;
+    remoteFrom_ = keptSenders(machine.oscRemoteFrom, &rejected);
+    remoteFromRefused_.clear();
+    // A list with something in it that is not an address was not written by this window, which
+    // keeps only addresses: remote setup is left off rather than opened wider than it meant.
+    remoteSetupOn_ = machine.oscRemoteSetup && rejected.empty();
+    applyRemoteSetup();
+    publishRemoteSetup(true);
+    if (machine.oscRemoteSetup && !rejected.empty()) {
+        setStatus("Remote setup is off: the settings file's list of senders has " +
+                      quotedWords(rejected) + ", which " +
+                      (rejected.size() == 1 ? "is not an address" : "are not addresses") +
+                      ". Tick it again once the list is right.",
+                  true);
+    }
+}
+
+void WindowController::applyRemoteSetup() {
+    control::OscControl::RemoteSetup setup;
+    setup.allowed = remoteSetupOn_;
+    setup.from = remote::senderList(remoteFrom_, nullptr);
+    oscControl_.setRemoteSetup(std::move(setup));
+    publishRemoteSetup(false);
+}
+
+void WindowController::publishRemoteSetup(bool force) {
+    window_->set_osc_remote_setup(remoteSetupOn_);
+    // Only when it has moved, or when a commit has to put the box back: the box shows this, and
+    // writing it every redraw would put it back under a hand typing in it (see
+    // `publishOscControl`).
+    if (force || remoteFrom_ != remoteFromShown_) {
+        remoteFromShown_ = remoteFrom_;
+        window_->set_osc_remote_from(shared(remoteFrom_));
+    }
+}
+
+std::string WindowController::remoteSendersText() const {
+    if (oscControl_.config().localOnly) {
+        return "from this machine only, as other machines are not allowed.";
+    }
+    if (remoteFrom_.empty()) {
+        return "from any machine that reaches takt4's OSC port.";
+    }
+    return "from " + remoteFrom_ + " and this machine only.";
+}
+
+int WindowController::rowWithId(std::string_view id) const {
+    for (std::size_t i = 0; i < targetDrafts_.size(); ++i) {
+        if (std::string_view(targetDrafts_[i].id) == id) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+remote::Status WindowController::remoteStatus() const {
+    remote::Status s;
+    const bool followingNow = followed_.running();
+    const tracking::TempoState state = followingNow ? followed_.state() : tracker_.engine().state();
+    // Heard now: the source followed, or an input open and not lost — so a lock the engine still
+    // holds from before an outage is not said as one.
+    const bool hearing = followingNow || (tracker_.running() && !outage_);
+    s.running = wantRunning_ || tracker_.running() || followingNow;
+    s.locked = hearing && state.locked;
+    s.hunting = s.running && !s.locked;
+    s.state = std::string(window_->get_lock_word());
+    s.confidence = hearing ? state.confidence : 0.0;
+    s.bpm = hearing ? state.bpm : 0.0;
+    s.levelDb = !followingNow && tracker_.running() ? static_cast<double>(lastLevelDb_)
+                                                    : remote::Status::kSilentDb;
+    s.dropouts = inputTroubleShown_.overflows + inputTroubleShown_.resyncs +
+                 inputTroubleShown_.hopsDropped + inputTroubleShown_.framesDropped +
+                 inputTroubleShown_.beatsDropped;
+    s.source = std::string(remote::sourceName(timingIndex()));
+    s.sourceOk =
+        following() ? followingNow && state.locked : tracker_.running() && !outage_ && state.locked;
+    s.sourceDetail =
+        std::string(following() ? window_->get_timing_detail() : window_->get_input_reading());
+    s.panic = runner_.panicked();
+    // What is open while it runs; what START would open while it does not.
+    const audio::InputDevice* device = nullptr;
+    if (input_) {
+        device = &input_->device;
+    } else if (device_ >= 0 && static_cast<std::size_t>(device_) < devices_.size()) {
+        device = &devices_[static_cast<std::size_t>(device_)];
+    }
+    if (device != nullptr) {
+        s.audioHost = device->hostApiName;
+        s.audioDevice = device->name;
+        const audio::ChannelSelection channels = input_ ? input_->selection : selection();
+        s.audioChannel = channels.channels[0] + 1;
+        s.audioMono = channels.count == 1;
+    }
+    if (const audio::InputStream* stream = tracker_.stream(); stream != nullptr) {
+        s.audioRate = static_cast<int>(stream->sampleRate());
+    }
+    s.latencyMs = runner_.transports().latencySeconds() * 1000.0;
+    s.version = std::string(window_->get_version());
+    s.uptimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::steady_clock::now() - startedAt_)
+                          .count();
+    // The settings file's spellings, in `output::OutputTarget::Kind`'s order.
+    constexpr std::array<std::string_view, 5> kKinds{"osc", "midi", "artnet", "midiclock", "link"};
+    for (const OutputRow& row : targetDrafts_) {
+        remote::OutputRow out;
+        out.id = std::string(row.id);
+        out.name = std::string(row.name);
+        const auto kind = static_cast<std::size_t>(std::max(row.kind_index, 0));
+        out.kind = std::string(kind < kKinds.size() ? kKinds[kind] : kKinds[0]);
+        if (row.kind_index == static_cast<int>(output::OutputTarget::Kind::Midi) ||
+            row.kind_index == static_cast<int>(output::OutputTarget::Kind::MidiClock)) {
+            const auto picked = static_cast<std::size_t>(std::max(row.device_index, 0));
+            out.host = picked > 0 && picked <= deviceNames_.size() ? deviceNames_[picked - 1]
+                                                                   : std::string();
+        } else if (row.kind_index != static_cast<int>(output::OutputTarget::Kind::Link)) {
+            out.host = std::string(row.host);
+            out.port = std::atoi(std::string(row.port).c_str());
+        }
+        out.enabled = row.enabled;
+        out.delayMs = static_cast<double>(row.delay_ms);
+        out.global = row.sends_namespace;
+        out.problem = std::string(row.problem);
+        s.outputs.push_back(std::move(out));
+    }
+    for (const audio::InputDevice& input : devices_) {
+        s.devices.push_back({input.hostApiName, input.name, input.maxInputChannels});
+    }
+    return s;
+}
+
+void WindowController::carryOutRemote() {
+    // A START or STOP under way, answered once it has settled: running, or not, as it was asked —
+    // or refused with what the window said when it was not.
+    if (remoteRun_ && !runPending_) {
+        const bool running = wantRunning_ || tracker_.running() || followed_.running();
+        const bool done = running == remoteRunWanted_;
+        oscControl_.answer(*remoteRun_, done,
+                           done ? std::string(running ? "running" : "stopped")
+                                : std::string(window_->get_status()));
+        remoteRun_.reset();
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (const remote::Command& command : remoteCommands_.drain()) {
+        std::string note;
+        Verdict verdict = Verdict::Refused;
+        if (std::chrono::duration<double>(now - command.queuedAt).count() >
+            remote::CommandQueue::kStaleSeconds) {
+            note = "busy: takt4's window was not taking changes when this came, and it is too old "
+                   "to carry out now";
+        } else {
+            try {
+                verdict = carryOut(command, note);
+            } catch (const std::exception& e) {
+                note = std::string("it failed: ") + e.what();
+                verdict = Verdict::Refused;
+            }
+        }
+        // Who asked, and what came of it, where the operator looks: a change made from somewhere
+        // else is the one that must not go unsaid.
+        setStatus("Remote, from " + command.from.text() + ": " + command.address +
+                      " \xE2\x80\x94 " +
+                      (verdict == Verdict::Refused ? "refused: " + note
+                       : verdict == Verdict::Later ? std::string("under way")
+                       : note.empty()              ? std::string("done")
+                                                   : note),
+                  verdict == Verdict::Refused);
+        if (verdict != Verdict::Later) {
+            oscControl_.answer(command, verdict == Verdict::Done, note);
+        }
+    }
+}
+
+WindowController::Verdict WindowController::carryOut(const remote::Command& command,
+                                                     std::string& note) {
+    using Kind = remote::Command::Kind;
+    const bool running = wantRunning_ || tracker_.running() || followed_.running();
+    const auto stopFirst = [&note] {
+        note = "stop first: takt4 changes its input and its source only while stopped";
+        return Verdict::Refused;
+    };
+    switch (command.kind) {
+    case Kind::Start:
+    case Kind::Stop: {
+        // Switches, never toggles: one already in the state asked for is answered, and done.
+        const bool wanted = command.kind == Kind::Start;
+        if (runPending_ || remoteRun_) {
+            note = "busy: START or STOP is being carried out";
+            return Verdict::Refused;
+        }
+        if (running == wanted) {
+            note = wanted ? "running already" : "stopped already";
+            return Verdict::Done;
+        }
+        if (wanted && !window_->get_timing_ready()) {
+            note = "it cannot start: " + std::string(window_->get_status());
+            return Verdict::Refused;
+        }
+        // The button's own moment after a press, when it takes none (`requestToggleRun`).
+        if (window_->get_run_busy()) {
+            note = "busy: START or STOP was carried out a moment ago";
+            return Verdict::Refused;
+        }
+        requestToggleRun();
+        remoteRun_ = command;
+        remoteRunWanted_ = wanted;
+        return Verdict::Later;
+    }
+    case Kind::Restart: {
+        const std::string held = "it has been reopened " + std::to_string(kMostRestarts) +
+                                 " times in a minute, so takt4 leaves it as it is until START";
+        if (following()) {
+            note = "takt4 is following " + timingName() + ": there is no audio input to restart";
+            return Verdict::Refused;
+        }
+        if (outage_) {
+            note = "the input is being brought back already";
+            return Verdict::Refused;
+        }
+        if (!tracker_.running()) {
+            note = "the input is not running: START it";
+            return Verdict::Refused;
+        }
+        if (restartsHeld_) {
+            note = held;
+            return Verdict::Refused;
+        }
+        // The path a driver's own reset takes, limit and all.
+        restartInput("Restarted from " + command.from.text(), nowSeconds());
+        if (restartsHeld_) {
+            note = held;
+            return Verdict::Refused;
+        }
+        if (outage_ || !tracker_.running()) {
+            note = "it would not open again, and takt4 is trying to bring it back";
+            return Verdict::Refused;
+        }
+        const audio::InputStream* stream = tracker_.stream();
+        note = "reopened" + (stream != nullptr ? " at " + fixed(stream->sampleRate(), 0) + " Hz"
+                                               : std::string());
+        return Verdict::Done;
+    }
+    case Kind::Device: {
+        if (running) {
+            return stopFirst();
+        }
+        const std::optional<std::size_t> found =
+            audio::findInput(devices_, command.text2, command.text);
+        if (!found) {
+            note = "no input \"" + command.text2 + "\" on " + command.text +
+                   " on this machine: ask " + oscControl_.config().prefix + "/ctl/audio/devices";
+            return Verdict::Refused;
+        }
+        // The operator's choice as a pick from the list is, and saved as one.
+        deviceChosen_ = true;
+        pickDevice(static_cast<int>(*found));
+        window_->set_device_index(static_cast<int>(*found));
+        note = devices_[*found].hostApiName + " / " + devices_[*found].name;
+        return Verdict::Done;
+    }
+    case Kind::Channel: {
+        if (running) {
+            return stopFirst();
+        }
+        if (device_ < 0 || static_cast<std::size_t>(device_) >= devices_.size()) {
+            note = "no input device is picked";
+            return Verdict::Refused;
+        }
+        const audio::InputDevice& device = devices_[static_cast<std::size_t>(device_)];
+        if (command.number < 1 || command.number > device.maxInputChannels) {
+            note = "input " + std::to_string(command.number) + " is not on " + device.name +
+                   ", which has " + std::to_string(device.maxInputChannels);
+            return Verdict::Refused;
+        }
+        const bool wantMono = command.flag.value_or(mono_);
+        const int first = command.number - 1;
+        // The window's own choices and no others: in stereo, the pairs an interface numbers its
+        // inputs in.
+        if (!wantMono && first % 2 == 1) {
+            note = "in stereo, inputs go in pairs from an odd one: ask for " +
+                   std::to_string(command.number - 1) + " for inputs " +
+                   std::to_string(command.number - 1) + " and " + std::to_string(command.number) +
+                   ", or for mono";
+            return Verdict::Refused;
+        }
+        deviceChosen_ = true;
+        setMono(wantMono);
+        pickChannel(wantMono ? first : first / 2);
+        publishChannels();
+        const audio::ChannelSelection picked = selection();
+        note = picked.count == 2
+                   ? "inputs " + std::to_string(picked.channels[0] + 1) + " and " +
+                         std::to_string(picked.channels[1] + 1)
+                   : "input " + std::to_string(picked.channels[0] + 1) + (mono_ ? ", mono" : "");
+        return Verdict::Done;
+    }
+    case Kind::Source: {
+        if (running) {
+            return stopFirst();
+        }
+        const std::optional<int> index = remote::sourceIndex(command.text);
+        if (!index) {
+            note = "no source \"" + command.text + "\": audio, link, midi-clock or prolink";
+            return Verdict::Refused;
+        }
+        pickTiming(*index);
+        note = "timing from " + timingName();
+        return Verdict::Done;
+    }
+    case Kind::OutputAdd: {
+        using TK = output::OutputTarget::Kind;
+        const std::string& word = command.text2;
+        int kind = -1;
+        if (word == "osc") {
+            kind = static_cast<int>(TK::Osc);
+        } else if (word == "midi") {
+            kind = static_cast<int>(TK::Midi);
+        } else if (word == "artnet") {
+            kind = static_cast<int>(TK::ArtNet);
+        } else if (word == "midiclock" || word == "midi-clock") {
+            kind = static_cast<int>(TK::MidiClock);
+        } else if (word == "link") {
+            note = "Link is always there, as the first output";
+            return Verdict::Refused;
+        }
+        if (kind < 0) {
+            note = "no kind \"" + word + "\": osc, midi, artnet or midiclock";
+            return Verdict::Refused;
+        }
+        if (command.text.empty()) {
+            note = "an output needs a name";
+            return Verdict::Refused;
+        }
+        const bool midi =
+            kind == static_cast<int>(TK::Midi) || kind == static_cast<int>(TK::MidiClock);
+        int device = 0;
+        if (midi) {
+            const auto found = std::find(deviceNames_.begin(), deviceNames_.end(), command.text3);
+            if (found == deviceNames_.end()) {
+                note = "no MIDI output \"" + command.text3 + "\" on this machine";
+                return Verdict::Refused;
+            }
+            device = static_cast<int>(found - deviceNames_.begin()) + 1;
+        } else if (command.text3.empty() || command.number < 1 || command.number > 65535) {
+            note = "an OSC or Art-Net output needs a host and a port from 1 to 65535";
+            return Verdict::Refused;
+        }
+        // As ADD and the row's own boxes make one: added, its kind picked, then filled in.
+        addTarget();
+        const int row = static_cast<int>(targetDrafts_.size()) - 1;
+        if (kind != static_cast<int>(TK::Osc)) {
+            setTargetKind(row, kind);
+        }
+        setTargetName(row, command.text, false);
+        if (midi) {
+            setTargetDevice(row, device);
+        } else {
+            setTargetHost(row, command.text3, false);
+            setTargetPort(row, std::to_string(command.number), true);
+        }
+        note = std::string(targetDrafts_[static_cast<std::size_t>(row)].id);
+        return Verdict::Done;
+    }
+    case Kind::OutputEnable:
+    case Kind::OutputDelay:
+    case Kind::OutputGlobal: {
+        const int row = rowWithId(command.text);
+        if (row < 0) {
+            note = "no output with the id \"" + command.text + "\": ask " +
+                   oscControl_.config().prefix + "/ctl/outputs";
+            return Verdict::Refused;
+        }
+        const auto at = static_cast<std::size_t>(row);
+        if (command.kind == Kind::OutputEnable) {
+            setTargetEnabled(row, command.flag.value_or(true));
+            note = targetDrafts_[at].enabled ? "on" : "off";
+        } else if (command.kind == Kind::OutputDelay) {
+            setTargetDelay(row, static_cast<float>(command.value));
+            note = fixed(static_cast<double>(targetDrafts_[at].delay_ms), 0) + " ms";
+        } else {
+            if (targetDrafts_[at].kind_index != static_cast<int>(output::OutputTarget::Kind::Osc)) {
+                note = "only an OSC output can be sent takt4's own messages";
+                return Verdict::Refused;
+            }
+            setTargetNamespace(row, command.flag.value_or(true));
+            note = targetDrafts_[at].sends_namespace ? "sent takt4's own messages"
+                                                     : "not sent takt4's own messages";
+        }
+        return Verdict::Done;
+    }
+    }
+    note = "not understood";
+    return Verdict::Refused;
 }
 
 } // namespace takt4::ui

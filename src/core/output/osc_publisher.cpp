@@ -53,6 +53,7 @@ OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
     lockedAddress_ = prefix_ + "/locked";
     meterAddress_ = prefix_ + "/meter";
     resyncAddress_ = prefix_ + "/resync";
+    timingAddress_ = prefix_ + "/beat/timing";
     // Every address is built from the prefix, so one bad prefix is caught here rather
     // than silently dropping messages later.
     if (!OscMessage(barAddress_).valid()) {
@@ -167,12 +168,8 @@ void OscPublisher::refresh() noexcept {
 }
 
 void OscPublisher::flushAll() {
-    for (const Pending& item : pending_) {
-        if (item.target < targets_.size() && targets_[item.target].sender->send(item.packet)) {
-            ++sent_;
-        } else {
-            ++failed_;
-        }
+    for (Pending& item : pending_) {
+        sendItem(item);
     }
     pending_.clear();
 }
@@ -191,11 +188,7 @@ void OscPublisher::flushTo(std::uint64_t outputs) {
             ++kept;
             continue;
         }
-        if (targets_[item.target].sender->send(item.packet)) {
-            ++sent_;
-        } else {
-            ++failed_;
-        }
+        sendItem(item);
     }
     pending_.resize(kept);
 }
@@ -206,9 +199,12 @@ double OscPublisher::dueOf(const Pending& item) const noexcept {
 }
 
 void OscPublisher::sendHeld(std::size_t index, double until) {
-    std::erase_if(pending_, [&](const Pending& item) {
+    std::erase_if(pending_, [&](Pending& item) {
         if (item.target != index || dueOf(item) > until) {
             return false;
+        }
+        if (item.timing) {
+            item.packet = timingPacket(item.moment, *item.timing);
         }
         if (targets_[item.target].sender->send(item.packet)) {
             ++sent_;
@@ -253,11 +249,7 @@ void OscPublisher::flushDue() {
         // dropped rather than sent somewhere else: the index it was queued against named a
         // socket that is gone, and guessing at a replacement would send a winch's cue to a
         // lighting desk.
-        if (item.target < targets_.size() && targets_[item.target].sender->send(item.packet)) {
-            ++sent_;
-        } else {
-            ++failed_;
-        }
+        sendItem(item);
     }
     pending_.resize(kept);
 }
@@ -365,8 +357,8 @@ void OscPublisher::sendPacket(OscMessage& message, std::uint64_t outputs, double
             ++dropped_;
             continue;
         }
-        pending_.push_back(
-            Pending{moment, i, std::vector<std::byte>(packet.begin(), packet.end()), own});
+        pending_.push_back(Pending{moment, i, std::vector<std::byte>(packet.begin(), packet.end()),
+                                   own, std::nullopt});
     }
 }
 
@@ -413,7 +405,8 @@ void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, 
     }
 }
 
-void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<double> moment) {
+void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<double> moment,
+                               std::uint64_t count) {
     const double at = moment.value_or(now_);
     // State first: a consumer that reads the beat and then looks at the tempo should see
     // the tempo of the beat it just got, not the one before it. Both at the beat's own moment,
@@ -425,6 +418,76 @@ void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<d
     }
     if (event.downbeat) {
         sendInt(downbeatAddress_, 1, kAllOutputs, at, true);
+    }
+    if (event.bpm > 0.0 && std::isfinite(event.bpm)) {
+        sendTiming(
+            at, BeatTiming{60.0 / event.bpm,
+                           static_cast<std::int32_t>(std::min<std::uint64_t>(count, 0x7FFFFFFF))});
+    }
+}
+
+void OscPublisher::sendNow(std::span<const std::byte> packet) {
+    if (packet.empty()) {
+        return;
+    }
+    for (Target& target : targets_) {
+        if (!target.sendsNamespace) {
+            continue;
+        }
+        if (target.sender->send(packet)) {
+            ++sent_;
+        } else {
+            ++failed_;
+        }
+    }
+}
+
+std::vector<std::byte> OscPublisher::timingPacket(double moment, const BeatTiming& timing) const {
+    // The beat as the operator means it to land: its moment and the rig's latency.
+    const double beat = moment + offsetSeconds_;
+    OscMessage message(timingAddress_);
+    message.addFloat(static_cast<float>((now_ - beat) * 1000.0));
+    message.addFloat(static_cast<float>((beat + timing.period - now_) * 1000.0));
+    message.addInt(timing.count);
+    const std::span<const std::byte> bytes = message.packet();
+    return {bytes.begin(), bytes.end()};
+}
+
+void OscPublisher::sendTiming(double moment, const BeatTiming& timing) {
+    for (std::size_t i = 0; i < targets_.size(); ++i) {
+        const Target& target = targets_[i];
+        if (!target.sendsNamespace) {
+            continue;
+        }
+        if (moment + offsetSeconds_ + target.delaySeconds <= now_) {
+            sendHeld(i, now_ + kReleaseFirstSeconds);
+            if (target.sender->send(timingPacket(moment, timing))) {
+                ++sent_;
+            } else {
+                ++failed_;
+            }
+            continue;
+        }
+        if (pending_.size() >= kMaxPending) {
+            ++dropped_;
+            continue;
+        }
+        pending_.push_back(Pending{moment, i, {}, true, timing});
+    }
+}
+
+void OscPublisher::sendItem(Pending& item) {
+    if (item.target >= targets_.size()) {
+        ++failed_;
+        return;
+    }
+    if (item.timing) {
+        item.packet = timingPacket(item.moment, *item.timing);
+    }
+    if (targets_[item.target].sender->send(item.packet)) {
+        ++sent_;
+    } else {
+        ++failed_;
     }
 }
 

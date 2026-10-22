@@ -48,6 +48,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     in.machine.oscControlEnabled = true;
     in.machine.oscControlPort = 7005;
     in.machine.oscControlLocalOnly = false;
+    in.machine.oscRemoteSetup = true;
+    in.machine.oscRemoteFrom = "192.168.1.60";
     in.machine.inputsFolded = true;
     in.machine.outputsFolded = true;
     in.preset.tempo.minBpm = 88.0;
@@ -96,6 +98,8 @@ TEST_CASE("settings survive a round trip through the file's text", "[settings]")
     CHECK(out.machine.oscControlEnabled);
     CHECK(out.machine.oscControlPort == 7005);
     CHECK_FALSE(out.machine.oscControlLocalOnly);
+    CHECK(out.machine.oscRemoteSetup);
+    CHECK(out.machine.oscRemoteFrom == "192.168.1.60");
     CHECK(out.machine.inputsFolded);
     CHECK(out.machine.outputsFolded);
     // Each on its own, so neither is read from the other's key.
@@ -211,6 +215,9 @@ TEST_CASE("the two layers stay apart in the file", "[settings]") {
     CHECK(text.find("oscControlEnabled", preset) == std::string::npos);
     CHECK(text.find("oscControlPort", preset) == std::string::npos);
     CHECK(text.find("oscControlLocalOnly", preset) == std::string::npos);
+    // And what a show controller may change over it, for the same reason.
+    CHECK(text.find("oscRemoteSetup", preset) == std::string::npos);
+    CHECK(text.find("oscRemoteFrom", preset) == std::string::npos);
     // Nor how the window was folded: what a desk's screen has room for.
     CHECK(text.find("inputsFolded") < preset);
     CHECK(text.find("outputsFolded") < preset);
@@ -249,6 +256,8 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK_FALSE(out.machine.oscControlEnabled);
     CHECK(out.machine.oscControlPort == defaults.machine.oscControlPort);
     CHECK(out.machine.oscControlLocalOnly);
+    CHECK_FALSE(out.machine.oscRemoteSetup);
+    CHECK(out.machine.oscRemoteFrom.empty());
     // A file from before folding opens as a fresh install does — Inputs folded (the operator,
     // 2026-10-08), Outputs open — and so does a fold that is not a yes or a no.
     CHECK(out.machine.inputsFolded);

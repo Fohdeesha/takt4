@@ -1,6 +1,7 @@
 #include "core/output/output_runner.hpp"
 
 #include "core/dmx/liberation.hpp"
+#include "core/remote/status_messages.hpp"
 #include "core/rt/thread_priority.hpp"
 
 #include <algorithm>
@@ -1273,7 +1274,7 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     // The releases owed about this beat first, and those owed a hair after it: see
     // `kReleaseFirstSeconds`.
     triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds);
-    transports_.publishBeat(beat.event, beat.moment, now);
+    transports_.publishBeat(beat.event, beat.moment, now, beat.beats);
     // For the window's dots: when the rig plays this beat (see `shownBeat`).
     shown_.publish(ShownBeat{beat.moment, beat.moment + transports_.latencySeconds(),
                              beat.event.beatInBar, beat.bars, ++shownSerial_});
@@ -1470,6 +1471,59 @@ void OutputRunner::drainOnce(double now) {
             takeSnapshot();
         }
     });
+    guarded("the remote status", [&] { sendRemoteStatus(now); });
+}
+
+void OutputRunner::sendRemoteStatus(double now) {
+    if (board_ == nullptr || now < nextStatusLook_) {
+        return;
+    }
+    nextStatusLook_ = now + kStatusLookSeconds;
+    OscPublisher& osc = transports_.osc();
+    const std::string& prefix = transports_.oscPrefix();
+    // Never waiting on the window: one that holds the board is writing it, and the next look has
+    // what it wrote.
+    remote::Status status;
+    remote::StatusBoard::Clock::time_point at{};
+    if (board_->tryRead(status, at) && at != remote::StatusBoard::Clock::time_point{}) {
+        if (now >= nextHeartbeat_) {
+            // A second's grid from the first heartbeat — not from this clock's nought, which put
+            // the second heartbeat less than a second after the first — and started again rather
+            // than caught up with after a stall.
+            nextHeartbeat_ = !statusSent_ || now - nextHeartbeat_ > kHeartbeatSeconds
+                                 ? now + kHeartbeatSeconds
+                                 : nextHeartbeat_ + kHeartbeatSeconds;
+            ++alive_;
+            const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 remote::StatusBoard::Clock::now() - at)
+                                 .count();
+            std::vector<remote::Packet> messages{remote::aliveMessage(prefix, alive_)};
+            for (remote::Packet& message :
+                 remote::statusMessages(prefix, status, status.uptimeSeconds, age)) {
+                messages.push_back(std::move(message));
+            }
+            osc.sendNow(remote::bundleOf(messages));
+            heartbeats_.fetch_add(1, std::memory_order_relaxed);
+        } else if (statusSent_) {
+            for (const remote::Packet& message :
+                 remote::changedMessages(prefix, sentStatus_, status)) {
+                osc.sendNow(message);
+            }
+        }
+        sentStatus_ = std::move(status);
+        statusSent_ = true;
+    }
+    if (logs_ != nullptr) {
+        if (now - logWindowStart_ >= 1.0) {
+            logWindowStart_ = now;
+            logLinesInWindow_ = 0;
+        }
+        const auto room = static_cast<std::size_t>(kLogLinesPerSecond - logLinesInWindow_);
+        for (const remote::LogLine& line : logs_->take(room)) {
+            ++logLinesInWindow_;
+            osc.sendNow(remote::logMessage(prefix, line));
+        }
+    }
 }
 
 } // namespace takt4::output

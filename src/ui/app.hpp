@@ -56,6 +56,9 @@ struct ShotOptions {
     /// SAVE.
     int beatsPerBar = 0;
     bool autosaveHeld = false;
+    /// The main window: remote setup ticked on the line under the OSC row, other machines allowed
+    /// and one address on its list.
+    bool remote = false;
     /// With `--rules`, one of the rule editor's other states, as the locked design's pictures show
     /// them (the design, `the approved design`): "message" (the editor's
     /// own message under the top row), "onset" (a fast "when", its cooldown live), "log" (the log

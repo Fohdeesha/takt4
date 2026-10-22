@@ -92,6 +92,12 @@ struct MachineSettings {
     bool oscControlEnabled = false;
     std::uint16_t oscControlPort = 7001;
     bool oscControlLocalOnly = true;
+    /// **Remote setup** over that socket — START, STOP, the input, the source and the outputs, from
+    /// a show controller (`control::OscControl::RemoteSetup`) — off unless the operator ticks it,
+    /// and from the senders in `oscRemoteFrom` only, when it names any: IPv4 addresses separated
+    /// by commas, as the window keeps them. Machine-local for the reason the port is.
+    bool oscRemoteSetup = false;
+    std::string oscRemoteFrom;
 
     /// **Where the beats come from** — `kTimingAudio`, or a source followed instead of the
     /// audio: `kTimingLink`, `kTimingMidiClock`, `kTimingProLink` (the CDJs). Machine-local, as the

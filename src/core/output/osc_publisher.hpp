@@ -32,6 +32,11 @@ namespace takt4::output {
 ///     /takt4/resync      int     1, when the tracker has just re-found itself
 ///     /takt4/intensity   int     0, 1 or 2 — Phase 6's classifier; not sent yet
 ///
+/// And one more since (the operator's answer of 2026-10-22), with every beat after `/downbeat`:
+///
+///     /takt4/beat/timing float float int   ms since the beat, ms until the next, the run's
+///                                          beats so far (see `publishBeat`)
+///
 /// The four state addresses are sent on every beat, and between beats when a value changes —
 /// the tempo by more than 0.005 BPM, the confidence by more than 0.005 — so a consumer that
 /// started late is right again within a beat rather than waiting for the operator to touch
@@ -162,7 +167,20 @@ public:
     /// Publishes one beat, and any state that changed with it. `moment` is when the beat is in
     /// the music, on the clock `setNow` is given — ahead of now when the output thread fires it
     /// on a prediction — and each target has it at that moment plus its offset. Unset is now.
-    void publishBeat(const tracking::BeatEvent& event, std::optional<double> moment = std::nullopt);
+    ///
+    /// And with it `/beat/timing f ms_since_beat f ms_until_next i count` (the operator's answer of
+    /// 2026-10-22): how long after the beat — its moment plus the rig's latency, where the
+    /// operator means it to land — the datagram is sent, which for each output is its own delay
+    /// plus any lateness, and negative when it goes ahead; how long until the next beat, from the
+    /// tempo; and `count`, the run's beats so far, so a dropped datagram is told from a missed
+    /// beat. Worked out as each output's copy goes, not when the beat was fired.
+    void publishBeat(const tracking::BeatEvent& event, std::optional<double> moment = std::nullopt,
+                     std::uint64_t count = 0);
+
+    /// `packet` to every output that takes takt4's own messages, **now**: no delay, no offset, no
+    /// queue. The heartbeat and the status (`remote`), which are about takt4 and not about a beat
+    /// — a monitor told takt4 is alive should be told it when it is.
+    void sendNow(std::span<const std::byte> packet);
 
     /// Publishes state that changed since the last call, without a beat — **only a run's lock**
     /// (the operator, 2026-10-22): `running` and `state.locked` both. Before a lock the tempo is
@@ -236,6 +254,7 @@ private:
                           bool force, double moment);
 
     std::string prefix_;
+    std::string timingAddress_;
     // The addresses, built once so publishing never touches a string.
     std::string bpmAddress_;
     std::string beatAddress_;
@@ -268,15 +287,29 @@ private:
     /// **Its moment, not a time it is due**: when it goes is worked out as it is looked at, from
     /// the rig's offset and the target's delay as they are then — so a delay dragged shorter
     /// cannot send a release held after its press ahead of it. See `RuleSink::HeldMidi`.
+    /// A `/beat/timing`'s own numbers: the beat's period and its count. See `publishBeat`.
+    struct BeatTiming {
+        double period = 0.0;
+        std::int32_t count = 0;
+    };
     struct Pending {
         double moment = 0.0;
         std::size_t target = 0;
         std::vector<std::byte> packet;
         /// One of the namespace's, dropped if its target stops taking the namespace first.
         bool own = false;
+        /// A `/beat/timing`, whose packet is made as it goes: its numbers are about then.
+        std::optional<BeatTiming> timing;
     };
     /// When `item` goes, as things are now; never for a target that is gone.
     double dueOf(const Pending& item) const noexcept;
+    /// `item` sent to its target now — a timing's packet made first — and counted.
+    void sendItem(Pending& item);
+    /// A `/beat/timing` about the beat at `moment`, as sent now.
+    std::vector<std::byte> timingPacket(double moment, const BeatTiming& timing) const;
+    /// The timing of the beat at `moment` to every target taking the namespace, each at its own
+    /// delay — `sendPacket`'s, with the packet made as each copy goes.
+    void sendTiming(double moment, const BeatTiming& timing);
     /// Sends now everything held for target `index` due by `until`, in the order held — before a
     /// datagram for it that is going at once, so it cannot overtake them.
     void sendHeld(std::size_t index, double until);

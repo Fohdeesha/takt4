@@ -949,7 +949,7 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     window.set_input_trouble(slint::SharedString(""));
 
     for (std::size_t i = 0; i < trace.row_count(); ++i) {
-        trace.set_row_data(i, TracePoint{0.0f, 0.0f, false});
+        trace.set_row_data(i, TracePoint{0.0f, 0.0f, false, false});
     }
     // The source's own state, as the follower publishes it (`timing::BeatGrid`): locked while it
     // is there and through a coast, a bar of four — its beat unknown until a Start places it.
@@ -1442,6 +1442,12 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_outputs_folded(options.foldOutputs);
     window->set_panicked(options.panicked);
     window->set_autosave_held(options.autosaveHeld);
+    if (options.remote) {
+        window->set_osc_control_on(true);
+        window->set_osc_control_network(true);
+        window->set_osc_remote_setup(true);
+        window->set_osc_remote_from(slint::SharedString("192.168.1.60"));
+    }
     if (options.beatsPerBar > 0) {
         window->set_beats_per_bar(options.beatsPerBar);
     }

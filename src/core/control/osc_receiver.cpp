@@ -5,11 +5,13 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
 #if defined(_WIN32)
 #include <iphlpapi.h>
+#include <mswsock.h> // SIO_UDP_CONNRESET
 
 #include <vector>
 #pragma comment(lib, "iphlpapi.lib")
@@ -63,6 +65,8 @@ struct OscReceiver::Impl {
     WinsockGuard winsock;
     Socket socket = kInvalidSocket;
     std::array<std::byte, kMaxDatagram> buffer{};
+    /// Replies go from the window's thread and the receiving one's both.
+    std::mutex sendMutex;
 
     ~Impl() {
         if (socket != kInvalidSocket) {
@@ -113,6 +117,19 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
         throw std::runtime_error("OSC control: cannot listen: " +
                                  net::bindFailure(lastSocketError(), port));
     }
+#if defined(_WIN32)
+    // A reply sent to a port nobody listens on makes Windows fail this socket's *next* receive
+    // with WSAECONNRESET (10054, measured): a monitor that went away would cost the next control
+    // message. Told not to.
+    BOOL report = FALSE;
+    DWORD returned = 0;
+    (void)::WSAIoctl(impl->socket, SIO_UDP_CONNRESET, &report, sizeof report, nullptr, 0, &returned,
+                     nullptr, nullptr);
+    // And never blocking, so a reply cannot wait on a full buffer (`sendTo`), as MSG_DONTWAIT
+    // does it a send at a time elsewhere. A receive waits in `select`, not in the call.
+    u_long nonBlocking = 1;
+    (void)::ioctlsocket(impl->socket, FIONBIO, &nonBlocking);
+#endif
 
     // Asked for any free port: say which one it got, so a caller can tell somebody.
     if (port_ == 0) {
@@ -169,8 +186,49 @@ std::span<const std::byte> OscReceiver::receive(std::chrono::milliseconds timeou
     }
 
     lastSender_ = describe(reinterpret_cast<const sockaddr*>(&from), fromLength);
+    lastFrom_ = {};
+    if (from.ss_family == AF_INET) {
+        sockaddr_in v4{};
+        std::memcpy(&v4, &from, sizeof v4);
+        lastFrom_.ip = ntohl(v4.sin_addr.s_addr);
+        lastFrom_.port = ntohs(v4.sin_port);
+    }
     ++datagrams_;
     return std::span<const std::byte>(impl_->buffer.data(), static_cast<std::size_t>(received));
+}
+
+bool OscReceiver::sendTo(const remote::Endpoint& to, std::span<const std::byte> packet) noexcept {
+    if (!impl_ || impl_->socket == kInvalidSocket || packet.empty() || to.port == 0) {
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    sockaddr_storage address{};
+    sockaddr_in v4{};
+    v4.sin_family = AF_INET;
+    v4.sin_port = htons(to.port);
+    v4.sin_addr.s_addr = htonl(to.ip);
+    std::memcpy(&address, &v4, sizeof v4);
+    // In the test binaries, only to a port a test's own receiver was given (`sandbox.hpp`).
+    if (!net::sandboxLets(address)) {
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+#if defined(_WIN32)
+    const int length = static_cast<int>(packet.size());
+    constexpr int flags = 0;
+#else
+    const std::size_t length = packet.size();
+    constexpr int flags = MSG_DONTWAIT;
+#endif
+    const std::lock_guard<std::mutex> lock(impl_->sendMutex);
+    const auto wrote = ::sendto(impl_->socket, reinterpret_cast<const char*>(packet.data()), length,
+                                flags, reinterpret_cast<const sockaddr*>(&v4), sizeof v4);
+    if (wrote < 0 || static_cast<std::size_t>(wrote) != packet.size()) {
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    sent_.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 } // namespace takt4::control

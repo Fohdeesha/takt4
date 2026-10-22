@@ -11,7 +11,9 @@
 #include "core/fixtures/fixture_library.hpp"
 #include "core/fixtures/import.hpp"
 #include "core/io/wav_file.hpp"
+#include "core/output/osc_message.hpp"
 #include "core/output/output_target.hpp"
+#include "core/remote/remote.hpp"
 #include "core/sandbox.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
@@ -29,6 +31,7 @@
 
 #include "support/fake_grid_source.hpp"
 #include "support/loopback_receiver.hpp"
+#include "support/osc_messages.hpp"
 #include "support/prolink_peer.hpp"
 #include "support/scoped_env.hpp"
 #include "support/temp_dir.hpp"
@@ -7347,6 +7350,11 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     window->on_osc_control_port_typed([&](const slint::SharedString&) { note("osc-port-key"); });
     window->on_osc_control_network_toggled(
         [&](bool on) { note(std::string("network ") + (on ? "1" : "0")); });
+    window->on_osc_remote_setup_toggled(
+        [&](bool on) { note(std::string("remote ") + (on ? "1" : "0")); });
+    window->on_osc_remote_from_edited(
+        [&](const slint::SharedString& t) { note("remote-from " + std::string(t)); });
+    window->on_osc_remote_from_typed([&](const slint::SharedString&) { note("remote-from-key"); });
     window->on_fold_clicked([&](int s) { note("fold " + std::to_string(s)); });
     window->on_link_peers_toggled([&] { note("peers"); });
     window->on_output_enabled_changed(
@@ -7629,27 +7637,54 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     REQUIRE(osc.size() == 7);
     click(middleOf(osc[1]), oscRow);
     expect({"listen 1"}, "the listen box");
+    // Listening, the remote setup line opens under the row, and the plot above gives up the room
+    // for it: the rest of the section, and the fold arrow over it, are found again.
+    shot = takt4::tests::render(*window, kWidth, kHeight);
+    handle.dispatch_window_active_changed_event(true);
+    sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const int listeningRow = sheets[4].first + 163;
+    const auto listening =
+        occupied(shot, listeningRow - 17, listeningRow + 17, 20, kWidth - 20, kSheet, 5);
+    INFO("OSC, listening: " << spans(listening));
+    REQUIRE(listening.size() == 7);
     // The port box: the run that holds "7001".
     float portX = -1.0f;
-    for (const auto& run : osc) {
+    for (const auto& run : listening) {
         if (run.second - run.first + 1 >= 68 && run.second - run.first + 1 <= 72) {
             portX = middleOf(run);
         }
     }
     REQUIRE(portX > 0.0f);
-    click(portX, oscRow);
+    click(portX, listeningRow);
     takt4::tests::endOfText(handle);
     key("2");
     key("\n");
     expect({"osc-port-key", "osc-port 70012"}, "the OSC port box: a keystroke, then Enter");
     // The allow box: the first run right of the port box.
-    for (const auto& run : osc) {
+    for (const auto& run : listening) {
         if (middleOf(run) > portX + 40.0f) {
-            click(middleOf(run), oscRow);
+            click(middleOf(run), listeningRow);
             break;
         }
     }
     expect({"network 1"}, "the allow-other-machines box");
+    // The remote setup line: its box and its words, "only from", the box of senders — which takes
+    // typing once remote setup is on and other machines are allowed — and what it allows.
+    const int remoteRow = listeningRow + 19 + 10 + 19;
+    const auto remoteLine =
+        occupied(shot, remoteRow - 17, remoteRow + 17, 20, kWidth - 20, kSheet, 5);
+    INFO("remote setup: " << spans(remoteLine));
+    REQUIRE(remoteLine.size() == 5);
+    click(middleOf(remoteLine[0]), remoteRow);
+    expect({"remote 1"}, "the remote setup box");
+    click(middleOf(remoteLine[3]), remoteRow);
+    key("1");
+    key("\n");
+    expect({"remote-from-key", "remote-from 1"}, "the box of senders: a keystroke, then Enter");
+    click(middleOf(remoteLine[2]), remoteRow);
+    click(middleOf(remoteLine[4]), remoteRow);
+    expect({}, "only from, and what it allows, which are words");
 
     // --- outputs -------------------------------------------------------------------------------
     // The Link row, 28 px, then the rows, 34 px, 8 px apart.
@@ -10352,4 +10387,663 @@ TEST_CASE("the CDJs' network card picked in the settings file is said while stop
     controller.tick();
     CHECK(std::string(controller.window().get_timing_network()) ==
           "the card on 169.254.20.7, from the settings file");
+}
+
+// --- remote status and control, from a show controller -----------------------------------------
+
+namespace {
+
+/// The window listening for OSC control on a port the system picks, with remote setup on — what a
+/// show controller on this machine talks to.
+void listenForRemote(WindowController& controller) {
+    controller.window().invoke_osc_control_port_edited(slint::SharedString("0"));
+    controller.window().invoke_osc_control_toggled(true);
+    REQUIRE(controller.oscControl().running());
+    controller.setRemoteSetup(true);
+    controller.tick(); // the window's status written: one that has not is busy
+}
+
+/// `message` sent from `bridge` to the window's control port, and the window run as its timer
+/// would until an answer comes back.
+std::vector<takt4::testing::OscMsg> ask(WindowController& controller,
+                                        takt4::testing::LoopbackReceiver& bridge,
+                                        takt4::output::OscMessage message) {
+    REQUIRE(bridge.send(controller.oscControlPort(), message.packet()));
+    std::vector<takt4::testing::OscMsg> answer;
+    waitUntil(controller, [&] {
+        if (bridge.ready(0)) {
+            answer = takt4::testing::oscMessagesIn(bridge.receive());
+        }
+        return !answer.empty();
+    });
+    return answer;
+}
+
+/// A `/takt4/reply` as its request number, "ok" or "refused", and its note; a request number of -1
+/// for anything else.
+struct Reply {
+    std::int32_t seq = -1;
+    std::string verdict;
+    std::string note;
+};
+
+Reply replyIn(const std::vector<takt4::testing::OscMsg>& messages) {
+    if (messages.size() != 1 || messages[0].address != "/takt4/reply" ||
+        messages[0].args.size() != 3) {
+        return {};
+    }
+    return {messages[0].args[0].i, messages[0].args[1].s, messages[0].args[2].s};
+}
+
+/// `address` with a string or two and a request number, as a show controller sends a change.
+/// A literal address only: the message keeps a view of it.
+takt4::output::OscMessage
+numbered(const char* address, std::initializer_list<std::string_view> words, std::int32_t seq) {
+    takt4::output::OscMessage message(address);
+    for (const std::string_view word : words) {
+        message.addString(word);
+    }
+    message.addInt(seq);
+    return message;
+}
+
+} // namespace
+
+TEST_CASE("remote setup has a line of its own under the OSC row while listening, and a list of "
+          "senders with a mistake in it changes nothing",
+          "[ui][remote]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.window().set_inputs_folded(false);
+    auto& window = controller.window().window();
+    const auto inputsSheet = [&controller](const takt4::tests::Shot& shot) {
+        const int osc = static_cast<int>(controller.window().get_osc_row_y());
+        std::pair<int, int> found{-1, -1};
+        for (const auto& sheet : sheetsDown(shot)) {
+            if (sheet.first <= osc && osc <= sheet.second) {
+                found = sheet;
+            }
+        }
+        REQUIRE(found.first >= 0);
+        return found;
+    };
+
+    // Not listening: nothing to set up, so nothing offered.
+    const takt4::tests::Shot off = takt4::tests::render(controller.window(), 800, 1480);
+    const std::pair<int, int> sheetOff = inputsSheet(off);
+
+    controller.window().invoke_osc_control_port_edited(slint::SharedString("0"));
+    controller.window().invoke_osc_control_toggled(true);
+    REQUIRE(controller.oscControl().running());
+    controller.tick();
+    const takt4::tests::Shot on = takt4::tests::render(controller.window(), 800, 1480);
+    const std::pair<int, int> sheetOn = inputsSheet(on);
+    // A line of its own, 38 px and the section's spacing, under the OSC row: the section that
+    // much taller (the plot above gives the room up, the window being the size it is).
+    INFO("sheets off: " << spans(sheetsDown(off)) << "; on: " << spans(sheetsDown(on))
+                        << "; the OSC row at " << controller.window().get_osc_row_y());
+    CHECK((sheetOn.second - sheetOn.first) - (sheetOff.second - sheetOff.first) == 48);
+    const int line = static_cast<int>(controller.window().get_osc_row_y()) + 38 + 10 + 19;
+    const auto parts = occupied(on, line - 9, line + 9, 20, 780, kSheet, 5);
+    INFO("the remote setup line: " << spans(parts));
+    // The tick's box and its words, "only from", its box and what it allows.
+    REQUIRE(parts.size() == 5);
+    CHECK(parts[0].first >= 74);
+
+    // Ticked by a click on its box — and said on the inputs heading, folded or not.
+    CHECK_FALSE(controller.remoteSetup());
+    CHECK(std::string(controller.window().get_inputs_summary()).find("remote setup") ==
+          std::string::npos);
+    clickAt(window, static_cast<float>(parts[0].first + 10), static_cast<float>(line));
+    controller.tick();
+    CHECK(controller.remoteSetup());
+    CHECK(std::string(controller.window().get_inputs_summary())
+              .find("OSC: listening on port " + std::to_string(controller.oscControlPort()) +
+                    ", remote setup on") != std::string::npos);
+    CHECK(controller.oscControl().remoteSetup().allowed);
+    CHECK(controller.window().get_osc_remote_setup());
+    CHECK(controller.currentSettings().machine.oscRemoteSetup);
+
+    // The list is for other machines, so it is open once they are allowed.
+    controller.setOscControlNetwork(true);
+    controller.tick();
+    const auto typeInto = [&](const std::string& text) {
+        clickAt(window, middleOf(parts[3]), static_cast<float>(line));
+        for (const char c : text) {
+            press(window, std::string(1, c));
+        }
+        press(window, "\n");
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+
+    // A letter O for a nought: refused whole, and said — what is left would have been empty,
+    // and an empty list lets every sender in.
+    typeInto("192.168.1.9O");
+    CHECK(controller.remoteFrom().empty());
+    CHECK(controller.oscControl().remoteSetup().from.empty());
+    CHECK(std::string(controller.window().get_osc_remote_from()).empty());
+    CHECK(controller.statusIsError());
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("\"192.168.1.9O\" is not an address") != std::string::npos);
+        CHECK(said.find("the list is as it was") != std::string::npos);
+    }
+
+    // Two addresses, as they are typed: kept as the window keeps them, and in force.
+    typeInto("192.168.1.70  10.0.0.2");
+    CHECK(controller.remoteFrom() == "192.168.1.70, 10.0.0.2");
+    CHECK(std::string(controller.window().get_osc_remote_from()) == "192.168.1.70, 10.0.0.2");
+    CHECK(controller.oscControl().remoteSetup().from ==
+          std::vector<std::uint32_t>{0xC0A80146u, 0x0A000002u});
+    CHECK_FALSE(controller.statusIsError());
+    CHECK(std::string(controller.window().get_status()) ==
+          "Remote setup from 192.168.1.70, 10.0.0.2 and this machine only.");
+    CHECK(controller.currentSettings().machine.oscRemoteFrom == "192.168.1.70, 10.0.0.2");
+
+    // And a typo after that leaves those two as they were.
+    controller.setRemoteFrom("192.168.1.70, 10.0.0");
+    CHECK(controller.remoteFrom() == "192.168.1.70, 10.0.0.2");
+    CHECK(controller.oscControl().remoteSetup().from.size() == 2);
+}
+
+TEST_CASE("a show controller's change over the wire is carried out by the window's own "
+          "functions, said with who asked, and answered",
+          "[ui][remote]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver bridge;
+
+    const Reply reply =
+        replyIn(ask(controller, bridge, numbered("/takt4/ctl/source", {"link"}, 3)));
+    CHECK(reply.seq == 3);
+    CHECK(reply.verdict == "ok");
+    CHECK(reply.note == "timing from Ableton Link");
+    // As the picker would have: the picker shows it, and it is what is saved.
+    CHECK(controller.timingIndex() == 1);
+    CHECK(controller.window().get_timing_index() == 1);
+    CHECK(controller.currentSettings().machine.timingSource == "link");
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said == "Remote, from 127.0.0.1:" + std::to_string(bridge.port()) +
+                          ": /takt4/ctl/source \xE2\x80\x94 timing from Ableton Link");
+        CHECK_FALSE(controller.statusIsError());
+    }
+
+    SECTION("a source takt4 does not know is refused, and nothing changes") {
+        const Reply refused =
+            replyIn(ask(controller, bridge, numbered("/takt4/ctl/source", {"midiclock"}, 4)));
+        CHECK(refused.verdict == "refused");
+        CHECK(refused.note.find("midi-clock") != std::string::npos);
+        CHECK(controller.timingIndex() == 1);
+        CHECK(controller.statusIsError());
+    }
+
+    SECTION("without a request number, a change is carried out and only a refusal is said") {
+        takt4::output::OscMessage back("/takt4/ctl/source");
+        back.addString("audio");
+        REQUIRE(bridge.send(controller.oscControlPort(), back.packet()));
+        waitUntil(controller, [&] { return controller.timingIndex() == 0; });
+        CHECK(controller.timingIndex() == 0);
+        CHECK(bridge.receive().empty());
+    }
+
+    SECTION("remote setup off, nothing changes, and the sender is told how to allow it") {
+        controller.setRemoteSetup(false);
+        const Reply refused =
+            replyIn(ask(controller, bridge, numbered("/takt4/ctl/source", {"audio"}, 5)));
+        CHECK(refused.verdict == "refused");
+        CHECK(refused.note.find("allow remote setup") != std::string::npos);
+        CHECK(controller.timingIndex() == 1);
+    }
+
+    SECTION("an input and a source are changed only while stopped") {
+        takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 120.0,
+                                              static_cast<double>(linkNow(controller)));
+        controller.followForTests(&source);
+        controller.toggleRun();
+        REQUIRE(controller.followed().running());
+        const Reply refused =
+            replyIn(ask(controller, bridge, numbered("/takt4/ctl/source", {"audio"}, 6)));
+        CHECK(refused.verdict == "refused");
+        CHECK(refused.note.rfind("stop first", 0) == 0);
+        CHECK(controller.timingIndex() == 1);
+        takt4::output::OscMessage channel("/takt4/ctl/audio/channel");
+        channel.addInt(1);
+        channel.addInt(1);
+        channel.addInt(7);
+        const Reply notNow = replyIn(ask(controller, bridge, channel));
+        CHECK(notNow.verdict == "refused");
+        CHECK(notNow.note.rfind("stop first", 0) == 0);
+        controller.toggleRun();
+        controller.followForTests(nullptr);
+    }
+}
+
+TEST_CASE("START and STOP from the network are switches, answered once the run has settled",
+          "[ui][remote][follow]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 120.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver bridge;
+    const auto askRun = [&](const char* address, std::int32_t seq) {
+        takt4::output::OscMessage message(address);
+        message.addInt(seq);
+        return replyIn(ask(controller, bridge, message));
+    };
+
+    const Reply started = askRun("/takt4/ctl/audio/start", 4);
+    CHECK(started.seq == 4);
+    CHECK(started.verdict == "ok");
+    CHECK(started.note == "running");
+    CHECK(controller.followed().running());
+    CHECK(controller.window().get_running());
+
+    // Again: running already, and still running — a switch, never a toggle.
+    const Reply again = askRun("/takt4/ctl/audio/start", 5);
+    CHECK(again.verdict == "ok");
+    CHECK(again.note == "running already");
+    CHECK(controller.followed().running());
+
+    // STOP, once the button takes presses again, as it does for a hand.
+    waitUntil(controller, [&] { return !controller.window().get_run_busy(); });
+    const Reply stopped = askRun("/takt4/ctl/audio/stop", 6);
+    CHECK(stopped.verdict == "ok");
+    CHECK(stopped.note == "stopped");
+    CHECK_FALSE(controller.followed().running());
+    CHECK_FALSE(controller.window().get_running());
+    const Reply stillStopped = askRun("/takt4/ctl/audio/stop", 7);
+    CHECK(stillStopped.note == "stopped already");
+
+    SECTION("a START the window cannot carry out is refused with what the window says") {
+        controller.pickTiming(2); // a MIDI clock, with no input picked for it
+        controller.tick();
+        REQUIRE_FALSE(controller.window().get_timing_ready());
+        const Reply refused = askRun("/takt4/ctl/audio/start", 8);
+        CHECK(refused.verdict == "refused");
+        CHECK(refused.note ==
+              "it cannot start: Pick the MIDI input the clock comes in on, then press Start.");
+        CHECK_FALSE(controller.followed().running());
+    }
+    controller.followForTests(nullptr);
+}
+
+TEST_CASE("an output added from the network is a row like one added in the window, changed by "
+          "its id, and hears the heartbeat once it takes the global messages",
+          "[ui][remote]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver bridge;
+    takt4::testing::LoopbackReceiver studio; // where the new output sends
+
+    takt4::output::OscMessage add("/takt4/ctl/output/add");
+    add.addString("show controller");
+    add.addString("osc");
+    add.addString("127.0.0.1");
+    add.addInt(studio.port());
+    add.addInt(7);
+    const Reply added = replyIn(ask(controller, bridge, add));
+    REQUIRE(added.verdict == "ok");
+    const std::string id = added.note;
+    CHECK(id.rfind("o-", 0) == 0);
+    const std::optional<OutputRow> row = outputRow(controller, id);
+    REQUIRE(row.has_value());
+    CHECK(std::string(row->name) == "show controller");
+    CHECK(std::string(row->host) == "127.0.0.1");
+    CHECK(std::string(row->port) == std::to_string(studio.port()));
+    CHECK(row->kind_index == 0);
+    CHECK(row->enabled);
+    CHECK_FALSE(row->sends_namespace);
+    // And on the output thread, as the window's own rows are.
+    bool running = false;
+    for (const takt4::output::OutputTarget& target : seen(controller).targets) {
+        running = running || (target.id == id && target.port == studio.port());
+    }
+    CHECK(running);
+
+    // Ticked for takt4's own messages: the heartbeat reaches it. (Each address held by name: an
+    // `OscMessage` keeps a view of its address, which a temporary would leave dangling.)
+    const std::string globalAddress = "/takt4/ctl/output/" + id + "/global";
+    takt4::output::OscMessage global(globalAddress);
+    global.addInt(1);
+    global.addInt(9);
+    const Reply global1 = replyIn(ask(controller, bridge, global));
+    CHECK(global1.verdict == "ok");
+    CHECK(outputRow(controller, id)->sends_namespace);
+    bool heard = false;
+    waitUntil(controller, [&] {
+        while (studio.ready(0)) {
+            const auto messages = takt4::testing::oscMessagesIn(studio.receive());
+            heard = heard || takt4::testing::findOsc(messages, "/takt4/status/alive") != nullptr;
+        }
+        return heard;
+    });
+    CHECK(heard);
+
+    // Its delay, by id, through the slider's own path.
+    const std::string delayAddress = "/takt4/ctl/output/" + id + "/delay";
+    takt4::output::OscMessage delay(delayAddress);
+    delay.addFloat(25.0f);
+    delay.addInt(10);
+    const Reply delayed = replyIn(ask(controller, bridge, delay));
+    CHECK(delayed.verdict == "ok");
+    CHECK(delayed.note == "25 ms");
+    CHECK(outputRow(controller, id)->delay_ms == Catch::Approx(25.0f));
+    // And what the status line said of it, to the outputs taking takt4's own messages — who asked
+    // included.
+    const std::string line = "Remote, from 127.0.0.1:" + std::to_string(bridge.port()) +
+                             ": /takt4/ctl/output/" + id + "/delay \xE2\x80\x94 25 ms";
+    bool said = false;
+    waitUntil(controller, [&] {
+        while (studio.ready(0)) {
+            for (const takt4::testing::OscMsg& message :
+                 takt4::testing::oscMessagesIn(studio.receive())) {
+                said =
+                    said || (message.address == "/takt4/status/log" && message.args.size() == 2 &&
+                             message.args[0].s == "info" && message.args[1].s == line);
+            }
+        }
+        return said;
+    });
+    CHECK(said);
+
+    // Off.
+    const std::string enableAddress = "/takt4/ctl/output/" + id + "/enable";
+    takt4::output::OscMessage enable(enableAddress);
+    enable.addInt(0);
+    enable.addInt(11);
+    const Reply off = replyIn(ask(controller, bridge, enable));
+    CHECK(off.verdict == "ok");
+    CHECK(off.note == "off");
+    CHECK_FALSE(outputRow(controller, id)->enabled);
+
+    // An id that is no output; a second Link; the global messages for a row that is not OSC.
+    takt4::output::OscMessage nobody("/takt4/ctl/output/o-00000000/enable");
+    nobody.addInt(1);
+    nobody.addInt(12);
+    const Reply none = replyIn(ask(controller, bridge, nobody));
+    CHECK(none.verdict == "refused");
+    CHECK(none.note.rfind("no output with the id \"o-00000000\"", 0) == 0);
+    takt4::output::OscMessage secondLink("/takt4/ctl/output/add");
+    secondLink.addString("another link");
+    secondLink.addString("link");
+    secondLink.addString("");
+    secondLink.addInt(0);
+    secondLink.addInt(13);
+    CHECK(replyIn(ask(controller, bridge, secondLink)).note ==
+          "Link is always there, as the first output");
+    const std::string linkId(controller.window().get_outputs_list()->row_data(0)->id);
+    const std::string linkGlobalAddress = "/takt4/ctl/output/" + linkId + "/global";
+    takt4::output::OscMessage linkGlobal(linkGlobalAddress);
+    linkGlobal.addInt(1);
+    linkGlobal.addInt(14);
+    const Reply notOsc = replyIn(ask(controller, bridge, linkGlobal));
+    CHECK(notOsc.verdict == "refused");
+    CHECK(notOsc.note == "only an OSC output can be sent takt4's own messages");
+}
+
+TEST_CASE("a change that waited behind a busy window is refused, not carried out late",
+          "[ui][remote]") {
+    // A dialog open stops the redraws, and with them the commands. One asked for before the
+    // window stopped and found after is two seconds stale: the show controller has moved on.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver bridge;
+    takt4::remote::Command command;
+    command.kind = takt4::remote::Command::Kind::Source;
+    command.address = "/takt4/ctl/source";
+    command.text = "link";
+    command.seq = 2;
+    command.from = {0x7F000001u, bridge.port()};
+    REQUIRE(controller.remoteCommands().push(command));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+    controller.tick();
+    const Reply refused = replyIn(takt4::testing::oscMessagesIn(bridge.receive()));
+    CHECK(refused.seq == 2);
+    CHECK(refused.verdict == "refused");
+    CHECK(refused.note.rfind("busy:", 0) == 0);
+    CHECK(controller.timingIndex() == 0);
+}
+
+TEST_CASE("the status a show controller is sent says what the window shows",
+          "[ui][remote][follow]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.tick();
+    const takt4::remote::Status stopped = controller.remoteBoard().read();
+    CHECK_FALSE(stopped.running);
+    CHECK(stopped.state == "stopped");
+    CHECK(stopped.state == std::string(controller.window().get_lock_word()));
+    CHECK(stopped.source == "audio");
+    CHECK(stopped.version == std::string(controller.window().get_version()));
+    CHECK(stopped.levelDb == takt4::remote::Status::kSilentDb);
+    const auto rows = controller.window().get_outputs_list();
+    REQUIRE(stopped.outputs.size() == rows->row_count());
+    CHECK(stopped.outputs[0].kind == "link");
+    CHECK(stopped.outputs[0].id == std::string(rows->row_data(0)->id));
+
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 120.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    // No session to follow yet, so the panel waits for as long as this likes, however slow the
+    // machine; then the session, and the panel goes on to "following" in one of the redraws
+    // watched.
+    source.setPresent(false);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    // After every redraw, while the panel's word goes from waiting to following: the status says
+    // the word the window has just put up, never the one before it. (From a redraw on: START has
+    // changed the word since the last one.)
+    controller.tick();
+    std::vector<std::string> words;
+    int disagreed = 0;
+    const auto watch = [&] {
+        const std::string board = controller.remoteBoard().read().state;
+        const std::string shown(controller.window().get_lock_word());
+        if (words.empty() || words.back() != shown) {
+            words.push_back(shown);
+        }
+        disagreed += board == shown ? 0 : 1;
+        return shown;
+    };
+    for (int round = 0; round < 5; ++round) {
+        controller.tick();
+        (void)watch();
+    }
+    source.setPresent(true);
+    waitUntil(controller,
+              [&] { return watch() == "following" && controller.remoteBoard().read().locked; });
+    INFO("the panel said, in turn: " << Catch::Detail::stringify(words));
+    CHECK(disagreed == 0);
+    REQUIRE(words.size() >= 2); // it did change while watched
+    CHECK(words.back() == "following");
+    const takt4::remote::Status following = controller.remoteBoard().read();
+    CHECK(following.running);
+    CHECK(following.locked);
+    CHECK_FALSE(following.hunting);
+    CHECK(following.source == "link");
+    CHECK(following.sourceOk);
+    CHECK(following.bpm == Catch::Approx(120.0).margin(0.5));
+    CHECK(following.state == std::string(controller.window().get_lock_word()));
+    CHECK(following.sourceDetail == std::string(controller.window().get_timing_detail()));
+    controller.toggleRun();
+    controller.followForTests(nullptr);
+    controller.tick();
+    CHECK_FALSE(controller.remoteBoard().read().running);
+}
+
+TEST_CASE("after a launch that fell back from the interface it remembered, a pick from the network "
+          "is the one saved",
+          "[ui][remote]") {
+    // A launch that could not find its interface keeps saving that one, until somebody picks
+    // another: a show the night after a launch with the interface switched off must not move to
+    // the stand-in. A pick sent from the network is somebody picking.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings settings;
+    settings.machine.deviceName = "Gone Interface";
+    settings.machine.hostApiName = "ASIO";
+    settings.machine.channel = 4;
+
+    SECTION("the device") {
+        InputDevice microphone;
+        microphone.index = 1;
+        microphone.name = "Microphone";
+        microphone.hostApiName = "Windows WASAPI";
+        microphone.maxInputChannels = 2;
+        microphone.defaultSampleRate = 48000.0;
+        tracker.setDeviceListHook(
+            [&microphone](std::vector<InputDevice>& list) { list = {motuAt(0), microphone}; });
+        WindowController controller(tracker, settings);
+        REQUIRE(controller.currentSettings().machine.deviceName == "Gone Interface");
+        listenForRemote(controller);
+        takt4::testing::LoopbackReceiver bridge;
+        CHECK(replyIn(ask(controller, bridge,
+                          numbered("/takt4/ctl/audio/device", {"Windows WASAPI", "Microphone"}, 1)))
+                  .verdict == "ok");
+        CHECK(controller.currentSettings().machine.deviceName == "Microphone");
+    }
+
+    SECTION("the channel, on the interface it fell back to") {
+        tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {motuAt(0)}; });
+        WindowController controller(tracker, settings);
+        REQUIRE(controller.currentSettings().machine.deviceName == "Gone Interface");
+        listenForRemote(controller);
+        takt4::testing::LoopbackReceiver bridge;
+        takt4::output::OscMessage channel("/takt4/ctl/audio/channel");
+        channel.addInt(3);
+        channel.addInt(0);
+        channel.addInt(2);
+        CHECK(replyIn(ask(controller, bridge, channel)).verdict == "ok");
+        const takt4::settings::Settings saved = controller.currentSettings();
+        CHECK(saved.machine.deviceName == "MOTU Pro Audio");
+        CHECK(saved.machine.channel == 2);
+    }
+}
+
+TEST_CASE("remote setup is saved and comes back, and a list in the file with a word in it leaves "
+          "it off",
+          "[ui][remote]") {
+    takt4::settings::Settings settings;
+    settings.machine.oscRemoteSetup = true;
+    settings.machine.oscRemoteFrom = "192.168.1.70,10.0.0.2";
+    LiveTracker tracker(kWeights, kStateSpace);
+
+    SECTION("as it was saved") {
+        WindowController controller(tracker, settings);
+        CHECK(controller.remoteSetup());
+        CHECK(controller.remoteFrom() == "192.168.1.70, 10.0.0.2");
+        CHECK(controller.oscControl().remoteSetup().allowed);
+        CHECK(controller.oscControl().remoteSetup().from ==
+              std::vector<std::uint32_t>{0xC0A80146u, 0x0A000002u});
+        CHECK(controller.currentSettings().machine.oscRemoteSetup);
+        CHECK(controller.currentSettings().machine.oscRemoteFrom == "192.168.1.70, 10.0.0.2");
+    }
+
+    SECTION("a list with something else in it opens nothing") {
+        settings.machine.oscRemoteFrom = "192.168.1.70, bridge";
+        WindowController controller(tracker, settings);
+        CHECK_FALSE(controller.remoteSetup());
+        CHECK_FALSE(controller.oscControl().remoteSetup().allowed);
+        CHECK(controller.remoteFrom() == "192.168.1.70");
+        CHECK(controller.statusIsError());
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("Remote setup is off") != std::string::npos);
+        CHECK(said.find("\"bridge\"") != std::string::npos);
+        CHECK_FALSE(controller.currentSettings().machine.oscRemoteSetup);
+    }
+}
+
+TEST_CASE("an input picked from the network is the one the pickers show, and its channel is one "
+          "the window offers",
+          "[ui][remote]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    InputDevice microphone;
+    microphone.index = 1;
+    microphone.name = "Microphone";
+    microphone.hostApiName = "Windows WASAPI";
+    microphone.maxInputChannels = 2;
+    microphone.defaultSampleRate = 48000.0;
+    tracker.setDeviceListHook(
+        [&microphone](std::vector<InputDevice>& list) { list = {motuAt(0), microphone}; });
+    WindowController controller(tracker);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver bridge;
+
+    // By the names the devices list gives, host first: as the picker would, and saved as a pick.
+    const Reply picked =
+        replyIn(ask(controller, bridge,
+                    numbered("/takt4/ctl/audio/device", {"Windows WASAPI", "Microphone"}, 1)));
+    CHECK(picked.verdict == "ok");
+    CHECK(picked.note == "Windows WASAPI / Microphone");
+    CHECK(controller.window().get_device_index() == 1);
+    CHECK(controller.currentSettings().machine.deviceName == "Microphone");
+    CHECK(controller.currentSettings().machine.hostApiName == "Windows WASAPI");
+
+    // A device this machine has not got changes nothing, and says where to look.
+    const Reply missing = replyIn(
+        ask(controller, bridge, numbered("/takt4/ctl/audio/device", {"ASIO", "Nothing Here"}, 2)));
+    CHECK(missing.verdict == "refused");
+    CHECK(missing.note.find("ask /takt4/ctl/audio/devices") != std::string::npos);
+    CHECK(controller.window().get_device_index() == 1);
+
+    // The MOTU's eight: inputs 5 and 6 as the pair they are, then 7 alone.
+    CHECK(replyIn(ask(controller, bridge,
+                      numbered("/takt4/ctl/audio/device", {"ASIO", "MOTU Pro Audio"}, 3)))
+              .verdict == "ok");
+    const auto channel = [&](std::int32_t first, std::int32_t mono, std::int32_t seq) {
+        takt4::output::OscMessage message("/takt4/ctl/audio/channel");
+        message.addInt(first);
+        message.addInt(mono);
+        message.addInt(seq);
+        return replyIn(ask(controller, bridge, message));
+    };
+    const Reply pair = channel(5, 0, 4);
+    CHECK(pair.verdict == "ok");
+    CHECK(pair.note == "inputs 5 and 6");
+    CHECK(controller.selection().count == 2);
+    CHECK(controller.selection().channels[0] == 4);
+    CHECK(controller.window().get_channel_index() == 2); // "5 + 6", third in the pairs' list
+    CHECK_FALSE(controller.window().get_input_mono());
+
+    // The second of a pair is no pair the window offers: refused, with the one it meant.
+    const Reply even = channel(6, 0, 5);
+    CHECK(even.verdict == "refused");
+    CHECK(even.note.find("ask for 5") != std::string::npos);
+    CHECK(controller.selection().channels[0] == 4);
+
+    const Reply single = channel(7, 1, 6);
+    CHECK(single.verdict == "ok");
+    CHECK(single.note == "input 7, mono");
+    CHECK(controller.selection().count == 1);
+    CHECK(controller.selection().channels[0] == 6);
+    CHECK(controller.window().get_input_mono());
+    CHECK(controller.window().get_channel_index() == 6);
+    CHECK(controller.currentSettings().machine.mono);
+    CHECK(controller.currentSettings().machine.channel == 6);
+
+    const Reply past = channel(9, 1, 7);
+    CHECK(past.verdict == "refused");
+    CHECK(past.note == "input 9 is not on MOTU Pro Audio, which has 8");
+
+    // And the status says what is picked, as the window shows it.
+    controller.tick();
+    const takt4::remote::Status status = controller.remoteBoard().read();
+    CHECK(status.audioHost == "ASIO");
+    CHECK(status.audioDevice == "MOTU Pro Audio");
+    CHECK(status.audioChannel == 7);
+    CHECK(status.audioMono);
+    REQUIRE(status.devices.size() == 2);
+    CHECK(status.devices[1].device == "Microphone");
+    CHECK(status.devices[1].inputs == 2);
 }

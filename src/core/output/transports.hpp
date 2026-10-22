@@ -287,7 +287,9 @@ public:
     /// `moment` plus the rig's offset plus its own delay. The moment is on the clock `advance`
     /// is given, and ahead of `now` when the output thread fires the beat on a prediction.
     /// Counted in `beats()`.
-    void publishBeat(const tracking::BeatEvent& event, double moment, double now);
+    /// `count` is the run's beats so far, for the OSC's `/beat/timing`.
+    void publishBeat(const tracking::BeatEvent& event, double moment, double now,
+                     std::uint64_t count = 0);
     /// Both at once, with the beat's moment taken to be now — for a caller with no scheduler
     /// of its own: `takt4-cli`'s file mode, and the tests.
     void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double beatTime);

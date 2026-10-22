@@ -72,6 +72,7 @@ add_executable(takt4_tests
   output/routing_test.cpp
   output/rule_sink_test.cpp
   output/transports_test.cpp
+  remote/remote_test.cpp
   rt/alloc_guard_test.cpp
   settings/rule_json_test.cpp
   settings/settings_test.cpp
@@ -106,6 +107,7 @@ add_executable(takt4_tests
   support/late_rounds.hpp
   support/link_network.hpp
   support/loopback_receiver.hpp
+  support/osc_messages.hpp
   support/prolink_capture.hpp
   support/prolink_peer.hpp
   support/prolink_sim.hpp

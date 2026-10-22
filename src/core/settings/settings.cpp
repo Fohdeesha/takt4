@@ -661,6 +661,8 @@ std::string toJson(const Settings& settings) {
              {"oscControlEnabled", settings.machine.oscControlEnabled},
              {"oscControlPort", settings.machine.oscControlPort},
              {"oscControlLocalOnly", settings.machine.oscControlLocalOnly},
+             {"oscRemoteSetup", settings.machine.oscRemoteSetup},
+             {"oscRemoteFrom", settings.machine.oscRemoteFrom},
              {"timingSource", settings.machine.timingSource},
              {"midiClockInPort", settings.machine.midiClockInPort},
              {"midiClockObeyStartStop", settings.machine.midiClockObeyStartStop},
@@ -707,6 +709,8 @@ Settings fromDocument(const json& document) {
         read(machine, "midiControlPort", settings.machine.midiControlPort);
         read(machine, "oscControlEnabled", settings.machine.oscControlEnabled);
         read(machine, "oscControlLocalOnly", settings.machine.oscControlLocalOnly);
+        read(machine, "oscRemoteSetup", settings.machine.oscRemoteSetup);
+        read(machine, "oscRemoteFrom", settings.machine.oscRemoteFrom);
         read(machine, "timingSource", settings.machine.timingSource);
         // A source this build cannot follow — a newer build's, or a typo — is the audio: the
         // tracker is always there to fall back on, and a picker showing nothing helps nobody.

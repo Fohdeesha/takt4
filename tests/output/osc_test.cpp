@@ -7,6 +7,7 @@
 #include "core/tracking/tempo_tracker.hpp"
 
 #include "support/loopback_receiver.hpp"
+#include "support/osc_messages.hpp"
 
 #if !defined(_WIN32)
 #include <sys/time.h>
@@ -371,15 +372,15 @@ TEST_CASE("the generic namespace is published as the design 5.6 specifies", "[ou
 
     // Everything a consumer needs, on the first beat it hears: the state, then the beat.
     std::vector<std::string> addresses;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         const std::string packet = receiver.receive();
         REQUIRE_FALSE(packet.empty());
         addresses.push_back(packet.substr(0, packet.find('\0')));
     }
     CHECK(addresses == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
                                                 "/takt4/meter", "/takt4/beat", "/takt4/beat/bar",
-                                                "/takt4/downbeat"});
-    CHECK(publisher.messagesSent() == 7);
+                                                "/takt4/downbeat", "/takt4/beat/timing"});
+    CHECK(publisher.messagesSent() == 8);
     CHECK(publisher.messagesFailed() == 0);
 
     SECTION("state that has not changed is not resent between beats") {
@@ -389,16 +390,16 @@ TEST_CASE("the generic namespace is published as the design 5.6 specifies", "[ou
         state.locked = true;
         state.beatsPerBar = 4;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 7);
+        CHECK(publisher.messagesSent() == 8);
 
         state.confidence = 0.20;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 8);
+        CHECK(publisher.messagesSent() == 9);
         CHECK(receiver.receive().substr(0, 17) == "/takt4/confidence");
 
         state.locked = false;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 9);
+        CHECK(publisher.messagesSent() == 10);
         CHECK(receiver.receive().substr(0, 13) == "/takt4/locked");
     }
 
@@ -408,16 +409,17 @@ TEST_CASE("the generic namespace is published as the design 5.6 specifies", "[ou
         early.beatInBar = 0;
         publisher.publishBeat(early);
         // Every beat repeats the state, so a consumer that started late is right again
-        // within a beat: four state messages and the beat, and nothing else.
-        CHECK(publisher.messagesSent() == 12);
+        // within a beat: four state messages, the beat and its timing, and nothing else.
+        CHECK(publisher.messagesSent() == 14);
         std::vector<std::string> after;
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             const std::string packet = receiver.receive();
             REQUIRE_FALSE(packet.empty());
             after.push_back(packet.substr(0, packet.find('\0')));
         }
         CHECK(after == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
-                                                "/takt4/meter", "/takt4/beat"});
+                                                "/takt4/meter", "/takt4/beat",
+                                                "/takt4/beat/timing"});
     }
 
     SECTION("resync is its own message") {
@@ -542,7 +544,7 @@ TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][o
         event.downbeat = true;
         publisher.setNow(40.0);
         publisher.publishBeat(event, 40.5);
-        CHECK(publisher.pending() == 7);
+        CHECK(publisher.pending() == 8);
         publisher.setNow(40.1999);
         publisher.flushDue();
         CHECK(early.receive().empty());
@@ -554,7 +556,7 @@ TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][o
         }
         CHECK(got == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
                                               "/takt4/meter", "/takt4/beat", "/takt4/beat/bar",
-                                              "/takt4/downbeat"});
+                                              "/takt4/downbeat", "/takt4/beat/timing"});
     }
 
     SECTION("flushing sends everything held, whatever it was waiting for") {
@@ -780,7 +782,7 @@ TEST_CASE("a target that takes only its rules is sent nothing of the namespace",
     const std::vector<std::string> atDeck = addresses(deck);
     const std::vector<std::string> atWinch = addresses(winch);
     INFO("deck: " << atDeck.size() << " datagrams, winch: " << atWinch.size());
-    CHECK(namespaced(atDeck) == 9); // the beat's seven, the resync, the tempo that moved
+    CHECK(namespaced(atDeck) == 10); // the beat's eight, the resync, the tempo that moved
     CHECK(std::find(atDeck.begin(), atDeck.end(), "/everywhere") != atDeck.end());
     CHECK(std::find(atDeck.begin(), atDeck.end(), "/winch/cue") == atDeck.end());
     CHECK(atWinch == std::vector<std::string>{"/everywhere", "/winch/cue"});
@@ -790,7 +792,7 @@ TEST_CASE("a target that takes only its rules is sent nothing of the namespace",
         publisher.setNow(2.0);
         publisher.publishBeat(event);
         publisher.sendAddressTo(std::uint64_t{1} << kWinchBit, "/winch/cue", std::int32_t{1});
-        REQUIRE(publisher.pending() == 8); // the beat's seven and the cue, all the winch's
+        REQUIRE(publisher.pending() == 9); // the beat's eight and the cue, all the winch's
         REQUIRE(publisher.setTargets(targets(false, 0.3)).empty());
         CHECK(publisher.pending() == 1);
         publisher.setNow(2.4);
@@ -878,4 +880,78 @@ TEST_CASE("an OSC target past the 64th is sent what goes everywhere and nothing 
     publisher.sendAddressTo(takt4::output::kAllOutputs, "/everywhere", 1);
     CHECK_FALSE(third.receive().empty());
     CHECK_FALSE(past.receive().empty());
+}
+
+TEST_CASE("a beat's timing says how long ago it landed and how long until the next, as each "
+          "output's copy is sent",
+          "[output][osc][remote]") {
+    // For a show controller that schedules from takt4's own phase and tempo, so a datagram that is
+    // late, or lost, costs nothing. The instant is the beat's moment and the rig's latency — where
+    // takt4's operator means it to land — so an output's own delay shows in it, with any lateness
+    // (a show controller's answer of 2026-10-22).
+    LoopbackReceiver prompt;
+    LoopbackReceiver slow;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", prompt.port(), 0);
+    publisher.addTarget("127.0.0.1", slow.port(), 1, 0.2);
+    takt4::tracking::BeatEvent event;
+    event.bpm = 120.0;
+    event.confidence = 0.9;
+    event.locked = true;
+    event.beatsPerBar = 4;
+    event.beatInBar = 2;
+    const auto timingIn = [](LoopbackReceiver& receiver) {
+        std::optional<takt4::testing::OscMsg> timing;
+        for (std::string datagram = receiver.receive(); !datagram.empty();
+             datagram = receiver.receive()) {
+            const std::vector<takt4::testing::OscMsg> messages =
+                takt4::testing::oscMessagesIn(datagram);
+            if (!messages.empty() && messages[0].address == "/takt4/beat/timing") {
+                timing = messages[0];
+            }
+        }
+        return timing;
+    };
+
+    // A beat at 10 s, fired 50 ms after it.
+    publisher.setNow(10.05);
+    publisher.publishBeat(event, 10.0, 41);
+    const std::optional<takt4::testing::OscMsg> now = timingIn(prompt);
+    REQUIRE(now.has_value());
+    REQUIRE(now->args.size() == 3);
+    CHECK(now->args[0].type == 'f');
+    CHECK(now->args[0].f == Catch::Approx(50.0f).margin(0.01));
+    CHECK(now->args[1].type == 'f');
+    CHECK(now->args[1].f == Catch::Approx(450.0f).margin(0.01));
+    CHECK(now->args[2].type == 'i');
+    CHECK(now->args[2].i == 41);
+
+    // The slow output's copy waits out its 200 ms and says what is true when it goes — worked out
+    // then, not when the beat was fired.
+    CHECK_FALSE(timingIn(slow).has_value());
+    publisher.setNow(10.26);
+    publisher.flushDue();
+    const std::optional<takt4::testing::OscMsg> held = timingIn(slow);
+    REQUIRE(held.has_value());
+    CHECK(held->args[0].f == Catch::Approx(260.0f).margin(0.01));
+    CHECK(held->args[1].f == Catch::Approx(240.0f).margin(0.01));
+    CHECK(held->args[2].i == 41);
+
+    SECTION("the rig's latency moves the instant the beat is meant to land") {
+        publisher.setOffsetSeconds(0.1);
+        publisher.setNow(20.15);
+        publisher.publishBeat(event, 20.0, 42);
+        const std::optional<takt4::testing::OscMsg> late = timingIn(prompt);
+        REQUIRE(late.has_value());
+        CHECK(late->args[0].f == Catch::Approx(50.0f).margin(0.01));
+        CHECK(late->args[1].f == Catch::Approx(450.0f).margin(0.01));
+        CHECK(late->args[2].i == 42);
+    }
+
+    SECTION("a beat with no tempo has no next beat to say, and goes without its timing") {
+        event.bpm = 0.0;
+        publisher.setNow(30.0);
+        publisher.publishBeat(event, 30.0, 43);
+        CHECK_FALSE(timingIn(prompt).has_value());
+    }
 }

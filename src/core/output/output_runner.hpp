@@ -6,6 +6,7 @@
 #include "core/output/beat_scheduler.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/remote/remote.hpp"
 #include "core/rt/published.hpp"
 #include "core/rt/thread_priority.hpp"
 #include "core/trigger/trigger_engine.hpp"
@@ -323,6 +324,29 @@ public:
 
     /// Set before `start()`; the thread reads it without synchronisation.
     void setBeatObserver(BeatObserver observer);
+
+    /// **takt4's own status, to the outputs taking its global messages** (`remote`; a show controller's
+    /// ask of 2026-10-22): `/status/alive i n` and the whole `remote::Status` once a second, as one
+    /// bundle, and each value that moves in between, loose; and the lines the window says
+    /// (`/status/log`). From this thread because it runs for the application's whole life whatever
+    /// the audio and the window are doing — so a heartbeat that stops means takt4 has, and one
+    /// still coming with "running, not locked" is a quiet room, not a dead takt4. Sent now, past
+    /// every output's delay: it is about takt4, not about a beat. Both must outlive the runner, or
+    /// be set to null before it stops; set before `start()`.
+    void setRemote(const remote::StatusBoard* board, remote::LogQueue* logs) noexcept {
+        board_ = board;
+        logs_ = logs;
+    }
+    /// Heartbeats sent.
+    std::uint64_t heartbeats() const noexcept {
+        return heartbeats_.load(std::memory_order_relaxed);
+    }
+    /// How often the status is looked at for changes, and the heartbeat's period.
+    static constexpr double kStatusLookSeconds = 0.1;
+    static constexpr double kHeartbeatSeconds = 1.0;
+    /// Lines of `/status/log` a second, at most: the status line can change faster than a show
+    /// controller needs to hear it. The rest wait their turn (`remote::LogQueue`).
+    static constexpr int kLogLinesPerSecond = 5;
 
     /// Enables the transports and starts the thread. `start()` on a running runner does
     /// nothing.
@@ -920,6 +944,19 @@ private:
     std::atomic<std::uint64_t> rounds_{0};
     /// The thread's `rt::RoundTimer` keeps it; reset by `start` before the thread exists.
     rt::RoundLateness lateness_;
+
+    /// See `setRemote`. The rest is the thread's own.
+    void sendRemoteStatus(double now);
+    const remote::StatusBoard* board_ = nullptr;
+    remote::LogQueue* logs_ = nullptr;
+    double nextStatusLook_ = 0.0;
+    double nextHeartbeat_ = 0.0;
+    std::int32_t alive_ = 0;
+    remote::Status sentStatus_;
+    bool statusSent_ = false;
+    double logWindowStart_ = 0.0;
+    int logLinesInWindow_ = 0;
+    std::atomic<std::uint64_t> heartbeats_{0};
     std::atomic<std::uint64_t> errors_{0};
     std::atomic<std::uint64_t> beatsUnsent_{0};
     std::atomic<bool> threadRaised_{false};

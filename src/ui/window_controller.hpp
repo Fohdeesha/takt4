@@ -11,6 +11,7 @@
 #include "core/midi/midi_input_hub.hpp"
 #include "core/output/link_peers.hpp"
 #include "core/output/output_runner.hpp"
+#include "core/remote/remote.hpp"
 #include "core/settings/settings.hpp"
 #include "core/timing/external_beats.hpp"
 #include "core/timing/grid_source.hpp"
@@ -399,6 +400,29 @@ public:
     /// control surface on another machine needs, and is the operator's call because OSC
     /// carries no authentication and takt4 invents none.
     void setOscControlNetwork(bool allowNetwork);
+
+    /// **Remote setup**: whether a show controller on the network may START and STOP takt4 and
+    /// change its input, its source and its outputs over the OSC control socket
+    /// (`control::OscControl::RemoteSetup`). Off until ticked, and a decision apart from
+    /// listening at all. Every change is carried out by this window's own functions, said on the
+    /// status line with who asked, and saved as one made here is.
+    void setRemoteSetup(bool on);
+    /// The senders it is allowed from, as typed: IPv4 addresses separated by commas or spaces,
+    /// empty for any that reaches the socket. **A list with anything else in it is not taken at
+    /// all** — what is left could be empty, and empty lets every sender in.
+    void setRemoteFrom(const std::string& text);
+    bool remoteSetup() const noexcept { return remoteSetupOn_; }
+    const std::string& remoteFrom() const noexcept { return remoteFrom_; }
+    /// What takt4 says about itself now (`remote::Status`): published on the board every
+    /// redraw, for the output thread's heartbeat and the control socket's answers.
+    remote::Status remoteStatus() const;
+    /// For the tests: the board the status is published on, and the queue the control socket
+    /// pushes remote commands to.
+    const remote::StatusBoard& remoteBoard() const noexcept { return remoteBoard_; }
+    remote::CommandQueue& remoteCommands() noexcept { return remoteCommands_; }
+    /// The remote commands waiting, carried out — the redraw does this — and a START or STOP
+    /// asked for remotely answered once it has settled.
+    void carryOutRemote();
     /// For the tests: how long before a control input that would not open is tried again —
     /// `kControlRetrySeconds` everywhere else. A test that frees a port and watches it taken
     /// should not have to wait five seconds of wall clock for it.
@@ -1087,6 +1111,36 @@ private:
     /// The OSC control port's box, as typed and not yet committed — see `applyDrafts`.
     std::optional<std::string> oscPortTyped_;
 
+    // --- remote status and control
+    // ----------------------------------------------------------------
+    /// What a command came to: carried out, refused, or a START or STOP under way, answered once
+    /// it has settled (`remoteRun_`).
+    enum class Verdict : std::uint8_t { Done, Refused, Later };
+    Verdict carryOut(const remote::Command& command, std::string& note);
+    /// The output row whose id is `id`, or -1.
+    int rowWithId(std::string_view id) const;
+    /// The settings' remote setup, at launch and from a file loaded.
+    void loadRemoteSetup(const settings::MachineSettings& machine);
+    /// The switch and the list, to the control socket; and what the window shows of them.
+    void applyRemoteSetup();
+    void publishRemoteSetup(bool force);
+    /// "from 192.168.1.70 and this machine only." — who remote setup is open to.
+    std::string remoteSendersText() const;
+    /// `tick`'s round, before the status is published.
+    void redraw();
+    std::optional<remote::Command> remoteRun_;
+    bool remoteRunWanted_ = false;
+    bool remoteSetupOn_ = false;
+    std::string remoteFrom_;
+    std::string remoteFromShown_;
+    /// The "only from" box, as typed and not yet committed — see `applyDrafts`.
+    std::optional<std::string> remoteFromTyped_;
+    /// A list refused, so the box's own late commit of it is not said twice.
+    std::string remoteFromRefused_;
+    /// The input's level as last measured, in dBFS, for the status.
+    float lastLevelDb_ = static_cast<float>(remote::Status::kSilentDb);
+    std::chrono::steady_clock::time_point startedAt_ = std::chrono::steady_clock::now();
+
     /// The tracker's beat count when a downbeat snap was posted, while one is still in
     /// flight. the snap lands on the *next* beat called, so the count moving is what
     /// says it has arrived — and until then the DOWNBEAT button stays lit, because a
@@ -1134,6 +1188,13 @@ private:
     /// surfaces and this window's own buttons hold it (`engine::BeatSourceSwitch`). **Before
     /// `runner_`**, so it outlives everything that holds it.
     engine::BeatSourceSwitch source_;
+
+    /// **Remote status and control** (`remote`): the status this window publishes as it redraws,
+    /// the commands the control socket queues for it, and the lines it says. **Before `runner_`
+    /// and `oscControl_`**, whose threads read them, so they go after both have stopped.
+    remote::StatusBoard remoteBoard_;
+    remote::CommandQueue remoteCommands_;
+    remote::LogQueue remoteLog_;
 
     /// the output thread, and the single consumer of the source's beat ring — which is
     /// why `tick()` no longer drains it.

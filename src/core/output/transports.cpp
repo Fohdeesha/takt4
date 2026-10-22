@@ -745,7 +745,8 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
     }
 }
 
-void Transports::publishBeat(const tracking::BeatEvent& event, double moment, double now) {
+void Transports::publishBeat(const tracking::BeatEvent& event, double moment, double now,
+                             std::uint64_t count) {
     // A beat queued for a delayed target is due its delay after *this* beat's moment, not
     // after whenever the next round happens to run.
     osc_->setNow(now);
@@ -754,7 +755,7 @@ void Transports::publishBeat(const tracking::BeatEvent& event, double moment, do
     if (event.downbeat) {
         downbeats_.fetch_add(1, std::memory_order_relaxed);
     }
-    osc_->publishBeat(event, moment);
+    osc_->publishBeat(event, moment, count);
 }
 
 void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros,

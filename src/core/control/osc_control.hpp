@@ -1,8 +1,10 @@
 #pragma once
 
 #include "core/control/control_action.hpp"
+#include "core/control/osc_parse.hpp"
 #include "core/control/osc_receiver.hpp"
 #include "core/engine/beat_source.hpp"
+#include "core/remote/remote.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -10,9 +12,11 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace takt4::control {
 
@@ -34,7 +38,7 @@ namespace takt4::control {
 /// `/ctl/lock <0|1>` **pins** the lock rather than setting it, because a `setLocked(true)`
 /// the hysteresis unwinds 75 frames later would not be a lock at all. The argument is
 /// required and is not a toggle; `TempoTracker::setLockPinned` carries the reasoning.
-class OscControl {
+class OscControl final : public remote::Replies {
 public:
     struct Config {
         /// Off unless an operator asks for it. A listening socket is not something to
@@ -101,11 +105,70 @@ public:
     /// Acts on one address, as if it had arrived — the way a test drives this without a
     /// socket. `argument` is the `<0|1>` where an address takes one.
     bool dispatch(std::string_view address, std::optional<double> argument);
+    /// A remote status or control message, as if it had arrived from `from` — the way a test
+    /// drives a sender on another machine, which no test's sender can be. True when it was one.
+    bool dispatchRemote(std::span<const std::byte> packet, const remote::Endpoint& from);
+
+    // --- remote status and control (a show controller's, 2026-10-22) -------------------------------
+
+    /// Where queries are answered from, and where commands go for the window to carry out. Both
+    /// must outlive this; set before `start`. Without them, the remote addresses are refused.
+    void setRemote(const remote::StatusBoard* board, remote::CommandQueue* commands) noexcept {
+        board_ = board;
+        commands_ = commands;
+    }
+    /// **Who may change takt4's set-up from the network** — START, STOP, the input, the source
+    /// and the outputs (the operator's answer of 2026-10-22). Off unless the operator ticks
+    /// "allow remote setup", which is a second step after "listen" and, from another machine,
+    /// "allow other machines". With addresses in `from` (IPv4, host order), only those; empty, any
+    /// that reaches the socket — and this machine (127.x.x.x) whatever the list says: what runs
+    /// on it can change the settings file anyway. The queries — status, the devices, the outputs —
+    /// need none of it: they change nothing. Any thread.
+    struct RemoteSetup {
+        bool allowed = false;
+        std::vector<std::uint32_t> from;
+    };
+    void setRemoteSetup(RemoteSetup setup);
+    RemoteSetup remoteSetup() const;
+
+    /// The verdict on a command, to whoever sent it — `remote::Replies`. Any thread; the window
+    /// calls it as it carries a command out.
+    void answer(const remote::Command& command, bool ok, std::string_view note) override;
+
+    /// Queries answered, commands handed to the window, and remote messages refused here — the
+    /// switch off, a sender not on the list, a window not taking changes, a message misspelt.
+    std::uint64_t queriesAnswered() const noexcept {
+        return queriesAnswered_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t commandsQueued() const noexcept {
+        return commandsQueued_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t remoteRefused() const noexcept {
+        return remoteRefused_.load(std::memory_order_relaxed);
+    }
+    /// Replies not sent because the sender was asking for more than `kRepliesPerSecond`.
+    std::uint64_t repliesHeld() const noexcept {
+        return repliesHeld_.load(std::memory_order_relaxed);
+    }
+
+    /// How many replies a second takt4 sends, all senders together: a query is answered with
+    /// a datagram per device or per output, and a sender could otherwise have takt4 send far more
+    /// than it was sent — at an address it never was (UDP's source can be forged).
+    static constexpr double kRepliesPerSecond = 200.0;
+    /// How long since the window last wrote the status before a command is refused as "busy": a
+    /// modal dialog stops the window's redraws, and a command would wait behind it unanswered.
+    static constexpr double kWindowAwaySeconds = 2.0;
 
 private:
     void run() noexcept;
     /// One message — a datagram, or one of a bundle's — acted on and counted.
     void handle(std::span<const std::byte> packet) noexcept;
+    /// A remote status or control address, answered: true when `message` was one of them.
+    bool handleRemote(const OscView& message, const remote::Endpoint& from);
+    /// One reply datagram to `to`, within `kRepliesPerSecond`.
+    bool reply(const remote::Endpoint& to, std::span<const std::byte> packet) noexcept;
+    /// `command` refused here, before the window, and said to whoever sent it.
+    void refuse(const remote::Command& command, std::string_view why);
 
     Config config_;
     /// This surface's own route in, including its own tap set — the taps arriving over the
@@ -119,6 +182,19 @@ private:
 
     mutable std::mutex lastMutex_;
     std::string last_;
+
+    const remote::StatusBoard* board_ = nullptr;
+    remote::CommandQueue* commands_ = nullptr;
+    mutable std::mutex setupMutex_;
+    RemoteSetup setup_;
+    std::atomic<std::uint64_t> queriesAnswered_{0};
+    std::atomic<std::uint64_t> commandsQueued_{0};
+    std::atomic<std::uint64_t> remoteRefused_{0};
+    std::atomic<std::uint64_t> repliesHeld_{0};
+    /// The reply allowance (`kRepliesPerSecond`): tokens, and when they were last topped up.
+    std::mutex replyMutex_;
+    double replyTokens_ = kRepliesPerSecond;
+    std::chrono::steady_clock::time_point replyRefilled_{};
 };
 
 } // namespace takt4::control

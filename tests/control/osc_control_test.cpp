@@ -8,10 +8,13 @@
 #include "core/net/udp.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_sender.hpp"
+#include "core/remote/remote.hpp"
 #include "core/sandbox.hpp"
 #include "core/timing/external_beats.hpp"
 #include "core/tracking/state_space.hpp"
 
+#include "support/loopback_receiver.hpp"
+#include "support/osc_messages.hpp"
 #include "support/recording_rules.hpp"
 #include "support/tap_rhythm.hpp"
 
@@ -687,4 +690,196 @@ TEST_CASE("following a grid from somewhere else, a tap or a lock from a control 
     // What a followed grid does take is still taken.
     CHECK(control.dispatch("/takt4/ctl/tempo/halve", std::nullopt));
     CHECK(control.dispatch("/takt4/ctl/downbeat", std::nullopt));
+}
+
+// --- remote status and control ------------------------------------------------------------------
+
+namespace {
+
+/// The next datagram `from` was sent, as messages — empty when nothing came in half a second.
+std::vector<takt4::testing::OscMsg> nextFrom(takt4::testing::LoopbackReceiver& from) {
+    return takt4::testing::oscMessagesIn(from.receive());
+}
+
+/// The first command the window would be handed, waited for.
+std::optional<takt4::remote::Command> commandFor(takt4::remote::CommandQueue& commands) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until) {
+        std::vector<takt4::remote::Command> drained = commands.drain();
+        if (!drained.empty()) {
+            return std::move(drained.front());
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("a remote query is answered to whoever asked, and a change waits for remote setup",
+          "[control][remote]") {
+    // A show controller sends and is answered on one socket; this one is it.
+    auto engine = makeEngine();
+    OscControl control(*engine, localConfig(kAnyPort));
+    takt4::remote::StatusBoard board;
+    takt4::remote::CommandQueue commands;
+    control.setRemote(&board, &commands);
+    takt4::remote::Status status;
+    status.version = "test";
+    status.devices = {{"ASIO", "MOTU Pro Audio", 28}};
+    status.outputs = {{"o-00000001", "Link", "link", "", 0, true, 0.0, false, ""}};
+    board.publish(status);
+    control.start();
+    REQUIRE(control.running());
+    takt4::testing::LoopbackReceiver bridge;
+    const auto sendIt = [&](OscMessage message) {
+        REQUIRE(bridge.send(control.port(), message.packet()));
+    };
+
+    SECTION("the status, as one bundle, and the request number answered after it") {
+        OscMessage ask("/takt4/ctl/status");
+        ask.addInt(5);
+        sendIt(ask);
+        const std::vector<takt4::testing::OscMsg> snapshot = nextFrom(bridge);
+        const takt4::testing::OscMsg* version =
+            takt4::testing::findOsc(snapshot, "/takt4/status/version");
+        REQUIRE(version != nullptr);
+        CHECK(version->args[0].s == "test");
+        CHECK(takt4::testing::findOsc(snapshot, "/takt4/status/ui_age_ms") != nullptr);
+        const std::vector<takt4::testing::OscMsg> reply = nextFrom(bridge);
+        REQUIRE(reply.size() == 1);
+        CHECK(reply[0].address == "/takt4/reply");
+        CHECK(reply[0].args[0].i == 5);
+        CHECK(reply[0].args[1].s == "ok");
+        CHECK(control.queriesAnswered() == 1);
+        // A query changes nothing, and needs no remote setup.
+        CHECK(commands.drain().empty());
+    }
+
+    SECTION("the devices and the outputs, a message each and then how many") {
+        sendIt(OscMessage("/takt4/ctl/audio/devices"));
+        const std::vector<takt4::testing::OscMsg> device = nextFrom(bridge);
+        REQUIRE(device.size() == 1);
+        CHECK(device[0].address == "/takt4/status/audio/device");
+        CHECK(device[0].args[1].s == "MOTU Pro Audio");
+        const std::vector<takt4::testing::OscMsg> count = nextFrom(bridge);
+        REQUIRE(count.size() == 1);
+        CHECK(count[0].address == "/takt4/status/audio/devices");
+        CHECK(count[0].args[0].i == 1);
+
+        sendIt(OscMessage("/takt4/ctl/outputs"));
+        const std::vector<takt4::testing::OscMsg> output = nextFrom(bridge);
+        REQUIRE(output.size() == 1);
+        CHECK(output[0].args[0].s == "o-00000001");
+        CHECK(nextFrom(bridge)[0].address == "/takt4/status/outputs");
+        // Without a request number, an answer that is not a refusal says nothing more.
+        CHECK(nextFrom(bridge).empty());
+    }
+
+    SECTION("a change with remote setup off is refused to its sender, saying how to allow it") {
+        sendIt(OscMessage("/takt4/ctl/audio/start"));
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        REQUIRE(refused.size() == 1);
+        CHECK(refused[0].address == "/takt4/status/refused");
+        CHECK(refused[0].args[0].s == "/takt4/ctl/audio/start");
+        CHECK(refused[0].args[1].s.find("allow remote setup") != std::string::npos);
+        CHECK(control.remoteRefused() == 1);
+        CHECK(commands.drain().empty());
+    }
+
+    SECTION("with remote setup on, a change goes to the window with who sent it, and is answered "
+            "by the window") {
+        control.setRemoteSetup({true, {}});
+        board.publish(status); // the window, a moment ago
+        OscMessage source("/takt4/ctl/source");
+        source.addString("link");
+        source.addInt(9);
+        sendIt(source);
+        const std::optional<takt4::remote::Command> command = commandFor(commands);
+        REQUIRE(command.has_value());
+        CHECK(command->kind == takt4::remote::Command::Kind::Source);
+        CHECK(command->text == "link");
+        REQUIRE(command->seq.has_value());
+        CHECK(*command->seq == 9);
+        CHECK(command->from.ip == 0x7F000001u);
+        CHECK(command->from.port == bridge.port());
+        CHECK(control.commandsQueued() == 1);
+        // Nothing is said here: the window is the one that knows what came of it.
+        CHECK(nextFrom(bridge).empty());
+        control.answer(*command, true, "timing from Ableton Link");
+        const std::vector<takt4::testing::OscMsg> answered = nextFrom(bridge);
+        REQUIRE(answered.size() == 1);
+        CHECK(answered[0].address == "/takt4/reply");
+        CHECK(answered[0].args[0].i == 9);
+        CHECK(answered[0].args[1].s == "ok");
+        CHECK(answered[0].args[2].s == "timing from Ableton Link");
+    }
+
+    SECTION("a button let go of is no command, and a misspelt one is refused as not understood") {
+        control.setRemoteSetup({true, {}});
+        board.publish(status);
+        OscMessage released("/takt4/ctl/audio/stop");
+        released.addInt(0);
+        sendIt(released);
+        OscMessage channel("/takt4/ctl/audio/channel");
+        channel.addString("three");
+        channel.addInt(4);
+        sendIt(channel);
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        REQUIRE(refused.size() == 1);
+        CHECK(refused[0].address == "/takt4/status/refused");
+        CHECK(refused[0].args[0].s == "/takt4/ctl/audio/channel");
+        CHECK(refused[0].args[1].s.rfind("not understood", 0) == 0);
+        CHECK(commands.drain().empty());
+    }
+
+    SECTION("a window that has not written the status for two seconds is busy") {
+        // A modal dialog stops the redraws, and a change would wait behind it unanswered.
+        control.setRemoteSetup({true, {}});
+        board.publish(status, takt4::remote::StatusBoard::Clock::now() - std::chrono::seconds{3});
+        OscMessage stop("/takt4/ctl/audio/stop");
+        stop.addInt(2);
+        sendIt(stop);
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        REQUIRE(refused.size() == 1);
+        CHECK(refused[0].address == "/takt4/reply");
+        CHECK(refused[0].args[1].s == "refused");
+        CHECK(refused[0].args[2].s.rfind("busy:", 0) == 0);
+        CHECK(commands.drain().empty());
+    }
+
+    SECTION("the list of senders keeps out a machine not on it, and never this one") {
+        control.setRemoteSetup({true, {0xC0A80146u}}); // 192.168.1.70
+        board.publish(status);
+        OscMessage start("/takt4/ctl/audio/start");
+        // From .50, which is not on the list: refused, and the window is handed nothing. (The
+        // refusal goes to .50, which the test binaries' sandbox does not let out.)
+        CHECK(control.dispatchRemote(start.packet(), {0xC0A80132u, 9000}));
+        CHECK(control.remoteRefused() == 1);
+        CHECK(commands.drain().empty());
+        // From .90, which is.
+        CHECK(control.dispatchRemote(start.packet(), {0xC0A80146u, 9000}));
+        CHECK(commands.drain().size() == 1);
+        // And from this machine, over the wire, whatever the list says.
+        sendIt(start);
+        const std::optional<takt4::remote::Command> local = commandFor(commands);
+        REQUIRE(local.has_value());
+        CHECK(local->from.ip == 0x7F000001u);
+        CHECK(control.remoteRefused() == 1);
+    }
+
+    SECTION("a query that would have takt4 send more than it may is cut short, and counted") {
+        // UDP's source can be forged: a query answered a datagram per device must not let a
+        // sender have takt4 send far more than it was sent, at somebody else.
+        status.devices.assign(260, {"ASIO", "a device", 2});
+        board.publish(status);
+        CHECK(control.dispatchRemote(OscMessage("/takt4/ctl/audio/devices").packet(),
+                                     {0x7F000001u, bridge.port()}));
+        // 261 asked for, 200 a second: some 60 held, fewer if the sends took long enough for the
+        // allowance to fill a little meanwhile.
+        CHECK(control.repliesHeld() >= 20);
+        CHECK(control.repliesHeld() <= 61);
+    }
+
+    control.stop();
 }

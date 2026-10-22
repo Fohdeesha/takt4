@@ -183,6 +183,10 @@ add_library(takt4_core STATIC
   output/rule_sink.hpp
   output/transports.cpp
   output/transports.hpp
+  remote/remote.cpp
+  remote/remote.hpp
+  remote/status_messages.cpp
+  remote/status_messages.hpp
   rt/alloc_guard.cpp
   rt/alloc_guard.hpp
   rt/published.hpp

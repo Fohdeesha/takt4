@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <string>
 
 #if defined(_WIN32)
@@ -215,6 +216,24 @@ public:
 #else
         return ::select(socket_ + 1, &set, nullptr, nullptr, &wait) > 0;
 #endif
+    }
+
+    /// `bytes` to `port` on 127.0.0.1, **from this socket** — so whatever answers the sender
+    /// answers here, as a show controller sends and is answered on its one socket.
+    bool send(std::uint16_t port, std::span<const std::byte> bytes) {
+        sockaddr_in to{};
+        to.sin_family = AF_INET;
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        to.sin_port = htons(port);
+#if defined(_WIN32)
+        const int length = static_cast<int>(bytes.size());
+#else
+        const std::size_t length = bytes.size();
+#endif
+        const auto wrote =
+            ::sendto(socket_, reinterpret_cast<const char*>(bytes.data()), length, 0,
+                     reinterpret_cast<const sockaddr*>(&to), static_cast<socklen_t>(sizeof to));
+        return wrote >= 0 && static_cast<std::size_t>(wrote) == bytes.size();
     }
 
 private:

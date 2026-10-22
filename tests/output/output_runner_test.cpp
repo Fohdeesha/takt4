@@ -10,12 +10,14 @@
 #include "core/output/output_runner.hpp"
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
+#include "core/remote/remote.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/trigger/rule.hpp"
 
 #include "support/fake_beat_source.hpp"
 #include "support/late_rounds.hpp"
 #include "support/loopback_receiver.hpp"
+#include "support/osc_messages.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -3829,4 +3831,222 @@ TEST_CASE("a sync waits out a round held up for a second, as a CI machine can ho
     CHECK(std::chrono::steady_clock::now() - asked >= std::chrono::milliseconds(500));
     holder.join();
     runner.stop();
+}
+
+// --- takt4's own status, to a show controller
+// ------------------------------------------------------
+
+namespace {
+
+/// One datagram as it reached a monitor: when, whether it was a bundle, and its messages.
+struct Datagram {
+    std::chrono::steady_clock::time_point at;
+    bool bundle = false;
+    std::vector<takt4::testing::OscMsg> messages;
+};
+
+std::vector<Datagram> datagramsAt(LoopbackReceiver& monitor, int milliseconds) {
+    std::vector<Datagram> out;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+    while (std::chrono::steady_clock::now() < until) {
+        if (!monitor.ready(10)) {
+            continue;
+        }
+        LoopbackReceiver::Stamped stamped = monitor.receiveStamped();
+        if (stamped.datagram.empty()) {
+            continue;
+        }
+        Datagram datagram;
+        datagram.at = stamped.at;
+        datagram.bundle = stamped.datagram.rfind("#bundle", 0) == 0;
+        datagram.messages = takt4::testing::oscMessagesIn(stamped.datagram);
+        out.push_back(std::move(datagram));
+    }
+    return out;
+}
+
+/// The heartbeats among them: each one's count, and when it came.
+std::vector<std::pair<std::int32_t, std::chrono::steady_clock::time_point>>
+heartbeatsIn(const std::vector<Datagram>& datagrams) {
+    std::vector<std::pair<std::int32_t, std::chrono::steady_clock::time_point>> out;
+    for (const Datagram& datagram : datagrams) {
+        if (const takt4::testing::OscMsg* alive =
+                takt4::testing::findOsc(datagram.messages, "/takt4/status/alive")) {
+            out.emplace_back(alive->args.at(0).i, datagram.at);
+        }
+    }
+    return out;
+}
+
+/// Waits for the first heartbeat, for a test about what comes after it.
+void waitForHeartbeat(LoopbackReceiver& monitor) {
+    for (int tries = 0; tries < 30; ++tries) {
+        if (!heartbeatsIn(datagramsAt(monitor, 100)).empty()) {
+            return;
+        }
+    }
+    FAIL("no heartbeat in three seconds");
+}
+
+takt4::output::OutputTarget monitorTarget(const LoopbackReceiver& monitor) {
+    takt4::output::OutputTarget target;
+    target.name = "monitor";
+    target.host = "127.0.0.1";
+    target.port = monitor.port();
+    target.sendsNamespace = true;
+    return target;
+}
+
+} // namespace
+
+TEST_CASE("takt4's heartbeat comes once a second from the output thread, with the window and the "
+          "audio doing nothing",
+          "[output][remote][realtime]") {
+    // A show controller tells "takt4 not heard for three seconds" from "running, no beat": a quiet
+    // room must not look like a dead takt4. So the heartbeat is the output thread's, which runs for
+    // the application's whole life, and needs nothing of the audio, nor of the window past its
+    // first word: here the window writes the status once and never again — as with a dialog open —
+    // and no beat comes at all.
+    LoopbackReceiver monitor;
+    Transports::Config config;
+    config.outputs = {monitorTarget(monitor)};
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    takt4::remote::StatusBoard board;
+    takt4::remote::LogQueue logs;
+    runner.setRemote(&board, &logs);
+    runner.start();
+
+    // Nothing about takt4 before the window has said anything: a status nobody wrote is not one.
+    CHECK(heartbeatsIn(datagramsAt(monitor, 300)).empty());
+
+    takt4::remote::Status status;
+    status.version = "test";
+    status.state = "stopped";
+    board.publish(status);
+    const std::vector<Datagram> heard = datagramsAt(monitor, 3400);
+    runner.stop();
+    const auto beats = heartbeatsIn(heard);
+    REQUIRE(beats.size() >= 3);
+    for (std::size_t i = 0; i < beats.size(); ++i) {
+        CHECK(beats[i].first == static_cast<std::int32_t>(i + 1));
+        if (i > 0) {
+            const double apart =
+                std::chrono::duration<double>(beats[i].second - beats[i - 1].second).count();
+            CHECK(apart > 0.8);
+            CHECK(apart < 1.3);
+        }
+    }
+    CHECK(runner.heartbeats() >= beats.size());
+    // Each with the whole status, in one datagram — and how long ago the window wrote it, which
+    // grows: the beats are fine, and the window is not.
+    std::int32_t lastAge = -1;
+    for (const Datagram& datagram : heard) {
+        if (takt4::testing::findOsc(datagram.messages, "/takt4/status/alive") == nullptr) {
+            continue;
+        }
+        CHECK(datagram.bundle);
+        const takt4::testing::OscMsg* version =
+            takt4::testing::findOsc(datagram.messages, "/takt4/status/version");
+        REQUIRE(version != nullptr);
+        CHECK(version->args.at(0).s == "test");
+        const takt4::testing::OscMsg* age =
+            takt4::testing::findOsc(datagram.messages, "/takt4/status/ui_age_ms");
+        REQUIRE(age != nullptr);
+        CHECK(age->args.at(0).i > lastAge);
+        lastAge = age->args.at(0).i;
+    }
+    CHECK(lastAge > 1500);
+}
+
+TEST_CASE("a value that moves goes to the monitor at once, loose, between the heartbeats",
+          "[output][remote]") {
+    LoopbackReceiver monitor;
+    Transports::Config config;
+    config.outputs = {monitorTarget(monitor)};
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    takt4::remote::StatusBoard board;
+    takt4::remote::LogQueue logs;
+    runner.setRemote(&board, &logs);
+    takt4::remote::Status status;
+    status.state = "stopped";
+    board.publish(status);
+    runner.start();
+    waitForHeartbeat(monitor);
+
+    status.running = true;
+    status.hunting = true;
+    status.state = "hunting";
+    status.levelDb = -12.0;
+    const auto published = std::chrono::steady_clock::now();
+    board.publish(status);
+    const std::vector<Datagram> soon = datagramsAt(monitor, 400);
+    runner.stop();
+    std::vector<std::string> said;
+    for (const Datagram& datagram : soon) {
+        CHECK_FALSE(datagram.bundle); // the next heartbeat is most of a second away
+        for (const takt4::testing::OscMsg& message : datagram.messages) {
+            said.push_back(message.address);
+            if (message.address == "/takt4/status/running") {
+                CHECK(std::chrono::duration<double>(datagram.at - published).count() < 0.3);
+            }
+        }
+    }
+    // What moved, each on its own — and not the level, which goes with the heartbeat.
+    CHECK(said == std::vector<std::string>{"/takt4/status/running", "/takt4/status/hunting",
+                                           "/takt4/status/state"});
+}
+
+TEST_CASE("the lines the window says go to the monitor five a second, the rest after them",
+          "[output][remote]") {
+    LoopbackReceiver monitor;
+    Transports::Config config;
+    config.outputs = {monitorTarget(monitor)};
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    takt4::remote::StatusBoard board;
+    takt4::remote::LogQueue logs;
+    runner.setRemote(&board, &logs);
+    board.publish(takt4::remote::Status{});
+    runner.start();
+    waitForHeartbeat(monitor);
+
+    logs.push({"warning", "No audio from MOTU Pro Audio"});
+    for (int n = 2; n <= 12; ++n) {
+        logs.push({"info", "line " + std::to_string(n)});
+    }
+    const auto linesIn = [](const std::vector<Datagram>& datagrams) {
+        std::vector<std::pair<std::string, std::string>> lines;
+        for (const Datagram& datagram : datagrams) {
+            for (const takt4::testing::OscMsg& message : datagram.messages) {
+                if (message.address == "/takt4/status/log") {
+                    lines.emplace_back(message.args.at(0).s, message.args.at(1).s);
+                }
+            }
+        }
+        return lines;
+    };
+    // Five at once — ten, were the twelve to straddle the turn of a second, which pushing them
+    // takes microseconds to do — and in the next three seconds the rest, every one in order.
+    std::vector<std::pair<std::string, std::string>> lines = linesIn(datagramsAt(monitor, 600));
+    CHECK(lines.size() >= 5);
+    CHECK(lines.size() <= 10);
+    const std::vector<std::pair<std::string, std::string>> after =
+        linesIn(datagramsAt(monitor, 3000));
+    lines.insert(lines.end(), after.begin(), after.end());
+    runner.stop();
+    REQUIRE(lines.size() == 12);
+    CHECK(lines[0] ==
+          std::pair<std::string, std::string>{"warning", "No audio from MOTU Pro Audio"});
+    for (std::size_t i = 1; i < lines.size(); ++i) {
+        CHECK(lines[i].second == "line " + std::to_string(i + 1));
+    }
+    CHECK(logs.dropped() == 0);
+
+    // A queue that is full drops what does not fit, and counts it.
+    for (std::size_t n = 0; n < takt4::remote::LogQueue::kCapacity + 3; ++n) {
+        logs.push({"info", "more"});
+    }
+    CHECK(logs.dropped() == 3);
 }

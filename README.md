@@ -91,6 +91,8 @@ takt4 sends the below global data to all OSC outputs you tick under **/takt4 glo
 
 They go out only while takt4 is running and locked: nothing while it hunts or is stopped. When the lock is lost, and at **stop**, `/takt4/locked 0` goes out once.
 
+Each beat also sends `/takt4/beat/timing`: a float, the ms since the beat was meant to land (its moment plus the latency, so an output's own delay shows in it); a float, the ms until the next beat; and an int, the run's beats so far. A show controller can schedule from these, so a late or lost datagram costs it nothing.
+
 You can *control* takt4 over OSC as well, tick **listen** on the OSC row under **inputs**:
 
 ```
@@ -119,6 +121,42 @@ address                       send           does
 - **tap** and **lock** do nothing while takt4 follows Link, a MIDI clock or the CDJs, and count as ignored
 - From this computer, send to `127.0.0.1`, not `localhost`: takt4 listens on IPv4 only
 - Ticking **allow other machines** makes Windows ask whether takt4 may use the network: allow **Public** networks too if the controller is on a network with no router
+
+### Status and remote setup, for a show controller
+
+Every output ticked for the global messages also gets takt4's status, sent from the thread that sends the beats:
+
+- **Once a second**, whatever the audio or the window is doing: `/takt4/status/alive` (an int that counts up), in one bundle with the whole status. Each value is its own address, `/takt4/status/<name>`: `running`, `locked`, `hunting`, `state` (the word on the tempo panel), `confidence`, `bpm`, `level` (dBFS), `dropouts`, `source` (`audio`, `link`, `midi-clock` or `prolink`), `source_ok`, `source_detail`, `panic`, `audio/host`, `audio/device`, `audio/channel`, `audio/mono`, `audio/rate`, `latency_ms`, `version`, `uptime_s`, and `ui_age_ms` (how long ago the window last updated it)
+- **Within a tenth of a second of a change**: that value again, on its own (not the level, `uptime_s` or `ui_age_ms`, which go once a second)
+- **What the status line says**: `/takt4/status/log` with a string level (`info` or `warning`) and the text, 5 lines a second, the rest after them
+
+With **listen** on, a controller can ask for these. The answer goes to the address and port it sent from:
+
+```
+/takt4/ctl/status          the whole status, as one bundle
+/takt4/ctl/audio/devices   one /takt4/status/audio/device (host, device, inputs) per input, then /takt4/status/audio/devices (how many)
+/takt4/ctl/outputs         one /takt4/status/output (id, name, kind, host, port, on, delay ms, global, problem) per output, then /takt4/status/outputs (how many)
+```
+
+To let a controller *change* takt4, tick **allow remote setup** on the line under the OSC row. It's off by default; for another computer, **allow other machines** has to be ticked too. **only from** takes IPv4 addresses (this computer is always allowed); leave it empty for any. Each change is made the way the window makes it, saved like one made in the window, and shown on the status line with who sent it:
+
+```
+address                               send                                does
+/takt4/ctl/audio/start                nothing                             start; "running already" if it is
+/takt4/ctl/audio/stop                 nothing                             stop
+/takt4/ctl/audio/restart              nothing                             reopen the audio input
+/takt4/ctl/audio/device               host, device (strings)              pick the input, by the names audio/devices gives (stopped only)
+/takt4/ctl/audio/channel              input (int, from 1), mono (1 or 0)  pick the input channel, from 1; in stereo a pair starts at an odd input; mono can be left off unless a request number follows (stopped only)
+/takt4/ctl/source                     audio, link, midi-clock or prolink  where the beats come from (stopped only)
+/takt4/ctl/output/add                 name, kind, host (strings), port    kind is osc, artnet, midi or midiclock (a MIDI output's name as host, port 0); the reply's note is the new output's id
+/takt4/ctl/output/<id>/enable         1 or 0                              switch an output on or off
+/takt4/ctl/output/<id>/delay          ms (a number)                       its delay
+/takt4/ctl/output/<id>/global         1 or 0                              send it takt4's global messages (OSC outputs only)
+```
+
+- Add a request number as one more int on any of these, the three questions included, and takt4 answers `/takt4/reply` with the number, `ok` or `refused`, and a note. Without one, it only answers a refusal: `/takt4/status/refused` with the address and why
+- A change is refused, with the reason, while a dialog is open in takt4 ("busy"), while a start or stop is under way, and when it can't be done
+- To restart takt4 from another program, end the running one first: a second launch only brings the first one to the front. Set the environment variable `TAKT4_NO_CRASH_DIALOG=1` so that after a crash takt4 writes its report and ends, instead of showing a message that waits for someone to answer it
 
 **MIDI control**: on the MIDI row under **inputs**, pick your controller and an action, click **learn**, hit the midi button you want to use. Available actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held
 

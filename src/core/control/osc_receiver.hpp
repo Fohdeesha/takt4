@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/remote/remote.hpp"
+
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -50,14 +53,31 @@ public:
     /// Where the last datagram came from, as "host:port". For a UI, and for learn mode to
     /// say which box is talking.
     const std::string& lastSender() const noexcept { return lastSender_; }
+    /// The same, as an address and port to answer — an IPv4 one, which is all this listens on.
+    /// The receiving thread's alone, like `receive`.
+    remote::Endpoint lastFrom() const noexcept { return lastFrom_; }
     std::uint64_t datagrams() const noexcept { return datagrams_; }
+
+    /// Sends `packet` to `to` from this socket — so a reply comes from the port the request was
+    /// sent to, which is the one a sender listening on the socket it sent from expects to hear
+    /// from. Any thread: the window answers its commands from its own. Never waits on a full
+    /// buffer: a reply that cannot go at once is not sent, and false says so.
+    bool sendTo(const remote::Endpoint& to, std::span<const std::byte> packet) noexcept;
+    /// Replies sent, and refused or failed.
+    std::uint64_t sent() const noexcept { return sent_.load(std::memory_order_relaxed); }
+    std::uint64_t sendFailures() const noexcept {
+        return sendFailures_.load(std::memory_order_relaxed);
+    }
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::uint16_t port_ = 0;
     std::string lastSender_;
+    remote::Endpoint lastFrom_;
     std::uint64_t datagrams_ = 0;
+    std::atomic<std::uint64_t> sent_{0};
+    std::atomic<std::uint64_t> sendFailures_{0};
 };
 
 } // namespace takt4::control
