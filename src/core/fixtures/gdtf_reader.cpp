@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <pugixml.hpp>
@@ -156,17 +157,27 @@ struct GeometryIndex {
     /// The first geometry of each name, in document order: names are unique per the spec, and a
     /// duplicate resolves to the first.
     std::unordered_map<std::string, std::size_t> byName;
+    /// The same for the top-level ones — looked up once a mode and once a reference, which a
+    /// walk through `tops` made a square of the file's size.
+    std::unordered_map<std::string, std::size_t> topByName;
+    /// More parts than `kMaxGeometries`: the index stops there, and the file is refused.
+    bool tooMany = false;
 
     explicit GeometryIndex(xml_node geometries) {
         for (xml_node top : geometryChildren(geometries)) {
             const std::size_t topIndex = tops.size();
             tops.push_back(top);
+            topByName.emplace(std::string(valueOf(top, "Name")), topIndex);
             // Depth first, in document order, with a stack of its own: a file nested ten thousand
             // deep is read as one, not as a crash.
             std::vector<std::pair<xml_node, bool>> stack{{top, false}};
             while (!stack.empty()) {
                 const auto [node, under] = stack.back();
                 stack.pop_back();
+                if (all.size() >= kMaxGeometries) {
+                    tooMany = true;
+                    return;
+                }
                 all.push_back(Entry{node, topIndex, under});
                 byName.emplace(std::string(valueOf(node, "Name")), all.size() - 1);
                 const bool childUnder = under || isReference(node);
@@ -179,12 +190,8 @@ struct GeometryIndex {
     }
 
     std::optional<std::size_t> topNamed(std::string_view name) const {
-        for (std::size_t i = 0; i < tops.size(); ++i) {
-            if (valueOf(tops[i], "Name") == name) {
-                return i;
-            }
-        }
-        return std::nullopt;
+        const auto found = topByName.find(std::string(name));
+        return found == topByName.end() ? std::nullopt : std::optional<std::size_t>(found->second);
     }
 
     const Entry* find(std::string_view name) const {
@@ -334,10 +341,12 @@ public:
         if (!out.refusal.empty()) {
             out.parts.clear();
         }
-        // Each said once, in the order it was met.
+        // Each said once, in the order it was met — by a set, as a channel placed a thousand times
+        // can say a thousand things.
         std::vector<std::string> unique;
+        std::unordered_set<std::string> said;
         for (std::string& note : notes_) {
-            if (std::find(unique.begin(), unique.end(), note) == unique.end()) {
+            if (said.insert(note).second) {
                 unique.push_back(std::move(note));
             }
         }
@@ -382,6 +391,12 @@ private:
         for (const std::string& reference : tree.nestedIgnored) {
             notes_.push_back("the file puts parts of the fixture inside " + quote(reference) +
                              ", where none belong — they were left out");
+        }
+        // The mode's references by the part they place, looked up once a channel rather than
+        // walked: a channel times every reference was a square of the file's size.
+        std::unordered_map<std::string_view, std::vector<xml_node>> referencesTo;
+        for (xml_node reference : tree.references) {
+            referencesTo[valueOf(reference, "Geometry")].push_back(reference);
         }
         std::optional<std::set<std::size_t>> nested;
 
@@ -434,10 +449,8 @@ private:
             std::vector<xml_node> references;
             if (entry != nullptr && !entry->underReference) {
                 const std::string_view target = valueOf(index_.tops[entry->top], "Name");
-                for (xml_node reference : tree.references) {
-                    if (valueOf(reference, "Geometry") == target) {
-                        references.push_back(reference);
-                    }
+                if (const auto found = referencesTo.find(target); found != referencesTo.end()) {
+                    references = found->second;
                 }
             }
             if (references.empty()) {
@@ -917,9 +930,20 @@ ReadResult readGdtfDescription(std::string_view xml, std::string_view fileName) 
     }
 
     const GeometryIndex index(type.child("Geometries"));
+    if (index.tooMany) {
+        result.problem = "it describes more than " + std::to_string(kMaxGeometries) +
+                         " parts of the fixture, which no fixture has — it may be damaged";
+        return result;
+    }
+    const auto modeNodes = type.child("DMXModes").children("DMXMode");
+    if (static_cast<std::size_t>(std::distance(modeNodes.begin(), modeNodes.end())) > kMaxModes) {
+        result.problem = "it has more than " + std::to_string(kMaxModes) +
+                         " modes, which no fixture has — it may be damaged";
+        return result;
+    }
     std::map<std::string, int> seen;
     std::size_t number = 0;
-    for (xml_node mode : type.child("DMXModes").children("DMXMode")) {
+    for (xml_node mode : modeNodes) {
         ++number;
         std::string name = text::clean(valueOf(mode, "Name"));
         if (name.empty()) {

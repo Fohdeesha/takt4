@@ -183,6 +183,37 @@ TEST_CASE("a GDTF channel's default comes from its initial function", "[fixtures
     }
 }
 
+TEST_CASE("a GDTF file with more modes or parts than any fixture has is refused, not read",
+          "[fixtures][gdtf][hostile]") {
+    // Each mode can place a thousand channels, and the number of modes was unbounded: a file of
+    // a few kilobytes, compressed, came out as gigabytes of channels and minutes of the window.
+    const std::string geometries = R"(<Geometry Name="Body"><Beam Name="Beam"/></Geometry>)";
+    const std::string channel = gdtfChannel("Body", "1", "Dimmer");
+    std::string modes;
+    for (std::size_t i = 0; i < takt4::fixtures::kMaxModes; ++i) {
+        modes += gdtfMode("mode " + std::to_string(i + 1), "Body", channel);
+    }
+    // As many as there may be: read.
+    CHECK(readGdtf(gdtfDocument(geometries, modes)).modes.size() == takt4::fixtures::kMaxModes);
+    // One more: refused, and said.
+    modes += gdtfMode("one too many", "Body", channel);
+    const takt4::fixtures::ReadResult tooMany =
+        readGdtfDescription(gdtfDocument(geometries, modes), "test.gdtf");
+    CHECK_FALSE(tooMany.definition);
+    CHECK_THAT(tooMany.problem, ContainsSubstring("more than 1024 modes"));
+
+    // Parts of the fixture likewise.
+    std::string parts = R"(<Geometry Name="Body">)";
+    for (std::size_t i = 0; i < takt4::fixtures::kMaxGeometries; ++i) {
+        parts += "<Beam Name=\"Beam " + std::to_string(i) + "\"/>";
+    }
+    parts += "</Geometry>";
+    const takt4::fixtures::ReadResult manyParts =
+        readGdtfDescription(gdtfDocument(parts, gdtfMode("m", "Body", channel)), "test.gdtf");
+    CHECK_FALSE(manyParts.definition);
+    CHECK_THAT(manyParts.problem, ContainsSubstring("more than 10000 parts of the fixture"));
+}
+
 TEST_CASE("a GDTF geometry reference places its channels once per reference", "[fixtures][gdtf]") {
     const std::string geometries = R"(
         <Geometry Name="Bar">
@@ -637,19 +668,28 @@ TEST_CASE("a damaged or hostile GDTF archive is refused with a reason, never rea
 }
 
 TEST_CASE("hostile GDTF XML is read or refused without crashing", "[fixtures][gdtf][hostile]") {
-    SECTION("geometries nested a hundred thousand deep") {
-        std::string deep;
-        for (int i = 0; i < 100000; ++i) {
-            deep += "<Geometry Name=\"g" + std::to_string(i) + "\">";
-        }
-        for (int i = 0; i < 100000; ++i) {
-            deep += "</Geometry>";
-        }
-        const std::string xml =
-            gdtfDocument(deep, gdtfMode("m", "g0", gdtfChannel("g99999", "1", "Dimmer")));
-        const auto result = readGdtfDescription(xml, "deep.gdtf");
+    SECTION("geometries nested as deep as a fixture may have parts") {
+        // Every part a fixture may have (`kMaxGeometries`), each inside the last: walked without a
+        // call a level, and read.
+        const auto nested = [](int count, const std::string& channelOn) {
+            std::string deep;
+            for (int i = 0; i < count; ++i) {
+                deep += "<Geometry Name=\"g" + std::to_string(i) + "\">";
+            }
+            for (int i = 0; i < count; ++i) {
+                deep += "</Geometry>";
+            }
+            return gdtfDocument(deep, gdtfMode("m", "g0", gdtfChannel(channelOn, "1", "Dimmer")));
+        };
+        const int most = static_cast<int>(takt4::fixtures::kMaxGeometries);
+        const auto result =
+            readGdtfDescription(nested(most, "g" + std::to_string(most - 1)), "deep.gdtf");
         REQUIRE(result.definition);
         CHECK(result.definition->modes.at(0).parts.at(0).at(0).kind == Kind::Dimmer);
+        // And a hundred thousand: refused, as more parts than any fixture has, without a crash.
+        const auto deeper = readGdtfDescription(nested(100000, "g99999"), "deeper.gdtf");
+        CHECK_FALSE(deeper.definition);
+        CHECK_THAT(deeper.problem, ContainsSubstring("more than 10000 parts"));
     }
     SECTION("an entity that would expand to a billion is not expanded") {
         std::string laughs = "<?xml version=\"1.0\"?>\n<!DOCTYPE GDTF [\n<!ENTITY lol \"lol\">\n";
@@ -671,9 +711,9 @@ TEST_CASE("hostile GDTF XML is read or refused without crashing", "[fixtures][gd
         REQUIRE(result.definition);
         CHECK(result.definition->model.size() <= 80);
     }
-    SECTION("ten thousand modes and channels with names nobody would write") {
+    SECTION("a thousand modes and channels with names nobody would write") {
         std::string modes;
-        for (int i = 0; i < 2000; ++i) {
+        for (int i = 0; i < 1000; ++i) {
             modes +=
                 gdtfMode(std::string(300, 'M'), "Body",
                          gdtfChannel("Body", std::to_string(1 + i % 500), std::string(500, 'A')));
@@ -681,7 +721,7 @@ TEST_CASE("hostile GDTF XML is read or refused without crashing", "[fixtures][gd
         const auto result =
             readGdtfDescription(gdtfDocument(R"(<Geometry Name="Body"/>)", modes), "x");
         REQUIRE(result.definition);
-        CHECK(result.definition->modes.size() == 2000);
+        CHECK(result.definition->modes.size() == 1000);
         CHECK(result.definition->modes.back().name.size() <= 80 + 8);
         CHECK(result.definition->modes[0].parts.at(0).at(0).label.size() <= 80);
     }

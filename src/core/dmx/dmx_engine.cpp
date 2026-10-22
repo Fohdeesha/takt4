@@ -191,6 +191,7 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         virtuals[j] = carries[j] ? carried[j] : virtualFromLevels(fixture);
         virtuals[j].active = true;
         virtuals[j].dirty = carries[j];
+        layOut(virtuals[j], fixture);
     }
     virtuals_ = std::move(virtuals);
 
@@ -296,22 +297,31 @@ DmxEngine::Virtual DmxEngine::virtualFromLevels(const Fixture& fixture) const {
     return state;
 }
 
+void DmxEngine::layOut(Virtual& state, const Fixture& fixture) {
+    for (std::vector<std::uint16_t>& channels : state.channels) {
+        channels.clear();
+    }
+    for (std::size_t i = 0; i < fixture.channels.size(); ++i) {
+        const auto e = std::find(kEmitters.begin(), kEmitters.end(), fixture.channels[i]);
+        const std::size_t channel = std::size_t{fixture.address} + i;
+        // A channel past the universe's end is "no such channel", as `channelOf` answers it.
+        if (e != kEmitters.end() && channel >= 1 && channel <= kChannelsPerUniverse) {
+            state.channels[static_cast<std::size_t>(e - kEmitters.begin())].push_back(
+                static_cast<std::uint16_t>(channel - 1));
+        }
+    }
+}
+
 void DmxEngine::rewriteVirtualOn(std::uint32_t buffer, std::uint16_t channel) noexcept {
     for (std::size_t index = 0; index < virtuals_.size() && index < patch_.size(); ++index) {
         Virtual& state = virtuals_[index];
-        if (!state.active || bufferOf(patch_[index].universe) != buffer) {
+        if (!state.active || state.dirty || bufferOf(patch_[index].universe) != buffer) {
             continue;
         }
-        for (std::size_t e = 0; e < kEmitters.size() && !state.dirty; ++e) {
-            for (std::size_t nth = 0;; ++nth) {
-                const std::uint16_t at = channelOf(patch_[index], kEmitters[e], nth);
-                if (at == 0) {
-                    break;
-                }
-                if (at - 1 == channel) {
-                    state.dirty = true;
-                    break;
-                }
+        for (const std::vector<std::uint16_t>& channels : state.channels) {
+            if (std::find(channels.begin(), channels.end(), channel) != channels.end()) {
+                state.dirty = true;
+                break;
             }
         }
     }
@@ -331,13 +341,8 @@ void DmxEngine::composeVirtuals() noexcept {
         }
         for (std::size_t e = 0; e < kEmitters.size(); ++e) {
             // Every cell of a bar that has several (`channelOf`'s `nth`, an earlier review).
-            for (std::size_t nth = 0;; ++nth) {
-                const std::uint16_t channel = channelOf(fixture, kEmitters[e], nth);
-                if (channel == 0) {
-                    break;
-                }
-                writeChannel(static_cast<std::uint32_t>(buffer),
-                             static_cast<std::uint16_t>(channel - 1), kNoChannel,
+            for (const std::uint16_t channel : state.channels[e]) {
+                writeChannel(static_cast<std::uint32_t>(buffer), channel, kNoChannel,
                              state.color[e] * state.intensity);
             }
         }
@@ -405,9 +410,10 @@ void DmxEngine::blackout(double now) {
     running_.clear();
     Payload dark;
     dark.kind = EffectKind::Blackout;
-    // Every fixture of the patch — not through a mask, which names the first 64 only. The
-    // patch is not capped there, only warned about, and a blackout that stopped at 64 left
-    // the rest lit through Stop and quit.
+    // Every fixture of the patch — not through a mask, which names the first
+    // `kMaxRoutableFixtures` only. The patch is not capped there, only warned about, and a
+    // blackout that stopped at the mask's end left the rest lit through Stop and quit (the
+    // 2026-09-25 review's L8).
     launch(dark, now, 0, true);
     // A snap: nothing to animate, so nothing left running to be advanced on the next tick.
     running_.clear();
@@ -564,7 +570,7 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
                              : role == Role::Tilt ? Role::TiltFine
                                                   : Role::Unused;
         bool any = false;
-        for (std::size_t nth = 0; nth <= std::numeric_limits<std::uint8_t>::max(); ++nth) {
+        for (std::size_t nth = 0; nth < fixture.channels.size(); ++nth) {
             const std::uint16_t channel = channelOf(fixture, role, nth);
             if (channel == 0) {
                 break;
@@ -575,7 +581,7 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
             track.role = tag;
             track.fixture = fixtureIndex;
             track.source = role;
-            track.nth = static_cast<std::uint8_t>(nth);
+            track.nth = static_cast<std::uint16_t>(nth);
             if (partner != Role::Unused) {
                 const std::uint16_t fine = channelOf(fixture, partner, nth);
                 track.fine = fine == 0 ? kNoChannel : static_cast<std::uint16_t>(fine - 1);
@@ -612,18 +618,24 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
     /// lit red is half red, and a flash after a flash is still red. A fixture that has no color
     /// at all — dark, never given one — is taken as **white**: its white LED where it has one,
     /// its color LEDs where it has not, which is what an operator aiming a dimmer at an unlit
-    /// par means and the only reading under which the lamp comes on.
+    /// par means and the only reading under which the lamp comes on. And one with neither — an
+    /// amber or a UV blinder — is every emitter it has: left at nothing, a dimmer rule the editor
+    /// said would drive its color lit nothing at all.
     const auto addIntensity = [&](double from, double to) {
         Virtual& state = virtuals_[index];
         const bool colorless = std::all_of(state.color.begin(), state.color.end(),
                                            [](double component) { return component <= 0.0; });
         if (colorless) {
             const bool white = has(fixture, Role::White);
+            const bool rgb = std::any_of(kEmitters.begin(), kEmitters.end(), [&](Role role) {
+                return isColor(role) && has(fixture, role);
+            });
             for (std::size_t e = 0; e < kEmitters.size(); ++e) {
                 const Role role = kEmitters[e];
                 if (has(fixture, role)) {
                     state.color[e] = white ? (role == Role::White ? 1.0 : 0.0)
-                                           : (isColor(role) ? 1.0 : 0.0);
+                                     : rgb ? (isColor(role) ? 1.0 : 0.0)
+                                           : 1.0;
                 }
             }
             state.dirty = true;

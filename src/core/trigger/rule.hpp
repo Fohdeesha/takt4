@@ -761,10 +761,28 @@ public:
         /// id comes back — an import carries its outputs' ids along with its rules.
         std::vector<std::string> outputs;
 
+        /// **What a newer takt4 wrote that this one does not know** — "trigger \"onset2\"" —
+        /// or empty. Read as the defaults those names fell back to, the rule was another rule
+        /// than the one written, and it fired as that one. Such a rule is read switched off, and
+        /// said so (`Rule::problem`) until the operator switches it on in the editor. Never
+        /// written: a rule saved here is what it reads as here.
+        std::string unknown;
+
         /// Every field, so a rule changed in any way is a different rule — what the autosave
         /// looks at before it writes anything out.
         friend bool operator==(const Config&, const Config&) = default;
     };
+
+    /// A fresh id for a rule in `rules`: "r-" and eight random hex digits, legal as an OSC address
+    /// segment and held by none of them. **Never one counted from the rules there are**: delete
+    /// rule3, add a rule, and the new one was "rule3" — and a control surface's button aimed at
+    /// the old one drove the new one.
+    static std::string newId(const std::vector<Config>& rules);
+    /// Every rule an id of its own: an empty one, or one an earlier rule has, given a fresh one
+    /// (`newId`). A preset holding two was an editing mistake shown nowhere — a mute or a
+    /// control aimed at the second reached the first — and the first keeps its id, as
+    /// everything aimed at it by id found the first.
+    static void ensureIds(std::vector<Config>& rules);
 
     explicit Rule(Config config);
 

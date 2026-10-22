@@ -1125,12 +1125,19 @@ void FixturesController::identify() {
     // lit one went out, and an LED par lost its colour.
     //
     // Every emitter rather than the dimmer alone, because plenty of pars have no dimmer at
-    // all — **and the dimmer whether the fixture has one or not**: a par without one has its
-    // colour scaled by an intensity of its own (`dmx::DmxEngine`), which a dimmer flash a rule
-    // left at nothing kept dark through the colour flashes. Flashed, it is lit; decayed back,
-    // it is where it was.
+    // all — amber and UV among them — **and the dimmer whether the fixture has one or not**: a
+    // par without one has its colour scaled by an intensity of its own (`dmx::DmxEngine`), which
+    // a dimmer flash a rule left at nothing kept dark through the colour flashes. Flashed, it is
+    // lit; decayed back, it is where it was.
+    //
+    // **The dimmer last.** Aimed at a dark par that has none, it lights the par white for good,
+    // since there is no colour to scale (`DmxEngine`) — and the colour flashes started before it
+    // are what take the par back to the dark they found. The other way round they decayed to
+    // the white the dimmer had just put there, and every dimmerless par IDENTIFY was pressed on
+    // stayed lit.
     for (const dmx::Role role :
-         {dmx::Role::Dimmer, dmx::Role::Red, dmx::Role::Green, dmx::Role::Blue, dmx::Role::White}) {
+         {dmx::Role::Red, dmx::Role::Green, dmx::Role::Blue, dmx::Role::White, dmx::Role::Amber,
+          dmx::Role::Uv, dmx::Role::Dimmer}) {
         if (role != dmx::Role::Dimmer && !dmx::has(*fixture, role)) {
             continue;
         }
@@ -1375,7 +1382,18 @@ void FixturesController::importFile(const std::filesystem::path& path) {
     import_.fileLine = fileName + " · " +
                        (read->manufacturer.empty() ? std::string() : read->manufacturer + " · ") +
                        read->model;
-    const fixtures::Comparison seen = fixtures::compareWithLibrary(library_, *read);
+    // Caught here as the reading is: from a file dialog's answer, a throw would cross into Slint.
+    fixtures::Comparison seen;
+    try {
+        seen = fixtures::compareWithLibrary(library_, *read);
+    } catch (const std::exception&) {
+        import_.fileLine = fileName;
+        import_.fileNote = "Can't read " + fileName +
+                           ": there was not enough memory to hold it beside this preset's library.";
+        import_.fileError = true;
+        publishImport();
+        return;
+    }
     switch (seen.arrival) {
     case fixtures::Arrival::New:
         import_.incoming = std::move(*read);

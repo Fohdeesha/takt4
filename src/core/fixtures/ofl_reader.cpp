@@ -476,9 +476,11 @@ private:
         if (const json* groups = member(*matrix, "pixelGroups");
             groups != nullptr && groups->is_object()) {
             groupKeys_ = natural::objectKeyOrder(groupInsertionOrder);
-            // A key the order recorder missed is still a group; it goes last.
+            // A key the order recorder missed is still a group; it goes last. Looked up in a set:
+            // a file of thousands of groups made this a square of them.
+            std::unordered_set<std::string> listed(groupKeys_.begin(), groupKeys_.end());
             for (const auto& [key, group] : groups->items()) {
-                if (std::find(groupKeys_.begin(), groupKeys_.end(), key) == groupKeys_.end()) {
+                if (listed.insert(key).second) {
                     groupKeys_.push_back(key);
                 }
             }
@@ -1321,6 +1323,11 @@ ReadResult readOflText(std::string_view text, std::string_view fileName, std::st
     if (!root.is_object() || name == nullptr || !name->is_string() || modes == nullptr ||
         !modes->is_array() || !hasChannels) {
         result.problem = "it isn't an Open Fixture Library fixture";
+        return result;
+    }
+    if (modes->size() > kMaxModes) {
+        result.problem = "it has more than " + std::to_string(kMaxModes) +
+                         " modes, which no fixture has — it may be damaged";
         return result;
     }
 

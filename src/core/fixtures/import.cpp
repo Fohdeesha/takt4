@@ -86,7 +86,16 @@ std::optional<FixtureProfile> importProfile(const std::filesystem::path& path,
         problem = read.problem;
         return std::nullopt;
     }
-    return mapDefinition(*read.definition);
+    // Inside a catch like the reading: what a file makes is the file's size, and a throw out of
+    // here crosses into the window that asked.
+    try {
+        return mapDefinition(*read.definition);
+    } catch (const std::bad_alloc&) {
+        problem = "there was not enough memory to read it";
+    } catch (const std::exception& error) {
+        problem = "it could not be read (" + text::clean(error.what(), 200) + ")";
+    }
+    return std::nullopt;
 }
 
 } // namespace takt4::fixtures

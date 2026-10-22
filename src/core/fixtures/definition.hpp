@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -119,6 +120,14 @@ struct DefMode {
 
     friend bool operator==(const DefMode&, const DefMode&) = default;
 };
+
+/// The most modes one definition file may have: far more than any fixture's, and few enough that
+/// a file of a few kilobytes — compressed, or a mode repeated — cannot make gigabytes of channels
+/// and minutes of the window's thread. Each mode places a thousand channels at the most (two
+/// start addresses of 512), so this is a million channels a file.
+inline constexpr std::size_t kMaxModes = 1024;
+/// The most parts of a fixture — geometries, and references to them — one GDTF file may describe.
+inline constexpr std::size_t kMaxGeometries = 10000;
 
 struct Definition {
     /// "gdtf" or "ofl".

@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <random>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace takt4::trigger {
@@ -453,6 +456,29 @@ Rule::Rule(Config config)
     validate();
 }
 
+std::string Rule::newId(const std::vector<Config>& rules) {
+    static thread_local std::mt19937_64 random{std::random_device{}()};
+    for (;;) {
+        char text[16] = {};
+        std::snprintf(text, sizeof text, "r-%08x", static_cast<unsigned int>(random()));
+        const std::string id(text);
+        if (std::none_of(rules.begin(), rules.end(),
+                         [&id](const Config& other) { return other.id == id; })) {
+            return id;
+        }
+    }
+}
+
+void Rule::ensureIds(std::vector<Config>& rules) {
+    std::unordered_set<std::string> seen;
+    for (Config& rule : rules) {
+        if (rule.id.empty() || !seen.insert(rule.id).second) {
+            rule.id = newId(rules);
+            seen.insert(rule.id);
+        }
+    }
+}
+
 void Rule::validate() {
     problem_.clear();
     if (config_.id.empty()) {
@@ -463,6 +489,12 @@ void Rule::validate() {
     // being a segment of that: legal OSC characters, and no '/' of its own to split it.
     if (config_.id.find('/') != std::string::npos || !output::addressIsLegal("/" + config_.id)) {
         problem_ = "a rule id must be usable in an OSC address: " + config_.id;
+        return;
+    }
+    if (!config_.unknown.empty() && !config_.enabled) {
+        problem_ = "written by a newer takt4: " + config_.unknown +
+                   " is not one this takt4 has, and reads as the default here. Switch the rule "
+                   "on in the rule editor to fire it as it reads.";
         return;
     }
     if (config_.sendKind == Message::Kind::Dmx) {

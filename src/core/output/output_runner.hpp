@@ -749,7 +749,7 @@ private:
     /// whichever target now occupies it. One unplugged MIDI device was enough to send a
     /// rule's clips to the lighting desk. Rethrows what `Transports` raised, so the failure
     /// still reaches `lastError`.
-    void setTargets(const std::vector<OutputTarget>& targets, double now);
+    void setTargets(const std::vector<OutputTarget>& targets);
     /// Turns every rule's output and fixture *names* into the bit masks its messages carry.
     /// Run after the rules change, after the targets do and after the patch does, because any
     /// of the three moves the answer.
@@ -766,23 +766,23 @@ private:
     void noteHolds(std::string_view ruleId, const trigger::Message& message, bool taken);
     /// Lets go of everything held by a rule `whose` picks — see `holds`. The rule's own owed
     /// releases and held fires are `trigger::TriggerEngine::releaseRule`'s.
-    void releaseHolds(const std::function<bool(const std::string&)>& whose, double now);
+    void releaseHolds(const std::function<bool(const std::string&)>& whose);
     struct HeldNote;
     struct HeldZone;
     /// The same, hold by hold.
     void releaseMatching(const std::function<bool(const HeldNote&)>& notes,
-                         const std::function<bool(const HeldZone&)>& zones, double now);
+                         const std::function<bool(const HeldZone&)>& zones);
     /// Lets go of every note held on the outputs in `outputs` (routing bits), on those outputs
     /// alone — for an output that is going.
-    void releaseNotesTo(std::uint64_t outputs, double now);
+    void releaseNotesTo(std::uint64_t outputs);
     /// After a new rule set: lets go of what a rule holds that it could no longer let go of
     /// itself — gone, switched off, muted, or aimed elsewhere — or of everything, for a set
     /// that was loaded rather than edited.
-    void releaseStale(bool fresh, double now);
+    void releaseStale(bool fresh);
     /// Every note still held once the sink's queue has been emptied — its Note Off refused by a
     /// full queue — let go of again and sent at once. For PANIC,
     /// Stop and quit, which promise to leave nothing on.
-    void releaseRefused(double now);
+    void releaseRefused();
     /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
     void forgetZones() noexcept { heldZones_.clear(); }
     /// **The input gone quiet or gone altogether** (the operator, 2026-10-05): the lasers

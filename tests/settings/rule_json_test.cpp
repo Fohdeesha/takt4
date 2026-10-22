@@ -432,14 +432,28 @@ TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {
         CHECK(out.enabled);
     }
 
-    SECTION("a name this build does not know keeps its default") {
+    SECTION("a name this build does not know keeps its default, and the rule is switched off") {
         // What lets a file written by a later build still load: an unknown trigger is not a
-        // reason to drop the rest of the rule.
+        // reason to drop the rest of the rule. But read as the defaults those names fell back
+        // to, it is another rule than the one written, and it used to fire as that one.
+        // A rule that would fire but for those names: it has an address to send to.
         const Rule::Config out =
-            first(R"([{"id":"x","trigger":"on-eclipse","send":"smoke-signal"}])");
+            first(R"([{"id":"x","trigger":"on-eclipse","send":"smoke-signal","address":"/x"}])");
         CHECK(out.id == "x");
         CHECK(out.trigger == Trigger::Bar); // the default
         CHECK(out.sendKind == Message::Kind::Osc);
+        CHECK_FALSE(out.enabled);
+        CHECK(out.unknown == R"(trigger "on-eclipse" and send "smoke-signal")");
+        const Rule built(out);
+        CHECK_FALSE(built.valid());
+        CHECK(built.problem().find("written by a newer takt4") != std::string::npos);
+        // Switched on, the operator has looked at it: it fires as it reads.
+        Rule::Config on = out;
+        on.enabled = true;
+        CHECK(Rule(on).valid());
+        // And what is written back is what it reads as here.
+        CHECK(rulesToJson({on}).find("on-eclipse") == std::string::npos);
+        CHECK(rulesFromJson(rulesToJson({on})).at(0).unknown.empty());
     }
 
     SECTION("a rule that will not fire is kept, not dropped") {

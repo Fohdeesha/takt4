@@ -4,6 +4,7 @@
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
 #include "core/io/json_depth.hpp"
+#include "core/io/utf8.hpp"
 #include "core/settings/rule_json_node.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/value.hpp"
@@ -41,9 +42,14 @@ void read(const json& object, const char* key, T& out) {
     }
 }
 
+/// The names a rule being read holds that this build does not know, for `ruleFromJson` to
+/// say on the rule (`Rule::Config::unknown`); null outside one.
+thread_local std::vector<std::string>* tUnknown = nullptr;
+
 /// A named enum, through the `nameOf`/`xOf` pair every one of these types carries. An
 /// unknown name keeps the default, which is what lets a file written by a later build —
-/// with a generator kind this one has never heard of — still load the rest of the rule.
+/// with a generator kind this one has never heard of — still load the rest of the rule; and is
+/// noted, for the rule to say it was written by one.
 template <typename T, typename Parse>
 void readNamed(const json& object, const char* key, T& out, Parse parse) {
     std::string name;
@@ -53,6 +59,8 @@ void readNamed(const json& object, const char* key, T& out, Parse parse) {
     }
     if (const auto parsed = parse(name)) {
         out = *parsed;
+    } else if (tUnknown != nullptr) {
+        tUnknown->push_back(std::string(key) + " \"" + io::validUtf8(name) + "\"");
     }
 }
 
@@ -578,6 +586,14 @@ void readLegacyFollowUp(const json& node, Rule::Config& rule) {
 
 Rule::Config ruleFromJson(const json& node) {
     Rule::Config rule;
+    std::vector<std::string> unknown;
+    struct Noting {
+        explicit Noting(std::vector<std::string>* into) : before(std::exchange(tUnknown, into)) {}
+        ~Noting() { tUnknown = before; }
+        Noting(const Noting&) = delete;
+        Noting& operator=(const Noting&) = delete;
+        std::vector<std::string>* before;
+    } const noting(&unknown);
     read(node, "id", rule.id);
     read(node, "name", rule.name);
     read(node, "enabled", rule.enabled);
@@ -699,6 +715,13 @@ Rule::Config ruleFromJson(const json& node) {
         for (const json& segment : node.at("segments")) {
             rule.segments.push_back(generatorFromJson(segment));
         }
+    }
+    // Written by a newer takt4: switched off, and the names it did not know kept to say why.
+    for (std::size_t i = 0; i < unknown.size(); ++i) {
+        rule.unknown += (i == 0 ? "" : i + 1 == unknown.size() ? " and " : ", ") + unknown[i];
+    }
+    if (!unknown.empty()) {
+        rule.enabled = false;
     }
     // Nothing is validated here. `Rule`'s constructor decides whether this is usable and
     // `Rule::problem()` says why it is not — the policy, which is that an invalid rule is

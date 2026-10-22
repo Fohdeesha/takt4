@@ -607,6 +607,32 @@ TEST_CASE("a fixture with more than one head says which head each pan and tilt m
     }
 }
 
+TEST_CASE("IDENTIFY flashes an amber or a UV fixture with no dimmer, and leaves it dark",
+          "[ui][dmx]") {
+    // Amber and UV were not among the colours IDENTIFY flashed, and the dimmer flash lit only
+    // white or RGB: a UV blinder or an amber strip with no dimmer did not light at all.
+    using takt4::dmx::Role;
+    takt4::dmx::Fixture blinder = takt4::dmx::fixtureFromMode("blinder", 1, 5, 70);
+    blinder.channels = {Role::Amber, Role::Uv};
+    blinder.parked.clear();
+    Rig rig;
+    FixturesController patch(rig.runner, {blinder});
+    patch.pick(0);
+    takt4::dmx::DmxEngine& engine = rig.runner.transports().dmx();
+    rig.runner.post(takt4::output::OutputCommand::patch(patch.fixtures()));
+    const auto at = [&engine](int channel) {
+        return int{engine.levels(5)[static_cast<std::size_t>(channel - 1)]};
+    };
+    const double start = rig.runner.elapsed();
+    patch.identify();
+    engine.tick(start + 0.05);
+    CHECK(at(70) > 200);
+    CHECK(at(71) > 200);
+    engine.tick(start + FixturesController::kIdentifySeconds + 1.0);
+    CHECK(at(70) == 0);
+    CHECK(at(71) == 0);
+}
+
 TEST_CASE("TEST and IDENTIFY say PANIC is engaged instead of lighting anything",
           "[ui][dmx]") {
     // an earlier review: both went to the lights past the rules, and so past a panic. The runner
@@ -680,6 +706,24 @@ TEST_CASE("IDENTIFY puts a lit fixture back as it found it", "[ui][dmx]") {
         rig.runner.post(takt4::output::OutputCommand::effect(1, flash));
         settle(0.0);
         CHECK(at(70) == 255);
+        CHECK(at(71) == 0);
+        CHECK(at(72) == 0);
+    }
+
+    SECTION("an RGB par that is dark") {
+        // With no dimmer and no colour to scale, the dimmer flash lights it white for good; it
+        // used to come first, and the colour flashes then decayed to that white — so every
+        // dimmerless par IDENTIFY was pressed on, stopped or freshly patched, stayed lit.
+        patch.pickMode(modeIndexOf("RGB (3ch)"));
+        settle(0.0);
+        REQUIRE(at(70) == 0);
+        patch.identify();
+        const double start = settle(0.05);
+        CHECK(at(70) > 200);
+        CHECK(at(71) > 200);
+        CHECK(at(72) > 200);
+        engine.tick(start + FixturesController::kIdentifySeconds + 1.0);
+        CHECK(at(70) == 0);
         CHECK(at(71) == 0);
         CHECK(at(72) == 0);
     }

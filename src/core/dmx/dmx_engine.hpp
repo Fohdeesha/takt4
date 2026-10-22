@@ -191,8 +191,9 @@ private:
         std::uint16_t fixture = kNoFixture;
         Role source = Role::Unused;
         /// Which of the fixture's channels carrying `source` this is (`channelOf`'s `nth`): a
-        /// bar of cells has a track per cell.
-        std::uint8_t nth = 0;
+        /// bar of cells has a track per cell — as many as a universe holds, not the 256 a byte
+        /// counted to, which left the rest of a long dimmer strip dark.
+        std::uint16_t nth = 0;
         /// Whether this drives a virtual fixture's state (`Virtual`) rather than a channel, and
         /// which part of it: `kIntensity`, or 1 + a `kEmitters` index.
         bool isVirtual = false;
@@ -276,7 +277,14 @@ private:
         std::array<double, kEmitters.size()> color{};
         /// Whether the channels need writing again from the two above.
         bool dirty = false;
+        /// Each emitter's channels, 0-based in the fixture's universe, every cell's in order —
+        /// laid out with the patch (`layOut`). Found again with `channelOf` on every round, a pixel
+        /// bar cost cells × channels each time it was written: a square of its size, a thousand
+        /// times a second.
+        std::array<std::vector<std::uint16_t>, kEmitters.size()> channels;
     };
+    /// Fills `state.channels` from `fixture`.
+    static void layOut(Virtual& state, const Fixture& fixture);
 
     /// The index of `universe` in `buffers_`, or `npos`.
     std::size_t bufferOf(PortAddress universe) const noexcept;
@@ -307,7 +315,7 @@ private:
     /// hold found it. A patch change, PANIC and Stop all do this first.
     void releaseTestHolds() noexcept;
     /// `start`, on the fixtures `fixtures` names — or, with `everyFixture`, on every enabled
-    /// fixture of the patch, past the 64 a mask can name. `blackout`'s.
+    /// fixture of the patch, past the `kMaxRoutableFixtures` a mask can name. `blackout`'s.
     void launch(const Payload& payload, double now, const FixtureSet& fixtures, bool everyFixture);
     /// Re-aims every running effect at the new patch, by fixture — see `setPatch`.
     /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.

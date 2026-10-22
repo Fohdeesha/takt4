@@ -3135,6 +3135,31 @@ TEST_CASE("a rule that stops sending lets go of what it holds", "[output][trigge
     CHECK(runner.holds().zones == 0);
 }
 
+TEST_CASE("a rule muted lets go of what it holds at once, not the rig's offset later",
+          "[output][trigger][release]") {
+    // A release was timed `now` at the earliest, and the rig's offset and the target's delay held
+    // it back as they hold a beat: muted, a laser clip or a note stayed on a fifth of a second
+    // longer. Timed at its press, which went out long ago, it goes at once.
+    auto cable = std::make_shared<Bytes>();
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, heldRig(cable));
+    runner.post(OutputCommand::rules({heldNote(), heldClip()}));
+    runner.post(OutputCommand::testRule("note"));
+    runner.post(OutputCommand::testRule("clip"));
+    REQUIRE(*cable == Bytes{{0x90, 60, 100}});
+    REQUIRE(zoneAndLamp(runner)[0] == 255);
+    runner.setLatencySeconds(0.2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    runner.post(OutputCommand::ruleMuted("note", true));
+    runner.post(OutputCommand::ruleMuted("clip", true));
+    CHECK(*cable == Bytes{{0x90, 60, 100}, {0x80, 60, 0}});
+    runner.transports().dmx().tick(runner.elapsed());
+    CHECK(zoneAndLamp(runner)[0] == 0);
+    CHECK(runner.holds().notes == 0);
+    CHECK(runner.holds().zones == 0);
+}
+
 TEST_CASE("the log shows a release beside the rule that held it", "[output][trigger][release]") {
     auto cable = std::make_shared<Bytes>();
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());

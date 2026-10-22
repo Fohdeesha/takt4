@@ -533,6 +533,7 @@ void assignIds(Preset& preset) {
     const std::vector<dmx::Fixture> fixturesBefore = preset.fixtures;
     output::ensureOutputIds(preset.outputs);
     dmx::ensureFixtureIds(preset.fixtures);
+    trigger::Rule::ensureIds(preset.rules);
     const std::vector<bool> newOutputs = givenIds(outputsBefore, preset.outputs);
     const std::vector<bool> newFixtures = givenIds(fixturesBefore, preset.fixtures);
     for (trigger::Rule::Config& rule : preset.rules) {
@@ -995,6 +996,19 @@ std::filesystem::path backupFile(const std::filesystem::path& file) {
     return backup;
 }
 
+std::string newerRulesNotice(const Preset& preset) {
+    const auto count =
+        std::count_if(preset.rules.begin(), preset.rules.end(),
+                      [](const trigger::Rule::Config& rule) { return !rule.unknown.empty(); });
+    if (count == 0) {
+        return {};
+    }
+    return (count == 1 ? std::string("A rule was") : std::to_string(count) + " rules were") +
+           " written by a newer takt4, with what this one does not have, and " +
+           (count == 1 ? "is" : "are") +
+           " switched off: the rule editor says what, and switches them on.";
+}
+
 Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom,
                       bool keepBackup) {
     Startup out;
@@ -1032,6 +1046,9 @@ Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::
                          "), so takt4 will not save over it automatically: what only the newer "
                          "one knows is kept. EXPORT keeps changes made here; SAVE writes the "
                          "file over without them.";
+        }
+        if (const std::string rules = newerRulesNotice(out.settings.preset); !rules.empty()) {
+            out.notice += (out.notice.empty() ? "" : " ") + rules;
         }
         return out;
     case LoadStatus::Unreadable:

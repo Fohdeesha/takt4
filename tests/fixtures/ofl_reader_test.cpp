@@ -421,6 +421,21 @@ TEST_CASE("an OFL file is known by its library keys, or its folder and name", "[
                ContainsSubstring("version 13 of the library's format"));
 }
 
+TEST_CASE("an OFL file with more modes than any fixture has is refused",
+          "[fixtures][ofl][hostile]") {
+    const std::string channels = R"("Dim": {"capability": {"type": "Intensity"}})";
+    std::string modes;
+    for (std::size_t i = 0; i < takt4::fixtures::kMaxModes; ++i) {
+        modes += std::string(i == 0 ? "" : ", ") + R"({"name": "mode )" + std::to_string(i + 1) +
+                 R"(", "channels": ["Dim"]})";
+    }
+    CHECK(readOflJson(oflFixture(channels, modes)).modes.size() == takt4::fixtures::kMaxModes);
+    modes += R"(, {"name": "one too many", "channels": ["Dim"]})";
+    const auto tooMany = readOflText(oflFixture(channels, modes), "x.json", "m", "f");
+    CHECK_FALSE(tooMany.definition);
+    CHECK_THAT(tooMany.problem, ContainsSubstring("more than 1024 modes"));
+}
+
 TEST_CASE("what is not an OFL fixture is refused with a reason", "[fixtures][ofl][hostile]") {
     const auto refused = [](const std::string& text) {
         const auto result = readOflText(text, "x.json", "m", "f");

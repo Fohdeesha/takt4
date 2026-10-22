@@ -761,6 +761,20 @@ TEST_CASE("a dimmer aimed at a fixture that has not got one drives its color", "
         CHECK(at(rgbwEngine, 0, 4) == 255);
     }
 
+    SECTION("an amber or a UV fixture comes up on every emitter it has") {
+        // Neither white nor RGB to light: it used to come up on nothing, while the rule editor
+        // said the dimmer drove its colour.
+        Fixture blinder = rgb("blinder", 1);
+        blinder.channels = {Role::Amber, Role::Uv};
+        blinder.parked.clear();
+        DmxEngine blinderEngine;
+        blinderEngine.setPatch({blinder});
+        blinderEngine.start(0b1, level(Role::Dimmer, 255), 0.0);
+        CHECK(blinderEngine.missed() == 0);
+        CHECK(at(blinderEngine, 0, 1) == 255);
+        CHECK(at(blinderEngine, 0, 2) == 255);
+    }
+
     SECTION("a fixture that really has a dimmer is untouched by any of this") {
         DmxEngine dimmerEngine;
         dimmerEngine.setPatch({takt4::dmx::fixtureFromMode("par", 3, 0, 1)}); // dimmer + RGB
@@ -791,6 +805,22 @@ TEST_CASE("a dimmer aimed at a fixture that has not got one drives its color", "
         move.kind = EffectKind::Position;
         engine.start(0b1, move, 0.0);
         CHECK(engine.missed() == 1);
+    }
+}
+
+TEST_CASE("every channel of a role a fixture has is driven, past the 256th", "[dmx][engine]") {
+    // A track counted its channel among the role's with a byte, and the loop stopped there: the
+    // 257th dimmer of a long strip on a universe of its own, and every one after, stayed dark.
+    Fixture strip = rgb("strip", 1);
+    strip.channels.assign(400, Role::Dimmer);
+    strip.parked.clear();
+    DmxEngine engine;
+    engine.setPatch({strip});
+    engine.start(0b1, level(Role::Dimmer, 200), 0.0);
+    CHECK(engine.missed() == 0);
+    for (const int channel : {1, 256, 257, 400}) {
+        INFO("channel " << channel);
+        CHECK(at(engine, 0, channel) == 200);
     }
 }
 

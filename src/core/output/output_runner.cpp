@@ -486,15 +486,13 @@ void OutputRunner::noteHolds(std::string_view ruleId, const trigger::Message& me
     }
 }
 
-void OutputRunner::releaseHolds(const std::function<bool(const std::string&)>& whose,
-                                double now) {
+void OutputRunner::releaseHolds(const std::function<bool(const std::string&)>& whose) {
     releaseMatching([&whose](const HeldNote& held) { return whose(held.ruleId); },
-                    [&whose](const HeldZone& held) { return whose(held.ruleId); }, now);
+                    [&whose](const HeldZone& held) { return whose(held.ruleId); });
 }
 
 void OutputRunner::releaseMatching(const std::function<bool(const HeldNote&)>& notes,
-                                   const std::function<bool(const HeldZone&)>& zones,
-                                   double now) {
+                                   const std::function<bool(const HeldZone&)>& zones) {
     // Copied before sending: each release reaches `noteHolds` through the observer, which takes
     // what it lets go of out of the very lists being walked.
     std::vector<HeldNote> going;
@@ -510,8 +508,11 @@ void OutputRunner::releaseMatching(const std::function<bool(const HeldNote&)>& n
         off.channel = held.channel;
         off.number = held.number;
         off.value = 0;
-        // About now, but never before its note on: see `HeldNote`.
-        off.moment = std::max(now, held.moment);
+        // **At its note on's own moment**: as soon as it can go without overtaking it — out with
+        // it while a target's delay still holds the note on back, and at once when that is past.
+        // It was `now` at the earliest, which the rig's offset and the target's delay then held
+        // back as they hold a beat: a note left on a fifth of a second after its rule was muted.
+        off.moment = held.moment;
         triggers_.sendRelease(held.ruleId, off);
     }
 
@@ -531,7 +532,8 @@ void OutputRunner::releaseMatching(const std::function<bool(const HeldNote&)>& n
         clear.kind = trigger::Message::Kind::Dmx;
         clear.payload.kind = dmx::EffectKind::Clip;
         clear.payload.clip = 0;
-        clear.moment = now;
+        // The latest moment the rule armed one at, as a note's release is timed: see above.
+        clear.moment = dark.front().moment;
         for (const HeldZone& held : dark) {
             if (held.ruleId != owner) {
                 continue;
@@ -552,7 +554,7 @@ void OutputRunner::releaseMatching(const std::function<bool(const HeldNote&)>& n
     }
 }
 
-void OutputRunner::releaseNotesTo(std::uint64_t outputs, double now) {
+void OutputRunner::releaseNotesTo(std::uint64_t outputs) {
     std::vector<HeldNote> notes;
     for (const HeldNote& held : heldNotes_) {
         if ((held.outputs & outputs) != 0) {
@@ -566,12 +568,12 @@ void OutputRunner::releaseNotesTo(std::uint64_t outputs, double now) {
         off.channel = held.channel;
         off.number = held.number;
         off.value = 0;
-        off.moment = std::max(now, held.moment);
+        off.moment = held.moment; // see `releaseMatching`
         triggers_.sendRelease(held.ruleId, off);
     }
 }
 
-void OutputRunner::releaseStale(bool fresh, double now) {
+void OutputRunner::releaseStale(bool fresh) {
     // Whether the rule that holds something could still let go of it itself: there, switched on,
     // not muted, and sending what it held to where it held it. Anything else is let go of now —
     // each hold on its own, so a rule taken off one zone keeps the other it still drives.
@@ -603,16 +605,14 @@ void OutputRunner::releaseStale(bool fresh, double now) {
                 }
             }
             return true;
-        },
-        now);
+        });
 }
 
-void OutputRunner::releaseRefused(double now) {
+void OutputRunner::releaseRefused() {
     if (heldNotes_.empty()) {
         return;
     }
-    releaseMatching([](const HeldNote&) { return true; }, [](const HeldZone&) { return false; },
-                    now);
+    releaseMatching([](const HeldNote&) { return true; }, [](const HeldZone&) { return false; });
     sink_.flushQueued();
 }
 
@@ -757,7 +757,7 @@ void OutputRunner::stop() noexcept {
             // and `setRules`; this is the third place that owed a flush and did not have one.
             triggers_.flushFollowUps();
             // And every note still on whose release nothing owed (see `holds`).
-            releaseHolds([](const std::string&) { return true; }, elapsed());
+            releaseHolds([](const std::string&) { return true; });
             // The lock gone with takt4, said as STOP says it (`OscPublisher::publishState`), so a
             // receiver is not left holding a `/locked 1` from a program that has quit.
             transports_.osc().publishState(tracking::TempoState{}, false);
@@ -766,7 +766,7 @@ void OutputRunner::stop() noexcept {
             sink_.flushQueued();
             transports_.osc().flushAll();
             // And a Note Off a full queue refused, now that the queue is empty.
-            releaseRefused(elapsed());
+            releaseRefused();
             // Then the lights out — the operator's call for quit as for Stop — and that
             // frame actually sent. Art-Net only goes out in `advance`, paced at 44 Hz, and there
             // is no round after this one: a node left holding the last frame before it would
@@ -863,10 +863,10 @@ void OutputRunner::apply(const OutputCommand& command) {
             transports_.setClockInput(command.port.value_or(""));
             break;
         case OutputCommand::Kind::OscTargets:
-            setTargets(oscOutputs(command.targets), now);
+            setTargets(oscOutputs(command.targets));
             break;
         case OutputCommand::Kind::Outputs:
-            setTargets(command.outputTargets, now);
+            setTargets(command.outputTargets);
             break;
         case OutputCommand::Kind::MidiClockPort:
             transports_.setMidiClockPort(command.port);
@@ -893,7 +893,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 }
             }
             // And whatever a rule holds that it can no longer let go of itself.
-            releaseStale(command.freshRules, now);
+            releaseStale(command.freshRules);
             break;
         }
         case OutputCommand::Kind::Panic:
@@ -907,7 +907,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // And every note still on that nothing owed a release for — a rule that sends a
                 // note on and leaves the off to something else (see `holds`). The zones are
                 // disarmed below, whoever holds them.
-                releaseHolds([](const std::string&) { return true; }, now);
+                releaseHolds([](const std::string&) { return true; });
                 sink_.holdLighting(false);
                 // What is held for an output's offset goes now too. A release among it must not
                 // wait, and a press among it is at most one lead's worth early — and would
@@ -918,7 +918,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 sink_.flushQueued();
                 transports_.osc().flushAll();
                 // A Note Off a full queue refused goes now that the queue is empty.
-                releaseRefused(now);
+                releaseRefused();
                 // And the lights stop animating — but keep their levels, and keep being sent.
                 // The operator's own call on 2026-09-16: takt4 may be one source among several
                 // on a rig, and a panic that blacked out the stage would take down lights that
@@ -960,7 +960,7 @@ void OutputRunner::apply(const OutputCommand& command) {
             });
             for (const std::string& id : quietened) {
                 triggers_.releaseRule(id, now);
-                releaseHolds([&id](const std::string& owner) { return owner == id; }, now);
+                releaseHolds([&id](const std::string& owner) { return owner == id; });
             }
             break;
         }
@@ -1041,13 +1041,13 @@ void OutputRunner::apply(const OutputCommand& command) {
                 sink_.holdLighting(true);
                 triggers_.flushFollowUps();
                 // every note still on whose release nothing owed (see `holds`);
-                releaseHolds([](const std::string&) { return true; }, now);
+                releaseHolds([](const std::string&) { return true; });
                 sink_.holdLighting(false);
                 sink_.dropQueuedLighting();
                 sink_.flushQueued();
                 transports_.osc().flushAll();
                 // a Note Off a full queue refused, now that the queue is empty;
-                releaseRefused(now);
+                releaseRefused();
                 // and the lights go out and stay out — sent, because the outputs keep running
                 //. The blackout disarms every laser zone with them.
                 transports_.stopClock();
@@ -1140,7 +1140,7 @@ std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
     return answer;
 }
 
-void OutputRunner::setTargets(const std::vector<OutputTarget>& targets, double now) {
+void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
     // What is held and what is owed names its output by its place in the list, which is about
     // to move — so each follows its output by id afterwards, rather than being flushed early
     // or sent to whatever takes its place.
@@ -1154,7 +1154,7 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets, double n
     if (const std::uint64_t leaving = leavingOutputs(before, targets); leaving != 0) {
         triggers_.flushFollowUpsTo(leaving);
         // And every note still on there that nothing owed a release for (see `holds`).
-        releaseNotesTo(leaving, now);
+        releaseNotesTo(leaving);
         sink_.flushQueuedTo(leaving);
         transports_.osc().flushTo(leaving);
     }
@@ -1317,7 +1317,7 @@ void OutputRunner::letGoOfTheRig(double now) {
     }
     // Then every note and zone a rule holds, let go of — **before** the zones are forgotten, so a
     // zone's release is made, and queued behind anything of its own still on the way.
-    releaseHolds([](const std::string&) { return true; }, now);
+    releaseHolds([](const std::string&) { return true; });
     transports_.dmx().disarm(now);
     forgetZones();
     // And no beat predicted from the last ones heard: an input that is gone says nothing about

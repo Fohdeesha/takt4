@@ -612,6 +612,36 @@ TEST_CASE("a start after a session that ended at once keeps the copy from the st
     CHECK(takt4::settings::load(backup).machine.deviceName == "what it fell over on");
 }
 
+TEST_CASE("two rules with one id in a file are given an id each", "[settings]") {
+    // Kept as written, the second was a rule shown nowhere as a mistake: a mute or a control
+    // surface aimed at it by id reached the first. The first keeps its id — what was aimed at it
+    // found the first — and the second, or one with none, is given a fresh one.
+    const Settings loaded = takt4::settings::fromJson(
+        R"({"preset": {"rules": [{"id": "strobe", "name": "first"}, {"id": "strobe", "name": "second"},
+                                 {"id": "", "name": "none"}, {"id": "wash", "name": "wash"}]}})");
+    REQUIRE(loaded.preset.rules.size() == 4);
+    CHECK(loaded.preset.rules[0].id == "strobe");
+    CHECK(loaded.preset.rules[1].id != "strobe");
+    CHECK(loaded.preset.rules[1].id.rfind("r-", 0) == 0);
+    CHECK_FALSE(loaded.preset.rules[2].id.empty());
+    CHECK(loaded.preset.rules[2].id != loaded.preset.rules[1].id);
+    CHECK(loaded.preset.rules[3].id == "wash");
+}
+
+TEST_CASE("a rule a newer takt4 wrote is said at the start, switched off", "[settings]") {
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    write(file, R"({"version": 2, "preset": {"rules": [{"id": "a", "trigger": "on-eclipse"},
+                                                       {"id": "b"}]}})");
+    const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+    INFO(startup.notice);
+    CHECK(startup.writable);
+    CHECK(startup.notice.find("A rule was written by a newer takt4") != std::string::npos);
+    REQUIRE(startup.settings.preset.rules.size() == 2);
+    CHECK_FALSE(startup.settings.preset.rules[0].enabled);
+    CHECK(startup.settings.preset.rules[1].enabled);
+}
+
 TEST_CASE("a settings file nested deeper than any takt4 writes is damaged, not a crash",
           "[settings]") {
     // A couple of hundred kilobytes of brackets where the rules go. They parse — and the rules

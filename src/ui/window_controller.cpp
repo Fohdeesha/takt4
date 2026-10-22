@@ -3740,7 +3740,11 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         " rules, " + std::to_string(loaded.preset.outputs.size()) + " outputs, " +
         std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
         (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
-        (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.");
+        (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.") +
+        [&loaded] {
+            const std::string rules = settings::newerRulesNotice(loaded.preset);
+            return rules.empty() ? rules : " " + rules;
+        }();
     // The START it asked for says this again once the input is open, in place of its own line
     // (`toggleRun`); an import that stopped listening says it as the trouble it is.
     const bool restarting = !input.empty() && runPending_;

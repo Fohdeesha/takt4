@@ -859,16 +859,7 @@ void RulesController::pickWith(int index, bool control, bool shift) {
 }
 
 std::string RulesController::newRuleId(const std::vector<Rule::Config>& rules) {
-    static thread_local std::mt19937_64 random{std::random_device{}()};
-    for (;;) {
-        char text[16] = {};
-        std::snprintf(text, sizeof text, "r-%08x", static_cast<unsigned int>(random()));
-        const std::string id(text);
-        const auto clash = [&id](const Rule::Config& other) { return other.id == id; };
-        if (std::none_of(rules.begin(), rules.end(), clash)) {
-            return id;
-        }
-    }
+    return Rule::newId(rules);
 }
 
 void RulesController::add() {
@@ -958,16 +949,12 @@ void RulesController::duplicate() {
         }
         const Rule::Config& source = rules_[at];
         Rule::Config copy = source;
-        copy.id += "-copy";
-        const auto taken = [this, &copies](const std::string& id) {
-            return std::any_of(rules_.begin(), rules_.end(),
-                               [&id](const Rule::Config& o) { return o.id == id; }) ||
-                   std::any_of(copies.begin(), copies.end(),
-                               [&id](const Rule::Config& o) { return o.id == id; });
-        };
-        for (int n = 2; taken(copy.id); ++n) {
-            copy.id = source.id + "-copy" + std::to_string(n);
-        }
+        // **A fresh id, as a new rule's**: "<id>-copy" came out the same again after the copy
+        // was deleted, so a control surface's button aimed at the deleted copy drove the next.
+        do {
+            copy.id = newRuleId(rules_);
+        } while (std::any_of(copies.begin(), copies.end(),
+                             [&copy](const Rule::Config& o) { return o.id == copy.id; }));
         if (!copy.name.empty()) {
             copy.name += " copy";
         }

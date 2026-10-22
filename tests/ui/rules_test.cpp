@@ -830,13 +830,27 @@ TEST_CASE("several rules are chosen at once, and acted on at once", "[ui][trigge
         const std::string second = editor.rules()[1].id;
         editor.duplicate();
         REQUIRE(editor.rules().size() == 7);
-        CHECK(editor.rules()[2].id == first + "-copy");
-        CHECK(editor.rules()[3].id == second + "-copy");
+        CHECK(editor.rules()[2].id != first);
+        CHECK(editor.rules()[3].id != second);
         // Distinct ids, or the /ctl/rule/<id>/enable is ambiguous — including between two
         // copies made in the same gesture.
         CHECK(editor.rules()[2].id != editor.rules()[3].id);
         // The copies are what the operator is looking at now.
         CHECK(editor.chosen() == std::vector<int>{2, 3});
+    }
+
+    SECTION("a copy made after one was deleted is not given the deleted one's id") {
+        // "<id>-copy" came out the same again, so a control surface's button aimed at the
+        // deleted copy drove the next copy made.
+        editor.pick(0);
+        editor.duplicate();
+        const std::string deleted = editor.rules()[1].id;
+        editor.pick(1);
+        editor.remove();
+        editor.pick(0);
+        editor.duplicate();
+        CHECK(editor.rules()[1].id != deleted);
+        CHECK(editor.rules()[1].id.rfind("r-", 0) == 0);
     }
 
     SECTION("a mark on a row outside the selection acts on that row alone") {

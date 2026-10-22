@@ -358,6 +358,11 @@ inline constexpr int kFormatVersion = 2;
 /// `load`, saying what happened. Never throws.
 Loaded loadChecked(const std::filesystem::path& path);
 
+/// What an operator is told of the rules in `preset` a newer takt4 wrote, with names this one does
+/// not know (`trigger::Rule::Config::unknown`): how many, and that they are switched off. Empty
+/// when there are none.
+std::string newerRulesNotice(const Preset& preset);
+
 /// Where the copy of the settings file taken at each good startup is kept:
 /// `settings.json.bak` beside it. See `openAtStartup`.
 std::filesystem::path backupFile(const std::filesystem::path& file);
