@@ -517,6 +517,7 @@ int runFollow(const std::vector<std::string_view>& args) {
 
     std::string lastStatus;
     double lastStatusAt = -10.0;
+    double cardCheckedAt = 0.0;
     std::vector<engine::EngineBeat> toPrint;
     const auto printBeats = [&] {
         {
@@ -539,6 +540,12 @@ int runFollow(const std::vector<std::string_view>& args) {
             onKey(key);
         }
         printBeats();
+        // The card the CDJs were joined on, looked for every few seconds: gone, and the network
+        // joins again on the card they are heard on now (`Network::recheckCard`).
+        if (cdjs && elapsed() - cardCheckedAt >= 5.0) {
+            cardCheckedAt = elapsed();
+            cdjs->recheckCard();
+        }
         // What the source is doing, whenever it changes, and every few seconds while it waits
         // for a session — a console with nothing on it looks like a console that has hung.
         const std::string status = statusOf(sourceStatus(), beats);

@@ -24,6 +24,8 @@ void VirtualPlayer::listen(std::int64_t now) {
     listeningSince_ = now;
     number_ = 0;
     counter_ = 0;
+    mixerAsked_ = false;
+    led_ = 0;
     devices_.clear();
     claimed_.fill(false);
     refused_.fill(false);
@@ -39,6 +41,7 @@ void VirtualPlayer::join(const Identity& identity, std::int64_t now) {
     haveIdentity_ = true;
     refused_.fill(false);
     number_ = 0;
+    mixerAsked_ = false;
     phase_ = Phase::Watching;
     joinAt_ = std::max(now, listeningSince_ + options_.watchMicros);
 }
@@ -74,7 +77,7 @@ VirtualPlayer::Device& VirtualPlayer::deviceFor(std::uint8_t number, std::int64_
 }
 
 void VirtualPlayer::receive(Channel channel, std::span<const std::uint8_t> datagram,
-                            std::uint32_t from, std::int64_t at) {
+                            std::uint32_t from, std::int64_t at, std::uint32_t via) {
     // Its own, back round: a broadcast is delivered to the sender's machine too.
     if (haveIdentity_ && from == identity_.ip) {
         return;
@@ -83,7 +86,7 @@ void VirtualPlayer::receive(Channel channel, std::span<const std::uint8_t> datag
     case Channel::Announce: {
         AnnouncePacket packet;
         if (parseAnnounce(datagram, packet)) {
-            announce(packet, from, at);
+            announce(packet, from, at, via);
         }
         break;
     }
@@ -104,7 +107,8 @@ void VirtualPlayer::receive(Channel channel, std::span<const std::uint8_t> datag
     }
 }
 
-void VirtualPlayer::announce(const AnnouncePacket& packet, std::uint32_t from, std::int64_t at) {
+void VirtualPlayer::announce(const AnnouncePacket& packet, std::uint32_t from, std::int64_t at,
+                             std::uint32_t via) {
     const bool claiming = phase_ == Phase::Hello || phase_ == Phase::FirstClaim ||
                           phase_ == Phase::SecondClaim || phase_ == Phase::FinalClaim;
     const bool mine = number_ != 0 && packet.device == number_;
@@ -117,6 +121,9 @@ void VirtualPlayer::announce(const AnnouncePacket& packet, std::uint32_t from, s
         device.name = packet.name;
         device.ip = packet.ip != 0 ? packet.ip : from;
         device.mac = packet.mac;
+        if (via != 0) {
+            device.via = via;
+        }
         if (packet.kind != DeviceKind::Unknown) {
             device.kind = packet.kind;
         }
@@ -162,7 +169,11 @@ void VirtualPlayer::announce(const AnnouncePacket& packet, std::uint32_t from, s
         }
         return;
     case Announce::AssignmentIntention:
-        if (phase_ == Phase::Hello || phase_ == Phase::FirstClaim || phase_ == Phase::SecondClaim) {
+        // Answered once a join. An XDJ-XZ sends one for every number claimed on its network port,
+        // and answering each would go back to asking it for a number for ever.
+        if (!mixerAsked_ && (phase_ == Phase::Hello || phase_ == Phase::FirstClaim ||
+                             phase_ == Phase::SecondClaim)) {
+            mixerAsked_ = true;
             mixerIp_ = from;
             sendTo(from, buildNumberRequest(options_.name, identity_.ip, identity_.mac));
             phase_ = Phase::AwaitingMixer;
@@ -170,10 +181,15 @@ void VirtualPlayer::announce(const AnnouncePacket& packet, std::uint32_t from, s
         }
         return;
     case Announce::Assignment:
-        if (phase_ == Phase::AwaitingMixer && from == mixerIp_ && packet.device != 0) {
-            // The channel's number, whatever was wanted: the mixer decides.
-            number_ = packet.device;
-            startStage(Phase::FinalClaim, at);
+        if (phase_ == Phase::AwaitingMixer && from == mixerIp_) {
+            if (assignable(packet.device, at)) {
+                number_ = packet.device;
+                startStage(Phase::FinalClaim, at);
+            } else {
+                // A deck's number from a channel's port, or nought: not one takt4 may hold, so it
+                // is claimed as anywhere else, now rather than at the deadline.
+                claimNext(at);
+            }
         }
         return;
     case Announce::Hello:
@@ -244,24 +260,56 @@ std::uint8_t VirtualPlayer::master(std::int64_t now) const noexcept {
     return best == nullptr ? std::uint8_t{0} : best->number;
 }
 
-std::uint8_t VirtualPlayer::leader(std::int64_t now) const noexcept {
-    if (const std::uint8_t number = master(now); number != 0) {
-        return number;
+bool VirtualPlayer::onAirTold(std::int64_t now) const noexcept {
+    return std::any_of(devices_.begin(), devices_.end(), [&](const Device& device) {
+        return fresh(device, now) && !device.status.mixer && device.status.onAir();
+    });
+}
+
+bool VirtualPlayer::canLead(const Device& device, std::int64_t now, bool onAir) const noexcept {
+    if (!fresh(device, now)) {
+        return false;
     }
-    // Nobody is master — a player that starts playing on a network with none takes the role, but
-    // only some 50 ms after its first beat (measured on a CDJ-2000nexus): the one player playing
-    // leads until somebody is.
-    std::uint8_t playing = 0;
-    for (const Device& device : devices_) {
-        if (device.hasStatus && now - device.statusAt <= options_.statusFreshMicros &&
-            !device.status.mixer && device.status.playing()) {
-            if (playing != 0) {
-                return 0; // two playing and neither leading: nobody to follow
-            }
-            playing = device.number;
+    const StatusPacket& status = device.status;
+    if (status.mixer) {
+        // It says it is playing whatever happens, and is never on the air: as the master, it is
+        // the one the DJ chose.
+        return status.master();
+    }
+    // Playing, by its status or by a beat newer than its status: a deck's first beat after a
+    // pause comes some 60 ms before its status says it is playing (S06, resuming at 46.2 s). A cue
+    // press's beat is not mistaken for that — its status says it is cueing about 12 ms first.
+    const bool playing = status.playing() || (device.heardBeat && device.beatAt > device.statusAt);
+    return playing && !status.cueing() && status.beatGrid() && status.masterMeaningful != 2 &&
+           (!onAir || status.onAir());
+}
+
+std::uint8_t VirtualPlayer::leader(std::int64_t now) const noexcept {
+    const bool onAir = onAirTold(now);
+    if (const std::uint8_t number = master(now); number != 0) {
+        if (const Device* device = find(number);
+            device != nullptr && canLead(*device, now, onAir)) {
+            return number;
         }
     }
-    return playing;
+    // No master that leads: paused, faded out, playing a track it cannot lead with — or nobody
+    // holds the role yet, which a player that starts playing takes only some 50 ms after its first
+    // beat (measured on a CDJ-2000nexus). The one player that can lead does; of more than one, the
+    // one already followed while it still can, so a deck mixed in by ear does not take the beats
+    // from the one playing to the room — and otherwise nobody, as there is no telling which.
+    std::uint8_t only = 0;
+    std::size_t count = 0;
+    for (const Device& device : devices_) {
+        if (device.status.mixer || !canLead(device, now, onAir)) {
+            continue;
+        }
+        if (device.number == led_) {
+            return led_;
+        }
+        only = device.number;
+        ++count;
+    }
+    return count == 1 ? only : std::uint8_t{0};
 }
 
 std::uint8_t VirtualPlayer::followed(std::int64_t now) const noexcept {
@@ -273,6 +321,11 @@ bool VirtualPlayer::numberUsed(std::uint8_t number, std::int64_t now) const noex
         return true;
     }
     return find(number) != nullptr;
+}
+
+bool VirtualPlayer::assignable(std::uint8_t number, std::int64_t now) const noexcept {
+    return number >= options_.firstNumber && number <= options_.lastNumber &&
+           !numberUsed(number, now);
 }
 
 void VirtualPlayer::claimNext(std::int64_t now) {
@@ -360,6 +413,8 @@ void VirtualPlayer::advance(std::int64_t now) {
             std::max({d.announcedAt, d.hasStatus ? d.statusAt : 0, d.heardBeat ? d.beatAt : 0});
         return now - last > options_.goneMicros;
     });
+    // Who leads now, for `leader` to keep the next time more than one deck can.
+    led_ = leader(now);
     switch (phase_) {
     case Phase::Listening:
         return;

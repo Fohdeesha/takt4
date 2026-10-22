@@ -52,6 +52,7 @@
 #include <future>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -8996,6 +8997,9 @@ TEST_CASE("following the CDJs, START joins as a player and the master's beats re
     settle(); // the window's next round, which reads what the network now says
     CHECK(std::string(controller.window().get_timing_network()) ==
           "loopback \xC2\xB7 127.0.0.1 \xC2\xB7 takt4 is player 7");
+    // Joined, and the deck not yet playing: nothing to follow, said in the terms it chooses by.
+    CHECK(std::string(controller.window().get_timing_reading()) ==
+          "no deck playing \xE2\x80\x94 waiting");
 
     // The player plays, and is master: its beats on the plot, its tempo the window's.
     rig.setPlaying(true);
@@ -9035,6 +9039,70 @@ TEST_CASE("following the CDJs, START joins as a player and the master's beats re
     }
     CHECK_FALSE(rig.announceSocket().receive(500).has_value());
     rig.stop();
+}
+
+TEST_CASE("following the CDJs, the window looks for the card they were joined on every few "
+          "seconds, and when its address has gone the network joins again on the one they are on",
+          "[ui][follow][prolink][slow]") {
+    namespace peer = takt4::testing::prolink_peer;
+    if (!peer::canUseSecondLoopbackAddress() || !peer::canUseThirdLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2 or 127.0.0.3");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.setControlRetrySeconds(0.2);
+    peer::SimulatedRig rig;
+    const auto cards = std::make_shared<peer::Cards>(peer::loopbackCard());
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    config.interfaces = [cards] { return cards->get(); };
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    controller.pickTiming(3);
+    waitUntil(controller, [&] { return !controller.cdjNetwork().snapshot().devices.empty(); });
+    controller.toggleRun();
+    waitUntil(controller, [&] { return controller.followed().running(); });
+    REQUIRE(controller.followed().running());
+    const auto joinedOn = [&](std::uint32_t ip) {
+        const takt4::timing::prolink::Network::Snapshot s = controller.cdjNetwork().snapshot();
+        return s.interfaceIp == ip &&
+               s.phase == takt4::timing::prolink::VirtualPlayer::Phase::Joined;
+    };
+    waitUntil(controller, [&] { return joinedOn(peer::kHere); });
+    REQUIRE(joinedOn(peer::kHere));
+
+    // The card's address changes, and nothing else is done: the window's own look finds it.
+    cards->set(peer::movedCard());
+    waitUntil(controller, [&] { return joinedOn(peer::kMoved); });
+    CHECK(joinedOn(peer::kMoved));
+    CHECK(controller.cdjNetwork().snapshot().rejoins == 1);
+    controller.tick();
+    slint::platform::update_timers_and_animations();
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "loopback \xC2\xB7 127.0.0.3 \xC2\xB7 takt4 is player 7");
+    controller.toggleRun();
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+    rig.stop();
+}
+
+TEST_CASE("with nothing at all coming in on the CDJs' ports, their row names the firewall",
+          "[ui][follow][prolink]") {
+    namespace peer = takt4::testing::prolink_peer;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    // Ports the sandbox gave this test, which nothing sends to.
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(peer::allowedPort(), [&controller] { return linkNow(controller); });
+    config.quietMicros = 200'000;
+    controller.useCdjNetworkForTests(config);
+    controller.pickTiming(3);
+    const std::string firewall = "nothing at all is coming in \xE2\x80\x94 a firewall may be "
+                                 "blocking takt4: allow it on Public networks too";
+    waitUntil(controller,
+              [&] { return std::string(controller.window().get_timing_note()) == firewall; });
+    CHECK(std::string(controller.window().get_timing_note()) == firewall);
+    CHECK(std::string(controller.window().get_timing_reading()) ==
+          "no CDJs heard on this network yet");
 }
 
 TEST_CASE("the CDJs' port held by another program is said on the timing row in the alarm colour, "
@@ -9177,8 +9245,154 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     facts.cdjFollowed = 0;
     facts.cdjMasterWithoutBeats = true;
     view = describeTiming(facts);
-    CHECK(view.waitingWord == "no master");
-    CHECK(view.reading == "no master playing \xE2\x80\x94 waiting");
+    CHECK(view.waitingWord == "no deck");
+    CHECK(view.reading == "no deck playing \xE2\x80\x94 waiting");
     CHECK(view.note == "the master's track has no beat grid, so it sends no beats");
     CHECK(view.stripLabel.empty());
+}
+
+TEST_CASE("the CDJs' row reads the network's own snapshot: the join, the decks that could be "
+          "followed, the mixer's on-air, nothing heard, the sends failing and the card's note",
+          "[ui][follow]") {
+    using takt4::timing::prolink::DeviceKind;
+    using takt4::timing::prolink::Network;
+    using takt4::timing::prolink::VirtualPlayer;
+    using takt4::ui::describeTiming;
+    using takt4::ui::TimingFacts;
+    const auto factsOf = [](const Network::Snapshot& snapshot) {
+        TimingFacts facts;
+        facts.index = 3;
+        facts.running = true;
+        takt4::ui::readCdjFacts(snapshot, facts);
+        return facts;
+    };
+    Network::Snapshot snapshot;
+    snapshot.open = true;
+    Network::DeviceView deck;
+    deck.kind = DeviceKind::Player;
+    deck.canLead = true;
+    deck.number = 1;
+    snapshot.devices.push_back(deck);
+    deck.number = 2;
+    snapshot.devices.push_back(deck);
+    Network::DeviceView mixer;
+    mixer.kind = DeviceKind::Mixer;
+    mixer.number = 33;
+    mixer.canLead = true; // the master: not a deck playing
+    snapshot.devices.push_back(mixer);
+
+    snapshot.phase = VirtualPlayer::Phase::AwaitingMixer;
+    TimingFacts facts = factsOf(snapshot);
+    CHECK(facts.cdjPlayers == 2);
+    CHECK(facts.cdjMixers == 1);
+    CHECK(facts.cdjLeaders == 2);
+    CHECK(describeTiming(facts).reading == "the mixer is giving takt4 a player number\xE2\x80\xA6");
+    snapshot.phase = VirtualPlayer::Phase::NoNumber;
+    CHECK(describeTiming(factsOf(snapshot)).waitingWord == "no number");
+
+    snapshot.phase = VirtualPlayer::Phase::Joined;
+    snapshot.number = 7;
+    snapshot.interfaceName = "Ethernet 2";
+    snapshot.interfaceIp = takt4::testing::ipv4(169, 254, 20, 7);
+    facts = factsOf(snapshot);
+    CHECK(facts.cdjInterface == "Ethernet 2 \xC2\xB7 169.254.20.7");
+    CHECK(describeTiming(facts).reading ==
+          "2 decks playing and none is the master \xE2\x80\x94 pick one under follow");
+    snapshot.devices[0].canLead = false;
+    snapshot.devices[1].canLead = false;
+    snapshot.onAirTold = true;
+    CHECK(describeTiming(factsOf(snapshot)).reading ==
+          "no deck playing on air \xE2\x80\x94 waiting");
+    snapshot.sendsFailing = true;
+    CHECK(describeTiming(factsOf(snapshot)).note ==
+          "takt4's packets to the CDJs are not getting out \xE2\x80\x94 joining again");
+    snapshot.sendsFailing = false;
+    snapshot.note = "the card picked for the CDJs, 10.9.9.9, is not on this computer";
+    CHECK(describeTiming(factsOf(snapshot)).note == snapshot.note);
+
+    // Listening, and not one datagram read: the firewall named.
+    snapshot = Network::Snapshot{};
+    snapshot.open = true;
+    snapshot.nothingHeard = true;
+    facts = factsOf(snapshot);
+    facts.running = false;
+    CHECK(describeTiming(facts).note ==
+          "nothing at all is coming in \xE2\x80\x94 a firewall may be blocking takt4: allow it on "
+          "Public networks too");
+}
+
+TEST_CASE("what the window says about the CDJs while joining, with nothing coming in, with the "
+          "master paused or two decks playing, and with takt4's packets not getting out",
+          "[ui][follow]") {
+    using takt4::ui::describeTiming;
+    using takt4::ui::TimingFacts;
+    TimingFacts facts;
+    facts.index = 3;
+    // Nothing at all read since the network opened: the firewall is named, stopped or running,
+    // for as long as no CDJ is heard.
+    facts.cdjNothingHeard = true;
+    const std::string firewall = "nothing at all is coming in \xE2\x80\x94 a firewall may be "
+                                 "blocking takt4: allow it on Public networks too";
+    takt4::ui::TimingView view = describeTiming(facts);
+    CHECK(view.reading == "no CDJs heard on this network yet");
+    CHECK(view.note == firewall);
+    facts.running = true;
+    view = describeTiming(facts);
+    CHECK(view.reading == "no CDJs heard on this network \xE2\x80\x94 waiting for one");
+    CHECK(view.note == firewall);
+    facts.cdjNothingHeard = false;
+    CHECK(describeTiming(facts).note.empty());
+
+    // Joining: a mixer giving the number, and every number taken.
+    facts.cdjPlayers = 2;
+    facts.cdjMixers = 1;
+    facts.cdjAwaitingMixer = true;
+    view = describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.waitingWord == "joining");
+    CHECK(view.reading == "the mixer is giving takt4 a player number\xE2\x80\xA6");
+    facts.cdjAwaitingMixer = false;
+    facts.cdjNoNumber = true;
+    view = describeTiming(facts);
+    CHECK(view.waitingWord == "no number");
+    CHECK(view.reading ==
+          "players 7 to 15 are all taken \xE2\x80\x94 waiting for one to come free");
+    CHECK(view.detail == "no player number free");
+    facts.cdjNoNumber = false;
+
+    // Joined, following the tempo master, and nobody to follow: no deck playing (on the air, when
+    // the mixer says which are), or two and no telling which.
+    facts.cdjJoined = true;
+    facts.cdjNumber = 7;
+    facts.cdjMaster = 1;
+    view = describeTiming(facts);
+    CHECK(view.waitingWord == "no deck");
+    CHECK(view.reading == "no deck playing \xE2\x80\x94 waiting");
+    facts.cdjOnAirTold = true;
+    CHECK(describeTiming(facts).reading == "no deck playing on air \xE2\x80\x94 waiting");
+    facts.cdjLeaders = 2;
+    view = describeTiming(facts);
+    CHECK(view.reading ==
+          "2 decks playing and none is the master \xE2\x80\x94 pick one under follow");
+    CHECK(view.detail == "2 decks playing and none is the master");
+    // One deck it can follow, and none of its beats yet.
+    facts.cdjLeaders = 1;
+    facts.cdjFollowed = 2;
+    view = describeTiming(facts);
+    CHECK(view.waitingWord == "no beats");
+    CHECK(view.reading == "player 2 playing, no beats yet \xE2\x80\x94 waiting");
+
+    // What stops nothing comes last: the card picked not here, then takt4's packets failing.
+    facts.cdjNote = "the card picked for the CDJs, 10.9.9.9, is not on this computer \xE2\x80\x94 "
+                    "joined on Ethernet 2 \xC2\xB7 169.254.20.7";
+    CHECK(describeTiming(facts).note == facts.cdjNote);
+    facts.cdjSendsFailing = true;
+    CHECK(describeTiming(facts).note ==
+          "takt4's packets to the CDJs are not getting out \xE2\x80\x94 joining again");
+    // And the master's beatless track before either.
+    facts.cdjFollowed = 0;
+    facts.cdjLeaders = 0;
+    facts.cdjMasterWithoutBeats = true;
+    CHECK(describeTiming(facts).note ==
+          "the master's track has no beat grid, so it sends no beats");
 }

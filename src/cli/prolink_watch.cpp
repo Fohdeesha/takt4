@@ -166,9 +166,11 @@ std::string proLinkStatus(const Network::Snapshot& snapshot) {
     }
     std::size_t players = 0;
     std::size_t mixers = 0;
+    std::size_t leaders = 0;
     for (const Network::DeviceView& device : snapshot.devices) {
         players += device.kind == DeviceKind::Player ? 1u : 0u;
         mixers += device.kind == DeviceKind::Mixer ? 1u : 0u;
+        leaders += device.kind == DeviceKind::Player && device.canLead ? 1u : 0u;
     }
     line << "CDJs: " << players << (players == 1 ? " player" : " players");
     if (mixers != 0) {
@@ -188,9 +190,23 @@ std::string proLinkStatus(const Network::Snapshot& snapshot) {
     if (snapshot.followed != 0) {
         line << "; following " << static_cast<int>(snapshot.followed);
     } else if (snapshot.phase == VirtualPlayer::Phase::Joined) {
-        line << (snapshot.follow == VirtualPlayer::kFollowMaster
-                     ? "; no master, and no lone player playing, to follow"
-                     : "; player " + std::to_string(snapshot.follow) + " not heard");
+        if (snapshot.follow != VirtualPlayer::kFollowMaster) {
+            line << "; player " << static_cast<int>(snapshot.follow) << " not heard";
+        } else if (leaders >= 2) {
+            line << "; " << leaders << " decks playing and none is the master: --follow one";
+        } else {
+            line << (snapshot.onAirTold ? "; no deck playing on air to follow"
+                                        : "; no deck playing to follow");
+        }
+    }
+    if (!snapshot.note.empty()) {
+        line << "; " << snapshot.note;
+    }
+    if (snapshot.sendsFailing) {
+        line << "; sends failing, joining again";
+    }
+    if (snapshot.nothingHeard) {
+        line << "; nothing at all coming in (a firewall may be blocking takt4)";
     }
     return line.str();
 }
@@ -223,9 +239,15 @@ int runProLinkWatch(const std::vector<std::string_view>& args) {
     std::string lastStatus;
     std::vector<std::string> lastDevices;
     double listedAt = -10.0;
+    double cardCheckedAt = 0.0;
     std::int64_t firstBeat = 0;
     while (!Interrupts::requested() && !(parsed.seconds > 0.0 && elapsed() >= parsed.seconds)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        // The card joined on, looked for every few seconds (`Network::recheckCard`).
+        if (elapsed() - cardCheckedAt >= 5.0) {
+            cardCheckedAt = elapsed();
+            network.recheckCard();
+        }
         VirtualPlayer::Heard beat;
         while (network.popBeat(beat)) {
             if (firstBeat == 0) {

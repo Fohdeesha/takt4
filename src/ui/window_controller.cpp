@@ -3674,6 +3674,14 @@ void WindowController::retryControls(double now) {
             recheckMidiInputs(output::listMidiInputPorts());
         }
     }
+    // The card the CDJs were joined on, looked for on the machine: gone — a cable plugged back
+    // in, a new link-local address — and the network leaves and joins again on the card they are
+    // heard on now. From here, because listing the cards takes milliseconds, and the network's
+    // own thread stamps each beat as it reads it. Nothing is listed while it is not joined.
+    if (timing_ == Timing::ProLink && followed_.running() && now >= cdjCheckAt_) {
+        cdjCheckAt_ = now + controlRetrySeconds_;
+        cdjs_->recheckCard();
+    }
 }
 
 void WindowController::recheckMidiInputs(const std::vector<std::string>& listed) {
@@ -4412,24 +4420,8 @@ void WindowController::publishTiming() {
         }
     } else if (timing_ == Timing::ProLink) {
         const timing::prolink::Network::Snapshot cdjs = cdjs_->snapshot();
-        facts.cdjProblem = cdjs.problem;
-        for (const timing::prolink::Network::DeviceView& device : cdjs.devices) {
-            facts.cdjPlayers += device.kind == timing::prolink::DeviceKind::Player ? 1u : 0u;
-            facts.cdjMixers += device.kind == timing::prolink::DeviceKind::Mixer ? 1u : 0u;
-            if (device.number == cdjs.master && device.masterWithoutBeats) {
-                facts.cdjMasterWithoutBeats = true;
-            }
-        }
-        facts.cdjJoined = cdjs.phase == timing::prolink::VirtualPlayer::Phase::Joined;
-        facts.cdjNumber = cdjs.number;
-        facts.cdjMaster = cdjs.master;
-        facts.cdjFollowed = cdjs.followed;
+        readCdjFacts(cdjs, facts);
         facts.cdjFollow = cdjFollow_;
-        if (cdjs.interfaceIp != 0) {
-            facts.cdjInterface =
-                (cdjs.interfaceName.empty() ? std::string() : cdjs.interfaceName + " \xC2\xB7 ") +
-                timing::prolink::addressText(cdjs.interfaceIp);
-        }
         publishCdjFollowList(cdjs, false);
     }
     publishTimingView(*window_, describeTiming(facts));

@@ -28,19 +28,29 @@ namespace takt4::timing::prolink {
 ///     300 ms apart, as a player does. A device that already holds the number answers with a
 ///     conflict, and the next free one is tried; a device already on the network answers the final
 ///     stage with "assignment finished", which ends it there, as it ends a real player's. A mixer
-///     that says it will assign a number (its channel's port) is asked for one and obeyed.
+///     that says it will assign a number (its channel's port) is asked for one, once a join, and
+///     the number it gives taken only if it is one from 7 to 15 that nothing uses: a channel's port
+///     gives that channel's number, a deck's, and an XDJ-XZ answers every claim on its network port
+///     with "use that one", nought and its own decks' numbers included. Otherwise the number is
+///     claimed as anywhere else.
 ///   * **Joined** sends a keep-alive every `Options::keepAliveMicros`, and answers a device that
 ///     claims takt4's number with a conflict. Two takt4s that claim one number at once part on
 ///     their addresses: the lower keeps it.
 ///
-/// **Which device is followed**: the tempo master — the player whose status says so (or the
-/// mixer, when it is master), the most recent to take the role when two say so during a hand-off,
-/// and while nobody holds the role the one player playing, if only one is (`leader`) — or one
-/// player named by the operator (`setFollow`). Its beat packets are the beats
-/// (`heard`); every other device's are not. A beat a player sends while its status says it is
-/// cueing — the cue button held, a hot cue previewed while paused, a search — is the DJ's
-/// headphones, not the music, and is dropped (measured on two CDJ-2000nexus players: every cue
-/// press sends one, about 12 ms after the status that says so).
+/// **Which device is followed**: one player named by the operator (`setFollow`), or "the tempo
+/// master" (`leader`) — which is the master only while it leads the music. The role stays with a
+/// player that has stopped: a stopped master hands it on only to a deck that is both synced and
+/// playing, so a DJ who mixes by ear leaves it on the deck played first, paused, while the next
+/// one plays to the room (measured: a CDJ-2000nexus kept it through both its pauses). So the
+/// master — the player whose status says so, or the mixer, the most recent to take the role when
+/// two say so during a hand-off — is followed while it is playing a track with a beat grid, and
+/// on the air whenever a mixer is telling the players which of them are; otherwise the one player
+/// that is, the one already followed staying while it still is; otherwise nobody, and the beats
+/// coast. A followed device's beat packets are the beats (`heard`); every other device's are
+/// not. A beat a player sends while its status says it is cueing — the cue button held, a hot cue
+/// previewed while paused, a search — is the DJ's headphones, not the music, and is dropped
+/// (measured on two CDJ-2000nexus players: every cue press sends one, about 12 ms after the status
+/// that says so).
 class VirtualPlayer {
 public:
     struct Options {
@@ -108,6 +118,9 @@ public:
         std::uint32_t ip = 0;
         Mac mac{};
         DeviceKind kind = DeviceKind::Unknown;
+        /// The system's index of the card its last keep-alive came in on, or 0 where the system
+        /// does not say. What `Network` joins on, when two cards are on its network.
+        std::uint32_t via = 0;
         /// Its last keep-alive, its last status and its last beat, on the clock it was given.
         std::int64_t announcedAt = 0;
         bool hasStatus = false;
@@ -149,10 +162,11 @@ public:
     void setFollow(std::uint8_t follow) noexcept { follow_ = follow; }
     std::uint8_t follow() const noexcept { return follow_; }
 
-    /// A datagram that came to `channel` from `from` (host order) at `at`. Its own, looped back
-    /// by the network, are told apart by their address and ignored.
+    /// A datagram that came to `channel` from `from` (host order) at `at`, on the card the system
+    /// numbers `via` (0 where it does not say). Its own, looped back by the network, are told apart
+    /// by their address and ignored.
     void receive(Channel channel, std::span<const std::uint8_t> datagram, std::uint32_t from,
-                 std::int64_t at);
+                 std::int64_t at, std::uint32_t via = 0);
     /// Time moved on to `now`: the claim's next step, a keep-alive due, a device gone.
     void advance(std::int64_t now);
 
@@ -168,11 +182,20 @@ public:
     const Identity& identity() const noexcept { return identity_; }
     /// Every device heard and not gone, in the order first heard.
     const std::vector<Device>& devices() const noexcept { return devices_; }
-    /// The tempo master's number at `now`, or 0 when no fresh status says one is.
+    /// The tempo master's number at `now`, or 0 when no fresh status says one is — playing or not.
     std::uint8_t master(std::int64_t now) const noexcept;
-    /// What "the tempo master" follows: the master, or — while there is none — the one player
-    /// playing, if only one is. 0 when neither.
+    /// What "the tempo master" follows at `now`: the master while it can lead (`canLead`);
+    /// otherwise the one player that can, or — when more than one can — the one this last named,
+    /// if it still can. 0 when none.
     std::uint8_t leader(std::int64_t now) const noexcept;
+    /// Whether any player's fresh status at `now` says it is on the air: a mixer is telling them,
+    /// and a fader is up.
+    bool onAirTold(std::int64_t now) const noexcept;
+    /// Whether `device` could lead at `now`, its status fresh: a mixer, only as the master; a
+    /// player, playing — by its status, or by a beat sent since its last status — a track with a
+    /// beat grid that it can lead with (status Mm 02 says it cannot), not cueing, and on the air
+    /// when `onAir` (`onAirTold`) says the players are told.
+    bool canLead(const Device& device, std::int64_t now, bool onAir) const noexcept;
     /// The device whose beats are followed at `now`, or 0.
     std::uint8_t followed(std::int64_t now) const noexcept;
     /// Beats dropped as a player's cueing, and conflicts that cost a number, since construction.
@@ -183,12 +206,18 @@ private:
     Device* find(std::uint8_t number) noexcept;
     const Device* find(std::uint8_t number) const noexcept;
     Device& deviceFor(std::uint8_t number, std::int64_t at);
-    void announce(const AnnouncePacket& packet, std::uint32_t from, std::int64_t at);
+    bool fresh(const Device& device, std::int64_t now) const noexcept {
+        return device.hasStatus && now - device.statusAt <= options_.statusFreshMicros;
+    }
+    void announce(const AnnouncePacket& packet, std::uint32_t from, std::int64_t at,
+                  std::uint32_t via);
     void status(const StatusPacket& packet, std::int64_t at);
     void beat(const BeatPacket& packet, std::int64_t at);
     /// Claims the next number nothing uses, from the first stage — or says there is none.
     void claimNext(std::int64_t now);
     bool numberUsed(std::uint8_t number, std::int64_t now) const noexcept;
+    /// A number a mixer assigned can be taken: one from first to last that nothing uses.
+    bool assignable(std::uint8_t number, std::int64_t now) const noexcept;
     /// The number held or being claimed is someone else's: not tried again this join, and the
     /// claim begun afresh for another.
     void giveUpNumber(std::int64_t now) noexcept;
@@ -213,7 +242,12 @@ private:
     std::int64_t nextKeepAliveAt_ = 0;
     std::int64_t mixerDeadline_ = 0;
     std::uint32_t mixerIp_ = 0;
+    /// A mixer has been asked for a number since the join began: another's intention is not
+    /// answered, and the claim goes on as anywhere else.
+    bool mixerAsked_ = false;
     std::uint8_t follow_ = kFollowMaster;
+    /// What `leader` named at the last `advance`: kept while it still can lead and another can too.
+    std::uint8_t led_ = 0;
 
     std::vector<Device> devices_;
     /// Numbers other devices have been heard claiming, and when — avoided for a while even before

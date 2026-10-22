@@ -28,6 +28,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace takt4::testing::prolink_peer {
@@ -267,6 +268,39 @@ private:
 
 inline bool canUseSecondLoopbackAddress() {
     return LoopbackReceiver::canBind(kDevices);
+}
+
+/// Another address of this machine's, for a card whose address has changed.
+inline constexpr std::uint32_t kMoved = ipv4(127, 0, 0, 3);
+
+inline bool canUseThirdLoopbackAddress() {
+    return LoopbackReceiver::canBind(kMoved);
+}
+
+/// This machine's cards as a test changes them under a network that reads them on its own thread
+/// (`Network::Config::interfaces`).
+class Cards {
+public:
+    explicit Cards(std::vector<Interface> cards) : cards_(std::move(cards)) {}
+    void set(std::vector<Interface> cards) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        cards_ = std::move(cards);
+    }
+    std::vector<Interface> get() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return cards_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<Interface> cards_;
+};
+
+/// The loopback card at another address — its link-local address changed, say.
+inline std::vector<Interface> movedCard() {
+    std::vector<Interface> cards = loopbackCard();
+    cards[0].ip = kMoved;
+    return cards;
 }
 
 } // namespace takt4::testing::prolink_peer

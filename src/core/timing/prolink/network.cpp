@@ -1,6 +1,7 @@
 #include "core/timing/prolink/network.hpp"
 
 #include "core/net/udp.hpp"
+#include "core/rt/thread_priority.hpp"
 #include "core/sandbox.hpp"
 
 #include <algorithm>
@@ -15,11 +16,13 @@
 
 #if defined(_WIN32)
 #include <iphlpapi.h>
+#include <mswsock.h>
 #pragma comment(lib, "iphlpapi.lib")
 #else
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <sys/select.h>
+#include <sys/uio.h>
 #if defined(__APPLE__)
 #include <net/if_dl.h>
 #elif defined(__linux__)
@@ -123,6 +126,7 @@ std::vector<Interface> listInterfaces() {
             card.mask = maskOfPrefix(unicast->OnLinkPrefixLength);
             card.broadcast = card.ip | ~card.mask;
             card.mac = mac;
+            card.index = adapter->IfIndex;
             found.push_back(std::move(card));
         }
     }
@@ -138,6 +142,7 @@ std::vector<Interface> listInterfaces() {
         }
         Interface card;
         card.name = entry->ifa_name != nullptr ? entry->ifa_name : "";
+        card.index = entry->ifa_name != nullptr ? ::if_nametoindex(entry->ifa_name) : 0u;
         card.ip = ntohl(reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr);
         card.mask =
             entry->ifa_netmask != nullptr
@@ -184,6 +189,19 @@ std::optional<Interface> interfaceFor(const std::vector<Interface>& interfaces,
     return std::nullopt;
 }
 
+std::optional<Interface> cardFor(const std::vector<Interface>& interfaces, std::uint32_t address,
+                                 std::uint32_t via) {
+    if (via != 0) {
+        for (const Interface& card : interfaces) {
+            if (card.index == via && card.mask != 0 &&
+                (card.ip & card.mask) == (address & card.mask)) {
+                return card;
+            }
+        }
+    }
+    return interfaceFor(interfaces, address);
+}
+
 // --- the sockets -------------------------------------------------------------------------------
 
 struct Network::Sockets {
@@ -191,6 +209,11 @@ struct Network::Sockets {
     net::Socket announce = net::kInvalidSocket;
     net::Socket beat = net::kInvalidSocket;
     net::Socket status = net::kInvalidSocket;
+#if defined(_WIN32)
+    /// `WSARecvMsg`, which Windows hands out only through an ioctl on a socket: what reads the
+    /// card a datagram came in on. Null where it would not.
+    LPFN_WSARECVMSG receiveMessage = nullptr;
+#endif
 
     static void shut(net::Socket& socket) noexcept {
         if (socket != net::kInvalidSocket) {
@@ -203,9 +226,110 @@ struct Network::Sockets {
         shut(beat);
         shut(status);
     }
+
+    /// Asks the announcement socket to say which card each datagram it reads came in on. A
+    /// system that will not leaves the card unknown, which costs only the choice between two
+    /// cards on one network (`cardFor`).
+    void askWhichCard() noexcept {
+#if defined(_WIN32)
+        const DWORD on = 1;
+        (void)::setsockopt(announce, IPPROTO_IP, IP_PKTINFO, reinterpret_cast<const char*>(&on),
+                           sizeof on);
+        GUID id = WSAID_WSARECVMSG;
+        DWORD bytes = 0;
+        if (::WSAIoctl(announce, SIO_GET_EXTENSION_FUNCTION_POINTER, &id, sizeof id,
+                       &receiveMessage, sizeof receiveMessage, &bytes, nullptr, nullptr) != 0) {
+            receiveMessage = nullptr;
+        }
+#elif defined(IP_PKTINFO)
+        const int on = 1;
+        (void)::setsockopt(announce, IPPROTO_IP, IP_PKTINFO, &on, sizeof on);
+#endif
+    }
+
+    /// One datagram from `socket` into `buffer`, with its sender — and, from the announcement
+    /// socket, the system's index of the card it came in on in `via` (0 where the system does not
+    /// say). What `recvfrom` returns: the length, or below zero with the error to read.
+    long receive(net::Socket socket, std::span<std::uint8_t> buffer, sockaddr_in& from,
+                 std::uint32_t& via) noexcept {
+        via = 0;
+#if defined(_WIN32)
+        if (socket == announce && receiveMessage != nullptr) {
+            WSABUF data;
+            data.buf = reinterpret_cast<char*>(buffer.data());
+            data.len = static_cast<ULONG>(buffer.size());
+            alignas(WSACMSGHDR) char control[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))] = {};
+            WSAMSG message{};
+            message.name = reinterpret_cast<sockaddr*>(&from);
+            message.namelen = sizeof from;
+            message.lpBuffers = &data;
+            message.dwBufferCount = 1;
+            message.Control.buf = control;
+            message.Control.len = sizeof control;
+            DWORD received = 0;
+            if (receiveMessage(socket, &message, &received, nullptr, nullptr) != 0) {
+                return -1;
+            }
+            for (WSACMSGHDR* header = WSA_CMSG_FIRSTHDR(&message); header != nullptr;
+                 header = WSA_CMSG_NXTHDR(&message, header)) {
+                if (header->cmsg_level == IPPROTO_IP && header->cmsg_type == IP_PKTINFO) {
+                    IN_PKTINFO info{};
+                    std::memcpy(&info, WSA_CMSG_DATA(header), sizeof info);
+                    via = info.ipi_ifindex;
+                }
+            }
+            return static_cast<long>(received);
+        }
+        int length = sizeof from;
+        return ::recvfrom(socket, reinterpret_cast<char*>(buffer.data()),
+                          static_cast<int>(buffer.size()), 0, reinterpret_cast<sockaddr*>(&from),
+                          &length);
+#else
+#if defined(IP_PKTINFO)
+        if (socket == announce) {
+            iovec io{};
+            io.iov_base = buffer.data();
+            io.iov_len = buffer.size();
+            alignas(cmsghdr) char control[CMSG_SPACE(sizeof(in_pktinfo))] = {};
+            msghdr message{};
+            message.msg_name = &from;
+            message.msg_namelen = sizeof from;
+            message.msg_iov = &io;
+            message.msg_iovlen = 1;
+            message.msg_control = control;
+            message.msg_controllen = sizeof control;
+            const auto received = ::recvmsg(socket, &message, 0);
+            if (received < 0) {
+                return -1;
+            }
+            for (cmsghdr* header = CMSG_FIRSTHDR(&message); header != nullptr;
+                 header = CMSG_NXTHDR(&message, header)) {
+                if (header->cmsg_level == IPPROTO_IP && header->cmsg_type == IP_PKTINFO) {
+                    in_pktinfo info{};
+                    std::memcpy(&info, CMSG_DATA(header), sizeof info);
+                    via = static_cast<std::uint32_t>(info.ipi_ifindex);
+                }
+            }
+            return static_cast<long>(received);
+        }
+#endif
+        socklen_t length = sizeof from;
+        return static_cast<long>(::recvfrom(socket, buffer.data(), buffer.size(), 0,
+                                            reinterpret_cast<sockaddr*>(&from), &length));
+#endif
+    }
 };
 
 namespace {
+
+/// "Ethernet 2 · 169.254.3.4", for the screen.
+std::string cardText(const Interface& card) {
+    return (card.name.empty() ? std::string() : card.name + " \xC2\xB7 ") + addressText(card.ip);
+}
+
+std::string noPickedCard(std::uint32_t wanted) {
+    return "no network card here has the address " + addressText(wanted) + " picked for the CDJs";
+}
 
 /// A non-blocking datagram socket bound to `ip`:`port`, allowed to broadcast — or invalid, with
 /// why. Not shared with anyone: a port another program holds is that program's.
@@ -262,6 +386,11 @@ void Network::setProblem(std::string problem) {
     snapshot_.problem = std::move(problem);
 }
 
+void Network::setNote(std::string note) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.note = std::move(note);
+}
+
 void Network::setInterface(std::optional<std::uint32_t> address) {
     const std::lock_guard<std::mutex> lock(mutex_);
     interfaceWanted_ = address;
@@ -286,11 +415,17 @@ bool Network::open(std::string& problem) {
         setProblem(problem);
         return false;
     }
+    sockets_->askWhichCard();
     player_ = VirtualPlayer(config_.player);
-    player_.listen(config_.clock());
+    openedAt_ = config_.clock();
+    player_.listen(openedAt_);
     interface_.reset();
     joinedSockets_ = false;
-    beatsHeard_ = beatsDropped_ = datagramsRead_ = sendsFailed_ = 0;
+    joinedIp_.store(0, std::memory_order_release);
+    rejoinWanted_.store(false, std::memory_order_release);
+    threadRaised_.store(false, std::memory_order_release);
+    beatsHeard_ = beatsDropped_ = datagramsRead_ = sendsFailed_ = rejoins_ = 0;
+    failedInARow_ = 0;
     publishedAt_ = 0;
     retryAt_ = 0;
     joinFailed_ = false;
@@ -298,6 +433,7 @@ bool Network::open(std::string& problem) {
     while (beats_.tryPop(stale)) {
     }
     setProblem({});
+    setNote({});
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run(); });
     return true;
@@ -310,9 +446,22 @@ void Network::close() noexcept {
     }
     sockets_.reset();
     joinedSockets_ = false;
+    joinedIp_.store(0, std::memory_order_release);
     interface_.reset();
     const std::lock_guard<std::mutex> lock(mutex_);
     snapshot_ = Snapshot{};
+}
+
+void Network::recheckCard() {
+    const std::uint32_t joined = joinedIp_.load(std::memory_order_acquire);
+    if (joined == 0) {
+        return;
+    }
+    const std::vector<Interface> cards = config_.interfaces();
+    if (std::none_of(cards.begin(), cards.end(),
+                     [joined](const Interface& card) { return card.ip == joined; })) {
+        rejoinWanted_.store(true, std::memory_order_release);
+    }
 }
 
 Network::Snapshot Network::snapshot() const {
@@ -321,6 +470,12 @@ Network::Snapshot Network::snapshot() const {
 }
 
 void Network::run() noexcept {
+    // Each datagram is stamped as it is read, and a beat's stamp is the beat: a late wake-up is a
+    // late beat, as a late round of the output thread is a late cue. On a busy machine one at an
+    // ordinary priority woke after the follower had stopped waiting for it, and a hot cue's
+    // downbeat went out as the bar the grid expected.
+    const rt::PriorityScope priority(rt::ThreadWork::Output);
+    threadRaised_.store(priority.raised(), std::memory_order_release);
     try {
         while (running_.load(std::memory_order_acquire)) {
             round();
@@ -345,14 +500,8 @@ void Network::readAll(int which, std::int64_t& now) {
     std::array<std::uint8_t, 2048> buffer{};
     for (int i = 0; i < kMaxReadsPerRound; ++i) {
         sockaddr_in from{};
-        socklen_t fromLength = sizeof from;
-#if defined(_WIN32)
-        const int capacity = static_cast<int>(buffer.size());
-#else
-        const std::size_t capacity = buffer.size();
-#endif
-        const auto received = ::recvfrom(socket, reinterpret_cast<char*>(buffer.data()), capacity,
-                                         0, reinterpret_cast<sockaddr*>(&from), &fromLength);
+        std::uint32_t via = 0;
+        const long received = sockets_->receive(socket, buffer, from, via);
         if (received < 0 && lastErrorIsReset()) {
             continue; // an earlier send's refusal, reported here: not this datagram
         }
@@ -365,12 +514,12 @@ void Network::readAll(int which, std::int64_t& now) {
         player_.receive(
             channel,
             std::span<const std::uint8_t>(buffer.data(), static_cast<std::size_t>(received)),
-            ntohl(from.sin_addr.s_addr), now);
+            ntohl(from.sin_addr.s_addr), now, via);
     }
 }
 
 bool Network::openJoined(std::int64_t now) {
-    // The card: the one asked for, or the one the first device heard is on.
+    // The card: the one asked for, or the one the first device heard came in on.
     std::optional<std::uint32_t> wanted;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -378,25 +527,35 @@ bool Network::openJoined(std::int64_t now) {
     }
     const std::vector<Interface> cards = config_.interfaces();
     std::optional<Interface> card;
+    std::string note;
     if (wanted) {
         const auto match = std::find_if(cards.begin(), cards.end(),
                                         [&](const Interface& c) { return c.ip == *wanted; });
-        if (match == cards.end()) {
-            setProblem("no network card here has the address " + addressText(*wanted) +
-                       " picked for the CDJs");
-            return false;
+        if (match != cards.end()) {
+            card = *match;
         }
-        card = *match;
-    } else {
+    }
+    if (!card) {
         const std::vector<VirtualPlayer::Device>& devices = player_.devices();
         if (devices.empty()) {
-            return false; // nothing heard yet to join: waited for, said by the snapshot
-        }
-        card = interfaceFor(cards, devices.front().ip);
-        if (!card) {
-            setProblem("no network card here is on the CDJs' network (" +
-                       addressText(devices.front().ip) + ")");
+            // Nothing heard yet to join: waited for, said by the snapshot.
+            if (wanted) {
+                setProblem(noPickedCard(*wanted));
+            }
             return false;
+        }
+        card = cardFor(cards, devices.front().ip, devices.front().via);
+        if (!card) {
+            setProblem(wanted ? noPickedCard(*wanted)
+                              : "no network card here is on the CDJs' network (" +
+                                    addressText(devices.front().ip) + ")");
+            return false;
+        }
+        if (wanted) {
+            // The card picked has gone — its link-local address changed, the cable is in another
+            // port: joined where the CDJs are heard instead, and said, rather than not at all.
+            note = "the card picked for the CDJs, " + addressText(*wanted) +
+                   ", is not on this computer \xE2\x80\x94 joined on " + cardText(*card);
         }
     }
     std::string why;
@@ -411,6 +570,7 @@ bool Network::openJoined(std::int64_t now) {
         return false;
     }
     interface_ = card;
+    joinedIp_.store(card->ip, std::memory_order_release);
     VirtualPlayer::Identity identity;
     identity.ip = card->ip;
     identity.broadcast = card->broadcast;
@@ -418,6 +578,7 @@ bool Network::openJoined(std::int64_t now) {
     player_.join(identity, now);
     joinedSockets_ = true;
     setProblem({});
+    setNote(std::move(note));
     return true;
 }
 
@@ -427,6 +588,16 @@ void Network::closeJoined() noexcept {
         Sockets::shut(sockets_->status);
     }
     joinedSockets_ = false;
+    joinedIp_.store(0, std::memory_order_release);
+}
+
+void Network::rejoin() {
+    player_.leave();
+    closeJoined();
+    interface_.reset();
+    retryAt_ = 0;
+    failedInARow_ = 0;
+    ++rejoins_;
 }
 
 void Network::sendOutbox() {
@@ -441,21 +612,35 @@ void Network::sendOutbox() {
         v4.sin_addr.s_addr = htonl(datagram.to);
         std::memcpy(&to, &v4, sizeof v4);
         if (!net::sandboxLets(to)) {
+            failedInARow_ = 0;
             continue; // dropped in the test binaries' sandbox, and taken as sent
         }
-        const std::span<const std::uint8_t> bytes = datagram.packet.view();
+        bool failed = config_.sendHook && !config_.sendHook(datagram);
+        if (!failed) {
+            const std::span<const std::uint8_t> bytes = datagram.packet.view();
 #if defined(_WIN32)
-        const int length = static_cast<int>(bytes.size());
+            const int length = static_cast<int>(bytes.size());
 #else
-        const std::size_t length = bytes.size();
+            const std::size_t length = bytes.size();
 #endif
-        const auto sent = ::sendto(from, reinterpret_cast<const char*>(bytes.data()), length, 0,
-                                   reinterpret_cast<const sockaddr*>(&v4), sizeof v4);
-        if (sent < 0) {
+            const auto sent = ::sendto(from, reinterpret_cast<const char*>(bytes.data()), length, 0,
+                                       reinterpret_cast<const sockaddr*>(&v4), sizeof v4);
+            failed = sent < 0;
+        }
+        if (failed) {
             ++sendsFailed_;
+            ++failedInARow_;
+        } else {
+            failedInARow_ = 0;
         }
     }
     outbox.clear();
+    // Three in a row, joined — keep-alives every second and a half, so some four seconds — and the
+    // address they go from is most likely gone: the players stop hearing takt4 and stop sending
+    // it their status. Joined again, on whichever card the devices are on now.
+    if (failedInARow_ >= kRejoinAfterFailures && player_.joined()) {
+        rejoinWanted_.store(true, std::memory_order_release);
+    }
 }
 
 void Network::round() {
@@ -491,6 +676,11 @@ void Network::round() {
         }
     }
 
+    // The card gone from under the join (`recheckCard`), or the sends failing: left, and joined
+    // again just below.
+    if (rejoinWanted_.exchange(false, std::memory_order_acq_rel) && joinedSockets_) {
+        rejoin();
+    }
     // The join asked for, on this thread.
     const bool wanted = wantJoined_.load(std::memory_order_acquire);
     if (wanted && !joinedSockets_) {
@@ -503,6 +693,7 @@ void Network::round() {
         player_.leave();
         closeJoined();
         interface_.reset();
+        setNote({});
     }
     // Why a join could not be made is said for as long as it is wanted, and no longer.
     if (!wanted && joinFailed_) {
@@ -539,6 +730,7 @@ void Network::publish(std::int64_t now) {
     made.master = player_.master(now);
     made.followed = player_.followed(now);
     made.follow = player_.follow();
+    made.onAirTold = player_.onAirTold(now);
     for (const VirtualPlayer::Device& device : player_.devices()) {
         DeviceView view;
         view.number = device.number;
@@ -556,6 +748,7 @@ void Network::publish(std::int64_t now) {
                                       device.status.masterMeaningful == 2;
             view.bpm = device.status.bpm();
         }
+        view.canLead = player_.canLead(device, now, made.onAirTold);
         view.beating = device.heardBeat && now - device.beatAt <= kBeatingMicros;
         made.devices.push_back(std::move(view));
     }
@@ -571,8 +764,12 @@ void Network::publish(std::int64_t now) {
     made.numbersLost = player_.numbersLost();
     made.datagramsRead = datagramsRead_;
     made.sendsFailed = sendsFailed_;
+    made.nothingHeard = datagramsRead_ == 0 && now - openedAt_ >= config_.quietMicros;
+    made.sendsFailing = failedInARow_ > 0;
+    made.rejoins = rejoins_;
     const std::lock_guard<std::mutex> lock(mutex_);
     made.problem = std::move(snapshot_.problem);
+    made.note = std::move(snapshot_.note);
     snapshot_ = std::move(made);
 }
 

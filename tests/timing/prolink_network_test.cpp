@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -220,6 +221,226 @@ TEST_CASE("with no card on the CDJs' network, joining says so, and with one pick
                    "no network card here has the address 10.9.9.9 picked for the CDJs";
         },
         2s));
+    rig.stop();
+}
+
+TEST_CASE("of two cards on a device's network, the one it was heard on is the one to answer it "
+          "from; the first, where the system does not say which",
+          "[prolink]") {
+    // A laptop's cable to the CDJs and a virtual adapter, both link-local: only the cable reaches
+    // them, and the virtual one is listed first.
+    Interface virtualCard;
+    virtualCard.name = "Npcap Loopback Adapter";
+    virtualCard.ip = ipv4(169, 254, 99, 1);
+    virtualCard.mask = 0xffff0000u;
+    virtualCard.index = 30;
+    Interface wifi;
+    wifi.name = "Wi-Fi";
+    wifi.ip = ipv4(192, 168, 1, 20);
+    wifi.mask = 0xffffff00u;
+    wifi.index = 7;
+    Interface cable;
+    cable.name = "Ethernet";
+    cable.ip = ipv4(169, 254, 20, 7);
+    cable.mask = 0xffff0000u;
+    cable.index = 12;
+    const std::vector<Interface> cards{virtualCard, wifi, cable};
+    const std::uint32_t cdj = ipv4(169, 254, 103, 172);
+    CHECK(cardFor(cards, cdj, 12)->ip == cable.ip);
+    // Not said, or said to be a card not on its network: the first that is.
+    CHECK(cardFor(cards, cdj, 0)->ip == virtualCard.ip);
+    CHECK(cardFor(cards, cdj, 7)->ip == virtualCard.ip);
+    CHECK(cardFor(cards, ipv4(192, 168, 1, 50), 7)->ip == wifi.ip);
+    CHECK_FALSE(cardFor(cards, ipv4(10, 0, 0, 5), 12).has_value());
+}
+
+TEST_CASE("on sockets, of two cards on the devices' network, the one their keep-alives came in on "
+          "is joined, though the other is listed first",
+          "[prolink][slow]") {
+    if (!canUseSecondLoopbackAddress() || !canUseThirdLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2 or 127.0.0.3");
+    }
+    // The loopback's own number, as the system gives it: what a datagram read on it is said to
+    // have come in on.
+    std::uint32_t loopback = 0;
+    for (const Interface& card : listInterfaces()) {
+        loopback = card.ip == kHere ? card.index : loopback;
+    }
+    if (loopback == 0) {
+        SKIP("this system lists its loopback with no number");
+    }
+    SimulatedRig rig;
+    Network::Config config = testConfig(rig.announcePort(), steadyMicros);
+    config.interfaces = [loopback] {
+        std::vector<Interface> cards = movedCard();
+        cards[0].name = "another card on the network";
+        cards[0].index = loopback + 1000;
+        Interface here = loopbackCard()[0];
+        here.index = loopback;
+        cards.push_back(here);
+        return cards;
+    };
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    rig.start(config);
+    REQUIRE(eventually([&] { return network.snapshot().devices.size() == 2; }, 3s));
+    network.join();
+    REQUIRE(
+        eventually([&] { return network.snapshot().phase == VirtualPlayer::Phase::Joined; }, 4s));
+    CHECK(network.snapshot().interfaceIp == kHere);
+    CHECK(network.snapshot().interfaceName == "loopback");
+    rig.stop();
+}
+
+TEST_CASE("joined, the card's address gone, as a cable plugged back in or a new link-local address "
+          "leaves it, the network leaves and joins again on the card the devices are heard on now",
+          "[prolink][slow]") {
+    if (!canUseSecondLoopbackAddress() || !canUseThirdLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2 or 127.0.0.3");
+    }
+    SimulatedRig rig;
+    Network::Config config = testConfig(rig.announcePort(), steadyMicros);
+    const auto cards = std::make_shared<Cards>(loopbackCard());
+    config.interfaces = [cards] { return cards->get(); };
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    rig.start(config);
+    REQUIRE(eventually([&] { return network.snapshot().devices.size() == 2; }, 3s));
+    network.join();
+    REQUIRE(
+        eventually([&] { return network.snapshot().phase == VirtualPlayer::Phase::Joined; }, 4s));
+    REQUIRE(network.snapshot().interfaceIp == kHere);
+    // Looked for and still there: nothing changes.
+    network.recheckCard();
+    std::this_thread::sleep_for(150ms);
+    CHECK(network.snapshot().rejoins == 0);
+    CHECK(network.snapshot().phase == VirtualPlayer::Phase::Joined);
+
+    // The card's address changes under the join.
+    cards->set(movedCard());
+    network.recheckCard();
+    REQUIRE(eventually(
+        [&] {
+            const Network::Snapshot s = network.snapshot();
+            return s.rejoins == 1 && s.interfaceIp == kMoved &&
+                   s.phase == VirtualPlayer::Phase::Joined;
+        },
+        4s));
+    // Its keep-alives now come from the new address, and say it.
+    bool heardFromMoved = false;
+    const auto until = std::chrono::steady_clock::now() + 2s;
+    while (!heardFromMoved && std::chrono::steady_clock::now() < until) {
+        std::uint32_t from = 0;
+        const auto datagram = rig.announceSocket().receive(100, &from);
+        AnnouncePacket packet;
+        heardFromMoved = datagram && parseAnnounce(*datagram, packet) && from == kMoved &&
+                         packet.type == Announce::KeepAlive && packet.ip == kMoved;
+    }
+    CHECK(heardFromMoved);
+    CHECK(network.snapshot().rejoins == 1);
+    rig.stop();
+}
+
+TEST_CASE("joined, three sends in a row failing are said, and the network leaves and joins again; "
+          "sending again, it stays joined",
+          "[prolink][slow]") {
+    if (!canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    SimulatedRig rig;
+    Network::Config config = testConfig(rig.announcePort(), steadyMicros);
+    const auto failing = std::make_shared<std::atomic<bool>>(false);
+    config.sendHook = [failing](const VirtualPlayer::Datagram&) { return !failing->load(); };
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    rig.start(config);
+    REQUIRE(eventually([&] { return network.snapshot().devices.size() == 2; }, 3s));
+    network.join();
+    REQUIRE(
+        eventually([&] { return network.snapshot().phase == VirtualPlayer::Phase::Joined; }, 4s));
+    CHECK_FALSE(network.snapshot().sendsFailing);
+
+    failing->store(true);
+    CHECK(eventually([&] { return network.snapshot().sendsFailing; }, 2s));
+    CHECK(eventually([&] { return network.snapshot().rejoins >= 1; }, 2s));
+    failing->store(false);
+    CHECK(eventually(
+        [&] {
+            const Network::Snapshot s = network.snapshot();
+            return s.phase == VirtualPlayer::Phase::Joined && !s.sendsFailing;
+        },
+        3s));
+    const std::uint64_t rejoins = network.snapshot().rejoins;
+    std::this_thread::sleep_for(600ms); // six keep-alives at the test's pace
+    CHECK(network.snapshot().rejoins == rejoins);
+    CHECK(network.snapshot().phase == VirtualPlayer::Phase::Joined);
+    CHECK(network.snapshot().sendsFailed > 0);
+    rig.stop();
+}
+
+TEST_CASE(
+    "open with not one datagram read for a while, the network says so, as a firewall dropping "
+    "everything would leave it, and once one is read, no longer",
+    "[prolink][slow]") {
+    if (!canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    SimulatedRig rig;
+    Network::Config config = testConfig(rig.announcePort(), steadyMicros);
+    config.quietMicros = 300'000;
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    CHECK(eventually([&] { return network.snapshot().nothingHeard; }, 2s));
+    CHECK(network.snapshot().datagramsRead == 0);
+    rig.start(config);
+    CHECK(eventually(
+        [&] {
+            const Network::Snapshot s = network.snapshot();
+            return !s.nothingHeard && s.datagramsRead > 0;
+        },
+        2s));
+    rig.stop();
+}
+
+TEST_CASE("the CDJ network's thread asks to run ahead: it stamps each beat as it reads it",
+          "[prolink]") {
+    Network network(testConfig(allowedPort(), steadyMicros));
+    std::string problem;
+    REQUIRE(network.open(problem));
+    (void)eventually([&] { return network.threadRaised(); }, 2s);
+#if defined(_WIN32)
+    CHECK(network.threadRaised());
+#endif
+    network.close();
+}
+
+TEST_CASE("a card picked for the CDJs that is not on this computer: joined on the card they are "
+          "heard on instead, and said until it leaves",
+          "[prolink][slow]") {
+    if (!canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    SimulatedRig rig;
+    Network::Config config = testConfig(rig.announcePort(), steadyMicros);
+    config.interfaceAddress = ipv4(10, 9, 9, 9);
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    rig.start(config);
+    REQUIRE(eventually([&] { return network.snapshot().devices.size() == 2; }, 3s));
+    network.join();
+    REQUIRE(
+        eventually([&] { return network.snapshot().phase == VirtualPlayer::Phase::Joined; }, 4s));
+    CHECK(network.snapshot().interfaceIp == kHere);
+    CHECK(network.snapshot().problem.empty());
+    CHECK(network.snapshot().note == "the card picked for the CDJs, 10.9.9.9, is not on this "
+                                     "computer \xE2\x80\x94 joined on loopback \xC2\xB7 127.0.0.1");
+    network.leave();
+    CHECK(eventually([&] { return network.snapshot().note.empty(); }, 1s));
     rig.stop();
 }
 

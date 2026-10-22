@@ -136,7 +136,14 @@ struct StatusPacket {
     bool playing() const noexcept { return (flags & 0x40) != 0; }
     bool master() const noexcept { return (flags & 0x20) != 0; }
     bool synced() const noexcept { return (flags & 0x10) != 0; }
+    /// Its channel can be heard in the mix. Only a mixer that tells the players so sets it (a DJM
+    /// with Pro DJ Link): with none, every player reads it clear; with one, a player reads it set
+    /// whenever its fader is up, playing or not (both seen in the captures).
     bool onAir() const noexcept { return (flags & 0x08) != 0; }
+    /// A player with a track rekordbox has analysed, which is what it sends beats for. The beat
+    /// counter reads ffffffff with no track, a track not analysed or a CD, and always on a player
+    /// older than the nexus.
+    bool beatGrid() const noexcept { return !mixer && beat != 0xffffffffu; }
     /// Playing with the cue button held, scratching at the cue, or searching: what a player says
     /// while its beats are a preview in the DJ's headphones, not the music.
     bool cueing() const noexcept { return !mixer && playMode >= 0x07 && playMode <= 0x09; }

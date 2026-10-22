@@ -808,6 +808,8 @@ private:
     /// When the MIDI inputs listened to are next looked for on the machine (`recheckMidiInputs`),
     /// on `nowSeconds()`'s clock.
     double inputsCheckAt_ = 0.0;
+    /// When the card the CDJs were joined on is next looked for (`Network::recheckCard`).
+    double cdjCheckAt_ = 0.0;
     /// Why each output reaches nothing, by `OutputTarget::id` — what each row says under itself.
     /// From the runner's snapshot, the lost MIDI devices, and a Link peer list that could not
     /// listen (`linkPeersProblem_`). See `publishRowProblems`.

@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -315,8 +316,8 @@ TEST_CASE("a player already on the network cuts the final stage short with assig
     CHECK(keepAlives[0].packet.device == 7);
 }
 
-TEST_CASE("a mixer that says it will assign the number is asked for one, and its number is "
-          "taken",
+TEST_CASE("a mixer that says it will assign the number is asked for one, and a number from 7 to "
+          "15 that nothing uses is taken",
           "[prolink]") {
     const std::uint32_t mixer = ipv4(169, 254, 1, 33);
     const Mac mixerMac{0x00, 0xe0, 0x36, 0x00, 0x00, 0x21};
@@ -342,19 +343,96 @@ TEST_CASE("a mixer that says it will assign the number is asked for one, and its
     rig.feed(Channel::Announce, sim::assignment(5), ipv4(169, 254, 1, 77));
     CHECK(rig.player.phase() == VirtualPlayer::Phase::AwaitingMixer);
 
-    rig.feed(Channel::Announce, sim::assignment(3), mixer);
-    CHECK(rig.player.number() == 3);
+    rig.feed(Channel::Announce, sim::assignment(9), mixer);
+    CHECK(rig.player.number() == 9);
     rig.runTo(rig.now + 1 * kMs);
     REQUIRE_FALSE(rig.sentOf(Announce::FinalClaim).empty());
-    CHECK(rig.sentOf(Announce::FinalClaim)[0].packet.device == 3);
+    CHECK(rig.sentOf(Announce::FinalClaim)[0].packet.device == 9);
     CHECK(rig.sentOf(Announce::FinalClaim)[0].packet.counter == 1);
     rig.feed(Channel::Announce, sim::assignmentFinished(33), mixer);
     CHECK(rig.player.joined());
     rig.runTo(rig.now + 4000 * kMs);
     for (const Sent& k : rig.sentOf(Announce::KeepAlive)) {
-        CHECK(k.packet.device == 3);
+        CHECK(k.packet.device == 9);
     }
     CHECK(rig.sentOf(Announce::FinalClaim).size() == 1);
+}
+
+TEST_CASE("a number a mixer assigns that takt4 may not hold, a deck's, nought, one in use or one "
+          "past 15, is not taken, and the number is claimed as anywhere else at once",
+          "[prolink]") {
+    // A channel's port gives that channel's number, a deck's 1 to 4, which takt4 would then
+    // defend against the deck; an XDJ-XZ hands back whatever was asked for, nought included.
+    const std::uint32_t mixer = ipv4(169, 254, 1, 33);
+    const Mac mixerMac{0x00, 0xe0, 0x36, 0x00, 0x00, 0x21};
+    for (const std::uint8_t assigned :
+         {std::uint8_t{3}, std::uint8_t{0}, std::uint8_t{8}, std::uint8_t{16}}) {
+        INFO("assigned " << int(assigned));
+        Rig rig;
+        rig.player.listen(0);
+        rig.feed(Channel::Announce, sim::keepAlive(33, mixer, mixerMac, 2), mixer);
+        rig.keepAlive(player(8, 18)); // 8 is in use
+        rig.player.join(identity(), rig.now);
+        while (rig.sentOf(Announce::FirstClaim).empty()) {
+            rig.runTo(rig.now + kMs);
+        }
+        rig.keepAlive(player(8, 18));
+        rig.feed(Channel::Announce, sim::assignmentIntention(mixer, mixerMac), mixer);
+        REQUIRE(rig.player.phase() == VirtualPlayer::Phase::AwaitingMixer);
+        const std::int64_t assignedAt = rig.now;
+        rig.feed(Channel::Announce, sim::assignment(assigned), mixer);
+        CHECK(rig.player.phase() == VirtualPlayer::Phase::SecondClaim);
+        CHECK(rig.player.number() == 7);
+        for (std::int64_t t = 1000; t <= 6000; t += 1000) {
+            rig.runTo(assignedAt + t * kMs);
+            rig.keepAlive(player(8, 18));
+        }
+        REQUIRE(rig.player.joined());
+        CHECK(rig.player.number() == 7);
+        // Claimed from the moment of the refusal, not a second later.
+        const std::vector<Sent> claims = rig.sentOf(Announce::SecondClaim);
+        REQUIRE(claims.size() == 4); // the request to the mixer, then three for 7
+        CHECK(claims[1].at == assignedAt);
+        CHECK(claims[1].packet.device == 7);
+    }
+}
+
+TEST_CASE("an XDJ-XZ that answers every claim on its network port with an intention to assign is "
+          "asked for a number once a join, and takt4 claims 7 as anywhere else",
+          "[prolink]") {
+    // On its network port the XZ tells a device claiming a number to go ahead and use it, nought
+    // and its own decks' numbers included, and never sends "assignment finished". Answering
+    // every intention with a request, takt4 went back to waiting for the mixer for ever.
+    const std::uint32_t xz = ipv4(169, 254, 1, 33);
+    const Mac xzMac{0x00, 0xe0, 0x36, 0x00, 0x00, 0x21};
+    Rig rig;
+    rig.player.listen(0);
+    rig.feed(Channel::Announce, sim::keepAlive(33, xz, xzMac, 2, 3, "XDJ-XZ"), xz);
+    rig.keepAlive(player(1, 11));
+    rig.keepAlive(player(2, 12));
+    rig.player.join(identity(), rig.now);
+    std::size_t answered = 0;
+    std::size_t requests = 0;
+    const std::int64_t until = rig.now + 20'000 * kMs;
+    while (rig.now < until && !rig.player.joined()) {
+        rig.runTo(rig.now + 10 * kMs);
+        // Every claim of takt4's since the last look, answered as the XZ answers it.
+        while (answered < rig.sent.size()) {
+            const Sent& s = rig.sent[answered++];
+            if (s.packet.type == Announce::FirstClaim || s.packet.type == Announce::SecondClaim) {
+                requests += s.packet.fromMixerPort ? 1u : 0u;
+                rig.feed(Channel::Announce, sim::assignmentIntention(xz, xzMac, "XDJ-XZ"), xz);
+            }
+        }
+        if ((rig.now / kMs) % 1000 == 0) {
+            rig.keepAlive(player(1, 11));
+            rig.keepAlive(player(2, 12));
+        }
+    }
+    REQUIRE(rig.player.joined());
+    CHECK(rig.player.number() == 7);
+    CHECK(requests == 1);
+    CHECK(rig.now < 12'000 * kMs);
 }
 
 TEST_CASE("a mixer that says it will assign a number and does not is waited for a second, then "
@@ -568,37 +646,44 @@ TEST_CASE("the master's beats are the ones heard, every one at the moment it cam
           "press's are dropped, as two CDJ-2000nexus players send them",
           "[prolink]") {
     const std::vector<Captured> datagrams = loadCapture("load-and-play.txt");
-    VirtualPlayer player;
-    player.listen(0);
-    std::vector<VirtualPlayer::Heard> heard;
-    std::vector<std::int64_t> cueBeatTimes;
-    std::uint8_t lastPlayMode = 0;
-    replay(player, datagrams, [&](const Captured& c) {
-        if (c.port == 50002 && c.bytes[0x21] == 1) {
-            lastPlayMode = c.bytes[0x7b];
-        }
-        if (c.port == 50001 && lastPlayMode == 0x07) {
-            cueBeatTimes.push_back(c.micros());
-        }
-        for (const VirtualPlayer::Heard& h : player.heard()) {
-            heard.push_back(h);
-            CHECK(h.at == c.micros()); // stamped with when it came, nothing else
-        }
-        player.heard().clear();
-    });
-    // Four beats came while the cue button was held over the paused track; every other is heard —
-    // the very first too, which a CDJ-2000nexus sends 50 ms before its status says it is master.
-    CHECK(cueBeatTimes.size() == 4);
-    CHECK(player.cueBeatsDropped() == 4);
-    CHECK(heard.size() == 93 - 4);
-    for (const VirtualPlayer::Heard& h : heard) {
-        CHECK(h.device == 1);
-        CHECK(h.bpm > 127.98);
-        CHECK(h.bpm < 127.99);
-        CHECK(h.beatInBar >= 1);
-        CHECK(h.beatInBar <= 4);
-        for (const std::int64_t cue : cueBeatTimes) {
-            CHECK(h.at != cue);
+    // Following the tempo master, and following player 1 by its number: the same beats either way.
+    for (const std::uint8_t follow : {VirtualPlayer::kFollowMaster, std::uint8_t{1}}) {
+        INFO("following " << int(follow));
+        VirtualPlayer player;
+        player.listen(0);
+        player.setFollow(follow);
+        std::vector<VirtualPlayer::Heard> heard;
+        std::vector<std::int64_t> cueBeatTimes;
+        std::uint8_t lastPlayMode = 0;
+        replay(player, datagrams, [&](const Captured& c) {
+            if (c.port == 50002 && c.bytes[0x21] == 1) {
+                lastPlayMode = c.bytes[0x7b];
+            }
+            if (c.port == 50001 && lastPlayMode == 0x07) {
+                cueBeatTimes.push_back(c.micros());
+            }
+            for (const VirtualPlayer::Heard& h : player.heard()) {
+                heard.push_back(h);
+                CHECK(h.at == c.micros()); // stamped with when it came, nothing else
+            }
+            player.heard().clear();
+        });
+        // Four beats came while the cue button was held over the paused track; every other is
+        // heard — the very first too, which a CDJ-2000nexus sends 50 ms before its status says it
+        // is master. A paused master leads nothing, so following the master its cue presses are
+        // not the followed deck's at all; following player 1, they are dropped as its cueing.
+        CHECK(cueBeatTimes.size() == 4);
+        CHECK(player.cueBeatsDropped() == (follow == 1 ? 4u : 0u));
+        CHECK(heard.size() == 93 - 4);
+        for (const VirtualPlayer::Heard& h : heard) {
+            CHECK(h.device == 1);
+            CHECK(h.bpm > 127.98);
+            CHECK(h.bpm < 127.99);
+            CHECK(h.beatInBar >= 1);
+            CHECK(h.beatInBar <= 4);
+            for (const std::int64_t cue : cueBeatTimes) {
+                CHECK(h.at != cue);
+            }
         }
     }
 }
@@ -636,28 +721,212 @@ TEST_CASE("following one player, only that player's beats are heard, master or n
     CHECK(rig.player.heard()[0].device == 2);
 }
 
-TEST_CASE("with no master and one player playing, its beats are followed; with two playing, "
-          "nobody's",
+TEST_CASE("with no master and one player playing, its beats are followed; a second deck playing "
+          "leaves the first followed until it stops, and two that start together are nobody's "
+          "until one stops",
           "[prolink]") {
-    Rig rig;
-    rig.player.listen(0);
+    const std::uint32_t two = ipv4(169, 254, 1, 12);
+    const std::uint32_t three = ipv4(169, 254, 1, 13);
     sim::PlayerState playing;
     playing.flags = sim::kPlaying;
     playing.playMode = sim::kModePlaying;
-    rig.feed(Channel::Status, sim::playerStatus(2, playing), ipv4(169, 254, 1, 12));
-    rig.feed(Channel::Beat, sim::beat(2, 128.0, 1), ipv4(169, 254, 1, 12));
+    const sim::PlayerState paused;
+    Rig rig;
+    rig.player.listen(0);
+    rig.feed(Channel::Status, sim::playerStatus(2, playing), two);
+    rig.feed(Channel::Beat, sim::beat(2, 128.0, 1), two);
     CHECK(rig.player.master(rig.now) == 0);
     CHECK(rig.player.leader(rig.now) == 2);
     CHECK(rig.player.heard().size() == 1);
-    rig.feed(Channel::Status, sim::playerStatus(3, playing), ipv4(169, 254, 1, 13));
-    CHECK(rig.player.leader(rig.now) == 0);
-    rig.feed(Channel::Beat, sim::beat(2, 128.0, 2), ipv4(169, 254, 1, 12));
-    CHECK(rig.player.heard().size() == 1);
+    // Deck 3 brought in by ear: deck 2, playing to the room, is still the one followed.
+    rig.feed(Channel::Status, sim::playerStatus(3, playing), three);
+    CHECK(rig.player.leader(rig.now) == 2);
+    rig.feed(Channel::Beat, sim::beat(2, 128.0, 2), two);
+    rig.feed(Channel::Beat, sim::beat(3, 128.0, 4), three);
+    REQUIRE(rig.player.heard().size() == 2);
+    CHECK(rig.player.heard()[1].device == 2);
+    // Deck 2 stopped: deck 3 is the one.
+    rig.runTo(rig.now + 100 * kMs);
+    rig.feed(Channel::Status, sim::playerStatus(2, paused), two);
+    CHECK(rig.player.leader(rig.now) == 3);
+
+    // Two playing before either was followed: no telling which is the music.
+    Rig together;
+    together.player.listen(0);
+    together.player.receive(Channel::Status, sim::playerStatus(2, playing), two, 0);
+    together.player.receive(Channel::Status, sim::playerStatus(3, playing), three, 0);
+    together.runTo(1 * kMs);
+    CHECK(together.player.leader(together.now) == 0);
+    together.feed(Channel::Beat, sim::beat(2, 128.0, 1), two);
+    CHECK(together.player.heard().empty());
+    together.feed(Channel::Status, sim::playerStatus(3, paused), three);
+    CHECK(together.player.leader(together.now) == 2);
+
     // A mixer playing is not a player playing.
     Rig mixer;
     mixer.player.listen(0);
     mixer.feed(Channel::Status, sim::mixerStatus(33, false), ipv4(169, 254, 1, 33));
     CHECK(mixer.player.leader(mixer.now) == 0);
+}
+
+TEST_CASE("with the master paused, the one other deck playing is followed, and the master again "
+          "once it plays: S06's master, which kept the role through both its pauses, with a deck "
+          "played in among it",
+          "[prolink]") {
+    // A DJ mixing by ear stops the deck played first, which stays master, while the next one plays
+    // to the room. The real master is S06's CDJ-2000nexus: playing 3.6 to 34.6 s, paused to
+    // 46.3 s, playing to 51.9 s, paused with its cue pressed to 63.0 s, playing to 67.3 s. The
+    // other deck, simulated, plays a track with a beat grid from 30 s to 70 s.
+    std::vector<Captured> datagrams = loadCapture("load-and-play.txt");
+    const std::uint32_t three = ipv4(169, 254, 1, 13);
+    const auto played = [&](double seconds, std::uint16_t port, std::vector<std::uint8_t> bytes) {
+        Captured c;
+        c.seconds = seconds;
+        c.port = port;
+        c.from = three;
+        c.bytes = std::move(bytes);
+        datagrams.push_back(std::move(c));
+    };
+    sim::PlayerState playing;
+    playing.flags = sim::kPlaying;
+    playing.playMode = sim::kModePlaying;
+    for (int i = 0; i < 200; ++i) {
+        played(30.0 + 0.2 * i, 50002, sim::playerStatus(3, playing));
+    }
+    std::vector<double> beatsSent;
+    for (double t = 30.05; t < 70.0; t += 60.0 / 128.0) {
+        played(t, 50001, sim::beat(3, 128.0, 1));
+        beatsSent.push_back(t);
+    }
+    std::stable_sort(datagrams.begin(), datagrams.end(),
+                     [](const Captured& a, const Captured& b) { return a.seconds < b.seconds; });
+    VirtualPlayer player;
+    player.listen(0);
+    std::vector<VirtualPlayer::Heard> heard;
+    replay(player, datagrams, [&](const Captured&) {
+        heard.insert(heard.end(), player.heard().begin(), player.heard().end());
+        player.heard().clear();
+    });
+    // Whose beats were heard between two moments.
+    const auto whose = [&](double from, double to) {
+        std::vector<int> devices;
+        for (const VirtualPlayer::Heard& h : heard) {
+            if (h.at >= static_cast<std::int64_t>(from * 1e6) &&
+                h.at <= static_cast<std::int64_t>(to * 1e6) &&
+                std::find(devices.begin(), devices.end(), h.device) == devices.end()) {
+                devices.push_back(h.device);
+            }
+        }
+        return devices;
+    };
+    using Devices = std::vector<int>;
+    CHECK(whose(30.0, 34.5) == Devices{1}); // both playing: the master
+    CHECK(whose(34.7, 46.2) == Devices{3}); // the master paused: the deck playing
+    CHECK(whose(46.4, 51.8) == Devices{1}); // the master playing again
+    CHECK(whose(52.1, 62.9) == Devices{3}); // paused, its cue pressed: the deck playing still
+    CHECK(whose(63.1, 67.2) == Devices{1});
+    CHECK(whose(67.4, 70.0) == Devices{3});
+    // Every one of deck 3's beats while the master was paused, not some.
+    std::size_t heardPaused = 0;
+    for (const VirtualPlayer::Heard& h : heard) {
+        heardPaused += h.device == 3 && h.at > 34'700'000 && h.at < 46'200'000 ? 1u : 0u;
+    }
+    const auto sentPaused = std::count_if(beatsSent.begin(), beatsSent.end(),
+                                          [](double t) { return t > 34.7 && t < 46.2; });
+    CHECK(sentPaused > 20);
+    CHECK(heardPaused == static_cast<std::size_t>(sentPaused));
+}
+
+TEST_CASE("with a mixer telling the players which are on the air, only a deck on the air is "
+          "followed, the master included; with none telling, the master playing is",
+          "[prolink]") {
+    Rig rig;
+    rig.player.listen(0);
+    const std::uint32_t one = ipv4(169, 254, 1, 11);
+    const std::uint32_t two = ipv4(169, 254, 1, 12);
+    sim::PlayerState master;
+    master.flags = sim::kPlaying | sim::kMaster;
+    master.playMode = sim::kModePlaying;
+    sim::PlayerState other;
+    other.flags = sim::kPlaying | sim::kOnAir;
+    other.playMode = sim::kModePlaying;
+    const auto statuses = [&] {
+        rig.runTo(rig.now + 200 * kMs);
+        rig.feed(Channel::Status, sim::playerStatus(1, master), one);
+        rig.feed(Channel::Status, sim::playerStatus(2, other), two);
+    };
+    // The master playing in the headphones, its fader down, and deck 2 on the air.
+    statuses();
+    CHECK(rig.player.onAirTold(rig.now));
+    CHECK(rig.player.master(rig.now) == 1);
+    CHECK(rig.player.leader(rig.now) == 2);
+    rig.feed(Channel::Beat, sim::beat(1, 128.0, 1), one);
+    rig.feed(Channel::Beat, sim::beat(2, 128.0, 3), two);
+    REQUIRE(rig.player.heard().size() == 1);
+    CHECK(rig.player.heard()[0].device == 2);
+    // Its fader up: the master leads.
+    master.flags = sim::kPlaying | sim::kMaster | sim::kOnAir;
+    statuses();
+    CHECK(rig.player.leader(rig.now) == 1);
+    // The master's fader down again, and deck 2 paused with its fader up: on the air and playing
+    // is nobody.
+    master.flags = sim::kPlaying | sim::kMaster;
+    other.flags = sim::kOnAir;
+    other.playMode = sim::kModePaused;
+    statuses();
+    CHECK(rig.player.onAirTold(rig.now));
+    CHECK(rig.player.leader(rig.now) == 0);
+    // No mixer telling anyone — every on-air bit clear, as with no DJM at all: the master playing.
+    other.flags = sim::kPlaying;
+    other.playMode = sim::kModePlaying;
+    statuses();
+    CHECK_FALSE(rig.player.onAirTold(rig.now));
+    CHECK(rig.player.leader(rig.now) == 1);
+}
+
+TEST_CASE("a master playing a track it cannot lead with, a deck playing one with no beat grid, and "
+          "a deck in cue play are not followed; a mixer as master is, whatever the players say",
+          "[prolink]") {
+    const std::uint32_t one = ipv4(169, 254, 1, 11);
+    const std::uint32_t two = ipv4(169, 254, 1, 12);
+    const std::uint32_t three = ipv4(169, 254, 1, 13);
+    // Master, playing a track rekordbox has not analysed: status Mm 02. A real player's beat
+    // counter reads ffffffff then too; left at a number here, so that Mm alone says it.
+    sim::PlayerState unanalysed;
+    unanalysed.flags = sim::kPlaying | sim::kMaster;
+    unanalysed.playMode = sim::kModePlaying;
+    unanalysed.masterMeaningful = 2;
+    // Playing a CD: no beat counter, no beats.
+    sim::PlayerState gridless;
+    gridless.flags = sim::kPlaying;
+    gridless.playMode = sim::kModePlaying;
+    gridless.beat = 0xffffffffu;
+    sim::PlayerState analysed;
+    analysed.flags = sim::kPlaying;
+    analysed.playMode = sim::kModePlaying;
+    Rig rig;
+    rig.player.listen(0);
+    rig.feed(Channel::Status, sim::playerStatus(1, unanalysed), one);
+    rig.feed(Channel::Status, sim::playerStatus(2, gridless), two);
+    rig.feed(Channel::Status, sim::playerStatus(3, analysed), three);
+    CHECK(rig.player.master(rig.now) == 1);
+    CHECK(rig.player.leader(rig.now) == 3);
+    // Deck 3's cue button held while it plays: the headphones, not the music.
+    sim::PlayerState cuePlay = analysed;
+    cuePlay.playMode = sim::kModeCuePlay;
+    rig.runTo(rig.now + 100 * kMs);
+    rig.feed(Channel::Status, sim::playerStatus(3, cuePlay), three);
+    CHECK(rig.player.leader(rig.now) == 0);
+
+    // The mixer as master — the DJ's choice — with a deck playing on the air beside it.
+    Rig mixer;
+    mixer.player.listen(0);
+    sim::PlayerState onAir = analysed;
+    onAir.flags = sim::kPlaying | sim::kOnAir;
+    mixer.feed(Channel::Status, sim::playerStatus(2, onAir), two);
+    mixer.feed(Channel::Status, sim::mixerStatus(33, true), ipv4(169, 254, 1, 33));
+    CHECK(mixer.player.onAirTold(mixer.now));
+    CHECK(mixer.player.leader(mixer.now) == 33);
 }
 
 TEST_CASE("during a hand-off, while the old master and the new both say they are master, the new "

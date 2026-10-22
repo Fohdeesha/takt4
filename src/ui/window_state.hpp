@@ -3,6 +3,7 @@
 #include "core/audio/devices.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/settings/settings.hpp"
+#include "core/timing/prolink/network.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
 #include "main_window.h" // generated from main_window.slint
@@ -142,6 +143,19 @@ struct TimingFacts {
     std::uint8_t cdjFollow = 0;
     bool cdjMasterWithoutBeats = false;
     std::string cdjInterface;
+    /// Joining: a mixer is giving takt4 its number, or every number takt4 may hold is taken.
+    bool cdjAwaitingMixer = false;
+    bool cdjNoNumber = false;
+    /// The players "the tempo master" could follow now, and whether a mixer is telling them
+    /// which are on the air (`VirtualPlayer::canLead`, `onAirTold`).
+    std::size_t cdjLeaders = 0;
+    bool cdjOnAirTold = false;
+    /// Not one datagram has come in since the network was opened, for long enough to say so; and
+    /// takt4's own packets are failing to go out.
+    bool cdjNothingHeard = false;
+    bool cdjSendsFailing = false;
+    /// What the network says that stops nothing: joined on another card than the one picked.
+    std::string cdjNote;
 };
 
 struct TimingView {
@@ -155,7 +169,7 @@ struct TimingView {
     std::string detail;
     std::string note;
     bool waiting = false;
-    /// The tempo sheet's word for waiting: "no peers", "no clock", "no master", "joining".
+    /// The tempo sheet's word for waiting: "no peers", "no clock", "no deck", "joining".
     std::string waitingWord;
     bool coasting = false;
     int stripBeat = 0;
@@ -171,6 +185,9 @@ struct TimingView {
 
 TimingView describeTiming(const TimingFacts& facts);
 void publishTimingView(MainWindow& window, const TimingView& view);
+/// The CDJs' part of `TimingFacts`, from what the network last saw — all but whom the operator
+/// asked to follow, which is the window's.
+void readCdjFacts(const timing::prolink::Network::Snapshot& snapshot, TimingFacts& facts);
 
 /// The MIDI clock's input list, as the control input's is: "select input" first, this machine's
 /// inputs, and `wanted` after them, said not to be plugged in, when it is not one of them — found

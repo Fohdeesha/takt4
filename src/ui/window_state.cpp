@@ -121,6 +121,14 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     view.network =
         facts.cdjInterface.empty() ? std::string("picked when a CDJ is heard") : facts.cdjInterface;
     const bool heard = facts.cdjPlayers + facts.cdjMixers > 0;
+    // Not one datagram, from anything: on a DJ network with no router — which Windows calls
+    // Public, and a firewall rule ticked for Private alone drops everything from — this is what a
+    // blocked takt4 sees, and nothing on the row said why.
+    const std::string firewall =
+        facts.cdjNothingHeard
+            ? std::string("nothing at all is coming in \xE2\x80\x94 a firewall may be blocking "
+                          "takt4: allow it on Public networks too")
+            : std::string();
     if (!facts.running) {
         // Listened to, and nothing announced, until START.
         if (!facts.cdjProblem.empty()) {
@@ -128,6 +136,7 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
             view.waiting = true;
         } else if (!heard) {
             view.reading = "no CDJs heard on this network yet";
+            view.note = firewall;
         } else {
             view.reading = devicesHeard(facts.cdjPlayers, facts.cdjMixers) + " heard" + dot +
                            "not joined until Start";
@@ -149,9 +158,18 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
         }
         return text;
     };
-    const std::string waitedFor =
-        facts.cdjFollow == 0 ? std::string("no master playing")
-                             : "player " + std::to_string(facts.cdjFollow) + " not playing";
+    // Whom "the tempo master" is waiting for, in the terms it chooses by: a deck playing (on the
+    // air, when the mixer says which are), and when more than one is, no telling which.
+    std::string waitedFor;
+    if (facts.cdjFollow != 0) {
+        waitedFor = "player " + std::to_string(facts.cdjFollow) + " not playing";
+    } else if (facts.cdjFollowed != 0) {
+        waitedFor = playerName(facts.cdjFollowed) + " playing, no beats yet";
+    } else if (facts.cdjLeaders >= 2) {
+        waitedFor = std::to_string(facts.cdjLeaders) + " decks playing and none is the master";
+    } else {
+        waitedFor = facts.cdjOnAirTold ? "no deck playing on air" : "no deck playing";
+    }
     if (!facts.cdjProblem.empty()) {
         view.waiting = true;
         view.waitingWord = "no network";
@@ -159,16 +177,32 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
         view.detail = facts.cdjProblem;
     } else if (!facts.cdjJoined) {
         view.waitingWord = "joining";
-        view.reading = heard ? "joining as a player\xE2\x80\xA6"
-                             : "no CDJs heard on this network \xE2\x80\x94 waiting for one";
-        view.detail = heard ? "joining as a player" : "no CDJs heard";
+        if (facts.cdjNoNumber) {
+            view.waitingWord = "no number";
+            view.reading =
+                "players 7 to 15 are all taken \xE2\x80\x94 waiting for one to come free";
+            view.detail = "no player number free";
+        } else if (facts.cdjAwaitingMixer) {
+            view.reading = "the mixer is giving takt4 a player number\xE2\x80\xA6";
+            view.detail = "the mixer is giving takt4 a number";
+        } else {
+            view.reading = heard ? "joining as a player\xE2\x80\xA6"
+                                 : "no CDJs heard on this network \xE2\x80\x94 waiting for one";
+            view.detail = heard ? "joining as a player" : "no CDJs heard";
+            if (!heard) {
+                view.note = firewall;
+            }
+        }
     } else if (view.coasting) {
         view.reading = "beats stopped \xE2\x80\x94 coasting at " + bpm;
         view.detail = playerName(facts.cdjFollowed) + " stopped";
     } else if (view.waiting) {
-        view.waitingWord = facts.cdjFollow == 0 ? "no master" : "no beats";
+        view.waitingWord = facts.cdjFollowed != 0 ? "no beats" : "no deck";
         view.reading = waitedFor + " \xE2\x80\x94 waiting";
         view.detail = waitedFor;
+        if (facts.cdjFollow == 0 && facts.cdjFollowed == 0 && facts.cdjLeaders >= 2) {
+            view.reading = waitedFor + " \xE2\x80\x94 pick one under follow";
+        }
         if (facts.cdjFollow == 0 && facts.cdjMasterWithoutBeats) {
             // A master with a track rekordbox has not analysed, or a CD: it leads nothing.
             view.note = "the master's track has no beat grid, so it sends no beats";
@@ -176,6 +210,13 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     } else {
         view.reading = "following " + playerName(facts.cdjFollowed) + dot + bpm;
         view.detail = playerName(facts.cdjFollowed) + dot + "4 beats to the bar";
+    }
+    // Then what stops nothing yet, after anything more pressing.
+    if (view.note.empty() && facts.cdjSendsFailing) {
+        view.note = "takt4's packets to the CDJs are not getting out \xE2\x80\x94 joining again";
+    }
+    if (view.note.empty()) {
+        view.note = facts.cdjNote;
     }
     if (view.stripBeat > 0 && facts.cdjFollowed != 0) {
         view.stripLabel = "player " + std::to_string(facts.cdjFollowed) + dot +
@@ -270,6 +311,36 @@ TimingView describeTiming(const TimingFacts& facts) {
     }
     view.stripTicks = facts.ticking && !facts.coasting ? static_cast<int>(facts.tickInBeat) + 1 : 0;
     return view;
+}
+
+void readCdjFacts(const timing::prolink::Network::Snapshot& snapshot, TimingFacts& facts) {
+    using Phase = timing::prolink::VirtualPlayer::Phase;
+    facts.cdjProblem = snapshot.problem;
+    for (const timing::prolink::Network::DeviceView& device : snapshot.devices) {
+        const bool player = device.kind == timing::prolink::DeviceKind::Player;
+        facts.cdjPlayers += player ? 1u : 0u;
+        facts.cdjMixers += device.kind == timing::prolink::DeviceKind::Mixer ? 1u : 0u;
+        facts.cdjLeaders += player && device.canLead ? 1u : 0u;
+        if (device.number == snapshot.master && device.masterWithoutBeats) {
+            facts.cdjMasterWithoutBeats = true;
+        }
+    }
+    facts.cdjJoined = snapshot.phase == Phase::Joined;
+    facts.cdjAwaitingMixer = snapshot.phase == Phase::AwaitingMixer;
+    facts.cdjNoNumber = snapshot.phase == Phase::NoNumber;
+    facts.cdjOnAirTold = snapshot.onAirTold;
+    facts.cdjNothingHeard = snapshot.nothingHeard;
+    facts.cdjSendsFailing = snapshot.sendsFailing;
+    facts.cdjNote = snapshot.note;
+    facts.cdjNumber = snapshot.number;
+    facts.cdjMaster = snapshot.master;
+    facts.cdjFollowed = snapshot.followed;
+    if (snapshot.interfaceIp != 0) {
+        facts.cdjInterface =
+            (snapshot.interfaceName.empty() ? std::string()
+                                            : snapshot.interfaceName + " \xC2\xB7 ") +
+            timing::prolink::addressText(snapshot.interfaceIp);
+    }
 }
 
 void publishTimingView(MainWindow& window, const TimingView& view) {
