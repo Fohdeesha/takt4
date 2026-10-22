@@ -257,14 +257,28 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
 constexpr std::uint16_t kNewTargetPort = 9000;
 
 /// An outage's pacing (see `WindowController::superviseInput`). The first try is soon: a
-/// driver that paused for a buffer-size change is usually back within it. After that every
-/// two seconds, which is quick enough that a replugged interface is running again before an
-/// operator has finished looking for the cable, and slow enough that a driver refusing to
-/// open is not hammered. A fresh enumeration costs a second or two of loading every ASIO
-/// driver on the machine, so it is rarer still.
+/// driver that paused for a buffer-size change is usually back within it. Then two seconds,
+/// which is quick enough that a replugged interface is running again before an operator has
+/// finished looking for the cable — and four, eight, sixteen, and every thirty seconds after
+/// that, so a driver that will not open is not asked every two seconds all night. A fresh
+/// enumeration costs a second or two of loading every ASIO driver on the machine, so it is
+/// rarer still.
 constexpr double kOutageFirstTrySeconds = 1.0;
 constexpr double kOutageRetrySeconds = 2.0;
+constexpr double kOutageLongestRetrySeconds = 30.0;
 constexpr double kOutageRescanSeconds = 10.0;
+
+/// A driver's own asks to be reopened — a reset, a new rate — taken at most this many times in
+/// this long (`WindowController::restartInput`).
+constexpr std::size_t kMostRestarts = 4;
+constexpr double kRestartWindowSeconds = 60.0;
+
+/// How long after try `tries` an outage tries again (see above).
+double outageRetrySeconds(int tries) noexcept {
+    const int doublings = std::clamp(tries - 1, 0, 4);
+    return std::min(kOutageLongestRetrySeconds,
+                    kOutageRetrySeconds * static_cast<double>(1 << doublings));
+}
 /// How soon after the last outage ended a new one goes on counting its tries rather than starting
 /// from nothing: an input that is back for moments at a time is one outage, not many.
 constexpr double kOutageCarrySeconds = 30.0;
@@ -948,6 +962,11 @@ WindowController::~WindowController() {
     tracker_.engine().setHostTimeSource(nullptr);
 }
 
+void WindowController::endSession() {
+    stopFollowing();
+    runner_.stop();
+}
+
 void WindowController::show() {
     window_->show();
     // The sections the settings left folded, folded again from the opening height exactly as a
@@ -987,6 +1006,8 @@ void WindowController::run() {
 }
 
 void WindowController::listDevices() {
+    // The table first: one that changes between the two is listed again, rather than missed.
+    listedTable_ = tracker_.deviceTable();
     devices_ = tracker_.devices();
     auto names = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const audio::InputDevice& device : devices_) {
@@ -1006,15 +1027,14 @@ void WindowController::relistDuringOutage() {
     const audio::InputDevice wanted = input_->device;
     const int channel = input_->selection.channels.front();
     listDevices();
-    for (std::size_t i = 0; i < devices_.size(); ++i) {
-        if (devices_[i].name == wanted.name && devices_[i].hostApiName == wanted.hostApiName) {
-            window_->set_device_index(static_cast<int>(i));
-            pickDevice(static_cast<int>(i));
-            if (channel > 0 && channel < devices_[i].maxInputChannels) {
-                selectChannel(channel);
-            }
-            return;
+    if (const std::optional<std::size_t> i =
+            audio::findInput(devices_, wanted.name, wanted.hostApiName)) {
+        window_->set_device_index(static_cast<int>(*i));
+        pickDevice(static_cast<int>(*i));
+        if (channel > 0 && channel < devices_[*i].maxInputChannels) {
+            selectChannel(channel);
         }
+        return;
     }
     // Not on the machine at the moment. Nothing else is selected in its place: START would open
     // that instead, and the settings would save it. It is still the one wanted — remembered as a
@@ -1056,13 +1076,8 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     // is connected — and restoring the wrong interface is worse than restoring none.
     std::size_t chosen = devices_.size();
     if (!remembered.deviceName.empty()) {
-        for (std::size_t i = 0; i < devices_.size(); ++i) {
-            if (devices_[i].name == remembered.deviceName &&
-                devices_[i].hostApiName == remembered.hostApiName) {
-                chosen = i;
-                break;
-            }
-        }
+        chosen = audio::findInput(devices_, remembered.deviceName, remembered.hostApiName)
+                     .value_or(devices_.size());
     }
 
     const bool restored = chosen != devices_.size();
@@ -1298,13 +1313,74 @@ void WindowController::rescanDevices() {
         keep.channel = channel_;
         keep.mono = mono_;
     }
-    setStatus("Looking for devices...", false);
+    if (rescanKeep_) {
+        return; // looking already
+    }
     try {
-        (void)tracker_.rescan();
+        if (!tracker_.beginRescan()) {
+            setStatus("Could not look for devices again: an input is still being opened.", true);
+            return;
+        }
     } catch (const std::exception& e) {
         setStatus(std::string("Could not look for devices again: ") + e.what(), true);
         return;
     }
+    rescanKeep_ = keep;
+    window_->set_rescanning(true);
+    setStatus("Looking for devices\xE2\x80\xA6", false);
+}
+
+void WindowController::pollRescanAsked() {
+    if (!rescanKeep_) {
+        return;
+    }
+    std::string error;
+    const engine::LiveTracker::Progress progress = tracker_.pollRescan(error);
+    if (progress == engine::LiveTracker::Progress::Pending) {
+        return;
+    }
+    const settings::MachineSettings keep = *std::exchange(rescanKeep_, std::nullopt);
+    window_->set_rescanning(false);
+    if (progress != engine::LiveTracker::Progress::Done) {
+        // A table that went with it is listed again — nothing in it, when PortAudio did not come
+        // back up — before the reason is said over what listing it says.
+        if (tracker_.deviceTable() != listedTable_) {
+            refreshDevices(keep);
+        }
+        setStatus("Could not look for devices again: " +
+                      (error.empty() ? std::string("the drivers did not say why") : error),
+                  true);
+        return;
+    }
+    finishRescan(keep);
+}
+
+void WindowController::followDeviceTable() {
+    // Only with nothing in hand that lists it itself: a RESCAN or an outage's look, each of
+    // which reads the list when it is told the drivers have answered.
+    if (listedTable_ == tracker_.deviceTable() || rescanKeep_ || tracker_.stuck() ||
+        (outage_ && outage_->asking != Outage::Asking::Nothing)) {
+        return;
+    }
+    if (outage_) {
+        relistDuringOutage();
+        return;
+    }
+    if (wantRunning_ || tracker_.running()) {
+        return; // listed when it stops; nothing is opened from the list meanwhile
+    }
+    settings::MachineSettings keep = remembered_;
+    if ((!deviceFallback_ || deviceChosen_) && device_ >= 0 &&
+        static_cast<std::size_t>(device_) < devices_.size()) {
+        keep.deviceName = devices_[static_cast<std::size_t>(device_)].name;
+        keep.hostApiName = devices_[static_cast<std::size_t>(device_)].hostApiName;
+        keep.channel = channel_;
+        keep.mono = mono_;
+    }
+    refreshDevices(keep);
+}
+
+void WindowController::finishRescan(const settings::MachineSettings& keep) {
     refreshDevices(keep);
 
     // RtMidi enumerates afresh on every call, so these are simply read again. The target rows
@@ -1559,6 +1635,13 @@ void WindowController::toggleRun() {
         publishStopped();
         return;
     }
+    // Not while the devices are being looked for: the list is about to be another one.
+    if (rescanKeep_) {
+        setStatus("Still looking for devices \xE2\x80\x94 press Start when that has finished.",
+                  true);
+        publishStopped();
+        return;
+    }
     // Nothing selected — the machine has no inputs, or the one being used went away and nothing
     // was put in its place — or a position the list no longer has, which used to be read anyway
     //.
@@ -1601,6 +1684,9 @@ void WindowController::toggleRun() {
     runner_.setTracking(true);
     wantRunning_ = true;
     nothingPlaying_ = false;
+    // A START is the operator's word that the input is worth reopening again.
+    restarts_.clear();
+    restartsHeld_ = false;
     input_ = tracker_.current();
     watchOpenedInput();
     window_->set_running(true);
@@ -1629,14 +1715,9 @@ bool WindowController::reopenInput(std::string& error) {
     tracker_.stop();
     // Found again by name: a rescan renumbers every device, and the index the input had when
     // it was opened may now belong to something else.
-    const audio::InputDevice* device = nullptr;
-    for (const audio::InputDevice& candidate : devices_) {
-        if (candidate.name == input_->device.name &&
-            candidate.hostApiName == input_->device.hostApiName) {
-            device = &candidate;
-            break;
-        }
-    }
+    const std::optional<std::size_t> found =
+        audio::findInput(devices_, input_->device.name, input_->device.hostApiName);
+    const audio::InputDevice* device = found ? &devices_[*found] : nullptr;
     if (device == nullptr) {
         // **Not there is a failure, not a reason to use the old entry** (an earlier review of
         // 2026-09-25, H1). The old one's index belongs to the PortAudio session before the
@@ -1700,6 +1781,23 @@ void WindowController::beginOutage(const std::string& why, double since, double 
 }
 
 void WindowController::restartInput(const std::string& why, double now) {
+    // **Not for ever.** A driver that asks to be reset, or a clock that moves, is reopened — but
+    // an interface on an external clock that misreports its rate was reopened every three
+    // seconds all night and never settled. Four times a minute at most; then said once, and left
+    // as it is until START.
+    if (restartsHeld_) {
+        return;
+    }
+    std::erase_if(restarts_, [now](double at) { return now - at > kRestartWindowSeconds; });
+    if (restarts_.size() >= kMostRestarts) {
+        restartsHeld_ = true;
+        setStatus(why + " \xE2\x80\x94 it has been reopened " + std::to_string(kMostRestarts) +
+                      " times in a minute, so takt4 leaves it as it is until START. Check its "
+                      "clock: external sync, and the sample rate it is set to.",
+                  true);
+        return;
+    }
+    restarts_.push_back(now);
     std::string error;
     if (reopenInput(error)) {
         const audio::InputStream* stream = tracker_.stream();
@@ -1711,6 +1809,43 @@ void WindowController::restartInput(const std::string& why, double now) {
         return;
     }
     beginOutage(why + ", and it would not open again (" + error + ")", now, now);
+}
+
+void WindowController::beginReopen(double now) {
+    std::string error;
+    // Found again by name: a rescan renumbers every device, and the index the input had when it
+    // was opened may now belong to something else.
+    const audio::InputDevice* device = nullptr;
+    if (input_) {
+        if (const std::optional<std::size_t> found =
+                audio::findInput(devices_, input_->device.name, input_->device.hostApiName)) {
+            device = &devices_[*found];
+        }
+    }
+    if (!input_) {
+        error = "nothing was open";
+    } else if (device == nullptr) {
+        error = input_->device.name + " is not on this machine at the moment";
+    } else {
+        try {
+            tracker_.beginStart(*device, input_->selection);
+            outage_->asking = Outage::Asking::Open;
+            return;
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+    }
+    failedReopen(error, now);
+}
+
+void WindowController::failedReopen(const std::string& error, double now) {
+    outage_->openFailed = true;
+    const double wait = outageRetrySeconds(outage_->tries);
+    outage_->nextTry = now + wait;
+    setStatus(outage_->why + " \xE2\x80\x94 still no audio after " +
+                  fixed(now - outage_->since, 0) + " s (" + error + "). Trying again in " +
+                  fixed(wait, 0) + " s...",
+              true);
 }
 
 void WindowController::publishDriverState() {
@@ -1746,6 +1881,48 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     const std::string name = input_ ? input_->device.name : std::string("the input");
 
     if (outage_) {
+        // **Nothing here waits for a driver.** An open and a rescan each held this thread — the
+        // window's, PANIC's — for up to ten and thirty seconds, at every try while the interface
+        // was gone, and the tries never slowed. Each is begun now and asked after on the ticks
+        // that follow; the tries come further apart the longer the input stays away.
+        std::string error;
+        switch (outage_->asking) {
+        case Outage::Asking::Rescan:
+            if (tracker_.pollRescan(error) == engine::LiveTracker::Progress::Pending) {
+                return;
+            }
+            // Listed again or not, the open goes ahead on the list there is.
+            if (error.empty()) {
+                relistDuringOutage();
+            }
+            rescannedAt_ = now;
+            outage_->asking = Outage::Asking::Nothing;
+            beginReopen(now);
+            return;
+        case Outage::Asking::Open:
+            switch (tracker_.pollStart(error)) {
+            case engine::LiveTracker::Progress::Pending:
+                return;
+            case engine::LiveTracker::Progress::Done:
+                input_ = tracker_.current();
+                watchOpenedInput();
+                outage_->asking = Outage::Asking::Nothing;
+                outage_->reopened = true;
+                outage_->openFailed = false;
+                outage_->nextTry = now + outageRetrySeconds(outage_->tries);
+                setStatus(outage_->why + " \xE2\x80\x94 reopened after " +
+                              fixed(now - outage_->since, 0) +
+                              " s, waiting for it to send audio...",
+                          true);
+                return;
+            default:
+                outage_->asking = Outage::Asking::Nothing;
+                failedReopen(error, now);
+                return;
+            }
+        case Outage::Asking::Nothing:
+            break;
+        }
         // **Back when the reopened input sends something, not when it opens** (an earlier review of
         // 2026-09-25, M8). A reopen that merely opened was announced as "Audio is back" and
         // ended the outage before a single callback, so an input that opens and then sends
@@ -1775,40 +1952,25 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
             return;
         }
         ++outage_->tries;
-        // Every third try, and not more often than `kOutageRescanSeconds`, PortAudio looks at
-        // the machine again: an interface that was unplugged, or power-cycled, can come back
-        // under another index or only be seen again by a fresh enumeration. The tracker is
-        // stopped for it — which it already is between attempts — and the device found again
-        // by name in `reopenInput`.
-        if (outage_->tries % 3 == 0 &&
+        // The machine looked at again — an interface unplugged, or power-cycled, can come back
+        // under another index or only be seen by a fresh enumeration — when the device is not in
+        // the list there is, or the last open of it failed; and not within `kOutageRescanSeconds`
+        // of the last look ending, since a look loads every ASIO driver on the machine. The
+        // device is found again by name in `beginReopen`.
+        const bool listed =
+            input_ && audio::findInput(devices_, input_->device.name, input_->device.hostApiName);
+        if ((!listed || outage_->openFailed) &&
             (rescannedAt_ < 0.0 || now - rescannedAt_ >= kOutageRescanSeconds)) {
-            const double scanFrom = nowSeconds();
-            tracker_.stop();
             try {
-                if (tracker_.rescan()) {
-                    relistDuringOutage();
+                if (tracker_.beginRescan()) {
+                    outage_->asking = Outage::Asking::Rescan;
+                    return;
                 }
             } catch (const std::exception&) {
-                // PortAudio would not come back up; the next try will ask again.
+                // The drivers are not answering: the open below says so.
             }
-            // When the look ended, on the clock `now` is on. An ASIO driver can take the scan's
-            // whole limit to answer, and timed from when it began the next look was due that
-            // much sooner.
-            rescannedAt_ = now + (nowSeconds() - scanFrom);
         }
-        std::string error;
-        if (reopenInput(error)) {
-            outage_->reopened = true;
-            outage_->nextTry = now + kOutageRetrySeconds;
-            setStatus(outage_->why + " — reopened after " + fixed(now - outage_->since, 0) +
-                          " s, waiting for it to send audio...",
-                      true);
-        } else {
-            outage_->nextTry = now + kOutageRetrySeconds;
-            setStatus(outage_->why + " — still no audio after " +
-                          fixed(now - outage_->since, 0) + " s (" + error + "). Trying again...",
-                      true);
-        }
+        beginReopen(now);
         return;
     }
 
@@ -3335,6 +3497,13 @@ bool WindowController::saveNow() {
         savedText_ = text;
         pendingText_.clear();
     }
+    // A file held from the autosave is this takt4's own once it has been saved over on purpose:
+    // kept saved from here, and on the way out — which otherwise went on skipping it, and lost
+    // what was changed after the SAVE.
+    if (!heldAutosave_.empty() && path == heldAutosave_) {
+        enableAutosave(std::exchange(heldAutosave_, {}), autosaveQuietSeconds_);
+        savedText_ = text;
+    }
     setStatus("Saved to " + io::pathText(path), false);
     return true;
 }
@@ -3360,6 +3529,11 @@ void WindowController::enableAutosave(std::filesystem::path file, double quietSe
     savedText_ = autosaveFile_.empty() ? std::string{} : settings::toJson(currentSettings());
     pendingText_.clear();
     autosaveFailedAt_ = -1.0;
+}
+
+void WindowController::holdAutosave(std::filesystem::path file, double quietSeconds) {
+    heldAutosave_ = std::move(file);
+    autosaveQuietSeconds_ = std::max(0.0, quietSeconds);
 }
 
 void WindowController::showNotice(const std::string& text) {
@@ -3397,7 +3571,13 @@ void WindowController::autosave(double now) {
     // A full disk or a folder gone read-only is retried every ten seconds, not twice a second:
     // each attempt is a file created and thrown away.
     constexpr double kRetrySeconds = 10.0;
-    std::string text = settings::toJson(currentSettings());
+    settings::Settings current = currentSettings();
+    if (!lookedAt_ || !(current == *lookedAt_)) {
+        lookedText_ = settings::toJson(current);
+        lookedAt_ = std::move(current);
+        ++autosaveTexts_;
+    }
+    std::string text = lookedText_;
     if (text == savedText_) {
         pendingText_.clear();
         return;
@@ -4062,6 +4242,10 @@ void WindowController::tick() {
     if (!autosaveFile_.empty() && ticks_ % kAutosaveCheckTicks == 0) {
         autosave(nowSeconds());
     }
+    // A RESCAN the drivers have answered, and a table nobody listed, before anything below can
+    // open a device from the list.
+    pollRescanAsked();
+    followDeviceTable();
     // The input's health, above the early return because an outage is exactly when no stream
     // is open: the tracker is stopped between attempts to bring it back. See `superviseInput`.
     superviseNow(nowSeconds());

@@ -2200,6 +2200,32 @@ TEST_CASE("after an unlock the beats' rate goes out, whatever the number says",
     }
 }
 
+TEST_CASE("a re-lock is not refused for a lock that moved with the beats' octave",
+          "[tracking][tempo][relock][octave]") {
+    // Locked on beats an octave below the cloud, and then the beats move onto it. Clearing the
+    // octave the beats have left carries the lock across with it — to the beats' new tempo — and
+    // the re-lock held the beats against that, found them the same, and stood down: the number
+    // stayed frozen an octave off over beats going out right.
+    TempoTracker::Options options;
+    options.octaveFold = false;
+    TempoTracker tracker(kFramePeriod, options);
+    Feed feed;
+    (void)feedBeats(tracker, feed, 15, 30, 1500); // the cloud at 200, the beats at 100
+    REQUIRE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+    // Two seconds of another tempo, its beats still an octave below its cloud, the decoder's
+    // tempo dipping on each beat — which keeps the ordinary way from locking it (the trap above):
+    // the lock goes, and the number is held where it was.
+    (void)feedBeats(tracker, feed, 20, 40, 200, 18, 2);
+    REQUIRE_FALSE(tracker.state().locked);
+    REQUIRE(tracker.state().bpm == Approx(bpmOf(30)).margin(1.0));
+    // Then the beats on the first cloud, at twice the lock that went, dipping as before.
+    (void)feedBeats(tracker, feed, 15, 15, 3000, 13, 2);
+    CHECK(tracker.state().beatsBpm == Approx(bpmOf(15)).margin(2.0));
+    CHECK(tracker.state().locked);
+    CHECK(tracker.state().bpm == Approx(bpmOf(15)).margin(2.0));
+}
+
 TEST_CASE("the beats' evidence never takes a first lock", "[tracking][tempo][relock]") {
     // The operator's strict-lock ruling of 2026-10-03: tolerating the dip on a *first* lock made a
     // drum machine lock sooner and locked wrong tempi half as often again. The beats' evidence is

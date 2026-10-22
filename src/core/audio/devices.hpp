@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::audio {
@@ -51,5 +54,17 @@ struct InputDevice {
 /// that, and then the interface is missing from this list rather than failing later at
 /// open (the design R2). Whether it refuses at load or at open is up to the driver.
 std::vector<InputDevice> listInputDevices(const PortAudioSession& session);
+
+/// A device's name less the "2- " Windows puts in front of the description of a second device of
+/// a kind, or of one plugged back in to another port: "Microphone (2- USB Audio CODEC)" is
+/// "Microphone (USB Audio CODEC)". Any other name as it is.
+std::string baseInputName(std::string_view name);
+
+/// Where in `devices` the input named `name` on the host API called `hostApi` is: by its name, or
+/// else — an input Windows renamed when it came back on another port — by the name it has
+/// without its "2- " (`baseInputName`), when exactly one has it. Two of a kind left without their
+/// own names cannot be told apart, and nothing is the answer then, as it is for one not there.
+std::optional<std::size_t> findInput(const std::vector<InputDevice>& devices, std::string_view name,
+                                     std::string_view hostApi);
 
 } // namespace takt4::audio

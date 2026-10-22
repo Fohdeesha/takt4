@@ -118,6 +118,7 @@ add_library(takt4_core STATIC
   fixtures/ofl_reader.hpp
   fixtures/profile_json.cpp
   fixtures/profile_json.hpp
+  fixtures/profile_json_node.hpp
   fixtures/profile_mapper.cpp
   fixtures/profile_mapper.hpp
   fixtures/text.cpp
@@ -134,6 +135,7 @@ add_library(takt4_core STATIC
   features/intensity.hpp
   io/atomic_file.cpp
   io/atomic_file.hpp
+  io/json_depth.hpp
   io/blob_file.cpp
   io/blob_file.hpp
   io/chars.cpp
@@ -189,6 +191,7 @@ add_library(takt4_core STATIC
   rt/thread_priority.hpp
   settings/rule_json.cpp
   settings/rule_json.hpp
+  settings/rule_json_node.hpp
   settings/settings.cpp
   settings/settings.hpp
   timing/beat_grid.cpp

@@ -24,19 +24,23 @@ void InputPipeline::process(const float* interleaved, std::size_t frames, Arriva
     // own audio was in the room (`HopProcessor::beginBuffer`).
     if (arrival.steadyNanos != 0) {
         const double outputRate = resampler_.outputRate();
-        const double lost = lost_.onBuffer(static_cast<std::uint32_t>(frames),
-                                           resampler_.inputRate(), arrival.steadyNanos);
-        lostSeconds_.store(lost, std::memory_order_relaxed);
+        const LostTime::Reading lost = lost_.onBuffer(static_cast<std::uint32_t>(frames),
+                                                      resampler_.inputRate(), arrival.steadyNanos);
+        lostSeconds_.store(lost.seconds, std::memory_order_relaxed);
         // The resampler is time-aligned — output sample k stands for input time k / outputRate —
         // so the first sample of this buffer is, on the hop clock, simply where the frames
         // delivered so far put it.
+        const double toHopClock = outputRate / resampler_.inputRate();
         const double first =
-            static_cast<double>(framesIn_.load(std::memory_order_relaxed)) * outputRate /
-            resampler_.inputRate();
+            static_cast<double>(framesIn_.load(std::memory_order_relaxed)) * toHopClock;
+        // A buffer that may have waited in the driver says nothing of when it was heard.
         const std::int64_t heard =
-            arrival.steadyNanos / 1000 -
-            static_cast<std::int64_t>(std::llround(arrival.inputLatencySeconds * 1e6));
-        processor_.beginBuffer(first, heard, lost * outputRate);
+            lost.delayed
+                ? 0
+                : arrival.steadyNanos / 1000 -
+                      static_cast<std::int64_t>(std::llround(arrival.inputLatencySeconds * 1e6));
+        processor_.beginBuffer(first, heard, lost.seconds * outputRate,
+                               static_cast<double>(lost.sinceFrame) * toHopClock);
     }
 
     while (frames > 0) {

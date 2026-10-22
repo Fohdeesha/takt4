@@ -1,6 +1,7 @@
 #include "ui/app.hpp"
 
 #include "core/assets/embedded.hpp"
+#include "core/audio/audio_thread.hpp"
 #include "core/engine/live_tracker.hpp"
 #include "core/io/utf8.hpp"
 #include "core/model/weights.hpp"
@@ -9,6 +10,7 @@
 #include "core/tracking/state_space.hpp"
 #include "ui/crash_report.hpp"
 #include "ui/native_window.hpp"
+#include "ui/single_instance.hpp"
 #include "ui/window_controller.hpp"
 
 #include <chrono>
@@ -19,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -55,15 +58,35 @@ std::string environment(const char* name) {
 } // namespace
 
 int run() {
+    const std::filesystem::path home = settings::settingsDirectory();
+    // **One takt4 per settings folder** (`SingleInstance`): a second launch brings the first to
+    // the front and goes. First of all, since everything after it is what two of them fight
+    // over — this log among them, which a second launch truncated.
+    SingleInstance instance(home);
+    if (!instance.claimed()) {
+        // Asked again for a few seconds: the first may be between its splash and its window.
+        for (int tries = 0; tries < 25; ++tries) {
+            if (SingleInstance::bringOtherToFront(home)) {
+                return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        reportFatal("takt4 is already running from " + io::pathText(home) +
+                    ", and its window is still opening.");
+        return 0;
+    }
     // Before anything else, so that anything after it which falls over leaves a minidump and a
     // sentence rather than a window that vanished. Where the settings live,
     // because that is the folder an operator already knows about. A log left behind by the last
     // session is taken first, since installing starts a new one in its place.
-    const std::filesystem::path home = settings::settingsDirectory();
     const std::filesystem::path leftover = CrashReport::takeLeftoverLog(home);
+    // Ended before it had settled: perhaps from what the settings asked for. The copy of them
+    // kept at the last good start is kept as it is, rather than replaced with what may be why.
+    const bool endedEarly = !leftover.empty() && CrashReport::endedEarly(leftover);
     CrashReport::install(home, environment("TAKT4_NO_CRASH_DIALOG").empty()
                                    ? CrashReport::kAfterCrashOption
                                    : std::string_view{});
+    CrashReport::pruneReports(home);
     // Full speed whether the window is in front, behind or minimised — see `rt::keepFullSpeed`.
     (void)rt::keepFullSpeed();
 
@@ -82,7 +105,7 @@ int run() {
     // those defaults over the damaged file — so one trailing comma, or half a file left by a
     // crash, cost the whole rig. This moves a damaged file aside, falls back
     // to the copy kept at the last good start, and says what it did.
-    const settings::Startup startup = settings::openAtStartup(settingsPath, readFrom);
+    const settings::Startup startup = settings::openAtStartup(settingsPath, readFrom, endedEarly);
     const settings::Settings& saved = startup.settings;
     // Whether anything may be written to `settingsPath` without the operator asking: not when
     // the file there could be neither read nor moved aside, because a save would replace it.
@@ -107,16 +130,36 @@ int run() {
     // else — which is the whole point of embedding them. They are still validated, and still
     // before the window opens: a checksum only fails here if the binary itself is damaged,
     // and that is worth saying plainly rather than crashing in the model a second later.
+    //
+    // Made on a thread of its own behind a splash, because making it lists the audio drivers —
+    // up to half a minute with ASIO — and nothing at all was on screen meanwhile, so takt4 was
+    // launched again. The splash keeps this thread's messages going while it waits.
     std::unique_ptr<engine::LiveTracker> tracker;
-    try {
-        tracker = std::make_unique<engine::LiveTracker>(
-            model::ModelWeights::fromBytes(assets::weights(), "electronic (built in)"),
-            tracking::StateSpaceModel::fromBytes(assets::stateSpace(), "default (built in)"),
-            options);
-    } catch (const std::exception& e) {
+    std::string failed;
+    {
+        StartupSplash splash(
+            "takt4 is starting \xE2\x80\x94 listing the audio interfaces\xE2\x80\xA6");
+        // What a second launch brings forward meanwhile, since the window is not made yet.
+        (void)instance.announceWindow(splash.window());
+        std::thread make([&tracker, &failed, &options] {
+            try {
+                tracker = std::make_unique<engine::LiveTracker>(
+                    model::ModelWeights::fromBytes(assets::weights(), "electronic (built in)"),
+                    tracking::StateSpaceModel::fromBytes(assets::stateSpace(),
+                                                         "default (built in)"),
+                    options);
+            } catch (const std::exception& e) {
+                failed = e.what();
+            } catch (...) {
+                failed = "the audio could not be brought up";
+            }
+        });
+        splash.waitFor(make);
+    }
+    if (!tracker) {
         // Where somebody will see it: takt4 is a window application on Windows and has no
         // console to write to unless it was started from one. See `ui::reportFatal`.
-        reportFatal(e.what());
+        reportFatal(failed);
         return 1;
     }
 
@@ -141,12 +184,24 @@ int run() {
         notice += std::string(notice.empty() ? "" : " ") +
                   "takt4 did not close normally last time; what it last printed is in " +
                   io::pathText(leftover.filename()) + ".";
+        std::error_code missing;
+        const std::filesystem::path backup = settings::backupFile(settingsPath);
+        if (endedEarly && std::filesystem::exists(backup, missing)) {
+            notice += " It ended within half a minute of opening its window. If the settings are "
+                      "why, " +
+                      io::pathText(backup.filename()) +
+                      " is the copy kept when takt4 last started cleanly, left as it was: IMPORT "
+                      "it to go back to it.";
+        }
     }
     controller->showNotice(notice);
     // Written a few seconds after each change from here on, so a crash, a power cut or a
-    // shutdown with the window open costs seconds rather than the session.
+    // shutdown with the window open costs seconds rather than the session — or, for a file
+    // takt4 must not write unasked, from the first SAVE to it.
     if (writable) {
         controller->enableAutosave(settingsPath);
+    } else if (!settingsPath.empty()) {
+        controller->holdAutosave(settingsPath);
     }
     // The bench switch that proves crash reporting on the machine it has to work on: from a
     // timer, so the failure happens inside Slint's event loop with the window up — where every
@@ -155,19 +210,57 @@ int run() {
         slint::Timer::single_shot(std::chrono::milliseconds(1500),
                                   [how] { CrashReport::crashOnPurpose(how); });
     }
+    // **Windows ending the session** ends the process once the window has answered, and nothing
+    // below would run: so what the way out does for the settings and the rig is done there and
+    // then, and the process ended without asking the audio driver anything — the machine is
+    // going down around it, and a driver is what an exit can hang in.
+    struct Ending {
+        WindowController* controller = nullptr;
+        const std::filesystem::path* path = nullptr;
+        bool writable = false;
+    };
+    Ending ending{controller.get(), &settingsPath, writable};
+    whenSessionEnds(
+        [](void* user) {
+            const auto& end = *static_cast<const Ending*>(user);
+            if (end.writable || end.controller->autosaving()) {
+                (void)settings::save(end.controller->currentSettings(), *end.path);
+            }
+            end.controller->endSession();
+            CrashReport::cleanExit();
+#if defined(_WIN32)
+            ::TerminateProcess(::GetCurrentProcess(), 0);
+#endif
+        },
+        &ending);
+    // Half a minute up: what a session that ends from here on is not taken to have ended early.
+    slint::Timer::single_shot(std::chrono::seconds(30), [] { CrashReport::markSettled(); });
+    // The window this takt4 is, for a second launch to bring to the front — once it is up, which
+    // is some turns of the event loop after it is shown: asked again until it is.
+    slint::Timer announcing;
+    announcing.start(slint::TimerMode::Repeated, std::chrono::milliseconds(200),
+                     [&instance, &announcing] {
+                         if (instance.announceWindow()) {
+                             announcing.stop();
+                         }
+                     });
     controller->run();
-    // The window has gone; stop the audio before the tracker goes with it.
-    tracker->stop();
-
-    // And once more on the way out, for whatever changed in the last few seconds.
-    if (writable && !settings::save(controller->currentSettings(), settingsPath)) {
+    whenSessionEnds(nullptr, nullptr);
+    // Once more on the way out, for whatever changed in the last few seconds — before the audio
+    // is touched: closing the interface is where a driver's rare crash on close happens, and it
+    // took those seconds with it.
+    if ((writable || controller->autosaving()) &&
+        !settings::save(controller->currentSettings(), settingsPath)) {
         reportFatal("Could not write " + io::pathText(settingsPath) +
                     ", so this session's settings were not kept.");
     }
-    // Asked before the tracker goes: whether a driver is still holding its audio thread.
-    const bool driverHeld = tracker->stuck();
+    // The window has gone; stop the audio before the tracker goes with it.
+    tracker->stop();
     controller.reset();
     tracker.reset();
+    // Asked once the tracker has gone, since ending PortAudio there can itself be what a driver
+    // never returns from: whether one is holding a thread of this process.
+    const bool driverHeld = audio::AudioThread::leftToADriver();
     // The session ended as it should, so its log goes: one still there at the next launch is
     // what "did not close normally" means.
     CrashReport::cleanExit();

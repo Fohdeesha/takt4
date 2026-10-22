@@ -3,6 +3,8 @@
 #include "core/dmx/color.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/io/json_depth.hpp"
+#include "core/settings/rule_json_node.hpp"
 #include "core/trigger/generator.hpp"
 #include "core/trigger/value.hpp"
 
@@ -707,11 +709,16 @@ Rule::Config ruleFromJson(const json& node) {
 
 } // namespace
 
-std::string rulesToJson(const std::vector<trigger::Rule::Config>& rules) {
+json rulesToNode(const std::vector<trigger::Rule::Config>& rules) {
     json out = json::array();
     for (const Rule::Config& rule : rules) {
         out.push_back(ruleToJson(rule));
     }
+    return out;
+}
+
+std::string rulesToJson(const std::vector<trigger::Rule::Config>& rules) {
+    const json out = rulesToNode(rules);
     // `error_handler_t::replace`, not the default `strict`. nlohmann refuses to write a
     // string that is not valid UTF-8 by *throwing* — and this is reached from
     // `settings::save`, which a Slint callback and `ui::run`'s save on the way out both
@@ -722,9 +729,18 @@ std::string rulesToJson(const std::vector<trigger::Rule::Config>& rules) {
 }
 
 std::vector<trigger::Rule::Config> rulesFromJson(std::string_view text) {
+    json document;
+    try {
+        document = io::parseJsonCapped(text);
+    } catch (const std::exception&) {
+        return {};
+    }
+    return rulesFromNode(document);
+}
+
+std::vector<trigger::Rule::Config> rulesFromNode(const json& document) {
     std::vector<Rule::Config> rules;
-    const json document = json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (document.is_discarded() || !document.is_array()) {
+    if (!document.is_array()) {
         return rules;
     }
     for (const json& node : document) {

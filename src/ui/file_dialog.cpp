@@ -12,6 +12,8 @@
 #endif
 #include <windows.h>
 
+// After windows.h, which they need: the dialogs, and what their failures are called.
+#include <cderr.h>
 #include <commdlg.h>
 
 #include <cstddef>
@@ -40,6 +42,19 @@ extern char** environ; // the process's environment, which <unistd.h> leaves und
 #include <string>
 
 namespace takt4::ui {
+
+std::string fileDialogProblem(unsigned long error) {
+    if (error == 0) {
+        return {}; // cancelled, which is not an error
+    }
+#if defined(_WIN32)
+    if (error == FNERR_BUFFERTOOSMALL) {
+        return "The file dialog could not hand back a path that long \xE2\x80\x94 choose a file "
+               "whose folder and name are shorter.";
+    }
+#endif
+    return "The file dialog could not be shown (Windows' error " + std::to_string(error) + ").";
+}
 
 bool fileDialogsAllowed() {
 #if defined(_MSC_VER)
@@ -106,7 +121,8 @@ OPENFILENAMEW baseOf(std::wstring& buffer, const std::wstring& title, FileKind k
 }
 
 std::wstring bufferWith(const std::string& suggested) {
-    std::wstring buffer(1024, L'\0');
+    // The longest path Windows has: a file a few folders down a share is past the 260 of old.
+    std::wstring buffer(32768, L'\0');
     const std::wstring wide = widen(suggested);
     // Leave room for the terminator the dialog writes.
     for (std::size_t i = 0; i < wide.size() && i + 1 < buffer.size(); ++i) {
@@ -115,26 +131,28 @@ std::wstring bufferWith(const std::string& suggested) {
     return buffer;
 }
 
-std::filesystem::path showOpen(const std::string& title, FileKind kind) {
+FileChoice showOpen(const std::string& title, FileKind kind) {
     std::wstring buffer = bufferWith("");
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle, kind);
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (::GetOpenFileNameW(&ofn) == 0) {
-        return {}; // cancelled, or the dialog could not be shown; both mean "do nothing"
+        // A cancel, or a dialog that could not do what was asked — which used to read as a
+        // cancel too, and IMPORT did nothing with nothing said.
+        return FileChoice{{}, fileDialogProblem(::CommDlgExtendedError())};
     }
-    return std::filesystem::path(buffer.c_str());
+    return FileChoice{std::filesystem::path(buffer.c_str()), {}};
 }
 
-std::filesystem::path showSave(const std::string& title, const std::string& suggested) {
+FileChoice showSave(const std::string& title, const std::string& suggested) {
     std::wstring buffer = bufferWith(suggested);
     const std::wstring wideTitle = widen(title);
     OPENFILENAMEW ofn = baseOf(buffer, wideTitle, FileKind::Preset);
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (::GetSaveFileNameW(&ofn) == 0) {
-        return {};
+        return FileChoice{{}, fileDialogProblem(::CommDlgExtendedError())};
     }
-    return std::filesystem::path(buffer.c_str());
+    return FileChoice{std::filesystem::path(buffer.c_str()), {}};
 }
 
 } // namespace
@@ -150,12 +168,11 @@ bool FileDialogs::waiting() const {
 }
 
 void FileDialogs::open(const std::string& title, FileKind kind, Chosen chosen) {
-    chosen(FileChoice{fileDialogsAllowed() ? showOpen(title, kind) : std::filesystem::path{}, {}});
+    chosen(fileDialogsAllowed() ? showOpen(title, kind) : FileChoice{});
 }
 
 void FileDialogs::save(const std::string& title, const std::string& suggested, Chosen chosen) {
-    chosen(FileChoice{fileDialogsAllowed() ? showSave(title, suggested) : std::filesystem::path{},
-                      {}});
+    chosen(fileDialogsAllowed() ? showSave(title, suggested) : FileChoice{});
 }
 
 #elif defined(__APPLE__)

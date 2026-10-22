@@ -150,6 +150,8 @@ address                       send           does
 - Everything saves by itself to `settings.json` next to `takt4.exe` (next to `takt4.app` on a Mac, or in `~/Library/Application Support/takt4` until the app is moved out of the folder it was downloaded to)
 - **export** / **import** carry everything: rules, outputs, lights, tempo settings, the audio input, MIDI and OSC control with what was learned, and which sections are folded. Import replaces it all. An input that isn't on this machine stays the one saved; **rescan** or the next launch finds it once it's plugged in
 - A rule's mute and its ÷2 / ×2 status aren't saved
+- A `settings.json` written by a newer takt4 isn't saved over until you press **save**
+- One takt4 runs per folder: starting it again brings the open one to the front
 
 ## How well it tracks
 

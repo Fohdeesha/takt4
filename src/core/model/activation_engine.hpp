@@ -112,8 +112,8 @@ public:
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
     /// Audio thread. Tells the host time source where this buffer's first sample is and when it
     /// was heard, and keeps the audio lost so far for the hops it completes. See `HopProcessor`.
-    void beginBuffer(double firstSample, std::int64_t steadyMicros,
-                     double lostSamples) noexcept override;
+    void beginBuffer(double firstSample, std::int64_t steadyMicros, double lostSamples,
+                     double lostFrom) noexcept override;
 
     /// Reader thread. False when nothing is queued.
     bool pop(FrameActivation& out) noexcept { return activations_.tryPop(out); }
@@ -184,8 +184,10 @@ private:
     /// past — and, from the last time it grew, where that was and what it had been. A hop whose
     /// first sample came before the gap was heard before it, and is stamped with what was lost
     /// before, though the buffer that finishes it comes after: the frame it completes is centred
-    /// two hops before the gap and was stamped the whole gap late without this. The audio
-    /// thread's alone; reset with the stream by `start`.
+    /// two hops before the gap and was stamped the whole gap late without this. A gap is known
+    /// only a buffer or more after it (`audio::LostTime`), so where it was is told, not taken to
+    /// be the buffer that tells of it. The audio thread's alone; reset with the stream by
+    /// `start`.
     double lostSamples_ = 0.0;
     double lostBefore_ = 0.0;
     double gapSample_ = 0.0;

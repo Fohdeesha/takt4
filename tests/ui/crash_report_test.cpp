@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -378,6 +379,11 @@ TEST_CASE("crash report child", "[.child]") {
         std::fflush(stderr);
         return;
     }
+    if (how == "settled-abort") {
+        // A session that ran past settling, and fell over after.
+        CrashReport::markSettled();
+        std::abort();
+    }
     if (how == "terminate-thread" || how == "abort-thread") {
         // From a thread that did not install anything: `std::set_terminate` is per thread in
         // MSVC's runtime, so this is what proves the global SIGABRT handler catches the rest.
@@ -630,6 +636,52 @@ TEST_CASE("the crash message says so when no report could be written, and no sta
 
     press(box, IDNO);
     CHECK(teller.waitForAnswer(std::chrono::seconds(10)) == 0);
+}
+
+TEST_CASE("a session that fell over before it had settled is told from one that fell over later",
+          "[ui][crash]") {
+    // One that ends at once may have been ended by what its settings asked for, and the next
+    // start keeps the copy of them from the start before (`settings::openAtStartup`).
+    const takt4::test::TempDir dir;
+    CHECK(runChild(dir.path(), "abort") != 0);
+    const std::filesystem::path early = CrashReport::takeLeftoverLog(dir.path());
+    REQUIRE_FALSE(early.empty());
+    CHECK(CrashReport::endedEarly(early));
+
+    CHECK(runChild(dir.path(), "settled-abort") != 0);
+    const std::filesystem::path later = CrashReport::takeLeftoverLog(dir.path());
+    REQUIRE_FALSE(later.empty());
+    CHECK_FALSE(CrashReport::endedEarly(later));
+}
+
+TEST_CASE("the reports of old crashes are kept to the newest ten of each", "[ui][crash]") {
+    // A machine that crashed at every launch for a week filled the folder with them.
+    const takt4::test::TempDir dir;
+    const auto touch = [&](const std::string& name) { std::ofstream(dir.path() / name) << "x"; };
+    for (int i = 1; i <= 14; ++i) {
+        char stamp[32] = {};
+        std::snprintf(stamp, sizeof stamp, "202610%02d-120000", i);
+        touch(std::string("takt4-crash-") + stamp + ".dmp");
+        touch(std::string("takt4-unclean-") + stamp + ".log");
+    }
+    touch("takt4.log");
+    touch("settings.json");
+    touch("takt4-crash-notes.txt");
+    CrashReport::pruneReports(dir.path());
+    CHECK(filesIn(dir.path(), L".dmp").size() == 10);
+    // The oldest went, the newest stayed — and nothing else was touched.
+    CHECK_FALSE(std::filesystem::exists(dir.path() / "takt4-crash-20261001-120000.dmp"));
+    CHECK_FALSE(std::filesystem::exists(dir.path() / "takt4-unclean-20261004-120000.log"));
+    CHECK(std::filesystem::exists(dir.path() / "takt4-crash-20261005-120000.dmp"));
+    CHECK(std::filesystem::exists(dir.path() / "takt4-unclean-20261014-120000.log"));
+    std::size_t logs = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path())) {
+        logs += entry.path().filename().string().rfind("takt4-unclean-", 0) == 0 ? 1 : 0;
+    }
+    CHECK(logs == 10);
+    CHECK(std::filesystem::exists(dir.path() / "takt4.log"));
+    CHECK(std::filesystem::exists(dir.path() / "settings.json"));
+    CHECK(std::filesystem::exists(dir.path() / "takt4-crash-notes.txt"));
 }
 
 TEST_CASE("a log left by an unclean session is found once and kept", "[ui][crash]") {

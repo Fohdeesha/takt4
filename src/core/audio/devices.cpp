@@ -152,4 +152,47 @@ std::vector<InputDevice> listInputDevices(const PortAudioSession&) {
     return devices;
 }
 
+std::string baseInputName(std::string_view name) {
+    std::string out;
+    out.reserve(name.size());
+    std::size_t at = 0;
+    while (at < name.size()) {
+        // Where a description starts: the name's beginning, or inside its brackets.
+        if (at == 0 || name[at - 1] == '(') {
+            std::size_t digits = at;
+            while (digits < name.size() && name[digits] >= '0' && name[digits] <= '9') {
+                ++digits;
+            }
+            if (digits > at && digits + 1 < name.size() && name[digits] == '-' &&
+                name[digits + 1] == ' ') {
+                at = digits + 2;
+                continue;
+            }
+        }
+        out += name[at];
+        ++at;
+    }
+    return out;
+}
+
+std::optional<std::size_t> findInput(const std::vector<InputDevice>& devices, std::string_view name,
+                                     std::string_view hostApi) {
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        if (devices[i].name == name && devices[i].hostApiName == hostApi) {
+            return i;
+        }
+    }
+    const std::string base = baseInputName(name);
+    std::optional<std::size_t> found;
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        if (devices[i].hostApiName == hostApi && baseInputName(devices[i].name) == base) {
+            if (found) {
+                return std::nullopt;
+            }
+            found = i;
+        }
+    }
+    return found;
+}
+
 } // namespace takt4::audio

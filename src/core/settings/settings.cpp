@@ -2,10 +2,13 @@
 
 #include "core/fixtures/fixture_library.hpp"
 #include "core/fixtures/profile_json.hpp"
+#include "core/fixtures/profile_json_node.hpp"
 #include "core/io/atomic_file.hpp"
+#include "core/io/json_depth.hpp"
 #include "core/io/utf8.hpp"
 #include "core/output/osc_publisher.hpp"
 #include "core/settings/rule_json.hpp"
+#include "core/settings/rule_json_node.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -42,10 +45,12 @@ namespace {
 
 using nlohmann::json;
 
-/// The format's version. Nothing reads it yet — every field already falls back to its
-/// default, which handles a file from an older build — but a change that *cannot* be
-/// expressed that way will need it, and adding it afterwards is too late.
-constexpr int kFormatVersion = 1;
+/// The format a document says it is in: 1 when it says none — every file written before the
+/// version was read said 1, or nothing — and 1 for anything that is not a whole number.
+int formatOf(const json& document) {
+    const auto found = document.find("version");
+    return found != document.end() && found->is_number_integer() ? found->get<int>() : 1;
+}
 
 /// Wide enough for anything the tracker can be asked to follow, and narrow enough that a
 /// nonsense file cannot put the fold window somewhere the filter can never reach.
@@ -631,15 +636,14 @@ std::string toJson(const Settings& settings) {
         {"timing", timingToJson(settings.preset)},
         {"outputs", targets},
         {"fixtures", patch},
-        // Through `rule_json`, which owns the shape of a rule, and back through
-        // `json::parse` so it nests as an array rather than as a string of JSON.
-        // the rules are the largest thing a preset carries and the only part of it
-        // with a format of its own.
-        {"rules", json::parse(rulesToJson(settings.preset.rules))},
+        // Through `rule_json`, which owns the shape of a rule — as a node of this document, not
+        // as text parsed back in. the rules are the largest thing a preset carries and the
+        // only part of it with a format of its own.
+        {"rules", rulesToNode(settings.preset.rules)},
     };
     // The imported definitions, the same way through `profile_json`. Only when there are any.
     if (!settings.preset.library.empty()) {
-        preset["fixtureLibrary"] = json::parse(fixtures::libraryToJson(settings.preset.library));
+        preset["fixtureLibrary"] = fixtures::libraryToNode(settings.preset.library);
     }
 
     const json document{
@@ -810,7 +814,7 @@ Settings fromDocument(const json& document) {
             timingFromJson(preset.at("timing"), settings.preset);
         }
         if (preset.is_object() && preset.contains("rules")) {
-            settings.preset.rules = rulesFromJson(preset.at("rules").dump());
+            settings.preset.rules = rulesFromNode(preset.at("rules"));
         }
         if (preset.is_object() && preset.contains("fixtures") && preset.at("fixtures").is_array()) {
             for (const json& one : preset.at("fixtures")) {
@@ -878,7 +882,7 @@ Settings fromDocument(const json& document) {
             }
         }
         if (preset.is_object() && preset.contains("fixtureLibrary")) {
-            settings.preset.library = fixtures::libraryFromJson(preset.at("fixtureLibrary").dump());
+            settings.preset.library = fixtures::libraryFromNode(preset.at("fixtureLibrary"));
         }
         // A link to an entry the file does not have, or that cannot be a link, is no link: the
         // fixture keeps its channels and is a fixture patched by hand.
@@ -932,13 +936,16 @@ Settings fromDocument(const json& document) {
 
 } // namespace
 
-std::optional<Settings> parse(std::string_view text, std::string& problem) {
+std::optional<Settings> parse(std::string_view text, std::string& problem, int* version) {
     problem.clear();
     try {
-        const json document = json::parse(text);
+        const json document = io::parseJsonCapped(text);
         if (!document.is_object()) {
             problem = "it is not a settings file";
             return std::nullopt;
+        }
+        if (version != nullptr) {
+            *version = formatOf(document);
         }
         return fromDocument(document);
     } catch (const std::exception& e) {
@@ -967,7 +974,7 @@ Loaded loadChecked(const std::filesystem::path& path) {
         }
         return out;
     }
-    std::optional<Settings> parsed = parse(*text, problem);
+    std::optional<Settings> parsed = parse(*text, problem, &out.version);
     if (!parsed) {
         out.status = LoadStatus::Corrupt;
         out.problem = std::move(problem);
@@ -988,7 +995,8 @@ std::filesystem::path backupFile(const std::filesystem::path& file) {
     return backup;
 }
 
-Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom) {
+Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom,
+                      bool keepBackup) {
     Startup out;
     const Loaded loaded = loadChecked(readFrom);
     const std::string name = io::pathText(readFrom.filename());
@@ -1004,12 +1012,26 @@ Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::
         // The rig as it stood when takt4 last started cleanly, kept beside it. Taken here and
         // nowhere else, so an evening of autosaved edits never overwrites it: the one copy that
         // is worth going back to is the one from before tonight. Atomic like every other
-        // write, so a crash in the middle of this cannot leave a half backup either.
-        if (isOurs) {
+        // write, so a crash in the middle of this cannot leave a half backup either. Not after a
+        // session that ended at once (`keepBackup`), which this file may have caused.
+        if (isOurs && !keepBackup) {
             std::string ignored;
             if (const std::optional<std::string> bytes = io::readFile(file, ignored)) {
                 (void)io::replaceFile(backupFile(file), *bytes);
             }
+        }
+        // **Written by a newer takt4: not saved over without asking** (the operator, 2026-10-22).
+        // Every field this one does not know was left out as it was read, and the first autosave
+        // wrote the file back without them — a run of the old takt4 on another computer cost a preset
+        // its timing source, its latencies and its CDJ settings, and the next start its backup.
+        if (isOurs && loaded.version > kFormatVersion) {
+            out.writable = false;
+            out.notice = name + " was written by a newer takt4 (settings format " +
+                         std::to_string(loaded.version) + ", where this one reads " +
+                         std::to_string(kFormatVersion) +
+                         "), so takt4 will not save over it automatically: what only the newer "
+                         "one knows is kept. EXPORT keeps changes made here; SAVE writes the "
+                         "file over without them.";
         }
         return out;
     case LoadStatus::Unreadable:

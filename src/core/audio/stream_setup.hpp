@@ -9,6 +9,7 @@
 
 #if defined(_WIN32)
 #include <pa_asio.h>
+#include <pa_win_wasapi.h>
 #elif defined(__APPLE__)
 #include <pa_mac_core.h>
 #endif
@@ -26,6 +27,7 @@ struct HostStreamInfo {
 #if defined(_WIN32)
     PaAsioStreamInfo asio{};
     std::array<int, 2> selectors{};
+    PaWasapiStreamInfo wasapi{};
 #elif defined(__APPLE__)
     PaMacCoreStreamInfo mac{};
     std::array<SInt32, 2> map{};
@@ -38,9 +40,12 @@ struct HostStreamInfo {
 /// exactly those device channels; that is only valid where
 /// hasNativeChannelSelection(device.hostApi) holds, and throws std::logic_error
 /// otherwise. `suggestedLatency` < 0 means the device's default low input latency.
+/// `convertRate` asks a WASAPI device to take a rate it is not mixing at and convert
+/// (`paWinWasapiAutoConvert`); nothing on any other host API.
 void setupInputParameters(PaStreamParameters& params, HostStreamInfo& info,
                           const InputDevice& device, int channelCount,
-                          std::span<const int> nativeSelectors, double suggestedLatency);
+                          std::span<const int> nativeSelectors, double suggestedLatency,
+                          bool convertRate = false);
 
 /// The rate to open with: `requested` if > 0, else the device's default.
 double resolveSampleRate(const InputDevice& device, double requested) noexcept;
@@ -52,5 +57,10 @@ double resolveSampleRate(const InputDevice& device, double requested) noexcept;
 /// Throws, naming `device`, when the test binaries' sandbox is on: an audio device on this
 /// machine is the rig's (see `core/sandbox.hpp`). Called before every stream is opened.
 void refuseInSandbox(const std::string& device);
+
+/// Throws `PortAudioError` unless PortAudio's table still has `device` where the list it came
+/// from said: the same name, on the same host API, at its index. Called before every stream is
+/// opened, and before the sandbox is asked — it opens nothing.
+void checkStillListed(const InputDevice& device);
 
 } // namespace takt4::audio::detail

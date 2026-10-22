@@ -10,7 +10,8 @@ namespace takt4::audio::detail {
 
 void setupInputParameters(PaStreamParameters& params, HostStreamInfo& info,
                           const InputDevice& device, int channelCount,
-                          std::span<const int> nativeSelectors, double suggestedLatency) {
+                          std::span<const int> nativeSelectors, double suggestedLatency,
+                          bool convertRate) {
     params = PaStreamParameters{};
     params.device = device.index;
     params.channelCount = channelCount;
@@ -18,6 +19,20 @@ void setupInputParameters(PaStreamParameters& params, HostStreamInfo& info,
     params.suggestedLatency = suggestedLatency < 0.0 ? device.defaultLowInputLatency : suggestedLatency;
     params.hostApiSpecificStreamInfo = nullptr;
     info.pointer = nullptr;
+
+#if defined(_WIN32)
+    if (convertRate && device.hostApi == HostApiKind::Wasapi) {
+        info.wasapi = PaWasapiStreamInfo{};
+        info.wasapi.size = sizeof(PaWasapiStreamInfo);
+        info.wasapi.hostApiType = paWASAPI;
+        info.wasapi.version = 1;
+        info.wasapi.flags = paWinWasapiAutoConvert;
+        info.pointer = &info.wasapi;
+        params.hostApiSpecificStreamInfo = info.pointer;
+    }
+#else
+    (void)convertRate;
+#endif
 
     if (nativeSelectors.empty()) {
         return;
@@ -75,6 +90,22 @@ void throwPortAudioError(const char* what, PaError err) {
         }
     }
     throw PortAudioError(err, message);
+}
+
+void checkStillListed(const InputDevice& device) {
+    // **A list's indices belong to the table it was read from.** Every rescan replaces
+    // PortAudio's table, and one that ran past its limit puts its table in place whenever the
+    // driver at last answers: an index from the list before then named whatever sat there now,
+    // and another driver's device was opened, and called healthy.
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(device.index);
+    const PaHostApiInfo* api = info != nullptr ? Pa_GetHostApiInfo(info->hostApi) : nullptr;
+    if (info == nullptr || api == nullptr || info->name == nullptr || api->name == nullptr ||
+        device.name != info->name || device.hostApiName != api->name) {
+        throw PortAudioError(paInvalidDevice,
+                             device.name + " is not where the list of devices it was picked "
+                                           "from has it: the devices have been looked for again "
+                                           "since. Press RESCAN to read the list again.");
+    }
 }
 
 void refuseInSandbox(const std::string& device) {

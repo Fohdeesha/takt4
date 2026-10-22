@@ -7,6 +7,7 @@
 #include "core/engine/live_tracker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <portaudio.h>
 
 #include <algorithm>
 #include <atomic>
@@ -357,6 +358,185 @@ TEST_CASE("a driver that does not answer costs the caller its limit, and is aske
     REQUIRE(within(std::chrono::milliseconds(2000), [&] { return !tracker.stuck(); }));
     tracker.setLimits(LiveTracker::Limits{});
     CHECK(tracker.rescan());
+}
+
+TEST_CASE("a rescan is begun and asked after, and nobody waits for the drivers meanwhile",
+          "[audio]") {
+    // An outage looked for the devices every third try with the window's thread waiting — up to
+    // half a minute with ASIO, PANIC and the meters with it. Begun, it is asked after.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setLimits(shortLimits());
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> hold{true};
+    tracker.setAudioJobHook([released, &hold](const char* what) {
+        if (std::string_view(what) == "rescan" && hold) {
+            released.wait();
+        }
+    });
+    const std::uint64_t table = tracker.deviceTable();
+    const std::size_t listed = tracker.devices().size();
+
+    const auto asked = std::chrono::steady_clock::now();
+    REQUIRE(tracker.beginRescan());
+    CHECK(std::chrono::steady_clock::now() - asked < std::chrono::milliseconds(100));
+    std::string error;
+    CHECK(tracker.pollRescan(error) == LiveTracker::Progress::Pending);
+    // One at a time, and the list asked meanwhile is the one from before, at once — the thread
+    // would take the question only after the rescan.
+    CHECK_FALSE(tracker.beginRescan());
+    const auto listing = std::chrono::steady_clock::now();
+    CHECK(tracker.devices().size() == listed);
+    CHECK(std::chrono::steady_clock::now() - listing < std::chrono::milliseconds(100));
+
+    // Past its limit it is given up on, as `rescan` gives up — the driver holds the thread.
+    REQUIRE(within(std::chrono::milliseconds(2000),
+                   [&] { return tracker.pollRescan(error) != LiveTracker::Progress::Pending; }));
+    CHECK(error.find("did not answer") != std::string::npos);
+    CHECK(tracker.stuck());
+    CHECK(tracker.deviceTable() == table);
+    // And when the drivers do answer, a table is in place that nobody listed: said, so the
+    // window lists it before opening anything by an index from the old one.
+    release.set_value();
+    REQUIRE(within(std::chrono::milliseconds(5000), [&] { return !tracker.stuck(); }));
+    CHECK(tracker.deviceTable() == table + 1);
+
+    // An answer in time is done, and moves the table on too.
+    hold = false;
+    tracker.setLimits(LiveTracker::Limits{});
+    REQUIRE(tracker.beginRescan());
+    LiveTracker::Progress answer = LiveTracker::Progress::Pending;
+    error.clear();
+    REQUIRE(within(std::chrono::milliseconds(30000), [&] {
+        answer = tracker.pollRescan(error);
+        return answer != LiveTracker::Progress::Pending;
+    }));
+    CHECK(answer == LiveTracker::Progress::Done);
+    CHECK(error.empty());
+    CHECK(tracker.deviceTable() == table + 2);
+    CHECK(tracker.pollRescan(error) == LiveTracker::Progress::None);
+    tracker.setAudioJobHook({}); // before `hold` goes: the tracker's way out runs jobs too
+}
+
+TEST_CASE("an open is begun and asked after, and fails as a start would", "[audio]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setLimits(shortLimits());
+    // An input no list has: refused by the open, on the audio thread, and said on the ask after.
+    InputDevice gone;
+    gone.index = 4096;
+    gone.name = "takt4 test - an input that is not there";
+    gone.hostApiName = "ASIO";
+    gone.maxInputChannels = 2;
+    gone.defaultSampleRate = 48000.0;
+    tracker.beginStart(gone, ChannelSelection::single(0));
+    CHECK(tracker.starting());
+    std::string error;
+    REQUIRE(within(std::chrono::milliseconds(2000),
+                   [&] { return tracker.pollStart(error) != LiveTracker::Progress::Pending; }));
+    INFO(error);
+    CHECK(error.find("Press RESCAN") != std::string::npos);
+    CHECK_FALSE(tracker.starting());
+    CHECK_FALSE(tracker.running());
+    CHECK_FALSE(tracker.engine().running());
+
+    // One the driver does not answer: given up on at its limit, the thread left to the driver.
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "open") {
+            released.wait();
+        }
+    });
+    const auto asked = std::chrono::steady_clock::now();
+    tracker.beginStart(gone, ChannelSelection::single(0));
+    CHECK(std::chrono::steady_clock::now() - asked < std::chrono::milliseconds(100));
+    CHECK(tracker.pollStart(error) == LiveTracker::Progress::Pending);
+    REQUIRE(within(std::chrono::milliseconds(2000),
+                   [&] { return tracker.pollStart(error) != LiveTracker::Progress::Pending; }));
+    CHECK(error.find("did not answer") != std::string::npos);
+    CHECK(tracker.stuck());
+    // Nothing more is begun while it holds the thread.
+    CHECK_THROWS_AS(tracker.beginStart(gone, ChannelSelection::single(0)),
+                    takt4::audio::DriverNotAnswering);
+    CHECK_THROWS_AS(tracker.beginRescan(), takt4::audio::DriverNotAnswering);
+    release.set_value();
+    REQUIRE(within(std::chrono::milliseconds(2000), [&] { return !tracker.stuck(); }));
+    tracker.setAudioJobHook({});
+}
+
+TEST_CASE("the device list after a rescan that could not bring PortAudio back up is empty, "
+          "not a throw",
+          "[audio]") {
+    // PortAudio ended and not started again: no table to list. The list used to throw, into an
+    // IMPORT or the outage's next look at the devices, and the window ended with it. Made to
+    // happen on the audio thread, where PortAudio lives.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setAudioJobHook([](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            Pa_Terminate();
+            throw std::runtime_error("Pa_Initialize failed: made to, for the test");
+        }
+    });
+    REQUIRE(tracker.beginRescan());
+    std::string error;
+    REQUIRE(within(std::chrono::milliseconds(5000),
+                   [&] { return tracker.pollRescan(error) != LiveTracker::Progress::Pending; }));
+    CHECK(error.find("made to") != std::string::npos);
+    std::vector<InputDevice> devices;
+    CHECK_NOTHROW(devices = tracker.devices());
+    CHECK(devices.empty());
+}
+
+TEST_CASE("an open given up on while its stream is starting sends the engine nothing after",
+          "[audio][hardware]") {
+    // A driver that calls back before it has returned from its start: an open given up on then
+    // had its stream running with nothing able to shut it off from the engine — and the engine
+    // could be the tracker's that was going. Held here just after the start, calling back.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    INFO(device->hostApiName << " / " << device->name);
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> started{false};
+    tracker.setStartHook([released, &started] {
+        started = true;
+        released.wait();
+    });
+    tracker.beginStart(*device, ChannelSelection::single(0));
+    REQUIRE(within(std::chrono::milliseconds(10000), [&] { return started.load(); }));
+    // Calling back while it is held: what it sends goes where a running stream's goes.
+    std::uint64_t levels = 0;
+    CHECK(within(std::chrono::milliseconds(3000), [&] {
+        HopLevel level;
+        while (tracker.popLevel(level)) {
+            ++levels;
+        }
+        return levels >= 5;
+    }));
+
+    tracker.stop(); // gives up on the open
+    HopLevel level;
+    while (tracker.popLevel(level)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::uint64_t after = 0;
+    while (tracker.popLevel(level)) {
+        ++after;
+    }
+    CHECK(after == 0);
+
+    // The driver returns from its start: the stream is stopped and closed where it was opened,
+    // and the interface opens again.
+    release.set_value();
+    tracker.setStartHook({});
+    REQUIRE(within(std::chrono::milliseconds(3000), [&] { return !tracker.stuck(); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    tracker.start(*device, ChannelSelection::single(0));
+    CHECK(tracker.running());
+    tracker.stop();
 }
 
 TEST_CASE("a stream whose driver does not return from its stop is let go of, and sends the "

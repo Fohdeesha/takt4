@@ -23,15 +23,18 @@ public:
 
     /// A buffer of input has arrived, before any hop it completes is handed over: its first
     /// sample is internal-rate sample `firstSample` (the hop clock above, counting only what was
-    /// delivered), it was at the input at `steadyMicros` on `std::chrono::steady_clock`, and
-    /// `lostSamples` of audio, as internal-rate samples, have been lost before it since the stream
-    /// started (`LostTime`). What stamps a hop with the moment its audio was heard — see
-    /// `HostTimeSource`. The default ignores it; only a processor that stamps needs it.
-    virtual void beginBuffer(double firstSample, std::int64_t steadyMicros,
-                             double lostSamples) noexcept {
+    /// delivered), it was at the input at `steadyMicros` on `std::chrono::steady_clock` — zero
+    /// when that is not known: a buffer that came late, or caught up behind one, may have waited
+    /// in the driver — and `lostSamples` of audio, as internal-rate samples, have been lost
+    /// before it since the stream started, the last of it before sample `lostFrom` (`LostTime`).
+    /// What stamps a hop with the moment its audio was heard — see `HostTimeSource`. The default
+    /// ignores it; only a processor that stamps needs it.
+    virtual void beginBuffer(double firstSample, std::int64_t steadyMicros, double lostSamples,
+                             double lostFrom) noexcept {
         (void)firstSample;
         (void)steadyMicros;
         (void)lostSamples;
+        (void)lostFrom;
     }
 
 protected:

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <thread>
 
 namespace takt4::ui {
 
@@ -58,6 +60,17 @@ std::uintptr_t pumpThroughModalLoops(DragPump pump, void* user, unsigned periodM
 /// Stops what `pumpThroughModalLoops` started. Nothing for 0.
 void stopPumping(std::uintptr_t handle);
 
+/// What `whenSessionEnds` calls.
+using SessionEnd = void (*)(void* user);
+
+/// **Windows is ending the session** — shutting down, restarting or signing out — and ends the
+/// process once its windows have answered, with nothing after that run: no save on the way out,
+/// no lights out, and a next launch that says takt4 did not close normally. `hook` is called
+/// once, on this thread, from the first `WM_ENDSESSION` a window `keepPaintingWhileDragged` has
+/// taken over is sent, and has to do there and then whatever must be done before the process
+/// goes. Setting a hook arms it again; null forgets it. Nothing away from Windows.
+void whenSessionEnds(SessionEnd hook, void* user);
+
 /// A size in Slint's logical pixels, kept free of Slint's own types so this header is not.
 struct LogicalExtent {
     float width = 0.0f;
@@ -83,6 +96,31 @@ LogicalExtent fitWithin(LogicalExtent wanted, LogicalExtent work) noexcept;
 /// Away from Windows, or when the screen cannot be asked, `wanted` unchanged.
 LogicalExtent fitToScreen(LogicalExtent wanted) noexcept;
 void fitWindowsToScreen(bool fit) noexcept;
+
+/// A small window that says takt4 is starting, for the seconds before its own can open: the
+/// audio drivers are listed first, up to half a minute with ASIO, and a launch that showed
+/// nothing for that long was launched again. Shown when made, gone when destroyed. Windows only;
+/// nothing elsewhere, where there is no driver scan to wait for.
+class StartupSplash {
+public:
+    explicit StartupSplash(std::string_view text);
+    ~StartupSplash();
+
+    StartupSplash(const StartupSplash&) = delete;
+    StartupSplash& operator=(const StartupSplash&) = delete;
+
+    /// Keeps the splash drawn — this thread's messages dispatched, so it neither freezes nor is
+    /// called not responding — until `worker` has finished, then joins it.
+    void waitFor(std::thread& worker);
+
+    /// Its native window, for a second launch to bring forward meanwhile; null when there is none.
+    void* window() const noexcept { return window_; }
+
+private:
+    /// Windows only, so unused elsewhere.
+    [[maybe_unused]] void* window_ = nullptr;
+    [[maybe_unused]] std::wstring text_;
+};
 
 /// Says something that stops takt4 starting, where somebody will see it.
 ///

@@ -131,6 +131,8 @@ struct MachineSettings {
     /// The patch editor's sheets folded — A where, B channels, C how far it moves — remembered the
     /// same way (its redesign, 2026-09-30). All open the first time.
     std::array<bool, 3> patchSectionsFolded{false, false, false};
+
+    friend bool operator==(const MachineSettings&, const MachineSettings&) = default;
 };
 
 /// the tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s
@@ -245,11 +247,17 @@ struct Preset {
     /// uses is kept until the operator removes it. Written as `"fixtureLibrary"`; a build before
     /// it ignores the key, and its fixtures still work, unlinked.
     std::vector<fixtures::FixtureProfile> library;
+
+    friend bool operator==(const Preset&, const Preset&) = default;
 };
 
 struct Settings {
     MachineSettings machine;
     Preset preset;
+
+    /// Every field of both, so settings that differ in anything at all differ: what the autosave
+    /// asks before it builds the file's text, which costs a large rig a dozen milliseconds.
+    friend bool operator==(const Settings&, const Settings&) = default;
 };
 
 /// Where settings are kept: **the directory the running executable is in** — on macOS, the one
@@ -336,7 +344,16 @@ struct Loaded {
     /// What was wrong, in a few words, for `Corrupt` and `Unreadable` — "line 12, column 3:
     /// unexpected '}'", "it is empty", "permission denied". Empty otherwise.
     std::string problem;
+    /// The format the file says it is in (`kFormatVersion`), for `Loaded`: 1 for a file that says
+    /// none, as every file written before the version was read said 1.
+    int version = 0;
 };
+
+/// The settings format this takt4 writes, and the newest it reads whole. A file that says a
+/// later one was written by a newer takt4, with fields this one does not know and would leave
+/// out of anything it saved — so it is not saved over automatically (`openAtStartup`). One more
+/// whenever a field is added that an older takt4 would lose.
+inline constexpr int kFormatVersion = 2;
 
 /// `load`, saying what happened. Never throws.
 Loaded loadChecked(const std::filesystem::path& path);
@@ -371,7 +388,12 @@ struct Startup {
 ///     notice names both.
 ///   * **Could not be opened** — the defaults, a notice, and `writable` false, since a save
 ///     would replace a file that may be perfectly good and merely locked.
-Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom);
+///
+/// `keepBackup` leaves the backup as it is however the file reads: the last session ended before
+/// it had settled, and the file it started from may be why — the copy from the start before it is
+/// then the one worth keeping.
+Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::path& readFrom,
+                      bool keepBackup = false);
 
 /// Writes `path`, creating the directory if it is not there — **atomically**: see
 /// `io::replaceFile`. The file on disk is always a whole settings file, the old one or the new
@@ -410,7 +432,8 @@ Settings fromJson(std::string_view text);
 
 /// `fromJson`, or nothing with `problem` saying why the text is not a settings file at all.
 /// A file that parses and merely holds odd values is still a settings file: those values
-/// fall back one by one, exactly as `fromJson` does.
-std::optional<Settings> parse(std::string_view text, std::string& problem);
+/// fall back one by one, exactly as `fromJson` does. `version`, given, is set to the format the
+/// text says it is in (`kFormatVersion`).
+std::optional<Settings> parse(std::string_view text, std::string& problem, int* version = nullptr);
 
 } // namespace takt4::settings

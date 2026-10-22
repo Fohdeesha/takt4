@@ -1,10 +1,10 @@
-#include "core/audio/input_stream.hpp"
-
 #include "core/audio/channel_picker.hpp"
 #include "core/audio/devices.hpp"
 #include "core/audio/hop_meter.hpp"
+#include "core/audio/input_stream.hpp"
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/rates.hpp"
+#include "core/sandbox.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -50,6 +50,53 @@ std::optional<InputDevice> bestInputDevice(const takt4::audio::PortAudioSession&
 }
 
 } // namespace
+
+TEST_CASE("a device is opened only where the list it was picked from still has it", "[audio]") {
+    // PortAudio's table of devices is replaced by every rescan — and one that ran past its limit
+    // puts its table in place whenever the driver at last answers — so an index from the list
+    // before then named whatever sat there now: another driver's device opened, and called
+    // healthy. Refused before any device is asked anything, the sandbox included.
+    const takt4::audio::PortAudioSession session;
+    HopMeter meter;
+    const auto refused = [&](const InputDevice& device) {
+        INFO(device.hostApiName << " / " << device.name << " at " << device.index);
+        const std::uint64_t asked = takt4::sandbox::refusals(takt4::sandbox::Refused::Audio);
+        try {
+            InputStream stream(session, device, ChannelSelection::single(0), meter, {});
+            FAIL("opened");
+        } catch (const takt4::audio::PortAudioError& e) {
+            CHECK_THAT(std::string(e.what()), ContainsSubstring("Press RESCAN"));
+        }
+        CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Audio) == asked);
+    };
+    InputDevice gone;
+    gone.index = 4096;
+    gone.name = "an interface the list had";
+    gone.hostApiName = "ASIO";
+    gone.maxInputChannels = 2;
+    gone.defaultSampleRate = 48000.0;
+    refused(gone);
+
+    const std::vector<InputDevice> devices = takt4::audio::listInputDevices(session);
+    if (devices.empty()) {
+        SKIP("no input device on this machine");
+    }
+    InputDevice renamed = devices.front();
+    renamed.name = "another interface";
+    refused(renamed);
+    InputDevice elsewhere = devices.front();
+    elsewhere.hostApiName = "not " + elsewhere.hostApiName;
+    refused(elsewhere);
+    // Where the list has it, it goes on to be opened — which the tests' sandbox refuses.
+    if (takt4::sandbox::active()) {
+        try {
+            InputStream stream(session, devices.front(), ChannelSelection::single(0), meter, {});
+            FAIL("opened in the sandbox");
+        } catch (const takt4::audio::PortAudioError& e) {
+            CHECK_THAT(std::string(e.what()), ContainsSubstring("sandbox"));
+        }
+    }
+}
 
 TEST_CASE("the input device streams hops end to end", "[audio][hardware]") {
     // Phase 1's live path on whatever this machine has: open a real device, pick its
@@ -129,6 +176,43 @@ TEST_CASE("the input device streams hops end to end", "[audio][hardware]") {
     }
     CHECK(outOfOrder == 0);
 }
+
+#if defined(_WIN32)
+TEST_CASE("a WASAPI input asked for a rate Windows is not mixing it at is opened, converted",
+          "[audio][hardware]") {
+    // PortAudio reads each device's rate once, when it starts. An input whose rate is changed in
+    // Windows' sound settings after that is asked for the rate it had, and shared mode takes only
+    // the one Windows mixes at: refused, every time, so it never opened again until RESCAN. The
+    // same stale rate here, on a WASAPI input of this machine's.
+    const takt4::audio::PortAudioSession session;
+    std::optional<InputDevice> found;
+    for (const InputDevice& device : takt4::audio::listInputDevices(session)) {
+        if (device.hostApi == takt4::audio::HostApiKind::Wasapi && !device.isLoopback &&
+            device.maxInputChannels > 0 && device.defaultSampleRate > 0.0) {
+            found = device;
+            break;
+        }
+    }
+    if (!found) {
+        SKIP("no WASAPI input on this machine");
+    }
+    InputDevice stale = *found;
+    stale.defaultSampleRate = found->defaultSampleRate == 48000.0 ? 44100.0 : 48000.0;
+    INFO(stale.name << ", mixed at " << found->defaultSampleRate << " Hz, asked for "
+                    << stale.defaultSampleRate);
+    HopMeter meter;
+    InputStream stream(session, stale, ChannelSelection::single(0), meter, {});
+    CHECK(stream.sampleRate() == stale.defaultSampleRate);
+    stream.start();
+    const auto quarter = static_cast<std::uint64_t>(stale.defaultSampleRate / 4.0);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (stream.counters().framesIn < quarter && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    stream.stop();
+    CHECK(stream.counters().framesIn >= quarter);
+}
+#endif
 
 TEST_CASE("an ASIO interface is opened at the rate it is running at, and never moved",
           "[audio][hardware]") {

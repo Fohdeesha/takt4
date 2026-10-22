@@ -84,18 +84,20 @@ std::string hertz(double rate) {
 InputStream::InputStream(const PortAudioSession& /*session*/, const InputDevice& device,
                          const ChannelSelection& selection, HopProcessor& processor,
                          const InputStreamOptions& options) {
+    detail::checkStillListed(device);
     detail::refuseInSandbox(device.name);
     const ChannelPicker picker(device, selection, !options.forceSoftwareSlice);
     double rate = detail::resolveSampleRate(device, options.sampleRate);
 
     // One attempt at `atRate`, into a fresh Impl: the pipeline is built for its rate, so a
     // second attempt at another rate starts again from nothing.
+    bool convertRate = false;
     const auto openAt = [&](double atRate) {
         impl_ = std::make_unique<Impl>(device, picker, atRate, processor);
         PaStreamParameters params;
-        detail::setupInputParameters(params, impl_->hostInfo, device,
-                                     picker.streamChannelCount(), picker.nativeSelectors(),
-                                     options.suggestedLatency);
+        detail::setupInputParameters(params, impl_->hostInfo, device, picker.streamChannelCount(),
+                                     picker.nativeSelectors(), options.suggestedLatency,
+                                     convertRate);
         const PaError opened = Pa_OpenStream(&impl_->stream, &params, nullptr, atRate,
                                              paFramesPerBufferUnspecified, paNoFlag,
                                              &Impl::callback, impl_.get());
@@ -133,6 +135,16 @@ InputStream::InputStream(const PortAudioSession& /*session*/, const InputDevice&
             rate = clocked;
             err = openAt(rate);
         }
+    }
+    // **A WASAPI input whose rate in Windows' sound settings has changed** since the device list
+    // was read is asked for the rate it had then — PortAudio reads the list once — and shared
+    // mode takes only the rate Windows mixes at: refused, every time, so an input set to 44.1 kHz
+    // under a running takt4 was never opened again. Windows converts it instead, asked to; only
+    // for that refusal, and only when the rate was the device's default rather than asked for.
+    if (device.hostApi == HostApiKind::Wasapi && err == paInvalidSampleRate &&
+        options.sampleRate <= 0.0) {
+        convertRate = true;
+        err = openAt(rate);
     }
     if (err != paNoError) {
         detail::throwPortAudioError("Pa_OpenStream failed", err);

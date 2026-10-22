@@ -10,10 +10,14 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/tracking/state_space.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace takt4::engine {
@@ -32,12 +36,15 @@ namespace takt4::engine {
 /// `takt4_core` alone, so a UI-side version of this could not be tested at all, and the
 /// headless mode would have to be written a second time.
 ///
-/// **Every PortAudio call it makes is made on an `audio::AudioThread` of its own**, and waited
-/// for no longer than `Limits` says: a driver wedged in a stop, an
-/// open or a rescan holds that thread, not the caller's — which is the window's, and was frozen
-/// with PANIC in it. Such a driver is `stuck()`: the stream it was stopping is let go of,
-/// detached first so nothing it sends reaches the engine, and until the driver answers nothing
-/// else is asked of it — `start` and `rescan` throw `audio::DriverNotAnswering` at once.
+/// **Every PortAudio call it makes is made on an `audio::AudioThread` of its own** (an earlier review of
+/// 2026-09-25, L23): a driver wedged in a stop, an open or a rescan holds that thread, and the
+/// caller — the window's thread, which was frozen with PANIC in it — waits for it no longer than
+/// `Limits` says: `stop` and `start` and `rescan` wait out their limits at most, and
+/// `beginStart` and `beginRescan`, which the window's outage handling uses, not at all — they are
+/// asked after (`pollStart`, `pollRescan`). Such a driver is `stuck()`: the stream it was
+/// stopping is let go of, detached first so nothing it sends reaches the engine, and until the
+/// driver answers nothing else is asked of it — `start` and `rescan`, and the two begun, throw
+/// `audio::DriverNotAnswering` at once.
 ///
 /// **It deliberately does not own the transports**, exactly as `BeatEngine` does not:
 /// `core/engine` stays clear of `core/output`, and whoever wants beats drains
@@ -105,8 +112,17 @@ public:
     /// at the last `rescan()`. Not freshly enumerated each call, which is what this used to
     /// claim: PortAudio builds its device table once, so an interface switched on after takt4
     /// started was never listed, however often this was asked. The indices
-    /// in it are only meaningful until the next `rescan()`.
+    /// in it are only meaningful with the table they were read from (`deviceTable`).
+    ///
+    /// The list from before while a rescan is going on — the audio thread would take the
+    /// question only after it — or while a driver holds the thread. Empty when the last rescan
+    /// could not bring PortAudio back up: there is no table to read until one does.
     std::vector<audio::InputDevice> devices() const;
+
+    /// Which device table PortAudio has: moved on by every rescan that has finished, one its
+    /// caller stopped waiting for among them — which put a table in place that nobody has listed.
+    /// A list read under another number names devices by indices that now mean something else.
+    std::uint64_t deviceTable() const noexcept { return table_->load(std::memory_order_acquire); }
 
     /// For the tests: every listing passes through `hook` before anybody sees it — a machine
     /// whose devices reorder, vanish or appear across a rescan, which no test can arrange with
@@ -115,6 +131,12 @@ public:
     void setDeviceListHook(std::function<void(std::vector<audio::InputDevice>&)> hook) {
         deviceListHook_ = std::move(hook);
     }
+
+    /// For the tests: called on the audio thread by every open from here on, once its stream has
+    /// been started and before the open is done with it — a driver slow to return from its start
+    /// and calling back meanwhile, which is when an open can be given up on with its stream
+    /// running. Empty for none, which is the application.
+    void setStartHook(std::function<void()> hook) { startHook_ = std::move(hook); }
 
     /// Makes PortAudio enumerate the machine's devices again — an interface switched on
     /// late, or one that went away and came back. Only while stopped, because every device
@@ -137,8 +159,40 @@ public:
     /// Detaches the stream from the engine, stops and closes it on the audio thread, and stops
     /// the engine. Returns within `Limits::stop` however the driver behaves: a driver that has
     /// not answered by then is left to finish on the audio thread, and `stuck()` says so. Safe to
-    /// call when nothing is running.
+    /// call when nothing is running. An open `beginStart` began and nobody has asked after is
+    /// given up on: closed by the audio thread when it is made.
     void stop() noexcept;
+
+    /// How a `beginStart` or a `beginRescan` has got on (`pollStart`, `pollRescan`).
+    enum class Progress : std::uint8_t {
+        /// Nothing begun, or its answer already taken.
+        None,
+        /// Still with the driver.
+        Pending,
+        /// Open and running, as `start` leaves it; or the devices listed again.
+        Done,
+        /// Refused, failed or given up on: why is in the `error` given.
+        Failed,
+    };
+
+    /// `start`, **without waiting for the driver** — for the window, which an interface gone
+    /// missing held for up to `Limits::open` at every try to bring it back, PANIC and all.
+    /// Whatever was running is stopped, as `start` stops it; the open goes on on the audio
+    /// thread; `pollStart` says how it went. Throws what `start` throws before a driver is asked:
+    /// `audio::DriverNotAnswering` while one still holds the thread.
+    void beginStart(const audio::InputDevice& device, const audio::ChannelSelection& selection);
+    /// Where the open `beginStart` began has got to: `Done` is open and running, `Failed` gives
+    /// why in `error`. Given up on as `start` gives up, once it has taken `Limits::open`: failed,
+    /// and the driver `stuck` until it answers.
+    Progress pollStart(std::string& error);
+    /// An open is with the driver.
+    bool starting() const noexcept { return opening_ != nullptr; }
+
+    /// `rescan`, without waiting: false, and nothing begun, while a stream is open or being
+    /// opened. Throws as `rescan` does before the drivers are asked.
+    bool beginRescan();
+    /// Where it has got to; given up on after `Limits::rescan`, as `rescan` gives up.
+    Progress pollRescan(std::string& error);
 
     bool running() const noexcept { return stream_ != nullptr; }
 
@@ -179,6 +233,29 @@ private:
     void initialise();
     /// Throws `audio::DriverNotAnswering` while a driver holds the audio thread.
     void refuseWhileStuck(const char* asked) const;
+    /// Where the audio thread puts a stream it has opened and started, for a caller that may have
+    /// stopped waiting for it by then — which the job finds out there, under the same lock.
+    struct OpenSlot;
+    /// The engine readied for a run, before its stream is opened: see `start`.
+    void readyForRun();
+    /// A rescan, to be run on `thread_`: PortAudio ended and brought up again, and `deviceTable`
+    /// moved on.
+    std::function<void()> rescanJob();
+    /// The open job, which puts what it opened in `slot`.
+    std::function<void()> openJob(std::shared_ptr<OpenSlot> slot, const audio::InputDevice& device,
+                                  const audio::ChannelSelection& selection);
+    /// An open that did not finish in time, or that nobody wants any more: the slot told so, and
+    /// a stream it already holds let go of on the audio thread, the way `stop` lets one go.
+    void giveUp(OpenSlot& slot) noexcept;
+
+    /// An open `beginStart` began: where its stream goes, the job, what it was for, and when.
+    struct Opening {
+        std::shared_ptr<OpenSlot> slot;
+        audio::AudioThread::Ticket ticket;
+        audio::InputDevice device;
+        audio::ChannelSelection selection;
+        std::chrono::steady_clock::time_point began;
+    };
 
     /// **First**, so it is built before anything that is made on it and destroyed after it all.
     /// Mutable because asking it for the device list is a const question with a thread's answer.
@@ -202,9 +279,17 @@ private:
     audio::HostTimeSource* hostTime_ = nullptr;
     /// Declared after everything it points at, so it is destroyed before them.
     std::unique_ptr<audio::InputStream> stream_;
+    /// The same for a stream still being opened, and a rescan going on.
+    std::unique_ptr<Opening> opening_;
+    audio::AudioThread::Ticket rescanning_;
+    std::chrono::steady_clock::time_point rescanBegan_;
     std::optional<Running> current_;
-    /// See `setDeviceListHook`.
+    /// See `setDeviceListHook` and `setStartHook`.
     std::function<void(std::vector<audio::InputDevice>&)> deviceListHook_;
+    std::function<void()> startHook_;
+    /// See `deviceTable`. Shared with the rescan jobs, which can finish after this has gone.
+    std::shared_ptr<std::atomic<std::uint64_t>> table_ =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
 };
 
 } // namespace takt4::engine

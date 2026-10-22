@@ -371,6 +371,8 @@ export component MainWindow inherits Window {
   /// when this is true and pairs when it is not.
   in-out property <bool> input-mono;
   in-out property <bool> running;
+  /// A RESCAN is going on: the button greyed until the drivers have answered.
+  in property <bool> rescanning;
   /// The input has stopped delivering audio, or is being reopened after it did — an earlier review
   /// C4. While this is true the readouts are the last ones before the audio stopped, and the
   /// lock readout says "no audio" rather than "locked" at a tempo nothing is producing any more.
@@ -994,6 +996,7 @@ export component MainWindow inherits Window {
                   y: parent.height - 17px - self.height / 2;
                   width: parent.width;
                   height: 40px;
+                  enabled: !root.rescanning;
                   text: "rescan";
                   font-size: 19px;
                   pad: 16px;

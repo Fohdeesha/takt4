@@ -269,6 +269,7 @@ if(TAKT4_BUILD_UI)
     ui/import_test.cpp
     ui/main.cpp
     ui/keys.hpp
+    ui/native_window_test.cpp
     ui/model_watch.hpp
     ui/nothing_real.hpp
     ui/rule_text_test.cpp
@@ -297,6 +298,9 @@ if(TAKT4_BUILD_UI)
     PRIVATE
       takt4::ui
       takt4::core
+      # Directly too, for the test that ends PortAudio under the window as a rescan that cannot
+      # start it again leaves it (ui/window_test.cpp).
+      portaudio
       takt4::miniz
       Catch2::Catch2
       takt4::warnings

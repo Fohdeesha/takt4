@@ -1,5 +1,6 @@
 #include "core/audio/audio_thread.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -23,6 +24,9 @@ namespace {
 
 /// How long the destructor lets the jobs still queued finish before it leaves them to it.
 constexpr std::chrono::seconds kFinishOnExit{5};
+
+/// See `AudioThread::leftToADriver`.
+std::atomic<bool> gLeftToADriver{false};
 
 } // namespace
 
@@ -176,7 +180,12 @@ AudioThread::~AudioThread() {
         // A driver holding the thread. Nothing here can bring it back; it keeps its own share of
         // the state, and the process ends around it.
         thread_.detach();
+        gLeftToADriver.store(true, std::memory_order_release);
     }
+}
+
+bool AudioThread::leftToADriver() noexcept {
+    return gLeftToADriver.load(std::memory_order_acquire);
 }
 
 bool AudioThread::enqueue(const char* what, std::function<void()>& fn,
@@ -219,6 +228,61 @@ bool AudioThread::enqueue(const char* what, std::function<void()>& fn,
 bool AudioThread::run(const char* what, std::function<void()> job,
                       std::chrono::milliseconds limit) {
     return enqueue(what, job, limit, true);
+}
+
+AudioThread::Ticket AudioThread::post(const char* what, std::function<void()> fn) {
+    auto job = std::make_shared<State::Job>();
+    job->what = what;
+    job->fn.swap(fn); // see `enqueue`
+    {
+        const std::lock_guard<std::mutex> lock(state_->mutex);
+        if (state_->running && state_->running->abandoned) {
+            // Behind a job that has not come back, this would never start: refused, as `run` is.
+            job->fn = nullptr;
+            return {};
+        }
+        state_->queue.push_back(job);
+    }
+    state_->signal();
+    Ticket ticket;
+    ticket.state_ = state_;
+    ticket.job_ = job;
+    return ticket;
+}
+
+bool AudioThread::Ticket::done() const {
+    if (!job_) {
+        return true;
+    }
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return static_cast<const State::Job*>(job_.get())->done;
+}
+
+void AudioThread::Ticket::rethrow() const {
+    if (!job_) {
+        return;
+    }
+    std::exception_ptr error;
+    {
+        // Taken out under the lock, so the exception is let go of on this thread: see `enqueue`.
+        const std::lock_guard<std::mutex> lock(state_->mutex);
+        auto* job = static_cast<State::Job*>(job_.get());
+        if (!job->done) {
+            return;
+        }
+        error = std::exchange(job->error, nullptr);
+    }
+    if (error) {
+        std::rethrow_exception(error);
+    }
+}
+
+void AudioThread::Ticket::abandon() {
+    if (!job_) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    static_cast<State::Job*>(job_.get())->abandoned = true;
 }
 
 bool AudioThread::handOver(const char* what, std::function<void()> job,

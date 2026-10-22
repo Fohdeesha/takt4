@@ -159,6 +159,8 @@ struct Conditions {
         return minConfidence > 0.0 || !intensities[0] || !intensities[1] || !intensities[2] ||
                minBpm > 0.0 || maxBpm < 1000.0 || probability < 1.0;
     }
+
+    friend bool operator==(const Conditions&, const Conditions&) = default;
 };
 
 /// What a fired rule hands the transports.
@@ -501,6 +503,8 @@ struct DmxSend {
     /// How far apart those heads move, 0 to 1 — "stagger movement between selected heads". See
     /// `dmx::Payload::spread`. 0, together, unless the operator asks.
     double spread = 0.0;
+
+    friend bool operator==(const DmxSend&, const DmxSend&) = default;
 };
 
 /// What a follow-up replaces of a DMX rule's own effect.
@@ -519,6 +523,8 @@ struct DmxFollow {
     DelayUnit unit = DelayUnit::Beats;
     double durationSeconds = 0.5;
     double durationBeats = 1.0;
+
+    friend bool operator==(const DmxFollow&, const DmxFollow&) = default;
 };
 
 /// One of the messages a rule sends *after* the one it fired — the *"optional follow-up
@@ -580,6 +586,8 @@ struct FollowUp {
     /// a 50 into a 0.077 the moment the unit changed, which is a box nobody can type in and a
     /// preset nobody can read.
     double delayBeats = 1.0;
+
+    friend bool operator==(const FollowUp&, const FollowUp&) = default;
 };
 
 /// How many follow-ups one rule may carry. Not a limit anybody should meet: it is here so a
@@ -752,6 +760,10 @@ public:
         /// editor says the routing reaches nothing, and nothing is lost if an output with that
         /// id comes back — an import carries its outputs' ids along with its rules.
         std::vector<std::string> outputs;
+
+        /// Every field, so a rule changed in any way is a different rule — what the autosave
+        /// looks at before it writes anything out.
+        friend bool operator==(const Config&, const Config&) = default;
     };
 
     explicit Rule(Config config);

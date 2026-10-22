@@ -37,6 +37,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <portaudio.h>
 #include <slint-platform.h>
 
 #include <algorithm>
@@ -145,6 +146,26 @@ void waitUntil(WindowController& controller, Done done) {
         slint::platform::update_timers_and_animations();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+}
+
+/// Waits up to five seconds for `done`, looking every couple of milliseconds.
+template <typename Done>
+bool waitFor(Done done) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!done()) {
+        if (std::chrono::steady_clock::now() >= until) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+
+/// RESCAN carried through: begun by `rescanDevices` or the button, finished by the redraws after
+/// it once the drivers have answered.
+void rescanned(WindowController& controller) {
+    waitUntil(controller, [&] { return !controller.rescanning(); });
+    REQUIRE_FALSE(controller.rescanning());
 }
 
 std::optional<InputDevice> bestInputDevice(const LiveTracker& tracker) {
@@ -1973,16 +1994,16 @@ TEST_CASE("a driver that does not answer leaves the window working, says so, and
         }
     });
 
+    // RESCAN waits for nothing: begun, said, and the window goes on.
     const auto pressed = std::chrono::steady_clock::now();
     controller.rescanDevices();
-    CHECK(std::chrono::steady_clock::now() - pressed < std::chrono::seconds(2));
+    CHECK(std::chrono::steady_clock::now() - pressed < std::chrono::milliseconds(200));
+    CHECK(controller.rescanning());
+    CHECK(std::string(controller.window().get_status()).find("Looking for devices") !=
+          std::string::npos);
+    // Until its limit, on the redraws after it — which is when the driver is let go of.
+    rescanned(controller);
     CHECK(controller.statusIsError());
-    {
-        const std::string status(controller.window().get_status());
-        INFO(status);
-        CHECK(status.find("did not answer") != std::string::npos);
-    }
-    controller.tick();
     {
         const std::string trouble(controller.window().get_input_trouble());
         INFO(trouble);
@@ -3466,6 +3487,7 @@ TEST_CASE("a remembered interface is still the one saved on a machine with no in
 
     // And RESCAN looks for it, not for nothing.
     controller.window().invoke_rescan_clicked();
+    rescanned(controller);
     CHECK(controller.currentSettings().machine.deviceName == "An interface that is switched off");
 }
 
@@ -3508,6 +3530,7 @@ TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
     const std::string api = controller.devices()[pick].hostApiName;
 
     controller.window().invoke_rescan_clicked();
+    rescanned(controller);
     REQUIRE(controller.deviceIndex() >= 0);
     const InputDevice& after = controller.devices()[static_cast<std::size_t>(controller.deviceIndex())];
     CHECK(after.name == chosen);
@@ -3579,6 +3602,169 @@ TEST_CASE("an outage is still brought back while a dialog holds the window's loo
 }
 #endif
 
+TEST_CASE("an outage waits for no driver, and its tries come further apart the longer it lasts",
+          "[ui]") {
+    // An open and a look at the devices each held the window's thread — PANIC's, the meters' —
+    // for up to ten and thirty seconds, at every try while the interface was gone, and the tries
+    // came every two seconds all night. Here the gone interface's driver does not answer.
+    LiveTracker tracker(kWeights, kStateSpace);
+    LiveTracker::Limits limits;
+    limits.open = std::chrono::milliseconds(300);
+    limits.stop = std::chrono::milliseconds(300);
+    limits.rescan = std::chrono::milliseconds(300);
+    limits.list = std::chrono::milliseconds(300);
+    tracker.setLimits(limits);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {motuAt(0)}; });
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "open") {
+            released.wait();
+        }
+    });
+    WindowController controller(tracker);
+    using Reading = takt4::audio::InputWatchdog::Reading;
+    const takt4::audio::AsioDriverEvents nothing;
+    controller.beginOutageOn({motuAt(0), takt4::audio::ChannelSelection::single(5)}, 100.0);
+    // Asks after whatever the outage began until it has its answer, as the redraws do.
+    const auto answered = [&](double now) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (controller.outageAsking() && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            controller.superviseInput(Reading{}, nothing, now);
+        }
+        REQUIRE_FALSE(controller.outageAsking());
+        return std::string(controller.window().get_status());
+    };
+
+    // The first try: begun, and the thread back at once, though the driver holds the open.
+    const auto asked = std::chrono::steady_clock::now();
+    controller.superviseInput(Reading{}, nothing, 101.1);
+    CHECK(std::chrono::steady_clock::now() - asked < std::chrono::milliseconds(100));
+    CHECK(controller.outageTries() == std::optional<int>(1));
+    CHECK(controller.outageAsking());
+    // PANIC meanwhile, from the window's own button.
+    controller.window().invoke_panic_clicked();
+    CHECK(panickedNow(controller));
+    controller.releasePanic();
+    {
+        const std::string status = answered(101.1);
+        INFO(status);
+        CHECK(status.find("did not answer") != std::string::npos);
+        CHECK(status.find("Trying again in 2 s") != std::string::npos);
+    }
+
+    // Then two seconds, four, eight, sixteen, and thirty from then on — never a moment early.
+    const std::array<double, 6> waits = {2.0, 4.0, 8.0, 16.0, 30.0, 30.0};
+    double now = 101.1;
+    for (std::size_t k = 1; k < waits.size(); ++k) {
+        controller.superviseInput(Reading{}, nothing, now + waits[k - 1] - 0.1);
+        CHECK(controller.outageTries() == std::optional<int>(static_cast<int>(k)));
+        now += waits[k - 1] + 0.05;
+        controller.superviseInput(Reading{}, nothing, now);
+        const std::string status = answered(now);
+        INFO("try " << k + 1 << ": " << status);
+        CHECK(controller.outageTries() == std::optional<int>(static_cast<int>(k + 1)));
+        CHECK(status.find("Trying again in " + std::to_string(static_cast<int>(waits[k])) + " s") !=
+              std::string::npos);
+    }
+    release.set_value();
+    REQUIRE(waitFor([&] { return !tracker.stuck(); }));
+    tracker.setAudioJobHook({});
+}
+
+TEST_CASE("a device table a late rescan put in place is listed before anything is opened from "
+          "the old one",
+          "[ui]") {
+    // A rescan given up on at its limit puts its table in place whenever the drivers at last
+    // answer — renumbering every device, while the window went on holding the old list. START
+    // then opened whatever sat at the old index. Here the interface moves from 1 to 0.
+    LiveTracker tracker(kWeights, kStateSpace);
+    LiveTracker::Limits limits;
+    limits.rescan = std::chrono::milliseconds(300);
+    tracker.setLimits(limits);
+    const auto device = [](const char* name, int index) {
+        InputDevice made;
+        made.index = index;
+        made.name = name;
+        made.hostApiName = "ASIO";
+        made.maxInputChannels = 8;
+        made.defaultSampleRate = 48000.0;
+        return made;
+    };
+    std::mutex machineMutex;
+    std::vector<InputDevice> machine = {device("A desk mic", 0), device("MOTU Pro Audio", 1)};
+    tracker.setDeviceListHook([&](std::vector<InputDevice>& list) {
+        const std::lock_guard<std::mutex> lock(machineMutex);
+        list = machine;
+    });
+    WindowController controller(tracker);
+    controller.window().invoke_device_picked(1);
+    REQUIRE(controller.devices()[1].name == "MOTU Pro Audio");
+
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            released.wait();
+        }
+    });
+    controller.rescanDevices();
+    rescanned(controller); // given up on at its limit
+    CHECK(tracker.stuck());
+    {
+        const std::lock_guard<std::mutex> lock(machineMutex);
+        machine = {device("MOTU Pro Audio", 0), device("A desk mic", 1)};
+    }
+    release.set_value();
+    REQUIRE(waitFor([&] { return !tracker.stuck(); }));
+    tracker.setAudioJobHook({});
+
+    controller.tick();
+    REQUIRE(controller.deviceIndex() >= 0);
+    const InputDevice& picked =
+        controller.devices()[static_cast<std::size_t>(controller.deviceIndex())];
+    CHECK(picked.name == "MOTU Pro Audio");
+    CHECK(picked.index == 0);
+    tracker.setDeviceListHook({});
+}
+
+TEST_CASE("IMPORT after a RESCAN that could not bring PortAudio back up goes on, with no input",
+          "[ui][settings]") {
+    // PortAudio ended and not started again has no devices to list, and the list threw — into
+    // IMPORT's callback, and out of the window. Made to happen on the audio thread.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    tracker.setAudioJobHook([](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            Pa_Terminate();
+            throw std::runtime_error("Pa_Initialize failed: made to, for the test");
+        }
+    });
+    controller.rescanDevices();
+    rescanned(controller);
+    {
+        const std::string status(controller.window().get_status());
+        INFO(status);
+        CHECK(status.find("Could not look for devices again") != std::string::npos);
+        CHECK(controller.statusIsError());
+    }
+    tracker.setAudioJobHook({});
+
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "the other rig.json";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << R"({"machine": {"deviceName": "The other rig's interface", "hostApiName": "ASIO"}})";
+    }
+    bool imported = false;
+    CHECK_NOTHROW(imported = controller.importFrom(file));
+    CHECK(imported);
+    CHECK(controller.devices().empty());
+    CHECK(controller.deviceIndex() == -1);
+    CHECK(controller.currentSettings().machine.deviceName == "The other rig's interface");
+}
+
 TEST_CASE("an outage that looks for the devices again finds its interface there by name",
           "[ui]") {
     // An outage long enough to reach its third reopen reads the
@@ -3626,14 +3812,20 @@ TEST_CASE("an outage that looks for the devices again finds its interface there 
     machine = {device("USB Mic", 0, "MME", 1), device("Realtek Mic", 1, "MME", 2),
                device("Speakers (loopback)", 2, "Windows WASAPI", 2),
                device("MOTU Pro Audio", 3, "ASIO", 8)};
-    // The tries come at a second, then every two; the third looks at the machine again.
+    // A try each time one is due — half a minute apart at the most — with what it began, an
+    // open or a look at the machine, asked after until it has its answer, as the redraws do.
+    // The first opens the list there is, and fails; the second looks at the machine again.
     const auto tries = [&controller, &now](int count) {
         for (int i = 0; i < count; ++i) {
-            now += 2.1;
+            now += 31.0;
             controller.superviseInput({}, {}, now);
+            REQUIRE(waitFor([&] {
+                controller.superviseInput({}, {}, now);
+                return !controller.outageAsking();
+            }));
         }
     };
-    tries(3);
+    tries(2);
     CHECK(selected() == "MOTU Pro Audio");
     CHECK(controller.channelIndex() == 5);
     CHECK(controller.window().get_device_index() == controller.deviceIndex());
@@ -3653,9 +3845,8 @@ TEST_CASE("an outage that looks for the devices again finds its interface there 
     SECTION("an interface that is not there is not replaced by another") {
         machine = {device("USB Mic", 0, "MME", 1), device("Realtek Mic", 1, "MME", 2),
                    device("Speakers (loopback)", 2, "Windows WASAPI", 2)};
-        // Ten seconds on, when the list may be read again, and three more tries to reach it.
-        now += 10.0;
-        tries(3);
+        // The next try looks at the machine again.
+        tries(1);
         CHECK(controller.deviceIndex() == -1);
         CHECK(controller.currentSettings().machine.deviceName == "MOTU Pro Audio");
         {
@@ -3675,6 +3866,7 @@ TEST_CASE("an outage that looks for the devices again finds its interface there 
         CHECK(controller.currentSettings().machine.channel == 5);
         machine.push_back(device("MOTU Pro Audio", 3, "ASIO", 8));
         controller.rescanDevices();
+        rescanned(controller);
         CHECK(selected() == "MOTU Pro Audio");
         CHECK(controller.channelIndex() == 5);
     }
@@ -3709,6 +3901,7 @@ TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN cl
         const takt4::test::ScopedVariable asio("TAKT4_NO_ASIO", nullptr);
         const takt4::test::ScopedVariable fall("TAKT4_TEST_ASIO_SCAN", "fall-over");
         controller.window().invoke_rescan_clicked();
+        rescanned(controller); // the scan runs on the audio thread, inside these
     }
     const std::string again(controller.window().get_status());
     INFO("after a RESCAN that fell over again: " << again);
@@ -3718,6 +3911,7 @@ TEST_CASE("an ASIO driver that fell over while being asked is said and RESCAN cl
     // And a RESCAN that finds nothing wrong — with no ASIO wanted this time, as in every other
     // test — says so, and what was said goes with the problem.
     controller.window().invoke_rescan_clicked();
+    rescanned(controller);
     const std::string after(controller.window().get_status());
     INFO("after RESCAN: " << after);
     CHECK(after.find("ASIO") == std::string::npos);
@@ -3794,6 +3988,13 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     controller.superviseInput(Reading{}, nothing, 100.5);
     CHECK(controller.window().get_input_lost());
     controller.superviseInput(Reading{}, nothing, 101.1);
+    // Begun, and asked after on the looks that follow until it has opened: nothing waits for the
+    // driver.
+    const auto opening = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (controller.outageAsking() && std::chrono::steady_clock::now() < opening) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        controller.superviseInput(Reading{}, nothing, 101.1);
+    }
     CHECK(tracker.running());
     CHECK(controller.window().get_input_lost());
     CHECK(std::string(controller.window().get_status()).find("waiting for it to send audio") !=
@@ -3853,6 +4054,50 @@ TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
     CHECK_FALSE(controller.window().get_input_lost());
     CHECK_FALSE(controller.window().get_running());
     CHECK_FALSE(controller.outageTries().has_value());
+}
+
+TEST_CASE("a driver that keeps asking to be reset is reopened four times a minute, then left until "
+          "START",
+          "[ui][hardware]") {
+    // An interface on an external clock that misreports its rate was reopened every three seconds
+    // all night and never settled.
+    LiveTracker tracker(kWeights, kStateSpace);
+    if (!bestInputDevice(tracker)) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    using Reading = takt4::audio::InputWatchdog::Reading;
+    takt4::audio::AsioDriverEvents reset;
+    reset.resetRequest = true;
+    for (int i = 0; i < 4; ++i) {
+        controller.superviseInput(Reading{}, reset, 100.0 + i);
+        const std::string status(controller.window().get_status());
+        INFO("ask " << i + 1 << ": " << status);
+        CHECK(status.find("asked to be reset; reopened at") != std::string::npos);
+        CHECK(tracker.running());
+    }
+    const takt4::audio::InputStream* const kept = tracker.stream();
+    controller.superviseInput(Reading{}, reset, 104.0);
+    const std::string held(controller.window().get_status());
+    INFO(held);
+    CHECK(held.find("reopened 4 times in a minute") != std::string::npos);
+    CHECK(controller.statusIsError());
+    CHECK(tracker.stream() == kept);
+    // Not again, and not said again — a minute on included.
+    controller.window().set_status(slint::SharedString("something else"));
+    controller.superviseInput(Reading{}, reset, 200.0);
+    CHECK(tracker.stream() == kept);
+    CHECK(std::string(controller.window().get_status()) == "something else");
+    // START is the operator's word that it is worth reopening again.
+    controller.toggleRun();
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    controller.superviseInput(Reading{}, reset, 300.0);
+    CHECK(std::string(controller.window().get_status()).find("asked to be reset; reopened at") !=
+          std::string::npos);
+    controller.toggleRun();
 }
 
 TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes quiet is reopened",
@@ -4005,43 +4250,53 @@ TEST_CASE("a driver's resyncs are counted with the input's other trouble", "[ui]
 }
 
 TEST_CASE("an outage's next look at the machine is timed from when the last one ended", "[ui]") {
-    // Every third try during an outage the machine's devices are
-    // read again, and not more than every ten seconds — timed from when the look *began*, while
-    // an ASIO driver can take the scan's whole limit to answer. A look that took eight seconds
-    // made the next one due two seconds after it. Here a look takes two and a half.
+    // During an outage the machine's devices are read again no more
+    // than every ten seconds — timed from when the look *began*, while an ASIO driver can take the
+    // scan's whole limit to answer: a look that took eight seconds made the next one due two
+    // seconds after it. Here a look is begun at the first try and answered eight seconds on.
     LiveTracker tracker(kWeights, kStateSpace);
     int looks = 0;
-    bool slow = false;
-    tracker.setDeviceListHook([&looks, &slow](std::vector<InputDevice>& list) {
+    bool counting = false;
+    tracker.setDeviceListHook([&looks, &counting](std::vector<InputDevice>& list) {
         list.clear(); // the interface is not there, so every reopen fails as a dead one does
-        if (slow) {
-            ++looks;
-            std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        looks += counting ? 1 : 0;
+    });
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    tracker.setAudioJobHook([released](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            released.wait();
         }
     });
     WindowController controller(tracker);
-    double now = 100.0;
-    controller.beginOutageOn({asioInterface(), takt4::audio::ChannelSelection::single(0)}, now);
-    slow = true;
-    const auto tryAgain = [&controller, &now](double after) {
-        now += after;
+    controller.beginOutageOn({asioInterface(), takt4::audio::ChannelSelection::single(0)}, 100.0);
+    counting = true;
+    // Each try's open or look asked after until it has its answer, at `now`.
+    const auto at = [&controller](double now) {
         controller.superviseInput({}, {}, now);
+        REQUIRE(waitFor([&] {
+            controller.superviseInput({}, {}, now);
+            return !controller.outageAsking();
+        }));
     };
-    tryAgain(1.0); // the first try, a second in
-    tryAgain(2.0);
-    tryAgain(2.0); // the third: a look
+
+    controller.superviseInput({}, {}, 101.0); // the first try: a look, begun
+    REQUIRE(controller.outageAsking());
+    release.set_value();
+    at(109.0); // and answered eight seconds on
     REQUIRE(looks == 1);
-    for (int i = 0; i < 6; ++i) {
-        tryAgain(2.0);
-    }
-    // The ninth try, twelve seconds after the third: ten after the look began, but only nine
-    // and a half after it ended.
+    tracker.setAudioJobHook({});
+    // The next try, two seconds after it ended: ten after the look began, which was due — and
+    // only two after it ended, which is not.
+    at(111.05);
+    CHECK(controller.outageTries() == std::optional<int>(2));
     CHECK(looks == 1);
-    for (int i = 0; i < 3; ++i) {
-        tryAgain(2.0);
-    }
+    at(115.1); // four seconds on: six after it ended
+    CHECK(controller.outageTries() == std::optional<int>(3));
+    CHECK(looks == 1);
+    at(123.15); // eight more: fourteen after it ended, and a look
+    CHECK(controller.outageTries() == std::optional<int>(4));
     CHECK(looks == 2);
-    CHECK(controller.outageTries() == std::optional<int>(12));
 }
 
 namespace {
@@ -4135,7 +4390,13 @@ TEST_CASE("an input that opens again and sends nothing is not back", "[ui][hardw
     std::vector<std::string> said;
     for (int step = 0; step < 8; ++step) {
         now += 1.1;
+        // A try begun is asked after until it has its answer, at the same moment, as the
+        // redraws do: the open runs on the audio thread.
         controller.superviseInput({}, {}, now);
+        REQUIRE(waitFor([&] {
+            controller.superviseInput({}, {}, now);
+            return !controller.outageAsking();
+        }));
         said.emplace_back(controller.window().get_status());
         CHECK(controller.window().get_input_lost());
     }
@@ -4274,6 +4535,84 @@ TEST_CASE("the settings are saved on their own a moment after a change", "[ui][s
 
     // And a slider moved while the tracker is stopped is saved as moved, not as it was before
     //.
+    controller.window().invoke_fold_min_changed(91.0f);
+    for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
+        controller.tick();
+    }
+    CHECK_THAT(takt4::settings::load(file).preset.tempo.minBpm, WithinAbs(91.0, 1e-6));
+}
+
+TEST_CASE("the autosave builds the settings' text only when they have changed", "[ui][settings]") {
+    // The text costs a large rig a dozen milliseconds of the window's thread (200 rules and 300
+    // fixtures: 15 ms, measured 2026-10-22), and it was built twice a second whether or not
+    // anything had changed.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    controller.enableAutosave(file, 0.0);
+    const auto looks = [&controller](std::uint64_t count) {
+        for (std::uint64_t i = 0; i < count * WindowController::kAutosaveCheckTicks; ++i) {
+            controller.tick();
+        }
+    };
+    looks(10);
+    CHECK(controller.autosaveTexts() == 1); // the first look, and none after it
+    CHECK_FALSE(std::filesystem::exists(file));
+
+    // A change is built, and written, as before.
+    takt4::trigger::Rule::Config strobe;
+    strobe.id = "strobe";
+    strobe.address = "/composition/layers/1/clips/1/connect";
+    controller.setRules({strobe});
+    looks(4);
+    CHECK(controller.autosaveTexts() == 2);
+    REQUIRE(std::filesystem::exists(file));
+    CHECK(takt4::settings::load(file).preset.rules.size() == 1);
+
+    // And a change to any one field of a rule is one.
+    strobe.every = 2;
+    controller.setRules({strobe});
+    looks(4);
+    CHECK(controller.autosaveTexts() == 3);
+    CHECK(takt4::settings::load(file).preset.rules.at(0).every == 2u);
+}
+
+TEST_CASE("a settings file held from the autosave is kept saved from the first SAVE to it",
+          "[ui][settings]") {
+    // A file a newer takt4 wrote is not saved over unasked, so its autosave starts off — and the
+    // way out skipped it as well, so what was changed after a SAVE over it was lost at quit.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const std::filesystem::path file = takt4::settings::settingsFile(); // where SAVE writes
+    REQUIRE_FALSE(file.empty());
+    const std::string newer = R"({"version": 3, "machine": {"somethingNew": 7}})";
+    std::filesystem::create_directories(file.parent_path());
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << newer;
+    }
+    REQUIRE(std::filesystem::exists(file));
+    const auto contents = [&] {
+        std::ifstream in(file, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    controller.holdAutosave(file, 0.0);
+    CHECK_FALSE(controller.autosaving());
+
+    takt4::trigger::Rule::Config strobe;
+    strobe.id = "strobe";
+    strobe.address = "/composition/layers/1/clips/1/connect";
+    controller.setRules({strobe});
+    for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
+        controller.tick();
+    }
+    CHECK(contents() == newer);
+
+    // SAVE writes over it, as the start said it would, and from then on it is kept saved.
+    REQUIRE(controller.saveNow());
+    CHECK(controller.autosaving());
+    CHECK(takt4::settings::load(file).preset.rules.size() == 1);
     controller.window().invoke_fold_min_changed(91.0f);
     for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
         controller.tick();
@@ -5530,6 +5869,57 @@ TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][
     CHECK(lit);
 }
 
+TEST_CASE("the end of the Windows session leaves the rig as quitting does", "[ui][dmx]") {
+    // Windows shutting down ends the process once the window has answered, and nothing after it
+    // ran — not the way out that lets go of what is held and puts the lights out. A par lit by
+    // IDENTIFY stayed lit through the shutdown.
+    takt4::testing::LoopbackReceiver node;
+    takt4::settings::Settings settings;
+    takt4::output::OutputTarget truss;
+    truss.name = "truss";
+    truss.kind = takt4::output::OutputTarget::Kind::ArtNet;
+    truss.host = "127.0.0.1";
+    truss.port = node.port();
+    settings.preset.outputs = {truss};
+    settings.preset.fixtures = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker, settings);
+    controller.patchEditor().pick(0);
+    controller.patchEditor().identify();
+    // An ArtDmx frame's levels start at byte 18; the par is channels 1 to 3.
+    const auto levels = [](const std::string& datagram) -> std::optional<std::array<int, 3>> {
+        if (datagram.size() < 21 || datagram.compare(0, 8, std::string("Art-Net\0", 8)) != 0) {
+            return std::nullopt;
+        }
+        return std::array<int, 3>{static_cast<std::uint8_t>(datagram[18]),
+                                  static_cast<std::uint8_t>(datagram[19]),
+                                  static_cast<std::uint8_t>(datagram[20])};
+    };
+    bool lit = false;
+    for (int attempt = 0; attempt < 200 && !lit; ++attempt) {
+        const std::string datagram = node.receive();
+        if (datagram.empty()) {
+            break;
+        }
+        const auto par = levels(datagram);
+        lit = par && (*par)[0] > 200 && (*par)[1] > 200 && (*par)[2] > 200;
+    }
+    REQUIRE(lit);
+
+    controller.endSession();
+    CHECK_FALSE(controller.outputs().running());
+    std::optional<std::array<int, 3>> last;
+    for (std::string datagram = node.receive(); !datagram.empty(); datagram = node.receive()) {
+        if (const auto par = levels(datagram)) {
+            last = par;
+        }
+    }
+    REQUIRE(last.has_value());
+    CHECK((*last)[0] == 0);
+    CHECK((*last)[1] == 0);
+    CHECK((*last)[2] == 0);
+}
+
 TEST_CASE("IDENTIFY lights a par without a dimmer that a rule left at nothing", "[ui][dmx]") {
     // A par without a dimmer has its colour scaled by an intensity of its own, and a dimmer rule
     // that took it to nothing left it there — so IDENTIFY's colour flashes came out dark. It
@@ -6040,6 +6430,7 @@ TEST_CASE("a MIDI row's device dropdown follows its row after the device list ch
 
     // RESCAN, and then the row naming the first device taken away: the list is B, C, D now.
     controller.rescanDevices();
+    rescanned(controller);
     settle();
     controller.removeTarget(rowNamed(controller, "a"));
     settle();

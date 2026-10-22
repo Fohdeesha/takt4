@@ -202,6 +202,9 @@ TEST_CASE("the audio thread's destructor does not wait on a driver holding it", 
         REQUIRE(thread.stuck());
     }
     CHECK(std::chrono::steady_clock::now() - start < 1s);
+    // And the process is told, for its way out: an ordinary exit would tell that driver's DLL it
+    // is being unloaded, which can wait for ever on whatever the driver holds.
+    CHECK(AudioThread::leftToADriver());
     release.set_value();
     CHECK(within(2000ms, [&] { return finished->load(); }));
 }

@@ -69,6 +69,37 @@ public:
     /// `limit`; false when it had not, including when it is still waiting its turn.
     bool handOver(const char* what, std::function<void()> job, std::chrono::milliseconds limit);
 
+private:
+    struct State;
+
+public:
+    /// A job started and not waited for (`post`): its caller asks whether it is `done`, and
+    /// gives up on it with `abandon` — which makes the thread `stuck` until it returns, as a
+    /// `run` past its limit does. Empty for a job that was refused.
+    class Ticket {
+    public:
+        Ticket() = default;
+        explicit operator bool() const noexcept { return job_ != nullptr; }
+        bool done() const;
+        /// What the job threw, rethrown here once it is done; nothing when it threw nothing.
+        void rethrow() const;
+        /// Its caller has stopped waiting for it.
+        void abandon();
+
+    private:
+        friend class AudioThread;
+        std::shared_ptr<State> state_;
+        /// The job, which only the source file knows the shape of.
+        std::shared_ptr<void> job_;
+    };
+
+    /// Starts `job` on the thread and returns at once — for a caller that cannot wait, the
+    /// window's thread above all, which an open or a rescan held for seconds at a time while an
+    /// interface was gone. Refused, an empty ticket and `job` not run, while the thread is stuck
+    /// with an earlier job, as `run` is. Like `run`'s, `job` must not own anything that has to be
+    /// destroyed on this thread.
+    Ticket post(const char* what, std::function<void()> job);
+
     /// A job ran past the time its caller gave it and has not finished since.
     bool stuck() const;
     /// What that job was, or empty.
@@ -82,8 +113,12 @@ public:
     /// The thread's id — for a test that checks a call really lands on it.
     std::thread::id id() const noexcept { return id_; }
 
+    /// Whether any `AudioThread` of this process was left to a driver that still held it when it
+    /// was destroyed — for the process's own way out, which an ordinary exit may never finish
+    /// once a driver's DLL is told it is being unloaded while it holds a thread.
+    static bool leftToADriver() noexcept;
+
 private:
-    struct State;
     /// The thread itself: jobs as they come, and messages between them.
     static void loop(const std::shared_ptr<State>& state);
     /// Takes `job` by swapping it out, which leaves the caller holding nothing — see there.

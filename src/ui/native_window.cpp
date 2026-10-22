@@ -74,6 +74,12 @@ constexpr UINT kPumpIntervalMs = 33;
 DragPump g_pump = nullptr;
 void* g_pumpUser = nullptr;
 
+/// See `whenSessionEnds`: the same, for the end of the session — and whether it has been
+/// called, since every window is told.
+SessionEnd g_sessionEnd = nullptr;
+void* g_sessionEndUser = nullptr;
+bool g_sessionEnded = false;
+
 /// Every top-level window belonging to *this thread*, which is the UI thread and the only one
 /// that has any. Collected first rather than acted on inside the callback: subclassing while
 /// enumerating is asking for trouble, and the list is two or three long.
@@ -153,6 +159,13 @@ LRESULT CALLBACK dragPumpProc(HWND window, UINT message, WPARAM wparam, LPARAM l
             return 0;
         }
         break;
+    case WM_ENDSESSION:
+        // FALSE when a program refused, and the session goes on.
+        if (wparam != FALSE && !g_sessionEnded && g_sessionEnd != nullptr) {
+            g_sessionEnded = true;
+            g_sessionEnd(g_sessionEndUser);
+        }
+        break;
     case WM_NCDESTROY:
         // Put back before the window goes, and the property with it — a procedure pointing
         // into this module must not outlive the window it was installed on.
@@ -229,6 +242,12 @@ void stopPumping(std::uintptr_t handle) {
     std::erase_if(g_pumped, [handle](const auto& pumped) { return pumped.first == handle; });
 }
 
+void whenSessionEnds(SessionEnd hook, void* user) {
+    g_sessionEnd = hook;
+    g_sessionEndUser = user;
+    g_sessionEnded = false;
+}
+
 void keepPaintingWhileDragged(DragPump pump, void* user) {
     g_pump = pump;
     g_pumpUser = user;
@@ -248,6 +267,93 @@ void keepPaintingWhileDragged(DragPump pump, void* user) {
 void reportFatal(std::string_view message) {
     const std::wstring text = widen(message);
     MessageBoxW(nullptr, text.c_str(), L"takt4", MB_OK | MB_ICONERROR);
+}
+
+namespace {
+
+constexpr wchar_t kSplashClass[] = L"takt4.splash";
+
+/// The splash's whole procedure: its one line, light on the window's own dark, and the rest
+/// left to Windows.
+LRESULT CALLBACK splashProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message != WM_PAINT) {
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+    PAINTSTRUCT paint{};
+    const HDC dc = BeginPaint(window, &paint);
+    RECT area{};
+    GetClientRect(window, &area);
+    const HBRUSH background = CreateSolidBrush(RGB(20, 20, 20));
+    FillRect(dc, &area, background);
+    DeleteObject(background);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(236, 236, 236));
+    const HFONT font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                   DEFAULT_PITCH, L"Segoe UI");
+    const HGDIOBJ before = SelectObject(dc, font);
+    const auto* text = reinterpret_cast<const wchar_t*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    DrawTextW(dc, text != nullptr ? text : L"takt4", -1, &area,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, before);
+    DeleteObject(font);
+    EndPaint(window, &paint);
+    return 0;
+}
+
+} // namespace
+
+StartupSplash::StartupSplash(std::string_view text) : text_(widen(text)) {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSW kind{};
+    kind.lpfnWndProc = splashProc;
+    kind.hInstance = instance;
+    kind.lpszClassName = kSplashClass;
+    // IDC_APPSTARTING, in its wide form: the macro is the narrow one in a build without UNICODE.
+    kind.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32650));
+    (void)RegisterClassW(&kind); // refused when it is already registered, which is as good
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    constexpr int kWidth = 520;
+    constexpr int kHeight = 90;
+    // Titled so it is never taken for the main window (`SingleInstance::announceWindow`), and
+    // listed on the taskbar, where an operator looks for a program that is starting.
+    const HWND window =
+        CreateWindowExW(WS_EX_APPWINDOW, kSplashClass, L"Starting takt4", WS_POPUP | WS_BORDER,
+                        work.left + (work.right - work.left - kWidth) / 2,
+                        work.top + (work.bottom - work.top - kHeight) / 2, kWidth, kHeight, nullptr,
+                        nullptr, instance, nullptr);
+    if (window == nullptr) {
+        return;
+    }
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(text_.c_str()));
+    ShowWindow(window, SW_SHOWNORMAL);
+    UpdateWindow(window);
+    window_ = window;
+}
+
+StartupSplash::~StartupSplash() {
+    if (window_ != nullptr) {
+        DestroyWindow(static_cast<HWND>(window_));
+    }
+}
+
+void StartupSplash::waitFor(std::thread& worker) {
+    if (window_ != nullptr && worker.joinable()) {
+        const HANDLE handle = static_cast<HANDLE>(worker.native_handle());
+        // Woken by a message, or by the thread ending — which is the only other way out.
+        while (MsgWaitForMultipleObjects(1, &handle, FALSE, INFINITE, QS_ALLINPUT) ==
+               WAIT_OBJECT_0 + 1) {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != 0) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+    if (worker.joinable()) {
+        worker.join();
+    }
 }
 
 LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
@@ -315,8 +421,20 @@ std::uintptr_t pumpThroughModalLoops(DragPump, void*, unsigned) {
 
 void stopPumping(std::uintptr_t) {}
 
+void whenSessionEnds(SessionEnd, void*) {}
+
 void reportFatal(std::string_view message) {
     std::cerr << "takt4: " << message << '\n';
+}
+
+StartupSplash::StartupSplash(std::string_view) {}
+
+StartupSplash::~StartupSplash() = default;
+
+void StartupSplash::waitFor(std::thread& worker) {
+    if (worker.joinable()) {
+        worker.join();
+    }
 }
 
 LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {

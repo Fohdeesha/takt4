@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -30,9 +31,12 @@ namespace takt4::ui {
 /// **What it cannot catch, and what is done instead.** A panic in Slint's Rust code ends the
 /// process with `__fastfail`, which goes straight to the kernel past every handler a process
 /// can install. Rust prints the panic's message to stderr first, though, and a window
-/// application's stderr goes nowhere — so this points it at `takt4.log` beside the executable.
-/// A clean exit deletes that file; one still there at the next launch is a session that did not
-/// end normally, and `takeLeftoverLog` hands it to the window to say so.
+/// application's stderr goes nowhere — so this points it at `takt4.log` in the settings folder,
+/// beside the executable. A clean exit deletes that file — quitting, or Windows ending the
+/// session (`whenSessionEnds`) — and one still there at the next launch is a session that ended
+/// some other way: a crash, a power cut, the process killed. `takeLeftoverLog` hands it to the
+/// window to say so. One takt4 to a folder (`SingleInstance`) keeps a second launch from taking
+/// the log of the first.
 ///
 /// Windows only; a no-op elsewhere, where the platform's own core dumps do this job.
 class CrashReport {
@@ -64,6 +68,21 @@ public:
     /// crash cannot overwrite it; empty when the last session ended normally. Read by the
     /// window to say "takt4 did not close normally last time" and where the log is.
     static std::filesystem::path takeLeftoverLog(const std::filesystem::path& directory);
+
+    /// The session has been running a while (`ui::run` says so half a minute after its window
+    /// opens): written in the log, so a next launch that finds the log left behind can tell a
+    /// session that ended at once — which what the settings asked for may have caused — from one
+    /// that ran, and fell over later.
+    static void markSettled();
+    /// What `markSettled` writes.
+    static constexpr std::string_view kSettledLine = "takt4: settled";
+    /// Whether the log a session left (`takeLeftoverLog`) is one that ended before it settled.
+    static bool endedEarly(const std::filesystem::path& leftover);
+
+    /// Deletes all but the newest `keep` crash dumps and all but the newest `keep` logs of
+    /// sessions that did not end cleanly, in `directory`: a machine that crashed at every launch
+    /// for a week filled the folder with them.
+    static void pruneReports(const std::filesystem::path& directory, std::size_t keep = 10);
 
     /// The exception codes a dump carries for the failures that are not SEH exceptions of
     /// their own, so a reader of the dump can tell which handler wrote it. In the range

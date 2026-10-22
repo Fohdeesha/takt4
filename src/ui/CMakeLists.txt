@@ -76,6 +76,8 @@ add_library(takt4_ui STATIC
   rules_controller_slots.cpp
   rules_editor_support.hpp
   shot.cpp
+  single_instance.cpp
+  single_instance.hpp
   window_controller.cpp
   window_controller.hpp
   window_state.cpp

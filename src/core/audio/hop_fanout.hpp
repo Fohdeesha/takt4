@@ -35,8 +35,8 @@ public:
     HopFanout(std::initializer_list<HopProcessor*> processors);
 
     void processHop(const float* hop, std::uint64_t hopIndex) noexcept override;
-    void beginBuffer(double firstSample, std::int64_t steadyMicros,
-                     double lostSamples) noexcept override;
+    void beginBuffer(double firstSample, std::int64_t steadyMicros, double lostSamples,
+                     double lostFrom) noexcept override;
 
     std::size_t size() const noexcept { return count_; }
 

@@ -1,5 +1,8 @@
 #include "core/fixtures/profile_json.hpp"
 
+#include "core/fixtures/profile_json_node.hpp"
+#include "core/io/json_depth.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -160,6 +163,10 @@ std::string newProfileId(const std::vector<FixtureProfile>& library) {
 }
 
 std::string libraryToJson(const std::vector<FixtureProfile>& library) {
+    return libraryToNode(library).dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+json libraryToNode(const std::vector<FixtureProfile>& library) {
     json out = json::array();
     for (const FixtureProfile& profile : library) {
         out.push_back(json{
@@ -175,17 +182,21 @@ std::string libraryToJson(const std::vector<FixtureProfile>& library) {
             {"modes", modesToJson(profile.modes)},
         });
     }
-    return out.dump(-1, ' ', false, json::error_handler_t::replace);
+    return out;
 }
 
 std::vector<FixtureProfile> libraryFromJson(std::string_view text) {
-    std::vector<FixtureProfile> library;
     json parsed;
     try {
-        parsed = json::parse(text);
+        parsed = io::parseJsonCapped(text);
     } catch (const std::exception&) {
-        return library;
+        return {};
     }
+    return libraryFromNode(parsed);
+}
+
+std::vector<FixtureProfile> libraryFromNode(const json& parsed) {
+    std::vector<FixtureProfile> library;
     if (!parsed.is_array()) {
         return library;
     }

@@ -72,4 +72,8 @@ private:
 /// a sweep of clicks aimed at where something else used to be.
 bool fileDialogsAllowed();
 
+/// What a file dialog that came back with nothing means, from Windows' `CommDlgExtendedError`:
+/// nothing for 0, a cancel — which is not an error — and otherwise the sentence the window shows.
+std::string fileDialogProblem(unsigned long error);
+
 } // namespace takt4::ui

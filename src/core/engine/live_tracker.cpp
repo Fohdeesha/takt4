@@ -2,7 +2,12 @@
 
 #include "core/model/weights.hpp"
 
+#include <chrono>
+#include <exception>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 
 namespace takt4::engine {
@@ -15,15 +20,16 @@ std::string spoken(std::chrono::milliseconds limit) {
                                      : std::to_string(limit.count()) + " ms";
 }
 
-/// Where the audio thread puts a stream it has opened and started, for a caller that may have
-/// stopped waiting for it by then — which the job finds out here, under the same lock.
-struct OpenSlot {
+} // namespace
+
+struct LiveTracker::OpenSlot {
     std::mutex mutex;
     std::unique_ptr<audio::InputStream> stream;
     bool abandoned = false;
+    /// The stream while it is being started, which a driver may call back from before `start`
+    /// returns: for `giveUp` to shut, so nothing it sends reaches an engine that may be going.
+    audio::InputStream* starting = nullptr;
 };
-
-} // namespace
 
 LiveTracker::LiveTracker(const std::filesystem::path& weights,
                          const std::filesystem::path& stateSpace, Options options)
@@ -92,14 +98,27 @@ std::vector<audio::InputDevice> LiveTracker::devices() const {
     // returned, and must not be writing into a list on a stack that is gone.
     auto found = std::make_shared<std::vector<audio::InputDevice>>();
     bool answered = false;
-    if (!thread_.stuck()) {
-        answered = thread_.run(
-            "list", [found, session = session_.get()] { *found = audio::listInputDevices(*session); },
-            limits_.list);
+    bool none = false;
+    // A rescan going on has the thread, and the question would wait behind it.
+    const bool rescanning = rescanning_ && !rescanning_.done();
+    if (!thread_.stuck() && !rescanning) {
+        try {
+            answered = thread_.run(
+                "list",
+                [found, session = session_.get()] { *found = audio::listInputDevices(*session); },
+                limits_.list);
+        } catch (...) {
+            // No table to read: PortAudio could not be brought back up by the last rescan, which
+            // said why. Thrown into the window it ended takt4 — an IMPORT after it, or the
+            // outage's next look at the list.
+            none = true;
+        }
     }
     // The last list the drivers answered with, while they are not answering.
-    std::vector<audio::InputDevice> list = answered ? *found : lastDevices_;
-    if (answered) {
+    std::vector<audio::InputDevice> list = answered ? *found
+                                           : none   ? std::vector<audio::InputDevice>{}
+                                                    : lastDevices_;
+    if (answered || none) {
         lastDevices_ = list;
     }
     if (deviceListHook_) {
@@ -109,22 +128,32 @@ std::vector<audio::InputDevice> LiveTracker::devices() const {
 }
 
 bool LiveTracker::rescan() {
-    if (stream_) {
+    if (stream_ || opening_) {
         return false;
     }
     refuseWhileStuck("look for devices again");
-    if (!thread_.run("rescan", [session = session_.get()] { session->restart(); }, limits_.rescan)) {
+    if (!thread_.run("rescan", rescanJob(), limits_.rescan)) {
         throw audio::DriverNotAnswering("the audio drivers did not answer while being listed again (" +
                                         spoken(limits_.rescan) + ")");
     }
     return true;
 }
 
-void LiveTracker::start(const audio::InputDevice& device,
-                        const audio::ChannelSelection& selection) {
-    stop();
-    refuseWhileStuck("open an input");
+std::function<void()> LiveTracker::rescanJob() {
+    // The table is another one once PortAudio has been ended, whether or not it comes back up —
+    // and said so even when the caller has stopped waiting, which is when nobody else would.
+    return [session = session_.get(), table = table_] {
+        try {
+            session->restart();
+        } catch (...) {
+            table->fetch_add(1, std::memory_order_acq_rel);
+            throw;
+        }
+        table->fetch_add(1, std::memory_order_acq_rel);
+    };
+}
 
+void LiveTracker::readyForRun() {
     // The levels of the run that just ended are still queued, and the next run's hop
     // indices start again at zero — so a consumer draining across the join would see them
     // go backwards. Throw them away with the run they belong to.
@@ -141,68 +170,105 @@ void LiveTracker::start(const audio::InputDevice& device,
     engine_->setHostTimeSource(hostTime_);
     // Before the stream, so the workers are draining by the time the first hop lands.
     engine_->start();
+}
 
+std::function<void()> LiveTracker::openJob(std::shared_ptr<OpenSlot> slot,
+                                           const audio::InputDevice& device,
+                                           const audio::ChannelSelection& selection) {
     // Opened and started on the audio thread, where it will be stopped and closed. Opening can
     // throw — a channel the device does not have (std::invalid_argument), or a driver that will
-    // not give up the interface (PortAudioError, the design R2) — and that reaches here.
+    // not give up the interface (PortAudioError, the design R2) — and that reaches the caller.
+    //
+    // The processor by address, though the job can outlive the tracker: everything the stream
+    // sends reaches it through the stream's gate, and `giveUp` — which the tracker's way out goes
+    // through — shuts that gate on a stream still starting, before anything it points at goes.
+    return [slot = std::move(slot), session = session_.get(), device, selection,
+            processor = &fanout_, options = options_.stream, hook = startHook_] {
+        auto stream =
+            std::make_unique<audio::InputStream>(*session, device, selection, *processor, options);
+        {
+            const std::lock_guard<std::mutex> lock(slot->mutex);
+            if (slot->abandoned) {
+                // Nobody is waiting for it any more: never started, closed here.
+                stream->detach();
+                return;
+            }
+            slot->starting = stream.get();
+        }
+        try {
+            stream->start();
+        } catch (...) {
+            const std::lock_guard<std::mutex> lock(slot->mutex);
+            slot->starting = nullptr;
+            throw;
+        }
+        if (hook) {
+            hook();
+        }
+        const std::lock_guard<std::mutex> lock(slot->mutex);
+        slot->starting = nullptr;
+        if (slot->abandoned) {
+            // Given up on while it started: detached before anything reaches the engine the
+            // caller has moved on from, and stopped and closed here, on this thread.
+            stream->detach();
+            try {
+                stream->stop();
+            } catch (...) {
+            }
+            return;
+        }
+        slot->stream = std::move(stream);
+    };
+}
+
+void LiveTracker::giveUp(OpenSlot& slot) noexcept {
+    std::unique_ptr<audio::InputStream> late;
+    {
+        const std::lock_guard<std::mutex> lock(slot.mutex);
+        slot.abandoned = true;
+        if (slot.starting != nullptr) {
+            // Starting this moment: whatever it sends from here on reaches nothing.
+            slot.starting->detach();
+        }
+        late = std::move(slot.stream);
+    }
+    if (!late) {
+        return; // the job closes whatever it opens from here
+    }
+    // It opened in the moment between the limit and here: let it go the way `stop` does.
+    late->detach();
+    std::shared_ptr<audio::InputStream> owned(std::move(late));
+    try {
+        (void)thread_.handOver(
+            "stop",
+            [owned = std::move(owned)]() mutable {
+                try {
+                    owned->stop();
+                } catch (...) {
+                }
+                owned.reset();
+            },
+            limits_.stop);
+    } catch (...) {
+        // Nothing is thrown by a job that catches everything.
+    }
+}
+
+void LiveTracker::start(const audio::InputDevice& device,
+                        const audio::ChannelSelection& selection) {
+    stop();
+    refuseWhileStuck("open an input");
+    readyForRun();
     auto slot = std::make_shared<OpenSlot>();
     bool opened = false;
     try {
-        opened = thread_.run(
-            "open",
-            [slot, session = session_.get(), device, selection, processor = &fanout_,
-             options = options_.stream] {
-                auto stream = std::make_unique<audio::InputStream>(*session, device, selection,
-                                                                   *processor, options);
-                {
-                    const std::lock_guard<std::mutex> lock(slot->mutex);
-                    if (slot->abandoned) {
-                        // Nobody is waiting for it any more: never started, closed here.
-                        stream->detach();
-                        return;
-                    }
-                }
-                stream->start();
-                const std::lock_guard<std::mutex> lock(slot->mutex);
-                if (slot->abandoned) {
-                    // Given up on while it started: detached before anything reaches the engine
-                    // the caller has moved on from, and stopped and closed here, on this thread.
-                    stream->detach();
-                    try {
-                        stream->stop();
-                    } catch (...) {
-                    }
-                    return;
-                }
-                slot->stream = std::move(stream);
-            },
-            limits_.open);
+        opened = thread_.run("open", openJob(slot, device, selection), limits_.open);
     } catch (...) {
         engine_->stop();
         throw;
     }
     if (!opened) {
-        std::unique_ptr<audio::InputStream> late;
-        {
-            const std::lock_guard<std::mutex> lock(slot->mutex);
-            slot->abandoned = true;
-            late = std::move(slot->stream);
-        }
-        if (late) {
-            // It opened in the moment between the limit and here: let it go the way `stop` does.
-            late->detach();
-            std::shared_ptr<audio::InputStream> owned(std::move(late));
-            (void)thread_.handOver(
-                "stop",
-                [owned = std::move(owned)]() mutable {
-                    try {
-                        owned->stop();
-                    } catch (...) {
-                    }
-                    owned.reset();
-                },
-                limits_.stop);
-        }
+        giveUp(*slot);
         engine_->stop();
         throw audio::DriverNotAnswering(device.name + " did not answer within " +
                                         spoken(limits_.open) + " of being opened");
@@ -214,7 +280,115 @@ void LiveTracker::start(const audio::InputDevice& device,
     current_ = Running{device, selection};
 }
 
+void LiveTracker::beginStart(const audio::InputDevice& device,
+                             const audio::ChannelSelection& selection) {
+    stop();
+    refuseWhileStuck("open an input");
+    readyForRun();
+    auto opening = std::make_unique<Opening>();
+    opening->slot = std::make_shared<OpenSlot>();
+    opening->ticket = thread_.post("open", openJob(opening->slot, device, selection));
+    if (!opening->ticket) {
+        // A driver began holding the thread between the check above and here.
+        engine_->stop();
+        refuseWhileStuck("open an input");
+        throw audio::DriverNotAnswering("the audio thread would not take the open");
+    }
+    opening->device = device;
+    opening->selection = selection;
+    opening->began = std::chrono::steady_clock::now();
+    opening_ = std::move(opening);
+}
+
+LiveTracker::Progress LiveTracker::pollStart(std::string& error) {
+    if (!opening_) {
+        return Progress::None;
+    }
+    if (!opening_->ticket.done()) {
+        if (std::chrono::steady_clock::now() - opening_->began < limits_.open) {
+            return Progress::Pending;
+        }
+        // Given up on, as `start` gives up: the driver holds the thread until it answers.
+        opening_->ticket.abandon();
+        giveUp(*opening_->slot);
+        error = opening_->device.name + " did not answer within " + spoken(limits_.open) +
+                " of being opened";
+        opening_.reset();
+        engine_->stop();
+        return Progress::Failed;
+    }
+    try {
+        opening_->ticket.rethrow();
+    } catch (const std::exception& e) {
+        error = e.what();
+        opening_.reset();
+        engine_->stop();
+        return Progress::Failed;
+    } catch (...) {
+        error = "the driver would not open it";
+        opening_.reset();
+        engine_->stop();
+        return Progress::Failed;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(opening_->slot->mutex);
+        stream_ = std::move(opening_->slot->stream);
+    }
+    current_ = Running{opening_->device, opening_->selection};
+    opening_.reset();
+    return Progress::Done;
+}
+
+bool LiveTracker::beginRescan() {
+    if (rescanning_ && rescanning_.done()) {
+        rescanning_ = {}; // one nobody asked after — the outage it was for has ended
+    }
+    if (stream_ || opening_ || rescanning_) {
+        return false;
+    }
+    refuseWhileStuck("look for devices again");
+    rescanning_ = thread_.post("rescan", rescanJob());
+    if (!rescanning_) {
+        refuseWhileStuck("look for devices again");
+        return false;
+    }
+    rescanBegan_ = std::chrono::steady_clock::now();
+    return true;
+}
+
+LiveTracker::Progress LiveTracker::pollRescan(std::string& error) {
+    if (!rescanning_) {
+        return Progress::None;
+    }
+    if (!rescanning_.done()) {
+        if (std::chrono::steady_clock::now() - rescanBegan_ < limits_.rescan) {
+            return Progress::Pending;
+        }
+        rescanning_.abandon();
+        rescanning_ = {};
+        error = "the audio drivers did not answer while being listed again (" +
+                spoken(limits_.rescan) + ")";
+        return Progress::Failed;
+    }
+    const audio::AudioThread::Ticket done = std::exchange(rescanning_, {});
+    try {
+        done.rethrow();
+    } catch (const std::exception& e) {
+        error = e.what();
+        return Progress::Failed;
+    } catch (...) {
+        error = "the audio drivers could not be listed again";
+        return Progress::Failed;
+    }
+    return Progress::Done;
+}
+
 void LiveTracker::stop() noexcept {
+    if (opening_) {
+        // An open nobody will now ask after: whatever it opens is closed where it was made.
+        giveUp(*opening_->slot);
+        opening_.reset();
+    }
     if (stream_) {
         // **Off the engine first, on this thread**: no PortAudio call, and a callback's length at
         // most. From here the driver can take as long as it likes over the stop, or never finish

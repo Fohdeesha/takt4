@@ -75,12 +75,21 @@ struct Gap {
     double seconds = 0.0;
 };
 
+/// The audio thread held up for `seconds` from `atSeconds` into the run: the buffers that came
+/// meanwhile wait, and are handed over one straight after another when it wakes — late, and
+/// every frame there.
+struct Stall {
+    double atSeconds = 0.0;
+    double seconds = 0.0;
+};
+
 /// How far each frame's stamp is from when the audio it is centred on was at the input: an
 /// interface delivering `bufferFrames` at a time, its callbacks jittered by up to half a
 /// millisecond, through the real pipeline and the real stamping, `buffers` buffers long.
 /// The one frame centred less than a hop before a gap is left out: it is stamped from the hop
 /// after it, which is after the gap, and no stamp can be right for both.
-std::vector<double> stampErrors(std::size_t bufferFrames, std::size_t buffers, Gap gap = {}) {
+std::vector<double> stampErrors(std::size_t bufferFrames, std::size_t buffers, Gap gap = {},
+                                Stall stall = {}) {
     const takt4::model::ModelWeights weights =
         takt4::model::ModelWeights::fromFile(kWeightsDir / "generic.bin");
     const auto engine = std::make_unique<ActivationEngine>(weights);
@@ -99,14 +108,27 @@ std::vector<double> stampErrors(std::size_t bufferFrames, std::size_t buffers, G
     std::vector<float> buffer(bufferFrames);
     std::vector<double> errors;
     std::uint64_t delivered = 0;
+    double previousMicros = 0.0;
     for (std::size_t b = 0; b < buffers; ++b) {
         for (std::size_t i = 0; i < bufferFrames; ++i) {
             buffer[i] = 0.1f * std::sin(static_cast<float>(delivered + i) * 0.01f);
         }
         // The callback comes when the buffer's first sample has been in the interface its input
-        // latency — plus a scheduler's jitter.
-        const double arrivedMicros =
+        // latency — plus a scheduler's jitter — or, held up, when the thread wakes, and then
+        // 50 µs after the one before until it has caught up.
+        double arrivedMicros =
             heardMicros(static_cast<double>(delivered)) + kInputLatency * 1e6 + jitter(random);
+        if (stall.seconds > 0.0) {
+            const double from = kOriginMicros + stall.atSeconds * 1e6;
+            const double wakes = from + stall.seconds * 1e6;
+            if (arrivedMicros >= from && arrivedMicros < wakes) {
+                arrivedMicros = wakes;
+            }
+            if (b > 0) {
+                arrivedMicros = std::max(arrivedMicros, previousMicros + 50.0);
+            }
+        }
+        previousMicros = arrivedMicros;
         pipeline.process(buffer.data(), bufferFrames,
                          InputPipeline::Arrival{static_cast<std::int64_t>(arrivedMicros * 1000.0),
                                                 kInputLatency});
@@ -168,9 +190,30 @@ TEST_CASE("a dropout does not move the stamps after it", "[audio][timing]") {
     // room's went on, and the line fitted to the two put every beat after it 40 ms early, then
     // 13 ms late seven seconds on, for the ten seconds it took to forget it (simulated
     // 2026-10-07). Counted in, the line runs straight through.
+    //
+    // The gap is known only from the buffer after the late one, and counted from where it was —
+    // the late buffer's first frame — not from the buffer that tells of it: with buffers longer
+    // than a hop, a hop begun inside the late one and finished by the next was otherwise stamped
+    // the whole gap early (1536 frames here: the frame centred on the gap).
+    const std::size_t frames = GENERATE(Catch::Generators::as<std::size_t>{}, 512, 1536);
+    INFO(frames << "-frame buffers");
     const std::size_t at = 4 * kSecond;
-    const std::vector<double> errors = stampErrors(512, 16 * kSecond / 512, Gap{at, 0.040});
+    const std::vector<double> errors = stampErrors(frames, 16 * kSecond / frames, Gap{at, 0.040});
     REQUIRE(errors.size() > 600);
+    CHECK(worst(errors, 50) < 1.5);
+}
+
+TEST_CASE("audio held up in the driver is stamped when it was heard, not when it came",
+          "[audio][timing]") {
+    // The audio thread held up 25 ms four seconds in, and the buffers that waited handed over one
+    // straight after another when it woke — late, and complete. Counted as audio lost the moment
+    // the first came late, and given back only as far as each early one made up, the stall stamped
+    // them 25 and 15 ms late, and 5 ms of it stayed counted for seconds after.
+    const std::size_t frames = GENERATE(Catch::Generators::as<std::size_t>{}, 64, 480, 1024);
+    INFO(frames << "-frame buffers");
+    const std::vector<double> errors =
+        stampErrors(frames, 8 * kSecond / frames, Gap{}, Stall{4.0, 0.025});
+    REQUIRE(errors.size() > 300);
     CHECK(worst(errors, 50) < 1.5);
 }
 

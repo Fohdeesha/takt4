@@ -65,13 +65,18 @@ void ActivationEngine::stop() noexcept {
 }
 
 void ActivationEngine::beginBuffer(double firstSample, std::int64_t steadyMicros,
-                                   double lostSamples) noexcept {
+                                   double lostSamples, double lostFrom) noexcept {
     if (lostSamples != lostSamples_) {
-        // Audio was lost before this buffer: its samples, and every one after, are that much
-        // further on in the room's time — the ones already in hand from before the gap are not.
-        gapSample_ = firstSample;
+        // Audio was lost before `lostFrom`: the samples from there on are that much further on
+        // in the room's time — the ones already in hand from before the gap are not.
+        gapSample_ = lostFrom;
         lostBefore_ = lostSamples_;
         lostSamples_ = lostSamples;
+    }
+    // A buffer whose moment is not known — late, or caught up behind a late one — would put a
+    // point off the line by however long it waited.
+    if (steadyMicros == 0) {
+        return;
     }
     if (audio::HostTimeSource* clock = hostTime_.load(std::memory_order_relaxed)) {
         clock->observe(firstSample + lostSamples, steadyMicros);

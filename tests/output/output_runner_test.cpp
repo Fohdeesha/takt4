@@ -1443,7 +1443,7 @@ void playInRealTime(BeatEngine& engine, const std::vector<float>& samples, std::
             began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
         engine.beginBuffer(static_cast<double>(first + hop * kHopSize),
-                           heardMicros(began, hop, hopSeconds), 0.0);
+                           heardMicros(began, hop, hopSeconds), 0.0, 0.0);
         engine.processHop(samples.data() + hop * kHopSize, first / kHopSize + hop);
     }
 }
@@ -2225,8 +2225,8 @@ TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of wha
                         std::chrono::duration<double>(static_cast<double>(hop + 1) * hopSeconds)));
         // Each hop a buffer of its own, as the input's callback hands them over: its first
         // sample heard a hop before it arrived (`audio::HopProcessor::beginBuffer`).
-        engine->beginBuffer(static_cast<double>(hop * kHopSize), heardMicros(began, hop, hopSeconds),
-                            0.0);
+        engine->beginBuffer(static_cast<double>(hop * kHopSize),
+                            heardMicros(began, hop, hopSeconds), 0.0, 0.0);
         engine->processHop(samples.data() + hop * kHopSize, hop);
     }
 

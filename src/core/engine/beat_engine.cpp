@@ -153,9 +153,9 @@ void BeatEngine::processHop(const float* hop, std::uint64_t hopIndex) noexcept {
     activations_->processHop(hop, hopIndex);
 }
 
-void BeatEngine::beginBuffer(double firstSample, std::int64_t steadyMicros,
-                             double lostSamples) noexcept {
-    activations_->beginBuffer(firstSample, steadyMicros, lostSamples);
+void BeatEngine::beginBuffer(double firstSample, std::int64_t steadyMicros, double lostSamples,
+                             double lostFrom) noexcept {
+    activations_->beginBuffer(firstSample, steadyMicros, lostSamples, lostFrom);
 }
 
 std::size_t BeatEngine::step() noexcept {

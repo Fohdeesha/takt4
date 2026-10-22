@@ -1077,8 +1077,11 @@ void TempoTracker::relockOnBeats(bool confident) noexcept {
     // In the published octave: the fold's and the operator's, as every lock is.
     const double beats = inChosenOctave(60.0 / (called * secondsPerFrame_));
     // A replacement only. The tempo still published comes back at the ordinary price, as it
-    // always has, and loses nothing by waiting.
-    if (std::abs(beats - lockedBpm_) <= options_.sameTempoTolerance * lockedBpm_) {
+    // always has, and loses nothing by waiting. **The published one**, not the lock's: clearing
+    // an octave the beats have left carries the lock across to the beats' tempo — and the beats
+    // were then the lock's tempo, and nothing was replaced, with the number frozen an octave off.
+    const double shown = state_.bpm;
+    if (shown > 0.0 && std::abs(beats - shown) <= options_.sameTempoTolerance * shown) {
         return;
     }
     candidate_ = beats;

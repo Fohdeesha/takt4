@@ -159,7 +159,13 @@ public:
     /// remembered one, if the last launch fell back from it) by name, and tries again anything
     /// remembered that was missing: the MIDI control input, and every MIDI output and MIDI clock
     /// an output row names.
+    ///
+    /// **Begun here and finished by the redraw** (`tick`) once the drivers have answered — which
+    /// takes ASIO up to half a minute, and held the whole window, PANIC included, for all of it.
+    /// RESCAN is greyed and START refused until then (`rescanning`).
     void rescanDevices();
+    /// A RESCAN is going on.
+    bool rescanning() const noexcept { return rescanKeep_.has_value(); }
 
     /// Whether the operator has asked for the tracker to run: true from Start to Stop, and
     /// **through an outage the window is recovering from**, when the tracker itself may be
@@ -193,6 +199,11 @@ public:
     /// there is none. Every third try looks at the device list again.
     std::optional<int> outageTries() const noexcept {
         return outage_ ? std::optional<int>(outage_->tries) : std::nullopt;
+    }
+    /// For the tests: an open or a look at the devices the outage began and has not had an
+    /// answer to yet — asked after on every look (`superviseInput`).
+    bool outageAsking() const noexcept {
+        return outage_ && outage_->asking != Outage::Asking::Nothing;
     }
 
     /// For the tests: the state `input` opening and then going silent at `now` leaves — running
@@ -507,6 +518,14 @@ public:
     /// Off until called. `ui::run` switches it on for the real settings file, and nothing else
     /// does, so a test never writes beside its own executable.
     void enableAutosave(std::filesystem::path file, double quietSeconds = 3.0);
+    /// The settings file this window would autosave to, and must not write unasked — one a newer
+    /// takt4 wrote, or one another program held at the start (`settings::Startup::writable`).
+    /// Autosaved from the moment SAVE has written it: it is this takt4's own file from then on.
+    void holdAutosave(std::filesystem::path file, double quietSeconds = 3.0);
+    /// Whether the settings are being autosaved — what the way out saves, too.
+    bool autosaving() const noexcept { return !autosaveFile_.empty(); }
+    /// For the tests: how many times the autosave has built the settings' text to look at.
+    std::uint64_t autosaveTexts() const noexcept { return autosaveTexts_; }
 
     /// A sentence the operator must see — `settings::Startup::notice`, most often: the file was
     /// damaged and what was done about it. On the status line, as an error.
@@ -527,6 +546,11 @@ public:
     /// What is being sent, for the row that draws it. The runner is running for as long as
     /// this window exists, so its rules and transports are read through `inspect` — see there.
     const output::OutputRunner& outputs() const noexcept { return runner_; }
+    /// Windows is ending the session and the process with it (`whenSessionEnds`): what quitting
+    /// does for the rig, done now — the timing input let go, and the outputs stopped as quitting
+    /// stops them, every release still owed sent and the lights out (`OutputRunner::stop`).
+    /// Nothing is sent after it; the window is not used again.
+    void endSession();
     /// Where the beat dots read the newest fired beat. The output thread by default; a test
     /// replaces it to hand the window a beat at a time of its choosing.
     void setShownBeatSource(std::function<output::OutputRunner::ShownBeat()> source) {
@@ -574,6 +598,14 @@ private:
     /// by name — or, when it is not there, nothing selected in its place and it remembered as
     /// the one wanted.
     void relistDuringOutage();
+    /// RESCAN, asked after on every redraw until the drivers have answered, and finished.
+    void pollRescanAsked();
+    /// What RESCAN does once PortAudio has looked: the list read again and `keep` found in it,
+    /// and the MIDI ports, outputs and control input with it.
+    void finishRescan(const settings::MachineSettings& keep);
+    /// A device table the window has not listed — a rescan that answered after its limit —
+    /// listed before anything is opened from the old one.
+    void followDeviceTable();
     /// The MIDI pickers' models, from `deviceNames_` and `midiInputPorts_` — and every MIDI row
     /// built again with them, since a dropdown given a new list stops following its row.
     void publishPortLists();
@@ -741,6 +773,10 @@ private:
     slint::Timer timer_;
 
     std::vector<audio::InputDevice> devices_;
+    /// The PortAudio table `devices_` was read from (`LiveTracker::deviceTable`).
+    std::uint64_t listedTable_ = 0;
+    /// What a RESCAN going on is to land on, kept from when it was pressed.
+    std::optional<settings::MachineSettings> rescanKeep_;
     int device_ = -1;
     /// An input, from 0; in stereo, either of the pair it is in (see `selection`).
     int channel_ = 0;
@@ -845,7 +881,17 @@ private:
         /// The input is open again and has not yet sent anything. It is not back until it has
         ///.
         bool reopened = false;
+        /// What is with the driver now — a rescan, then an open — asked after at each tick,
+        /// never waited for.
+        enum class Asking : std::uint8_t { Nothing, Rescan, Open };
+        Asking asking = Asking::Nothing;
+        /// The last try's open failed: the machine is looked at again before the next one.
+        bool openFailed = false;
     };
+    /// Begins the open of the input the outage is about, found again by name, or says why it
+    /// cannot be and when it is tried again.
+    void beginReopen(double now);
+    void failedReopen(const std::string& error, double now);
     std::optional<Outage> outage_;
     /// When the last outage ended and how many tries it had taken, so an input that comes back
     /// for a moment and goes again carries on counting. Negative before any.
@@ -860,6 +906,10 @@ private:
     bool nothingPlaying_ = false;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
+    /// When the input was last reopened on a driver's say-so, within the last minute, and whether
+    /// that has happened too often for another until START (`restartInput`).
+    std::vector<double> restarts_;
+    bool restartsHeld_ = false;
     /// See `requestToggleRun`. A member, so a press still waiting to be carried out goes with
     /// the window rather than calling into it after it has gone.
     slint::Timer runTimer_;
@@ -960,6 +1010,8 @@ private:
 
     /// `enableAutosave`'s state. Empty `autosaveFile_` is autosave off.
     std::filesystem::path autosaveFile_;
+    /// `holdAutosave`'s file, until SAVE writes it.
+    std::filesystem::path heldAutosave_;
     double autosaveQuietSeconds_ = 3.0;
     /// What the file holds, as far as this window knows — the text of the last save it made,
     /// or of the settings it started from. A change is this differing from what would be
@@ -969,6 +1021,14 @@ private:
     /// text moving again restarts the wait, which is what makes a drag one save.
     std::string pendingText_;
     double pendingSince_ = 0.0;
+    /// The settings at the autosave's last look, and their text. Built again only when they
+    /// have changed: the text costs a large rig a dozen milliseconds of this thread, twice a
+    /// second (measured 2026-10-22: 200 rules and 300 fixtures, 15 ms), and the comparison a
+    /// fraction of one.
+    std::optional<settings::Settings> lookedAt_;
+    std::string lookedText_;
+    /// How many times the autosave has built the text, for the tests.
+    std::uint64_t autosaveTexts_ = 0;
     /// When a save last failed, or negative. A full disk is retried now and then rather than
     /// twice a second, and said once rather than on every attempt.
     double autosaveFailedAt_ = -1.0;

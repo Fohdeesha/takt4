@@ -564,6 +564,108 @@ TEST_CASE("a damaged file falls back to the copy kept at the last good start", "
     CHECK(filesStarting(dir.path(), "settings.json.corrupt-").size() == 1);
 }
 
+TEST_CASE("a settings file from a newer takt4 is read, and not saved over", "[settings]") {
+    // What a takt4 does not know it leaves out of what it writes, so the first autosave of an
+    // older one stripped a newer one's file — its timing source, its latencies, its CDJ settings —
+    // and the next start replaced the backup with the stripped file too.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    const std::string newer =
+        R"({"version": 3, "machine": {"deviceName": "MOTU Pro Audio", "somethingNew": 7}})";
+    write(file, newer);
+
+    CHECK(takt4::settings::loadChecked(file).version == 3);
+    const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+    // Read, as far as it is understood.
+    CHECK(startup.settings.machine.deviceName == "MOTU Pro Audio");
+    // Not written by takt4 without being asked, and said.
+    CHECK_FALSE(startup.writable);
+    INFO(startup.notice);
+    CHECK(startup.notice.find("written by a newer takt4") != std::string::npos);
+    CHECK(startup.notice.find("settings format 3") != std::string::npos);
+    CHECK(startup.notice.find("EXPORT") != std::string::npos);
+    CHECK(readBytes(file) == newer);
+    // The copy kept at a good start is the file as it is, unknown fields and all.
+    CHECK(readBytes(takt4::settings::backupFile(file)) == newer);
+}
+
+TEST_CASE("a start after a session that ended at once keeps the copy from the start before it",
+          "[settings]") {
+    // The copy taken at every good start is what to go back to — and a file that made takt4 fall
+    // over at once still reads, so the next start replaced the copy with it.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    Settings rig;
+    rig.machine.deviceName = "the rig as it was";
+    REQUIRE(takt4::settings::save(rig, file));
+    (void)takt4::settings::openAtStartup(file, file);
+    const std::filesystem::path backup = takt4::settings::backupFile(file);
+    REQUIRE(takt4::settings::load(backup).machine.deviceName == "the rig as it was");
+
+    rig.machine.deviceName = "what it fell over on";
+    REQUIRE(takt4::settings::save(rig, file));
+    const takt4::settings::Startup after = takt4::settings::openAtStartup(file, file, true);
+    CHECK(after.settings.machine.deviceName == "what it fell over on");
+    CHECK(takt4::settings::load(backup).machine.deviceName == "the rig as it was");
+    // A start after one that settled takes the copy as usual.
+    (void)takt4::settings::openAtStartup(file, file);
+    CHECK(takt4::settings::load(backup).machine.deviceName == "what it fell over on");
+}
+
+TEST_CASE("a settings file nested deeper than any takt4 writes is damaged, not a crash",
+          "[settings]") {
+    // A couple of hundred kilobytes of brackets where the rules go. They parse — and the rules
+    // were then written out as text to be read again, which goes down a level per call and ran
+    // out of stack: IMPORT ended takt4, and as the rig's own file every launch did.
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    std::string deep = R"({"version": 2, "preset": {"rules": )";
+    deep.append(100000, '[');
+    deep.append(100000, ']');
+    deep += "}}";
+    write(file, deep);
+
+    std::string problem;
+    CHECK_FALSE(takt4::settings::parse(deep, problem).has_value());
+    INFO(problem);
+    CHECK(problem.find("nested more than 64 levels deep") != std::string::npos);
+    const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+    INFO(startup.notice);
+    CHECK(startup.notice.find("is damaged") != std::string::npos);
+    CHECK(startup.notice.find("nested more than 64 levels deep") != std::string::npos);
+    // And the most a file of takt4's own nests is well inside it.
+    Settings rig;
+    rig.preset.rules.push_back(takt4::trigger::Rule::Config{});
+    CHECK(takt4::settings::parse(takt4::settings::toJson(rig), problem).has_value());
+}
+
+TEST_CASE("a settings file of this format or an older one opens to be saved as before",
+          "[settings]") {
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    const auto opens = [&](const std::string& text, int version) {
+        INFO(text);
+        write(file, text);
+        CHECK(takt4::settings::loadChecked(file).version == version);
+        const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
+        CHECK(startup.writable);
+        CHECK(startup.notice.empty());
+        CHECK(startup.settings.machine.deviceName == "MOTU Pro Audio");
+    };
+    opens(R"({"version": 2, "machine": {"deviceName": "MOTU Pro Audio"}})", 2);
+    opens(R"({"version": 1, "machine": {"deviceName": "MOTU Pro Audio"}})", 1);
+    // Every file before the version was read: some said 1, the oldest nothing.
+    opens(R"({"machine": {"deviceName": "MOTU Pro Audio"}})", 1);
+    // A version that is not a whole number says nothing.
+    opens(R"({"version": "3", "machine": {"deviceName": "MOTU Pro Audio"}})", 1);
+    opens(R"({"version": 3.5, "machine": {"deviceName": "MOTU Pro Audio"}})", 1);
+
+    // And what is saved says the format it is in, so a takt4 older still can be told.
+    REQUIRE(takt4::settings::save(Settings{}, file));
+    CHECK(takt4::settings::loadChecked(file).version == takt4::settings::kFormatVersion);
+    CHECK(takt4::settings::kFormatVersion == 2);
+}
+
 #if defined(_WIN32)
 TEST_CASE("a settings file another program holds is not saved over", "[settings]") {
     // Locked, not damaged: a sync client or an editor with it open. The contents may be

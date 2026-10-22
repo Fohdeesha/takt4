@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 using takt4::audio::HostApiKind;
 
@@ -48,4 +49,50 @@ TEST_CASE("Host API kinds are named and classified", "[audio]") {
     CHECK_FALSE(takt4::audio::hasNativeChannelSelection(HostApiKind::Alsa));
     CHECK_FALSE(takt4::audio::hasNativeChannelSelection(HostApiKind::Jack));
     CHECK_FALSE(takt4::audio::hasNativeChannelSelection(HostApiKind::Other));
+}
+
+TEST_CASE("an input Windows renamed when it came back on another port is found by its own name",
+          "[audio]") {
+    // Plugged back in elsewhere, a USB interface comes back as "Microphone (2- USB Audio CODEC)",
+    // and the input remembered — and the outage reopening it — looked for it by its old name for
+    // ever. Two of a kind cannot be told apart that way, and are not guessed between.
+    using takt4::audio::baseInputName;
+    using takt4::audio::findInput;
+    using takt4::audio::InputDevice;
+    CHECK(baseInputName("Microphone (2- USB Audio CODEC)") == "Microphone (USB Audio CODEC)");
+    CHECK(baseInputName("Microphone (12- USB Audio CODEC)") == "Microphone (USB Audio CODEC)");
+    CHECK(baseInputName("2- USB Audio CODEC") == "USB Audio CODEC");
+    CHECK(baseInputName("Microphone (USB Audio CODEC)") == "Microphone (USB Audio CODEC)");
+    // A number that is not Windows' doing is left alone.
+    CHECK(baseInputName("In 1-2 (MOTU Pro Audio)") == "In 1-2 (MOTU Pro Audio)");
+    CHECK(baseInputName("Line (2-channel input)") == "Line (2-channel input)");
+    CHECK(baseInputName("") == "");
+
+    const auto device = [](const char* name, const char* api) {
+        InputDevice made;
+        made.name = name;
+        made.hostApiName = api;
+        return made;
+    };
+    const std::vector<InputDevice> machine = {
+        device("Microphone (Realtek Audio)", "Windows WASAPI"),
+        device("Microphone (2- USB Audio CODEC)", "Windows WASAPI"),
+        device("MOTU Pro Audio", "ASIO"),
+    };
+    CHECK(findInput(machine, "Microphone (2- USB Audio CODEC)", "Windows WASAPI") == 1u);
+    CHECK(findInput(machine, "Microphone (USB Audio CODEC)", "Windows WASAPI") == 1u);
+    CHECK(findInput(machine, "Microphone (3- USB Audio CODEC)", "Windows WASAPI") == 1u);
+    CHECK(findInput(machine, "MOTU Pro Audio", "ASIO") == 2u);
+    // Another host API is another input.
+    CHECK_FALSE(findInput(machine, "Microphone (USB Audio CODEC)", "MME").has_value());
+    CHECK_FALSE(findInput(machine, "A desk mic", "Windows WASAPI").has_value());
+
+    // Two of them: its own name finds each, and no guess is made without it.
+    const std::vector<InputDevice> pair = {
+        device("Microphone (USB Audio CODEC)", "Windows WASAPI"),
+        device("Microphone (2- USB Audio CODEC)", "Windows WASAPI"),
+    };
+    CHECK(findInput(pair, "Microphone (USB Audio CODEC)", "Windows WASAPI") == 0u);
+    CHECK(findInput(pair, "Microphone (2- USB Audio CODEC)", "Windows WASAPI") == 1u);
+    CHECK_FALSE(findInput(pair, "Microphone (3- USB Audio CODEC)", "Windows WASAPI").has_value());
 }

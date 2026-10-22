@@ -549,6 +549,8 @@ public:
         /// which the lock is not waiting on — a *tempo change* moves the lock, and moving
         /// the lock discards the refinement outright.
         double refineSmoothing = 0.25;
+
+        friend bool operator==(const Options&, const Options&) = default;
     };
 
     /// Two constructors rather than `Options options = {}`: a default argument is

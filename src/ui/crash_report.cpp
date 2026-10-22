@@ -1,5 +1,12 @@
 #include "ui/crash_report.hpp"
 
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <system_error>
+#include <vector>
+
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -338,6 +345,13 @@ void CrashReport::cleanExit() {
     g_log = INVALID_HANDLE_VALUE;
 }
 
+void CrashReport::markSettled() {
+    if (g_log == INVALID_HANDLE_VALUE) {
+        return; // stderr is a console or a pipe, and there is no log to leave
+    }
+    std::fprintf(stderr, "%.*s\n", static_cast<int>(kSettledLine.size()), kSettledLine.data());
+}
+
 std::filesystem::path CrashReport::takeLeftoverLog(const std::filesystem::path& directory) {
     const std::filesystem::path log = directory / "takt4.log";
     // Opened without sharing first: another takt4 running from the same folder holds its log
@@ -350,14 +364,29 @@ std::filesystem::path CrashReport::takeLeftoverLog(const std::filesystem::path& 
     CloseHandle(probe);
     SYSTEMTIME now{};
     GetLocalTime(&now);
-    wchar_t name[64] = {};
-    swprintf_s(name, L"takt4-unclean-%04u%02u%02u-%02u%02u%02u.log", now.wYear, now.wMonth,
-               now.wDay, now.wHour, now.wMinute, now.wSecond);
-    const std::filesystem::path kept = directory / name;
-    if (MoveFileExW(log.c_str(), kept.c_str(), 0) == 0) {
-        return {};
+    wchar_t stamp[32] = {};
+    swprintf_s(stamp, L"%04u%02u%02u-%02u%02u%02u", now.wYear, now.wMonth, now.wDay, now.wHour,
+               now.wMinute, now.wSecond);
+    // Never over another: a launch that falls over at once and is started again can leave its log
+    // in the same second as the one before, and that one used to stay where it was, unreported,
+    // for the session after to start its own log over.
+    for (int again = 0; again < 100; ++again) {
+        wchar_t name[64] = {};
+        if (again == 0) {
+            swprintf_s(name, L"takt4-unclean-%ls.log", stamp);
+        } else {
+            swprintf_s(name, L"takt4-unclean-%ls-%d.log", stamp, again);
+        }
+        const std::filesystem::path kept = directory / name;
+        if (MoveFileExW(log.c_str(), kept.c_str(), 0) != 0) {
+            return kept;
+        }
+        if (const DWORD error = GetLastError();
+            error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
+            return {};
+        }
     }
-    return kept;
+    return {};
 }
 
 namespace {
@@ -420,8 +449,45 @@ void CrashReport::cleanExit() {}
 std::filesystem::path CrashReport::takeLeftoverLog(const std::filesystem::path&) {
     return {};
 }
+void CrashReport::markSettled() {}
 void CrashReport::crashOnPurpose(const std::string&) {}
 
 } // namespace takt4::ui
 
 #endif
+
+namespace takt4::ui {
+
+bool CrashReport::endedEarly(const std::filesystem::path& leftover) {
+    std::ifstream in(leftover, std::ios::binary);
+    if (!in) {
+        return false; // nothing to tell by
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return text.find(kSettledLine) == std::string::npos;
+}
+
+void CrashReport::pruneReports(const std::filesystem::path& directory, std::size_t keep) {
+    std::vector<std::filesystem::path> dumps;
+    std::vector<std::filesystem::path> logs;
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end;
+         it.increment(error)) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("takt4-crash-", 0) == 0 && it->path().extension() == ".dmp") {
+            dumps.push_back(it->path());
+        } else if (name.rfind("takt4-unclean-", 0) == 0 && it->path().extension() == ".log") {
+            logs.push_back(it->path());
+        }
+    }
+    // Named by when they were written, to the second and zero-padded: in order of name is in
+    // order of time.
+    for (std::vector<std::filesystem::path>* kind : {&dumps, &logs}) {
+        std::sort(kind->begin(), kind->end());
+        for (std::size_t i = 0; i + keep < kind->size(); ++i) {
+            std::filesystem::remove((*kind)[i], error);
+        }
+    }
+}
+
+} // namespace takt4::ui
