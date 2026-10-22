@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -18,6 +19,8 @@
 
 using takt4::rt::DenormalsAsZero;
 using takt4::rt::PriorityScope;
+using takt4::rt::RoundLateness;
+using takt4::rt::RoundTimer;
 using takt4::rt::ThreadWork;
 
 namespace {
@@ -165,4 +168,43 @@ TEST_CASE("a thread that asks reads denormals as zero, and only while it asks", 
     (void)readAsZero;
     (void)after;
 #endif
+}
+
+TEST_CASE("a round that runs long is its own, not a thread the machine woke late",
+          "[rt][realtime]") {
+    // What a timing test excuses a late cue by is the machine holding a thread asleep, and
+    // nothing of takt4's own: a round that took 50 ms has to be reported as a round that ran
+    // 50 ms, and the rounds either side of it as woken on time — the one after it did not sleep
+    // at all, being already behind its moment.
+    using namespace std::chrono_literals;
+    RoundLateness lateness;
+    std::vector<RoundLateness::Late> late;
+    lateness.setObserver([&late](const RoundLateness::Late& round) { late.push_back(round); });
+    RoundTimer timer(&lateness);
+    for (int round = 0; round < 5; ++round) {
+        timer.wait(1ms);
+    }
+    std::this_thread::sleep_for(50ms); // a round's own work, taking 50 ms
+    for (int round = 0; round < 5; ++round) {
+        timer.wait(1ms);
+    }
+
+    const auto ranLong = std::find_if(late.begin(), late.end(), [](const RoundLateness::Late& r) {
+        return r.done - r.woke >= 49ms;
+    });
+    REQUIRE(ranLong != late.end());
+    // In milliseconds, named: a template's comma inside a test macro is two of its arguments.
+    using Ms = std::chrono::duration<double, std::milli>;
+    const double wokeAfter = Ms(ranLong->woke - ranLong->due).count();
+    INFO("woke " << wokeAfter << " ms after it was due");
+    CHECK(wokeAfter < 25.0);
+    for (const RoundLateness::Late& round : late) {
+        CHECK(Ms(round.woke - round.due).count() < 25.0); // no round slept the 50 ms
+    }
+    CHECK(lateness.longestRoundSeconds() >= 0.049);
+    CHECK(lateness.longestWakeSeconds() < 0.025);
+
+    lateness.reset();
+    CHECK(lateness.longestRoundSeconds() == 0.0);
+    CHECK(lateness.longestWakeSeconds() == 0.0);
 }

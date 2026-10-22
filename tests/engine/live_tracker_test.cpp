@@ -5,6 +5,7 @@
 #include "core/audio/host_time.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/engine/live_tracker.hpp"
+#include "core/model/activation_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <portaudio.h>
@@ -100,7 +101,8 @@ TEST_CASE("LiveTracker refuses a channel the device does not have", "[audio][har
     CHECK_FALSE(tracker.engine().running());
 }
 
-TEST_CASE("LiveTracker feeds the engine and the meter from one stream", "[audio][hardware]") {
+TEST_CASE("LiveTracker feeds the engine and the meter from one stream",
+          "[audio][hardware][realtime]") {
     // What the window is: a device chosen, the tracker running on it, and levels arriving
     // for the input meter beside the readouts. Both consumers are fed from the same
     // stream through HopFanout, so this is where that wiring is proven on real hardware.
@@ -137,19 +139,42 @@ TEST_CASE("LiveTracker feeds the engine and the meter from one stream", "[audio]
         }
     };
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    // The longest this thread went between looks: how long the machine held the process up, as
+    // near as a thread at the default priority can tell.
+    double heldUp = 0.0;
+    auto looked = std::chrono::steady_clock::now();
     while (levels < 50 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const auto now = std::chrono::steady_clock::now();
+        heldUp = std::max(heldUp, std::chrono::duration<double>(now - looked).count());
+        looked = now;
         drain();
     }
     tracker.stop();
     drain();
 
-    INFO(levels << " hop levels, " << frames << " tracked frames");
+    INFO(levels << " hop levels, " << frames << " tracked frames; this thread held up for as long "
+                << "as " << heldUp << " s");
     CHECK(levels >= 50);
     // The engine is two threads behind the meter, so it is a little short of the hops —
     // but it must have seen most of the same second, not a handful.
     CHECK(frames > levels / 2);
-    CHECK(tracker.engine().activations().hopsDropped() == 0);
+    // Every hop reached the model — unless the machine held the whole process up for a good part
+    // of what the model's queue holds (`kHopQueueCapacity` hops, 1.28 s): the hops that came
+    // while it did could not all be kept, and that is said rather than failed. On a CI Mac this
+    // loop once found 112 levels where it stops at 50 — the process held up about 1.2 s, by them
+    // — and 8 hops were dropped: the model's thread was held longer than this one saw, so the
+    // line is half the queue, not all of it. A quiet machine holds this thread up 10 to 20 ms.
+    const double queueSeconds =
+        static_cast<double>(takt4::model::ActivationEngine::kHopQueueCapacity) *
+        tracker.stateSpace().secondsPerFrame();
+    const std::uint64_t dropped = tracker.engine().activations().hopsDropped();
+    if (dropped != 0 && heldUp >= queueSeconds / 2.0) {
+        WARN(dropped << " hops dropped while the machine held this process up for " << heldUp
+                     << " s");
+    } else {
+        CHECK(dropped == 0);
+    }
 
     CHECK_FALSE(tracker.running());
     CHECK_FALSE(tracker.current().has_value());

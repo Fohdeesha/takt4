@@ -144,6 +144,8 @@ jobs:
             name: macos-x64
             preset: macos
             launch: true
+            # Its millisecond tests report and do not block: see "the millisecond tests" below.
+            realtime: report
             app: build/macos/bin/takt4.app/Contents/MacOS/takt4
             cli: build/macos/bin/takt4-cli
             cargo: build/macos/cargo
@@ -321,7 +323,16 @@ jobs:
       - name: Test
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --preset ${{ matrix.preset }}-all
+        run: ctest --preset ${{ matrix.preset }}-all ${{ matrix.realtime == 'report' && '-LE realtime' || '' }}
+
+      # The tests that measure milliseconds ([realtime]) on GitHub's Intel Mac, whose machines
+      # stall: at 1.5.x its Test step failed in five runs of seven, each time on timing alone, and
+      # a release took six attempts. There they run and report, and do not block; everywhere else
+      # they are part of the step above, and do.
+      - name: The millisecond tests (reported, not required)
+        if: matrix.realtime == 'report'
+        continue-on-error: true
+        run: ctest --preset ${{ matrix.preset }}-all -L realtime
 
       - name: Version banner
         run: ${{ matrix.app }} --version

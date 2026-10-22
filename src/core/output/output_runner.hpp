@@ -7,6 +7,7 @@
 #include "core/output/rule_sink.hpp"
 #include "core/output/transports.hpp"
 #include "core/rt/published.hpp"
+#include "core/rt/thread_priority.hpp"
 #include "core/trigger/trigger_engine.hpp"
 
 #include <atomic>
@@ -363,6 +364,11 @@ public:
     /// Rounds the loop has made. What a test watches to tell "the thread is running" from
     /// "the thread does the right thing", which are two separate claims.
     std::uint64_t rounds() const noexcept { return rounds_.load(std::memory_order_relaxed); }
+    /// How late the thread's rounds have come since `start`, woken and run (`rt::RoundLateness`):
+    /// what a cue that went out late is put down to — the machine, or takt4.
+    const rt::RoundLateness& lateness() const noexcept { return lateness_; }
+    /// For an observer, set before `start()`.
+    rt::RoundLateness& lateness() noexcept { return lateness_; }
 
     /// Whether the output thread got a raised priority when it started (an earlier review; see
     /// rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
@@ -568,20 +574,22 @@ public:
 
     /// `post`, and wait for the output thread to have applied it: what went wrong applying
     /// **this** command, empty for nothing — or no answer at all when it has not been applied
-    /// within `kWaitForApply`, when the caller should rely on `lastError` later.
+    /// within `wait`, when the caller should rely on `lastError` later.
     ///
     /// For the few changes a window reports on the spot — a MIDI port that is not on the
     /// machine, an output that will not open. Since the runner runs for the application's
     /// whole life a `post` is always asynchronous, and `lastError()` read straight after one is
     /// the *previous* command's answer. From any thread but the output thread.
-    std::optional<std::string> postAndWait(OutputCommand command);
+    std::optional<std::string> postAndWait(OutputCommand command,
+                                           std::chrono::milliseconds wait = kWaitForApply);
 
     /// Waits until everything posted before this call has been applied. True when it has been,
-    /// within `kWaitForApply`. For whoever has to read what a change did — a test, mostly.
+    /// within `kWaitForSync`. For whoever has to read what a change did — the tests, and nothing
+    /// a window waits on.
     bool sync() {
         OutputCommand command;
         command.kind = OutputCommand::Kind::Sync;
-        return postAndWait(std::move(command)).has_value();
+        return postAndWait(std::move(command), kWaitForSync).has_value();
     }
 
     /// Calls `look(rules, transports, sink)` **between two of the output thread's rounds**, and
@@ -600,6 +608,11 @@ public:
     /// one and short enough that a window never visibly stalls on a change. A host name is
     /// looked up on a thread of its own (`net::AsyncAddress`) and never holds a round up.
     static constexpr std::chrono::milliseconds kWaitForApply{250};
+    /// How long `sync` waits: far past any round, since nothing on screen waits on it. A CI
+    /// machine that held the whole test process up for over a second in the same run left a
+    /// `sync` unanswered at the window's 250 ms, and a test failed waiting on a command that did
+    /// nothing.
+    static constexpr std::chrono::milliseconds kWaitForSync{5000};
 
     /// the `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.
     ///
@@ -905,6 +918,8 @@ private:
     /// See `tracking()`.
     std::atomic<bool> tracking_{false};
     std::atomic<std::uint64_t> rounds_{0};
+    /// The thread's `rt::RoundTimer` keeps it; reset by `start` before the thread exists.
+    rt::RoundLateness lateness_;
     std::atomic<std::uint64_t> errors_{0};
     std::atomic<std::uint64_t> beatsUnsent_{0};
     std::atomic<bool> threadRaised_{false};

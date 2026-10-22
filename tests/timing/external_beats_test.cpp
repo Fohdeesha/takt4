@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -40,6 +41,22 @@ bool waitFor(Done done) {
     }
     return done();
 }
+
+/// A source with nothing to follow, whose reading a test can hold up: the timing worker's round
+/// waits on it, as on a source slow to answer.
+class HeldSource final : public takt4::timing::GridSource {
+public:
+    void begin(std::uint32_t) noexcept override {}
+    takt4::timing::GridReading read() noexcept override {
+        const std::lock_guard<std::mutex> lock(held);
+        takt4::timing::GridReading reading;
+        reading.at = steadyMicros();
+        return reading;
+    }
+    void end() noexcept override {}
+
+    std::mutex held;
+};
 
 } // namespace
 
@@ -214,5 +231,27 @@ TEST_CASE("a followed grid that goes is coasted on the timing thread too", "[tim
     source.setStopped(true);
     CHECK(waitFor([&] { return beats.state().noSignal; }));
     CHECK_FALSE(beats.state().locked);
+    beats.stop();
+}
+
+TEST_CASE("a round the timing worker is held up in is its own, and counted from each start",
+          "[timing][follow][realtime]") {
+    // A late round is a late beat, and a timing test puts a late beat down to the machine only
+    // where the worker slept past its time (`rt::RoundLateness`): a round held up by its own
+    // source is the worker's, and is said as a round that ran long.
+    HeldSource source;
+    ExternalBeats beats;
+    beats.start(source, BeatGrid::Options{});
+    REQUIRE(waitFor([&] { return beats.rounds() >= 5; }));
+    {
+        const std::lock_guard<std::mutex> hold(source.held);
+        std::this_thread::sleep_for(std::chrono::milliseconds{60});
+    }
+    REQUIRE(waitFor([&] { return beats.lateness().longestRoundSeconds() >= 0.050; }));
+    CHECK(beats.lateness().longestWakeSeconds() < 0.030);
+    beats.stop();
+
+    beats.start(source, BeatGrid::Options{});
+    CHECK(beats.lateness().longestRoundSeconds() < 0.050); // a new run, counted from nothing
     beats.stop();
 }

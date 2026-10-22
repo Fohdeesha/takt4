@@ -4,6 +4,7 @@
 #include "core/engine/control.hpp"
 #include "core/rt/published.hpp"
 #include "core/rt/spsc_ring.hpp"
+#include "core/rt/thread_priority.hpp"
 #include "core/timing/beat_grid.hpp"
 #include "core/timing/grid_source.hpp"
 
@@ -113,6 +114,11 @@ public:
     std::uint64_t beatsDropped() const noexcept { return dropped_.load(std::memory_order_relaxed); }
     /// Whether the worker got a raised priority, as it saw it. False before it has started.
     bool workerRaised() const noexcept { return workerRaised_.load(std::memory_order_acquire); }
+    /// How late the worker's rounds have come this run, woken and run (`rt::RoundLateness`): a
+    /// late round is a late beat.
+    const rt::RoundLateness& lateness() const noexcept { return lateness_; }
+    /// For an observer, set before `start`.
+    rt::RoundLateness& lateness() noexcept { return lateness_; }
     /// Whether the source has gone and is being run on at its last tempo (`BeatGrid::coasting`).
     bool coasting() const noexcept { return coasting_.load(std::memory_order_relaxed); }
 
@@ -141,6 +147,8 @@ private:
     std::atomic<std::uint64_t> displayDropped_{0};
     std::atomic<bool> workerRaised_{false};
     std::atomic<bool> coasting_{false};
+    /// The worker's `rt::RoundTimer` keeps it; reset by `start` before the worker exists.
+    rt::RoundLateness lateness_;
 };
 
 } // namespace takt4::timing

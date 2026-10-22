@@ -136,7 +136,7 @@ TEST_CASE("a reader never sees half of two values", "[rt]") {
 
 #if defined(_WIN32)
 
-TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt]") {
+TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt][realtime]") {
     // The output thread (MMCSS "Pro Audio", High) reads what the
     // tracker (Audio, Medium) publishes, and on one core the reader can preempt the writer half
     // way through a write — and then spin on it, with the writer that would finish it unable to

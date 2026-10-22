@@ -8,8 +8,10 @@
 // redraw. Only Link's own threads asked Windows for better (MMCSS, "Distribution"). This asks
 // for the model, the tracker and the output thread, and undoes it when the thread is done.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 
 namespace takt4::rt {
 
@@ -77,6 +79,49 @@ private:
 /// a reason to stop.
 bool keepFullSpeed() noexcept;
 
+/// **How late a thread's rounds came**, kept by its `RoundTimer` and read from any thread.
+///
+/// A round is late in one of two ways, and they are different faults. The thread **woke** late for
+/// it: it asked to be woken and the machine let it sleep on — a busy core, a virtual machine
+/// paused. Or the round **ran** long once it had woken: the thread's own work, or the machine
+/// taking the core from it partway through, which nothing here can tell apart. A cue that went
+/// late is put down to one or the other by these: one went out 141 ms late on a CI machine, and
+/// the test that caught it could not say whether takt4 or the machine had held it.
+class RoundLateness {
+public:
+    /// A round that woke or ran `kNoted` or more late, on the steady clock: when the thread should
+    /// have woken for it — its moment, or when the wait began if that was later, since a thread
+    /// already behind does not sleep — when it woke, and when the round was done.
+    struct Late {
+        std::chrono::steady_clock::time_point due;
+        std::chrono::steady_clock::time_point woke;
+        std::chrono::steady_clock::time_point done;
+    };
+    using Observer = std::function<void(const Late&)>;
+    /// What a round has to be late by to reach the observer: a round on Windows wakes a tick of
+    /// the system timer late every time (see `RoundTimer`), half a millisecond on the rig.
+    static constexpr std::chrono::milliseconds kNoted{1};
+
+    /// Both longest back to nothing. Before the thread starts.
+    void reset() noexcept;
+    /// Called on the thread after each round late by `kNoted` or more, woken or run. Set before
+    /// the thread starts. What a timing test puts a late cue down to; nothing in takt4 sets it.
+    void setObserver(Observer observer) { observer_ = std::move(observer); }
+    /// The longest the thread has slept past when it should have woken, and the longest a round
+    /// has run, since `reset`. Any thread.
+    double longestWakeSeconds() const noexcept { return wake_.load(std::memory_order_relaxed); }
+    double longestRoundSeconds() const noexcept { return round_.load(std::memory_order_relaxed); }
+
+private:
+    friend class RoundTimer;
+    /// On the thread, for every round.
+    void note(const Late& round) noexcept;
+
+    std::atomic<double> wake_{0.0};
+    std::atomic<double> round_{0.0};
+    Observer observer_;
+};
+
 /// The output thread's wait between rounds: a round every millisecond, a thousand a second.
 ///
 /// **On a grid, not a millisecond from whenever the last round finished.** Every wait Windows
@@ -93,7 +138,9 @@ bool keepFullSpeed() noexcept;
 /// not used by that timer. Where one cannot be made, the wait is a sleep until the same moment.
 class RoundTimer {
 public:
-    RoundTimer() noexcept;
+    /// `lateness`, where given, is told of every round from the second on (the first has no moment
+    /// it was due at), and has to outlive this.
+    explicit RoundTimer(RoundLateness* lateness = nullptr) noexcept;
     ~RoundTimer();
 
     RoundTimer(const RoundTimer&) = delete;
@@ -105,10 +152,18 @@ public:
     bool precise() const noexcept { return timer_ != nullptr; }
 
 private:
+    /// The wait ending: the moment the round now beginning woke, kept for `lateness_`.
+    void noteWoke() noexcept;
+
     void* timer_ = nullptr;
     /// When the round being waited for is due; unset before the first wait.
     std::chrono::steady_clock::time_point next_{};
     bool started_ = false;
+    RoundLateness* lateness_ = nullptr;
+    /// The round running between waits: when the thread should have woken for it, and when it
+    /// did. Unset before the first wait.
+    std::chrono::steady_clock::time_point due_{};
+    std::chrono::steady_clock::time_point woke_{};
 };
 
 /// Flush-to-zero and denormals-are-zero on the calling thread, for as long as it lives, and

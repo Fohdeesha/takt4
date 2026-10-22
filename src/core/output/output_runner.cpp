@@ -715,6 +715,7 @@ void OutputRunner::start() {
     running_.store(true, std::memory_order_release);
     threadRaised_.store(false, std::memory_order_relaxed);
     preciseRounds_.store(false, std::memory_order_relaxed);
+    lateness_.reset();
     try {
         worker_ = std::thread([this] { run(); });
     } catch (...) {
@@ -1116,7 +1117,8 @@ void OutputRunner::apply(const OutputCommand& command) {
     }
 }
 
-std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
+std::optional<std::string> OutputRunner::postAndWait(OutputCommand command,
+                                                     std::chrono::milliseconds wait) {
     std::uint64_t ticket = 0;
     {
         const std::lock_guard<std::mutex> lock(answerMutex_);
@@ -1129,7 +1131,7 @@ std::optional<std::string> OutputRunner::postAndWait(OutputCommand command) {
         return std::find_if(answers_.begin(), answers_.end(),
                             [ticket](const auto& answer) { return answer.first == ticket; });
     };
-    if (!answered_.wait_for(lock, kWaitForApply, [&] { return mine() != answers_.end(); })) {
+    if (!answered_.wait_for(lock, wait, [&] { return mine() != answers_.end(); })) {
         // Not applied yet. Its answer is thrown away when it comes — `lastError` still has it.
         std::erase_if(answers_, [ticket](const auto& answer) { return answer.first < ticket; });
         return std::nullopt;
@@ -1233,7 +1235,7 @@ void OutputRunner::run() noexcept {
     const rt::PriorityScope priority(rt::ThreadWork::Output);
     threadRaised_.store(priority.raised(), std::memory_order_release);
     // A millisecond between rounds that is a millisecond, minimised or not — see `rt::RoundTimer`.
-    rt::RoundTimer timer;
+    rt::RoundTimer timer(&lateness_);
     preciseRounds_.store(timer.precise(), std::memory_order_release);
     while (running_.load(std::memory_order_acquire)) {
         applyCommands();

@@ -55,6 +55,7 @@ void ExternalBeats::start(GridSource& source, const BeatGrid::Options& options) 
     displayDropped_.store(0, std::memory_order_relaxed);
     coasting_.store(false, std::memory_order_relaxed);
     workerRaised_.store(false, std::memory_order_relaxed);
+    lateness_.reset();
     running_.store(true, std::memory_order_release);
     worker_ = std::thread(
         [this, &source, beatsPerBar = options.beatsPerBar] { run(source, beatsPerBar); });
@@ -71,7 +72,7 @@ void ExternalBeats::run(GridSource& source, std::uint32_t beatsPerBar) noexcept 
     // A late round is a late beat, as a late round of the output thread is a late cue.
     const rt::PriorityScope priority(rt::ThreadWork::Output);
     workerRaised_.store(priority.raised(), std::memory_order_release);
-    rt::RoundTimer timer;
+    rt::RoundTimer timer(&lateness_);
     source.begin(beatsPerBar);
     while (running_.load(std::memory_order_acquire)) {
         round(source);

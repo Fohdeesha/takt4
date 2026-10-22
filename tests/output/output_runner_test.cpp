@@ -14,6 +14,7 @@
 #include "core/trigger/rule.hpp"
 
 #include "support/fake_beat_source.hpp"
+#include "support/late_rounds.hpp"
 #include "support/loopback_receiver.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -44,6 +45,7 @@ using takt4::engine::BeatEngine;
 using takt4::output::OutputCommand;
 using takt4::output::OutputRunner;
 using takt4::output::Transports;
+using takt4::testing::LateRounds;
 using takt4::testing::LoopbackReceiver;
 using takt4::trigger::Rule;
 
@@ -1563,22 +1565,31 @@ TEST_CASE("a negative offset lands a beat's cue before that beat from live audio
 }
 
 TEST_CASE("a positive offset sends each beat's cue on the beat as it was heard",
-          "[output][trigger][slow]") {
+          "[output][trigger][realtime][slow]") {
     // The other side of the one above: a rig whose every output is later than the beat, here a
-    // media server set 200 ms late. There is time to wait for the beat the tracker measures, so
+    // media server set 400 ms late. There is time to wait for the beat the tracker measures, so
     // each cue goes on that beat, the offset after it — the beat Link and the MIDI clock are
     // given — and not on the one predicted from the beat before, which put a phase correction on
     // the lights a beat after it reached Link.
+    //
+    // **400 ms, where it was 200.** A beat is waited for as long as the offset leaves, less
+    // `Transports::kPredictionMargin`, and CI's Macs heard beats up to 227 ms after their moment
+    // where this machine hears them at about 66: there, a beat heard past 195 ms was rightly
+    // fired on its prediction, and the test failed on how fast the machine was. Where that line
+    // falls is `BeatScheduler`'s to prove, and its own tests do, exactly.
+    constexpr double kDelay = 0.400;
+    LateRounds late(std::chrono::steady_clock::now());
     LoopbackReceiver media;
     Transports::Config config;
     takt4::output::OutputTarget server;
     server.name = "media";
     server.host = "127.0.0.1";
     server.port = media.port();
-    server.delaySeconds = 0.200;
+    server.delaySeconds = kDelay;
     config.outputs = {server};
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace());
     OutputRunner runner(*engine, config);
+    late.watch(runner.lateness(), "the output thread");
     engine->setHostTimeSource(&runner.hostTimeClock());
 
     Rule::Config rule;
@@ -1600,7 +1611,7 @@ TEST_CASE("a positive offset sends each beat's cue on the beat as it was heard",
     std::mutex mutex;
     std::vector<Heard> heard;
     runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
-        const double now = runner.elapsed();
+        const double now = late.now();
         const double moment =
             now - static_cast<double>(runner.transports().link().now().count() - beat.hostMicros) /
                       1e6;
@@ -1615,11 +1626,10 @@ TEST_CASE("a positive offset sends each beat's cue on the beat as it was heard",
     std::atomic<bool> listening{true};
     std::thread listener([&] {
         while (listening.load(std::memory_order_acquire)) {
-            const std::string datagram = media.receive();
-            if (datagram.rfind("/cue", 0) == 0) {
-                const double at = runner.elapsed();
+            const LoopbackReceiver::Stamped got = media.receiveStamped();
+            if (got.datagram.rfind("/cue", 0) == 0) {
                 const std::lock_guard<std::mutex> lock(mutex);
-                cues.push_back({at, lastInt(datagram)});
+                cues.push_back({late.since(got.at), lastInt(got.datagram)});
             }
         }
     });
@@ -1627,47 +1637,126 @@ TEST_CASE("a positive offset sends each beat's cue on the beat as it was heard",
     runner.start();
     engine->start();
     playInRealTime(*engine, excerpt());
-    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    // Long enough for the beats predicted past the end of the excerpt to go — up to
+    // `BeatScheduler::kMaxAhead` of them, each the offset after its moment.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1500});
     engine->stop();
     runner.stop();
     listening.store(false, std::memory_order_release);
     listener.join();
 
     // Every beat that reached the rig, heard in time to wait for, has its own cue the offset after
-    // its moment.
-    std::size_t sent = 0;
-    std::size_t inTime = 0;
-    std::size_t onTime = 0;
+    // its moment. "In time" with room either side of the line: where the scheduler draws it is
+    // the beat it predicted, which the beat heard may correct.
+    constexpr double kOnTime = 0.010;
+    const double line = kDelay - Transports::kPredictionMargin;
+    std::size_t acquired = 0;
+    std::size_t clearlyInTime = 0;
+    std::size_t clearlyLate = 0;
     double latest = 0.0;
+    double lastDue = 0.0;
     for (const Heard& beat : heard) {
-        if (!beat.acquired || beat.beatInBar == 0) {
+        if (!beat.acquired) {
             continue;
         }
-        ++sent;
-        latest = std::max(latest, beat.at - beat.moment);
-        if (beat.at - beat.moment > 0.200 - Transports::kPredictionMargin) {
+        ++acquired;
+        const double after = beat.at - beat.moment;
+        const double due = beat.moment + kDelay;
+        latest = std::max(latest, after);
+        lastDue = std::max(lastDue, due);
+        if (after > line + 0.050) {
+            ++clearlyLate;
+        }
+        if (after > line - 0.050) {
             continue;
         }
-        ++inTime;
+        ++clearlyInTime;
+        // Its own cue: the one with its place in the bar nearest the moment it was due.
+        const Cue* own = nullptr;
         for (const Cue& cue : cues) {
             if (cue.value == static_cast<int>(beat.beatInBar) &&
-                std::abs(cue.at - beat.moment - 0.200) < 0.035) {
-                ++onTime;
-                break;
+                (own == nullptr || std::abs(cue.at - due) < std::abs(own->at - due))) {
+                own = &cue;
+            }
+        }
+        INFO("a beat at " << beat.moment << " s, " << beat.beatInBar << " of the bar, heard "
+                          << after * 1000.0 << " ms after it");
+        REQUIRE(own != nullptr);
+        const double off = own->at - due;
+        INFO("its cue " << off * 1000.0 << " ms off");
+        CHECK(off > -kOnTime); // never early
+        if (off >= kOnTime) {
+            // Late: by no more than the output thread was held asleep across it.
+            const double asleep = late.asleepBetween(due, own->at);
+            INFO(late.describe(due, own->at));
+            CHECK(off - asleep < kOnTime);
+            if (off - asleep < kOnTime) {
+                WARN("a cue went out " << off * 1000.0 << " ms late, the machine holding the "
+                                       << "output thread asleep for " << asleep * 1000.0
+                                       << " ms of it: " << late.describe(due, own->at));
             }
         }
     }
-    INFO(sent << " beats sent, " << inTime << " heard in time, " << onTime
-              << " with their own cue 200 ms after; heard as late as " << latest * 1000.0
-              << " ms; " << runner.scheduler().heardFires() << " fired as heard, "
-              << runner.scheduler().predictedFires() << " on a prediction");
+    // The beats predicted past the end of the excerpt, which no beat heard answered: every cue
+    // after the last beat's.
+    const auto pastTheEnd =
+        static_cast<std::size_t>(std::count_if(cues.begin(), cues.end(), [lastDue](const Cue& cue) {
+            return cue.at > lastDue + kOnTime;
+        }));
+    const auto& scheduler = runner.scheduler();
+    INFO(acquired << " beats sent, " << clearlyInTime << " heard well in time, " << clearlyLate
+                  << " well late; heard as late as " << latest * 1000.0 << " ms; " << cues.size()
+                  << " cues, " << pastTheEnd << " past the end; " << scheduler.heardFires()
+                  << " fired as heard, " << scheduler.predictedFires() << " on a prediction, "
+                  << scheduler.matched() << " of those heard after");
     CHECK(runner.errors() == 0);
-    CHECK(sent >= 12);
-    CHECK(inTime + 1 >= sent);
-    CHECK(onTime + 1 >= inTime);
-    // Fired as heard, not on the prediction.
-    CHECK(runner.scheduler().heardFires() + 1 >= inTime);
-    CHECK(runner.scheduler().predictedFires() <= sent - inTime + 1);
+    CHECK(scheduler.stale() == 0);
+    CHECK(acquired >= 12);
+    CHECK(clearlyInTime >= 8); // enough waited for to be a test of waiting
+    if (clearlyInTime < acquired) {
+        WARN(acquired - clearlyInTime << " of " << acquired << " beats heard too late to wait "
+                                      << "for, the latest " << latest * 1000.0
+                                      << " ms after its moment");
+    }
+    // Every fire a cue; every beat sent once, as it was heard or on its prediction — as heard
+    // whenever it came in time, and predicted whenever it did not; and nothing else predicted
+    // but the beats past the end.
+    CHECK(cues.size() == scheduler.heardFires() + scheduler.predictedFires());
+    CHECK(scheduler.heardFires() + scheduler.matched() == acquired);
+    CHECK(scheduler.heardFires() >= clearlyInTime);
+    CHECK(scheduler.matched() >= clearlyLate);
+    CHECK(scheduler.heardFires() + scheduler.predictedFires() == acquired + pastTheEnd);
+    CHECK(pastTheEnd <= takt4::output::BeatScheduler::kMaxAhead);
+}
+
+TEST_CASE("a round the output thread is held up in is takt4's, not the machine's",
+          "[output][realtime]") {
+    // `inspect` holds the output thread between two rounds for as long as it takes: takt4's own
+    // lock, so the round waiting on it is a round that ran long — what a timing test does not
+    // excuse a late cue by — and never a thread the machine woke late. And it is counted from
+    // each start.
+    using namespace std::chrono_literals;
+    LateRounds late(std::chrono::steady_clock::now());
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, Transports::Config{});
+    late.watch(runner.lateness(), "the output thread");
+    runner.start();
+    REQUIRE(runner.sync());
+    const double from = late.now();
+    runner.inspect([](const auto&, const auto&, const auto&) {
+        std::this_thread::sleep_for(60ms);
+        return 0;
+    });
+    const double to = late.now();
+    REQUIRE(runner.sync());
+    runner.stop();
+    INFO(late.describe(from, to));
+    CHECK(runner.lateness().longestRoundSeconds() >= 0.050);
+    CHECK(late.asleepBetween(from, to) < 0.030); // none of it put down to the machine
+
+    runner.start();
+    CHECK(runner.lateness().longestRoundSeconds() < 0.050); // a new run, counted from nothing
+    runner.stop();
 }
 
 TEST_CASE("a note released after one beat is let go before the next beat's note, live",
@@ -2412,7 +2501,8 @@ TEST_CASE("the model, the tracker and the output thread each ask to run ahead",
     engine->stop();
 }
 
-TEST_CASE("the MIDI clock keeps its time while every core is busy", "[output][midi][hardware]") {
+TEST_CASE("the MIDI clock keeps its time while every core is busy",
+          "[output][midi][hardware][realtime]") {
     // an earlier review as a receiver meets it. The output thread ran at the priority every
     // thread starts at, the window's included, so on a machine with its cores busy — Skia
     // drawing, a video server, another program — a tick waited its turn behind them. Here
@@ -2616,7 +2706,7 @@ TEST_CASE("a hand-fired effect or channel test sends nothing while PANIC is enga
 }
 
 TEST_CASE("a name server that does not answer does not stop the output thread",
-          "[output][network]") {
+          "[output][network][realtime]") {
     // an earlier review. An output typed as a host name was resolved on the output thread — the
     // one with the MIDI clock, Link, Art-Net's keep-alive and every rule on it — so a name the
     // network could not answer stopped all of that for the resolver's timeout. A missing
@@ -3712,4 +3802,31 @@ TEST_CASE("the global state goes out only while a run is locked: nothing while i
     runner.stop();
     heard = globalHeard(monitor, 250);
     CHECK(heard == Heard{{"/takt4/locked", 0.0}});
+}
+
+TEST_CASE("a sync waits out a round held up for a second, as a CI machine can hold one",
+          "[output]") {
+    // `sync` is what a test reads a change's effect after. A machine that held the whole test
+    // process up for over a second left one unanswered at the window's 250 ms, and the test failed
+    // on a command that had done nothing wrong. It waits far longer: nothing on screen waits on it.
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, Transports::Config{});
+    runner.start();
+    REQUIRE(runner.sync());
+    std::atomic<bool> holding{false};
+    std::thread holder([&runner, &holding] {
+        runner.inspect([&holding](const auto&, const auto&, const auto&) {
+            holding.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            return 0;
+        });
+    });
+    while (!holding.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto asked = std::chrono::steady_clock::now();
+    CHECK(runner.sync());
+    CHECK(std::chrono::steady_clock::now() - asked >= std::chrono::milliseconds(500));
+    holder.join();
+    runner.stop();
 }

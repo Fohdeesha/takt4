@@ -11,8 +11,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #if defined(_WIN32)
@@ -25,6 +27,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
@@ -130,6 +133,62 @@ public:
 
     std::uint16_t port() const { return port_; }
 
+    /// A datagram and when it reached this machine, on `std::chrono::steady_clock`.
+    struct Stamped {
+        std::string datagram;
+        std::chrono::steady_clock::time_point at;
+    };
+
+    /// The next datagram and when it arrived — **the kernel's own stamp** where there is one
+    /// (SO_TIMESTAMP, macOS and Linux), so a test measuring when takt4 sent something does not
+    /// also measure how soon its own reading thread, at the default priority, was let run: on the
+    /// first macOS CI runs a thread at that priority woke 154 times a second when asked for a
+    /// thousand. Where there is none (Windows), the moment `recv` returned. An empty datagram for
+    /// a timeout.
+    Stamped receiveStamped() {
+#if defined(_WIN32)
+        Stamped out;
+        out.datagram = receive();
+        out.at = std::chrono::steady_clock::now();
+        return out;
+#else
+        char buffer[1024];
+        alignas(cmsghdr) char control[256];
+        iovec part{buffer, sizeof buffer};
+        msghdr message{};
+        message.msg_iov = &part;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof control;
+        Stamped out;
+        const auto got = ::recvmsg(socket_, &message, 0);
+        const auto steadyNow = std::chrono::steady_clock::now();
+        const auto systemNow = std::chrono::system_clock::now();
+        out.at = steadyNow;
+        if (got <= 0) {
+            return out;
+        }
+        out.datagram.assign(buffer, static_cast<std::size_t>(got));
+        for (cmsghdr* item = CMSG_FIRSTHDR(&message); item != nullptr;
+             item = CMSG_NXTHDR(&message, item)) {
+            if (item->cmsg_level == SOL_SOCKET && item->cmsg_type == SCM_TIMESTAMP) {
+                timeval stamp{};
+                std::memcpy(&stamp, CMSG_DATA(item), sizeof stamp);
+                // The kernel stamps on the wall clock: carried onto the steady one across the
+                // moment just read on both, which the two cannot drift apart in.
+                const auto arrived = std::chrono::system_clock::time_point(
+                    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                        std::chrono::seconds(stamp.tv_sec) +
+                        std::chrono::microseconds(stamp.tv_usec)));
+                out.at =
+                    steadyNow - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                    systemNow - arrived);
+            }
+        }
+        return out;
+#endif
+    }
+
     /// The next datagram, or an empty string if none arrived before the timeout.
     std::string receive() {
         char buffer[1024];
@@ -184,6 +243,12 @@ private:
             takt4::sandbox::allowPort(port_);
         }
 
+#if !defined(_WIN32)
+        // The kernel's own moment of arrival on every datagram: see `receiveStamped`.
+        const int stamp = 1;
+        ::setsockopt(socket_, SOL_SOCKET, SO_TIMESTAMP, &stamp,
+                     static_cast<socklen_t>(sizeof stamp));
+#endif
         // A test must not hang if a datagram is lost; half a second is far longer than a
         // loopback packet can take.
 #if defined(_WIN32)

@@ -164,6 +164,35 @@ TEST_CASE("datagrams reach a socket that is really listening", "[output][osc]") 
     }
 }
 
+TEST_CASE("a datagram is stamped when it arrived, not when the test read it",
+          "[output][osc][realtime]") {
+    // What the [realtime] tests measure a cue's moment by: the kernel's stamp, so a reading
+    // thread the machine held up does not make a cue on time read as late. Windows stamps
+    // nothing, and there the receiver reads the time as it reads the datagram.
+#if defined(_WIN32)
+    SKIP("Windows gives a datagram no stamp of its arrival");
+#else
+    LoopbackReceiver receiver;
+    OscSender sender("127.0.0.1", receiver.port());
+    OscMessage message("/takt4/beat");
+    message.addInt(1);
+    const auto sent = std::chrono::steady_clock::now();
+    REQUIRE(sender.send(message.packet()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(80)); // a reader held up
+    const LoopbackReceiver::Stamped got = receiver.receiveStamped();
+    const auto read = std::chrono::steady_clock::now();
+    REQUIRE(got.datagram == bytesOf(message));
+    const auto ms = [](std::chrono::steady_clock::duration span) {
+        return std::chrono::duration<double, std::milli>(span).count();
+    };
+    INFO("arrived " << ms(got.at - sent) << " ms after the send, read " << ms(read - got.at)
+                    << " ms after it arrived");
+    CHECK(got.at >= sent - std::chrono::milliseconds(2)); // the clocks agree to a stamp's grain
+    CHECK(got.at - sent < std::chrono::milliseconds(20));
+    CHECK(read - got.at >= std::chrono::milliseconds(70));
+#endif
+}
+
 TEST_CASE("an output aimed at a name follows the name to a new address", "[output][osc][net]") {
     // A name is looked up again every half minute (`net::AsyncAddress`), so a media server that
     // comes back from a restart on a new DHCP address is found there — but the sender stopped

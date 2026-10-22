@@ -8,6 +8,7 @@
 #include "core/trigger/rule.hpp"
 
 #include "support/fake_grid_source.hpp"
+#include "support/late_rounds.hpp"
 #include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
 
@@ -36,6 +37,7 @@ using takt4::output::OutputRunner;
 using takt4::output::OutputTarget;
 using takt4::output::Transports;
 using takt4::testing::FakeGridSource;
+using takt4::testing::LateRounds;
 using takt4::testing::LoopbackReceiver;
 using takt4::timing::BeatGrid;
 using takt4::timing::ExternalBeats;
@@ -103,13 +105,20 @@ Rule::Config cueOnEveryBeat() {
 } // namespace
 
 TEST_CASE("following a grid, every beat's cue lands on that beat, early or late",
-          "[output][timing][follow][slow]") {
+          "[output][timing][follow][realtime][slow]") {
     // A rule on every beat, its media server set 200 ms early or 200 ms late. The tracker's beats
     // are heard a pipeline after their moment and jitter by milliseconds; a followed grid's are
     // pushed as their moment passes and are exact. So every beat's own cue — its own place in the
     // bar — has to land on it, offset by the delay, to within the loop's rounds, and only once.
+    //
+    // **What is measured is takt4, not the machine.** Each cue is stamped by the kernel as it
+    // arrives, where the system stamps (`LoopbackReceiver::receiveStamped`), and one that went out
+    // more than 10 ms late is put down to the machine only for as long as a thread of takt4's
+    // slept past its time across it (`LateRounds`) — said, not failed. Which cue, which beat and
+    // how many stay exact.
     const double delay = GENERATE(-0.200, 0.200);
     INFO("the media server " << delay * 1000.0 << " ms");
+    LateRounds late(std::chrono::steady_clock::now());
     LoopbackReceiver media;
     Transports::Config config;
     OutputTarget server;
@@ -121,6 +130,8 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
 
     ExternalBeats beats;
     OutputRunner runner(beats, config);
+    late.watch(runner.lateness(), "the output thread");
+    late.watch(beats.lateness(), "the timing worker");
     runner.post(OutputCommand::rules({cueOnEveryBeat()}));
     REQUIRE(runner.triggers().rule(0).valid());
     const auto linkNow = [&runner] { return runner.transports().link().now().count(); };
@@ -136,8 +147,7 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
     std::mutex mutex;
     std::vector<Heard> heard;
     runner.setBeatObserver([&](const takt4::engine::EngineBeat& beat) {
-        const double moment =
-            runner.elapsed() - static_cast<double>(linkNow() - beat.hostMicros) / 1e6;
+        const double moment = late.now() - static_cast<double>(linkNow() - beat.hostMicros) / 1e6;
         const std::lock_guard<std::mutex> lock(mutex);
         heard.push_back({moment, beat.event.beatInBar});
     });
@@ -149,11 +159,10 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
     std::atomic<bool> listening{true};
     std::thread listener([&] {
         while (listening.load(std::memory_order_acquire)) {
-            const std::string datagram = media.receive();
-            if (datagram.rfind("/cue", 0) == 0) {
-                const double at = runner.elapsed();
+            const LoopbackReceiver::Stamped got = media.receiveStamped();
+            if (got.datagram.rfind("/cue", 0) == 0) {
                 const std::lock_guard<std::mutex> lock(mutex);
-                cues.push_back({at, lastInt(datagram)});
+                cues.push_back({late.since(got.at), lastInt(got.datagram)});
             }
         }
     });
@@ -167,50 +176,68 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
     listening.store(false, std::memory_order_release);
     listener.join();
 
+    // The cues in the order they were sent, each beside the beat it is for. Early, the first beat
+    // goes as it is heard — there is nothing before it to predict it from — and the predictions
+    // run on past the last beat heard, for up to `BeatScheduler::kMaxAhead` beats the source was
+    // stopped before.
+    const auto& scheduler = runner.scheduler();
+    INFO(heard.size() << " beats heard, " << cues.size() << " cues; " << scheduler.heardFires()
+                      << " fired as heard, " << scheduler.predictedFires() << " predicted, "
+                      << scheduler.matched() << " of them heard after");
     REQUIRE(heard.size() >= 9);
-    std::size_t onTheirBeat = 0;
-    for (std::size_t i = 0; i < heard.size(); ++i) {
-        INFO("beat " << i << " at " << heard[i].moment << ", " << heard[i].beatInBar << " of 4");
-        // The first beat early has nothing before it to be predicted from, and goes as heard.
-        if (delay < 0.0 && i == 0) {
-            continue;
-        }
-        std::size_t nearby = 0;
-        std::size_t own = 0;
-        double nearest = 0.0;
-        int nearestValue = 0;
-        for (const Cue& cue : cues) {
-            const double off = cue.at - heard[i].moment - delay;
-            if (std::abs(off) < 0.45 * period) {
-                ++nearby;
-                nearest = off;
-                nearestValue = cue.value;
-                if (cue.value == static_cast<int>(heard[i].beatInBar) && std::abs(off) < 0.010) {
-                    ++own;
-                }
+    REQUIRE(cues.size() >= heard.size());
+    const std::size_t past = cues.size() - heard.size();
+    if (delay > 0.0) {
+        REQUIRE(past == 0);
+    } else {
+        REQUIRE(past <= takt4::output::BeatScheduler::kMaxAhead);
+    }
+    std::size_t excused = 0;
+    for (std::size_t i = 0; i < cues.size(); ++i) {
+        const std::size_t ahead = i < heard.size() ? 0 : i - heard.size() + 1;
+        const Heard& beat = ahead == 0 ? heard[i] : heard.back();
+        const double moment = beat.moment + static_cast<double>(ahead) * period;
+        const int beatInBar = ahead == 0 ? static_cast<int>(beat.beatInBar)
+                                         : static_cast<int>((beat.beatInBar + ahead - 1) % 4 + 1);
+        const double due = delay < 0.0 && i == 0 ? moment : moment + delay;
+        const double off = cues[i].at - due;
+        INFO("cue " << i << (ahead == 0 ? "" : ", for a beat past the last heard")
+                    << ": its beat at " << moment << " s, " << beatInBar << " of 4; the cue said "
+                    << cues[i].value << ", " << off * 1000.0 << " ms off");
+        CHECK(cues[i].value == beatInBar); // its own beat's
+        CHECK(off > -0.010);               // and never early
+        if (off >= 0.010) {
+            // Late: by no more than a thread of takt4's was held asleep across it.
+            const double asleep = late.asleepBetween(due, cues[i].at);
+            INFO(late.describe(due, cues[i].at));
+            CHECK(off - asleep < 0.010);
+            if (off - asleep < 0.010) {
+                ++excused;
+                WARN("cue " << i << " went out " << off * 1000.0 << " ms late, the machine holding "
+                            << "a thread of takt4's asleep for " << asleep * 1000.0
+                            << " ms of it: " << late.describe(due, cues[i].at));
             }
         }
-        // What a miss was by: the cue's place in the bar, and how far off its beat it landed.
-        INFO("its cue said " << nearestValue << ", " << nearest * 1000.0 << " ms off");
-        CHECK(nearby == 1); // one cue for each beat, and only one
-        CHECK(own == 1);    // and it is this beat's, on time
-        onTheirBeat += own;
     }
-    INFO(onTheirBeat << " of " << heard.size() << " beats with their own cue on time; "
-                     << runner.scheduler().heardFires() << " fired as heard, "
-                     << runner.scheduler().predictedFires() << " predicted, "
-                     << runner.scheduler().matched() << " matched");
     CHECK(runner.errors() == 0);
-    CHECK(runner.scheduler().stale() == 0);
+    CHECK(scheduler.stale() == 0);
+    // Every cue a fire and every fire a cue; every beat heard fired once, as it was heard or
+    // ahead of it; every prediction a beat heard after it, or one of the beats past the last.
+    CHECK(cues.size() == scheduler.heardFires() + scheduler.predictedFires());
+    CHECK(scheduler.heardFires() + scheduler.matched() == heard.size());
+    CHECK(scheduler.predictedFires() == scheduler.matched() + past);
     if (delay < 0.0) {
-        CHECK(runner.scheduler().predictedFires() + 1 >= heard.size());
+        // Ahead of the beat, on predictions, all but the first — save a beat that came while the
+        // machine held the output thread past its prediction, which goes as it is heard, late.
+        CHECK(scheduler.heardFires() <= 1 + excused);
     } else {
-        CHECK(runner.scheduler().heardFires() == heard.size());
+        // On the beat, as it is heard: nothing predicted at no lead to race it.
+        CHECK(scheduler.predictedFires() == 0);
     }
 }
 
 TEST_CASE("following a grid, the rig is let go of when the source has been gone four seconds",
-          "[output][timing][follow][release][slow]") {
+          "[output][timing][follow][release][realtime][slow]") {
     // The operator's call of 2026-10-15: a source that goes is coasted, then treated exactly as
     // silence — and silence lets go of every note a rule holds on, so a Liberation clip driven by
     // MIDI is not left playing to a rig nobody is following.
@@ -281,7 +308,7 @@ TEST_CASE("following a grid, the rig is let go of when the source has been gone 
 }
 
 TEST_CASE("following a grid, a MIDI clock output is ticked from it and started on its downbeat",
-          "[output][timing][follow][midi][slow]") {
+          "[output][timing][follow][midi][realtime][slow]") {
     // The bridge the operator asked for: a drum machine or a lighting desk on MIDI clock hears the
     // followed grid's tempo, 24 ticks to its beat, and is started on its downbeat — the clock is
     // the same one the tracker drives, fed by beats that are exact.
@@ -306,12 +333,17 @@ TEST_CASE("following a grid, a MIDI clock output is ticked from it and started o
     const StopsWhenDone stops{beats};
     runner.start();
     runner.setTracking(true);
+    const auto pressed = std::chrono::steady_clock::now();
     beats.start(source, BeatGrid::Options{});
     std::this_thread::sleep_for(std::chrono::seconds{4});
     const std::uint64_t sent = beats.beatsSent();
     beats.stop();
     runner.setTracking(false);
+    // However long this thread's four seconds took: a stalled machine wakes it late.
+    const double ran =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - pressed).count();
     REQUIRE(runner.sync());
+    const std::uint64_t skipped = runner.snapshot().trouble.clockTicksSkipped;
     runner.stop();
 
     const std::lock_guard<std::mutex> lock(*cableMutex);
@@ -327,10 +359,13 @@ TEST_CASE("following a grid, a MIDI clock output is ticked from it and started o
             ticksAfterStart += started ? 1 : 0;
         }
     }
-    INFO(sent << " beats, " << ticks << " ticks, " << ticksAfterStart << " after Start");
+    INFO(sent << " beats, " << ticks << " ticks, " << ticksAfterStart << " after Start, " << skipped
+              << " skipped, over " << ran << " s");
     CHECK(started);
-    // Four seconds of 150 BPM is ten beats, 240 ticks, ticked from the press.
-    CHECK(ticks == Approx(240.0).margin(30.0));
+    // 150 BPM is 60 ticks a second, ticked from the press to the stop — four seconds is ten
+    // beats, 240 ticks. Any a stall made the clock skip rather than send in a burst
+    // (`MidiClock::kMaxBurst`) are counted, and count.
+    CHECK(static_cast<double>(ticks + skipped) == Approx(60.0 * ran).margin(30.0));
     // Started on a downbeat: a whole number of bars before the end, give or take a part of one.
     CHECK(ticksAfterStart > 96);
 }
@@ -408,15 +443,18 @@ TEST_CASE("following a grid that is not Link, the Link output leads at its tempo
 
 namespace {
 
-/// The CDJs as the follower reads them, played by a test thread: each beat pushed when it comes,
-/// stamped on Link's clock.
-class PushedFeed final : public takt4::timing::CdjFeed {
+/// The CDJs as the follower reads them, from a list made up front: each beat handed over once its
+/// moment has come, stamped with that moment on Link's clock, as the network thread stamps a
+/// packet as it reads it. No thread of the test's has to wake on time: one pushing each beat as it
+/// came slept a millisecond at a time at the default priority, which on CI's Macs is about six —
+/// as long as the follower waits for a beat past its moment (`ProLinkFollower::kWaitMicros`).
+class QueuedFeed final : public takt4::timing::CdjFeed {
 public:
-    explicit PushedFeed(std::function<std::int64_t()> clock) : clock_(std::move(clock)) {}
+    explicit QueuedFeed(std::function<std::int64_t()> clock) : clock_(std::move(clock)) {}
     std::int64_t now() const noexcept override { return clock_(); }
     bool popBeat(takt4::timing::prolink::VirtualPlayer::Heard& out) noexcept override {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (beats_.empty()) {
+        if (beats_.empty() || beats_.front().at > clock_()) {
             return false;
         }
         out = beats_.front();
@@ -425,10 +463,10 @@ public:
     }
     void join() noexcept override {}
     void leave() noexcept override {}
-    /// A beat of player 1 at `bpm`, `beatInBar`, heard now.
-    void push(double bpm, std::uint8_t beatInBar) {
+    /// A beat of player 1 at `bpm`, `beatInBar`, at `at` on the clock. In order.
+    void queue(std::int64_t at, double bpm, std::uint8_t beatInBar) {
         takt4::timing::prolink::VirtualPlayer::Heard beat;
-        beat.at = clock_();
+        beat.at = at;
         beat.device = 1;
         beat.bpm = bpm;
         beat.beatInBar = beatInBar;
@@ -447,7 +485,7 @@ private:
 
 TEST_CASE("following the CDJs, a hot cue's downbeat that comes a moment late goes out as the "
           "bar's first, not as the beat the grid expected",
-          "[output][timing][follow][prolink][slow]") {
+          "[output][timing][follow][prolink][realtime][slow]") {
     // A CDJ sends its beats on its own 3 ms step, so a beat can come a moment after the tempo
     // puts it. The tracker's beats come a pipeline late and are fired on a prediction; a followed
     // grid's come on time, and a prediction at no lead would race them — and win with the bar
@@ -465,7 +503,7 @@ TEST_CASE("following the CDJs, a hot cue's downbeat that comes a moment late goe
     runner.post(OutputCommand::rules({cueOnEveryBeat()}));
     REQUIRE(runner.triggers().rule(0).valid());
     const auto linkNow = [&runner] { return runner.transports().link().now().count(); };
-    PushedFeed feed(linkNow);
+    QueuedFeed feed(linkNow);
     takt4::timing::ProLinkFollower follower(feed);
     const StopsWhenDone stops{beats};
 
@@ -478,17 +516,19 @@ TEST_CASE("following the CDJs, a hot cue's downbeat that comes a moment late goe
     std::atomic<bool> listening{true};
     std::thread listener([&] {
         while (listening.load(std::memory_order_acquire)) {
-            const std::string datagram = media.receive();
-            if (datagram.rfind("/cue", 0) == 0) {
-                const std::int64_t at = linkNow();
+            // When it arrived, by the kernel's stamp where there is one, on Link's clock.
+            const LoopbackReceiver::Stamped got = media.receiveStamped();
+            if (got.datagram.rfind("/cue", 0) == 0) {
+                const std::int64_t at =
+                    linkNow() - std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - got.at)
+                                    .count();
                 const std::lock_guard<std::mutex> lock(mutex);
-                cues.push_back({at, lastInt(datagram)});
+                cues.push_back({at, lastInt(got.datagram)});
             }
         }
     });
 
-    runner.start();
-    beats.start(follower, BeatGrid::Options{4, 4.0});
     constexpr double kBpm = 125.0;
     const auto period = static_cast<std::int64_t>(std::llround(60e6 / kBpm));
     const std::int64_t first = linkNow() + 200'000;
@@ -497,18 +537,14 @@ TEST_CASE("following the CDJs, a hot cue's downbeat that comes a moment late goe
     constexpr std::size_t kCue = 7;
     std::vector<std::int64_t> moments;
     for (std::size_t i = 0; i < bars.size(); ++i) {
-        const std::int64_t due =
-            first + static_cast<std::int64_t>(i) * period + (i == kCue ? 2'000 : 0);
-        while (linkNow() < due - 2'000) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        while (linkNow() < due) {
-            std::this_thread::yield();
-        }
-        moments.push_back(linkNow());
-        feed.push(kBpm, bars[i]);
+        moments.push_back(first + static_cast<std::int64_t>(i) * period + (i == kCue ? 2'000 : 0));
+        feed.queue(moments.back(), kBpm, bars[i]);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    runner.start();
+    beats.start(follower, BeatGrid::Options{4, 4.0});
+    while (linkNow() < moments.back() + 100'000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     beats.stop();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     runner.stop();

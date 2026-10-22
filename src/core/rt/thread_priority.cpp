@@ -1,5 +1,6 @@
 #include "core/rt/thread_priority.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -146,7 +147,33 @@ bool keepFullSpeed() noexcept {
     return false;
 }
 
-RoundTimer::RoundTimer() noexcept {
+void RoundLateness::reset() noexcept {
+    wake_.store(0.0, std::memory_order_relaxed);
+    round_.store(0.0, std::memory_order_relaxed);
+}
+
+void RoundLateness::note(const Late& round) noexcept {
+    // One writer, the thread itself, so a plain compare and store keeps the longest.
+    const auto overslept = std::max(round.woke - round.due, std::chrono::steady_clock::duration{});
+    const auto ran = round.done - round.woke;
+    const double wake = std::chrono::duration<double>(overslept).count();
+    const double took = std::chrono::duration<double>(ran).count();
+    if (wake > wake_.load(std::memory_order_relaxed)) {
+        wake_.store(wake, std::memory_order_relaxed);
+    }
+    if (took > round_.load(std::memory_order_relaxed)) {
+        round_.store(took, std::memory_order_relaxed);
+    }
+    if (observer_ && (overslept >= kNoted || ran >= kNoted)) {
+        try {
+            observer_(round);
+        } catch (...) {
+            // A test's own bookkeeping failing is the test's to find; the round goes on.
+        }
+    }
+}
+
+RoundTimer::RoundTimer(RoundLateness* lateness) noexcept : lateness_(lateness) {
 #if defined(_WIN32)
     timer_ = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                       TIMER_ALL_ACCESS);
@@ -163,14 +190,19 @@ RoundTimer::~RoundTimer() {
 
 void RoundTimer::wait(std::chrono::microseconds period) noexcept {
     const auto now = std::chrono::steady_clock::now();
+    if (lateness_ != nullptr && woke_ != std::chrono::steady_clock::time_point{}) {
+        lateness_->note({due_, woke_, now});
+    }
     // The first round, or one more than a period behind its time: the grid from here.
     if (!started_ || now - next_ > period) {
         next_ = now;
         started_ = true;
     }
     next_ += period;
+    due_ = std::max(next_, now);
     const auto left = std::chrono::duration_cast<std::chrono::microseconds>(next_ - now);
     if (left <= std::chrono::microseconds::zero()) {
+        noteWoke();
         return; // behind, by less than a round: this one now
     }
 #if defined(_WIN32)
@@ -179,11 +211,19 @@ void RoundTimer::wait(std::chrono::microseconds period) noexcept {
         due.QuadPart = -static_cast<LONGLONG>(left.count()) * 10; // relative, in 100 ns
         if (::SetWaitableTimer(static_cast<HANDLE>(timer_), &due, 0, nullptr, nullptr, FALSE) != 0 &&
             ::WaitForSingleObject(static_cast<HANDLE>(timer_), INFINITE) == WAIT_OBJECT_0) {
+            noteWoke();
             return;
         }
     }
 #endif
     std::this_thread::sleep_until(next_);
+    noteWoke();
+}
+
+void RoundTimer::noteWoke() noexcept {
+    if (lateness_ != nullptr) {
+        woke_ = std::chrono::steady_clock::now();
+    }
 }
 
 DenormalsAsZero::DenormalsAsZero() noexcept {

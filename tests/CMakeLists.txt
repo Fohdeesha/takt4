@@ -103,6 +103,7 @@ add_executable(takt4_tests
   support/crt_dialogs.cpp
   support/fake_beat_source.hpp
   support/fake_grid_source.hpp
+  support/late_rounds.hpp
   support/link_network.hpp
   support/loopback_receiver.hpp
   support/prolink_capture.hpp
