@@ -30,6 +30,9 @@ TickFit::TickFit(Options options)
 void TickFit::startAgain() noexcept {
     line_.reset(kNominalMicrosPerTick, 2);
     assumed_ = false;
+    runStartedAt_ = 0.0;
+    starting_ = true;
+    arrived_ = false;
     run_.clear();
     runSide_ = 0;
 }
@@ -38,12 +41,14 @@ void TickFit::startAgainAt(double microsPerTick) noexcept {
     startAgain();
     line_.reset(microsPerTick, options_.firstTaken);
     assumed_ = true;
+    runStartedAt_ = microsPerTick;
 }
 
 void TickFit::reset() noexcept {
     startAgain();
     heldBack_ = 0;
     tempoChanges_ = 0;
+    bunched_ = 0;
 }
 
 double TickFit::indexAt(std::int64_t atMicros) const noexcept {
@@ -58,8 +63,30 @@ void TickFit::take(const Tick& tick) noexcept {
 
 void TickFit::add(std::int64_t index, std::int64_t atMicros) noexcept {
     const Tick tick{index, atMicros};
+    const double sincePrevious = static_cast<double>(atMicros - lastArrival_);
+    const bool after = arrived_;
+    arrived_ = true;
+    lastArrival_ = atMicros;
     if (line_.points() < options_.firstTaken) {
+        // Taken unchecked, since there is no spread yet to check it by — unless, as the run
+        // starts, it came bunched with the one before (`Options::leastGap`): then neither says
+        // where the ticks are, and the line starts again from the next that comes at its own
+        // pace, at the tempo the run was started at if it had one.
+        if (starting_ && after &&
+            sincePrevious < std::max(options_.leastGap, runStartedAt_ / 4.0)) {
+            ++bunched_;
+            const double startedAt = runStartedAt_;
+            if (startedAt > 0.0) {
+                startAgainAt(startedAt);
+            } else {
+                startAgain();
+            }
+            arrived_ = true;
+            lastArrival_ = atMicros;
+            return;
+        }
         take(tick);
+        starting_ = starting_ && line_.points() < options_.firstTaken;
         return;
     }
     const double spread = kSpreadPerMedian * line_.medianDistance();
@@ -104,6 +131,8 @@ void TickFit::startFromRun(std::size_t count) noexcept {
     // after all. Its own slope from its first two: nothing from before is known about it.
     line_.reset(kNominalMicrosPerTick, 2);
     assumed_ = false;
+    runStartedAt_ = 0.0;
+    starting_ = false;
     for (auto tick = run_.end() - static_cast<std::ptrdiff_t>(count); tick != run_.end(); ++tick) {
         take(*tick);
     }

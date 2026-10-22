@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -38,35 +39,42 @@ public:
         nextTick_ = static_cast<double>(now_) + 300.0;
     }
 
-    /// Sends `message` now.
+    /// Sends `message` now. A Start makes the next tick the song's first.
     void send(std::vector<unsigned char> message) {
+        if (!message.empty() && message[0] == kStart) {
+            songZero_ = moments_.size();
+        }
         hub_.deliver("Mixer", std::span<const unsigned char>(message.data(), message.size()));
     }
 
     /// Runs `seconds` on, a tick every gap while `ticking`, a reading every millisecond. Returns
     /// the beats sent and remembers every tick's moment.
     std::vector<EngineBeat> run(double seconds, bool ticking = true) {
-        std::vector<EngineBeat> beats;
-        const std::int64_t until = now_ + static_cast<std::int64_t>(seconds * 1e6);
-        while (now_ < until) {
-            const std::int64_t next = now_ + 1000;
-            while (ticking && nextTick_ < static_cast<double>(next)) {
-                now_ = static_cast<std::int64_t>(std::llround(nextTick_));
-                send({kTick});
-                ticks_.push_back(now_);
-                nextTick_ += gap_;
+        return carryOn(seconds, ticking ? Ticks::Sent : Ticks::None);
+    }
+
+    /// `seconds` of a delivery stall while the clock runs on: the ticks due in it are held, and
+    /// handed over together as it ends, `spacing` microseconds apart — a stalled driver's backlog.
+    std::vector<EngineBeat> runStalled(double seconds, double spacing) {
+        std::vector<EngineBeat> beats = carryOn(seconds, Ticks::Held);
+        for (std::size_t i = 0; i < held_; ++i) {
+            if (i > 0) {
+                now_ += static_cast<std::int64_t>(spacing);
             }
-            now_ = next;
-            last_ = follower_.read();
-            if (const std::optional<EngineBeat> beat = grid_.advance(last_)) {
-                beats.push_back(*beat);
-            }
+            send({kTick});
+            ticks_.push_back(now_);
         }
-        if (!ticking) {
-            nextTick_ = static_cast<double>(now_) + 300.0;
-        }
+        held_ = 0;
         return beats;
     }
+
+    /// `seconds` with the cable out while the clock runs on: every tick due in it is lost.
+    std::vector<EngineBeat> runLosing(double seconds) { return carryOn(seconds, Ticks::Lost); }
+
+    /// Where the sender's beat `n` of the song since the last Start was, by its own ticks.
+    double songBeatAt(std::size_t n) const { return moments_.at(songZero_ + 24 * n); }
+    /// The highest tempo the follower said it was present at.
+    double highestBpm() const { return highestBpm_; }
 
     void setTempo(double bpm) { gap_ = 60e6 / (bpm * 24.0); }
 
@@ -85,6 +93,40 @@ public:
     std::int64_t now() const { return now_; }
 
 private:
+    /// What becomes of the ticks due while the clock runs on.
+    enum class Ticks { Sent, None, Held, Lost };
+
+    std::vector<EngineBeat> carryOn(double seconds, Ticks ticks) {
+        std::vector<EngineBeat> beats;
+        const std::int64_t until = now_ + static_cast<std::int64_t>(seconds * 1e6);
+        while (now_ < until) {
+            const std::int64_t next = now_ + 1000;
+            while (ticks != Ticks::None && nextTick_ < static_cast<double>(next)) {
+                moments_.push_back(nextTick_);
+                if (ticks == Ticks::Sent) {
+                    now_ = static_cast<std::int64_t>(std::llround(nextTick_));
+                    send({kTick});
+                    ticks_.push_back(now_);
+                } else if (ticks == Ticks::Held) {
+                    ++held_;
+                }
+                nextTick_ += gap_;
+            }
+            now_ = next;
+            last_ = follower_.read();
+            if (last_.present) {
+                highestBpm_ = std::max(highestBpm_, last_.bpm);
+            }
+            if (const std::optional<EngineBeat> beat = grid_.advance(last_)) {
+                beats.push_back(*beat);
+            }
+        }
+        if (ticks == Ticks::None) {
+            nextTick_ = static_cast<double>(now_) + 300.0;
+        }
+        return beats;
+    }
+
     double gap_;
     std::int64_t now_ = 5'000'000'000LL;
     double nextTick_ = 0.0;
@@ -93,6 +135,12 @@ private:
     BeatGrid grid_;
     GridReading last_;
     std::vector<std::int64_t> ticks_;
+    /// Every tick's moment as the clock sent it, delivered or not; and where the last Start's
+    /// song began in it.
+    std::vector<double> moments_;
+    std::size_t songZero_ = 0;
+    std::size_t held_ = 0;
+    double highestBpm_ = 0.0;
 };
 
 } // namespace
@@ -422,4 +470,218 @@ TEST_CASE("a MIDI clock's tempo is known from one run of takt4 to the next, and 
     CHECK(static_cast<double>(beats[0].hostMicros) ==
           Approx(static_cast<double>(rig.ticks()[song])).margin(1000.0));
     CHECK(beats[0].event.beatInBar == 1);
+}
+
+namespace {
+
+/// No two beats closer than `share` of a beat at `bpm`: no flood.
+void noFlood(const std::vector<EngineBeat>& beats, double bpm, double share = 0.4) {
+    for (std::size_t i = 1; i < beats.size(); ++i) {
+        INFO("beats " << i - 1 << " and " << i);
+        CHECK(static_cast<double>(beats[i].hostMicros - beats[i - 1].hostMicros) >=
+              share * 60e6 / bpm);
+    }
+}
+
+std::vector<EngineBeat> joined(std::vector<EngineBeat> first, const std::vector<EngineBeat>& then) {
+    first.insert(first.end(), then.begin(), then.end());
+    return first;
+}
+
+} // namespace
+
+TEST_CASE("a MIDI clock's delivery stall and the burst after it are followed as the clock, not "
+          "as thousands of BPM",
+          "[timing][midi][follow]") {
+    // A stall of more than 100 ms starts a new run of ticks, whose
+    // first were taken unchecked: the ticks it held, handed over microseconds apart, made a line
+    // of thousands of BPM, trusted once two beats of ticks had come — 42 beats a millisecond apart
+    // from a stall of half a second at 128, 455 from one of a second. Nothing is followed at a
+    // tempo no clock has, the burst starts the run's count again, and the beats coast through.
+    for (const double stall : {0.15, 0.5, 1.0}) {
+        for (const double spacing : {5.0, 200.0}) {
+            INFO(stall << " s stall, its ticks " << spacing << " us apart");
+            Rig rig(128.0);
+            (void)rig.run(3.0);
+            REQUIRE(rig.last().present);
+            std::vector<EngineBeat> beats = rig.runStalled(stall, spacing);
+            beats = joined(beats, rig.run(4.0));
+            noFlood(beats, 128.0);
+            CHECK(rig.highestBpm() < 130.0);
+            CHECK(rig.highestBpm() > 126.0);
+            // As many beats as the music had: coasted through the stall, and followed after it.
+            const double seconds = stall + 4.0;
+            CHECK(static_cast<double>(beats.size()) >= std::floor(seconds * 128.0 / 60.0) - 1.0);
+            CHECK(static_cast<double>(beats.size()) <= std::ceil(seconds * 128.0 / 60.0) + 1.0);
+            CHECK(rig.last().present);
+        }
+    }
+}
+
+TEST_CASE("a MIDI clock stalled at 174 BPM with its ticks handed over 3 ms apart is no tempo",
+          "[timing][midi][follow]") {
+    // Ticks 3 ms apart are 833 BPM, inside the 2.5x a line may move by — and 600 ms of them sent
+    // 262 beats. Bunched as the run starts, they are no tempo either.
+    Rig rig(174.0);
+    (void)rig.run(3.0);
+    std::vector<EngineBeat> beats = rig.runStalled(0.6, 3000.0);
+    beats = joined(beats, rig.run(4.0));
+    noFlood(beats, 174.0);
+    CHECK(rig.highestBpm() < 177.0);
+}
+
+TEST_CASE("STOP in a MIDI clock's stall remembers the clock's tempo, not the burst's",
+          "[timing][midi][follow]") {
+    // STOP during the flood used to remember 5 us a tick, and the next song's Start sent 93 beats
+    // in its first 200 ms.
+    Rig rig(128.0);
+    rig.send({kStart});
+    (void)rig.run(3.0);
+    (void)rig.runStalled(0.5, 5.0);
+    (void)rig.run(0.2);
+    rig.restart();
+    rig.send({kStart});
+    const std::vector<EngineBeat> beats = rig.run(2.0);
+    REQUIRE_FALSE(beats.empty());
+    noFlood(beats, 128.0);
+    CHECK(rig.highestBpm() < 130.0);
+    CHECK(rig.last().bpm == Approx(128.0).margin(0.05));
+}
+
+TEST_CASE("a Start whose first MIDI clock ticks come in a bunch starts at the tempo remembered",
+          "[timing][midi][follow]") {
+    // A song started at a tempo known from before is followed from its first tick: those first
+    // ticks bunched by a 120 ms stall made a line of thousands of BPM at once, and 456 beats.
+    Rig rig(128.0);
+    rig.send({kStart});
+    (void)rig.run(3.0);
+    rig.send({kStop});
+    (void)rig.run(0.5, false);
+    rig.restart();
+    rig.send({kStart});
+    std::vector<EngineBeat> beats = rig.runStalled(0.12, 5.0);
+    beats = joined(beats, rig.run(3.0));
+    REQUIRE(beats.size() >= 5);
+    noFlood(beats, 128.0);
+    CHECK(rig.highestBpm() < 130.0);
+}
+
+TEST_CASE("ticks a MIDI clock lost in a gap are counted, and its beats stay on its own",
+          "[timing][midi][follow]") {
+    // an earlier review. A clock that had a Start, its cable out for two seconds while the mixer ran
+    // on: the ticks lost were not counted, so every beat after landed a part of a beat off the
+    // music — 0.29 of one in the reader's case — with the row saying "ticking · started".
+    for (const double gap : {0.7, 2.0, 5.0}) {
+        INFO(gap << " s with the cable out");
+        Rig rig(128.0);
+        rig.send({kStart});
+        (void)rig.run(3.0);
+        (void)rig.runLosing(gap);
+        const std::vector<EngineBeat> after = rig.run(5.0);
+        CHECK(rig.follower().status().placed);
+        CHECK(rig.follower().status().ticksLost > 0);
+        // Every beat once the clock is followed again on one of the clock's own beats, labelled as
+        // the song counts its bars.
+        std::size_t checked = 0;
+        for (const EngineBeat& beat : after) {
+            if (!beat.state.locked || beat.event.beatInBar == 0) {
+                continue;
+            }
+            const double since = static_cast<double>(beat.hostMicros) - rig.songBeatAt(0);
+            const auto n = static_cast<std::size_t>(std::llround(since / (60e6 / 128.0)));
+            INFO("beat " << n << " of the song");
+            CHECK(static_cast<double>(beat.hostMicros) == Approx(rig.songBeatAt(n)).margin(1500.0));
+            CHECK(beat.event.beatInBar == static_cast<std::uint32_t>(n % 4 + 1));
+            ++checked;
+        }
+        CHECK(checked >= 8);
+    }
+}
+
+TEST_CASE("a MIDI clock back after a gap too long to count across leaves its beats for DOWNBEAT",
+          "[timing][midi][follow]") {
+    // Over sixteen beats a tempo a quarter of a percent out is a tick out, and nothing says the
+    // clock held its tempo meanwhile: the clock is unplaced instead, and the window says to press
+    // DOWNBEAT.
+    Rig rig(128.0);
+    rig.send({kStart});
+    (void)rig.run(3.0);
+    REQUIRE(rig.follower().status().placed);
+    (void)rig.runLosing(10.0);
+    (void)rig.run(3.0);
+    CHECK_FALSE(rig.follower().status().placed);
+    CHECK(rig.follower().status().gapsUncounted == 1);
+    CHECK(rig.last().present);
+    CHECK_FALSE(rig.last().anchored);
+}
+
+TEST_CASE("a run that starts on a burst is followed once two beats of ticks have come at their own "
+          "pace",
+          "[timing][midi][follow]") {
+    // A second's stall: 51 ticks in the burst, and two beats of ticks counted before a few on-time
+    // ones had come — followed on a line through a handful of ticks. The count starts again after
+    // the burst, so the line it is followed on is two beats of ticks that came at their own pace.
+    Rig rig(128.0);
+    (void)rig.run(3.0);
+    (void)rig.runStalled(1.0, 5.0);
+    (void)rig.run(0.07);
+    CHECK_FALSE(rig.last().present);
+    CHECK(rig.follower().status().bunched >= 50);
+    (void)rig.run(48.0 * 60.0 / (128.0 * 24.0));
+    CHECK(rig.last().present);
+}
+
+TEST_CASE("a MIDI clock back from a gap far from the tempo it ran at waits a few beats to be "
+          "believed",
+          "[timing][midi][follow]") {
+    // In a run's first beats a tempo more than 2.5x from the one the clock last ran at is far
+    // likelier a stall's ticks than a DJ's new tempo; a few beats more of ticks say which.
+    Rig rig(128.0);
+    (void)rig.run(3.0);
+    (void)rig.run(0.3, false); // gone, and back at 330
+    rig.setTempo(330.0);
+    (void)rig.run(60.0 / 330.0 * 3.0); // three beats: counted, not believed
+    CHECK_FALSE(rig.last().present);
+    CHECK(rig.follower().status().refused > 0);
+    (void)rig.run(60.0 / 330.0 * 2.0); // past four beats of this run's ticks: believed
+    REQUIRE(rig.last().present);
+    CHECK(rig.last().bpm == Approx(330.0).margin(0.05));
+}
+
+TEST_CASE("a MIDI clock's tempo is remembered only from a line through a beat of its ticks",
+          "[timing][midi][follow]") {
+    // A song started, at a tempo known from before, and stopped again within a beat: its line is
+    // a handful of ticks, which is not a tempo to start the next song at.
+    Rig rig(128.0);
+    rig.send({kStart});
+    (void)rig.run(3.0);
+    rig.restart();
+    rig.setTempo(100.0);
+    rig.send({kStart});
+    (void)rig.run(10.0 * 60.0 / (100.0 * 24.0)); // ten ticks
+    rig.restart();
+    rig.send({kStart});
+    (void)rig.run(0.03); // a tick or two: the tempo is the one remembered until six have come
+    REQUIRE(rig.last().present);
+    CHECK(rig.last().bpm == Approx(128.0).margin(0.01));
+}
+
+TEST_CASE("a MIDI clock is followed down to 20 BPM and up to 400, and no further",
+          "[timing][midi][follow]") {
+    // Under 25 BPM every tick came more than 100 ms after the one before, and began a run of its
+    // own: such a clock was never followed.
+    for (const double bpm : {20.5, 22.0, 399.0}) {
+        INFO(bpm << " BPM");
+        Rig rig(bpm);
+        (void)rig.run(60.0 / bpm * 2.5); // two beats and a half
+        REQUIRE(rig.last().present);
+        CHECK(rig.last().bpm == Approx(bpm).margin(0.01));
+    }
+    for (const double bpm : {15.0, 450.0}) {
+        INFO(bpm << " BPM");
+        Rig rig(bpm);
+        (void)rig.run(60.0 / bpm * 4.0);
+        CHECK(rig.highestBpm() == 0.0);
+        CHECK(rig.follower().status().refused > 0);
+    }
 }

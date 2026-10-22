@@ -51,7 +51,8 @@ public:
         std::int64_t stepMicros = 300'000;
         std::int64_t keepAliveMicros = 1'500'000;
         /// A device not heard from for this long has gone. Players announce every two seconds
-        /// and mixers every one and a half; this rides out a lost keep-alive or two.
+        /// and mixers every one and a half; this rides out one lost keep-alive from a player, and
+        /// two from a mixer.
         std::int64_t goneMicros = 5'000'000;
         /// A status older than this says nothing about who is master: a player sends one about
         /// five times a second.

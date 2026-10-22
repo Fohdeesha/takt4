@@ -21,10 +21,11 @@ namespace takt4::output {
 /// beat in one commit) on the first locked beat and on a DOWNBEAT, and after that `setTempo`,
 /// nudged by how far `phaseAtTime` says the session has drifted. Following
 /// Link — this as the `timing::LinkReader` a `timing::LinkFollower` reads — it is only ever read,
-/// the follower alone switches it on and off, and the outputs commit nothing
-/// (`Transports::setLinkFollowing`). `requestBeat`, `forceBeat`, `beatAtTime` and start/stop sync
-/// are the tests' — some of them play the part of other peers with these — and nothing in the
-/// application calls them. Start/stop sync is off by default.
+/// and the outputs commit nothing: they hand it over switched off, the follower switches it on to
+/// join a session and off again, and the outputs put it back to the Link row's own switch when the
+/// following ends (`Transports::setLinkFollowing`). `requestBeat`, `forceBeat`, `beatAtTime` and
+/// start/stop sync are the tests' — some of them play the part of other peers with these — and
+/// nothing in the application calls them. Start/stop sync is off by default.
 ///
 /// Timing goes through HostTimeSource: the audio thread tells `observe` where each
 /// buffer's first sample is and when it was heard, and reads every hop's moment off the line

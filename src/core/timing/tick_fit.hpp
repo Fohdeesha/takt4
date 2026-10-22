@@ -69,6 +69,15 @@ public:
         /// Ticks in a row off the line on one side that are a new tempo however they look: a beat
         /// of a MIDI clock, half as long again as the longest run of held-up deliveries measured.
         std::size_t giveUpAfter = 24;
+        /// **A burst, not a tempo**: while a run's line is still being started (`firstTaken`), a
+        /// tick that arrives closer than this to the one before it — or than a quarter of the
+        /// tempo the run was started at, when that is wider — was held up and handed over in a
+        /// bunch with others, and says nothing about where the ticks are. The line starts again,
+        /// and the run's line is made from ticks that arrive at their own pace. A quarter of the
+        /// gap between two ticks at 400 BPM, the fastest clock followed: no clock that slow sends
+        /// two this close (a delivery stall's 26 ticks, handed over 5 µs apart, were once fitted
+        /// as 500 000 BPM).
+        double leastGap = 60e6 / (400.0 * 24.0) / 4.0;
     };
 
     TickFit();
@@ -96,9 +105,14 @@ public:
     double indexAt(std::int64_t atMicros) const noexcept;
     /// Microseconds from one tick to the next. Fitted lines only.
     double microsPerTick() const noexcept { return line_.slope(); }
+    /// How many ticks the line goes through: its own measurement once this reaches two, or more
+    /// than `Options::firstTaken` after a start at a tempo known from before.
+    std::size_t taken() const noexcept { return line_.points(); }
 
     /// Ticks held back as deliveries held up — never taken.
     std::uint64_t heldBack() const noexcept { return heldBack_; }
+    /// Ticks that arrived bunched as a run was starting, and started its line again (`leastGap`).
+    std::uint64_t bunched() const noexcept { return bunched_; }
     /// How many times the line started again from a new tempo.
     std::uint64_t tempoChanges() const noexcept { return tempoChanges_; }
 
@@ -124,9 +138,20 @@ private:
     int runSide_ = 0;
     /// The line's slope is a tempo known from before until it has ticks to measure its own by.
     bool assumed_ = false;
+    /// The tempo the run was started at (`startAgainAt`), in microseconds a tick, or zero — what a
+    /// bunched tick starts the line again at.
+    double runStartedAt_ = 0.0;
+    /// The run's line is being started — `startAgain` or `startAgainAt`, and fewer than
+    /// `Options::firstTaken` ticks taken since — which is when a bunched tick starts it again. Not
+    /// after a tempo change within the run (`startFromRun`), whose line is already the ticks'.
+    bool starting_ = true;
     std::int64_t lastIndex_ = 0;
+    /// When the newest tick arrived, taken or not; and whether one has this run.
+    std::int64_t lastArrival_ = 0;
+    bool arrived_ = false;
     std::uint64_t heldBack_ = 0;
     std::uint64_t tempoChanges_ = 0;
+    std::uint64_t bunched_ = 0;
 };
 
 } // namespace takt4::timing

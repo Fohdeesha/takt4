@@ -256,3 +256,77 @@ TEST_CASE("following Link with nothing to listen on says why and never switches 
     (void)rounds(follower, link, listener, 3000);
     CHECK_FALSE(link.enabledNow);
 }
+
+TEST_CASE("following Link, a listener that would not open is tried again until it does",
+          "[timing][follow][link]") {
+    // A follower that could not listen at START never tried again,
+    // and stayed deaf for the run.
+    FakeLink link;
+    FakeListener listener;
+    listener.opens_ = false;
+    LinkFollower follower(link, listener);
+    follower.begin(4);
+    REQUIRE(listener.opens == 1);
+    (void)rounds(follower, link, listener, 4900);
+    CHECK(listener.opens == 1);
+    (void)rounds(follower, link, listener, 200);
+    CHECK(listener.opens == 2);
+    // Free now: the next try opens it, and says so.
+    listener.opens_ = true;
+    (void)rounds(follower, link, listener, 5100);
+    CHECK(listener.opens == 3);
+    CHECK(follower.status().canListen);
+    CHECK(follower.problem().empty());
+    // And a session heard from then on is joined.
+    listener.peers.push_back({seconds(link), seconds(link), 126.5});
+    (void)rounds(follower, link, listener, 1100);
+    CHECK(link.enabledNow);
+}
+
+TEST_CASE("following Link, a join nobody answers is tried again later each time, up to half a "
+          "minute apart",
+          "[timing][follow][link]") {
+    // an earlier review. A peer heard and not reached left takt4 alone in a session of its own for
+    // three seconds of every four — past half a second alone it is the older session, and a DJ
+    // app joining then takes its leftover tempo. Each join that finds nobody waits longer before
+    // the next, up to half a minute; one that works starts the waiting from nothing.
+    FakeLink link;
+    FakeListener listener;
+    LinkFollower follower(link, listener);
+    follower.begin(4);
+    const LinkFollower::Options options;
+    // The peer goes on announcing: heard again each time the listener is opened afresh.
+    const auto keepHeard = [&] {
+        if (listener.isOpen && listener.peers.empty()) {
+            listener.peers.push_back({seconds(link), seconds(link), 126.5});
+        }
+    };
+    std::vector<double> waits;
+    double offAt = -1.0;
+    for (int ms = 0; ms < 200'000 && waits.size() < 7; ++ms) {
+        keepHeard();
+        const bool was = link.enabledNow;
+        (void)rounds(follower, link, listener, 1);
+        if (was && !link.enabledNow) {
+            offAt = seconds(link);
+        } else if (!was && link.enabledNow && offAt >= 0.0) {
+            waits.push_back(seconds(link) - offAt);
+        }
+    }
+    REQUIRE(waits.size() == 7);
+    // Off, then on again no sooner than the wait — 2, 4, 8, 16, then 30 s and no more — and not
+    // much later: the peer heard a second and still announcing is all else it needs.
+    const std::vector<double> expected{2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0};
+    for (std::size_t i = 0; i < waits.size(); ++i) {
+        INFO("wait " << i);
+        CHECK(waits[i] >= expected[i]);
+        CHECK(waits[i] <= expected[i] + options.listenEvery + 0.002);
+    }
+    CHECK(follower.status().failedJoins == 7);
+    // A join that works starts the waiting from nothing.
+    link.peers = 1;
+    (void)rounds(follower, link, listener, 1);
+    REQUIRE(follower.status().phase == LinkFollower::Phase::Following);
+    CHECK(follower.status().failedJoins == 0);
+    CHECK(follower.status().retryIn == 0.0);
+}

@@ -291,3 +291,85 @@ TEST_CASE("a MIDI clock line starts again from nothing, keeping its counts", "[t
     fit.startAgain();
     CHECK_FALSE(fit.fitted());
 }
+
+namespace {
+
+/// A run that starts on a delivery stall at 128 BPM: the first `burst` ticks handed over
+/// `spacing` microseconds apart once it ends, at `releasedAt`, and every tick after on its own
+/// moment, a tick's gap apart from where the clock had got to. Returns the ticks' moments, by
+/// number, as the clock sent them.
+std::vector<double> stallThenOnTime(TickFit& fit, std::size_t burst, double spacing,
+                                    double releasedAt, std::size_t after) {
+    const double gap = 60e6 / (128.0 * 24.0);
+    // The clock's own grid: tick k at `zero + k * gap`, the burst's held back to `releasedAt`.
+    const double zero = releasedAt - static_cast<double>(burst) * gap + 0.4 * gap;
+    std::vector<double> sent;
+    double last = 0.0;
+    for (std::size_t k = 0; k < burst + after; ++k) {
+        const double moment = zero + static_cast<double>(k) * gap;
+        sent.push_back(moment);
+        // In order, as a port's queue hands them over: a tick never before the one ahead of it.
+        const double at =
+            std::max(k < burst ? releasedAt + static_cast<double>(k) * spacing : moment, last);
+        last = at;
+        fit.add(static_cast<std::int64_t>(k), static_cast<std::int64_t>(std::llround(at)));
+    }
+    return sent;
+}
+
+} // namespace
+
+TEST_CASE("MIDI clock ticks handed over in a bunch as a run starts are no tempo",
+          "[timing][midi][follow]") {
+    // A stall hands its ticks over a few microseconds apart, and the
+    // first six of a run were taken unchecked: the line through them was 5 µs a tick — 500 000
+    // BPM — and a follower trusted it. Bunched as the run starts, they start its line again, and
+    // the line is made from the ticks that come at their own pace.
+    const double gap = 60e6 / (128.0 * 24.0);
+    for (const double spacing : {5.0, 100.0, 300.0}) {
+        INFO("burst ticks " << spacing << " us apart");
+        TickFit fit;
+        const std::vector<double> sent = stallThenOnTime(fit, 26, spacing, 3.0e9, 30);
+        REQUIRE(fit.fitted());
+        CHECK(fit.bunched() >= 25);
+        CHECK(std::abs(fit.microsPerTick() - gap) < 2.0);
+        // The ticks the burst carried are where the clock sent them, on the line from those after.
+        CHECK(std::abs(fit.momentOf(0.0) - sent[0]) < 50.0);
+        CHECK(fit.taken() <= 30);
+    }
+}
+
+TEST_CASE("a run started at a known tempo with its first ticks bunched starts again at that tempo",
+          "[timing][midi][follow]") {
+    const double gap = 60e6 / (128.0 * 24.0);
+    TickFit fit;
+    fit.startAgainAt(gap);
+    for (std::int64_t k = 0; k < 6; ++k) {
+        fit.add(k, 2'000'000'000LL + k * 5); // a Start's first ticks, handed over at once
+    }
+    CHECK(fit.bunched() == 5);
+    // The tick after them, on its own moment: the line is the known tempo through it.
+    fit.add(6, 2'000'000'000LL + static_cast<std::int64_t>(gap));
+    REQUIRE(fit.fitted());
+    CHECK(fit.microsPerTick() == gap);
+}
+
+TEST_CASE("a bunched delivery after a tempo change does not undo the change", "[timing][midi]") {
+    // Only a run's start is judged for bunching: a tempo found mid-run is already the ticks' own,
+    // and a delivery held up just after it must not throw it away.
+    const Played played = play(Sender{120.0, 6.0, 3.0, 1.25, 0.0}, std::vector<std::int64_t>{0});
+    TickFit fit;
+    std::size_t i = 0;
+    for (; i < played.stamps.size() && fit.tempoChanges() == 0; ++i) {
+        fit.add(static_cast<std::int64_t>(i), played.stamps[i]);
+    }
+    REQUIRE(fit.tempoChanges() == 1);
+    const std::size_t taken = fit.taken();
+    REQUIRE(taken < TickFit::Options{}.firstTaken); // the new line is short, and still unchecked
+    // A tick held up nearly a whole gap, then the next on time: the two arrive together.
+    fit.add(static_cast<std::int64_t>(i), played.stamps[i + 1] - 400);
+    fit.add(static_cast<std::int64_t>(i + 1), played.stamps[i + 1]);
+    CHECK(fit.bunched() == 0);
+    CHECK(fit.fitted());
+    CHECK(fit.taken() == taken + 2);
+}

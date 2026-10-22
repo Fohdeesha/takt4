@@ -126,8 +126,8 @@ public:
         std::uint64_t sendsFailed = 0;
     };
 
-    /// Beats the follower may fall behind by: a minute of them, where it takes them every
-    /// millisecond.
+    /// Beats the follower may fall behind by: two minutes of them at 128 BPM, where it takes them
+    /// every millisecond.
     static constexpr std::size_t kBeatCapacity = 256;
 
     explicit Network(Config config);

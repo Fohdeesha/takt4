@@ -195,6 +195,13 @@ TimingView describeTiming(const TimingFacts& facts) {
     if (facts.index == 3) {
         return describeCdjs(facts, view);
     }
+    // Running, the box shows the bar the run counts in, and says when the setting is another for
+    // the next START (an import while running).
+    std::string meterNote;
+    if (facts.running && facts.runBeatsPerBar != 0 && facts.runBeatsPerBar != facts.beatsPerBar) {
+        view.beatsPerBar = static_cast<int>(facts.runBeatsPerBar);
+        meterNote = std::to_string(facts.beatsPerBar) + " beats to the bar from the next START";
+    }
     if (facts.index != 1 && facts.index != 2) {
         return view; // beat detection: the tracker's own readouts say it all
     }
@@ -214,6 +221,7 @@ TimingView describeTiming(const TimingFacts& facts) {
         return view;
     }
     view.coasting = facts.coasting;
+    view.note = meterNote;
     // Waiting for the source: started, and nothing to follow — never heard since START, or gone
     // for longer than the coast.
     view.waiting = !facts.state.locked && !facts.coasting;
@@ -221,7 +229,7 @@ TimingView describeTiming(const TimingFacts& facts) {
     view.stripBeat = static_cast<int>(facts.state.beatInBar);
     if (view.stripBeat > 0) {
         view.stripLabel =
-            "beat " + std::to_string(view.stripBeat) + " of " + std::to_string(facts.beatsPerBar);
+            "beat " + std::to_string(view.stripBeat) + " of " + std::to_string(view.beatsPerBar);
     }
     const std::string bpm = fixed(facts.state.rawBpm, 2) + " BPM";
     if (link) {
@@ -230,12 +238,18 @@ TimingView describeTiming(const TimingFacts& facts) {
         view.reading = view.waiting ? "no peers \xE2\x80\x94 waiting for a Link session"
                                     : peers + " \xC2\xB7 " + bpm;
         view.detail = view.waiting ? "waiting for a Link session"
-                                   : peers + " \xC2\xB7 " + std::to_string(facts.beatsPerBar) +
+                                   : peers + " \xC2\xB7 " + std::to_string(view.beatsPerBar) +
                                          " beats to the bar";
         return view;
     }
     const std::string port = facts.port.empty() ? std::string("no port") : facts.port;
-    if (facts.stopObeyed) {
+    if (facts.portLost) {
+        // Its device pulled out: no clock can come until it is back, and the hub opens it again
+        // the moment it is.
+        view.reading = "NOT OPEN \xE2\x80\x94 " + port + " is not plugged in";
+        view.detail = port + " \xC2\xB7 not plugged in";
+        view.waitingWord = "unplugged";
+    } else if (facts.stopObeyed) {
         view.reading = "stopped \xE2\x80\x94 waiting for Start or Continue";
         view.detail = port + " \xC2\xB7 stopped";
     } else if (facts.coasting) {

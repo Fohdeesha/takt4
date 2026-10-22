@@ -1,6 +1,7 @@
 #include "core/timing/midi_clock_follower.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace takt4::timing {
 
@@ -82,6 +83,10 @@ void MidiClockFollower::begin(std::uint32_t) noexcept {
     lastSongTick_ = -1;
     songPositionPending_ = false;
     pendingSongTick_ = 0;
+    gapPending_ = false;
+    refused_ = 0;
+    ticksLost_ = 0;
+    gapsUncounted_ = 0;
     // The tempo the clock last ran at is kept: the song this run starts may well be at it, and
     // until the ticks have measured their own it is only the line's slope.
     startedSinceTick_ = false;
@@ -99,15 +104,35 @@ GridReading MidiClockFollower::read() noexcept {
     reading.at = now;
     reading.stopped = stopSeen_ && obey_.load(std::memory_order_relaxed);
     if (!reading.stopped && ticking(now) && followed()) {
-        reading.present = true;
-        reading.bpm = 60e6 / (fit_.microsPerTick() * kTicksPerBeat);
-        reading.beat = (fit_.indexAt(now) + static_cast<double>(songOffset_)) / kTicksPerBeat;
-        reading.anchored = placed_;
-        reading.placements = placements_;
-        reading.placedAt = placedAt_;
+        const double bpm = 60e6 / (fit_.microsPerTick() * kTicksPerBeat);
+        const double beat = (fit_.indexAt(now) + static_cast<double>(songOffset_)) / kTicksPerBeat;
+        if (believable(bpm) && std::isfinite(beat)) {
+            reading.present = true;
+            reading.bpm = bpm;
+            reading.beat = beat;
+            reading.anchored = placed_;
+            reading.placements = placements_;
+            reading.placedAt = placedAt_;
+        } else {
+            ++refused_;
+        }
     }
     publish(now);
     return reading;
+}
+
+bool MidiClockFollower::believable(double bpm) const noexcept {
+    if (!std::isfinite(bpm) || bpm < kMinBpm || bpm > kMaxBpm) {
+        return false;
+    }
+    // In a run's first beats, near what the clock last ran at: one far from it so soon is a
+    // stall's ticks handed over in a bunch far likelier than a DJ's new tempo, which a few beats
+    // more of ticks will show.
+    if (unbroken_ < 2 * kSettledTicks && knownMicrosPerTick_ > 0.0) {
+        const double known = 60e6 / (knownMicrosPerTick_ * kTicksPerBeat);
+        return bpm >= known / kWidestStart && bpm <= known * kWidestStart;
+    }
+    return true;
 }
 
 void MidiClockFollower::end() noexcept {
@@ -170,6 +195,12 @@ void MidiClockFollower::tick(std::int64_t at) noexcept {
         // has just said it is a song starting: then it is taken to be at the tempo it last ran
         // at, and followed from this tick, until it has ticked enough to say.
         rememberTempo();
+        // Back with nothing to say where: the ticks the gap lost are counted once this run is
+        // followed (`countGap`). A Start, a Continue or a Song Position says where itself.
+        gapPending_ = heardTick_ && !startedSinceTick_;
+        gapFrom_ = lastTickAt_;
+        gapIndex_ = ticks_;
+        gapMicrosPerTick_ = knownMicrosPerTick_;
         resumed_ = startedSinceTick_ && knownMicrosPerTick_ > 0.0;
         if (resumed_) {
             fit_.startAgainAt(knownMicrosPerTick_);
@@ -179,14 +210,48 @@ void MidiClockFollower::tick(std::int64_t at) noexcept {
         unbroken_ = 0;
     }
     startedSinceTick_ = false;
+    const std::uint64_t bunched = fit_.bunched();
     fit_.add(ticks_, at);
     heardTick_ = true;
     lastTickAt_ = at;
-    ++unbroken_;
+    // A tick bunched with the one before it as the run started (`TickFit::Options::leastGap`):
+    // the run is counted again from the next that comes at its own pace, so it is never followed
+    // on a line through a burst.
+    unbroken_ = fit_.bunched() != bunched ? 0 : unbroken_ + 1;
     if (playing_) {
         lastSongTick_ = ticks_ + songOffset_;
     }
     ++ticks_;
+    if (gapPending_ && followed()) {
+        countGap();
+    }
+}
+
+void MidiClockFollower::countGap() noexcept {
+    gapPending_ = false;
+    // When the first tick back would have been on the line the ticks since make — which a stall's
+    // ticks handed over late, in a bunch, put just after the last tick before it, and ticks lost
+    // put the length of the gap after it — in ticks of the tempo now.
+    const double now = fit_.microsPerTick();
+    const double ticks =
+        (fit_.momentOf(static_cast<double>(gapIndex_)) - static_cast<double>(gapFrom_)) / now;
+    const double whole = std::round(ticks);
+    // Sure of the count only when it comes out close to whole, the gap is short enough, and the
+    // tempo before it and after it agree closely enough that it cannot be a tick out over it.
+    const bool steady =
+        gapMicrosPerTick_ <= 0.0 || whole * std::abs(now / gapMicrosPerTick_ - 1.0) <= 0.25;
+    const bool sure = std::isfinite(ticks) && whole >= 1.0 && std::abs(ticks - whole) <= 0.25 &&
+                      whole <= kLongestCountedGapTicks && steady;
+    if (!sure) {
+        // The beats are wherever the ticks now say, which is nobody's beat: DOWNBEAT puts them
+        // right, and the window says to press it.
+        ++gapsUncounted_;
+        placed_ = false;
+        return;
+    }
+    const auto lost = static_cast<std::int64_t>(whole) - 1;
+    songOffset_ += lost;
+    ticksLost_ += static_cast<std::uint64_t>(lost);
 }
 
 void MidiClockFollower::placeNextTick(std::int64_t songTick) noexcept {
@@ -196,11 +261,20 @@ void MidiClockFollower::placeNextTick(std::int64_t songTick) noexcept {
     placed_ = true;
     ++placements_;
     placedAt_ = static_cast<double>(songTick) / kTicksPerBeat;
+    // Placed now, so there is nothing for a gap to have moved.
+    gapPending_ = false;
 }
 
 void MidiClockFollower::rememberTempo() noexcept {
-    if (followed()) {
-        knownMicrosPerTick_ = fit_.microsPerTick();
+    // Only a line that is the ticks' own: followed, through a beat of them at the least, at a tempo
+    // a clock has — never one fitted through a burst, which STOP during it used to keep for the
+    // next Start.
+    if (followed() && fit_.taken() >= static_cast<std::size_t>(kTicksPerBeat)) {
+        const double micros = fit_.microsPerTick();
+        const double bpm = 60e6 / (micros * kTicksPerBeat);
+        if (std::isfinite(bpm) && bpm >= kMinBpm && bpm <= kMaxBpm) {
+            knownMicrosPerTick_ = micros;
+        }
     }
 }
 
@@ -209,8 +283,10 @@ bool MidiClockFollower::followed() const noexcept {
 }
 
 double MidiClockFollower::absentAfter() const noexcept {
-    const auto least = static_cast<double>(kAbsentMicros);
-    return fit_.fitted() ? std::max(kAbsentTicks * fit_.microsPerTick(), least) : least;
+    if (!fit_.fitted()) {
+        return kAbsentUnfittedMicros;
+    }
+    return std::max(kAbsentTicks * fit_.microsPerTick(), static_cast<double>(kAbsentMicros));
 }
 
 bool MidiClockFollower::ticking(std::int64_t now) const noexcept {
@@ -234,6 +310,10 @@ void MidiClockFollower::publish(std::int64_t now) noexcept {
     status.ticks = static_cast<std::uint64_t>(ticks_);
     status.heldBack = fit_.heldBack();
     status.tempoChanges = fit_.tempoChanges();
+    status.bunched = fit_.bunched();
+    status.refused = refused_;
+    status.ticksLost = ticksLost_;
+    status.gapsUncounted = gapsUncounted_;
     status.dropped = dropped_.load(std::memory_order_relaxed);
     status_.publish(status);
 }

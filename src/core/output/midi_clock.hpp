@@ -209,8 +209,13 @@ public:
     std::size_t advance(double now) noexcept;
 
     /// The tempo the ticks are spaced by. Takes effect from the next tick, so the
-    /// interval already in flight is not retimed underneath the receiver.
+    /// interval already in flight is not retimed underneath the receiver. Held to `kMinBpm` to
+    /// `kMaxBpm`, and a tempo that is no number changes nothing: a tempo of thousands of BPM from
+    /// upstream used to flood the cable with ticks.
     void setTempo(double bpm) noexcept;
+    /// What `setTempo` holds a tempo to: Ableton Link's own range, so the two clocks always agree.
+    static constexpr double kMinBpm = 20.0;
+    static constexpr double kMaxBpm = 999.0;
     double tempo() const noexcept { return bpm_; }
 
     /// Steers the clock towards a beat at `beatTime` — past or future, on the clock `advance`

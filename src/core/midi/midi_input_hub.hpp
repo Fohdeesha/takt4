@@ -85,6 +85,28 @@ public:
     /// How many inputs are open.
     std::size_t openPorts() const;
 
+    /// **Inputs unplugged, and plugged back in.** A device pulled out
+    /// says nothing to whoever has it open — RtMidi's Windows input drops the driver's "closed"
+    /// notice — so its listeners went on waiting for messages that never came, and plugged back
+    /// in it was never heard again. Whoever owns this calls `recheck` now and then with the inputs
+    /// on the machine now (`output::listMidiInputPorts`): each input listened to that is not among
+    /// them is closed and said to be lost, every listener kept; each lost one that is among them
+    /// again is opened again under every listener. An input is found again as `listen` finds one
+    /// — whole name, the same device under another number (Windows renumbers the inputs after one
+    /// that goes), or part of a name — so a device still plugged in is never taken for gone.
+    struct Recheck {
+        /// The inputs found gone, and found back, this time.
+        std::vector<std::string> lost;
+        std::vector<std::string> back;
+        /// Inputs back on the list that would not open — another program has them — with why.
+        std::vector<std::string> refused;
+    };
+    Recheck recheck(const std::vector<std::string>& listed);
+    /// The inputs listened to that are not plugged in now, by name.
+    std::vector<std::string> lostPorts() const;
+    /// Whether the input `listener` listens to is not plugged in now.
+    bool isLost(const MidiInputListener& listener) const;
+
     /// **For the tests**: a message as the driver would hand it over on the input called `name` —
     /// stamped now, and given to whoever listens to that name. Nothing needs to be open: a test
     /// with no device uses `attachWithoutPort`.

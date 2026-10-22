@@ -1117,7 +1117,9 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
     const Timing wanted = timingOf(machine.timingSource);
     if (wanted != timing_ || machine.midiClockInPort != clockPort_) {
         const bool running = followed_.running() || wantRunning_ || tracker_.running();
-        if (running && (wanted != timing_ || timing_ == Timing::MidiClock)) {
+        // Another source, or another input for the clock being followed: stopped first.
+        const bool stopping = running && (wanted != timing_ || timing_ == Timing::MidiClock);
+        if (stopping) {
             toggleRun();
             timing_ = wanted;
             clockPort_ = machine.midiClockInPort;
@@ -1128,7 +1130,13 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
         }
         timing_ = wanted;
         clockPort_ = machine.midiClockInPort;
-        applyTiming();
+        // **Applied only to a source that is not running.** The same source running, with only a
+        // clock input it does not use changed, needs nothing applied — and applying it opened the
+        // Link listener or the CDJs' network on this thread while the timing worker had them.
+        // The input is remembered for the clock's next START.
+        if (!running || stopping) {
+            applyTiming();
+        }
     }
     // **The input**, found by name as a launch finds it — and left alone when it is the one in
     // use, so importing this rig's own file interrupts nothing. Another one, while listening, is
@@ -2903,6 +2911,16 @@ void WindowController::publishMidiControl() {
                                       : std::string("off \xE2\x80\x94 pick a port")));
         return;
     }
+    // Open, and its device pulled out: nothing arrives, so the bindings below are not what it is
+    // doing.
+    if (inputs_.isLost(control_)) {
+        window_->set_control_error(true);
+        window_->set_control_reading_words(true);
+        window_->set_control_reading(
+            shared("NOT OPEN \xE2\x80\x94 " + inputs_.portOf(control_) +
+                   " is not plugged in. Listening again as soon as it is."));
+        return;
+    }
     window_->set_control_error(false);
     if (control_.learning()) {
         window_->set_control_reading_words(true);
@@ -3647,6 +3665,36 @@ void WindowController::retryControls(double now) {
         }
         publishMidiControl();
     }
+    // The MIDI inputs listened to, looked for on the machine: one pulled out is said to be, and
+    // opened again under everything listening to it when it is back (`recheckMidiInputs`). Only
+    // while any is open or lost — the list costs a few milliseconds of this thread.
+    if (now >= inputsCheckAt_) {
+        inputsCheckAt_ = now + controlRetrySeconds_;
+        if (inputs_.openPorts() > 0 || !inputs_.lostPorts().empty()) {
+            recheckMidiInputs(output::listMidiInputPorts());
+        }
+    }
+}
+
+void WindowController::recheckMidiInputs(const std::vector<std::string>& listed) {
+    const midi::MidiInputHub::Recheck changed = inputs_.recheck(listed);
+    for (const std::string& name : changed.lost) {
+        report("MIDI input " + name +
+                   " is not plugged in any more \xE2\x80\x94 listening again as soon as it is.",
+               true);
+    }
+    for (const std::string& name : changed.back) {
+        report("MIDI input " + name + " is back, and listened to again.", false);
+    }
+    for (const std::string& why : changed.refused) {
+        report("MIDI input back but would not open \xE2\x80\x94 another program may have it: " +
+                   why,
+               true);
+    }
+    if (!changed.lost.empty() || !changed.back.empty() || !changed.refused.empty()) {
+        publishMidiControl();
+        publishTiming();
+    }
 }
 
 void WindowController::publishRowProblems(const output::OutputRunner::Snapshot& live) {
@@ -4316,6 +4364,17 @@ void WindowController::stopFollowing() noexcept {
     clockFollower_.stopListening();
     runningSource_ = nullptr;
     shownBeats_.clear();
+    // The Link follower closed its listener as the run ended, and the stopped row lists who can
+    // be heard: opened again here, as picking Link opens it. The row said "cannot listen for Link
+    // sessions" after every STOP.
+    if (timing_ == Timing::Link && !linkWatch_.isOpen()) {
+        try {
+            std::string problem;
+            (void)linkWatch_.open(problem);
+        } catch (...) {
+            // No memory for a socket: the row says it cannot listen, which is then true.
+        }
+    }
 }
 
 void WindowController::publishTiming() {
@@ -4325,6 +4384,9 @@ void WindowController::publishTiming() {
     facts.state = followed_.state();
     facts.coasting = facts.running && followed_.coasting();
     facts.beatsPerBar = externalBeatsPerBar_;
+    // The bar the run counts in, fixed at START — which an import while running can leave
+    // different from the setting.
+    facts.runBeatsPerBar = facts.running ? facts.state.beatsPerBar : 0;
     facts.obey = clockObey_;
     facts.ready = timing_ != Timing::MidiClock || !clockPort_.empty();
     if (timing_ == Timing::Link) {
@@ -4346,6 +4408,7 @@ void WindowController::publishTiming() {
             facts.placed = clock.placed;
             facts.stopObeyed = clock.stopped && clockObey_;
             facts.tickInBeat = clock.tickInBeat;
+            facts.portLost = inputs_.isLost(clockFollower_);
         }
     } else if (timing_ == Timing::ProLink) {
         const timing::prolink::Network::Snapshot cdjs = cdjs_->snapshot();

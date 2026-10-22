@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -231,8 +232,10 @@ TEST_CASE("DOWNBEAT on a source with no phase puts the beats and the bar under t
     }
     CHECK(grid.state().bars == 0);
 
-    // The music's beats are this far after the clock's.
-    const double offset = GENERATE(0.6, 0.3);
+    // The music's beats are this far after the clock's. Between 0.4 and 0.5 of a beat after, the
+    // press's own crossing was let out as a downbeat as well as the bar declared: the bar counted
+    // twice, its rules fired twice.
+    const double offset = GENERATE(0.6, 0.3, 0.42, 0.45, 0.49);
     INFO("the music " << offset << " of a beat after the clock");
     (void)drive(grid, source, at, static_cast<std::int64_t>(zero + (8.0 + offset) * period));
     // Pressed on the reading that follows the music's beat — within a millisecond of it.
@@ -254,9 +257,10 @@ TEST_CASE("DOWNBEAT on a source with no phase puts the beats and the bar under t
         CHECK(after[0].beat.event.beatInBar == 2);
     } else {
         // Within half a beat of the last: that was the beat, sent a little early, and its bar is
-        // declared. The next is a beat after the press, as beat 2.
+        // declared — once. The next is a beat after the press, as beat 2.
         CHECK_FALSE(atPress.has_value());
         CHECK(grid.state().barsDeclared == 1);
+        CHECK(after[0].beat.state.bars == 1);
         CHECK(after[0].beat.event.beatInBar == 2);
         CHECK(after[0].beat.event.snapped);
     }
@@ -489,7 +493,7 @@ TEST_CASE("a followed grid that jumps is followed from where it lands, never bac
     const double bpm = 120.0;
     const double period = periodOf(bpm);
     const double zero = static_cast<double>(kStart) + 700.0;
-    const double jumpBy = GENERATE(-0.6, -0.2, -0.1, 0.3, 3.0, 17.25);
+    const double jumpBy = GENERATE(-4.0, -1.5, -0.6, -0.2, -0.1, 0.3, 3.0, 17.25);
     INFO("jumped by " << jumpBy << " beats just after beat 10");
     const auto jumpAt = static_cast<std::int64_t>(zero + 10.05 * period);
     BeatGrid grid;
@@ -676,5 +680,145 @@ TEST_CASE("a bar placed a little behind the reading that first sees it still has
     for (std::size_t i = 1; i < sent.size(); ++i) {
         CHECK(positionOf(sent[i].beat, bpm, zero) ==
               Approx(first + static_cast<double>(i)).margin(1e-5));
+    }
+}
+
+TEST_CASE("a reading at a tempo no source has is no reading", "[timing][follow]") {
+    // A MIDI clock's delivery stall came out as hundreds of thousands
+    // of BPM, and a beat went out every millisecond. Whatever a source says, a tempo outside
+    // Link's own range, or a position that is no number, is followed as a source gone: coasted,
+    // and then let go of.
+    const double bpm = 120.0;
+    const double zero = static_cast<double>(kStart) + 400.0;
+    const auto wildAt = static_cast<std::int64_t>(zero + 8.3 * periodOf(bpm));
+    const double wild = GENERATE(500000.0, 1000.0, 19.0, std::numeric_limits<double>::infinity(),
+                                 std::numeric_limits<double>::quiet_NaN());
+    INFO("a reading at " << wild << " BPM");
+    const Source source = [&](std::int64_t at) {
+        if (at < wildAt) {
+            return onGrid(at, bpm, zero);
+        }
+        GridReading reading = onGrid(at, bpm, zero);
+        reading.bpm = wild;
+        reading.beat = std::isnan(wild) ? wild : reading.beat * wild / bpm;
+        return reading;
+    };
+    BeatGrid grid;
+    std::int64_t at = kStart;
+    (void)drive(grid, source, at, wildAt);
+    REQUIRE(grid.state().locked);
+    // Coasted at the tempo it had: a beat a period apart, no faster.
+    const std::vector<Sent> coasted = drive(grid, source, at, wildAt + 3 * kSecond);
+    CHECK(grid.coasting());
+    REQUIRE(coasted.size() >= 5);
+    for (std::size_t i = 1; i < coasted.size(); ++i) {
+        CHECK(static_cast<double>(coasted[i].beat.hostMicros - coasted[i - 1].beat.hostMicros) ==
+              Approx(periodOf(bpm)).margin(2.0));
+        CHECK(coasted[i].beat.event.bpm == bpm);
+    }
+    // And let go of once the coast is over.
+    (void)drive(grid, source, at, wildAt + 5 * kSecond);
+    CHECK(grid.state().noSignal);
+    CHECK(drive(grid, source, at, wildAt + 7 * kSecond).empty());
+}
+
+TEST_CASE("no two followed beats go out closer than 60 ms", "[timing][follow]") {
+    // ×2 twice over a 300 BPM source is a beat every 50 ms. The operator's call: never closer than
+    // 60 ms, past any grid a source and the octave buttons make that is still a beat.
+    const double bpm = 300.0;
+    const double zero = static_cast<double>(kStart) + 900.0;
+    BeatGrid grid;
+    grid.redouble();
+    grid.redouble();
+    const std::vector<Sent> sent = driveFrom(
+        grid, [&](std::int64_t at) { return onGrid(at, bpm, zero); }, kStart, kStart + 3 * kSecond);
+    REQUIRE(sent.size() >= 20);
+    for (std::size_t i = 1; i < sent.size(); ++i) {
+        CHECK(sent[i].beat.hostMicros - sent[i - 1].beat.hostMicros >= BeatGrid::kLeastBeatMicros);
+    }
+}
+
+TEST_CASE("a followed grid moved back across the beat just sent does not send it again",
+          "[timing][follow]") {
+    // an earlier review: a Link peer that moves the phase back by 0.4 to 0.5 of a beat — another
+    // computer's old takt4 snapping at its START — made the beat just sent go out again, past the 0.4 of
+    // a beat that keeps a beat moved a little from going twice. Its number on the grid says it is
+    // the same beat, however long ago it went.
+    const double bpm = 120.0;
+    const double period = periodOf(bpm);
+    const double zero = static_cast<double>(kStart) + 600.0;
+    const double back = GENERATE(0.42, 0.45, 0.49, 0.8);
+    INFO("moved back " << back << " of a beat just after beat 10");
+    const auto movedAt = static_cast<std::int64_t>(zero + 10.05 * period);
+    const Source source = [&](std::int64_t at) {
+        return onGrid(at, bpm, at < movedAt ? zero : zero + back * period);
+    };
+    BeatGrid grid;
+    const std::vector<Sent> sent = driveFrom(grid, source, kStart, movedAt + 4 * kSecond);
+    REQUIRE(sent.size() >= 18);
+    std::size_t beatTen = 0;
+    for (std::size_t i = 0; i < sent.size(); ++i) {
+        const double position =
+            positionOf(sent[i].beat, bpm, sent[i].readAt < movedAt ? zero : zero + back * period);
+        INFO("beat " << i << " at " << position);
+        CHECK(position == Approx(std::round(position)).margin(1e-4));
+        beatTen += std::llround(position) == 10 ? 1 : 0;
+        if (i > 0) {
+            // Every beat the next of its bar: none repeated.
+            CHECK(sent[i].beat.event.beatInBar == sent[i - 1].beat.event.beatInBar % 4 + 1);
+        }
+    }
+    CHECK(beatTen == 1);
+}
+
+TEST_CASE("halving or doubling a followed grid forgets the rate the beats went out at",
+          "[timing][follow]") {
+    // an earlier review: the beats' own rate is the median of the last eight gaps, and ÷2 kept the
+    // old grid's — so the window read 128 against a published 64 and told the operator to press
+    // ×2, for up to five seconds after pressing ÷2. Forgotten at the press, as the tracker forgets
+    // its own, and measured afresh on the new grid.
+    const double bpm = 128.0;
+    const double zero = static_cast<double>(kStart) + 300.0;
+    const Source source = [&](std::int64_t at) { return onGrid(at, bpm, zero); };
+    BeatGrid grid;
+    std::int64_t at = kStart;
+    (void)drive(grid, source, at, kStart + 6 * kSecond);
+    REQUIRE(grid.state().beatsBpm == Approx(bpm).epsilon(1e-4));
+    const bool halving = GENERATE(true, false);
+    INFO((halving ? "halved" : "doubled"));
+    if (halving) {
+        grid.halve();
+    } else {
+        grid.redouble();
+    }
+    const double published = halving ? bpm / 2.0 : bpm * 2.0;
+    // Never the old rate against the new tempo: unknown until there are gaps enough, then the new.
+    const std::vector<Sent> after = drive(grid, source, at, at + 10 * kSecond);
+    REQUIRE(after.size() > BeatGrid::kBeatRateGaps + 1);
+    for (const Sent& one : after) {
+        CHECK((one.beat.state.beatsBpm == 0.0 ||
+               one.beat.state.beatsBpm == Approx(published).epsilon(1e-4)));
+    }
+    CHECK(grid.state().beatsBpm == Approx(published).epsilon(1e-4));
+}
+
+TEST_CASE("a followed tempo that jumps forgets the rate the beats went out at",
+          "[timing][follow]") {
+    // A DJ halving the Link session: the gaps before it are the old tempo's.
+    const double zero = static_cast<double>(kStart) + 300.0;
+    const auto jumpAt = static_cast<std::int64_t>(zero + 12.02 * periodOf(128.0));
+    const double newZero = static_cast<double>(jumpAt) - 0.02 * periodOf(64.0);
+    const Source source = [&](std::int64_t at) {
+        return at < jumpAt ? onGrid(at, 128.0, zero) : onGrid(at, 64.0, newZero);
+    };
+    BeatGrid grid;
+    std::int64_t at = kStart;
+    (void)drive(grid, source, at, jumpAt);
+    REQUIRE(grid.state().beatsBpm == Approx(128.0).epsilon(1e-4));
+    const std::vector<Sent> after = drive(grid, source, at, at + 12 * kSecond);
+    REQUIRE(after.size() > BeatGrid::kBeatRateGaps + 1);
+    for (const Sent& one : after) {
+        CHECK((one.beat.state.beatsBpm == 0.0 ||
+               one.beat.state.beatsBpm == Approx(64.0).epsilon(1e-4)));
     }
 }

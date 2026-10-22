@@ -95,7 +95,16 @@ public:
 
     /// Reads every announcement waiting, and forgets each peer whose ttl has run out. `now` is
     /// any steady clock, in seconds. Never blocks.
+    ///
+    /// **And every `kRejoinSeconds` joins the group again on every interface that is up**: one
+    /// that came up since — a cable plugged back in, the DJ network joined after START — is joined
+    /// then, where it used to be joined only at `open`, so a follower that had listened through an
+    /// outage heard loopback alone from then on. Joining one already
+    /// joined is refused by the system and changes nothing.
     void poll(double now) override;
+    static constexpr double kRejoinSeconds = 2.0;
+    /// How many times the group has been joined again, for a test.
+    std::uint64_t rejoins() const noexcept { return rejoins_; }
     /// One announcement from `address`:`port` — what `poll` does with each datagram, and how a
     /// test feeds one without a network.
     void take(std::span<const std::uint8_t> datagram, const std::string& address,
@@ -126,6 +135,10 @@ private:
     OwnPort ownPort_;
     std::unique_ptr<Socket> socket_;
     std::vector<Node> nodes_;
+    /// When the group was last joined on every interface, on `poll`'s clock; negative until the
+    /// first poll after `open`, which joined it.
+    double joinedAt_ = -1.0;
+    std::uint64_t rejoins_ = 0;
 };
 
 /// Whether this process holds a UDP socket bound to `port`: Windows' table of sockets by owning

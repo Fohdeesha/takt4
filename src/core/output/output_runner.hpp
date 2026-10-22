@@ -347,7 +347,8 @@ public:
 
     /// The tracker has started, or stopped, listening. Any thread; it is a `post`.
     ///
-    /// Started, the MIDI clock is sent Start and begins ticking. Stopped, it is sent Stop, and
+    /// Started, the MIDI clock begins ticking, and is sent Start on the first locked downbeat — a
+    /// receiver's bar 1 is the first tick after it. Stopped, it is sent Stop, and
     /// **the lights are blacked out** — every light-emitting channel to zero, and kept being
     /// sent: the operator's call of 2026-09-23, for the rig takt4 is running. PANIC is
     /// different and freezes; see `dmx::DmxEngine::cancelAll`. Everything else goes on — Link on

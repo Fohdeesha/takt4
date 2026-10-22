@@ -400,6 +400,15 @@ public:
         midiControlRetryAt_ = midiControlRetryAt_ > soonest ? soonest : midiControlRetryAt_;
     }
 
+    /// **MIDI inputs unplugged and plugged back in**: the hub told
+    /// what is on the machine now (`midi::MidiInputHub::recheck`), what changed said on the status
+    /// line, and the control input's and the clock's rows told. What the control retry does every
+    /// `kControlRetrySeconds` with the machine's own list; public so a test can hand it one.
+    void recheckMidiInputs(const std::vector<std::string>& listed);
+    /// The machine's MIDI inputs as this window listens to them, for a test to attach an input
+    /// with no device behind it — the sandbox opens none.
+    midi::MidiInputHub& midiInputs() noexcept { return inputs_; }
+
     /// The OSC control surface, for reading and for a test to `dispatch` into.
     control::OscControl& oscControl() noexcept { return oscControl_; }
     const control::OscControl& oscControl() const noexcept { return oscControl_; }
@@ -796,6 +805,9 @@ private:
     /// program holds (a WinMM input is one program's at a time).
     std::string midiControlProblem_;
     double midiControlRetryAt_ = -1.0;
+    /// When the MIDI inputs listened to are next looked for on the machine (`recheckMidiInputs`),
+    /// on `nowSeconds()`'s clock.
+    double inputsCheckAt_ = 0.0;
     /// Why each output reaches nothing, by `OutputTarget::id` — what each row says under itself.
     /// From the runner's snapshot, the lost MIDI devices, and a Link peer list that could not
     /// listen (`linkPeersProblem_`). See `publishRowProblems`.

@@ -12,6 +12,7 @@
 #include "core/fixtures/import.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/output/output_target.hpp"
+#include "core/sandbox.hpp"
 #include "core/settings/settings.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 #include "core/trigger/generator.hpp"
@@ -54,6 +55,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -8545,6 +8547,57 @@ TEST_CASE("the beats-per-bar box takes a number when it is clicked away from, an
     nothingReal.check();
 }
 
+TEST_CASE("an import while a source is followed leaves the run alone, and its bar is the next "
+          "START's",
+          "[ui][follow]") {
+    // A file with the source being followed and another MIDI clock
+    // input was applied as if stopped — the Link listener or the CDJs' network opened on this
+    // thread while the timing worker had it — and its beats to the bar went on screen while the
+    // run went on counting in its own.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 240.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 2; });
+
+    const takt4::test::TempDir dir;
+    takt4::settings::Settings file = controller.currentSettings();
+    file.machine.midiClockInPort = "takt4 test - another clock";
+    file.preset.externalBeatsPerBar = 3;
+    const std::filesystem::path path = dir.path() / "rig.json";
+    REQUIRE(takt4::settings::save(file, path));
+    // The Link listener is the timing worker's while it runs: the import does not so much as try
+    // to open it (which the sandbox would refuse, and count).
+    const std::uint64_t listens = takt4::sandbox::refusals(takt4::sandbox::Refused::Link);
+    REQUIRE(controller.importFrom(path));
+    controller.tick();
+    CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Link) == listens);
+    // Still following, the same run, counting in four.
+    CHECK(controller.followed().running());
+    CHECK(source.begun() == 1);
+    CHECK(source.ended() == 0);
+    CHECK(controller.followed().state().beatsPerBar == 4);
+    CHECK(controller.window().get_timing_beats_per_bar() == 4);
+    CHECK(std::string(controller.window().get_timing_note()) ==
+          "3 beats to the bar from the next START");
+    // And what the file asked for kept, for the next START and the next save.
+    CHECK(controller.currentSettings().preset.externalBeatsPerBar == 3);
+    CHECK(controller.currentSettings().machine.midiClockInPort == "takt4 test - another clock");
+    controller.toggleRun();
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 2; });
+    CHECK(controller.followed().state().beatsPerBar == 3);
+    controller.tick();
+    CHECK(std::string(controller.window().get_timing_note()).empty());
+    controller.toggleRun();
+    controller.followForTests(nullptr);
+}
+
 TEST_CASE("where the beats come from, and how, is saved and comes back picked and not started",
           "[ui][follow][settings]") {
     LiveTracker tracker(kWeights, kStateSpace);
@@ -8699,6 +8752,69 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     facts.stopObeyed = false;
     facts.state.locked = false;
     CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one on DJM-A9");
+    // Its device pulled out: not "waiting for one", which nothing
+    // would ever bring — said not to be plugged in, whatever else the clock was doing.
+    facts.portLost = true;
+    view = describeTiming(facts);
+    CHECK(view.reading == "NOT OPEN \xE2\x80\x94 DJM-A9 is not plugged in");
+    CHECK(view.detail == "DJM-A9 \xC2\xB7 not plugged in");
+    facts.state.locked = true;
+    facts.coasting = true;
+    CHECK(describeTiming(facts).reading == "NOT OPEN \xE2\x80\x94 DJM-A9 is not plugged in");
+
+    // An import while running sets the bar for the next START, and the run goes on in its own
+    //: the box shows the run's, and says the next.
+    facts = TimingFacts{};
+    facts.index = 1;
+    facts.running = true;
+    facts.state.locked = true;
+    facts.state.rawBpm = 128.0;
+    facts.state.beatInBar = 2;
+    facts.peers = 2;
+    facts.beatsPerBar = 3;
+    facts.runBeatsPerBar = 4;
+    view = describeTiming(facts);
+    CHECK(view.beatsPerBar == 4);
+    CHECK(view.note == "3 beats to the bar from the next START");
+    CHECK(view.detail == "2 peers \xC2\xB7 4 beats to the bar");
+    CHECK(view.stripLabel == "beat 2 of 4");
+    facts.runBeatsPerBar = 3;
+    CHECK(describeTiming(facts).note.empty());
+}
+
+TEST_CASE("a MIDI control input pulled out says so on its line, and is heard again when it is back",
+          "[ui]") {
+    // A pad's cable knocked out mid-set went on showing its port and
+    // its bindings, and PANIC from it had stopped arriving with no sign; plugged back in, it was
+    // never heard again. The machine's list is looked at every few seconds; here it is handed in.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.midiInputs().attachWithoutPort("Pad 1", controller.control());
+    controller.control().listenWithoutPort();
+    controller.tick();
+    REQUIRE_FALSE(controller.window().get_control_error());
+
+    controller.recheckMidiInputs({"MOTU Pro Audio 0"});
+    controller.tick();
+    CHECK(controller.window().get_control_error());
+    CHECK(std::string(controller.window().get_control_reading()) ==
+          "NOT OPEN \xE2\x80\x94 Pad 1 is not plugged in. Listening again as soon as it is.");
+    CHECK(std::string(controller.window().get_status())
+              .find("MIDI input Pad 1 is not plugged in any more") != std::string::npos);
+    CHECK(controller.statusIsError());
+
+    // Back, under another number now that Windows has counted its inputs again.
+    controller.recheckMidiInputs({"MOTU Pro Audio 0", "Pad 2"});
+    controller.tick();
+    CHECK_FALSE(controller.window().get_control_error());
+    CHECK(std::string(controller.window().get_control_reading()).rfind("NOT OPEN", 0) ==
+          std::string::npos);
+    CHECK(std::string(controller.window().get_status()).find("MIDI input Pad 2 is back") !=
+          std::string::npos);
+    // And what it sends reaches the control input again.
+    const std::vector<unsigned char> note{0x90, 36, 100};
+    controller.midiInputs().deliver("Pad 2", std::span<const unsigned char>(note));
+    CHECK(controller.control().lastEvent().has_value());
 }
 
 TEST_CASE("while a source is followed, a rule that needs the audio says it will not fire and is "

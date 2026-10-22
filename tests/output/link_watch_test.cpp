@@ -335,3 +335,25 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
     first.enable(false);
     second.enable(false);
 }
+
+TEST_CASE("the Link peer list joins Link's group again on every interface now and then",
+          "[output][link][network]") {
+    // Joined only as it opened, a listener that listened through an
+    // outage, or opened before the DJ network was plugged in, heard loopback alone from then on.
+    // Every two seconds it joins again on every interface that is up; one joined already is
+    // refused by the system and changes nothing. Listening only: nothing is sent.
+    LinkPeerWatch watch;
+    std::string problem;
+    REQUIRE(watch.open(problem));
+    watch.poll(100.0);
+    CHECK(watch.rejoins() == 0);
+    watch.poll(101.9);
+    CHECK(watch.rejoins() == 0);
+    watch.poll(102.0);
+    CHECK(watch.rejoins() == 1);
+    watch.poll(104.1);
+    CHECK(watch.rejoins() == 2);
+    // Still listening, every peer it held kept.
+    CHECK(watch.isOpen());
+    watch.close();
+}

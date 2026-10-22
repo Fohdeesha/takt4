@@ -110,6 +110,9 @@ struct TimingFacts {
     std::uint32_t beatsPerBar = 4;
     bool obey = false;
     bool ready = true;
+    /// Running: the beats to the bar the run counts in, fixed at its START — 0 while stopped. An
+    /// import while running can leave the setting above different from it.
+    std::uint32_t runBeatsPerBar = 0;
     /// Link, stopped: what its discovery traffic says — whether it can be heard at all, how many
     /// peers there are, and the tempo the first announces.
     bool canListen = true;
@@ -117,12 +120,14 @@ struct TimingFacts {
     double heardBpm = 0.0;
     /// Link, running: peers in the session.
     std::uint32_t peers = 0;
-    /// MIDI clock: its port, by name, and what its ticks are doing (`MidiClockFollower::Status`).
+    /// MIDI clock: its port, by name, and what its ticks are doing (`MidiClockFollower::Status`) —
+    /// and whether the device it comes in on has been pulled out (`midi::MidiInputHub::isLost`).
     std::string port;
     bool ticking = false;
     bool placed = false;
     bool stopObeyed = false;
     std::uint32_t tickInBeat = 0;
+    bool portLost = false;
     /// The CDJs: the network as `timing::prolink::Network::snapshot` has it — why it cannot be
     /// listened to or joined, the players and mixers heard, whether takt4 has joined and as which
     /// player, the master, whom it follows and whom it was asked to (0 the master), whether the

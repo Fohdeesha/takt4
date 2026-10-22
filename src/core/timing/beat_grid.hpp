@@ -43,8 +43,13 @@ namespace takt4::timing {
 /// stop (an obeyed MIDI Stop) is not coasted.
 ///
 /// `beats` only ever goes up within a run, as the output thread's scheduler needs: a grid that
-/// jumps — a peer forcing a beat, a phase moved — is followed from wherever it lands, and no beat
-/// is sent within half a beat of the last.
+/// jumps — a peer forcing a beat, a phase moved — is followed from wherever it lands, no beat is
+/// sent within `kSameBeat` of a beat of the last, no beat the grid has already sent is sent again
+/// when it moves back across it, and no two beats are sent closer than `kLeastBeatMicros`.
+///
+/// **A reading at a tempo no source has is no reading** (`kMinBpm`, `kMaxBpm`), whatever the
+/// source says: a MIDI clock's delivery stall once came out as hundreds of thousands of BPM, and a
+/// beat went out every millisecond.
 class BeatGrid {
 public:
     struct Options {
@@ -66,11 +71,24 @@ public:
     /// No beat is sent within this share of a beat of the last: a grid moved back a little — by
     /// no more than `kJumpBeats` — crosses the beat just sent again, and that is the same beat.
     /// Short of half, because ÷2 pressed just after a beat the halved grid does not keep puts the
-    /// next beat it does keep exactly half a beat after it, and that one is wanted.
+    /// next beat it does keep exactly half a beat after it, and that one is wanted. A grid moved
+    /// back further, but by less than a beat, between nothing the operator did, is caught by the
+    /// beat's own number: the one just sent is not sent again. One moved back a beat or more
+    /// is a new grid, followed from where it lands.
     static constexpr double kSameBeat = 0.4;
     /// How many gaps between the beats sent `TempoState::beatsBpm` is the median of — the
     /// tracker's own count.
     static constexpr std::size_t kBeatRateGaps = 8;
+    /// The tempi a reading may have: Link's own range, the widest any source followed carries.
+    static constexpr double kMinBpm = 20.0;
+    static constexpr double kMaxBpm = 999.0;
+    /// No two beats closer than this: 1000 BPM, past any grid an operator's ×2 makes of a tempo a
+    /// source has (the operator, 2026-10-22).
+    static constexpr std::int64_t kLeastBeatMicros = 60'000;
+    /// A tempo that moves by more than this share between two readings — a DJ halving the Link
+    /// session — starts the beats' own rate (`TempoState::beatsBpm`) again: the gaps before it are
+    /// the old tempo's, and the window would read them as beats going out at the wrong rate.
+    static constexpr double kTempoJump = 0.12;
 
     BeatGrid();
     explicit BeatGrid(Options options);
@@ -130,6 +148,8 @@ private:
     std::uint32_t beatInBarOf(std::int64_t k) const noexcept;
     /// The fields that move between beats: the lock, the confidence, the beats' own rate.
     void publish(std::int64_t now) noexcept;
+    /// Forgets the gaps the beats' own rate is measured over: the grid they were sent on is gone.
+    void forgetRate() noexcept;
 
     Options options_;
     tracking::TempoState state_;
@@ -165,6 +185,12 @@ private:
     bool sent_ = false;
     std::int64_t lastSentAt_ = 0;
     double lastSentBeat_ = 0.0;
+    /// And its whole published position — while nothing has moved the grid under it since: ÷2, ×2,
+    /// DOWNBEAT, a placement and going quiet each renumber the published beats, and forget it.
+    std::int64_t lastSentIndex_ = 0;
+    bool indexKnown_ = false;
+    /// The source's tempo at the last reading followed, for `kTempoJump`.
+    double lastSourceBpm_ = 0.0;
 
     bool snapPending_ = false;
     /// A snap whose new bar has not reached the outputs yet: the next beat sent carries it.

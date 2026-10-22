@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -19,15 +20,25 @@ std::string LinkFollower::problem() const {
 }
 
 void LinkFollower::publish(std::uint32_t peers, double bpm) noexcept {
-    status_.publish(Status{phase_, peers, bpm, canListen_});
+    Status status{phase_, peers, bpm, canListen_};
+    status.failedJoins = failedJoins_;
+    status.retryIn = std::max(0.0, nextJoinAt_ - now_);
+    status_.publish(status);
+}
+
+double LinkFollower::clockSeconds() const {
+    return static_cast<double>(link_.now().count()) / 1e6;
 }
 
 void LinkFollower::begin(std::uint32_t beatsPerBar) noexcept {
     quantum_ = static_cast<double>(std::max<std::uint32_t>(beatsPerBar, 1));
+    failedJoins_ = 0;
+    nextJoinAt_ = 0.0;
     // Off until a session has been heard, whatever it was left at: the outputs hand Link over
     // switched off (`output::Transports::setLinkFollowing`), and this makes sure of it.
     link_.enable(false);
-    listenAfresh();
+    now_ = clockSeconds();
+    listenAfresh(now_);
 }
 
 void LinkFollower::end() noexcept {
@@ -35,13 +46,16 @@ void LinkFollower::end() noexcept {
     listener_.close();
     phase_ = Phase::Listening;
     heard_.clear();
+    failedJoins_ = 0;
+    nextJoinAt_ = 0.0;
     publish(0, 0.0);
 }
 
-void LinkFollower::listenAfresh() noexcept {
+void LinkFollower::listenAfresh(double now) noexcept {
     phase_ = Phase::Listening;
     heard_.clear();
     listenedAt_ = -1.0;
+    openedAt_ = now;
     // Closed and opened again, which forgets every peer it held: a peer that has gone without a
     // word goes on being listed until its announcement's time to live runs out, and joining on
     // the strength of one is being alone in a session for as long as the join is waited for.
@@ -56,7 +70,16 @@ void LinkFollower::listenAfresh() noexcept {
 }
 
 void LinkFollower::listen(double now) {
-    if (!canListen_ || (listenedAt_ >= 0.0 && now - listenedAt_ < options_.listenEvery)) {
+    now_ = now;
+    if (!canListen_) {
+        // A listener that would not open — another program holding Link's port without sharing
+        // it — is tried again now and then, rather than never.
+        if (now - openedAt_ >= options_.reopenEvery) {
+            listenAfresh(now);
+        }
+        return;
+    }
+    if (listenedAt_ >= 0.0 && now - listenedAt_ < options_.listenEvery) {
         return;
     }
     listenedAt_ = now;
@@ -68,7 +91,8 @@ void LinkFollower::listen(double now) {
             return now - peer.firstHeard >= options_.hearFor &&
                    now - peer.lastHeard <= options_.stillHeardWithin;
         });
-    if (ready == heard_.end()) {
+    // Heard, and the last join that found nobody far enough behind (`Options::retryAfter`).
+    if (ready == heard_.end() || now < nextJoinAt_) {
         return;
     }
     // A session out there for longer than switching on takes to found one: join it, as the
@@ -93,11 +117,21 @@ GridReading LinkFollower::read() noexcept {
     case Phase::Joining:
         if (link_.numPeers() >= 1) {
             phase_ = Phase::Following;
+            failedJoins_ = 0;
+            nextJoinAt_ = 0.0;
         } else if (seconds - joiningSince_ >= options_.joinFor) {
-            // Heard and not reached. Off again before this lone session has been on long enough
-            // to be the older one when somebody does arrive.
+            // Heard and not reached — a firewall letting the announcements in and not the
+            // measurement. Off again, and not tried again for a while: past half a second alone
+            // this is the older session to anybody who arrives (see `Options::joinFor`).
             link_.enable(false);
-            listenAfresh();
+            ++failedJoins_;
+            const double wait = std::min(
+                options_.retryAtMost,
+                options_.retryAfter * std::ldexp(1.0, static_cast<int>(std::min<std::uint32_t>(
+                                                          failedJoins_ - 1, 16))));
+            nextJoinAt_ = seconds + wait;
+            now_ = seconds;
+            listenAfresh(seconds);
         }
         break;
     case Phase::Following:
@@ -111,7 +145,8 @@ GridReading LinkFollower::read() noexcept {
         // Everyone else has gone. Off at once: left on and alone, this session would be the older
         // one when the DJ's app came back, and would hand it whatever tempo it was left at.
         link_.enable(false);
-        listenAfresh();
+        now_ = seconds;
+        listenAfresh(seconds);
         return reading;
     }
     const LinkReader::Timeline timeline = link_.timelineAt(now, quantum_);

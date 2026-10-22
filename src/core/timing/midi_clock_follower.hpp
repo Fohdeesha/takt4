@@ -37,6 +37,17 @@ namespace takt4::timing {
 ///   * **Present** while ticks keep coming — one within the last `kAbsentTicks` tick gaps, or
 ///     `kAbsentMicros`, whichever is longer — once `kSettledTicks` have come without a break: two
 ///     beats to measure the tempo by. A clock that stops is coasted by `BeatGrid`.
+///   * **Only at a tempo a clock could have**: `kMinBpm` to
+///     `kMaxBpm`, and in a run's first beats within `kWidestStart` of the tempo it last ran at. A
+///     delivery stall hands its ticks over in a bunch, microseconds apart: fitted, they were a
+///     tempo of hundreds of thousands of BPM, and a beat went out every millisecond. Ticks
+///     bunched as a run starts begin its count again (`TickFit::Options::leastGap`), and a
+///     tempo is remembered only from a line through a beat of ticks.
+///   * **Ticks lost in a gap are counted** when the clock comes back with no Start, Continue or
+///     Song Position: the new line says when the first tick back would have been, and the ticks
+///     between are added to the song position, so the beats stay on the music. A gap too long, or
+///     across a tempo the two lines disagree on, to count with confidence leaves the clock
+///     unplaced instead, for DOWNBEAT to put right.
 ///   * **A clock that starts again on a Start or Continue** — a DAW's, which ticks only while its
 ///     song plays — is present from its first tick, taken to be at the tempo it last ran at until
 ///     it has ticked enough to measure its own (`TickFit::startAgainAt`). So the song's first
@@ -59,6 +70,21 @@ public:
     static constexpr double kAbsentTicks = 4.0;
     /// ...or this long, whichever is longer.
     static constexpr std::int64_t kAbsentMicros = 100'000;
+    /// The tempi a clock is followed at. The tempo window's own limits (`settings`), the MIDI
+    /// clock's sanity range (the operator, 2026-10-22).
+    static constexpr double kMinBpm = 20.0;
+    static constexpr double kMaxBpm = 400.0;
+    /// How far from the tempo the clock last ran at its first beats may be, either way.
+    static constexpr double kWidestStart = 2.5;
+    /// Before a run has a line there is no tick gap to measure by, and the slowest clock followed
+    /// sets how long a gap starts a new run: half as long again as a tick at `kMinBpm`. At
+    /// `kAbsentMicros`, every tick of a clock under 25 BPM began a run of its own, and it was never
+    /// followed.
+    static constexpr double kAbsentUnfittedMicros = 1.5 * 60e6 / (kMinBpm * 24.0);
+    /// A gap longer than this many ticks — sixteen beats — is not counted across: over it a tempo a
+    /// quarter of a percent out is a tick out, and nothing says the clock held its tempo while it
+    /// was not heard.
+    static constexpr double kLongestCountedGapTicks = 16.0 * 24.0;
     /// Messages the ring holds: a minute of ticks at 174 BPM, where the worker takes them every
     /// millisecond.
     static constexpr std::size_t kRingCapacity = 4096;
@@ -84,6 +110,14 @@ public:
         std::uint64_t ticks = 0;
         std::uint64_t heldBack = 0;
         std::uint64_t tempoChanges = 0;
+        /// Ticks that came bunched as a run started (`TickFit::bunched`), and the readings refused
+        /// for a tempo no clock has (`kMinBpm`, `kMaxBpm`, `kWidestStart`).
+        std::uint64_t bunched = 0;
+        std::uint64_t refused = 0;
+        /// Ticks a gap was found to have lost, added to the song position; and gaps that could not
+        /// be counted across, which left the clock unplaced.
+        std::uint64_t ticksLost = 0;
+        std::uint64_t gapsUncounted = 0;
         /// Messages lost because the ring was full.
         std::uint64_t dropped = 0;
     };
@@ -133,6 +167,10 @@ private:
     void rememberTempo() noexcept;
     /// Whether this run of ticks is followed: enough of them without a break to go on.
     bool followed() const noexcept;
+    /// Whether a reading at `bpm` may be followed — see the class.
+    bool believable(double bpm) const noexcept;
+    /// The ticks a gap lost, counted once the run after it is followed — see the class.
+    void countGap() noexcept;
     /// How long without a tick before the clock is gone.
     double absentAfter() const noexcept;
     bool ticking(std::int64_t now) const noexcept;
@@ -174,6 +212,15 @@ private:
     /// A Song Position that came while stopped, for the next Continue.
     bool songPositionPending_ = false;
     std::int64_t pendingSongTick_ = 0;
+    /// A gap with no Start, Continue or Song Position after it, waiting to be counted across: when
+    /// the last tick before it came, the first tick's number after it, and the tempo before it.
+    bool gapPending_ = false;
+    std::int64_t gapFrom_ = 0;
+    std::int64_t gapIndex_ = 0;
+    double gapMicrosPerTick_ = 0.0;
+    std::uint64_t refused_ = 0;
+    std::uint64_t ticksLost_ = 0;
+    std::uint64_t gapsUncounted_ = 0;
 };
 
 } // namespace takt4::timing

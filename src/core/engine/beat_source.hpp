@@ -98,8 +98,10 @@ protected:
 /// the caller's rule, which the window keeps by locking its picker while running. Not for the
 /// memory's sake: the selection is atomic, so the output thread reading it as it changes is no
 /// race, and that thread is the only one that ever drains a ring, whichever source it belongs
-/// to. For the rig's: STOP has silenced the output thread before the source changes, so no run
-/// of one source goes on with the beats of another.
+/// to. For the rig's: STOP is posted to the output thread before the source changes — and applied
+/// a round or so later, perhaps after it — and every beat a source calls carries the run it
+/// belongs to, which the output thread checks against the selected source's own run before it
+/// fires one. So no run of one source goes on with the beats of another.
 ///
 /// Every source it can select has to outlive it and everything holding it: a source selected
 /// away from can still be in use for a moment — the output thread inside its `popBeat`, a

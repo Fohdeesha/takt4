@@ -43,7 +43,23 @@ public:
         double stillHeardWithin = 0.75;
         /// How long Link may be switched on without a peer joining it before it is switched off
         /// again and the listening starts afresh: a peer that can be heard and not reached.
-        double joinFor = 3.0;
+        ///
+        /// **Every moment of it past half a second is a hazard**: a session alone for longer than
+        /// Link's tie band (0.5 s) is the older one to anybody who arrives, and a DJ app joining
+        /// then takes this session's leftover tempo and phase. A
+        /// join is one discovery exchange and about fifty measurement round trips — tens of
+        /// milliseconds on a wired network, about a second on Wi-Fi at 20 ms a round trip — so
+        /// this is long enough for a slow network, and a join that fails is not tried again at
+        /// once (`retryAfter`).
+        double joinFor = 1.5;
+        /// After a join that found nobody, how long before the next is tried — doubled after each
+        /// that fails in a row, up to `retryAtMost` — so a peer that can be heard and not reached
+        /// leaves takt4 alone in a session of its own for a second and a half a minute, not three
+        /// seconds of every four. A join that works starts it from nothing.
+        double retryAfter = 2.0;
+        double retryAtMost = 30.0;
+        /// How often a listener that would not open is tried again.
+        double reopenEvery = 5.0;
         /// How often the discovery traffic is read while listening.
         double listenEvery = 0.05;
     };
@@ -68,6 +84,10 @@ public:
         /// Whether the discovery traffic can be heard at all — false when it would not open, and
         /// then `problem` says why.
         bool canListen = true;
+        /// Joins tried in a row that found nobody, and how long until the next is tried — zero
+        /// when one may be tried as soon as a session is heard.
+        std::uint32_t failedJoins = 0;
+        double retryIn = 0.0;
     };
 
     LinkFollower(LinkReader& link, LinkListener& listener);
@@ -85,8 +105,10 @@ public:
 private:
     void listen(double now);
     /// Starts listening from nothing: every peer heard before is forgotten, so one that has gone
-    /// cannot be joined on the strength of what it said before.
-    void listenAfresh() noexcept;
+    /// cannot be joined on the strength of what it said before. `now` on Link's clock, in seconds.
+    void listenAfresh(double now) noexcept;
+    /// Link's clock, in seconds.
+    double clockSeconds() const;
     void publish(std::uint32_t peers, double bpm) noexcept;
 
     LinkReader& link_;
@@ -99,6 +121,13 @@ private:
     /// Link's clock.
     double listenedAt_ = -1.0;
     double joiningSince_ = 0.0;
+    /// See `Options::retryAfter`: joins failed in a row, and the earliest the next may be tried.
+    std::uint32_t failedJoins_ = 0;
+    double nextJoinAt_ = 0.0;
+    /// When the listener was last opened, or tried; negative before.
+    double openedAt_ = -1.0;
+    /// The clock `listen` last ran at, for the status's `retryIn`.
+    double now_ = 0.0;
     std::vector<LinkListener::Heard> heard_;
     rt::Published<Status> status_;
     mutable std::mutex problemMutex_;

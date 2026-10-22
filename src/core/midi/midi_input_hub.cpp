@@ -25,7 +25,32 @@ struct MidiInputHub::Port {
         bool clock = false;
     };
     std::vector<Listening> listeners;
+    /// Not on the machine's list at the last `recheck`, and closed: opened again when it is.
+    bool lost = false;
+    /// A device was opened for it — false only for a test's (`attachWithoutPort`), which has
+    /// nothing to open again.
+    bool wasOpened = false;
 };
+
+namespace {
+
+/// Stops a device's callbacks and closes it. Never under the hub's lock: see `close`.
+void closeDevice(output::RtMidiErrors* errors, RtMidiIn* in) noexcept {
+    if (in == nullptr) {
+        return;
+    }
+    try {
+        in->cancelCallback();
+        in->closePort();
+        if (errors != nullptr) {
+            errors->raise();
+        }
+    } catch (...) {
+        // Closing a device that has already gone — unplugged — is nothing a stop can report.
+    }
+}
+
+} // namespace
 
 bool isTimingMessage(std::span<const unsigned char> message) noexcept {
     if (message.empty()) {
@@ -103,16 +128,7 @@ MidiInputHub::detachLocked(const MidiInputListener& listener) {
 }
 
 void MidiInputHub::close(Port& port) noexcept {
-    if (!port.in) {
-        return;
-    }
-    try {
-        port.in->cancelCallback();
-        port.in->closePort();
-        port.errors->raise();
-    } catch (...) {
-        // Closing a device that has already gone — unplugged — is nothing a stop can report.
-    }
+    closeDevice(port.errors.get(), port.in.get());
 }
 
 std::string MidiInputHub::listen(std::string_view spec, MidiInputListener& listener,
@@ -177,6 +193,7 @@ std::string MidiInputHub::listen(std::string_view spec, MidiInputListener& liste
     auto port = std::make_unique<Port>();
     port->name = name;
     port->hub = this;
+    port->wasOpened = true;
     port->errors = std::move(errors);
     port->in = std::move(in);
     try {
@@ -248,9 +265,139 @@ std::size_t MidiInputHub::openPorts() const {
 void MidiInputHub::deliver(std::string_view name, std::span<const unsigned char> message) noexcept {
     const std::int64_t at = clock_();
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (const Port* port = findLocked(name); port != nullptr && !message.empty()) {
+    // An input that is not plugged in says nothing.
+    if (const Port* port = findLocked(name); port != nullptr && !port->lost && !message.empty()) {
         handLocked(*port, message, at);
     }
+}
+
+MidiInputHub::Recheck MidiInputHub::recheck(const std::vector<std::string>& listed) {
+    Recheck result;
+    // What is gone, taken off its port under the lock and closed after it; and what is back, by
+    // the name it is listed under now, to be opened outside it.
+    struct Device {
+        std::unique_ptr<output::RtMidiErrors> errors;
+        std::unique_ptr<RtMidiIn> in;
+    };
+    std::vector<Device> gone;
+    struct Back {
+        Port* port = nullptr;
+        std::string name;
+    };
+    std::vector<Back> back;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (const std::unique_ptr<Port>& port : ports_) {
+            const std::optional<std::size_t> at = output::findMidiPort(listed, port->name);
+            if (!port->lost && !at) {
+                port->lost = true;
+                result.lost.push_back(port->name);
+                gone.push_back({std::move(port->errors), std::move(port->in)});
+            } else if (port->lost && at) {
+                back.push_back({port.get(), listed[*at]});
+            } else if (at && listed[*at] != port->name) {
+                // Still plugged in, and listed under another number now that another input has
+                // gone: the same device, under the name a `listen` for it would find.
+                port->name = listed[*at];
+            }
+        }
+    }
+    for (Device& device : gone) {
+        closeDevice(device.errors.get(), device.in.get());
+    }
+
+    for (const Back& found : back) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            const auto still = std::find_if(ports_.begin(), ports_.end(), [&](const auto& port) {
+                return port.get() == found.port;
+            });
+            if (still == ports_.end()) {
+                continue; // everyone stopped listening meanwhile
+            }
+            if (!found.port->wasOpened) {
+                // A test's input, which has no device: listed again, it is back.
+                found.port->lost = false;
+                found.port->name = found.name;
+                result.back.push_back(found.name);
+                continue;
+            }
+        }
+        if (sandbox::active()) {
+            continue; // the test binaries open no device; see `listen`
+        }
+        // Opened by the place it has on the list of the very instance that opens it, as `listen`
+        // does: the list handed in can be a moment old.
+        auto errors = std::make_unique<output::RtMidiErrors>();
+        std::unique_ptr<RtMidiIn> in;
+        std::string name;
+        try {
+            in = std::make_unique<RtMidiIn>();
+            errors->watch(*in);
+            std::vector<std::string> names;
+            const unsigned int count = in->getPortCount();
+            for (unsigned int i = 0; i < count; ++i) {
+                names.push_back(in->getPortName(i));
+            }
+            errors->raise();
+            const std::optional<std::size_t> at = output::findMidiPort(names, found.name);
+            if (!at) {
+                continue; // gone again already
+            }
+            name = names[*at];
+            in->openPort(static_cast<unsigned int>(*at), "takt4");
+            errors->raise();
+            in->ignoreTypes(/*sysex=*/true, /*time=*/false, /*sense=*/true);
+        } catch (const RtMidiError& error) {
+            // Listed, and would not open: another program took it while it was out.
+            result.refused.push_back(found.name + ": " + error.getMessage());
+            continue;
+        }
+        bool installed = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            const auto still = std::find_if(ports_.begin(), ports_.end(), [&](const auto& port) {
+                return port.get() == found.port;
+            });
+            if (still != ports_.end() && found.port->lost) {
+                found.port->errors = std::move(errors);
+                found.port->in = std::move(in);
+                found.port->lost = false;
+                found.port->name = name;
+                // Last, as `listen` does: a message arriving now waits for the lock.
+                found.port->in->setCallback(&MidiInputHub::received, found.port);
+                installed = true;
+                result.back.push_back(name);
+            }
+        }
+        if (!installed) {
+            closeDevice(errors.get(), in.get()); // the port went while this one opened
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> MidiInputHub::lostPorts() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> lost;
+    for (const std::unique_ptr<Port>& port : ports_) {
+        if (port->lost) {
+            lost.push_back(port->name);
+        }
+    }
+    return lost;
+}
+
+bool MidiInputHub::isLost(const MidiInputListener& listener) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::unique_ptr<Port>& port : ports_) {
+        for (const Port::Listening& listening : port->listeners) {
+            if (listening.listener == &listener) {
+                return port->lost;
+            }
+        }
+    }
+    return false;
 }
 
 void MidiInputHub::attachWithoutPort(std::string_view name, MidiInputListener& listener) {

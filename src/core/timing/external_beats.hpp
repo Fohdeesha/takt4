@@ -41,7 +41,7 @@ public:
     /// Beats a consumer may fall behind by — as many as the tracker's ring holds.
     static constexpr std::size_t kBeatQueueCapacity = 256;
     /// Beats the window may fall behind by: half a minute of them at 128 BPM, where it takes
-    /// them fifty times a second.
+    /// them at every redraw, about thirty times a second.
     static constexpr std::size_t kDisplayCapacity = 64;
 
     /// **A beat as the window draws it** — on a ring of its own (`popDisplayBeat`), so the output

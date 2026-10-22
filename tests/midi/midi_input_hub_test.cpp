@@ -165,6 +165,57 @@ TEST_CASE("a MIDI listener that stops is not let go of while a message is being 
     CHECK(slow.handled == 1);
 }
 
+TEST_CASE("a MIDI input pulled out is said to be, and heard again when it is plugged back in",
+          "[midi]") {
+    // A device pulled out says nothing to whoever has it open —
+    // RtMidi's Windows input drops the driver's notice — so the control input went on showing its
+    // port, and a followed clock waited for ever; plugged back in, it was never heard again. The
+    // hub is told what is on the machine now: an input not there is lost, every listener kept, and
+    // listened to again when it is. Windows numbers its inputs, and plugged back in this one comes
+    // back under another number.
+    MidiInputHub hub(steadyMicros);
+    Keeping control;
+    Keeping clock(true);
+    hub.attachWithoutPort("DJM-A9 1", control);
+    hub.attachWithoutPort("DJM-A9 1", clock);
+
+    const MidiInputHub::Recheck out = hub.recheck({"MOTU 0"});
+    CHECK(out.lost == std::vector<std::string>{"DJM-A9 1"});
+    CHECK(out.back.empty());
+    CHECK(hub.isLost(control));
+    CHECK(hub.isLost(clock));
+    CHECK(hub.lostPorts() == std::vector<std::string>{"DJM-A9 1"});
+    send(hub, "DJM-A9 1", {0x90, 36, 100}); // nothing comes from a device that is not there
+    CHECK(control.heard().empty());
+    // Looked at again, still out: nothing new to say.
+    CHECK(hub.recheck({"MOTU 0"}).lost.empty());
+
+    const MidiInputHub::Recheck in = hub.recheck({"MOTU 0", "DJM-A9 2"});
+    CHECK(in.back == std::vector<std::string>{"DJM-A9 2"});
+    CHECK_FALSE(hub.isLost(control));
+    CHECK(hub.lostPorts().empty());
+    CHECK(hub.portOf(control) == "DJM-A9 2");
+    CHECK(hub.portOf(clock) == "DJM-A9 2");
+    send(hub, "DJM-A9 2", {0x90, 36, 100});
+    send(hub, "DJM-A9 2", {0xF8});
+    CHECK(control.heard() == std::vector<Bytes>{{0x90, 36, 100}});
+    CHECK(clock.heard() == std::vector<Bytes>{{0x90, 36, 100}, {0xF8}});
+}
+
+TEST_CASE("a MIDI input renumbered when another is pulled out is not taken for gone", "[midi]") {
+    // Windows numbers its inputs in order and RtMidi puts the number in the name: the pad was
+    // "Pad 2" until the input before it went, and is "Pad 1" now — the same device, still open.
+    MidiInputHub hub(steadyMicros);
+    Keeping pad;
+    hub.attachWithoutPort("Pad 2", pad);
+    const MidiInputHub::Recheck checked = hub.recheck({"MOTU 0", "Pad 1"});
+    CHECK(checked.lost.empty());
+    CHECK_FALSE(hub.isLost(pad));
+    CHECK(hub.portOf(pad) == "Pad 1");
+    send(hub, "Pad 1", {0xB0, 7, 64});
+    CHECK(pad.heard().size() == 1);
+}
+
 TEST_CASE("a MIDI input that is not there is said to be, and in the sandbox none is opened",
           "[midi]") {
     MidiInputHub hub(steadyMicros);
@@ -280,6 +331,37 @@ TEST_CASE("a real MIDI input is shared by two listeners, a clock on it is follow
         // The last tick sent was song tick 81, three and three-eighths beats in.
         CHECK(std::abs(reading.beat - 81.0 / 24.0) < 0.05);
         follower.stopListening();
+        CHECK(hub.openPorts() == 0);
+    }
+
+    {
+        // Pulled out and plugged back in, through the driver: told
+        // the machine's list has it no more, the hub closes the device, and told it is back, opens
+        // it again under the listener that never stopped listening — which then hears it. Windows
+        // goes on listing a port this process made, so the list without it is made by hand.
+        Keeping listener;
+        const std::string name = hub.listen(takt4::testing::kTestPort, listener, "MIDI test: ");
+        std::vector<std::string> without = takt4::output::listMidiInputPorts();
+        std::erase_if(without, [](const std::string& input) {
+            return input.find(takt4::testing::kTestPort) != std::string::npos;
+        });
+        const MidiInputHub::Recheck gone = hub.recheck(without);
+        CHECK(gone.lost == std::vector<std::string>{name});
+        CHECK(hub.openPorts() == 0);
+        CHECK(hub.isLost(listener));
+        const MidiInputHub::Recheck back = hub.recheck(takt4::output::listMidiInputPorts());
+        INFO("refused: " << (back.refused.empty() ? std::string() : back.refused.front()));
+        REQUIRE(back.back.size() == 1);
+        CHECK(hub.openPorts() == 1);
+        CHECK_FALSE(hub.isLost(listener));
+        std::vector<BYTE> note{0x90, 61, 99};
+        (void)virtualMidi.send(port, note.data(), static_cast<DWORD>(note.size()));
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (listener.heard().empty() && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        CHECK(listener.heard() == std::vector<Bytes>{{0x90, 61, 99}});
+        hub.stopListening(listener);
         CHECK(hub.openPorts() == 0);
     }
 

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -299,6 +300,25 @@ TEST_CASE("the tick rate follows the tempo", "[output][midi]") {
         CHECK(clock.tempo() == Catch::Approx(120.0));
         clock.setTempo(-5.0);
         CHECK(clock.tempo() == Catch::Approx(120.0));
+        clock.setTempo(std::numeric_limits<double>::quiet_NaN());
+        CHECK(clock.tempo() == Catch::Approx(120.0));
+        clock.setTempo(std::numeric_limits<double>::infinity());
+        CHECK(clock.tempo() == Catch::Approx(120.0));
+    }
+
+    SECTION("a tempo no clock has is held to Link's range, so the cable is never flooded") {
+        // A followed MIDI clock's stall came out as thousands of BPM,
+        // and the clock out ticked at it. A second at the most a tempo can be is 400 ticks.
+        clock.setTempo(500'000.0);
+        CHECK(clock.tempo() == Catch::Approx(MidiClock::kMaxBpm));
+        // A round every millisecond, as the output thread drives it.
+        std::size_t ticks = 0;
+        for (int ms = 1; ms <= 990; ++ms) {
+            ticks += clock.advance(2.0 + static_cast<double>(ms) / 1000.0);
+        }
+        CHECK(ticks <= 401);
+        clock.setTempo(1.0);
+        CHECK(clock.tempo() == Catch::Approx(MidiClock::kMinBpm));
     }
 }
 

@@ -259,6 +259,7 @@ bool LinkPeerWatch::open(std::string& problem) {
         }
     }
     socket_ = std::move(socket);
+    joinedAt_ = -1.0;
     return true;
 }
 
@@ -269,6 +270,16 @@ void LinkPeerWatch::close() noexcept {
 
 void LinkPeerWatch::poll(double now) {
     if (socket_ != nullptr) {
+        // See the declaration. `open` has just joined every interface up then.
+        if (joinedAt_ < 0.0) {
+            joinedAt_ = now;
+        } else if (now - joinedAt_ >= kRejoinSeconds) {
+            joinedAt_ = now;
+            ++rejoins_;
+            for (const in_addr where : interfaceAddresses()) {
+                (void)joinGroup(socket_->handle, where);
+            }
+        }
         std::array<std::uint8_t, kMaxMessage + 1> buffer{};
         for (int i = 0; i < kMaxPerPoll; ++i) {
             sockaddr_in from{};

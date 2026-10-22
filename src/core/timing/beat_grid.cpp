@@ -40,6 +40,9 @@ void BeatGrid::halve() noexcept {
     // The published position is scaled about the anchor, so where the grid had got to is scaled
     // with it: the next reading is no jump, and the next whole number is the next beat kept.
     lastP_ *= 0.5;
+    // The published beats are numbered afresh on the new grid.
+    indexKnown_ = false;
+    forgetRate();
 }
 
 void BeatGrid::redouble() noexcept {
@@ -48,6 +51,17 @@ void BeatGrid::redouble() noexcept {
     }
     ++octaveShift_;
     lastP_ *= 2.0;
+    indexKnown_ = false;
+    forgetRate();
+}
+
+void BeatGrid::forgetRate() noexcept {
+    // The gaps measured so far are another grid's, and read against this one they say the beats
+    // are going out at the other octave — which the window turned into "press ×2 to match" just
+    // after ÷2 was pressed, for up to five seconds. The tracker
+    // forgets its own the same way.
+    sentCount_ = 0;
+    state_.beatsBpm = 0.0;
 }
 
 void BeatGrid::snapDownbeat() noexcept {
@@ -59,7 +73,11 @@ std::optional<BeatGrid::Grid> BeatGrid::follow(const GridReading& reading) noexc
         goQuiet();
         return std::nullopt;
     }
-    if (reading.present && reading.bpm > 0.0) {
+    // A tempo no source has, or a position that is no number, is no reading: run on through it as
+    // through a source gone (see the class).
+    const bool sane = std::isfinite(reading.bpm) && reading.bpm >= kMinBpm &&
+                      reading.bpm <= kMaxBpm && std::isfinite(reading.beat);
+    if (reading.present && sane) {
         good_ = reading;
         haveGood_ = true;
         coasting_ = false;
@@ -93,11 +111,14 @@ void BeatGrid::goQuiet() noexcept {
     haveGood_ = false;
     // Whatever comes back is followed from wherever it is then.
     haveLast_ = false;
+    indexKnown_ = false;
 }
 
 void BeatGrid::moveAnchor(double anchor) noexcept {
     lastP_ += (anchor_ - anchor) * scale();
     anchor_ = anchor;
+    // The published beats are numbered from the new anchor.
+    indexKnown_ = false;
 }
 
 void BeatGrid::declareBar() noexcept {
@@ -127,6 +148,14 @@ void BeatGrid::snap(std::int64_t at, const Grid& grid) noexcept {
         moveAnchor(grid.beat);
         if (lastIsNearer) {
             declareBar();
+            // **And the press's own crossing is that beat, not another.** It was let out whenever
+            // the press came more than `kSameBeat` after the beat — 0.4 to 0.5 of one — so the
+            // bar was counted twice and its rules fired twice in one round. The beat just sent is
+            // now the one at the press.
+            lastSentAt_ = at;
+            lastSentBeat_ = grid.beat;
+            lastSentIndex_ = 0;
+            indexKnown_ = true;
         }
         return;
     }
@@ -159,6 +188,8 @@ engine::EngineBeat BeatGrid::send(std::int64_t k, std::int64_t moment,
     sent_ = true;
     lastSentAt_ = moment;
     lastSentBeat_ = anchor_ + static_cast<double>(k) / scale();
+    lastSentIndex_ = k;
+    indexKnown_ = true;
     if (sentCount_ < sentAt_.size()) {
         sentAt_[sentCount_++] = moment;
     } else {
@@ -226,9 +257,16 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
         barSet_ = true;
         haveLast_ = false;
         placedUncrossed_ = true;
+        indexKnown_ = false;
     }
     wasAnchored_ = grid->anchored;
     placements_ = grid->placements;
+    // A tempo that jumped — a DJ halving the session — leaves the gaps before it saying nothing
+    // about the beats now: see `kTempoJump`.
+    if (lastSourceBpm_ > 0.0 && std::abs(grid->bpm / lastSourceBpm_ - 1.0) > kTempoJump) {
+        forgetRate();
+    }
+    lastSourceBpm_ = grid->bpm;
 
     const double scaled = scale();
     const double bpm = grid->bpm * scaled;
@@ -260,6 +298,18 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
         // just passed, is the placing tick's own: a Start's downbeat, read together with its
         // first tick — as a DAW that starts its clock with its song sends them.
         crossed = 1;
+    } else if (haveLast_ && lastP_ - p >= 1.0) {
+        // Jumped back a beat or more — a session started again, a tempo halved under it: the
+        // beats it crosses again are the new grid's, followed from where it landed. Only a grid
+        // moved back by less than a beat crosses the beat just sent again as that same beat.
+        indexKnown_ = false;
+    }
+    // A beat the grid has already sent, crossed again because the grid moved back over it —
+    // between nothing the operator did — is that beat, however long ago it went: a Link peer that
+    // moves the phase back by half a beat put the beat just sent out again. Only the beats
+    // past it count.
+    if (crossed > 0 && indexKnown_) {
+        crossed = std::min<std::int64_t>(crossed, now - lastSentIndex_);
     }
     std::optional<engine::EngineBeat> beat;
     if (crossed > 0) {
@@ -267,7 +317,9 @@ std::optional<engine::EngineBeat> BeatGrid::advance(const GridReading& reading) 
         // noticed.
         const std::int64_t moment =
             reading.at - std::llround((p - static_cast<double>(now)) * period);
-        if (!sent_ || static_cast<double>(moment - lastSentAt_) >= kSameBeat * period) {
+        const std::int64_t since = moment - lastSentAt_;
+        if (!sent_ ||
+            (static_cast<double>(since) >= kSameBeat * period && since >= kLeastBeatMicros)) {
             beat = send(now, moment, crossed);
         } else if (placedUncrossed_ && beatInBarOf(now) == 1) {
             // The source has just placed its bar, and the bar's first beat comes too soon after

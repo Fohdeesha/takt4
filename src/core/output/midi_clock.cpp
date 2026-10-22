@@ -333,10 +333,10 @@ void MidiClock::stop() noexcept {
 }
 
 void MidiClock::setTempo(double bpm) noexcept {
-    if (!(bpm > 0.0)) {
+    if (!(bpm > 0.0) || !std::isfinite(bpm)) {
         return;
     }
-    bpm_ = bpm;
+    bpm_ = std::clamp(bpm, kMinBpm, kMaxBpm);
     if (steering_ == 0) {
         // Re-anchored on the tick that was already scheduled, so the interval in flight is
         // not retimed underneath the receiver. A steered stretch keeps its spacing: it was
