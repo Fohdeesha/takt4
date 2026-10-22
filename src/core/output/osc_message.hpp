@@ -38,6 +38,10 @@ public:
     /// An address must begin with '/' and hold none of OSC 1.0's reserved characters
     /// (space, '#', '*', ',', '?', '[', ']', '{', '}') nor anything outside printable
     /// ASCII. One that does leaves the message invalid.
+    ///
+    /// **The address is kept as a view and copied only by `packet()`**, so it has to outlive the
+    /// message: an address built in place — `OscMessage("/a/" + id)` — is gone by the time the
+    /// packet is made (a test did this, and AddressSanitizer found it reading freed memory).
     explicit OscMessage(std::string_view address) noexcept;
 
     OscMessage& addInt(std::int32_t value) noexcept;
