@@ -740,7 +740,7 @@ TEST_CASE("no two followed beats go out closer than 60 ms", "[timing][follow]") 
 
 TEST_CASE("a followed grid moved back across the beat just sent does not send it again",
           "[timing][follow]") {
-    // an earlier review: a Link peer that moves the phase back by 0.4 to 0.5 of a beat — another
+    // A Link peer that moves the phase back by 0.4 to 0.5 of a beat — another
     // computer's old takt4 snapping at its START — made the beat just sent go out again, past the 0.4 of
     // a beat that keeps a beat moved a little from going twice. Its number on the grid says it is
     // the same beat, however long ago it went.
@@ -762,7 +762,9 @@ TEST_CASE("a followed grid moved back across the beat just sent does not send it
             positionOf(sent[i].beat, bpm, sent[i].readAt < movedAt ? zero : zero + back * period);
         INFO("beat " << i << " at " << position);
         CHECK(position == Approx(std::round(position)).margin(1e-4));
-        beatTen += std::llround(position) == 10 ? 1 : 0;
+        if (std::llround(position) == 10) {
+            ++beatTen;
+        }
         if (i > 0) {
             // Every beat the next of its bar: none repeated.
             CHECK(sent[i].beat.event.beatInBar == sent[i - 1].beat.event.beatInBar % 4 + 1);
@@ -773,7 +775,7 @@ TEST_CASE("a followed grid moved back across the beat just sent does not send it
 
 TEST_CASE("halving or doubling a followed grid forgets the rate the beats went out at",
           "[timing][follow]") {
-    // an earlier review: the beats' own rate is the median of the last eight gaps, and ÷2 kept the
+    // The beats' own rate is the median of the last eight gaps, and ÷2 kept the
     // old grid's — so the window read 128 against a published 64 and told the operator to press
     // ×2, for up to five seconds after pressing ÷2. Forgotten at the press, as the tracker forgets
     // its own, and measured afresh on the new grid.

@@ -676,7 +676,9 @@ TEST_CASE("the reports of old crashes are kept to the newest ten of each", "[ui]
     CHECK(std::filesystem::exists(dir.path() / "takt4-unclean-20261014-120000.log"));
     std::size_t logs = 0;
     for (const auto& entry : std::filesystem::directory_iterator(dir.path())) {
-        logs += entry.path().filename().string().rfind("takt4-unclean-", 0) == 0 ? 1 : 0;
+        if (entry.path().filename().string().rfind("takt4-unclean-", 0) == 0) {
+            ++logs;
+        }
     }
     CHECK(logs == 10);
     CHECK(std::filesystem::exists(dir.path() / "takt4.log"));

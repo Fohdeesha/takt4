@@ -9257,8 +9257,8 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     facts.coasting = true;
     CHECK(describeTiming(facts).reading == "NOT OPEN \xE2\x80\x94 DJM-A9 is not plugged in");
 
-    // An import while running sets the bar for the next START, and the run goes on in its own
-    //: the box shows the run's, and says the next.
+    // An import while running sets the bar for the next START, and the run goes on in its own:
+    // the box shows the run's, and says the next.
     facts = TimingFacts{};
     facts.index = 1;
     facts.running = true;

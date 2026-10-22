@@ -286,7 +286,7 @@ TEST_CASE("following Link, a listener that would not open is tried again until i
 TEST_CASE("following Link, a join nobody answers is tried again later each time, up to half a "
           "minute apart",
           "[timing][follow][link]") {
-    // an earlier review. A peer heard and not reached left takt4 alone in a session of its own for
+    // A peer heard and not reached left takt4 alone in a session of its own for
     // three seconds of every four — past half a second alone it is the older session, and a DJ
     // app joining then takes its leftover tempo. Each join that finds nobody waits longer before
     // the next, up to half a minute; one that works starts the waiting from nothing.

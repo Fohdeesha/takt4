@@ -568,7 +568,7 @@ TEST_CASE("a Start whose first MIDI clock ticks come in a bunch starts at the te
 
 TEST_CASE("ticks a MIDI clock lost in a gap are counted, and its beats stay on its own",
           "[timing][midi][follow]") {
-    // an earlier review. A clock that had a Start, its cable out for two seconds while the mixer ran
+    // A clock that had a Start, its cable out for two seconds while the mixer ran
     // on: the ticks lost were not counted, so every beat after landed a part of a beat off the
     // music — 0.29 of one in the reader's case — with the row saying "ticking · started".
     for (const double gap : {0.7, 2.0, 5.0}) {
