@@ -775,15 +775,15 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // pressing a pad says which button, never which rule, and nothing in the windows asks the
     // second question. A binding to one is written into the settings file by hand —
     // `MidiControl::learn` takes a whole target, rule and all, for when something does ask.
-    auto actions = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    learnActionLabels_ = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const control::ControlAction action : control::kControlActions) {
         if (control::takesRuleId(action)) {
             continue;
         }
         learnActions_.push_back(action);
-        actions->push_back(shared(std::string(control::labelOf(action))));
+        learnActionLabels_->push_back(shared(std::string(control::labelOf(action))));
     }
-    window_->set_learn_actions(actions);
+    window_->set_learn_actions(learnActionLabels_);
 
     // Whatever was learned last time, restored. A line this build cannot read is skipped
     // rather than refused: `settings` keeps the text it was given, so a file written by a
@@ -1606,10 +1606,7 @@ void WindowController::toggleRun() {
         // After the follower, so nothing ticks for a run that would not start.
         runner_.setTracking(true);
         window_->set_running(true);
-        setStatus(importSaid.empty()
-                      ? "following " + timingName() + " " + "\xE2\x80\x94" + " audio not in use."
-                      : importSaid,
-                  false);
+        setStatus(importSaid.empty() ? "following " + timingName() + "." : importSaid, false);
         return;
     }
     // By what was asked for, not by whether a stream is open: during an outage the tracker is
@@ -3522,6 +3519,7 @@ bool WindowController::exportTo(const std::filesystem::path& path) {
 }
 
 void WindowController::enableAutosave(std::filesystem::path file, double quietSeconds) {
+    window_->set_autosave_held(false);
     autosaveFile_ = std::move(file);
     autosaveQuietSeconds_ = std::max(0.0, quietSeconds);
     // What the file holds now, as far as this window can know: the settings it was built
@@ -3532,6 +3530,7 @@ void WindowController::enableAutosave(std::filesystem::path file, double quietSe
 }
 
 void WindowController::holdAutosave(std::filesystem::path file, double quietSeconds) {
+    window_->set_autosave_held(true);
     heldAutosave_ = std::move(file);
     autosaveQuietSeconds_ = std::max(0.0, quietSeconds);
 }
@@ -4007,7 +4006,7 @@ void WindowController::publishStopped() {
     publishIdleReadouts(*window_);
     publishOptions();
     if (following() && !statusIsError_) {
-        setStatus("press Start to follow " + timingName() + ".", false);
+        sayHowToStart();
     } else if (!devices_.empty() && !statusIsError_) {
         // The version is not repeated here: it is in the title bar and the status bar's
         // corner now, and unlike this line neither of them is spent by the next status.
@@ -4514,6 +4513,31 @@ void WindowController::setClockPort(const std::string& name) {
     }
     publishClockPortList();
     publishTiming();
+    // What START needs has changed: said again, over what was said about the input before.
+    if (timing_ == Timing::MidiClock && !constructing_) {
+        sayHowToStart();
+    }
+}
+
+void WindowController::publishLearnActions() {
+    for (std::size_t i = 0; i < learnActions_.size() && i < learnActionLabels_->row_count(); ++i) {
+        const control::ControlAction action = learnActions_[i];
+        const bool off = following() && (action == control::ControlAction::Tap ||
+                                         action == control::ControlAction::Lock);
+        const slint::SharedString words(std::string(control::labelOf(action)) +
+                                        (off ? " (off while following)" : ""));
+        if (learnActionLabels_->row_data(i) != std::optional<slint::SharedString>(words)) {
+            learnActionLabels_->set_row_data(i, words);
+        }
+    }
+}
+
+void WindowController::sayHowToStart() {
+    if (timing_ == Timing::MidiClock && clockPort_.empty()) {
+        setStatus("Pick the MIDI input the clock comes in on, then press Start.", true);
+    } else {
+        setStatus("press Start to follow " + timingName() + ".", false);
+    }
 }
 
 void WindowController::setClockObey(bool obey) {
@@ -4591,6 +4615,7 @@ void WindowController::stopFollowing() noexcept {
 }
 
 void WindowController::publishTiming() {
+    publishLearnActions();
     TimingFacts facts;
     facts.index = timingIndex();
     facts.running = followed_.running();
@@ -4611,7 +4636,13 @@ void WindowController::publishTiming() {
             facts.peersHeard = peers.size();
             facts.heardBpm = peers.empty() ? 0.0 : peers.front().bpm;
         } else if (linkFollower_ && runningSource_ == &*linkFollower_) {
-            facts.peers = linkFollower_->status().peers;
+            const timing::LinkFollower::Status status = linkFollower_->status();
+            facts.peers = status.peers;
+            facts.linkPhase = status.phase;
+            facts.linkFailedJoins = status.failedJoins;
+            facts.linkRetryIn = status.retryIn;
+            facts.canListen = status.canListen;
+            facts.linkProblem = linkFollower_->problem();
         }
     } else if (timing_ == Timing::MidiClock) {
         facts.port = clockPort_;
@@ -4626,6 +4657,7 @@ void WindowController::publishTiming() {
     } else if (timing_ == Timing::ProLink) {
         const timing::prolink::Network::Snapshot cdjs = cdjs_->snapshot();
         readCdjFacts(cdjs, facts);
+        facts.cdjSavedCard = cdjInterface_;
         facts.cdjFollow = cdjFollow_;
         publishCdjFollowList(cdjs, false);
     }
@@ -4680,6 +4712,11 @@ void WindowController::publishCdjFollowList(const timing::prolink::Network::Snap
     if (!force && numbers == cdjFollowNumbers_ && words == cdjFollowWords_) {
         return;
     }
+    // Never under an open list: a player joining moved the rows under the pointer, and the click
+    // meant for one deck picked another. Written the next redraw after it closes.
+    if (!force && window_->get_cdj_follow_open()) {
+        return;
+    }
     cdjFollowNumbers_ = publishCdjFollow(*window_, players, cdjFollow_);
     cdjFollowWords_ = std::move(words);
 }
@@ -4721,8 +4758,10 @@ void WindowController::publishFollowedTrace() {
         const auto last = static_cast<std::int64_t>(trace_.size()) - 1;
         for (const std::int64_t column : {last - back, last - back - 1}) {
             if (column >= 0 && column <= last) {
+                // Run on at the last tempo, the source having gone: drawn dimmed, so a beat that
+                // came is not taken for one that was guessed.
                 trace_[static_cast<std::size_t>(column)] =
-                    TracePoint{1.0f, shown.downbeat ? 1.0f : 0.0f, true};
+                    TracePoint{1.0f, shown.downbeat ? 1.0f : 0.0f, true, shown.coasted};
             }
         }
     }

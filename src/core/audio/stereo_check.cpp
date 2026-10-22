@@ -116,20 +116,22 @@ StereoCheck::Reading StereoCheck::observe(const StereoSums& sums, double now) {
 std::string StereoCheck::describe(Verdict verdict, const std::string& left,
                                   const std::string& right) {
     switch (verdict) {
+    // What to do first, where a line cut short keeps it: under the meter there is room for about
+    // eighty characters, and the remedy at the end of these was lost. And "stop, then": mono is
+    // locked while the input runs, and this is said while it runs.
     case Verdict::OutOfPhase:
-        return left + " and " + right +
-               " are out of phase \xE2\x80\x94 averaging them cancels the kick and the bass. Check "
-               "the cable (one leg may be wired backwards), or tick mono to hear " +
-               left + " alone";
+        return left + " and " + right + " are out of phase: stop, then tick mono to hear " + left +
+               " alone, or check the cable (one leg may be wired backwards) \xE2\x80\x94 averaged, "
+               "they cancel the kick and the bass";
     case Verdict::LeftSilent:
-        return left + " is silent and " + right + " is not \xE2\x80\x94 if the feed is mono on " +
-               right + ", tick mono and pick it";
+        return left + " is silent and " + right + " is not: if the feed is mono on " + right +
+               ", stop, then tick mono and pick it";
     case Verdict::RightSilent:
-        return right + " is silent and " + left + " is not \xE2\x80\x94 if the feed is mono on " +
-               left + ", tick mono";
+        return right + " is silent and " + left + " is not: if the feed is mono on " + left +
+               ", stop, then tick mono";
     case Verdict::Unrelated:
         return left + " and " + right +
-               " share almost nothing \xE2\x80\x94 if one of them is not the music, tick mono";
+               " share almost nothing: if one of them is not the music, stop, then tick mono";
     case Verdict::Quiet:
     case Verdict::Fine:
         break;

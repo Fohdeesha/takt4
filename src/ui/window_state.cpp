@@ -118,8 +118,10 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     view.shortName = "CDJ";
     // The CDJs count four to the bar, whatever the setting says.
     view.beatsPerBar = 4;
-    view.network =
-        facts.cdjInterface.empty() ? std::string("picked when a CDJ is heard") : facts.cdjInterface;
+    view.network = !facts.cdjInterface.empty() ? facts.cdjInterface
+                   : facts.cdjSavedCard.empty()
+                       ? std::string("picked when a CDJ is heard")
+                       : "the card on " + facts.cdjSavedCard + ", from the settings file";
     const bool heard = facts.cdjPlayers + facts.cdjMixers > 0;
     // Not one datagram, from anything: on a DJ network with no router — which Windows calls
     // Public, and a firewall rule ticked for Private alone drops everything from — this is what a
@@ -132,14 +134,14 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     if (!facts.running) {
         // Listened to, and nothing announced, until START.
         if (!facts.cdjProblem.empty()) {
-            view.reading = facts.cdjProblem;
+            view.reading = "cannot listen for CDJs";
+            view.problem = facts.cdjProblem;
             view.waiting = true;
         } else if (!heard) {
             view.reading = "no CDJs heard on this network yet";
             view.note = firewall;
         } else {
-            view.reading = devicesHeard(facts.cdjPlayers, facts.cdjMixers) + " heard" + dot +
-                           "not joined until Start";
+            view.reading = devicesHeard(facts.cdjPlayers, facts.cdjMixers) + " heard";
         }
         return view;
     }
@@ -173,11 +175,14 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     if (!facts.cdjProblem.empty()) {
         view.waiting = true;
         view.waitingWord = "no network";
-        view.reading = facts.cdjProblem;
-        view.detail = facts.cdjProblem;
+        view.reading = "cannot listen for CDJs";
+        view.detail = "cannot listen for CDJs";
+        view.problem = facts.cdjProblem;
     } else if (!facts.cdjJoined) {
+        view.wait = TimingView::Wait::Coming;
         view.waitingWord = "joining";
         if (facts.cdjNoNumber) {
+            view.wait = TimingView::Wait::Absent;
             view.waitingWord = "no number";
             view.reading =
                 "players 7 to 15 are all taken \xE2\x80\x94 waiting for one to come free";
@@ -190,6 +195,8 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
                                  : "no CDJs heard on this network \xE2\x80\x94 waiting for one";
             view.detail = heard ? "joining as a player" : "no CDJs heard";
             if (!heard) {
+                view.wait = TimingView::Wait::Absent;
+                view.waitingWord = "no CDJs";
                 view.note = firewall;
             }
         }
@@ -197,15 +204,25 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
         view.reading = "beats stopped \xE2\x80\x94 coasting at " + bpm;
         view.detail = playerName(facts.cdjFollowed) + " stopped";
     } else if (view.waiting) {
-        view.waitingWord = facts.cdjFollowed != 0 ? "no beats" : "no deck";
         view.reading = waitedFor + " \xE2\x80\x94 waiting";
         view.detail = waitedFor;
-        if (facts.cdjFollow == 0 && facts.cdjFollowed == 0 && facts.cdjLeaders >= 2) {
+        if (facts.cdjFollow != 0) {
+            // The deck asked for, paused: the DJ's to start, as a quiet room is.
+            view.wait = TimingView::Wait::Stopped;
+            view.waitingWord = "not playing";
+        } else if (facts.cdjFollowed != 0) {
+            view.wait = TimingView::Wait::Coming;
+            view.waitingWord = "no beats";
+        } else if (facts.cdjLeaders >= 2) {
+            view.waitingWord = "pick a deck";
             view.reading = waitedFor + " \xE2\x80\x94 pick one under follow";
-        }
-        if (facts.cdjFollow == 0 && facts.cdjMasterWithoutBeats) {
+        } else if (facts.cdjMasterWithoutBeats) {
             // A master with a track rekordbox has not analysed, or a CD: it leads nothing.
+            view.waitingWord = "no beat grid";
             view.note = "the master's track has no beat grid, so it sends no beats";
+        } else {
+            view.wait = TimingView::Wait::Stopped;
+            view.waitingWord = "no deck";
         }
     } else {
         view.reading = "following " + playerName(facts.cdjFollowed) + dot + bpm;
@@ -258,6 +275,11 @@ TimingView describeTiming(const TimingFacts& facts) {
                                : std::to_string(facts.peersHeard) +
                                      (facts.peersHeard == 1 ? " peer" : " peers") +
                                      " seen \xC2\xB7 " + fixed(facts.heardBpm, 2) + " BPM";
+        } else if (!facts.ready) {
+            // START is greyed out until there is one, and nothing else said why.
+            view.waiting = true;
+            view.wait = TimingView::Wait::Coming;
+            view.reading = "pick the clock's input";
         }
         return view;
     }
@@ -274,13 +296,42 @@ TimingView describeTiming(const TimingFacts& facts) {
     }
     const std::string bpm = fixed(facts.state.rawBpm, 2) + " BPM";
     if (link) {
+        using Phase = timing::LinkFollower::Phase;
         const std::string peers =
             facts.peers == 1 ? std::string("1 peer") : std::to_string(facts.peers) + " peers";
-        view.reading = view.waiting ? "no peers \xE2\x80\x94 waiting for a Link session"
-                                    : peers + " \xC2\xB7 " + bpm;
-        view.detail = view.waiting ? "waiting for a Link session"
-                                   : peers + " \xC2\xB7 " + std::to_string(view.beatsPerBar) +
-                                         " beats to the bar";
+        if (facts.coasting) {
+            view.reading = "no peers \xE2\x80\x94 coasting at " + bpm;
+            view.detail = "the session has gone";
+        } else if (!view.waiting) {
+            view.reading = peers + " \xC2\xB7 " + bpm;
+            view.detail =
+                peers + " \xC2\xB7 " + std::to_string(view.beatsPerBar) + " beats to the bar";
+        } else if (!facts.canListen) {
+            view.waitingWord = "cannot listen";
+            view.reading = "cannot listen for Link sessions";
+            view.detail = "cannot listen for Link sessions";
+            view.problem = facts.linkProblem;
+        } else if (facts.linkPhase != Phase::Listening) {
+            // Joined or joining: a session's own count, which takes a moment to come.
+            view.wait = TimingView::Wait::Coming;
+            view.waitingWord = "joining";
+            view.reading = "joining the Link session\xE2\x80\xA6";
+            view.detail = "joining the Link session";
+        } else if (facts.peers == 0) {
+            view.reading = "no Link session heard \xE2\x80\x94 waiting for one";
+            view.detail = "no Link session heard";
+        } else if (facts.linkFailedJoins > 0 && facts.linkRetryIn > 0.0) {
+            // Heard and not reached (a firewall, another subnet): said, with when it tries again.
+            view.waitingWord = "not reached";
+            view.reading = peers + " heard, not reached \xE2\x80\x94 trying again in " +
+                           fixed(facts.linkRetryIn, 0) + " s";
+            view.detail = peers + " heard, not reached";
+        } else {
+            view.wait = TimingView::Wait::Coming;
+            view.waitingWord = "joining";
+            view.reading = peers + " heard \xE2\x80\x94 joining\xE2\x80\xA6";
+            view.detail = peers + " heard, joining";
+        }
         return view;
     }
     const std::string port = facts.port.empty() ? std::string("no port") : facts.port;
@@ -291,14 +342,21 @@ TimingView describeTiming(const TimingFacts& facts) {
         view.detail = port + " \xC2\xB7 not plugged in";
         view.waitingWord = "unplugged";
     } else if (facts.stopObeyed) {
-        view.reading = "stopped \xE2\x80\x94 waiting for Start or Continue";
+        view.wait = TimingView::Wait::Stopped;
+        view.waitingWord = "stopped";
+        view.reading = "stopped \xE2\x80\x94 waiting for Start";
         view.detail = port + " \xC2\xB7 stopped";
     } else if (facts.coasting) {
         view.reading = "no clock \xE2\x80\x94 coasting at " + bpm;
         view.detail = port + " \xC2\xB7 clock stopped";
     } else if (view.waiting) {
+        if (facts.ticking) {
+            view.wait = TimingView::Wait::Coming;
+            view.waitingWord = "measuring";
+        }
+        // The port is named in the picker beside it; the reading has the row's width left over.
         view.reading = facts.ticking ? "ticking \xE2\x80\x94 measuring the tempo"
-                                     : "no clock \xE2\x80\x94 waiting for one on " + port;
+                                     : "no clock \xE2\x80\x94 waiting for one";
         view.detail = port + (facts.ticking ? " \xC2\xB7 measuring" : " \xC2\xB7 no clock");
     } else {
         view.reading = "ticking \xC2\xB7 " + bpm;
@@ -306,7 +364,7 @@ TimingView describeTiming(const TimingFacts& facts) {
         if (!facts.placed) {
             // A DJ mixer's clock gives the tempo and no beat: until a Start, the beats are
             // nobody's, and DOWNBEAT is what puts them on the music.
-            view.note = "no start received \xE2\x80\x94 press downbeat on the beat";
+            view.note = "no start received \xE2\x80\x94 press downbeat on the one";
         }
     }
     view.stripTicks = facts.ticking && !facts.coasting ? static_cast<int>(facts.tickInBeat) + 1 : 0;
@@ -350,7 +408,9 @@ void publishTimingView(MainWindow& window, const TimingView& view) {
     window.set_timing_reading(slint::SharedString(view.reading));
     window.set_timing_detail(slint::SharedString(view.detail));
     window.set_timing_note(slint::SharedString(view.note));
+    window.set_timing_problem(slint::SharedString(view.problem));
     window.set_timing_waiting(view.waiting);
+    window.set_timing_wait_tone(static_cast<int>(view.wait));
     window.set_timing_waiting_word(slint::SharedString(view.waitingWord));
     window.set_timing_coasting(view.coasting);
     window.set_strip_beat(view.stripBeat);

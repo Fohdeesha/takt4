@@ -51,6 +51,11 @@ struct ShotOptions {
     /// Draw PANIC engaged, with RELEASE beside it (the main window) or over the preset menu (the
     /// rule editor).
     bool panicked = false;
+    /// The main window: so many beats to the bar in the tempo banner, 0 for whatever the state
+    /// has; and the settings file's autosave held (a file written by a newer takt4), said beside
+    /// SAVE.
+    int beatsPerBar = 0;
+    bool autosaveHeld = false;
     /// With `--rules`, one of the rule editor's other states, as the locked design's pictures show
     /// them (the design, `the approved design`): "message" (the editor's
     /// own message under the top row), "onset" (a fast "when", its cooldown live), "log" (the log

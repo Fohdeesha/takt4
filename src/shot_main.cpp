@@ -19,6 +19,7 @@ void printUsage(std::ostream& out) {
            "\n"
            "  takt4-shot OUT.bmp [--size WxH] [--scale S] [--stopped | --trouble]\n"
            "                     [--mockup] [--fold inputs,outputs] [--panicked]\n"
+           "                     [--beats N] [--held]\n"
            "                     [--rules [--dmx] [--state NAME] | --fixtures | --about |\n"
            "                      --widgets]\n"
            "\n"
@@ -34,6 +35,8 @@ void printUsage(std::ostream& out) {
            "                  pictures over each other\n"
            "  --fold WHICH    draw inputs, outputs or both (inputs,outputs) folded\n"
            "  --panicked      draw PANIC engaged, with RELEASE beside it\n"
+           "  --beats N       N beats to the bar in the tempo banner, 1 to 16\n"
+           "  --held          the settings file's autosave held until SAVE, said beside it\n"
            "  --rules         draw the rule editor instead of the main window\n"
            "  --dmx           with --rules, its lighting half rather than the OSC one\n"
            "  --state NAME    with --rules, another of its states: message, onset, beat,\n"
@@ -41,7 +44,13 @@ void printUsage(std::ostream& out) {
            "                  the Liberation prompt: liberation, liberation-4,\n"
            "                  liberation-clash, liberation-warning; with --fixtures: par,\n"
            "                  none, message; and\n"
-           "                  for the main window: halved, apart, frozen\n"
+           "                  for the main window: halved, apart, frozen, and where\n"
+           "                  the beats come from: link, link-alone, link-joining,\n"
+           "                  link-unreached, midi, midi-nostart, midi-coasting,\n"
+           "                  midi-gone, midi-stopped, midi-measuring, midi-noport, cdj,\n"
+           "                  cdj-nomaster, cdj-coasting, cdj-joining, cdj-pick,\n"
+           "                  cdj-blocked: running,\n"
+           "                  or with --stopped the source picked before START\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
            "  --widgets       draw one of each of the main window's controls, in each state\n"
@@ -86,6 +95,22 @@ int main(int argc, char** argv) {
             options.mockup = true;
         } else if (arg == "--panicked") {
             options.panicked = true;
+        } else if (arg == "--held") {
+            options.autosaveHeld = true;
+        } else if (arg == "--beats") {
+            if (i + 1 >= argc) {
+                std::cerr << "takt4-shot: --beats needs a number of beats to the bar, 1 to 16\n";
+                return 2;
+            }
+            try {
+                options.beatsPerBar = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                options.beatsPerBar = 0;
+            }
+            if (options.beatsPerBar < 1 || options.beatsPerBar > 16) {
+                std::cerr << "takt4-shot: --beats is 1 to 16\n";
+                return 2;
+            }
         } else if (arg == "--state") {
             if (i + 1 >= argc) {
                 std::cerr << "takt4-shot: --state needs a name; see --help\n";

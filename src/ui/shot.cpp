@@ -902,8 +902,9 @@ void fillAsMockup(MainWindow& window) {
 }
 
 /// Whether `state` is one of the window's states following a source rather than the audio:
-/// `link`, `link-alone`, `midi`, `midi-nostart`, `midi-coasting`, `midi-gone`, `cdj`,
-/// `cdj-nomaster`, `cdj-coasting`.
+/// `link`, `link-alone`, `link-joining`, `link-unreached`, `midi`, `midi-nostart`,
+/// `midi-coasting`, `midi-gone`, `midi-stopped`, `midi-measuring`, `midi-noport`, `cdj`,
+/// `cdj-nomaster`, `cdj-coasting`, `cdj-joining`, `cdj-pick`, `cdj-blocked`.
 bool followingState(const std::string& state) {
     return state.rfind("link", 0) == 0 || state.rfind("midi", 0) == 0 || state.rfind("cdj", 0) == 0;
 }
@@ -913,8 +914,13 @@ bool followingState(const std::string& state) {
 /// a DJ mixer's MIDI clock: started (`midi`), ticking with no Start yet (`midi-nostart`), gone a
 /// second ago and coasted (`midi-coasting`), and gone for good (`midi-gone`). Following the CDJs:
 /// player 2 the master and followed (`cdj`), nobody master and playing (`cdj-nomaster`), and the
-/// master paused a moment ago (`cdj-coasting`). `running` false is the source picked and START not
-/// yet pressed.
+/// master paused a moment ago (`cdj-coasting`). And the source on its way or stopped: Link's peers
+/// heard and the session being joined (`link-joining`), or heard and not reached
+/// (`link-unreached`); a DAW's Stop obeyed (`midi-stopped`); a clock ticking whose tempo is still
+/// being measured (`midi-measuring`); the CDJs being joined (`cdj-joining`); two decks playing and
+/// neither the master (`cdj-pick`); and the CDJs' port held by rekordbox (`cdj-blocked`). `running`
+/// false is the source picked and START not yet pressed
+/// — and `midi-noport` is that, with no input picked for the clock.
 void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
                    const std::string& state, bool running) {
     const bool link = state.rfind("link", 0) == 0;
@@ -922,6 +928,17 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     const bool gone = state == "link-alone" || state == "midi-gone" || state == "cdj-nomaster";
     const bool coasting = state == "midi-coasting" || state == "cdj-coasting";
     const bool unplaced = state == "midi-nostart";
+    const bool linkHeard = state == "link-joining" || state == "link-unreached";
+    const bool clockStopped = state == "midi-stopped";
+    const bool measuring = state == "midi-measuring";
+    const bool noPort = state == "midi-noport";
+    const bool cdjJoining = state == "cdj-joining";
+    const bool cdjPick = state == "cdj-pick";
+    const bool cdjBlocked = state == "cdj-blocked";
+    // Waiting for the source, one way or another: no beats in the meantime.
+    const bool waiting =
+        linkHeard || clockStopped || measuring || cdjJoining || cdjPick || cdjBlocked;
+    running = running && !noPort;
     const double bpm = link ? 127.98 : cdj ? 126.00 : 127.90;
     const char* const mixer = "DJM-A9";
 
@@ -936,7 +953,7 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     }
     // The source's own state, as the follower publishes it (`timing::BeatGrid`): locked while it
     // is there and through a coast, a bar of four — its beat unknown until a Start places it.
-    const bool beating = running && !gone;
+    const bool beating = running && !gone && !waiting;
     tracking::TempoState tempo;
     tempo.beatsPerBar = 4;
     tempo.refined = true;
@@ -966,20 +983,41 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     facts.peersHeard = 3; // Link, before START: heard, not joined
     facts.heardBpm = bpm;
     facts.peers = gone ? 0 : 3;
-    facts.port = mixer;
-    facts.ticking = running && !gone && !coasting;
+    if (state == "link-unreached") {
+        // Heard and joined twice with nobody reached: the next try in eight seconds.
+        facts.linkFailedJoins = 2;
+        facts.linkRetryIn = 8.0;
+    }
+    facts.port = noPort ? std::string() : std::string(mixer);
+    facts.ready = !noPort;
+    facts.ticking = running && !gone && !coasting && !clockStopped;
+    facts.stopObeyed = clockStopped;
+    facts.obey = clockStopped;
     facts.placed = !unplaced;
     facts.tickInBeat = 13;
     // The CDJs: three players and a DJM heard, takt4 joined as player 7 once started, player 2
     // the master.
     facts.cdjPlayers = 3;
     facts.cdjMixers = 1;
-    facts.cdjJoined = running;
+    facts.cdjJoined = running && !cdjJoining;
     facts.cdjNumber = 7;
-    facts.cdjMaster = gone ? 0 : 2;
-    facts.cdjFollowed = gone ? 0 : 2;
+    facts.cdjMaster = gone || cdjPick ? 0 : 2;
+    facts.cdjFollowed = gone || cdjPick ? 0 : 2;
+    facts.cdjLeaders = cdjPick ? 2 : 0;
+    if (cdjBlocked) {
+        // What `Network::open` says when the port is taken, word for word.
+        facts.cdjProblem = "cannot listen for CDJs: port 50000 is in use by another program "
+                           "(10048) \xE2\x80\x94 is rekordbox running on this computer?";
+        facts.cdjJoined = false;
+    }
     facts.cdjInterface = running ? "Ethernet 2 \xC2\xB7 169.254.20.7" : "";
     publishTimingView(window, describeTiming(facts));
+    if (link) {
+        // The Link output's own count is the session followed: the three the row says while it is
+        // followed, none before it is joined — not the two the audio states' filler shows.
+        window.set_link_peers(beating ? 3 : 0);
+        window.set_link_peers_shown(false);
+    }
     if (cdj) {
         (void)publishCdjFollow(window, {{1, "CDJ-3000"}, {2, "CDJ-3000"}, {3, "CDJ-3000"}}, 0);
     }
@@ -989,15 +1027,16 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     // The clock's inputs as the window lists them, the mixer among them.
     std::vector<std::string> inputs = output::listMidiInputPorts();
     inputs.push_back(mixer);
-    publishClockPorts(window, inputs, mixer);
+    publishClockPorts(window, inputs, noPort ? std::string() : std::string(mixer));
     window.set_tap_count(0);
+    // What START needs, as `WindowController::sayHowToStart` says it: the clock's input in amber.
+    window.set_status_is_error(noPort);
+    // As the window says them (`WindowController::sayHowToStart`, `timingName`).
+    const std::string name = link ? "Ableton Link" : cdj ? "CDJs" : "MIDI clock";
     window.set_status(slint::SharedString(
-        !running ? std::string("press Start to follow ") + (link  ? "Ableton Link."
-                                                            : cdj ? "the CDJs."
-                                                                  : "the MIDI clock.")
-        : link   ? std::string("following Ableton Link — audio not in use")
-        : cdj    ? std::string("following CDJs — audio not in use")
-                 : "following the MIDI clock on " + std::string(mixer) + " — audio not in use"));
+        noPort     ? std::string("Pick the MIDI input the clock comes in on, then press Start.")
+        : !running ? "press Start to follow " + name + "."
+                   : "following " + name + "."));
     if (!link && !cdj && running) {
         // A MIDI clock out to the mixer the clock comes in from, which could go round in a loop:
         // refused, and the row says why.
@@ -1037,8 +1076,10 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
         // Beat 2 of its bar first, counting back.
         const bool downbeat = !unplaced && (k % 4) == 1;
         const auto column = static_cast<std::size_t>(std::lround(at));
+        // Coasting, the newest two were run on at the last tempo: the source went before them.
+        const bool coasted = coasting && k < 2;
         for (std::size_t c = column; c <= column + 1 && c < trace.row_count(); ++c) {
-            trace.set_row_data(c, TracePoint{1.0f, downbeat ? 1.0f : 0.0f, true});
+            trace.set_row_data(c, TracePoint{1.0f, downbeat ? 1.0f : 0.0f, true, coasted});
         }
     }
 }
@@ -1374,11 +1415,11 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_osc_control_reading_words(true);
         window->set_status(slint::SharedString("pick an input and press Start."));
     }
+    window->set_status_is_error(false);
     // The timing input's states: following a source rather than the audio.
     if (followingState(options.state)) {
         fillFollowing(*window, *traceModel, options.state, options.running);
     }
-    window->set_status_is_error(false);
     if (options.mockup && options.running) {
         fillAsMockup(*window);
     }
@@ -1400,6 +1441,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     window->set_inputs_folded(options.foldInputs);
     window->set_outputs_folded(options.foldOutputs);
     window->set_panicked(options.panicked);
+    window->set_autosave_held(options.autosaveHeld);
+    if (options.beatsPerBar > 0) {
+        window->set_beats_per_bar(options.beatsPerBar);
+    }
     // As the real app does it: the build belongs in the title bar and the status bar's
     // corner, where a status cannot take it away. A screenshot that did not carry it would
     // be a picture with no way of saying which build it is a picture of.

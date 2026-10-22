@@ -2148,6 +2148,11 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     const std::string trouble(controller.window().get_input_trouble());
     INFO(trouble);
     CHECK(trouble.find("In 11 and In 12 are out of phase") != std::string::npos);
+    // What to do before why: under the meter the end of it was cut off, and it was the remedy —
+    // which named mono, locked while the input runs.
+    const std::size_t remedy = trouble.find("stop, then tick mono");
+    CHECK(remedy != std::string::npos);
+    CHECK(remedy < trouble.find("cancel the kick"));
     const std::string status(controller.window().get_status());
     INFO(status);
     CHECK(status.find("out of phase") != std::string::npos);
@@ -4599,6 +4604,7 @@ TEST_CASE("a settings file held from the autosave is kept saved from the first S
     };
     controller.holdAutosave(file, 0.0);
     CHECK_FALSE(controller.autosaving());
+    CHECK(controller.window().get_autosave_held());
 
     takt4::trigger::Rule::Config strobe;
     strobe.id = "strobe";
@@ -4612,6 +4618,7 @@ TEST_CASE("a settings file held from the autosave is kept saved from the first S
     // SAVE writes over it, as the start said it would, and from then on it is kept saved.
     REQUIRE(controller.saveNow());
     CHECK(controller.autosaving());
+    CHECK_FALSE(controller.window().get_autosave_held());
     CHECK(takt4::settings::load(file).preset.rules.size() == 1);
     controller.window().invoke_fold_min_changed(91.0f);
     for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
@@ -7046,7 +7053,9 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     };
     std::string licence;
     std::string notices;
-    for (float y = 280.0f; y < 440.0f && (licence.empty() || notices.empty()); y += 6.0f) {
+    // Down to 480: the description above them is three lines since it names the followed sources.
+    // CLOSE is at the bottom right, far below and to the right of this.
+    for (float y = 280.0f; y < 480.0f && (licence.empty() || notices.empty()); y += 6.0f) {
         for (float x = 30.0f; x < 560.0f && (licence.empty() || notices.empty()); x += 20.0f) {
             opened.clear();
             clickAt(about.window(), x, y);
@@ -7820,11 +7829,14 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     REQUIRE(banner.size() == 3);
     CHECK(banner[1] == top[4]);
     CHECK(banner[2] == top[5]);
-    // CHANGE, at the box's right end; the source's name and the words, which are not controls.
-    click(banner[0].second - 30, topRow);
-    click(banner[0].first + 50, topRow);
-    click(banner[0].first + 200, topRow);
-    expect({"timing-change"}, "CHANGE, then the words in the banner");
+    // CHANGE, at the box's right end — and, stopped, the box it is in: the source's name and the
+    // words. Each opens the timing list, which a click on the background closes (Escape is
+    // PANIC's), so the next click is a click and not the list closing.
+    for (const int x : {banner[0].second - 30, banner[0].first + 50, banner[0].first + 200}) {
+        click(x, topRow);
+        background();
+    }
+    expect({"timing-change", "timing-change", "timing-change"}, "CHANGE, and the box it is in");
     click(middleOf(banner[2]), topRow);
     expect({"toggle-run"}, "START, following");
 
@@ -7850,8 +7862,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     const int howRow = followRow + 44;
     const auto how = occupied(shot, howRow - 17, howRow + 16, 20, kWidth - 20, kSheet, 5);
     INFO("following, the row under it: " << spans(how));
-    // "beats per bar", its box, the obey box and its words.
-    REQUIRE(how.size() == 4);
+    // "beats per bar", its box, the obey box and its words, and the hint about it at the right.
+    REQUIRE(how.size() == 5);
     click(middleOf(how[1]), howRow);
     takt4::tests::endOfText(handle);
     key("\x08");
@@ -8808,8 +8820,10 @@ TEST_CASE("where the beats come from is picked with the pointer, and the window 
     // And back, by the same picker, two steps up: the audio pickers come back.
     const auto following = inputsRow(controller, 73, y);
     INFO("timing row, following: " << spans(following));
-    // timing, from, the picker, port, the port's picker.
-    REQUIRE(following.size() == 5);
+    // timing, from, the picker, port, the port's picker — and, no input picked for the clock,
+    // what START needs.
+    REQUIRE(following.size() == 6);
+    CHECK(std::string(controller.window().get_timing_reading()) == "pick the clock's input");
     clickAt(window, middleOf(following[2]), static_cast<float>(y));
     slint::platform::update_timers_and_animations();
     press(window, kUp);
@@ -8965,8 +8979,8 @@ TEST_CASE("the beats-per-bar box takes a number when it is clicked away from, an
     int y = 0;
     const auto how = inputsRow(controller, 73 + 44, y);
     INFO("the row under the timing row: " << spans(how));
-    // "beats per bar", its box, the obey box and its words.
-    REQUIRE(how.size() == 4);
+    // "beats per bar", its box, the obey box and its words, and the hint about it at the right.
+    REQUIRE(how.size() == 5);
     clickAt(window, middleOf(how[1]), static_cast<float>(y));
     takt4::tests::endOfText(window);
     press(window, "\x08");
@@ -9153,7 +9167,7 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     facts.canListen = true;
     takt4::ui::TimingView view = describeTiming(facts);
     CHECK(view.waiting);
-    CHECK(view.reading == "no peers \xE2\x80\x94 waiting for a Link session");
+    CHECK(view.reading == "no Link session heard \xE2\x80\x94 waiting for one");
     facts.state.locked = true;
     facts.state.rawBpm = 128.0;
     facts.state.beatInBar = 3;
@@ -9179,7 +9193,7 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     view = describeTiming(facts);
     CHECK(view.reading == "ticking \xC2\xB7 127.90 BPM");
     CHECK(view.detail == "DJM-A9 \xC2\xB7 no start yet");
-    CHECK(view.note == "no start received \xE2\x80\x94 press downbeat on the beat");
+    CHECK(view.note == "no start received \xE2\x80\x94 press downbeat on the one");
     CHECK(view.stripTicks == 14);
     facts.placed = true;
     view = describeTiming(facts);
@@ -9194,10 +9208,10 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     CHECK(view.stripTicks == 0);
     facts.coasting = false;
     facts.stopObeyed = true;
-    CHECK(describeTiming(facts).reading == "stopped \xE2\x80\x94 waiting for Start or Continue");
+    CHECK(describeTiming(facts).reading == "stopped \xE2\x80\x94 waiting for Start");
     facts.stopObeyed = false;
     facts.state.locked = false;
-    CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one on DJM-A9");
+    CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one");
     // Its device pulled out: not "waiting for one", which nothing
     // would ever bring — said not to be plugged in, whatever else the clock was doing.
     facts.portLost = true;
@@ -9365,8 +9379,7 @@ TEST_CASE("the CDJs are picked with the pointer: the follow list fills with the 
     REQUIRE(choices->row_count() == 2);
     CHECK(std::string(*choices->row_data(0)) == "tempo master");
     CHECK(std::string(*choices->row_data(1)) == "player 2 \xC2\xB7 CDJ-3000");
-    CHECK(std::string(controller.window().get_timing_reading()) ==
-          "1 player, 1 mixer heard \xC2\xB7 not joined until Start");
+    CHECK(std::string(controller.window().get_timing_reading()) == "1 player, 1 mixer heard");
     CHECK(std::string(controller.window().get_timing_network()) == "picked when a CDJ is heard");
 
     // The row: timing, from, the picker, follow, the follow picker, and the reading.
@@ -9562,7 +9575,10 @@ TEST_CASE("the CDJs' port held by another program is said on the timing row in t
         controller.tick();
         const std::string reading(controller.window().get_timing_reading());
         INFO(reading);
-        CHECK(reading == "cannot listen for CDJs: not listening for CDJs in the test sandbox");
+        CHECK(reading == "cannot listen for CDJs");
+        // And the whole of why on its own line.
+        CHECK(std::string(controller.window().get_timing_problem()) ==
+              "cannot listen for CDJs: not listening for CDJs in the test sandbox");
         CHECK(controller.window().get_timing_waiting());
     }
     SECTION("a port another program has") {
@@ -9573,10 +9589,11 @@ TEST_CASE("the CDJs' port held by another program is said on the timing row in t
         controller.useCdjNetworkForTests(config);
         controller.pickTiming(3);
         controller.tick();
-        const std::string reading(controller.window().get_timing_reading());
-        INFO(reading);
-        CHECK(reading.find("is in use by another program") != std::string::npos);
-        CHECK(reading.find("rekordbox") != std::string::npos);
+        const std::string problem(controller.window().get_timing_problem());
+        INFO(problem);
+        CHECK(std::string(controller.window().get_timing_reading()) == "cannot listen for CDJs");
+        CHECK(problem.find("is in use by another program") != std::string::npos);
+        CHECK(problem.find("rekordbox") != std::string::npos);
         CHECK(controller.window().get_timing_waiting());
         controller.toggleRun();
         CHECK_FALSE(controller.followed().running());
@@ -9639,15 +9656,22 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     CHECK_FALSE(view.waiting);
     facts.cdjPlayers = 3;
     facts.cdjMixers = 1;
-    CHECK(describeTiming(facts).reading ==
-          "3 players, 1 mixer heard \xC2\xB7 not joined until Start");
+    CHECK(describeTiming(facts).reading == "3 players, 1 mixer heard");
     facts.cdjPlayers = 1;
     facts.cdjMixers = 0;
-    CHECK(describeTiming(facts).reading == "1 player heard \xC2\xB7 not joined until Start");
+    CHECK(describeTiming(facts).reading == "1 player heard");
+    // A card picked in the settings file: seen, where it was not anywhere.
+    CHECK(describeTiming(facts).network == "picked when a CDJ is heard");
+    facts.cdjSavedCard = "169.254.20.7";
+    CHECK(describeTiming(facts).network == "the card on 169.254.20.7, from the settings file");
+    facts.cdjSavedCard.clear();
     facts.cdjProblem = "cannot listen for CDJs: port 50000 is in use by another program";
     view = describeTiming(facts);
-    CHECK(view.reading == facts.cdjProblem);
+    // A few words on the row, the whole of it on a line of its own under the rows.
+    CHECK(view.reading == "cannot listen for CDJs");
+    CHECK(view.problem == facts.cdjProblem);
     CHECK(view.waiting); // in the alarm colour, stopped or not
+    CHECK(view.wait == takt4::ui::TimingView::Wait::Absent);
 
     // Running: joining, then following, coasting, waiting for a master.
     facts.cdjProblem.clear();
@@ -9684,13 +9708,17 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     facts.state.locked = false;
     view = describeTiming(facts);
     CHECK(view.waiting);
-    CHECK(view.waitingWord == "no beats");
+    // The deck asked for, paused: the DJ's to start, grey as a quiet room is, not a fault.
+    CHECK(view.waitingWord == "not playing");
+    CHECK(view.wait == takt4::ui::TimingView::Wait::Stopped);
     CHECK(view.reading == "player 3 not playing \xE2\x80\x94 waiting");
     facts.cdjFollow = 0;
     facts.cdjFollowed = 0;
     facts.cdjMasterWithoutBeats = true;
     view = describeTiming(facts);
-    CHECK(view.waitingWord == "no deck");
+    // The master playing a track with no grid leads nothing: a fault to put right, in red.
+    CHECK(view.waitingWord == "no beat grid");
+    CHECK(view.wait == takt4::ui::TimingView::Wait::Absent);
     CHECK(view.reading == "no deck playing \xE2\x80\x94 waiting");
     CHECK(view.note == "the master's track has no beat grid, so it sends no beats");
     CHECK(view.stripLabel.empty());
@@ -9840,4 +9868,488 @@ TEST_CASE("what the window says about the CDJs while joining, with nothing comin
     facts.cdjMasterWithoutBeats = true;
     CHECK(describeTiming(facts).note ==
           "the master's track has no beat grid, so it sends no beats");
+}
+
+// --- the timing row's colours, its CHANGE and its words (2026-10-22) ----------------------------
+
+namespace {
+
+/// The alarm's own pixels (#ff5646) and the amber's (#ffb541) in a part of a picture.
+struct Coloured {
+    int alarm = 0;
+    int amber = 0;
+};
+
+Coloured coloured(const takt4::tests::Shot& shot, int y0, int y1, int x0, int x1) {
+    Coloured seen;
+    for (int y = std::max(0, y0); y < std::min(shot.height, y1); ++y) {
+        for (int x = std::max(0, x0); x < std::min(shot.width, x1); ++x) {
+            seen.alarm += shot.is(x, y, 0xff, 0x56, 0x46) ? 1 : 0;
+            seen.amber += shot.is(x, y, 0xff, 0xb5, 0x41) ? 1 : 0;
+        }
+    }
+    return seen;
+}
+
+} // namespace
+
+TEST_CASE("a followed source is red only when it is not there: a stop obeyed is grey, one on its "
+          "way amber",
+          "[ui][follow]") {
+    // A DAW's Stop, obeyed, turned the banner, the timing row and the folded inputs heading the
+    // alarm red, as an unplugged clock does; so did a clock's first beats while its tempo was
+    // measured, Link's peers being joined, and the CDJs at every START. Counted on the picture:
+    // the alarm's own pixels and the amber's in the banner's right half — the state word and its
+    // dot — on the timing row's right, where the reading is, and on the folded heading right of
+    // its number, which is the same red and is not counted.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window();
+    struct Drawn {
+        Coloured banner;
+        Coloured row;
+        Coloured heading;
+    };
+    const auto drawn = [&](const takt4::ui::TimingFacts& facts) {
+        window.set_running(facts.running);
+        takt4::ui::publishTimingView(window, takt4::ui::describeTiming(facts));
+        window.set_inputs_folded(false);
+        takt4::tests::Shot shot = takt4::tests::render(window, 800, 1480);
+        std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        Drawn out;
+        out.banner = coloured(shot, sheets[1].first, sheets[1].second, 400, 800);
+        const int row = static_cast<int>(window.get_timing_row_y());
+        out.row = coloured(shot, row, row + 34, 400, 800);
+        window.set_inputs_folded(true);
+        shot = takt4::tests::render(window, 800, 1480);
+        sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        out.heading = coloured(shot, sheets[4].first, sheets[4].second, 100, 740);
+        window.set_inputs_folded(false);
+        return out;
+    };
+
+    takt4::ui::TimingFacts clock;
+    clock.index = 2;
+    clock.running = true;
+    clock.port = "DJM-A9";
+    clock.obey = true;
+    {
+        INFO("no clock at all: red, wherever it is said");
+        const Drawn none = drawn(clock);
+        CHECK(none.banner.alarm > 0);
+        CHECK(none.row.alarm > 0);
+        CHECK(none.heading.alarm > 0);
+    }
+    clock.stopObeyed = true;
+    {
+        INFO("the DAW's Stop, obeyed: grey, not one pixel of the alarm or the amber");
+        const Drawn stopped = drawn(clock);
+        CHECK(stopped.banner.alarm == 0);
+        CHECK(stopped.banner.amber == 0);
+        CHECK(stopped.row.alarm == 0);
+        CHECK(stopped.row.amber == 0);
+        CHECK(stopped.heading.alarm == 0);
+    }
+    clock.stopObeyed = false;
+    clock.ticking = true;
+    {
+        INFO("ticking, its tempo being measured: amber, and the heading not red");
+        const Drawn measuring = drawn(clock);
+        CHECK(measuring.banner.alarm == 0);
+        CHECK(measuring.banner.amber > 0);
+        CHECK(measuring.row.alarm == 0);
+        CHECK(measuring.row.amber > 0);
+        CHECK(measuring.heading.alarm == 0);
+    }
+
+    takt4::ui::TimingFacts cdjs;
+    cdjs.index = 3;
+    cdjs.running = true;
+    cdjs.cdjPlayers = 2;
+    {
+        INFO("the CDJs being joined at START: amber");
+        const Drawn joining = drawn(cdjs);
+        CHECK(joining.banner.alarm == 0);
+        CHECK(joining.banner.amber > 0);
+        CHECK(joining.heading.alarm == 0);
+    }
+    cdjs.cdjJoined = true;
+    {
+        INFO("joined, and no deck playing: the DJ's pause, grey");
+        const Drawn paused = drawn(cdjs);
+        CHECK(paused.banner.alarm == 0);
+        CHECK(paused.banner.amber == 0);
+        CHECK(paused.heading.alarm == 0);
+    }
+
+    takt4::ui::TimingFacts link;
+    link.index = 1;
+    link.running = true;
+    link.peers = 3;
+    {
+        INFO("Link: three peers heard, the session being joined — amber, not 'no peers' in red");
+        const Drawn joining = drawn(link);
+        CHECK(joining.banner.alarm == 0);
+        CHECK(joining.banner.amber > 0);
+        CHECK(joining.row.alarm == 0);
+    }
+    link.peers = 0;
+    {
+        INFO("Link: nobody heard at all — red");
+        const Drawn alone = drawn(link);
+        CHECK(alone.banner.alarm > 0);
+        CHECK(alone.row.alarm > 0);
+    }
+}
+
+TEST_CASE("CHANGE brings the timing row into view with its list open, and is not there while "
+          "running",
+          "[ui][follow]") {
+    // CHANGE only unfolded the inputs: with them open, or the window scrolled, it did nothing at
+    // all, and while running it sat beside "stop to change" and led to a picker that would not
+    // open. Here the window is short, so the row is below the fold; CHANGE is clicked where the
+    // picture puts it, and the keys that follow pick from the list it opened.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 120.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    controller.tick();
+    // Folded, as a window opens: CHANGE has to unfold the section too.
+    REQUIRE(controller.window().get_inputs_folded());
+    const int height = 520;
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, height);
+    window.dispatch_window_active_changed_event(true);
+    REQUIRE(controller.window().get_timing_row_y() > static_cast<float>(height));
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE_FALSE(sheets.empty());
+    const int topRow = sheets[0].first + 48;
+    const auto banner = occupied(shot, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+    INFO("following, stopped, top bar: " << spans(banner));
+    REQUIRE(banner.size() == 3);
+
+    clickAt(window, static_cast<float>(banner[0].second - 30), static_cast<float>(topRow));
+    slint::platform::update_timers_and_animations();
+    CHECK_FALSE(controller.window().get_inputs_folded());
+    const float y = controller.window().get_timing_row_y();
+    INFO("the timing row, after CHANGE, at y " << y);
+    CHECK(y >= 0.0f);
+    CHECK(y + 34.0f <= static_cast<float>(height));
+    // Its list open: one step down is the MIDI clock.
+    press(window, kDown);
+    press(window, "\n");
+    controller.tick();
+    CHECK(controller.timingIndex() == 2);
+
+    // Running: the box is the source's name and words, and START's STOP; no CHANGE.
+    controller.pickTiming(1);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    controller.tick();
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.rfind("following ", 0) == 0);
+        CHECK(said.find("audio not in use") == std::string::npos);
+    }
+    // Rendered tall, where the window has nothing to scroll: CHANGE left it scrolled down to the
+    // timing row, and at the short height the picture is of that row and not of the bar — where
+    // there is nothing at the box's right end whether CHANGE is drawn or not.
+    const takt4::tests::Shot running = takt4::tests::render(controller.window(), 800, 1480);
+    const std::vector<std::pair<int, int>> runningSheets = sheetsDown(running);
+    REQUIRE_FALSE(runningSheets.empty());
+    REQUIRE(runningSheets[0].first == sheets[0].first);
+    const auto runningBanner = occupied(running, topRow - 20, topRow + 20, 20, 780, kSheet, 5);
+    INFO("following, running, top bar: " << spans(runningBanner));
+    REQUIRE_FALSE(runningBanner.empty());
+    CHECK(runningBanner[0].first == banner[0].first);
+    // The box, "stop to change", STOP — and nothing in the box at its right end.
+    const auto inBox = occupied(running, topRow - 12, topRow + 12, banner[0].second - 80,
+                                banner[0].second - 4, kSheet, 5);
+    CHECK(inBox.empty());
+    // A click where CHANGE was does nothing, the list staying shut.
+    clickAt(window, static_cast<float>(banner[0].second - 30), static_cast<float>(topRow));
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, "\n");
+    controller.tick();
+    CHECK(controller.timingIndex() == 1);
+    controller.toggleRun();
+    controller.followForTests(nullptr);
+}
+
+TEST_CASE("a MIDI clock with no input picked says what START needs, in amber, until one is",
+          "[ui][follow]") {
+    // START is greyed out until the clock has an input, and the status line said "press Start" —
+    // which could not be done. Said instead, and on the row, in amber.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.window().set_inputs_folded(false);
+    controller.pickTiming(2);
+    controller.tick();
+    CHECK_FALSE(controller.window().get_timing_ready());
+    CHECK(std::string(controller.window().get_status()) ==
+          "Pick the MIDI input the clock comes in on, then press Start.");
+    CHECK(std::string(controller.window().get_timing_reading()) == "pick the clock's input");
+    {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+        const int row = static_cast<int>(controller.window().get_timing_row_y());
+        CHECK(coloured(shot, row, row + 34, 400, 800).amber > 0);
+        CHECK(coloured(shot, shot.height - 51, shot.height, 0, 400).amber > 0); // the status line
+    }
+    controller.setClockPort("DJM-A9 1");
+    controller.tick();
+    CHECK(controller.window().get_timing_ready());
+    const std::string said(controller.window().get_status());
+    INFO(said);
+    CHECK(said.rfind("press Start to follow", 0) == 0);
+    CHECK_FALSE(controller.window().get_status_is_error());
+    CHECK(std::string(controller.window().get_timing_reading()).empty());
+}
+
+TEST_CASE("what stops the CDJs is said whole on a red line of its own under the timing rows",
+          "[ui][follow][prolink]") {
+    // At the reading's width the end of it — "is rekordbox running on this computer?", what to
+    // do — was cut off. The row says it in a few words; the line under the rows says all of it.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.window().set_inputs_folded(false);
+    controller.pickTiming(3);
+    controller.tick();
+    REQUIRE(std::string(controller.window().get_timing_problem()) ==
+            "cannot listen for CDJs: not listening for CDJs in the test sandbox");
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    const int row = static_cast<int>(controller.window().get_timing_row_y());
+    // The timing row, the row under it, and then the problem's own line.
+    const Coloured line =
+        coloured(shot, row + 34 + 10 + 34 + 10, row + 34 + 10 + 34 + 10 + 20, 74, 780);
+    CHECK(line.alarm > 0);
+    // Gone with the problem: back on the audio, nothing red there.
+    controller.pickTiming(0);
+    controller.tick();
+    CHECK(std::string(controller.window().get_timing_problem()).empty());
+}
+
+TEST_CASE("tap and lock say in the MIDI learn list that they are off while a source is followed",
+          "[ui][follow]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const auto words = [&controller] {
+        std::vector<std::string> out;
+        const auto model = controller.window().get_learn_actions();
+        for (std::size_t i = 0; i < model->row_count(); ++i) {
+            out.emplace_back(*model->row_data(i));
+        }
+        return out;
+    };
+    const std::string tap(takt4::control::labelOf(takt4::control::ControlAction::Tap));
+    const std::string lock(takt4::control::labelOf(takt4::control::ControlAction::Lock));
+    const std::string halve(takt4::control::labelOf(takt4::control::ControlAction::TempoHalve));
+    const auto has = [](const std::vector<std::string>& list, const std::string& word) {
+        return std::find(list.begin(), list.end(), word) != list.end();
+    };
+    std::vector<std::string> list = words();
+    CHECK(has(list, tap));
+    CHECK(has(list, lock));
+    const auto model = controller.window().get_learn_actions();
+    controller.pickTiming(1);
+    controller.tick();
+    list = words();
+    CHECK(has(list, tap + " (off while following)"));
+    CHECK(has(list, lock + " (off while following)"));
+    CHECK(has(list, halve)); // the rest as they were
+    // Rows written in place: the same list, which an open dropdown is not taken from under.
+    CHECK(controller.window().get_learn_actions().get() == model.get());
+    controller.pickTiming(0);
+    controller.tick();
+    list = words();
+    CHECK(has(list, tap));
+    CHECK(has(list, lock));
+}
+
+TEST_CASE("a beat run on at the last tempo after the source went is drawn dimmed", "[ui][follow]") {
+    // A coasted beat is a guess, and was drawn exactly like one that came.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 240.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= 4; });
+    source.setPresent(false);
+    waitUntil(controller, [&] { return controller.followed().coasting(); });
+    const auto coastedSent = controller.followed().beatsSent();
+    waitUntil(controller, [&] { return controller.followed().beatsSent() >= coastedSent + 2; });
+    controller.tick();
+    // The window's trace: beats that came, and beats coasted, each marked as it was.
+    const auto trace = controller.window().get_trace();
+    int came = 0;
+    int coasted = 0;
+    for (std::size_t i = 0; i < trace->row_count(); ++i) {
+        const TracePoint point = *trace->row_data(i);
+        came += point.called && !point.coasted ? 1 : 0;
+        coasted += point.called && point.coasted ? 1 : 0;
+    }
+    CHECK(came > 0);
+    CHECK(coasted > 0);
+    controller.toggleRun();
+    controller.followForTests(nullptr);
+
+    // And drawn so: the same picture with every beat coasted has fewer full-bright pixels in the
+    // timing sheet than with none.
+    const auto bright = [&](bool asCoasted) {
+        auto points = std::make_shared<slint::VectorModel<TracePoint>>();
+        for (int i = 0; i < 300; ++i) {
+            points->push_back(TracePoint{1.0f, 0.0f, i % 25 < 2, asCoasted});
+        }
+        controller.window().set_trace(points);
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() == 7);
+        int count = 0;
+        for (int y = sheets[2].first; y < sheets[2].second; ++y) {
+            for (int x = 20; x < 780; ++x) {
+                const slint::Rgb8Pixel p = shot.at(x, y);
+                count += p.r > 0xe0 && p.g > 0xe0 && p.b > 0xe0 ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    controller.pickTiming(1); // following, so the plot draws beats as columns
+    const int full = bright(false);
+    const int dimmed = bright(true);
+    INFO(full << " full-bright pixels drawn as they came, " << dimmed << " coasted");
+    CHECK(full > dimmed + 1000);
+}
+
+TEST_CASE("the CDJs' follow list is not rebuilt under the pointer while it is open",
+          "[ui][follow][prolink]") {
+    // A player joining while the list was open moved its rows under the pointer, and the click
+    // meant for one deck picked another. Held until the list closes, then written.
+    namespace peer = takt4::testing::prolink_peer;
+    if (!peer::canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    const takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    controller.pickTiming(3);
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_follow_choices()->row_count() == 2; });
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    int y = 0;
+    const auto row = inputsRow(controller, 73, y);
+    INFO("timing row, the CDJs: " << spans(row));
+    REQUIRE(row.size() == 6);
+    clickAt(window, middleOf(row[4]), static_cast<float>(y));
+    slint::platform::update_timers_and_animations();
+    REQUIRE(controller.window().get_cdj_follow_open());
+    const auto before = controller.window().get_cdj_follow_choices();
+
+    // A second player announces itself while the list is open.
+    peer::UdpPeer other(peer::kDevices);
+    const takt4::testing::prolink_sim::Mac mac{0x74, 0x5e, 0x1c, 0, 0, 3};
+    const auto announced = [&] {
+        for (const auto& device : controller.cdjNetwork().snapshot().devices) {
+            if (device.number == 3) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!announced() && std::chrono::steady_clock::now() < deadline) {
+        other.sendTo(peer::kHere, config.own.announce,
+                     takt4::testing::prolink_sim::keepAlive(3, peer::kDevices, mac, 1, 3));
+        settle();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    REQUIRE(announced());
+    for (int i = 0; i < 10; ++i) {
+        settle();
+    }
+    CHECK(controller.window().get_cdj_follow_choices().get() == before.get());
+    CHECK(controller.window().get_cdj_follow_choices()->row_count() == 2);
+
+    // Closed, the next redraw writes it.
+    press(window, kEscape);
+    slint::platform::update_timers_and_animations();
+    REQUIRE_FALSE(controller.window().get_cdj_follow_open());
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_follow_choices()->row_count() == 3; });
+    CHECK(controller.window().get_cdj_follow_choices()->row_count() == 3);
+    rig.stop();
+}
+
+TEST_CASE("Link's row says what the follower is doing: peers heard and being joined, not reached, "
+          "or not to be heard at all",
+          "[ui][follow]") {
+    // Running, Link's row said "no peers — waiting for a Link session" in red for the second or
+    // two a join takes, while the peers were heard; and nothing at all of a join that reached
+    // nobody, or of discovery that could not be listened to.
+    using Wait = takt4::ui::TimingView::Wait;
+    takt4::ui::TimingFacts facts;
+    facts.index = 1;
+    facts.running = true;
+    facts.peers = 3;
+    takt4::ui::TimingView view = takt4::ui::describeTiming(facts);
+    CHECK(view.waiting);
+    CHECK(view.wait == Wait::Coming);
+    CHECK(view.waitingWord == "joining");
+    CHECK(view.reading == "3 peers heard \xE2\x80\x94 joining\xE2\x80\xA6");
+    facts.linkFailedJoins = 2;
+    facts.linkRetryIn = 8.0;
+    view = takt4::ui::describeTiming(facts);
+    CHECK(view.wait == Wait::Absent);
+    CHECK(view.waitingWord == "not reached");
+    CHECK(view.reading == "3 peers heard, not reached \xE2\x80\x94 trying again in 8 s");
+    facts.linkFailedJoins = 0;
+    facts.linkRetryIn = 0.0;
+    facts.linkPhase = takt4::timing::LinkFollower::Phase::Joining;
+    view = takt4::ui::describeTiming(facts);
+    CHECK(view.wait == Wait::Coming);
+    CHECK(view.reading == "joining the Link session\xE2\x80\xA6");
+    facts.linkPhase = takt4::timing::LinkFollower::Phase::Listening;
+    facts.canListen = false;
+    facts.linkProblem = "no network card is up";
+    view = takt4::ui::describeTiming(facts);
+    CHECK(view.wait == Wait::Absent);
+    CHECK(view.reading == "cannot listen for Link sessions");
+    CHECK(view.problem == "no network card is up");
+    facts.canListen = true;
+    facts.linkProblem.clear();
+    facts.coasting = true;
+    facts.state.rawBpm = 127.98;
+    view = takt4::ui::describeTiming(facts);
+    CHECK_FALSE(view.waiting);
+    CHECK(view.reading == "no peers \xE2\x80\x94 coasting at 127.98 BPM");
+}
+
+TEST_CASE("the CDJs' network card picked in the settings file is said while stopped",
+          "[ui][follow][prolink]") {
+    // A card can only be picked in the file (or by IMPORT), and was shown nowhere: the row said
+    // "picked when a CDJ is heard" whatever the file asked for.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::settings::Settings saved;
+    saved.machine.proLinkInterface = "169.254.20.7";
+    WindowController controller(tracker, saved);
+    controller.pickTiming(3);
+    controller.tick();
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "the card on 169.254.20.7, from the settings file");
 }

@@ -1684,6 +1684,18 @@ export component Scroller inherits Rectangle {
         @children
     }
 
+    /// Scrolls as little as it takes to show the part of the content from `top` down `height` —
+    /// `top` in the window's own terms, as an element's `absolute-position` gives it. CHANGE's,
+    /// for the timing row: the content could not be moved from code at all.
+    public function reveal(top: length, height: length) {
+        let from = top - root.absolute-position.y;
+        if (from < 0px) {
+            flick.content-y = -clamp(-flick.content-y + from, 0px, root.most);
+        } else if (from + height > flick.height) {
+            flick.content-y = -clamp(-flick.content-y + from + height - flick.height, 0px, root.most);
+        }
+    }
+
     private property <length> most: max(0px, flick.content-height - flick.height);
     private property <length> bar-length: max(24px, (flick.height - 8px) * flick.height / max(1px, flick.content-height));
     private property <length> bar-y: 4px + (flick.height - 8px - root.bar-length) * (-flick.content-y / max(1px, root.most));

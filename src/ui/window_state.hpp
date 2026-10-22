@@ -3,6 +3,7 @@
 #include "core/audio/devices.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/settings/settings.hpp"
+#include "core/timing/link_follower.hpp"
 #include "core/timing/prolink/network.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
@@ -119,8 +120,15 @@ struct TimingFacts {
     bool canListen = true;
     std::size_t peersHeard = 0;
     double heardBpm = 0.0;
-    /// Link, running: peers in the session.
+    /// Link, running: what the follower is doing (`LinkFollower::Status`) — listening for a
+    /// session, when `peers` are the peers heard; joining one; or following it, when they are the
+    /// session's — and, after joins that found nobody, how many in a row and how long until the
+    /// next. `canListen` and why not (`linkProblem`) are the follower's while running.
     std::uint32_t peers = 0;
+    timing::LinkFollower::Phase linkPhase = timing::LinkFollower::Phase::Listening;
+    std::uint32_t linkFailedJoins = 0;
+    double linkRetryIn = 0.0;
+    std::string linkProblem;
     /// MIDI clock: its port, by name, and what its ticks are doing (`MidiClockFollower::Status`) —
     /// and whether the device it comes in on has been pulled out (`midi::MidiInputHub::isLost`).
     std::string port;
@@ -143,6 +151,10 @@ struct TimingFacts {
     std::uint8_t cdjFollow = 0;
     bool cdjMasterWithoutBeats = false;
     std::string cdjInterface;
+    /// The card the settings file asks for (`MachineSettings::proLinkInterface`), by address, or
+    /// empty for the one the CDJs are heard on: said while nothing is joined, since a card can
+    /// only be picked in the file and was seen nowhere.
+    std::string cdjSavedCard;
     /// Joining: a mixer is giving takt4 its number, or every number takt4 may hold is taken.
     bool cdjAwaitingMixer = false;
     bool cdjNoNumber = false;
@@ -168,8 +180,20 @@ struct TimingView {
     std::string reading;
     std::string detail;
     std::string note;
+    /// What stops the source, in full, on a red line of its own under the row — a CDJ port
+    /// another program holds, Link's discovery that cannot be heard — where the reading says it
+    /// in a few words. At the reading's width the end of it, which is what to do, was cut off.
+    std::string problem;
     bool waiting = false;
-    /// The tempo sheet's word for waiting: "no peers", "no clock", "no deck", "joining".
+    /// Why it is waiting, which is its colour. **Red only for what is not there**: no peers, no
+    /// clock, no CDJs, a deck to pick. Amber for what is on its way: a tempo being measured, a
+    /// session or a CDJ network being joined, a deck playing whose beats have not come yet. Grey
+    /// for a stop that was asked for — a DAW's Stop obeyed, the decks paused — as a quiet room is
+    /// on the audio. A stopped DAW used to turn the banner, the row and the folded heading red.
+    enum class Wait : std::uint8_t { Absent, Coming, Stopped };
+    Wait wait = Wait::Absent;
+    /// The tempo sheet's word for waiting: "no peers", "no clock", "measuring", "stopped",
+    /// "joining", "no deck".
     std::string waitingWord;
     bool coasting = false;
     int stripBeat = 0;

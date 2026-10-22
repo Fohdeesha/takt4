@@ -646,6 +646,14 @@ private:
     /// heading — and a stage that threw on the status line, when what it said is new.
     void publishOutputTrouble(const output::OutputRunner::Snapshot::Trouble& trouble);
     void publishStopped();
+    /// The MIDI learn list's words: tap and lock "(off while following)" while a source is
+    /// followed, since they do nothing then. Only the rows whose words change are written, so an
+    /// open list is not disturbed.
+    void publishLearnActions();
+    /// While stopped and following a source: what START needs, on the status line — the MIDI
+    /// clock's input when none is picked (amber: START is greyed out until there is one), or
+    /// "press Start".
+    void sayHowToStart();
     /// What is being listened to, on the status line — or `said` in its place, when it is not
     /// empty: what the import that asked for this START said (`importFrom`).
     void publishOpenStream(const std::string& said);
@@ -1113,6 +1121,8 @@ private:
     /// The actions this window offers for binding: `control::kControlActions` minus the
     /// ones that need a rule named too, which a gesture cannot supply. See the constructor.
     std::vector<control::ControlAction> learnActions_;
+    /// Their words, as the learn list shows them (`publishLearnActions`).
+    std::shared_ptr<slint::VectorModel<slint::SharedString>> learnActionLabels_;
 
     /// A source followed instead of the audio, as beats (`timing::ExternalBeats`): what `source_`
     /// is pointed at while one is picked. **Before `source_` and `runner_`**, so the output thread
