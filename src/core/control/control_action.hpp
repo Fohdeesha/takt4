@@ -23,9 +23,10 @@ namespace takt4::control {
 /// naming convention that belongs to another, and the prefix is configurable, so the
 /// string it had to manufacture would not even be constant.
 ///
-/// **Five of these ask the tracker and two ask the rules.** That is the whole of why a
+/// **Five of these ask the tracker and the rest ask the rules.** That is the whole of why a
 /// surface has two destinations: `engine::BeatSource::post` for the first five, and
-/// `RuleControl` for `Panic` and `RuleEnable`, whose subject lives on the output thread.
+/// `RuleControl` for the rest — PANIC and its release, the manual rules and the six
+/// `rule/<id>/…` verbs — whose subject lives on the output thread.
 ///
 /// New actions go on the **end**: a binding is stored as a verb, so the order is not part of
 /// the file format — but a UI indexes this list, and inserting would silently move what a
@@ -89,10 +90,9 @@ inline constexpr bool takesRuleId(ControlAction action) noexcept {
 
 /// One action, and what it acts on where the action needs saying.
 ///
-/// Six of the seven addresses are a verb and nothing else. `rule/<id>/enable` names a
-/// rule in the middle of the address, and a MIDI binding to it has to carry that id too —
-/// so the two travel together rather than the id being threaded past every call that has no
-/// use for it.
+/// Most addresses are a verb and nothing else. The six `rule/<id>/…` verbs name a rule in the
+/// middle of the address, and a MIDI binding to one has to carry that id too — so the two
+/// travel together rather than the id being threaded past every call that has no use for it.
 struct ControlTarget {
     ControlTarget() = default;
     /// Implicit, deliberately: six of the seven *are* just an action, and a call site that

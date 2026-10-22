@@ -469,6 +469,23 @@ std::vector<Transports::Problem> Transports::problems() const {
             byOutput[row] = why;
         }
     }
+    // Two Art-Net outputs to one node: the node is sent every universe twice, at twice the 44 Hz
+    // it takes, with two runs of sequence numbers it reads as frames out of order. Said on the
+    // second row, which is the one to take away.
+    for (std::size_t j = 0; j < artnet_->targetCount(); ++j) {
+        for (std::size_t i = 0; i < j; ++i) {
+            const std::size_t row = artnet_->outputOf(j);
+            const std::size_t first = artnet_->outputOf(i);
+            if (dmx::sameNode(artnet_->target(i), artnet_->target(j)) && row < byOutput.size() &&
+                first < outputs_.size() && byOutput[row].empty()) {
+                const OutputTarget& other = outputs_[first];
+                byOutput[row] = "sends to the same node as " +
+                                (other.name.empty() ? "another Art-Net output" : other.name) +
+                                " \xE2\x80\x94 the node is sent every frame twice";
+                break;
+            }
+        }
+    }
     std::vector<Problem> problems;
     for (std::size_t i = 0; i < byOutput.size(); ++i) {
         if (!byOutput[i].empty()) {
@@ -592,7 +609,7 @@ void Transports::maintainMidi(double now) noexcept {
     }
 }
 
-void Transports::advance(double now, const tracking::TempoState& state) {
+void Transports::advance(double now, const tracking::TempoState& state, bool running) {
     lastNow_ = now;
     maintainMidi(now);
     for (Clock& clock : clocks_) {
@@ -603,7 +620,7 @@ void Transports::advance(double now, const tracking::TempoState& state) {
     // Before this round's state, so a message held from an earlier round goes out ahead of
     // one sent now.
     osc_->flushDue();
-    osc_->publishState(state);
+    osc_->publishState(state, running);
 
     // The lighting half, and the reason it is here rather than in `publish`: a fade is not
     // waiting for a beat, it is waiting for a clock. Every running effect is advanced and the

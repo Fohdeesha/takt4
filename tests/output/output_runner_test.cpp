@@ -1,4 +1,5 @@
 #include "core/audio/rates.hpp"
+#include "core/control/osc_parse.hpp"
 #include "core/control/rule_control.hpp"
 #include "core/dmx/fixture.hpp"
 #include "core/dmx/liberation.hpp"
@@ -3579,4 +3580,111 @@ TEST_CASE("a Note Off a full queue refused leaves the note held, and PANIC still
     CHECK(runner.holds().notes == 0);
     REQUIRE(cable->size() == 2 * takt4::output::RuleSink::kMaxQueued + 1);
     CHECK(cable->back() == std::vector<unsigned char>{0x80, 60, 0});
+}
+
+namespace {
+
+/// What a receiver of the global messages hears in `millis`: each address, with its first
+/// argument as a number (0 with none).
+std::vector<std::pair<std::string, double>> globalHeard(LoopbackReceiver& receiver, int millis) {
+    std::vector<std::pair<std::string, double>> heard;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+    while (std::chrono::steady_clock::now() < until) {
+        if (!receiver.ready(10)) {
+            continue;
+        }
+        const std::string datagram = receiver.receive();
+        const auto view = takt4::control::parseOsc(std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(datagram.data()), datagram.size()));
+        if (view) {
+            heard.emplace_back(std::string(view->address()), view->number(0).value_or(0.0));
+        }
+    }
+    return heard;
+}
+
+bool heardAddress(const std::vector<std::pair<std::string, double>>& heard,
+                  const std::string& address) {
+    return std::any_of(heard.begin(), heard.end(),
+                       [&address](const auto& one) { return one.first == address; });
+}
+
+} // namespace
+
+TEST_CASE("the global state goes out only while a run is locked: nothing while it hunts or is "
+          "stopped, and /locked 0 once when the lock goes, at STOP and at quit",
+          "[output]") {
+    // The README promised nothing goes out until a lock, and the state went out every round,
+    // stopped or not: a monitor was sent the hunt's tempi, a stream of confidences, the last
+    // run's /locked 1 for ever after STOP, and another source's state when the picker was
+    // flipped while stopped.
+    LoopbackReceiver monitor;
+    Transports::Config config;
+    takt4::output::OutputTarget target;
+    target.name = "monitor";
+    target.host = "127.0.0.1";
+    target.port = monitor.port();
+    target.sendsNamespace = true;
+    config.outputs = {target};
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    runner.start();
+    runner.setTracking(true);
+    using Heard = std::vector<std::pair<std::string, double>>;
+
+    // Hunting: tempi that move, no lock.
+    takt4::tracking::TempoState hunting;
+    hunting.bpm = 120.0;
+    hunting.confidence = 0.2;
+    hunting.beatsPerBar = 4;
+    source.publish(hunting);
+    Heard heard = globalHeard(monitor, 200);
+    hunting.bpm = 61.0;
+    hunting.confidence = 0.35;
+    source.publish(hunting);
+    const Heard more = globalHeard(monitor, 200);
+    heard.insert(heard.end(), more.begin(), more.end());
+    CHECK(heard.empty());
+
+    // Locked: the state.
+    takt4::tracking::TempoState locked = hunting;
+    locked.bpm = 128.0;
+    locked.confidence = 0.9;
+    locked.locked = true;
+    source.publish(locked);
+    heard = globalHeard(monitor, 250);
+    CHECK(heardAddress(heard, "/takt4/bpm"));
+    CHECK(heardAddress(heard, "/takt4/confidence"));
+    CHECK(heardAddress(heard, "/takt4/meter"));
+    CHECK(heard.end() !=
+          std::find(heard.begin(), heard.end(), Heard::value_type{"/takt4/locked", 1.0}));
+
+    // The lock lost: /locked 0 once, and not the hunt's tempo.
+    hunting.bpm = 95.0;
+    source.publish(hunting);
+    heard = globalHeard(monitor, 250);
+    CHECK(heard == Heard{{"/takt4/locked", 0.0}});
+    // Found again: said, with a resync.
+    source.publish(locked);
+    heard = globalHeard(monitor, 250);
+    CHECK(heard.end() !=
+          std::find(heard.begin(), heard.end(), Heard::value_type{"/takt4/locked", 1.0}));
+    CHECK(heardAddress(heard, "/takt4/resync"));
+
+    // STOP: /locked 0, once. Then another source's locked state, flipped in while stopped: nothing.
+    runner.setTracking(false);
+    heard = globalHeard(monitor, 250);
+    CHECK(heard == Heard{{"/takt4/locked", 0.0}});
+    locked.bpm = 140.0;
+    source.publish(locked);
+    CHECK(globalHeard(monitor, 250).empty());
+
+    // Started, locked, and quit: /locked 0 on the way out.
+    runner.setTracking(true);
+    heard = globalHeard(monitor, 250);
+    CHECK(heard.end() !=
+          std::find(heard.begin(), heard.end(), Heard::value_type{"/takt4/locked", 1.0}));
+    runner.stop();
+    heard = globalHeard(monitor, 250);
+    CHECK(heard == Heard{{"/takt4/locked", 0.0}});
 }

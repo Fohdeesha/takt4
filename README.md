@@ -89,6 +89,8 @@ takt4 sends the below global data to all OSC outputs you tick under **/takt4 glo
 /takt4/resync      int     1, when the tracker has just found itself again
 ```
 
+They go out only while takt4 is running and locked: nothing while it hunts or is stopped. When the lock is lost, and at **stop**, `/takt4/locked 0` goes out once.
+
 You can *control* takt4 over OSC as well, tick **listen** on the OSC row under **inputs**:
 
 ```
@@ -113,6 +115,10 @@ address                       send           does
 - **nothing or 1**: a button. Any number but 0 presses it too; a 0 is its release and does nothing, so a push button that sends 1 then 0 presses once. **panic** engages on anything, 0 included
 - **1 or 0**: a switch, never a toggle, so a missed message can't leave one backwards. Anything but 0 is on; with no value it's ignored
 - `<id>` is the rule's id, shown beside its name in the rule editor, or `all`
+- A bundle's messages are each acted on as they arrive; its time tag isn't waited for
+- **tap** and **lock** do nothing while takt4 follows Link, a MIDI clock or the CDJs, and count as ignored
+- From this computer, send to `127.0.0.1`, not `localhost`: takt4 listens on IPv4 only
+- Ticking **allow other machines** makes Windows ask whether takt4 may use the network: allow **Public** networks too if the controller is on a network with no router
 
 **MIDI control**: on the MIDI row under **inputs**, pick your controller and an action, click **learn**, hit the midi button you want to use. Available actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held
 

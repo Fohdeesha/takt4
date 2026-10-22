@@ -758,6 +758,9 @@ void OutputRunner::stop() noexcept {
             triggers_.flushFollowUps();
             // And every note still on whose release nothing owed (see `holds`).
             releaseHolds([](const std::string&) { return true; }, elapsed());
+            // The lock gone with takt4, said as STOP says it (`OscPublisher::publishState`), so a
+            // receiver is not left holding a `/locked 1` from a program that has quit.
+            transports_.osc().publishState(tracking::TempoState{}, false);
             // And everything held for an output's offset, releases included — a held datagram
             // used to sit in the queue until the next Start.
             sink_.flushQueued();
@@ -1405,7 +1408,9 @@ void OutputRunner::drainOnce(double now) {
     guarded("the held messages", [&] { sink_.releaseDue(now); });
     // Every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one, and
     // OSC's state addresses are how a peer learns the tempo drifted.
-    guarded("the outputs", [&] { transports_.advance(now, source_.state()); });
+    // The global state goes out only for a run that is going: stopped, `source_.state()` is the
+    // last run's, or another source's after the picker was flipped.
+    guarded("the outputs", [&] { transports_.advance(now, source_.state(), !quiet_); });
 
     const trigger::Context context = contextAt(now);
     // The output thread never sees a frame, so an onset reaches it as a count that moved.

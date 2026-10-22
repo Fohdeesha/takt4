@@ -757,11 +757,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     kinds->push_back(shared("MIDI clock"));
     window_->set_output_kinds(kinds);
 
-    // Everything a gesture can bind on its own. the `rule/<id>/enable` is the one that
-    // cannot: pressing a pad says which button, never which rule, and this window has
-    // nowhere to ask the second question. the rule editor is where that binding gets
-    // armed, from the card that already names the rule — `MidiControl::learn` takes a whole
-    // target for exactly that.
+    // Everything a gesture can bind on its own. The six `rule/<id>/…` verbs are what cannot:
+    // pressing a pad says which button, never which rule, and nothing in the windows asks the
+    // second question. A binding to one is written into the settings file by hand —
+    // `MidiControl::learn` takes a whole target, rule and all, for when something does ask.
     auto actions = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const control::ControlAction action : control::kControlActions) {
         if (control::takesRuleId(action)) {
@@ -2837,16 +2836,34 @@ void WindowController::setOscControlNetwork(bool allowNetwork) {
     if (config.localOnly == !allowNetwork) {
         return;
     }
+    const bool wasLocalOnly = config.localOnly;
     config.localOnly = !allowNetwork;
     const bool wasRunning = oscControl_.running();
     oscControl_.stop();
     config.enabled = false;
     oscControl_.setConfig(config);
-    if (wasRunning) {
-        setOscControlEnabled(true);
-    } else {
+    if (!wasRunning) {
         publishControl();
+        return;
     }
+    setOscControlEnabled(true);
+    if (oscControl_.running()) {
+        return;
+    }
+    // **The new address would not bind, so the old one comes back**, as a port that would not
+    // does (`setOscControlPort`). This closed the working socket first and then tried every
+    // address — which another program holding the port on any one address refuses — and left a
+    // Stream Deck with no one listening. What was said about the refusal is kept.
+    const std::string refusal(window_->get_status());
+    config.localOnly = wasLocalOnly;
+    oscControl_.setConfig(config);
+    setOscControlEnabled(true);
+    if (oscControl_.running()) {
+        setStatus(refusal + " Still listening on " + std::to_string(oscControl_.port()) +
+                      (wasLocalOnly ? " (this machine only)." : " (any address)."),
+                  true);
+    }
+    publishControl();
 }
 
 void WindowController::pickLearnAction(int index) {

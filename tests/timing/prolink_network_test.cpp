@@ -406,6 +406,27 @@ TEST_CASE(
     rig.stop();
 }
 
+TEST_CASE("the CDJs' ports are the network's own while it has them: a later bind to this "
+          "machine's own address on one is refused",
+          "[prolink]") {
+    // The announcement port is bound to every address. On Windows a program binding 127.0.0.1 on
+    // it afterwards used to be let, and took every datagram sent to that address, nobody told.
+    const Network::Config config = testConfig(allowedPort(), steadyMicros);
+    Network network(config);
+    std::string problem;
+    REQUIRE(network.open(problem));
+    [[maybe_unused]] const takt4::net::WinsockGuard winsock; // an empty struct off Windows
+    const takt4::net::Socket later = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    REQUIRE(later != takt4::net::kInvalidSocket);
+    sockaddr_in loopback{};
+    loopback.sin_family = AF_INET;
+    loopback.sin_port = htons(config.own.announce);
+    loopback.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(::bind(later, reinterpret_cast<const sockaddr*>(&loopback), sizeof loopback) != 0);
+    takt4::net::closeSocket(later);
+    network.close();
+}
+
 TEST_CASE("the CDJ network's thread asks to run ahead: it stamps each beat as it reads it",
           "[prolink]") {
     Network network(testConfig(allowedPort(), steadyMicros));

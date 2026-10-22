@@ -919,3 +919,85 @@ TEST_CASE("a farewell stops when a new node is given its address", "[dmx][artnet
         }
     }
 }
+
+TEST_CASE("a node re-spelled, localhost as 127.0.0.1 or back again, is sent no farewell between "
+          "its own frames",
+          "[dmx][artnet]") {
+    // The farewell went by the host as spelled: re-typed, the same Liberation was sent the new
+    // row's frames and the old row's zeros in turn for three seconds, its lasers armed and
+    // disarmed with each.
+    for (const bool toNumber : {true, false}) {
+        INFO((toNumber ? "localhost, then 127.0.0.1" : "127.0.0.1, then localhost"));
+        takt4::testing::ArtNetNodes nodes(1);
+        DmxEngine engine;
+        engine.setPatch({rgbAt("par", 0, 1)});
+        ArtNetPublisher publisher;
+        ArtNetPublisher::TargetConfig node;
+        node.host = toNumber ? "localhost" : "127.0.0.1";
+        node.port = nodes.port(0);
+        node.id = "o-liberation";
+        // A name is looked up on a thread of its own, in real time; the rounds below are not.
+        const auto resolved = [&publisher] {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (publisher.target(0).resolved().empty() &&
+                   std::chrono::steady_clock::now() < until) {
+                publisher.refresh();
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            return !publisher.target(0).resolved().empty();
+        };
+        REQUIRE(publisher.setTargets({node}).empty());
+        REQUIRE(resolved());
+        const auto round = [&](double now) { return publisher.publish(engine, now); };
+        paint(engine, 255, 0.0);
+        nodes.run(round, 0, 300);
+        REQUIRE(nodes.first(0, 255) >= 0.0);
+
+        node.host = toNumber ? "127.0.0.1" : "localhost";
+        REQUIRE(publisher.setTargets({node}).empty());
+        REQUIRE(resolved());
+        nodes.run(round, 300, 1500);
+        std::size_t after = 0;
+        for (const auto& heard : nodes.heard(0)) {
+            if (heard.at >= 0.300) {
+                INFO("sent at " << heard.at);
+                CHECK(heard.channel1 == 255);
+                ++after;
+            }
+        }
+        // A still look goes at the keep-alive's pace; a farewell's zeros would have gone at 44 Hz.
+        CHECK(after >= 1);
+        CHECK(publisher.leaving() == 0);
+    }
+}
+
+TEST_CASE("a node that has gone is still sent its farewell, a moment late at most while another "
+          "output looks a name up",
+          "[dmx][artnet]") {
+    // The farewell waits for an output still looking its address up, which may be the same node
+    // under a name — and only that long: a name that never answers does not keep a node lit.
+    takt4::testing::ArtNetNodes nodes(2);
+    DmxEngine engine;
+    engine.setPatch({rgbAt("par", 0, 1)});
+    ArtNetPublisher publisher;
+    ArtNetPublisher::TargetConfig gone;
+    gone.host = "127.0.0.1";
+    gone.port = nodes.port(0);
+    gone.id = "o-gone";
+    REQUIRE(publisher.setTargets({gone}).empty());
+    const auto round = [&](double now) { return publisher.publish(engine, now); };
+    paint(engine, 255, 0.0);
+    nodes.run(round, 0, 100);
+    REQUIRE(nodes.first(0, 255) >= 0.0);
+    // Switched off, as another output aimed at a name nobody answers for is added.
+    ArtNetPublisher::TargetConfig unanswered;
+    unanswered.host = "a-node-nobody-has.invalid";
+    unanswered.port = nodes.port(1);
+    unanswered.id = "o-unanswered";
+    REQUIRE(publisher.setTargets({unanswered}).empty());
+    nodes.run(round, 100, 2000);
+    const double dark = nodes.first(0, 0, 0.1);
+    INFO("dark from " << dark);
+    CHECK(dark >= 0.1 + 1.0 - 0.001);
+    CHECK(dark <= 0.1 + 1.0 + 0.030);
+}

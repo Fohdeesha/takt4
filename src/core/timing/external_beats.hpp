@@ -97,6 +97,8 @@ public:
     /// moment after the tempo puts it — so the output thread has it on time, with its own place
     /// in the bar.
     bool beatsOnTime() const noexcept override { return true; }
+    /// The tempo is the followed source's: a tap or a pin is refused (`post`).
+    bool takesTempo() const noexcept override { return false; }
 
     /// Commands refused because a followed grid cannot carry them out — a tap, a pin, a hold.
     std::uint64_t commandsRefused() const noexcept {

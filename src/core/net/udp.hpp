@@ -130,6 +130,21 @@ inline void prepareSender(Socket socket) noexcept {
 #endif
 }
 
+/// Makes a fresh socket's port its own alone once it is bound — before the bind. Windows lets a
+/// later socket bind 127.0.0.1 on a port another holds on every address, measured: from then on
+/// every loopback datagram to the port goes to the later socket, and neither is told. With this
+/// (`SO_EXCLUSIVEADDRUSE`) the later bind is refused instead. POSIX sockets are exclusive unless
+/// asked otherwise, so there it asks for nothing.
+inline void bindExclusively(Socket socket) noexcept {
+#if defined(_WIN32)
+    const BOOL on = TRUE;
+    ::setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&on),
+                 sizeof on);
+#else
+    (void)socket;
+#endif
+}
+
 /// Why a datagram could not be sent, in words an operator can act on, with the code after
 /// it for anyone who has to look it up. For the errors a network that is down, unplugged or
 /// wrongly addressed gives; anything else is its code.

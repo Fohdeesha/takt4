@@ -15,6 +15,11 @@
 
 namespace takt4::dmx {
 
+/// Whether two senders reach one node: the same port, and the address spelled the same or
+/// resolved to the same — `localhost` and `127.0.0.1` are one Liberation. A sender's address is
+/// known once it has sent (`ArtNetSender::resolved`).
+bool sameNode(const ArtNetSender& a, const ArtNetSender& b);
+
 /// Every Art-Net node takt4 sends to, and the clock that decides when.
 ///
 /// The mirror of `output::OscPublisher`, for the protocol that works the other way round.
@@ -89,7 +94,9 @@ public:
     /// that has left the patch is sent (`DmxEngine::released`), for the same reason, so that
     /// whatever takes the node over next is not fought for it. A node brought back at the same
     /// address within that time takes its sender back and is fed as before, rather than being
-    /// fought by its own farewell.
+    /// fought by its own farewell; and a node another output still reaches under another
+    /// spelling (`sameNode`) is sent none — its farewell waits up to a second for an output still
+    /// looking its address up, which may be it.
     std::vector<std::pair<std::size_t, std::string>>
     setTargets(const std::vector<TargetConfig>& configs);
 
@@ -223,11 +230,12 @@ private:
     static const Paced* findPaced(const Target& target, PortAddress universe) noexcept;
 
     std::vector<Target> targets_;
-    /// A node that has gone, and until when it is sent its farewell — negative until the first
-    /// `publish` after it went, which is the first moment this object knows the time.
+    /// A node that has gone, and until when it is sent its farewell — negative until it starts,
+    /// which is the first `publish` after it went that is not waiting for a name (`since`).
     struct Leaving {
         Target target;
         double until = -1.0;
+        double since = -1.0;
     };
     std::vector<Leaving> leaving_;
     /// Sends one farewell frame of `universe` — all zeros — to `target`, now. False when the

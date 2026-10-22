@@ -12,7 +12,18 @@ namespace {
 /// it comes from cannot drift apart.
 constexpr double kMinFramePeriod = 1.0 / kMaxRefreshHz;
 
+/// How long a node's farewell waits for an output still looking its address up, which may be
+/// that very node under another spelling. A name that takes longer is not waited for.
+constexpr double kNameWaitSeconds = 1.0;
+
 } // namespace
+
+bool sameNode(const ArtNetSender& a, const ArtNetSender& b) {
+    if (a.port() != b.port()) {
+        return false;
+    }
+    return a.host() == b.host() || (!a.resolved().empty() && a.resolved() == b.resolved());
+}
 
 void ArtNetPublisher::addTarget(const TargetConfig& config) {
     Target target;
@@ -406,7 +417,28 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     // The nodes that have gone: all zeros, at the 44 Hz pace whatever has moved, for a released
     // universe's time — and at once, whatever their delay: this is the way out. See `setTargets`.
     for (Leaving& going : leaving_) {
+        // **Not a node still fed under another spelling.** `localhost` re-typed as `127.0.0.1`
+        // is the same node, and its farewell's zeros between the new row's frames disarmed the
+        // lasers on and off for three seconds. Told by where each resolves, which an output knows
+        // once it has sent — the live outputs went above, this round.
+        if (std::any_of(targets_.begin(), targets_.end(), [&going](const Target& kept) {
+                return sameNode(*kept.sender, *going.target.sender);
+            })) {
+            going.until = 0.0;
+            continue;
+        }
         if (going.until < 0.0) {
+            // And not before an output still looking its address up has an answer, a moment at
+            // most: it may be this node, under a name.
+            if (going.since < 0.0) {
+                going.since = now;
+            }
+            const bool looking =
+                std::any_of(targets_.begin(), targets_.end(),
+                            [](const Target& kept) { return kept.sender->resolved().empty(); });
+            if (looking && now - going.since < kNameWaitSeconds) {
+                continue;
+            }
             going.until = now + kFarewellSeconds;
         }
         const std::size_t patched = engine.universes().size();
@@ -423,7 +455,9 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             }
         }
     }
-    std::erase_if(leaving_, [now](const Leaving& going) { return now >= going.until; });
+    // A farewell still waiting for a name to resolve (`until` negative) is not over.
+    std::erase_if(leaving_,
+                  [now](const Leaving& going) { return going.until >= 0.0 && now >= going.until; });
     return datagrams;
 }
 

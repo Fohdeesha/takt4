@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -196,5 +197,103 @@ TEST_CASE("truncating a real message at any length never reads past the end", "[
                 CHECK(view->argumentCount() <= OscView::kMaxArguments);
             }
         }
+    }
+}
+
+namespace {
+
+/// A message's bytes, as a sender would put them on the wire.
+std::vector<std::byte> messageBytes(std::string_view address) {
+    OscMessage message(address);
+    const std::span<const std::byte> encoded = message.packet();
+    return {encoded.begin(), encoded.end()};
+}
+
+/// "#bundle", a time tag of 1 — "at once" — and each element after its size.
+std::vector<std::byte> bundleOf(const std::vector<std::vector<std::byte>>& elements) {
+    std::vector<std::byte> out = packet("#bundle.");
+    for (int i = 0; i < 7; ++i) {
+        out.push_back(std::byte{0});
+    }
+    out.push_back(std::byte{1});
+    for (const std::vector<std::byte>& element : elements) {
+        const auto size = static_cast<std::uint32_t>(element.size());
+        for (const int shift : {24, 16, 8, 0}) {
+            out.push_back(static_cast<std::byte>((size >> shift) & 0xffu));
+        }
+        out.insert(out.end(), element.begin(), element.end());
+    }
+    return out;
+}
+
+/// The addresses `forEachOscMessage` hands over, in order: "?" for anything that is no message.
+std::vector<std::string> addressesIn(std::span<const std::byte> datagram) {
+    std::vector<std::string> seen;
+    (void)takt4::control::forEachOscMessage(datagram, [&seen](std::span<const std::byte> one) {
+        const auto view = parseOsc(one);
+        seen.push_back(view ? std::string(view->address()) : std::string("?"));
+    });
+    return seen;
+}
+
+} // namespace
+
+TEST_CASE("a bundle's messages are each handed over, in order, bundles inside it opened in turn; "
+          "a bundle is not a message, and a message is handed over as itself",
+          "[control]") {
+    using takt4::control::forEachOscMessage;
+    using takt4::control::isOscBundle;
+    const std::vector<std::byte> halve = messageBytes("/takt4/ctl/tempo/halve");
+    const std::vector<std::byte> downbeat = messageBytes("/takt4/ctl/downbeat");
+    const std::vector<std::byte> tap = messageBytes("/takt4/ctl/tap");
+    const std::vector<std::byte> nested = bundleOf({halve, bundleOf({downbeat, tap})});
+    CHECK(isOscBundle(nested));
+    CHECK_FALSE(isOscBundle(halve));
+    CHECK_FALSE(parseOsc(nested).has_value());
+    CHECK(addressesIn(nested) == std::vector<std::string>{"/takt4/ctl/tempo/halve",
+                                                          "/takt4/ctl/downbeat", "/takt4/ctl/tap"});
+    CHECK(forEachOscMessage(nested, [](std::span<const std::byte>) {}) == 3);
+    CHECK(addressesIn(halve) == std::vector<std::string>{"/takt4/ctl/tempo/halve"});
+    // An empty bundle holds nothing to hand over.
+    CHECK(addressesIn(bundleOf({})).empty());
+}
+
+TEST_CASE("bundles are opened only so deep, and an element that runs past its bundle ends the walk "
+          "there, after those before it",
+          "[control]") {
+    using takt4::control::forEachOscMessage;
+    using takt4::control::kMaxBundleDepth;
+    const auto none = [](std::span<const std::byte>) {};
+    std::vector<std::byte> wrapped = messageBytes("/takt4/ctl/tap");
+    for (int depth = 0; depth < kMaxBundleDepth; ++depth) {
+        wrapped = bundleOf({wrapped});
+    }
+    CHECK(forEachOscMessage(wrapped, none) == 1);
+    CHECK(forEachOscMessage(bundleOf({wrapped}), none) == 0);
+
+    // A size that runs past the end, and one that is not a whole number of words.
+    std::vector<std::byte> ragged = bundleOf({messageBytes("/takt4/ctl/tap")});
+    for (const std::byte b : {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{64}}) {
+        ragged.push_back(b);
+    }
+    ragged.resize(ragged.size() + 8, std::byte{0});
+    CHECK(addressesIn(ragged) == std::vector<std::string>{"/takt4/ctl/tap"});
+    std::vector<std::byte> unaligned = bundleOf({messageBytes("/takt4/ctl/tap")});
+    for (const std::byte b : {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{6}}) {
+        unaligned.push_back(b);
+    }
+    unaligned.resize(unaligned.size() + 8, std::byte{0});
+    CHECK(addressesIn(unaligned) == std::vector<std::string>{"/takt4/ctl/tap"});
+
+    // Every truncation of a nested bundle is walked without reading past its end — each in a heap
+    // block of exactly its length, so ASan's redzone is the next byte — and hands over at most
+    // the three messages there are.
+    const std::vector<std::byte> whole =
+        bundleOf({messageBytes("/takt4/ctl/tempo/halve"),
+                  bundleOf({messageBytes("/takt4/ctl/downbeat"), messageBytes("/takt4/ctl/tap")})});
+    for (std::size_t length = 0; length <= whole.size(); ++length) {
+        const std::unique_ptr<std::byte[]> prefix(new std::byte[length == 0 ? 1 : length]);
+        std::copy_n(whole.begin(), length, prefix.get());
+        CHECK(forEachOscMessage(std::span<const std::byte>(prefix.get(), length), none) <= 3);
     }
 }

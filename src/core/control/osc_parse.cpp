@@ -1,5 +1,6 @@
 #include "core/control/osc_parse.hpp"
 
+#include <array>
 #include <bit>
 #include <cstring>
 
@@ -9,6 +10,11 @@ namespace {
 /// OSC pads every part to a multiple of four bytes *after* its terminator, so a
 /// four-character address takes eight.
 constexpr std::size_t kAlign = 4;
+
+/// "#bundle" and its terminator, which every bundle begins with, and then its eight-byte time
+/// tag: what comes before a bundle's first element.
+constexpr std::array<char, 8> kBundleTag{'#', 'b', 'u', 'n', 'd', 'l', 'e', '\0'};
+constexpr std::size_t kBundleHeader = 16;
 
 std::size_t padded(std::size_t length) noexcept {
     return (length + kAlign) & ~(kAlign - 1);
@@ -61,6 +67,31 @@ bool validAddress(std::string_view address) noexcept {
     return true;
 }
 
+std::size_t walk(std::span<const std::byte> packet,
+                 const std::function<void(std::span<const std::byte>)>& visit, int depth) {
+    if (!isOscBundle(packet)) {
+        visit(packet);
+        return 1;
+    }
+    if (depth >= kMaxBundleDepth) {
+        return 0;
+    }
+    // Each element a size and that many bytes, a message or a bundle of its own. One whose size
+    // is not a whole number of words, or runs past the bundle, is not an element at all: the walk
+    // ends there, after the ones before it.
+    std::size_t visited = 0;
+    std::size_t offset = kBundleHeader;
+    while (offset < packet.size()) {
+        const std::optional<std::uint32_t> size = readBig32(packet, offset);
+        if (!size || *size == 0 || *size % kAlign != 0 || *size > packet.size() - offset - 4) {
+            break;
+        }
+        visited += walk(packet.subspan(offset + 4, *size), visit, depth + 1);
+        offset += 4 + *size;
+    }
+    return visited;
+}
+
 } // namespace
 
 std::optional<double> OscView::number(std::size_t index) const noexcept {
@@ -89,13 +120,9 @@ std::optional<OscView> parseOsc(std::span<const std::byte> packet) noexcept {
         return std::nullopt;
     }
 
+    // "#bundle" is no address, and so no message: `forEachOscMessage` is what opens one.
     const std::optional<Part> address = readString(packet, 0);
     if (!address || !validAddress(address->text)) {
-        return std::nullopt;
-    }
-    // "#bundle" is a container of messages with a timestamp. Refused rather than guessed
-    // at; see the header.
-    if (address->text.front() == '#') {
         return std::nullopt;
     }
 
@@ -161,6 +188,16 @@ std::optional<OscView> parseOsc(std::span<const std::byte> packet) noexcept {
         ++view.count_;
     }
     return view;
+}
+
+bool isOscBundle(std::span<const std::byte> packet) noexcept {
+    return packet.size() >= kBundleHeader &&
+           std::memcmp(packet.data(), kBundleTag.data(), kBundleTag.size()) == 0;
+}
+
+std::size_t forEachOscMessage(std::span<const std::byte> packet,
+                              const std::function<void(std::span<const std::byte>)>& visit) {
+    return walk(packet, visit, 0);
 }
 
 } // namespace takt4::control

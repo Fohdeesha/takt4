@@ -27,17 +27,25 @@ namespace takt4::net {
 /// had still used until the new one is in. It used to be looked up once: a media server that
 /// came back from a restart on a new DHCP address was sent to the old one, with no error, until
 /// somebody edited the output. A numeric address is never asked.
+/// A name with several addresses keeps the one it has while the answer still holds it: taking
+/// whichever came first each time moved a node from one address to another every refresh.
 class AsyncAddress {
 public:
     /// For the tests: from now on `host` is looked up as `numeric` — a name whose answer a test
-    /// can change, which no name server offers it. Only in the test binaries' sandbox
-    /// (`sandbox.hpp`), where a name otherwise goes nowhere; nothing outside it reads this.
-    static void answerForTests(const std::string& host, const std::string& numeric);
+    /// can change, which no name server offers it — answered `delaySeconds` after it is asked, as
+    /// a slow name server would. Only in the test binaries' sandbox (`sandbox.hpp`), where a name
+    /// otherwise goes nowhere; nothing outside it reads this.
+    static void answerForTests(const std::string& host, const std::string& numeric,
+                               double delaySeconds = 0.0);
 
     /// How long after a failed look-up the next one starts, at the earliest.
     static constexpr double kRetrySeconds = 5.0;
     /// How long a name's address is used before it is looked up again.
     static constexpr double kRefreshSeconds = 30.0;
+    /// A first look-up unanswered this long is said to be (`problem`), rather than shown as an
+    /// ordinary wait for ever: a name server that never answered left an output "looking up",
+    /// with nothing on its row.
+    static constexpr double kSlowSeconds = 10.0;
 
     /// One resolved UDP address, in the form `sendto` takes.
     struct Address {
@@ -49,8 +57,9 @@ public:
         int family = 0;
     };
 
-    /// `refreshSeconds` is `kRefreshSeconds` but for a test.
-    AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds = kRefreshSeconds);
+    /// `refreshSeconds` and `slowSeconds` are `kRefreshSeconds` and `kSlowSeconds` but for a test.
+    AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds = kRefreshSeconds,
+                 double slowSeconds = kSlowSeconds);
     ~AsyncAddress();
 
     AsyncAddress(const AsyncAddress&) = delete;
@@ -76,6 +85,7 @@ private:
     std::string host_;
     std::uint16_t port_ = 0;
     double refreshSeconds_ = kRefreshSeconds;
+    double slowSeconds_ = kSlowSeconds;
     /// Shared with the look-up thread, which may outlive this object: a target removed while
     /// its name is still being resolved leaves the thread to finish into a state nobody reads.
     std::shared_ptr<State> state_;

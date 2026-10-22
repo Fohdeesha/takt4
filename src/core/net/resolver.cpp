@@ -24,27 +24,49 @@ using Clock = std::chrono::steady_clock;
 static_assert(sizeof(sockaddr_storage) <= sizeof(AsyncAddress::Address::storage),
               "AsyncAddress::Address has to hold any address the platform can hand back");
 
-/// The best of what a look-up returned: the first IPv4 address, or else the first IPv6 one.
-std::optional<AsyncAddress::Address> pick(const addrinfo* results) {
-    const addrinfo* chosen = nullptr;
-    for (const addrinfo* candidate = results; candidate != nullptr;
-         candidate = candidate->ai_next) {
-        if (candidate->ai_family == AF_INET) {
-            chosen = candidate;
+using Address = AsyncAddress::Address;
+
+/// Every IPv4 and IPv6 address a look-up returned, in its order.
+std::vector<Address> candidatesOf(const addrinfo* results) {
+    std::vector<Address> all;
+    for (const addrinfo* result = results; result != nullptr; result = result->ai_next) {
+        if (result->ai_family != AF_INET && result->ai_family != AF_INET6) {
+            continue;
+        }
+        Address address;
+        std::memcpy(address.storage, result->ai_addr, result->ai_addrlen);
+        address.length = static_cast<int>(result->ai_addrlen);
+        address.family = result->ai_family;
+        all.push_back(address);
+    }
+    return all;
+}
+
+bool same(const Address& a, const Address& b) {
+    return a.family == b.family && a.length == b.length &&
+           std::memcmp(a.storage, b.storage, static_cast<std::size_t>(a.length)) == 0;
+}
+
+/// The best of what a look-up returned: `held` while the answer still has it — a name with
+/// several addresses answers them in any order, and taking the first moved a node from one to
+/// another every refresh — and otherwise the first IPv4 address, or else the first IPv6 one.
+std::optional<Address> pick(const std::vector<Address>& candidates,
+                            const std::optional<Address>& held) {
+    if (held && std::any_of(candidates.begin(), candidates.end(),
+                            [&held](const Address& candidate) { return same(candidate, *held); })) {
+        return held;
+    }
+    const Address* chosen = nullptr;
+    for (const Address& candidate : candidates) {
+        if (candidate.family == AF_INET) {
+            chosen = &candidate;
             break;
         }
-        if (chosen == nullptr && candidate->ai_family == AF_INET6) {
-            chosen = candidate;
+        if (chosen == nullptr && candidate.family == AF_INET6) {
+            chosen = &candidate;
         }
     }
-    if (chosen == nullptr) {
-        return std::nullopt;
-    }
-    AsyncAddress::Address out;
-    std::memcpy(out.storage, chosen->ai_addr, chosen->ai_addrlen);
-    out.length = static_cast<int>(chosen->ai_addrlen);
-    out.family = chosen->ai_family;
-    return out;
+    return chosen != nullptr ? std::optional<Address>(*chosen) : std::nullopt;
 }
 
 /// Whether this is the one name the test sandbox lets through: `localhost`, which the system
@@ -58,34 +80,59 @@ bool isLocalhost(const std::string& host) noexcept {
 }
 
 /// `AsyncAddress::answerForTests`'s answers.
+struct TestAnswer {
+    std::string host;
+    std::string numeric;
+    double delaySeconds = 0.0;
+};
 std::mutex& testAnswersMutex() {
     static std::mutex mutex;
     return mutex;
 }
-std::vector<std::pair<std::string, std::string>>& testAnswers() {
-    static std::vector<std::pair<std::string, std::string>> answers;
+std::vector<TestAnswer>& testAnswers() {
+    static std::vector<TestAnswer> answers;
     return answers;
 }
 
-std::optional<std::string> testAnswer(const std::string& host) {
+std::optional<TestAnswer> testAnswer(const std::string& host) {
     const std::lock_guard<std::mutex> lock(testAnswersMutex());
-    for (const auto& [name, numeric] : testAnswers()) {
-        if (name == host) {
-            return numeric;
+    for (const TestAnswer& answer : testAnswers()) {
+        if (answer.host == host) {
+            return answer;
         }
     }
     return std::nullopt;
 }
 
-/// One look-up. `numericOnly` asks nobody — `AI_NUMERICHOST` fails at once on a name — which is
-/// what makes the constructor safe to call from the output thread. Zero, or the error.
-int resolve(const std::string& host, std::uint16_t port, bool numericOnly,
-            std::optional<AsyncAddress::Address>& out) {
+/// Every address of one look-up. `numericOnly` asks nobody — `AI_NUMERICHOST` fails at once on
+/// a name — which is what makes the constructor safe to call from the output thread. Zero, or
+/// the error.
+int lookUpAll(const std::string& host, std::uint16_t port, bool numericOnly,
+              std::vector<Address>& out) {
     // In the test binaries, a name goes nowhere: see `sandbox.hpp`. -2 is not one of
     // `getaddrinfo`'s codes, so a status line that shows it is recognisably this.
     if (!numericOnly && sandbox::active()) {
-        if (const std::optional<std::string> answer = testAnswer(host)) {
-            return resolve(*answer, port, true, out);
+        if (const std::optional<TestAnswer> answer = testAnswer(host)) {
+            if (answer->delaySeconds > 0.0) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(answer->delaySeconds));
+            }
+            // Comma-separated, a name with several addresses, in the order a test gives them.
+            std::size_t from = 0;
+            for (;;) {
+                const std::size_t comma = answer->numeric.find(',', from);
+                std::vector<Address> one;
+                const int error =
+                    lookUpAll(answer->numeric.substr(from, comma - from), port, true, one);
+                if (error != 0) {
+                    return error;
+                }
+                out.insert(out.end(), one.begin(), one.end());
+                if (comma == std::string::npos) {
+                    break;
+                }
+                from = comma + 1;
+            }
+            return out.empty() ? -1 : 0;
         }
         if (!isLocalhost(host)) {
             sandbox::refuse(sandbox::Refused::Lookup);
@@ -103,8 +150,20 @@ int resolve(const std::string& host, std::uint16_t port, bool numericOnly,
     if (error != 0 || results == nullptr) {
         return error != 0 ? error : -1;
     }
-    out = pick(results);
+    out = candidatesOf(results);
     ::freeaddrinfo(results);
+    return out.empty() ? -1 : 0;
+}
+
+/// One look-up's answer: `held`, the address the name already has, while the answer still has it
+/// (`pick`). Zero, or the error.
+int resolve(const std::string& host, std::uint16_t port, bool numericOnly,
+            std::optional<Address>& out, const std::optional<Address>& held = std::nullopt) {
+    std::vector<Address> candidates;
+    if (const int error = lookUpAll(host, port, numericOnly, candidates); error != 0) {
+        return error;
+    }
+    out = pick(candidates, held);
     return out ? 0 : -1;
 }
 
@@ -121,12 +180,15 @@ struct AsyncAddress::State {
     /// When the name was last asked about, whatever the answer: a refresh is due
     /// `refreshSeconds_` after it.
     Clock::time_point askedAt{};
+    /// When the look-up going now was started, for `problem` to say when it has gone on too long.
+    Clock::time_point lookingSince{};
     std::uint64_t lookUps = 0;
 };
 
-AsyncAddress::AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds)
+AsyncAddress::AsyncAddress(std::string host, std::uint16_t port, double refreshSeconds,
+                           double slowSeconds)
     : host_(std::move(host)), port_(port), refreshSeconds_(refreshSeconds),
-      state_(std::make_shared<State>()) {
+      slowSeconds_(slowSeconds), state_(std::make_shared<State>()) {
     std::optional<Address> numeric;
     if (resolve(host_, port_, /*numericOnly=*/true, numeric) == 0) {
         state_->address = numeric;
@@ -138,16 +200,19 @@ AsyncAddress::AsyncAddress(std::string host, std::uint16_t port, double refreshS
 AsyncAddress::~AsyncAddress() = default;
 
 void AsyncAddress::lookUp() {
+    std::optional<Address> held;
     {
         const std::lock_guard<std::mutex> lock(state_->mutex);
         state_->looking = true;
+        state_->lookingSince = Clock::now();
         state_->error = 0;
         ++state_->lookUps;
+        held = state_->address;
     }
     try {
-        std::thread([state = state_, host = host_, port = port_] {
+        std::thread([state = state_, host = host_, port = port_, held] {
             std::optional<Address> found;
-            const int error = resolve(host, port, /*numericOnly=*/false, found);
+            const int error = resolve(host, port, /*numericOnly=*/false, found, held);
             const std::lock_guard<std::mutex> lock(state->mutex);
             state->looking = false;
             state->askedAt = Clock::now();
@@ -170,15 +235,17 @@ void AsyncAddress::lookUp() {
     }
 }
 
-void AsyncAddress::answerForTests(const std::string& host, const std::string& numeric) {
+void AsyncAddress::answerForTests(const std::string& host, const std::string& numeric,
+                                  double delaySeconds) {
     const std::lock_guard<std::mutex> lock(testAnswersMutex());
-    for (auto& [name, answer] : testAnswers()) {
-        if (name == host) {
-            answer = numeric;
+    for (TestAnswer& answer : testAnswers()) {
+        if (answer.host == host) {
+            answer.numeric = numeric;
+            answer.delaySeconds = delaySeconds;
             return;
         }
     }
-    testAnswers().emplace_back(host, numeric);
+    testAnswers().push_back(TestAnswer{host, numeric, delaySeconds});
 }
 
 std::optional<AsyncAddress::Address> AsyncAddress::address() {
@@ -217,7 +284,16 @@ std::string AsyncAddress::problem() const {
         return {};
     }
     if (state_->looking) {
-        return "looking up " + host_;
+        const double waited =
+            std::chrono::duration<double>(Clock::now() - state_->lookingSince).count();
+        if (waited < slowSeconds_) {
+            return "looking up " + host_;
+        }
+        // Not "looking up": a status line passes that over as the moment every named output
+        // has at launch, and a name server that never answers made it the output's word for good.
+        return "no answer about " + host_ + " after " +
+               std::to_string(static_cast<long long>(waited)) +
+               " s \xE2\x80\x94 is the name right, and a name server reachable?";
     }
     // The code rather than `gai_strerror`'s words: on Windows that returns a static buffer,
     // which two look-up threads failing together would write over each other.

@@ -3,9 +3,17 @@
 #include "core/net/udp.hpp"
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+
+#if defined(_WIN32)
+#include <iphlpapi.h>
+
+#include <vector>
+#pragma comment(lib, "iphlpapi.lib")
+#endif
 
 namespace takt4::control {
 namespace {
@@ -16,6 +24,38 @@ using net::kInvalidSocket;
 using net::lastSocketError;
 using net::Socket;
 using net::WinsockGuard;
+
+#if defined(_WIN32)
+/// Whether another socket on this machine already takes loopback datagrams sent to `port`: one
+/// bound to every address, or to 127.0.0.1. Windows lets a bind to 127.0.0.1 succeed beside a
+/// socket on every address — exclusive or not, measured — and then hands it every loopback
+/// datagram to the port: the operator types Resolume's port as the control port, takt4 says it
+/// is listening, and from then on its own OSC to Resolume lands in its control socket. From the
+/// system's table of UDP sockets; a table that cannot be read says nothing is there.
+bool loopbackTaken(std::uint16_t port) {
+    std::vector<DWORD> buffer;
+    ULONG size = 16 * 1024;
+    DWORD result = ERROR_INSUFFICIENT_BUFFER;
+    for (int attempt = 0; attempt < 4 && result == ERROR_INSUFFICIENT_BUFFER; ++attempt) {
+        buffer.resize(size / sizeof(DWORD) + 64);
+        size = static_cast<ULONG>(buffer.size() * sizeof(DWORD));
+        result = ::GetExtendedUdpTable(buffer.data(), &size, FALSE, AF_INET, UDP_TABLE_BASIC, 0);
+    }
+    if (result != NO_ERROR) {
+        return false;
+    }
+    const auto* table = reinterpret_cast<const MIB_UDPTABLE*>(buffer.data());
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const MIB_UDPROW& row = table->table[i];
+        const std::uint32_t address = ntohl(row.dwLocalAddr);
+        if (ntohs(static_cast<u_short>(row.dwLocalPort)) == port &&
+            (address == INADDR_ANY || address == INADDR_LOOPBACK)) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 } // namespace
 
@@ -48,6 +88,18 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
         throw std::runtime_error("OSC control: cannot open a socket (" +
                                  std::to_string(lastSocketError()) + ")");
     }
+    // The port this socket's alone: a tool binding 127.0.0.1 to it later, with this one on every
+    // address ("allow other machines"), took the Stream Deck's traffic from this machine — PANIC
+    // included — without a word to either.
+    net::bindExclusively(impl->socket);
+#if defined(_WIN32)
+    // And the other way round, which no flag of this socket's can stop: a port another program
+    // holds on every address is refused here rather than shared.
+    if (localOnly && port != 0 && loopbackTaken(port)) {
+        throw std::runtime_error("OSC control: cannot listen: " +
+                                 net::bindFailure(WSAEADDRINUSE, port));
+    }
+#endif
 
     // Unqualified: `htons` and `htonl` are functions on Winsock but *macros* on glibc and
     // on Darwin, and `::htons` asks a macro for a namespace it does not have. MSVC

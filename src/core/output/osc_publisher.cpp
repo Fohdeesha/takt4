@@ -428,7 +428,15 @@ void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<d
     }
 }
 
-void OscPublisher::publishState(const tracking::TempoState& state) {
+void OscPublisher::publishState(const tracking::TempoState& state, bool running) {
+    if (!running || !state.locked) {
+        // Said once, and only after a lock was: a run that never locked never said it had one.
+        if (lastLocked_ == 1) {
+            sendInt(lockedAddress_, 0, kAllOutputs, now_, true);
+            lastLocked_ = 0;
+        }
+        return;
+    }
     sendChangedState(state.bpm, state.confidence, state.locked, state.beatsPerBar, false, now_);
 }
 

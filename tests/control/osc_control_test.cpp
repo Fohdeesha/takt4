@@ -5,8 +5,11 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/model/weights.hpp"
+#include "core/net/udp.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_sender.hpp"
+#include "core/sandbox.hpp"
+#include "core/timing/external_beats.hpp"
 #include "core/tracking/state_space.hpp"
 
 #include "support/recording_rules.hpp"
@@ -561,4 +564,127 @@ TEST_CASE("a control is safe to stop twice, and to never start", "[control]") {
         REQUIRE(held != 0);
     }
     CHECK_NOTHROW(OscReceiver(held, /*localOnly=*/true));
+}
+
+namespace {
+
+/// A message's bytes, as a sender puts them on the wire.
+std::vector<std::byte> messageBytes(const char* address) {
+    OscMessage message(address);
+    const std::span<const std::byte> encoded = message.packet();
+    return {encoded.begin(), encoded.end()};
+}
+
+/// "#bundle", a time tag of "at once", and each message after its size.
+std::vector<std::byte> bundleOf(const std::vector<std::vector<std::byte>>& messages) {
+    std::vector<std::byte> out;
+    for (const char c : std::string("#bundle")) {
+        out.push_back(static_cast<std::byte>(c));
+    }
+    out.push_back(std::byte{0});              // its terminator: eight bytes in all
+    out.resize(out.size() + 7, std::byte{0}); // then the time tag, 1: "at once"
+    out.push_back(std::byte{1});
+    for (const std::vector<std::byte>& message : messages) {
+        const auto size = static_cast<std::uint32_t>(message.size());
+        for (const int shift : {24, 16, 8, 0}) {
+            out.push_back(static_cast<std::byte>((size >> shift) & 0xffu));
+        }
+        out.insert(out.end(), message.begin(), message.end());
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a bundle's control messages are each acted on as they arrive, and a bundle with none "
+          "in it is said",
+          "[control]") {
+    auto engine = makeEngine();
+    OscControl control(*engine, localConfig(kAnyPort));
+    control.start();
+    REQUIRE(control.running());
+    OscSender sender("127.0.0.1", control.port());
+    const std::vector<std::byte> bundle =
+        bundleOf({messageBytes("/takt4/ctl/tempo/halve"), messageBytes("/takt4/ctl/tempo/double")});
+    REQUIRE(sender.send(bundle));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until && control.handled() < 2) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    CHECK(control.handled() == 2);
+    CHECK(control.ignored() == 0);
+
+    // Nothing readable in it: one ignored, and the line says it was a bundle.
+    REQUIRE(sender.send(bundleOf({})));
+    const auto until2 = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < until2 &&
+           control.lastMessage().find("#bundle") == std::string::npos) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    CHECK(control.ignored() == 1);
+    CHECK(control.lastMessage().find("#bundle") != std::string::npos);
+    control.stop();
+}
+
+TEST_CASE("a port another program holds on every address is refused for a control on this machine "
+          "alone, rather than shared",
+          "[control]") {
+    // As a media server binds its OSC input. On Windows a bind to 127.0.0.1 used to succeed
+    // beside it, and every loopback datagram to the port then went to takt4: the operator's own
+    // OSC to the media server landed in the control socket, and nothing said so.
+    [[maybe_unused]] const takt4::net::WinsockGuard winsock; // an empty struct off Windows
+    const takt4::net::Socket holder = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    REQUIRE(holder != takt4::net::kInvalidSocket);
+    sockaddr_in every{};
+    every.sin_family = AF_INET;
+    every.sin_addr.s_addr = htonl(INADDR_ANY);
+    REQUIRE(::bind(holder, reinterpret_cast<const sockaddr*>(&every), sizeof every) == 0);
+    socklen_t length = sizeof every;
+    REQUIRE(::getsockname(holder, reinterpret_cast<sockaddr*>(&every), &length) == 0);
+    const std::uint16_t port = ntohs(every.sin_port);
+    takt4::sandbox::allowPort(port);
+    try {
+        const OscReceiver beside(port, /*localOnly=*/true);
+        FAIL("listening on 127.0.0.1:" << port << " beside a socket on every address");
+    } catch (const std::runtime_error& e) {
+        INFO(e.what());
+        CHECK(std::string(e.what()).find("in use") != std::string::npos);
+    }
+    takt4::net::closeSocket(holder);
+    // Let go of, it is the control's.
+    CHECK_NOTHROW(OscReceiver(port, /*localOnly=*/true));
+}
+
+TEST_CASE("listening to other machines, the control's port is its own: a later bind to this "
+          "machine's own address on it is refused",
+          "[control]") {
+    // A tool binding 127.0.0.1 on the port took a Stream Deck's traffic from this machine,
+    // PANIC included, on Windows, without a word to either.
+    const OscReceiver every(kAnyPort, /*localOnly=*/false);
+    [[maybe_unused]] const takt4::net::WinsockGuard winsock; // an empty struct off Windows
+    const takt4::net::Socket later = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    REQUIRE(later != takt4::net::kInvalidSocket);
+    sockaddr_in loopback{};
+    loopback.sin_family = AF_INET;
+    loopback.sin_port = htons(every.port());
+    loopback.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(::bind(later, reinterpret_cast<const sockaddr*>(&loopback), sizeof loopback) != 0);
+    takt4::net::closeSocket(later);
+}
+
+TEST_CASE("following a grid from somewhere else, a tap or a lock from a control surface is "
+          "refused, not counted as acted on",
+          "[control]") {
+    // The follower refuses both; the surface used to count them as acted, so the OSC row said
+    // "acted" beside a greyed-out TAP.
+    takt4::timing::ExternalBeats beats;
+    OscControl control(beats, localConfig(kAnyPort));
+    for (int tap = 0; tap < 4; ++tap) {
+        CHECK_FALSE(control.dispatch("/takt4/ctl/tap", std::nullopt));
+    }
+    CHECK_FALSE(control.dispatch("/takt4/ctl/lock", 1.0));
+    CHECK_FALSE(control.dispatch("/takt4/ctl/lock", 0.0));
+    // What a followed grid does take is still taken.
+    CHECK(control.dispatch("/takt4/ctl/tempo/halve", std::nullopt));
+    CHECK(control.dispatch("/takt4/ctl/downbeat", std::nullopt));
 }

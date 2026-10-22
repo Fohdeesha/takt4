@@ -199,11 +199,16 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
 
     switch (target.action) {
     case ControlAction::Tap: {
+        // Following a grid from somewhere else, a tap means nothing: not acted on, from the first
+        // tap — it used to be counted as acted while the follower refused it.
+        if (!beats_.takesTempo()) {
+            return false;
+        }
         const std::optional<double> tapped = taps_.tap(nowSeconds);
         if (tapped) {
             // A seed, not an override — the locked decision, and the same thing the
             // window's TAP and the console's space bar do.
-            (void)beats_.post(Command::seedTempo(*tapped));
+            return beats_.post(Command::seedTempo(*tapped));
         }
         // The taps before the third say nothing, which is not the same as failing.
         return true;
@@ -221,9 +226,8 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         // Anything a surface spells "true" with: OSC booleans arrive as 1 and 0, a fader
         // sends 1.0, and a MIDI pad sends 1 while held and 0 on its release (`argumentOf`),
         // so a pad pins while it is down — it used to send 1 and nothing, and pinned for good
-        //.
-        (void)beats_.post(Command::setLockPinned(*argument != 0.0));
-        return true;
+        //. Refused, as a tap is, by a grid followed from elsewhere.
+        return beats_.post(Command::setLockPinned(*argument != 0.0));
 
     // The two that are not the tracker's. Refused outright where nothing is wired to the
     // rules: an app with no output runner has no rules to halt, and reporting that is what

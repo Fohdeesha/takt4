@@ -2459,3 +2459,33 @@ TEST_CASE("following Link, a beat commits nothing to it, and leading again snaps
     CHECK(transports.link().beatRequests() == 1);
     CHECK(transports.link().tempoUpdates() == 1);
 }
+
+TEST_CASE("two Art-Net outputs to one node are said on the second row: the node would be sent "
+          "every frame twice",
+          "[output][artnet]") {
+    // Twice the 44 Hz a node takes, and two runs of sequence numbers it reads as frames out of
+    // order — with nothing on either row to say why the lights stutter.
+    takt4::testing::ArtNetNodes nodes(1);
+    Transports::Config config;
+    const auto node = [&nodes](std::string id, std::string name, std::string host) {
+        takt4::output::OutputTarget target;
+        target.id = std::move(id);
+        target.name = std::move(name);
+        target.kind = takt4::output::OutputTarget::Kind::ArtNet;
+        target.host = std::move(host);
+        target.port = nodes.port(0);
+        return target;
+    };
+    config.outputs = {node("o-a1", "truss", "127.0.0.1"), node("o-a2", "truss again", "127.0.0.1")};
+    Transports transports(config);
+    const std::vector<Transports::Problem> problems = transports.problems();
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].id == "o-a2");
+    CHECK(problems[0].why ==
+          "sends to the same node as truss \xE2\x80\x94 the node is sent every frame twice");
+
+    // Another port is another node.
+    config.outputs[1].port = static_cast<std::uint16_t>(nodes.port(0) + 1);
+    Transports apart(config);
+    CHECK(apart.problems().empty());
+}

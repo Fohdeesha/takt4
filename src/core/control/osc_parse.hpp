@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -74,8 +75,23 @@ private:
 /// requires the type tag string, but enough senders omit it for an address-only message
 /// that refusing them would mean refusing real control surfaces.
 ///
-/// **Bundles are not handled** — `#bundle` returns nothing. Nothing in the design needs one, and
-/// accepting a container of messages means deciding what their timestamps mean.
+/// A bundle is not a message, and returns nothing: `forEachOscMessage` opens one.
 std::optional<OscView> parseOsc(std::span<const std::byte> packet) noexcept;
+
+/// Bundles inside bundles opened this deep, and no deeper.
+inline constexpr int kMaxBundleDepth = 4;
+
+/// Whether `packet` is an OSC bundle: "#bundle", its terminator and a time tag, then elements.
+bool isOscBundle(std::span<const std::byte> packet) noexcept;
+
+/// Every message in `packet`, handed to `visit` in order: the packet itself when it is not a
+/// bundle, or each message a bundle holds — bundles inside it opened in turn, `kMaxBundleDepth`
+/// deep. **A bundle's time tag is not waited for**: what it holds is acted on as it arrives, which
+/// is what a controller that bundles its messages out of habit means by them. An element that
+/// runs past its bundle ends the walk there, after those before it. How many were handed over.
+/// A controller that wrapped its messages in bundles used to do nothing at all, counted as
+/// ignored with no word of why.
+std::size_t forEachOscMessage(std::span<const std::byte> packet,
+                              const std::function<void(std::span<const std::byte>)>& visit);
 
 } // namespace takt4::control

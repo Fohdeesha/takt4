@@ -1763,6 +1763,44 @@ TEST_CASE("an OSC control port another program holds stays asked for, says why, 
     }
 }
 
+TEST_CASE("opening the OSC control to other machines on a port another program holds on an address "
+          "of its own leaves it listening on this machine, and says so",
+          "[ui]") {
+    // Every address cannot be had beside a socket on any one, so ticking "allow other machines"
+    // closed the working socket and then failed — a Stream Deck left with nobody listening, as
+    // a new port that would not bind once did.
+    namespace peer = takt4::testing::prolink_peer;
+    if (!peer::canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    std::uint16_t free = 0;
+    {
+        const takt4::testing::LoopbackReceiver probe;
+        free = probe.port();
+    }
+    controller.window().invoke_osc_control_port_edited(slint::SharedString(std::to_string(free)));
+    controller.window().invoke_osc_control_toggled(true);
+    REQUIRE(controller.oscControl().running());
+    REQUIRE(controller.oscControlPort() == free);
+    REQUIRE(controller.oscControl().config().localOnly);
+
+    // Another program on the same port at 127.0.0.2: nothing takt4 sends itself reaches it.
+    peer::UdpPeer holder(peer::kDevices, free);
+    controller.window().invoke_osc_control_network_toggled(true);
+    CHECK(controller.oscControl().running());
+    CHECK(controller.oscControlPort() == free);
+    CHECK(controller.oscControl().config().localOnly);
+    CHECK_FALSE(controller.window().get_osc_control_network());
+    CHECK(controller.currentSettings().machine.oscControlLocalOnly);
+    CHECK(controller.statusIsError());
+    const std::string status(controller.window().get_status());
+    INFO(status);
+    CHECK(status.find("Still listening on " + std::to_string(free) + " (this machine only).") !=
+          std::string::npos);
+}
+
 TEST_CASE("a MIDI control input that is not here says so on its own line until it is", "[ui]") {
     // The same for the MIDI input: a controller left at home, or held by a DAW that opened
     // every input it saw (a WinMM input is one program's at a time). Its line used to read
@@ -6226,27 +6264,45 @@ TEST_CASE("an import restores this machine's half too, and a file without one le
     }
 }
 
+namespace {
+
+/// An output called `name` at the address every send to fails, sent the global messages, and a
+/// cue fired by hand ("manual") aimed at every output, whichever there are.
+takt4::settings::Settings settingsWithHandFiredCueTo(const std::string& name) {
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget output;
+    REQUIRE(takt4::output::parseOutputTarget(
+        name + " = " + takt4::testing::kUnsendableHost + ":57000 global", output));
+    saved.preset.outputs = {output};
+    takt4::trigger::Rule::Config cue;
+    cue.id = "cue";
+    cue.trigger = takt4::trigger::Trigger::Manual;
+    cue.address = "/cue";
+    saved.preset.rules = {cue};
+    return saved;
+}
+
+} // namespace
+
 TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
     // Where the operator meets an earlier review: a network that is down, or a cable that is
     // out, fails every send, and the window said nothing — the output just went quiet.
     // The socket refuses every send to `kUnsendableHost`, the stand-in here, since no test can
     // pull a cable. Nothing is started: the outputs run from launch, and the status has
-    // to say so before anybody presses anything — for an output sent takt4's own messages,
-    // which are what a stopped window sends; one sent nothing has nothing to fail.
+    // to say so before START — for an output that is sent something; one sent nothing has
+    // nothing to fail. A stopped window sends the global messages nothing (they wait for a
+    // lock), so it is sent a cue fired by hand, as a control surface fires one.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
     LiveTracker tracker(kWeights, kStateSpace);
-    takt4::settings::Settings saved;
-    takt4::output::OutputTarget deck;
-    REQUIRE(takt4::output::parseOutputTarget(
-        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000 global", deck));
-    saved.preset.outputs = {deck};
+    takt4::settings::Settings saved = settingsWithHandFiredCueTo("deck");
     WindowController controller(tracker, saved);
 
     std::string status;
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (status.find("deck") == std::string::npos && std::chrono::steady_clock::now() < until) {
+        (void)controller.oscControl().dispatch("/takt4/ctl/manual", std::nullopt);
         controller.tick();
         status = std::string(controller.window().get_status());
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -6289,12 +6345,8 @@ TEST_CASE("the settings notice and what the first redraws find are said together
         SKIP(takt4::testing::kUnsendableSkip);
     }
     LiveTracker tracker(kWeights, kStateSpace);
-    takt4::settings::Settings saved;
-    takt4::output::OutputTarget deck;
-    // Sent takt4's own messages, which are what fails — see the test above.
-    REQUIRE(takt4::output::parseOutputTarget(
-        std::string("deck = ") + takt4::testing::kUnsendableHost + ":57000 global", deck));
-    saved.preset.outputs = {deck};
+    // Sent a cue fired by hand, which is what fails — see the test above.
+    takt4::settings::Settings saved = settingsWithHandFiredCueTo("deck");
     WindowController controller(tracker, saved);
     const std::string notice = "settings.json could not be read, so the copy from the last good "
                                "start is being used.";
@@ -6303,6 +6355,7 @@ TEST_CASE("the settings notice and what the first redraws find are said together
     std::string status;
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (status.find("deck") == std::string::npos && std::chrono::steady_clock::now() < until) {
+        (void)controller.oscControl().dispatch("/takt4/ctl/manual", std::nullopt);
         controller.tick();
         status = std::string(controller.window().get_status());
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -6324,6 +6377,7 @@ TEST_CASE("the settings notice and what the first redraws find are said together
     std::string later;
     const auto until2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (later.find("desk") == std::string::npos && std::chrono::steady_clock::now() < until2) {
+        (void)controller.oscControl().dispatch("/takt4/ctl/manual", std::nullopt);
         controller.tick();
         later = std::string(controller.window().get_status());
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

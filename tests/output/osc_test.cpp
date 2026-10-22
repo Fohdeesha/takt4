@@ -198,6 +198,72 @@ TEST_CASE("an output aimed at a name follows the name to a new address", "[outpu
     CHECK(sender.resolved().find("127.0.0.2") != std::string::npos);
 }
 
+namespace {
+
+/// The IPv4 address an `AsyncAddress` has, in host order, or 0 with none (or an IPv6 one).
+std::uint32_t ipv4Of(const std::optional<takt4::net::AsyncAddress::Address>& address) {
+    if (!address || address->family != AF_INET) {
+        return 0;
+    }
+    sockaddr_in v4{};
+    std::memcpy(&v4, address->storage, sizeof v4);
+    return ntohl(v4.sin_addr.s_addr);
+}
+
+} // namespace
+
+TEST_CASE("a name with several addresses keeps the one it has while the name still answers it, "
+          "and moves when the name does",
+          "[output][osc][net]") {
+    // A name server hands a name's addresses back in any order. Taking the first IPv4 one each
+    // time moved a node from one address to another at every half-minute refresh.
+    using takt4::net::AsyncAddress;
+    AsyncAddress::answerForTests("two-cards.test", "127.0.0.1,127.0.0.2");
+    AsyncAddress where("two-cards.test", 9000, 0.05);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!where.address() && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(ipv4Of(where.address()) == 0x7F000001u);
+
+    // The same two, the other way round: refreshed many times, and kept.
+    AsyncAddress::answerForTests("two-cards.test", "127.0.0.2,127.0.0.1");
+    const std::uint64_t asked = where.lookUps();
+    const auto watch = std::chrono::steady_clock::now() + std::chrono::milliseconds{600};
+    while (std::chrono::steady_clock::now() < watch) {
+        CHECK(ipv4Of(where.address()) == 0x7F000001u);
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    CHECK(where.lookUps() >= asked + 3);
+
+    // The name moved for real: followed.
+    AsyncAddress::answerForTests("two-cards.test", "127.0.0.2");
+    const auto moved = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (ipv4Of(where.address()) != 0x7F000002u && std::chrono::steady_clock::now() < moved) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    CHECK(ipv4Of(where.address()) == 0x7F000002u);
+}
+
+TEST_CASE("a name the name server does not answer for is said to be after a while, rather than "
+          "shown as the ordinary wait every named output has at launch",
+          "[output][osc][net]") {
+    using takt4::net::AsyncAddress;
+    AsyncAddress::answerForTests("slow-server.test", "127.0.0.1", 0.8);
+    AsyncAddress where("slow-server.test", 9000, AsyncAddress::kRefreshSeconds, 0.2);
+    CHECK(where.problem() == "looking up slow-server.test");
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+    const std::string slow = where.problem();
+    INFO(slow);
+    // Not "looking up …", which the outputs' list passes over as that ordinary wait.
+    CHECK(slow.rfind("no answer about slow-server.test after ", 0) == 0);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!where.address() && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    CHECK(where.problem().empty());
+}
+
 TEST_CASE("a sending socket never waits", "[output][osc]") {
     // an earlier review: "a single non-blocking sendto", said the senders, of sockets that were
     // blocking — so a full send buffer would have held the output thread, and the MIDI clock
@@ -739,18 +805,24 @@ TEST_CASE("the tracker finding the beat again sends a resync", "[output][osc]") 
     takt4::tracking::TempoState state;
     state.bpm = 128.0;
     state.locked = false;
+    publisher.publishState(state); // hunting: nothing at all goes out before a lock
+    CHECK(received().empty());
+
+    // Found for the first time: told, and no resync — nothing a receiver had was lost.
+    state.locked = true;
     publisher.publishState(state);
     CHECK(resyncs(received()) == 0);
-
-    state.locked = true; // found
-    publisher.publishState(state);
-    CHECK(resyncs(received()) == 1);
     publisher.publishState(state); // still locked: nothing new
-    CHECK(resyncs(received()) == 0);
+    CHECK(received().empty());
 
-    state.locked = false; // lost
+    state.locked = false; // lost: /locked 0
     publisher.publishState(state);
     state.locked = true; // and found again
+    publisher.publishState(state);
+    CHECK(resyncs(received()) == 1);
+
+    // A run stopped, which says /locked 0 too, and its next lock: a resync.
+    publisher.publishState(state, /*running=*/false);
     publisher.publishState(state);
     CHECK(resyncs(received()) == 1);
 

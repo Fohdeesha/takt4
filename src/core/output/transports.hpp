@@ -265,9 +265,10 @@ public:
     /// beat — up to fifteen seconds with a peer's tempo off by a couple of BPM the while.
     void resnapLink() noexcept { linkSnapped_ = false; }
 
-    /// Ticks the MIDI clock up to `now` and republishes any OSC state that moved. Called
-    /// every round, beat or no beat: the MIDI clock's 24 PPQN does not wait for one.
-    void advance(double now, const tracking::TempoState& state);
+    /// Ticks the MIDI clock up to `now` and republishes any OSC state that moved — while
+    /// `running` and locked only (`OscPublisher::publishState`). Called every round, beat or no
+    /// beat: the MIDI clock's 24 PPQN does not wait for one.
+    void advance(double now, const tracking::TempoState& state, bool running = true);
 
     /// One beat's effect on the two clocks: the MIDI clock is steered towards it and Link's
     /// timeline is put under it. Called as each beat is **detected**, whenever that is — both

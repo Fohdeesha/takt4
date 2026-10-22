@@ -6,9 +6,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -96,13 +98,14 @@ public:
     /// The last address acted on and where it came from, for a UI and for learn mode.
     std::string lastMessage() const;
 
-    /// Acts on one address, as if it had arrived. The way a test drives this without a
-    /// socket, and the seam a MIDI binding will use when learn mode arrives.
-    /// `argument` is the `<0|1>` where an address takes one.
+    /// Acts on one address, as if it had arrived — the way a test drives this without a
+    /// socket. `argument` is the `<0|1>` where an address takes one.
     bool dispatch(std::string_view address, std::optional<double> argument);
 
 private:
     void run() noexcept;
+    /// One message — a datagram, or one of a bundle's — acted on and counted.
+    void handle(std::span<const std::byte> packet) noexcept;
 
     Config config_;
     /// This surface's own route in, including its own tap set — the taps arriving over the

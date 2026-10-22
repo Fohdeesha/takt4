@@ -46,9 +46,9 @@ std::optional<MidiEvent> readMidiEvent(std::span<const unsigned char> message) n
 /// which — instead of needing two bindings that could never both be learned from one
 /// gesture.
 ///
-/// A `ControlTarget` rather than a bare `ControlAction`, because the design's
-/// `rule/<id>/enable` names a rule and a binding to it is worthless without one. The
-/// implicit conversion means a binding to any of the other six still reads as before.
+/// A `ControlTarget` rather than a bare `ControlAction`, because the `rule/<id>/…` verbs
+/// name a rule and a binding to one is worthless without it. The implicit conversion means a
+/// binding to any action that names no rule still reads as before.
 struct MidiBinding {
     MidiEvent::Kind kind = MidiEvent::Kind::Note;
     std::uint8_t channel = 1;

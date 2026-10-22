@@ -77,37 +77,63 @@ bool OscControl::dispatch(std::string_view address, std::optional<double> argume
     return surface_.apply(*target, argument);
 }
 
+void OscControl::handle(std::span<const std::byte> packet) noexcept {
+    const std::optional<OscView> message = parseOsc(packet);
+    if (!message) {
+        // Not an OSC message at all. Counted, because a control surface pointed at
+        // the wrong port looks exactly like a broken one otherwise.
+        ignored_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    bool acted = false;
+    try {
+        acted = dispatch(message->address(), message->number(0));
+    } catch (...) {
+        // Nothing in dispatch throws today, and a control surface must not be able to
+        // take the process down by sending something unexpected if one ever does.
+        acted = false;
+    }
+
+    if (acted) {
+        handled_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        ignored_.fetch_add(1, std::memory_order_relaxed);
+    }
+    try {
+        const std::lock_guard<std::mutex> lock(lastMutex_);
+        last_ = std::string(message->address()) + (acted ? "" : "  (not understood)") + "  from " +
+                receiver_->lastSender();
+    } catch (...) {
+        // No memory for the line: the counts above still say it came.
+    }
+}
+
 void OscControl::run() noexcept {
     while (running_.load(std::memory_order_acquire)) {
         const std::span<const std::byte> datagram = receiver_->receive(kPoll);
         if (datagram.empty()) {
             continue;
         }
-        const std::optional<OscView> message = parseOsc(datagram);
-        if (!message) {
-            // Not an OSC message at all. Counted, because a control surface pointed at
-            // the wrong port looks exactly like a broken one otherwise.
-            ignored_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        bool acted = false;
+        // A bundle's messages each as it was sent alone, at once (`forEachOscMessage`).
+        std::size_t messages = 0;
         try {
-            acted = dispatch(message->address(), message->number(0));
+            messages = forEachOscMessage(
+                datagram, [this](std::span<const std::byte> packet) { handle(packet); });
         } catch (...) {
-            // Nothing in dispatch throws today, and a control surface must not be able to
-            // take the process down by sending something unexpected if one ever does.
-            acted = false;
+            messages = 0;
         }
-
-        if (acted) {
-            handled_.fetch_add(1, std::memory_order_relaxed);
-        } else {
+        if (messages == 0 && isOscBundle(datagram)) {
+            // A bundle with nothing readable in it: said, where a bundle used to be counted as
+            // ignored with no line to say why.
             ignored_.fetch_add(1, std::memory_order_relaxed);
+            try {
+                const std::lock_guard<std::mutex> lock(lastMutex_);
+                last_ =
+                    "#bundle with no message takt4 can read in it  from " + receiver_->lastSender();
+            } catch (...) {
+            }
         }
-        const std::lock_guard<std::mutex> lock(lastMutex_);
-        last_ = std::string(message->address()) + (acted ? "" : "  (not understood)") + "  from " +
-                receiver_->lastSender();
     }
 }
 

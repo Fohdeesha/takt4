@@ -32,10 +32,11 @@ namespace takt4::output {
 ///     /takt4/resync      int     1, when the tracker has just re-found itself
 ///     /takt4/intensity   int     0, 1 or 2 — Phase 6's classifier; not sent yet
 ///
-/// The four state addresses are sent when the value changes and on every beat, so a
-/// consumer that started late is right again within a beat rather than waiting for the
-/// operator to touch something. Nothing is sent faster than the beats themselves except
-/// a tempo or lock change, which is a handful of datagrams a minute.
+/// The four state addresses are sent on every beat, and between beats when a value changes —
+/// the tempo by more than 0.005 BPM, the confidence by more than 0.005 — so a consumer that
+/// started late is right again within a beat rather than waiting for the operator to touch
+/// something. **Only while a run is locked** (`publishState`): nothing before the first lock,
+/// nothing while stopped, and `/locked 0` once when the lock goes or the run stops.
 ///
 /// To every target that wants them — `OutputTarget::sendsNamespace`, which an output has off
 /// until it is asked for. A target with it off is sent the rules aimed at it and nothing of this.
@@ -163,9 +164,13 @@ public:
     /// on a prediction — and each target has it at that moment plus its offset. Unset is now.
     void publishBeat(const tracking::BeatEvent& event, std::optional<double> moment = std::nullopt);
 
-    /// Publishes state that changed since the last call, without a beat. Cheap to call
-    /// every frame: when nothing has changed it sends nothing.
-    void publishState(const tracking::TempoState& state);
+    /// Publishes state that changed since the last call, without a beat — **only a run's lock**
+    /// (the operator, 2026-10-22): `running` and `state.locked` both. Before a lock the tempo is
+    /// the hunt's, flipping octaves or read off beatless sound; stopped, the state is the last
+    /// run's, or another source's after the picker was flipped. What is said then is that the lock
+    /// is gone: `/locked 0`, once — at STOP, and when a run loses its lock. Cheap to call every
+    /// frame: when nothing has changed it sends nothing.
+    void publishState(const tracking::TempoState& state, bool running = true);
 
     /// the resync: tell downstream to snap. Sent by itself whenever the published lock goes
     /// from off to on — see `sendChangedState` — and callable for anything else that means the

@@ -6,10 +6,11 @@ namespace takt4::control {
 
 /// What a control surface can ask of the rules.
 ///
-/// the table has seven addresses. Five of them are questions for the tracker and reach it
-/// through `engine::BeatSource::post`; two are questions for the *rules*, which live on
-/// the output thread behind `output::OutputRunner`'s own queue. So a surface needs two
-/// destinations rather than one, and this is the second.
+/// Five of the control addresses are questions for the tracker and reach it through
+/// `engine::BeatSource::post`; the rest — PANIC and its release, the manual rules and the six
+/// `rule/<id>/…` verbs — are questions for the *rules*, which live on the output thread
+/// behind `output::OutputRunner`'s own queue. So a surface needs two destinations rather than
+/// one, and this is the second.
 ///
 /// **An interface rather than a reference to the runner**, for the reasons `trigger::Sink`
 /// is one. `core/control` has no business pulling in a Link session, three sockets and a

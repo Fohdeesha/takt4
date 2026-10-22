@@ -344,8 +344,11 @@ net::Socket bound(std::uint32_t ip, std::uint16_t port, std::string& problem) {
         problem = "cannot open a socket (" + std::to_string(net::lastSocketError()) + ")";
         return net::kInvalidSocket;
     }
-    // Non-blocking, and allowed to broadcast: everything takt4 sends goes from these.
+    // Non-blocking, and allowed to broadcast: everything takt4 sends goes from these. And the
+    // port takt4's alone while it has it: on Windows a program binding one address to it later
+    // would otherwise take the datagrams sent to that address, and nobody would be told.
     net::prepareSender(socket);
+    net::bindExclusively(socket);
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);

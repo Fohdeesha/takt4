@@ -86,6 +86,10 @@ public:
     /// it, as the tracker's are. The output thread then fires a beat ahead of being heard only
     /// for an output that wants it early (`output::BeatScheduler`).
     virtual bool beatsOnTime() const noexcept { return false; }
+    /// Whether a tempo of the operator's — a tap, a pinned lock — means anything to this source.
+    /// A grid followed from somewhere else has its tempo from there, and refuses both (`post`); a
+    /// control surface asks this first, so a tap it sends is not counted as acted on.
+    virtual bool takesTempo() const noexcept { return true; }
 
 protected:
     BeatSource() = default;
@@ -123,6 +127,7 @@ public:
     std::uint64_t runNumber() const noexcept override { return selected().runNumber(); }
     bool post(const Command& command) override { return selected().post(command); }
     bool beatsOnTime() const noexcept override { return selected().beatsOnTime(); }
+    bool takesTempo() const noexcept override { return selected().takesTempo(); }
 
 private:
     std::atomic<BeatSource*> selected_;
