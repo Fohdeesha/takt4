@@ -16,7 +16,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <string>
 #include <thread>
@@ -61,11 +63,23 @@ bool eventually(Predicate predicate, std::chrono::milliseconds limit = std::chro
 
 using takt4::testing::anyLinkHeard;
 
-TEST_CASE("two Link sessions for another process to list", "[.link-peer]") {
+TEST_CASE("two Link sessions for another process to list", "[.link-peer][network]") {
     // Hidden: run only by window_test.cpp's "SHOW PEERS lists a Link peer in another process", as
     // the peer it lists. That test has made sure no other Link session is on the network before
     // switching takt4's own on, and its own is the session these join; a guarded test in their
-    // place heard it and skipped, and SHOW PEERS listed nobody.
+    // place heard it and skipped, and SHOW PEERS listed nobody. [network], or the test sandbox
+    // refuses both sessions; and only when SHOW PEERS says so in the environment it starts this
+    // with, since run by hand, or by its tag, it would join whatever session is on the network.
+#ifdef _MSC_VER
+    std::size_t length = 0;
+    const bool asked = getenv_s(&length, nullptr, 0, "TAKT4_TEST_LINK_PEER") == 0 && length > 1;
+#else
+    const char* const value = std::getenv("TAKT4_TEST_LINK_PEER");
+    const bool asked = value != nullptr && *value != '\0';
+#endif
+    if (!asked) {
+        SKIP("run only as SHOW PEERS's peer, which sets TAKT4_TEST_LINK_PEER");
+    }
     LinkSession first(123.0);
     LinkSession second(97.0);
     first.enable(true);

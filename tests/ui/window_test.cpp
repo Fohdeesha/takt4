@@ -2916,6 +2916,8 @@ TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself",
     }
     const std::string command = "\"\"" + other.string() +
                                 "\" \"two Link sessions for another process to list\" >NUL 2>&1\"";
+    // Which that test waits for: the network has been checked clear, and this is the one asking.
+    const takt4::test::ScopedVariable peerFor("TAKT4_TEST_LINK_PEER", "1");
     std::thread peer([command] { (void)std::system(command.c_str()); });
     std::size_t most = 0;
     std::string tempo;
