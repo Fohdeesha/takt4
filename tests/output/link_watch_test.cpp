@@ -1,6 +1,7 @@
 #include "core/output/link_peers.hpp"
 #include "core/output/link_session.hpp"
 
+#include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
 #include "support/this_machine.hpp"
 
@@ -339,6 +340,10 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
     // nothing taken for this process's own, both are listed at their tempos — so what the parser
     // reads is what Link really sends. Seen as takt4 sees them, both are this process's, and the
     // list is empty: takt4's own Link is never shown as a peer of itself.
+    //
+    // Not on a network with a Link session on it already: the two would join it and take its
+    // tempo (another computer, at 120 BPM, made "a peer at 120 BPM" of this test's own).
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     takt4::output::LinkSession first(123.0);
     takt4::output::LinkSession second(97.0);
     LinkPeerWatch everyone([](const std::string&, std::uint16_t) { return false; });

@@ -62,6 +62,7 @@ bool eventually(Predicate predicate, std::chrono::milliseconds limit = std::chro
 using takt4::testing::anyLinkHeard;
 
 TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     LinkSession tracker(120.0); // takt4, driving
     LinkSession peer(60.0);     // whatever is listening
 
@@ -139,6 +140,7 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link
 }
 
 TEST_CASE("a peer that was there first is put on the music's phase", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // an earlier review, as its experiment ran it: Resolume on Link first, takt4 enabling Link
     // after, so takt4's session adopts Resolume's timeline on join — and the music's beats fall
     // 180 ms off it. With a peer present `requestBeatAtTime` does not move the session's phase

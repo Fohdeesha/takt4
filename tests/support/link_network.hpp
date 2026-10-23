@@ -6,6 +6,8 @@
 
 #include "core/output/link_peers.hpp"
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <chrono>
 #include <string>
 #include <thread>
@@ -31,6 +33,21 @@ inline bool anyLinkHeard(double seconds, std::string& problem) {
         }
     }
     return false;
+}
+
+/// First thing in a [network] test that switches a Link session on: skipped while another Link
+/// session is on this network, or when Link cannot be listened to. Joined, a test's session takes
+/// that session's tempo and is counted in it, and whatever the test then sets — a tempo, a bar —
+/// is set for everyone in it: on the rig's network, another computer.
+inline void skipWhileLinkIsOnTheNetwork() {
+    std::string problem;
+    const bool other = anyLinkHeard(2.0, problem);
+    if (!problem.empty()) {
+        SKIP("cannot listen for Link sessions on this network: " + problem);
+    }
+    if (other) {
+        SKIP("a Link session is already on this network, which this test's own would join");
+    }
 }
 
 } // namespace takt4::testing

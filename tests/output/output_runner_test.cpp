@@ -16,6 +16,7 @@
 
 #include "support/fake_beat_source.hpp"
 #include "support/late_rounds.hpp"
+#include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
 #include "support/osc_messages.hpp"
 
@@ -1833,6 +1834,7 @@ TEST_CASE("a note released after one beat is let go before the next beat's note,
 
 TEST_CASE("Link is put under the first locked beat after a START and after a silence",
           "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The output thread's half of `Transports::resnapLink`: a START, and the input going quiet,
     // each begin a new run, and the first locked beat after either is where Link's bar is put —
     // not nudged towards at two per cent a beat from wherever the last run left the session.

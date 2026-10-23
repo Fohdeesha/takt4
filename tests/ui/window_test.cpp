@@ -30,6 +30,7 @@
 #include "ui/window_state.hpp"
 
 #include "support/fake_grid_source.hpp"
+#include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
 #include "support/osc_messages.hpp"
 #include "support/prolink_peer.hpp"
@@ -2697,6 +2698,7 @@ TEST_CASE("the window comes up sending nothing", "[ui]") {
 }
 
 TEST_CASE("the Link row's tick reaches the transports", "[ui][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
@@ -2850,6 +2852,7 @@ TEST_CASE("unticking a MIDI output sends the note off it still owes, on a real p
 #endif
 
 TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself", "[ui][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The list under the Link row, end to end: Link switched on from its row, SHOW PEERS, and
     // a real Link peer — two sessions in another process, the core suite's own two-session test
     // — listed at its tempo, while takt4's own Link, announcing on the same network, is not.
@@ -4475,6 +4478,7 @@ TEST_CASE("an input that opens again and sends nothing is not back", "[ui][hardw
 }
 
 TEST_CASE("the window switches the outputs back on", "[ui][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     saved.preset.link = true;
@@ -4686,6 +4690,7 @@ TEST_CASE("a settings file held from the autosave is kept saved from the first S
 }
 
 TEST_CASE("what the window hands back is what it was given", "[ui][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     saved.preset.link = true;
@@ -8565,6 +8570,7 @@ TEST_CASE("a right-click puts each of the main window's sliders back to a fresh 
 
 TEST_CASE("the Liberation preset patches its zones, adds Liberation's output and switches Link on",
           "[ui][liberation][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // Tagged for the network because adding switches Link on, which joins the session on the LAN.
     // The Art-Net output is aimed at a listener of the test's own rather than Art-Net's port, so a
     // Liberation running on this machine never hears it (`RulesController::setLiberationPort`).

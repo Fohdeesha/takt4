@@ -180,6 +180,7 @@ TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output
 }
 
 TEST_CASE("Link is built whether or not it is switched on", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The invariant the audio thread depends on. `BeatEngine::setHostTimeSource` is handed
     // this session and reads it every hop, so building it on demand would mean
     // destroying one under a running audio thread the first time Link was switched off.
@@ -200,6 +201,7 @@ TEST_CASE("Link is built whether or not it is switched on", "[output][link][netw
 }
 
 TEST_CASE("switching Link on before the outputs start does not join yet", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // Setting something up is not the same as doing it: an operator ticks Link while the
     // tracker is stopped, and nothing should appear to peers until Start.
     Transports transports{Transports::Config{}};
@@ -714,6 +716,7 @@ TEST_CASE("a MIDI receiver's bar 1 is a downbeat of the music", "[output][midi]"
 }
 
 TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The wiring, held to Link's own counters and to its own timeline. What the calls then
     // *mean* between two peers is link_peers_test.cpp's business; this is about which calls
     // are made, and when — an earlier review and H15.
@@ -1329,6 +1332,7 @@ TEST_CASE("outputs with no Link output among them leave Link as it was", "[outpu
 }
 
 TEST_CASE("the Link output's delay moves the timeline under the beat", "[output][link][network]") {
+    takt4::testing::skipWhileLinkIsOnTheNetwork();
     // Link's delay works as every output's does: the session's bar starts the delay after the
     // beat's own moment. Driven like "a beat reaches Link as a tempo and a bar position".
     std::vector<takt4::output::OutputTarget> outputs;
