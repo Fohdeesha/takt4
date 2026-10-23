@@ -208,6 +208,34 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     CHECK(findOsc(again, "/takt4/status/load") == nullptr);
 }
 
+TEST_CASE("a change of source_ok comes after the source_detail that says why", "[remote]") {
+    // show controller judges each datagram as it comes, and source_ok went before the detail: a
+    // source lost was a warning saying takt4 gave no reason, the reason following a moment later.
+    const Status s = everything();
+    const auto order = [](const Status& before, const Status& after) {
+        std::vector<std::string> addresses;
+        for (const OscMsg& message :
+             readAll(takt4::remote::changedMessages("/takt4", before, after))) {
+            addresses.push_back(message.address);
+        }
+        return addresses;
+    };
+    Status lost = s;
+    lost.sourceOk = false;
+    lost.sourceDetail = "no peers \xE2\x80\x94 coasting at 128.00 BPM";
+    CHECK(order(s, lost) ==
+          std::vector<std::string>{"/takt4/status/source_detail", "/takt4/status/source_ok"});
+    // The detail came a look before, on its own: it goes again with the change.
+    Status detailFirst = s;
+    detailFirst.sourceDetail = lost.sourceDetail;
+    CHECK(order(detailFirst, lost) ==
+          std::vector<std::string>{"/takt4/status/source_detail", "/takt4/status/source_ok"});
+    // A detail that moves on its own goes alone.
+    Status moved = s;
+    moved.sourceDetail = "-12 dB";
+    CHECK(order(s, moved) == std::vector<std::string>{"/takt4/status/source_detail"});
+}
+
 TEST_CASE("the outputs and the devices are a message each, with how many after them, and an "
           "output says why it reaches nothing",
           "[remote]") {

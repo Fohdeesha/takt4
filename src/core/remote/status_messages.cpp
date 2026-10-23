@@ -101,8 +101,13 @@ void values(std::vector<Packet>& out, std::string_view prefix, const Status& s,
     }
     integer("/status/dropouts", clampedInt(s.dropouts), clampedInt(b.dropouts));
     text("/status/source", s.source, b.source, 32);
+    // The detail before source_ok, and again with every change of it: a show controller that
+    // judges a change of source_ok at the end of each datagram has the reason by then.
+    if (all || s.sourceDetail != b.sourceDetail || s.sourceOk != b.sourceOk) {
+        add(out, prefix, "/status/source_detail",
+            [&](output::OscMessage& m) { m.addString(clipped(s.sourceDetail, 160)); });
+    }
     flag("/status/source_ok", s.sourceOk, b.sourceOk);
-    text("/status/source_detail", s.sourceDetail, b.sourceDetail, 160);
     flag("/status/panic", s.panic, b.panic);
     text("/status/audio/host", s.audioHost, b.audioHost, 64);
     text("/status/audio/device", s.audioDevice, b.audioDevice, 160);
