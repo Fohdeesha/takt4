@@ -803,6 +803,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     }
     control_.setBindings(std::move(bindings));
 
+    // The source picked, known before the inputs are listed: a source followed does not open the
+    // audio, so a machine with no input has nothing to be told about it (`refreshDevices`).
+    // Applied below, after the outputs.
+    timing_ = timingOf(settings.machine.timingSource);
     refreshDevices(settings.machine);
     // A file from before there was a choice listened to one input: it is heard as the pair that
     // input is in now, and the operator is told so, once, with the way back (2026-09-28). Said
@@ -862,7 +866,6 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     cdjInterface_ = settings.machine.proLinkInterface;
     cdjs_->setFollow(cdjFollow_);
     cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
-    timing_ = timingOf(settings.machine.timingSource);
     applyTiming();
     // **Remote status and control**, before the control socket opens and the output thread
     // starts: the board this window writes as it redraws — which the heartbeat and the socket's
@@ -1077,10 +1080,14 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
         deviceFallback_ = !remembered.deviceName.empty();
         device_ = -1;
         window_->set_channels(std::make_shared<slint::VectorModel<slint::SharedString>>());
-        setStatus(asioProblem.empty()
-                      ? "No input device. Connect an interface and press RESCAN."
-                      : asioProblem,
-                  true);
+        // **Not said while a source is followed**, which does not open the audio: a show PC that
+        // follows Link with nothing plugged in can have no input at all, and was told to connect
+        // one. What START needs is said instead, and this again when the audio is picked.
+        if (!asioProblem.empty()) {
+            setStatus(asioProblem, true);
+        } else if (!following()) {
+            setStatus("No input device. Connect an interface and press RESCAN.", true);
+        }
         return;
     }
 
@@ -4027,12 +4034,8 @@ void WindowController::publishStopped() {
     publishTaps();
     publishIdleReadouts(*window_);
     publishOptions();
-    if (following() && !statusIsError_) {
+    if (!statusIsError_) {
         sayHowToStart();
-    } else if (!devices_.empty() && !statusIsError_) {
-        // The version is not repeated here: it is in the title bar and the status bar's
-        // corner now, and unlike this line neither of them is spent by the next status.
-        setStatus("pick an input and press Start.", false);
     }
 }
 
@@ -4475,7 +4478,14 @@ void WindowController::pickTiming(int index) {
     }
     timing_ = static_cast<Timing>(index);
     applyTiming();
+    // **What START needs is said over an error too**, which was about the source left: the audio's
+    // "No input device" stayed up over the MIDI clock's "pick its input", and the clock's over the
+    // audio picked back. Over anything else `publishStopped` says it.
+    const bool overAnError = statusIsError_;
     publishStopped();
+    if (overAnError) {
+        sayHowToStart();
+    }
 }
 
 void WindowController::applyTiming() {
@@ -4568,7 +4578,19 @@ void WindowController::publishLearnActions() {
 }
 
 void WindowController::sayHowToStart() {
-    if (timing_ == Timing::MidiClock && clockPort_.empty()) {
+    if (!following()) {
+        if (devices_.empty()) {
+            const std::string asioProblem = audio::asioScanProblem();
+            setStatus(asioProblem.empty()
+                          ? "No input device. Connect an interface and press RESCAN."
+                          : asioProblem,
+                      true);
+        } else {
+            // The version is not repeated here: it is in the title bar and the status bar's
+            // corner now, and unlike this line neither of them is spent by the next status.
+            setStatus("pick an input and press Start.", false);
+        }
+    } else if (timing_ == Timing::MidiClock && clockPort_.empty()) {
         setStatus("Pick the MIDI input the clock comes in on, then press Start.", true);
     } else {
         setStatus("press Start to follow " + timingName() + ".", false);

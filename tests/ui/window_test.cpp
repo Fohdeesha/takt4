@@ -10146,6 +10146,147 @@ TEST_CASE("a MIDI clock with no input picked says what START needs, in amber, un
     CHECK(std::string(controller.window().get_timing_reading()).empty());
 }
 
+TEST_CASE("with no audio input on the machine, a source picked says what its START needs, and the "
+          "audio picked back says there is no input",
+          "[ui][follow]") {
+    // A followed source does not open the audio at all, yet on a machine with no input — every
+    // CI runner — the audio's "No input device" stayed up over the MIDI clock's "pick its input",
+    // and Link's "press Start" over the audio picked back.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list.clear(); });
+    WindowController controller(tracker);
+    REQUIRE(controller.devices().empty());
+    const std::string noInput = "No input device. Connect an interface and press RESCAN.";
+    REQUIRE(std::string(controller.window().get_status()) == noInput);
+    controller.pickTiming(2);
+    controller.tick();
+    CHECK(std::string(controller.window().get_status()) ==
+          "Pick the MIDI input the clock comes in on, then press Start.");
+    CHECK(controller.window().get_status_is_error());
+    controller.setClockPort("DJM-A9 1");
+    controller.tick();
+    CHECK(std::string(controller.window().get_status()) == "press Start to follow MIDI clock.");
+    CHECK_FALSE(controller.window().get_status_is_error());
+    controller.pickTiming(1);
+    controller.tick();
+    CHECK(std::string(controller.window().get_status()) == "press Start to follow Ableton Link.");
+    // The audio picked back has nothing to start on, and says so again.
+    controller.pickTiming(0);
+    controller.tick();
+    CHECK(std::string(controller.window().get_status()) == noInput);
+    CHECK(controller.window().get_status_is_error());
+}
+
+TEST_CASE("the MIDI clock's amber line gives way to the audio's when the audio is picked back",
+          "[ui][follow]") {
+    // "Pick the MIDI input the clock comes in on" is an error line, and nothing said the audio's
+    // own over an error: it stayed up with the audio picked, asking for a clock nobody wanted.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {motuAt(0)}; });
+    WindowController controller(tracker);
+    controller.pickTiming(2);
+    controller.tick();
+    REQUIRE(std::string(controller.window().get_status()) ==
+            "Pick the MIDI input the clock comes in on, then press Start.");
+    controller.pickTiming(0);
+    controller.tick();
+    CHECK(std::string(controller.window().get_status()) == "pick an input and press Start.");
+    CHECK_FALSE(controller.window().get_status_is_error());
+}
+
+TEST_CASE("a machine with no audio input that follows a source opens saying what START needs, "
+          "not that there is no input",
+          "[ui][follow]") {
+    // A show PC that follows Link with nothing plugged in can have no capture device at all, and
+    // was told to connect an interface it does not use.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list.clear(); });
+    takt4::settings::Settings saved;
+    saved.machine.timingSource = "link";
+    WindowController controller(tracker, saved);
+    controller.tick();
+    REQUIRE(controller.devices().empty());
+    CHECK(std::string(controller.window().get_status()) == "press Start to follow Ableton Link.");
+    CHECK_FALSE(controller.window().get_status_is_error());
+    // And a RESCAN that finds none still says what it found, not a fault.
+    controller.rescanDevices();
+    rescanned(controller);
+    const std::string said(controller.window().get_status());
+    INFO(said);
+    CHECK(said.rfind("Found 0 inputs", 0) == 0);
+    CHECK_FALSE(controller.window().get_status_is_error());
+}
+
+TEST_CASE("following, halving or doubling never leaves the banner telling the operator to press "
+          "the other one",
+          "[ui][follow]") {
+    // The beats' own rate is the median of the last eight gaps, and ÷2 kept the old grid's: the
+    // banner read 128 going out against 64 shown and said "press ×2 to match" for up to four
+    // seconds, and the operator who obeyed undid the halve and was told to press ÷2. Watched on
+    // the picture: the advice's amber, on the banner's line under the number, never drawn.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 128.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    waitUntil(controller, [&] { return controller.window().get_beats_bpm() > 0.0f; });
+    REQUIRE(controller.window().get_beats_bpm() == Catch::Approx(128.0).margin(0.5));
+
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, 1480);
+    window.dispatch_window_active_changed_event(true);
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const int buttonsRow = sheets[3].first + 26;
+    const auto buttons = occupied(shot, buttonsRow - 16, buttonsRow + 15, 20, 780, kSheet, 5);
+    INFO("controls: " << spans(buttons));
+    REQUIRE(buttons.size() == 6); // ÷2, ×2, tap, lock, downbeat, and that tap and lock are off
+    // The line under the number: "truth source: Ableton Link" in ink while the two agree, the
+    // advice in amber when they are an octave apart. "÷2 applied", amber too, is beside the
+    // number, above it; the source's own word is in the right half.
+    const auto adviceDrawn = [&controller] {
+        const takt4::tests::Shot now = takt4::tests::render(controller.window(), 800, 1480);
+        const std::vector<std::pair<int, int>> down = sheetsDown(now);
+        REQUIRE(down.size() == 7);
+        return coloured(now, down[1].first + 70, down[1].first + 92, 20, 360).amber;
+    };
+    REQUIRE(adviceDrawn() == 0);
+    const auto watch = [&controller, &adviceDrawn](std::chrono::milliseconds lasting) {
+        int most = 0;
+        const auto until = std::chrono::steady_clock::now() + lasting;
+        while (std::chrono::steady_clock::now() < until) {
+            controller.tick();
+            slint::platform::update_timers_and_animations();
+            most = std::max(most, adviceDrawn());
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return most;
+    };
+
+    clickAt(window, middleOf(buttons[0]), static_cast<float>(buttonsRow));
+    waitUntil(controller, [&] { return controller.followed().state().octaveShift == -1; });
+    REQUIRE(controller.followed().state().octaveShift == -1);
+    CHECK(watch(std::chrono::milliseconds{5000}) == 0);
+    // And measured again, on the new grid.
+    waitUntil(controller, [&] { return controller.window().get_beats_bpm() > 0.0f; });
+    CHECK(controller.window().get_beats_bpm() == Catch::Approx(64.0).margin(0.5));
+    CHECK(adviceDrawn() == 0);
+
+    clickAt(window, middleOf(buttons[1]), static_cast<float>(buttonsRow));
+    waitUntil(controller, [&] { return controller.followed().state().octaveShift == 0; });
+    REQUIRE(controller.followed().state().octaveShift == 0);
+    CHECK(watch(std::chrono::milliseconds{3000}) == 0);
+    waitUntil(controller, [&] { return controller.window().get_beats_bpm() > 0.0f; });
+    CHECK(controller.window().get_beats_bpm() == Catch::Approx(128.0).margin(0.5));
+
+    controller.toggleRun();
+    controller.followForTests(nullptr);
+}
+
 TEST_CASE("what stops the CDJs is said whole on a red line of its own under the timing rows",
           "[ui][follow][prolink]") {
     // At the reading's width the end of it — "is rekordbox running on this computer?", what to

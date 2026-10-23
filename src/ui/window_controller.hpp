@@ -674,9 +674,10 @@ private:
     /// followed, since they do nothing then. Only the rows whose words change are written, so an
     /// open list is not disturbed.
     void publishLearnActions();
-    /// While stopped and following a source: what START needs, on the status line — the MIDI
-    /// clock's input when none is picked (amber: START is greyed out until there is one), or
-    /// "press Start".
+    /// While stopped: what START needs of the source picked, on the status line — for the audio,
+    /// an input when the machine has none (or the ASIO scan's problem), otherwise "pick an input";
+    /// for the MIDI clock, its input when none is picked (amber: START is greyed out until there
+    /// is one); otherwise "press Start".
     void sayHowToStart();
     /// What is being listened to, on the status line — or `said` in its place, when it is not
     /// empty: what the import that asked for this START said (`importFrom`).
