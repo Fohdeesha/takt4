@@ -126,8 +126,8 @@ address                       send           does
 
 Every output ticked for the global messages also gets takt4's status, sent from the thread that sends the beats:
 
-- **Once a second**, whatever the audio or the window is doing: `/takt4/status/alive` (an int that counts up), in one bundle with the whole status. Each value is its own address, `/takt4/status/<name>`: `running`, `locked`, `hunting`, `state` (the word on the tempo panel), `confidence`, `bpm`, `level` (dBFS), `dropouts`, `source` (`audio`, `link`, `midi-clock` or `prolink`), `source_ok`, `source_detail`, `panic`, `audio/host`, `audio/device`, `audio/channel`, `audio/mono`, `audio/rate`, `latency_ms`, `version`, `uptime_s`, and `ui_age_ms` (how long ago the window last updated it)
-- **Within a tenth of a second of a change**: that value again, on its own (not the level, `uptime_s` or `ui_age_ms`, which go once a second)
+- **Once a second**, whatever the audio or the window is doing: `/takt4/status/alive` (an int that counts up), in one bundle with the whole status. Each value is its own address, `/takt4/status/<name>`: `running`, `locked`, `hunting`, `state` (the word on the tempo panel), `confidence`, `bpm`, `level` (dBFS), `load` (the slowest audio callback of the last second, as a share of its buffer's time: 1 leaves no time to spare), `dropouts`, `source` (`audio`, `link`, `midi-clock` or `prolink`), `source_ok`, `source_detail`, `panic`, `audio/host`, `audio/device`, `audio/channel`, `audio/mono`, `audio/rate`, `latency_ms`, `version`, `uptime_s`, and `ui_age_ms` (how long ago the window last updated it)
+- **Within a tenth of a second of a change**: that value again, on its own (not the level, the load, `uptime_s` or `ui_age_ms`, which go once a second)
 - **What the status line says**: `/takt4/status/log` with a string level (`info` or `warning`) and the text, 5 lines a second, the rest after them
 
 With **listen** on, a controller can ask for these. The answer goes to the address and port it sent from:

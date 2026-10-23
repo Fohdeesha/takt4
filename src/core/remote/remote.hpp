@@ -79,6 +79,9 @@ struct Status {
     double bpm = 0.0;
     /// The input meter's level, in dBFS; `kSilentDb` for none.
     double levelDb = -120.0;
+    /// The worst audio callback of the last second, as a share of its buffer's time: 1 left the
+    /// driver no time to spare. 0 with no audio open.
+    double load = 0.0;
     /// Audio lost since START: the interface's overflows and the driver's resyncs, and the hops,
     /// frames and beats the engine dropped behind it.
     std::uint64_t dropouts = 0;

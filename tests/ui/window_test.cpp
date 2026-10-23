@@ -1164,6 +1164,30 @@ TEST_CASE("a window closed with the tracker running stops it first", "[ui][hardw
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
+TEST_CASE("the status a show controller is sent carries the audio callbacks' load",
+          "[ui][hardware]") {
+    // The worst callback of each second, as a share of its buffer's time, measured by the stream
+    // on the real interface; and nothing once nothing is open.
+    LiveTracker tracker(kWeights, kStateSpace);
+    const std::optional<InputDevice> device = bestInputDevice(tracker);
+    if (!device) {
+        SKIP("no input device on this machine");
+    }
+    WindowController controller(tracker);
+    CHECK(controller.remoteStatus().load == 0.0);
+    controller.toggleRun();
+    REQUIRE(tracker.running());
+    waitUntil(controller, [&controller] { return controller.remoteStatus().load > 0.0; });
+    const double load = controller.remoteStatus().load;
+    INFO("the worst callback of the second: " << load);
+    CHECK(load > 0.0);
+    // The callback only hands the audio on: anywhere near its buffer's time is a fault.
+    CHECK(load < 0.5);
+    controller.toggleRun();
+    REQUIRE_FALSE(tracker.running());
+    CHECK(controller.remoteStatus().load == 0.0);
+}
+
 TEST_CASE("the trace scrolls while the tracker is running", "[ui][hardware]") {
     // The other claim a still picture cannot make: that the window's redraw actually
     // moves the activation trace along as frames arrive.

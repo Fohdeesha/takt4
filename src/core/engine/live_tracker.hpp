@@ -215,6 +215,8 @@ public:
 
     /// The open stream, for its rates, latencies and counters. Null when stopped.
     const audio::InputStream* stream() const noexcept { return stream_.get(); }
+    /// The same, to take its callbacks' load (`audio::InputStream::takeLoad`).
+    audio::InputStream* stream() noexcept { return stream_.get(); }
 
     BeatEngine& engine() noexcept { return *engine_; }
     const BeatEngine& engine() const noexcept { return *engine_; }

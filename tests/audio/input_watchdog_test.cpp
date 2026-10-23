@@ -1,4 +1,5 @@
 #include "core/audio/callback_clock.hpp"
+#include "core/audio/callback_load.hpp"
 #include "core/audio/input_watchdog.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -344,4 +345,26 @@ TEST_CASE("a busy redraw neither hides a moved clock nor makes one of a dropout"
         CHECK_FALSE(dropoutsAlarm(44100.0, buffer, 0.020, 0.080));
         CHECK_FALSE(dropoutsAlarm(48000.0, buffer, 0.020, 0.080));
     }
+}
+
+TEST_CASE("an audio callback's load is the worst share of its buffer's time since it was taken",
+          "[audio][watchdog][remote]") {
+    // What a show controller is sent as `/takt4/status/load`: a callback as long as its buffer
+    // leaves the driver no time before the next is due. 480 frames at 48 kHz is 10 ms.
+    takt4::audio::CallbackLoad load(48000.0);
+    CHECK(load.take() == 0.0);                    // nothing yet
+    load.onCallback(480, 0, 2'000'000);           // 2 ms of 10
+    load.onCallback(480, 10'000'000, 15'000'000); // 5 ms
+    load.onCallback(480, 20'000'000, 21'000'000); // 1 ms
+    CHECK(load.take() == Approx(0.5));
+    // Taken: the next span starts from nothing, and one over its buffer's time says so.
+    CHECK(load.take() == 0.0);
+    load.onCallback(480, 30'000'000, 42'000'000);
+    CHECK(load.take() == Approx(1.2));
+    // A buffer that says nothing of its time is no reading: no frames, or no rate.
+    load.onCallback(0, 50'000'000, 59'000'000);
+    takt4::audio::CallbackLoad unopened;
+    unopened.onCallback(480, 0, 9'000'000);
+    CHECK(load.take() == 0.0);
+    CHECK(unopened.take() == 0.0);
 }

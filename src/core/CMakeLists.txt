@@ -29,6 +29,7 @@ add_library(takt4_core STATIC
   audio/audio_thread.hpp
   audio/callback_clock.hpp
   audio/callback_gate.hpp
+  audio/callback_load.hpp
   audio/channel_meter.cpp
   audio/channel_meter.hpp
   audio/channel_picker.cpp

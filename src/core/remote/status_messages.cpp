@@ -95,6 +95,9 @@ void values(std::vector<Packet>& out, std::string_view prefix, const Status& s,
     if (all) {
         add(out, prefix, "/status/level",
             [&](output::OscMessage& m) { m.addFloat(static_cast<float>(s.levelDb)); });
+        // As the level: the worst of each second, sent with the second.
+        add(out, prefix, "/status/load",
+            [&](output::OscMessage& m) { m.addFloat(static_cast<float>(s.load)); });
     }
     integer("/status/dropouts", clampedInt(s.dropouts), clampedInt(b.dropouts));
     text("/status/source", s.source, b.source, 32);

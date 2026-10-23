@@ -34,6 +34,7 @@ Status everything() {
     s.confidence = 0.8;
     s.bpm = 128.0;
     s.levelDb = -18.5;
+    s.load = 0.25;
     s.dropouts = 3;
     s.source = "audio";
     s.sourceOk = true;
@@ -124,17 +125,17 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     }
     CHECK(addresses.size() == all.size()); // each once
     CHECK(addresses ==
-          std::set<std::string>{"/takt4/status/running",       "/takt4/status/locked",
-                                "/takt4/status/hunting",       "/takt4/status/state",
-                                "/takt4/status/confidence",    "/takt4/status/bpm",
-                                "/takt4/status/level",         "/takt4/status/dropouts",
-                                "/takt4/status/source",        "/takt4/status/source_ok",
-                                "/takt4/status/source_detail", "/takt4/status/panic",
-                                "/takt4/status/audio/host",    "/takt4/status/audio/device",
-                                "/takt4/status/audio/channel", "/takt4/status/audio/mono",
-                                "/takt4/status/audio/rate",    "/takt4/status/latency_ms",
-                                "/takt4/status/version",       "/takt4/status/uptime_s",
-                                "/takt4/status/ui_age_ms"});
+          std::set<std::string>{"/takt4/status/running",      "/takt4/status/locked",
+                                "/takt4/status/hunting",      "/takt4/status/state",
+                                "/takt4/status/confidence",   "/takt4/status/bpm",
+                                "/takt4/status/level",        "/takt4/status/load",
+                                "/takt4/status/dropouts",     "/takt4/status/source",
+                                "/takt4/status/source_ok",    "/takt4/status/source_detail",
+                                "/takt4/status/panic",        "/takt4/status/audio/host",
+                                "/takt4/status/audio/device", "/takt4/status/audio/channel",
+                                "/takt4/status/audio/mono",   "/takt4/status/audio/rate",
+                                "/takt4/status/latency_ms",   "/takt4/status/version",
+                                "/takt4/status/uptime_s",     "/takt4/status/ui_age_ms"});
     const auto integer = [&all](const char* address) {
         const OscMsg* message = findOsc(all, address);
         REQUIRE(message != nullptr);
@@ -163,6 +164,7 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     CHECK(number("/takt4/status/confidence") == Approx(0.8));
     CHECK(number("/takt4/status/bpm") == Approx(128.0));
     CHECK(number("/takt4/status/level") == Approx(-18.5));
+    CHECK(number("/takt4/status/load") == Approx(0.25));
     CHECK(integer("/takt4/status/dropouts") == 3);
     CHECK(text("/takt4/status/source") == "audio");
     CHECK(integer("/takt4/status/source_ok") == 1);
@@ -184,6 +186,7 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     moved.bpm = 128.004;
     moved.confidence = 0.82;
     moved.levelDb = -6.0;
+    moved.load = 0.9;
     moved.locked = false;
     moved.hunting = true;
     moved.state = "hunting";
@@ -202,6 +205,7 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     REQUIRE(findOsc(again, "/takt4/status/dropouts") != nullptr);
     CHECK(findOsc(again, "/takt4/status/dropouts")->args[0].i == 4);
     CHECK(findOsc(again, "/takt4/status/level") == nullptr);
+    CHECK(findOsc(again, "/takt4/status/load") == nullptr);
 }
 
 TEST_CASE("the outputs and the devices are a message each, with how many after them, and an "

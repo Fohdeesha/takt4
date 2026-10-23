@@ -2,6 +2,7 @@
 
 #include "core/audio/asio_driver.hpp"
 #include "core/audio/callback_gate.hpp"
+#include "core/audio/callback_load.hpp"
 #include "core/audio/portaudio_session.hpp"
 #include "core/audio/stream_setup.hpp"
 #include "core/rt/alloc_guard.hpp"
@@ -16,8 +17,8 @@ namespace takt4::audio {
 
 struct InputStream::Impl {
     Impl(const InputDevice& dev, const ChannelPicker& pick, double rate, HopProcessor& processor)
-        : device(dev), picker(pick), sampleRate(rate), pipeline(pick, rate, processor),
-          clock(rate) {}
+        : device(dev), picker(pick), sampleRate(rate), pipeline(pick, rate, processor), clock(rate),
+          load(rate) {}
 
     InputDevice device;
     ChannelPicker picker;
@@ -35,6 +36,8 @@ struct InputStream::Impl {
     /// The callbacks' own account of when they came — what the watchdog measures the device's
     /// rate over, however seldom the window looks.
     CallbackClock clock;
+    /// And of how long each took, against its buffer's time: see `takeLoad`.
+    CallbackLoad load;
 
     static int callback(const void* input, void* /*output*/, unsigned long frameCount,
                         const PaStreamCallbackTimeInfo* /*timeInfo*/,
@@ -60,7 +63,9 @@ struct InputStream::Impl {
             self->pipeline.process(static_cast<const float*>(input), frameCount,
                                    InputPipeline::Arrival{arrived, self->inputLatency});
         }
-        self->clock.onCallback(static_cast<std::uint32_t>(frameCount), CallbackClock::steadyNanos());
+        const std::int64_t done = CallbackClock::steadyNanos();
+        self->clock.onCallback(static_cast<std::uint32_t>(frameCount), done);
+        self->load.onCallback(static_cast<std::uint32_t>(frameCount), arrived, done);
         return paContinue;
     }
 };
@@ -221,6 +226,10 @@ std::size_t InputStream::resamplerDelayFrames() const noexcept {
 
 StereoSums InputStream::stereo() const noexcept {
     return impl_->pipeline.stereoSums();
+}
+
+double InputStream::takeLoad() noexcept {
+    return impl_->load.take();
 }
 
 InputStreamCounters InputStream::counters() const noexcept {

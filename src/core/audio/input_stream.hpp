@@ -79,6 +79,9 @@ public:
     std::size_t resamplerDelayFrames() const noexcept;
 
     InputStreamCounters counters() const noexcept;
+    /// The worst callback since the last call, as a share of its buffer's time — 1 is one as long
+    /// as its buffer — and from here on the next span's (`CallbackLoad`). One reader.
+    double takeLoad() noexcept;
     /// For a pair, what its two sides have brought — see `StereoCheck`. Zero for one channel.
     StereoSums stereo() const noexcept;
 

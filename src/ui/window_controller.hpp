@@ -690,6 +690,9 @@ private:
     void publishTrace();
     void publishState();
     void publishLevels();
+    /// The worst audio callback of each second, for the status (`remote::Status::load`). `now`
+    /// is `nowSeconds()`.
+    void publishLoad(double now);
     void publishTaps();
     void publishOutputs();
     /// The Link peers list, while it is shown: what the listener has heard since the last
@@ -1140,6 +1143,12 @@ private:
     std::string remoteFromRefused_;
     /// The input's level as last measured, in dBFS, for the status.
     float lastLevelDb_ = static_cast<float>(remote::Status::kSilentDb);
+    /// See `publishLoad`: the worst callback of the last whole second and of this one, when this
+    /// one began, and the stream they are of.
+    double lastLoad_ = 0.0;
+    double loadWorst_ = 0.0;
+    double loadSince_ = 0.0;
+    const audio::InputStream* loadStream_ = nullptr;
     std::chrono::steady_clock::time_point startedAt_ = std::chrono::steady_clock::now();
 
     /// The tracker's beat count when a downbeat snap was posted, while one is still in

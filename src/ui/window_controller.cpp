@@ -4343,6 +4343,7 @@ void WindowController::redraw() {
 
     publishState();
     publishLevels();
+    publishLoad(nowSeconds());
     // Peers come and go, and the beat counter is the only thing on screen that says a
     // transport is really doing something.
     publishOutputs();
@@ -4416,6 +4417,28 @@ void WindowController::publishLevels() {
     }
     lastLevelDb_ = audio::toDbfs(loudest);
     publishInput(*window_, loudest, peak_);
+}
+
+void WindowController::publishLoad(double now) {
+    audio::InputStream* stream = tracker_.stream();
+    if (stream != loadStream_) {
+        // Another stream, or none: a second of its own, from nothing.
+        loadStream_ = stream;
+        lastLoad_ = 0.0;
+        loadWorst_ = 0.0;
+        loadSince_ = now;
+    }
+    if (stream == nullptr) {
+        return;
+    }
+    // The worst callback of each whole second, for the status: taken from the stream every
+    // redraw, and handed on once a second.
+    loadWorst_ = std::max(loadWorst_, stream->takeLoad());
+    if (now - loadSince_ >= 1.0) {
+        lastLoad_ = loadWorst_;
+        loadWorst_ = 0.0;
+        loadSince_ = now;
+    }
 }
 
 // --- the timing input ----------------------------------------------------------------------
@@ -4961,6 +4984,7 @@ remote::Status WindowController::remoteStatus() const {
     s.bpm = hearing ? state.bpm : 0.0;
     s.levelDb = !followingNow && tracker_.running() ? static_cast<double>(lastLevelDb_)
                                                     : remote::Status::kSilentDb;
+    s.load = !followingNow && tracker_.running() ? lastLoad_ : 0.0;
     s.dropouts = inputTroubleShown_.overflows + inputTroubleShown_.resyncs +
                  inputTroubleShown_.hopsDropped + inputTroubleShown_.framesDropped +
                  inputTroubleShown_.beatsDropped;
