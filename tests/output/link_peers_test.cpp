@@ -61,6 +61,20 @@ bool eventually(Predicate predicate, std::chrono::milliseconds limit = std::chro
 
 using takt4::testing::anyLinkHeard;
 
+TEST_CASE("two Link sessions for another process to list", "[.link-peer]") {
+    // Hidden: run only by window_test.cpp's "SHOW PEERS lists a Link peer in another process", as
+    // the peer it lists. That test has made sure no other Link session is on the network before
+    // switching takt4's own on, and its own is the session these join; a guarded test in their
+    // place heard it and skipped, and SHOW PEERS listed nobody.
+    LinkSession first(123.0);
+    LinkSession second(97.0);
+    first.enable(true);
+    second.enable(true);
+    std::this_thread::sleep_for(std::chrono::seconds{8});
+    first.enable(false);
+    second.enable(false);
+}
+
 TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link][network]") {
     takt4::testing::skipWhileLinkIsOnTheNetwork();
     LinkSession tracker(120.0); // takt4, driving

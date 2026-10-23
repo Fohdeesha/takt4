@@ -751,6 +751,11 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     window->window().dispatch_pointer_scroll_event(slint::LogicalPosition({500.0f, 300.0f}), 0.0f,
                                                    -120.0f);
     pumpTimers(std::chrono::milliseconds(250));
+    // And the pointer out of the window, as it was for the first picture, so nothing is drawn
+    // hovered in one and not the other: a row's x lit is 50 of these pixels here. With the pointer
+    // left in, Linux failed 214 against 200 on two runs in five.
+    window->window().dispatch_pointer_exit_event();
+    pumpTimers(std::chrono::milliseconds(50));
     const takt4::tests::Shot after = takt4::tests::render(*window, kWidth, kHeight);
 
     // The body moved — by how much, measured on the picture itself: the body scrolls as one
@@ -2854,8 +2859,9 @@ TEST_CASE("unticking a MIDI output sends the note off it still owes, on a real p
 TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself", "[ui][network]") {
     takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The list under the Link row, end to end: Link switched on from its row, SHOW PEERS, and
-    // a real Link peer — two sessions in another process, the core suite's own two-session test
-    // — listed at its tempo, while takt4's own Link, announcing on the same network, is not.
+    // a real Link peer — two sessions in another process, the core suite's hidden "two Link
+    // sessions for another process to list" — listed at its tempo, while takt4's own Link,
+    // announcing on the same network, is not.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     controller.window().invoke_output_enabled_changed(0, true);
@@ -2908,9 +2914,8 @@ TEST_CASE("SHOW PEERS lists a Link peer in another process, never takt4 itself",
     if (!std::filesystem::exists(other)) {
         SKIP("takt4_tests.exe is not beside this binary");
     }
-    const std::string command =
-        "\"\"" + other.string() +
-        "\" \"a Link peer sees the tempo and phase takt4 publishes\" >NUL 2>&1\"";
+    const std::string command = "\"\"" + other.string() +
+                                "\" \"two Link sessions for another process to list\" >NUL 2>&1\"";
     std::thread peer([command] { (void)std::system(command.c_str()); });
     std::size_t most = 0;
     std::string tempo;
