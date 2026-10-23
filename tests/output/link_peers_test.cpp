@@ -13,6 +13,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -439,5 +440,46 @@ TEST_CASE("a Link follower alone takes no session over, and follows the DJ's whe
     CHECK(eventually([&] { return !session.enabled(); }, std::chrono::seconds{10}));
     CHECK(eventually([&] { return beats.state().noSignal; }, std::chrono::seconds{10}));
     beats.stop();
+    CHECK_FALSE(session.enabled());
+}
+
+TEST_CASE("a Link follower's rounds are not held up by the system while it listens",
+          "[output][link][network][follow]") {
+    // While it listens — before a join, and through a coast after the session goes — the follower
+    // reads its listener on the thread that sends the beats, and the listener asked the system for
+    // the machine's interfaces (at every open and every two seconds) and for whose socket each
+    // node it hears sends from, in milliseconds each. Asked aside now: made a second each here,
+    // which a round that waited for one would show. Never joins (it is told to hear for ever), so
+    // nothing is sent, whatever is on the network.
+    std::string problem;
+    (void)anyLinkHeard(0.2, problem);
+    if (!problem.empty()) {
+        SKIP("cannot listen for Link sessions on this network: " + problem);
+    }
+    std::atomic<int> listed{0};
+    takt4::output::LinkPeerWatch watch(
+        [](const std::string& address, std::uint16_t port) {
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            return takt4::output::sentFromHere(address, port);
+        },
+        [&listed] {
+            ++listed;
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            return takt4::output::interfacesUp();
+        });
+    LinkSession session(120.0);
+    takt4::timing::LinkFollower::Options options;
+    options.hearFor = 1e9;
+    takt4::timing::LinkFollower follower(session, watch, options);
+    takt4::timing::ExternalBeats beats;
+    beats.start(follower, takt4::timing::BeatGrid::Options{});
+    // The open, and two rejoins at least.
+    std::this_thread::sleep_for(std::chrono::milliseconds{5000});
+    const double longest = beats.lateness().longestRoundSeconds();
+    beats.stop();
+    INFO("the longest round: " << longest * 1000.0 << " ms");
+    CHECK(longest < 0.25);
+    CHECK(listed >= 2);
+    CHECK(watch.rejoins() >= 1);
     CHECK_FALSE(session.enabled());
 }

@@ -8,6 +8,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -70,6 +71,22 @@ Bytes announcement(std::uint8_t type, Id node, double bpm, Id session,
     put64(out, 0);
     put64(out, playing ? 5555 : 0); // never stamped: nobody shares start and stop
     return out;
+}
+
+/// Polls `watch` at `now` until what it asked the system has been answered and taken in, as its
+/// owner's next polls would: the system is asked on a thread of the watch's own.
+bool answered(LinkPeerWatch& watch, double now) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (true) {
+        watch.poll(now);
+        if (!watch.asking()) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= until) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
 }
 
 } // namespace
@@ -196,6 +213,7 @@ TEST_CASE("a peer is this process only when it sends from this machine as well a
     LinkPeerWatch watch; // the operating system's answer
     watch.take(announcement(1, id(7), 128.0, id(7)), "203.0.113.9", ours, 0.0);
     watch.take(announcement(1, id(8), 128.0, id(8)), "127.0.0.1", ours, 0.0);
+    REQUIRE(answered(watch, 0.0));
     const std::vector<LinkPeer> peers = watch.peers();
     REQUIRE(peers.size() == 1); // the one elsewhere; the one from here is this process
     CHECK(peers[0].addresses == std::vector<std::string>{"203.0.113.9"});
@@ -210,6 +228,7 @@ TEST_CASE("the peers list is every Link peer but this process's own", "[output][
     watch.take(announcement(1, id(2), 128.0, id(1), true), "192.168.1.20", 61000, 0.0);
     watch.take(announcement(1, id(3), 120.0, id(3)), "192.168.1.35", 62000, 0.1);
     watch.take(Bytes{'n', 'o', 'i', 's', 'e'}, "192.168.1.99", 9, 0.1); // not Link: ignored
+    REQUIRE(answered(watch, 0.1));
 
     CHECK(watch.ownSession() == std::optional<Id>(id(1)));
     std::vector<LinkPeer> peers = watch.peers();
@@ -259,6 +278,43 @@ TEST_CASE("the peers list is every Link peer but this process's own", "[output][
         CHECK(watch.peers().empty());
         CHECK_FALSE(watch.ownSession().has_value());
     }
+}
+
+TEST_CASE("the Link peer list never waits on the system to say whose a peer is", "[output][link]") {
+    // A Link follower polls its listener on the thread that sends the beats, and the system's
+    // answers — the machine's interfaces, the table of its sockets — take milliseconds: asked
+    // there, a coasted beat went out that much late. Asked aside; made a second each here, so
+    // any wait for one shows.
+    std::atomic<int> asked{0};
+    LinkPeerWatch watch(
+        [&asked](const std::string& address, std::uint16_t) {
+            ++asked;
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            return address == "192.168.1.10";
+        },
+        [] {
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            return std::vector<std::uint32_t>{};
+        });
+    const auto start = std::chrono::steady_clock::now();
+    watch.take(announcement(1, id(1), 128.0, id(1)), "192.168.1.10", 50000, 0.0); // takt4 itself
+    watch.take(announcement(1, id(2), 128.0, id(1)), "192.168.1.20", 61000, 0.0);
+    watch.poll(0.0);
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds{400});
+    // Nobody listed, nor heard by a follower, before the system has said whose each is.
+    CHECK(watch.peers().empty());
+    CHECK(watch.heard().empty());
+    CHECK(watch.asking());
+    REQUIRE(answered(watch, 0.1));
+    CHECK(asked == 2);
+    const std::vector<LinkPeer> peers = watch.peers();
+    REQUIRE(peers.size() == 1);
+    CHECK(peers[0].addresses == std::vector<std::string>{"192.168.1.20"});
+    CHECK(watch.ownSession() == std::optional<Id>(id(1)));
+    // Heard from when it was first heard, not from when the answer came: a follower's second of
+    // hearing is not made longer.
+    REQUIRE(watch.heard().size() == 1);
+    CHECK_THAT(watch.heard()[0].firstHeard, WithinAbs(0.0, 1e-9));
 }
 
 TEST_CASE("a port this process holds is known to be its own", "[output][link]") {
@@ -341,17 +397,31 @@ TEST_CASE("the Link peer list joins Link's group again on every interface now an
     // Joined only as it opened, a listener that listened through an
     // outage, or opened before the DJ network was plugged in, heard loopback alone from then on.
     // Every two seconds it joins again on every interface that is up; one joined already is
-    // refused by the system and changes nothing. Listening only: nothing is sent.
-    LinkPeerWatch watch;
+    // refused by the system and changes nothing. Listening only: nothing is sent. The list of
+    // interfaces is asked for aside — made a second here — so neither the open nor the poll that
+    // asks for it again waits for it.
+    std::atomic<int> listed{0};
+    LinkPeerWatch watch({}, [&listed] {
+        ++listed;
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+        return takt4::output::interfacesUp();
+    });
     std::string problem;
+    auto start = std::chrono::steady_clock::now();
     REQUIRE(watch.open(problem));
     watch.poll(100.0);
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds{400});
     CHECK(watch.rejoins() == 0);
-    watch.poll(101.9);
+    REQUIRE(answered(watch, 101.9)); // the list the open asked for, joined on
+    CHECK(listed == 1);
     CHECK(watch.rejoins() == 0);
+    start = std::chrono::steady_clock::now();
     watch.poll(102.0);
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds{400});
+    REQUIRE(answered(watch, 102.0));
+    CHECK(listed == 2);
     CHECK(watch.rejoins() == 1);
-    watch.poll(104.1);
+    REQUIRE(answered(watch, 104.1));
     CHECK(watch.rejoins() == 2);
     // Still listening, every peer it held kept.
     CHECK(watch.isOpen());

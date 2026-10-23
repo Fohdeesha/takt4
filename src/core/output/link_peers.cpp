@@ -4,8 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -185,12 +190,134 @@ bool joinGroup(net::Socket socket, in_addr where) noexcept {
                         reinterpret_cast<const char*>(&request), sizeof request) == 0;
 }
 
+in_addr addressOf(std::uint32_t networkOrder) noexcept {
+    in_addr address{};
+    address.s_addr = networkOrder;
+    return address;
+}
+
 } // namespace
 
-LinkPeerWatch::LinkPeerWatch(OwnPort ownPort) : ownPort_(std::move(ownPort)) {
+// --- what the system is asked, aside ------------------------------------------------------------
+
+/// The thread the system is asked on, and what it has answered (see the class). Every member is
+/// the mutex's; each question is asked with it let go.
+struct LinkPeerWatch::Asker {
+    /// Whether the node first heard from `address`:`port` while the watch was at `generation`
+    /// sent from this process — `own`, once answered.
+    struct Whose {
+        LinkAnnouncement::Id node{};
+        std::string address;
+        std::uint16_t port = 0;
+        std::uint64_t generation = 0;
+        bool own = false;
+    };
+
+    Asker(OwnPort own, Interfaces up) : ownPort_(std::move(own)), interfaces_(std::move(up)) {
+        thread_ = std::thread([this] { run(); });
+    }
+    ~Asker() {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        wake_.notify_all();
+        thread_.join();
+    }
+    Asker(const Asker&) = delete;
+    Asker& operator=(const Asker&) = delete;
+
+    void askInterfaces() {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            wantInterfaces_ = true;
+        }
+        wake_.notify_all();
+    }
+    void askWhose(Whose question) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            questions_.push_back(std::move(question));
+        }
+        wake_.notify_all();
+    }
+    /// The list of interfaces answered since the last call, if one was.
+    std::optional<std::vector<std::uint32_t>> takeInterfaces() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return std::exchange(interfacesAnswered_, std::nullopt);
+    }
+    /// The nodes answered about since the last call.
+    std::vector<Whose> takeWhose() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return std::exchange(answered_, std::vector<Whose>{});
+    }
+    bool busy() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return working_ || wantInterfaces_ || interfacesAnswered_.has_value() ||
+               !questions_.empty() || !answered_.empty();
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (true) {
+            wake_.wait(lock, [this] { return stop_ || wantInterfaces_ || !questions_.empty(); });
+            if (stop_) {
+                return;
+            }
+            working_ = true;
+            if (wantInterfaces_) {
+                wantInterfaces_ = false;
+                lock.unlock();
+                std::optional<std::vector<std::uint32_t>> list;
+                try {
+                    list = interfaces_();
+                } catch (...) {
+                    // No memory for the list: the one there was stands, and the next rejoin asks.
+                }
+                lock.lock();
+                if (list) {
+                    interfacesAnswered_ = std::move(list);
+                }
+            } else {
+                Whose question = std::move(questions_.front());
+                questions_.pop_front();
+                lock.unlock();
+                try {
+                    question.own = ownPort_(question.address, question.port);
+                } catch (...) {
+                    question.own = false;
+                }
+                lock.lock();
+                answered_.push_back(std::move(question));
+            }
+            working_ = false;
+        }
+    }
+
+    const OwnPort ownPort_;
+    const Interfaces interfaces_;
+    mutable std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stop_ = false;
+    bool wantInterfaces_ = false;
+    bool working_ = false;
+    std::deque<Whose> questions_;
+    std::vector<Whose> answered_;
+    std::optional<std::vector<std::uint32_t>> interfacesAnswered_;
+    /// Last, so it starts once everything it reads is there.
+    std::thread thread_;
+};
+
+LinkPeerWatch::LinkPeerWatch(OwnPort ownPort, Interfaces interfaces)
+    : ownPort_(std::move(ownPort)), interfaces_(std::move(interfaces)) {
     if (!ownPort_) {
         ownPort_ = sentFromHere;
     }
+    if (!interfaces_) {
+        interfaces_ = interfacesUp;
+    }
+    asker_ = std::make_unique<Asker>(ownPort_, interfaces_);
 }
 
 LinkPeerWatch::~LinkPeerWatch() = default;
@@ -243,11 +370,12 @@ bool LinkPeerWatch::open(std::string& problem) {
                   net::bindFailure(net::lastSocketError(), kLinkPort);
         return false;
     }
-    // On every interface, as Link announces on every interface; and on the default one when
-    // there is no list to be had.
+    // On every interface the system last said is up, as Link announces on every interface; and
+    // on the default one before it has said, or when none of them would join. The list is asked
+    // for afresh, and joined on as it comes (`takeAnswers`): see the class.
     int joined = 0;
-    for (const in_addr where : interfaceAddresses()) {
-        joined += joinGroup(socket->handle, where) ? 1 : 0;
+    for (const std::uint32_t where : up_) {
+        joined += joinGroup(socket->handle, addressOf(where)) ? 1 : 0;
     }
     if (joined == 0) {
         in_addr any{};
@@ -260,25 +388,60 @@ bool LinkPeerWatch::open(std::string& problem) {
     }
     socket_ = std::move(socket);
     joinedAt_ = -1.0;
+    rejoinAsked_ = false;
+    asker_->askInterfaces();
     return true;
 }
 
 void LinkPeerWatch::close() noexcept {
     socket_.reset();
     nodes_.clear();
+    ++generation_;
+    rejoinAsked_ = false;
+}
+
+bool LinkPeerWatch::asking() const {
+    return asker_->busy() ||
+           std::any_of(nodes_.begin(), nodes_.end(), [](const Node& node) { return node.pending; });
+}
+
+void LinkPeerWatch::takeAnswers() {
+    if (std::optional<std::vector<std::uint32_t>> up = asker_->takeInterfaces()) {
+        up_ = std::move(*up);
+        if (socket_ != nullptr) {
+            for (const std::uint32_t where : up_) {
+                (void)joinGroup(socket_->handle, addressOf(where));
+            }
+            if (rejoinAsked_) {
+                ++rejoins_;
+            }
+        }
+        rejoinAsked_ = false;
+    }
+    for (const Asker::Whose& answer : asker_->takeWhose()) {
+        if (answer.generation != generation_) {
+            continue; // about a node from before `close`
+        }
+        const auto found = std::find_if(nodes_.begin(), nodes_.end(), [&answer](const Node& node) {
+            return node.id == answer.node;
+        });
+        if (found != nodes_.end() && found->pending) {
+            found->own = answer.own;
+            found->pending = false;
+        }
+    }
 }
 
 void LinkPeerWatch::poll(double now) {
+    takeAnswers();
     if (socket_ != nullptr) {
-        // See the declaration. `open` has just joined every interface up then.
+        // See the declaration. `open` has just joined, and asked for the list.
         if (joinedAt_ < 0.0) {
             joinedAt_ = now;
         } else if (now - joinedAt_ >= kRejoinSeconds) {
             joinedAt_ = now;
-            ++rejoins_;
-            for (const in_addr where : interfaceAddresses()) {
-                (void)joinGroup(socket_->handle, where);
-            }
+            rejoinAsked_ = true;
+            asker_->askInterfaces();
         }
         std::array<std::uint8_t, kMaxMessage + 1> buffer{};
         for (int i = 0; i < kMaxPerPoll; ++i) {
@@ -324,10 +487,11 @@ void LinkPeerWatch::take(std::span<const std::uint8_t> datagram, const std::stri
     } else {
         Node made;
         made.id = announcement.node;
-        made.own = ownPort_ && ownPort_(address, port);
         made.firstHeard = now;
         nodes_.push_back(std::move(made));
         node = &nodes_.back();
+        // Whose it is, asked aside: heard once the answer has come (see the class).
+        asker_->askWhose({announcement.node, address, port, generation_, false});
     }
     if (std::find(node->addresses.begin(), node->addresses.end(), address) ==
         node->addresses.end()) {
@@ -357,7 +521,7 @@ std::vector<LinkPeer> LinkPeerWatch::peers() const {
     const std::optional<LinkAnnouncement::Id> own = ownSession();
     std::vector<LinkPeer> peers;
     for (const Node& node : nodes_) {
-        if (node.own) {
+        if (node.own || node.pending) {
             continue;
         }
         LinkPeer peer;
@@ -374,7 +538,7 @@ std::vector<LinkPeer> LinkPeerWatch::peers() const {
 std::vector<timing::LinkListener::Heard> LinkPeerWatch::heard() const {
     std::vector<timing::LinkListener::Heard> heard;
     for (const Node& node : nodes_) {
-        if (!node.own) {
+        if (!node.own && !node.pending) {
             heard.push_back({node.firstHeard, node.lastHeard, node.bpm});
         }
     }
@@ -382,6 +546,14 @@ std::vector<timing::LinkListener::Heard> LinkPeerWatch::heard() const {
 }
 
 // --- whose port --------------------------------------------------------------------------------
+
+std::vector<std::uint32_t> interfacesUp() {
+    std::vector<std::uint32_t> up;
+    for (const in_addr address : interfaceAddresses()) {
+        up.push_back(address.s_addr);
+    }
+    return up;
+}
 
 bool addressIsHere(const std::string& address) {
     in_addr parsed{};
