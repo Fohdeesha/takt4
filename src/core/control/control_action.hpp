@@ -95,8 +95,8 @@ inline constexpr bool takesRuleId(ControlAction action) noexcept {
 /// travel together rather than the id being threaded past every call that has no use for it.
 struct ControlTarget {
     ControlTarget() = default;
-    /// Implicit, deliberately: six of the seven *are* just an action, and a call site that
-    /// names one should not have to say so twice.
+    /// Implicit, deliberately: every action but the six `rule/<id>/…` verbs *is* just an action,
+    /// and a call site that names one should not have to say so twice.
     ControlTarget(ControlAction which) noexcept // NOLINT(google-explicit-constructor)
         : action(which) {}
     ControlTarget(ControlAction which, std::string id) : action(which), rule(std::move(id)) {}

@@ -118,11 +118,15 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     view.shortName = "CDJ";
     // The CDJs count four to the bar, whatever the setting says.
     view.beatsPerBar = 4;
-    view.network = !facts.cdjInterface.empty() ? facts.cdjInterface
-                   : facts.cdjSavedCard.empty()
-                       ? std::string("picked when a CDJ is heard")
-                       : "the card on " + facts.cdjSavedCard + ", from the settings file";
     const bool heard = facts.cdjPlayers + facts.cdjMixers > 0;
+    // "picked when a CDJ is heard" sat under "3 players, 1 mixer heard": once they are heard, the
+    // card is the one they are heard on, taken at START.
+    view.network = !facts.cdjInterface.empty() ? facts.cdjInterface
+                   : !facts.cdjSavedCard.empty()
+                       ? "the card on " + facts.cdjSavedCard + ", from the settings file"
+                   : !heard        ? std::string("picked when a CDJ is heard")
+                   : facts.running ? std::string("the card the CDJs are heard on")
+                                   : std::string("the card the CDJs are heard on, at START");
     // Not one datagram, from anything: on a DJ network with no router — which Windows calls
     // Public, and a firewall rule ticked for Private alone drops everything from — this is what a
     // blocked takt4 sees, and nothing on the row said why.

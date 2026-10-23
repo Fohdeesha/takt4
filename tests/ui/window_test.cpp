@@ -4307,6 +4307,37 @@ TEST_CASE("an outage's next look at the machine is timed from when the last one 
     CHECK(looks == 2);
 }
 
+TEST_CASE("an outage looks at the machine again only once its interface has gone from the list "
+          "or would not open",
+          "[ui]") {
+    // A look loads every ASIO driver on the machine. With the interface still listed, a try is an
+    // open; only an open that failed, or the interface gone from the list, earns a look.
+    LiveTracker tracker(kWeights, kStateSpace);
+    tracker.setDeviceListHook([](std::vector<InputDevice>& list) { list = {asioInterface()}; });
+    WindowController controller(tracker);
+    std::atomic<int> looks{0};
+    tracker.setAudioJobHook([&looks](const char* what) {
+        if (std::string_view(what) == "rescan") {
+            ++looks;
+        }
+    });
+    controller.beginOutageOn({asioInterface(), takt4::audio::ChannelSelection::single(0)}, 100.0);
+    const auto at = [&controller](double now) {
+        controller.superviseInput({}, {}, now);
+        REQUIRE(waitFor([&] {
+            controller.superviseInput({}, {}, now);
+            return !controller.outageAsking();
+        }));
+    };
+    at(101.0); // the first try: listed, and never refused, so opened
+    CHECK(controller.outageTries() == std::optional<int>(1));
+    CHECK(looks == 0);
+    at(103.05); // refused (the sandbox opens nothing), so the next try looks first
+    CHECK(controller.outageTries() == std::optional<int>(2));
+    CHECK(looks == 1);
+    tracker.setAudioJobHook({});
+}
+
 namespace {
 
 /// A loopback on this machine that nothing is playing on, found by opening each for a second
@@ -9242,10 +9273,11 @@ TEST_CASE("what the window says about the source followed, in each state it can 
     CHECK(view.reading == "no clock \xE2\x80\x94 coasting at 127.90 BPM");
     CHECK(view.stripTicks == 0);
     facts.coasting = false;
+    // An obeyed Stop lets go of the lock at once (`BeatGrid::goQuiet`).
+    facts.state.locked = false;
     facts.stopObeyed = true;
     CHECK(describeTiming(facts).reading == "stopped \xE2\x80\x94 waiting for Start");
     facts.stopObeyed = false;
-    facts.state.locked = false;
     CHECK(describeTiming(facts).reading == "no clock \xE2\x80\x94 waiting for one");
     // Its device pulled out: not "waiting for one", which nothing
     // would ever bring — said not to be plugged in, whatever else the clock was doing.
@@ -9415,7 +9447,8 @@ TEST_CASE("the CDJs are picked with the pointer: the follow list fills with the 
     CHECK(std::string(*choices->row_data(0)) == "tempo master");
     CHECK(std::string(*choices->row_data(1)) == "player 2 \xC2\xB7 CDJ-3000");
     CHECK(std::string(controller.window().get_timing_reading()) == "1 player, 1 mixer heard");
-    CHECK(std::string(controller.window().get_timing_network()) == "picked when a CDJ is heard");
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "the card the CDJs are heard on, at START");
 
     // The row: timing, from, the picker, follow, the follow picker, and the reading.
     const auto row = inputsRow(controller, 73, y);
@@ -9695,8 +9728,13 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     facts.cdjPlayers = 1;
     facts.cdjMixers = 0;
     CHECK(describeTiming(facts).reading == "1 player heard");
+    // Heard, the card is the one they are heard on — not "picked when a CDJ is heard" under "1
+    // player heard" — taken at START, or being taken.
+    CHECK(describeTiming(facts).network == "the card the CDJs are heard on, at START");
+    facts.running = true;
+    CHECK(describeTiming(facts).network == "the card the CDJs are heard on");
+    facts.running = false;
     // A card picked in the settings file: seen, where it was not anywhere.
-    CHECK(describeTiming(facts).network == "picked when a CDJ is heard");
     facts.cdjSavedCard = "169.254.20.7";
     CHECK(describeTiming(facts).network == "the card on 169.254.20.7, from the settings file");
     facts.cdjSavedCard.clear();
@@ -10528,6 +10566,66 @@ TEST_CASE("the CDJs' network card picked in the settings file is said while stop
     controller.tick();
     CHECK(std::string(controller.window().get_timing_network()) ==
           "the card on 169.254.20.7, from the settings file");
+}
+
+TEST_CASE("the folded inputs heading says what a followed source is waiting for, and calls the "
+          "MIDI input beside a clock the MIDI control",
+          "[ui][follow]") {
+    // Folded, the heading turned red for a clock that had stopped coming and said nothing of why,
+    // and "MIDI:" beside "MIDI clock on DJM-A9" read as the clock's input said twice.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window();
+    const std::string dot = " \xC2\xB7 ";
+    std::string summary(window.get_inputs_summary());
+    INFO(summary);
+    CHECK(summary.rfind("timing: audio" + dot + "MIDI: ", 0) == 0);
+
+    takt4::ui::TimingFacts clock;
+    clock.index = 2;
+    clock.port = "DJM-A9";
+    takt4::ui::publishClockPorts(window, {"DJM-A9"}, "DJM-A9");
+    takt4::ui::publishTimingView(window, takt4::ui::describeTiming(clock));
+    summary = std::string(window.get_inputs_summary());
+    INFO(summary);
+    CHECK(summary.rfind("timing: MIDI clock on DJM-A9" + dot + "MIDI control: ", 0) == 0);
+    // Running, and no clock coming: what is wrong, on the heading it turns red.
+    clock.running = true;
+    window.set_running(true);
+    takt4::ui::publishTimingView(window, takt4::ui::describeTiming(clock));
+    summary = std::string(window.get_inputs_summary());
+    INFO(summary);
+    const std::string noClock = "timing: MIDI clock on DJM-A9 \xE2\x80\x94 no clock";
+    CHECK(summary.rfind(noClock + dot + "MIDI control: ", 0) == 0);
+    window.set_running(false);
+}
+
+TEST_CASE("STOP while following Link listens again for the peers the stopped row lists",
+          "[ui][follow]") {
+    // The follower closes the listener as its run ends, and only picking Link opened it: after
+    // every STOP the row said "cannot listen for Link sessions" and counted no peers. In the
+    // sandbox the open is refused, and counted, which is how it is seen to be asked for.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::testing::FakeGridSource source([&controller] { return linkNow(controller); }, 120.0,
+                                          static_cast<double>(linkNow(controller)));
+    controller.followForTests(&source);
+    controller.pickTiming(1);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    std::uint64_t asked = takt4::sandbox::refusals(takt4::sandbox::Refused::Link);
+    controller.toggleRun();
+    REQUIRE_FALSE(controller.followed().running());
+    CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Link) == asked + 1);
+    // Not after a run on another source, which has no such row.
+    controller.pickTiming(2);
+    controller.toggleRun();
+    REQUIRE(controller.followed().running());
+    asked = takt4::sandbox::refusals(takt4::sandbox::Refused::Link);
+    controller.toggleRun();
+    REQUIRE_FALSE(controller.followed().running());
+    CHECK(takt4::sandbox::refusals(takt4::sandbox::Refused::Link) == asked);
+    controller.followForTests(nullptr);
 }
 
 // --- remote status and control, from a show controller -----------------------------------------
