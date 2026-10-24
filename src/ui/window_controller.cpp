@@ -2164,6 +2164,7 @@ void WindowController::toggleFold(int section) {
             window_->set_outputs_folded(folding);
         }
         foldTaken_[at] = 0.0f; // the operator's size, not this class's to change
+        openGrew_[at] = -1.0f;
         return;
     }
     const float width = window_->get_shown_width();
@@ -2175,6 +2176,9 @@ void WindowController::toggleFold(int section) {
 }
 
 float WindowController::refold(std::size_t at, bool folding, float width, float height) {
+    // How far the scrolling part is taller than its content needs, before the change: the
+    // height the trace has stretched into, which opening a section takes first.
+    const float spare = window_->get_body_spare();
     // What the fold takes off the content, or gives back: its least height either side of the
     // change. Read straight after setting the property, since Slint works a layout out when it is
     // read — which is also what makes `fold-keep` below the new layout's and not the old one's.
@@ -2186,17 +2190,26 @@ float WindowController::refold(std::size_t at, bool folding, float width, float 
     }
     const float after = window_->get_content_least();
     if (folding) {
-        // Shorter by what was folded — but the lowest folded heading, and the arrow that opens it
-        // again, stays in sight above what is pinned, and the window keeps its own minimum.
+        // Shorter by what opening the section made the window taller, when that is known — what
+        // it took from the trace goes back to the trace — and otherwise by all that was folded.
+        // But the lowest folded heading, and the arrow that opens it again, stays in sight above
+        // what is pinned, and the window keeps its own minimum.
+        const float give = openGrew_[at] >= 0.0f ? openGrew_[at] : before - after;
         const float keep = window_->get_fold_keep() + window_->get_pinned_height();
-        const float next =
-            std::min(height, std::max({kMainWindowMinHeight, height - (before - after), keep}));
+        const float next = std::min(height, std::max({kMainWindowMinHeight, height - give, keep}));
         foldTaken_[at] = height - next;
+        openGrew_[at] = -1.0f;
         return next;
     }
-    // What the fold took, given back — no taller than the screen has room for.
-    const float next = fitToScreen({width, height + foldTaken_[at]}).height;
+    // The section's height comes out of the trace's spare first: a window made taller than its
+    // content lends it, and does not grow. The window grows only by what is left — never by more
+    // than the fold took off it, no taller than the screen has room for, and never shorter than
+    // it is, for a window already dragged taller than that.
+    const float grow = std::min(std::max(0.0f, (after - before) - spare), foldTaken_[at]);
+    const float next =
+        grow > 0.0f ? std::max(height, fitToScreen({width, height + grow}).height) : height;
     foldTaken_[at] = 0.0f;
+    openGrew_[at] = next - height;
     return next;
 }
 

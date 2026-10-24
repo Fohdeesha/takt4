@@ -8229,6 +8229,125 @@ TEST_CASE("a fresh window opens with the control inputs folded and the outputs o
     CHECK(controller.currentSettings().machine.inputsFolded);
 }
 
+TEST_CASE("opening a section takes its height from what the trace has to spare before the window "
+          "grows, and folding it gives that back",
+          "[ui]") {
+    // The operator, 2026-10-24: a window made taller gave the height to the trace, and opening
+    // Inputs then made the window taller still, or scrolled, rather than taking it back from the
+    // trace — the one part that stretches, and the one worth least. Driven by clicks on the real
+    // arrow, from a window opened folded as a launch opens it; every height off a render.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker); // a fresh install: Inputs folded, Outputs open
+    REQUIRE(controller.window().get_inputs_folded());
+    auto* const adapter = takt4::ui::headlessAdapterFor(controller.window().window());
+    REQUIRE(adapter != nullptr);
+    auto& window = controller.window().window();
+    const takt4::tests::NothingReal nothingReal;
+    constexpr int kWidth = 800;
+    controller.show();
+    const int opened = static_cast<int>(adapter->requested()->height);
+    int height = opened;
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto shoot = [&] {
+        const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, height);
+        window.dispatch_window_active_changed_event(true);
+        return shot;
+    };
+    const auto span = [](const std::pair<int, int>& sheet) {
+        return sheet.second - sheet.first + 1;
+    };
+    constexpr int kPinned = 10 + 66 + 51; // the triggers row and the status bar, which never scroll
+    // Whether the body has anything left to scroll: its bar, in the page's right-hand margin.
+    const auto scrolls = [&](const takt4::tests::Shot& shot) {
+        for (int y = 0; y < shot.height - kPinned; ++y) {
+            if (is(shot, kWidth - 5, y, Rgb{0x55, 0x55, 0x53})) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto clickArrow = [&](const std::pair<int, int>& sheet) {
+        clickAt(window, static_cast<float>(kWidth - 26 - 14), static_cast<float>(sheet.first + 24));
+        settle();
+    };
+    // The trace at its least: in a window too short for everything the body scrolls, and the
+    // trace has nothing to spare.
+    height = 600;
+    const takt4::tests::Shot shortest = shoot();
+    REQUIRE(scrolls(shortest));
+    // (The sheets below the view are cut off where it ends; the trace's is the third from the top.)
+    const std::vector<std::pair<int, int>> least = sheetsDown(shortest);
+    REQUIRE(least.size() >= 3);
+    const int traceLeast = span(least[2]);
+
+    SECTION("a window made taller lends the section the trace's spare, and does not grow") {
+        // Dragged 500 px taller: everything fits, and the trace takes the rest.
+        height = opened + 500;
+        const std::vector<std::pair<int, int>> tall = sheetsDown(shoot());
+        REQUIRE(tall.size() == 7);
+        const int trace = span(tall[2]);
+        REQUIRE(span(tall[4]) == 40);
+        clickArrow(tall[4]);
+        CHECK_FALSE(controller.window().get_inputs_folded());
+        // No height asked for: the last size the window was asked to be is still the launch's.
+        CHECK(static_cast<int>(adapter->requested()->height) == opened);
+        const takt4::tests::Shot shot = shoot();
+        const std::vector<std::pair<int, int>> open = sheetsDown(shot);
+        REQUIRE(open.size() == 7);
+        const int section = span(open[4]) - 40;
+        INFO("the trace " << trace << " px, " << trace - traceLeast << " to spare; Inputs "
+                          << section << " px taller open");
+        REQUIRE(section > 0);
+        REQUIRE(trace - traceLeast >= section);
+        CHECK(span(open[2]) == trace - section);
+        CHECK_FALSE(scrolls(shot));
+        // Folded again: the trace has its height back, and the window is the size it was made.
+        clickArrow(open[4]);
+        CHECK(controller.window().get_inputs_folded());
+        CHECK(static_cast<int>(adapter->requested()->height) == opened);
+        const std::vector<std::pair<int, int>> folded = sheetsDown(shoot());
+        REQUIRE(folded.size() == 7);
+        CHECK(span(folded[2]) == trace);
+        CHECK(span(folded[4]) == 40);
+    }
+
+    SECTION("what the spare cannot cover makes the window taller, and folding takes that off") {
+        height = opened + 50;
+        const std::vector<std::pair<int, int>> tall = sheetsDown(shoot());
+        REQUIRE(tall.size() == 7);
+        const int trace = span(tall[2]);
+        const int spare = trace - traceLeast;
+        REQUIRE(spare > 0);
+        const int made = height;
+        clickArrow(tall[4]);
+        height = static_cast<int>(adapter->requested()->height);
+        const takt4::tests::Shot shot = shoot();
+        const std::vector<std::pair<int, int>> open = sheetsDown(shot);
+        REQUIRE(open.size() == 7);
+        const int section = span(open[4]) - 40;
+        INFO("the trace " << trace << " px, " << spare << " to spare; Inputs " << section
+                          << " px taller open; the window " << made << " then " << height);
+        REQUIRE(section > spare);
+        // Taller by what the spare could not cover, and not a pixel more: the trace at its least,
+        // and nothing to scroll.
+        CHECK(height - made == section - spare);
+        CHECK(span(open[2]) == traceLeast);
+        CHECK_FALSE(scrolls(shot));
+        // Folded again: the window gives up what it grew, and the trace has its spare back.
+        clickArrow(open[4]);
+        height = static_cast<int>(adapter->requested()->height);
+        CHECK(height == made);
+        const std::vector<std::pair<int, int>> folded = sheetsDown(shoot());
+        REQUIRE(folded.size() == 7);
+        CHECK(span(folded[2]) == trace);
+    }
+
+    nothingReal.check();
+}
+
 TEST_CASE("the rule editor opens folded as it was left, with its log as it was",
           "[ui][settings][trigger]") {
     // The rule editor's folds, A to D and the event log, and the log's height are the window's

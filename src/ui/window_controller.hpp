@@ -311,10 +311,14 @@ public:
     bool linkPeersShown() const noexcept { return linkPeersShown_; }
 
     /// Folds a section of the window down to its heading, or opens it again — 0 is Inputs, 1 is
-    /// Outputs. **A fold takes the section's height off the window**, and the trace keeps its
-    /// height: the window gets shorter by what was folded — but never so short that a folded
-    /// heading, with the arrow that opens it again, is scrolled out of sight, nor below the
-    /// window's 420 px minimum. Opening the section gives back what its fold took. A maximised or
+    /// Outputs. **Opening a section takes the height the trace has to spare first**: the trace is
+    /// the one part that stretches and the one worth least, so a window the operator made taller
+    /// lends the section that height and does not grow. Only what the spare cannot cover makes the
+    /// window taller — never by more than the section's fold took off it, nor past the screen.
+    /// **Folding gives back what opening took**: the trace what it lent, the window what it grew.
+    /// A section open since the window opened takes its whole height off the window, the trace
+    /// keeping its height — but never so much that a folded heading, with the arrow that opens it
+    /// again, is scrolled out of sight, nor below the window's 420 px minimum. A maximised or
     /// full-screen window is left the size it is. Folds are remembered in the settings file, and
     /// a window opens folded as it was left, shorter by the same rule.
     void toggleFold(int section);
@@ -1042,9 +1046,15 @@ private:
     std::string outputErrorShown_;
     std::shared_ptr<slint::VectorModel<OutputRow>> targetModel_;
 
-    /// How much height each section's fold took off the window, in logical pixels — given back
-    /// when it is opened again. Inputs, then Outputs.
+    /// How much height each section's fold took off the window, in logical pixels — the most
+    /// that opening it again may give back. Inputs, then Outputs.
     std::array<float, 2> foldTaken_{};
+    /// How much opening each section by its arrow made the window taller, in logical pixels —
+    /// what folding it takes off again, the rest of the section's height going back to the trace
+    /// that lent it. Negative while that is not known (open since the window opened, or opened in
+    /// a maximised window): folding then takes the section's whole height off. Inputs, then
+    /// Outputs.
+    std::array<float, 2> openGrew_{-1.0f, -1.0f};
     /// The size the window was asked to open at, in logical pixels, before any fold the settings
     /// remembered — what `show` takes those folds' height off.
     std::array<float, 2> opening_{};
