@@ -4852,7 +4852,7 @@ void WindowController::publishFollowedTrace() {
 
 namespace {
 
-/// The senders in `text` as the window keeps them — "192.168.1.70, 192.168.1.60" — with what was
+/// The senders in `text` as the window keeps them — "192.168.1.50, 192.168.1.60" — with what was
 /// not an address put in `rejected`.
 std::string keptSenders(std::string_view text, std::vector<std::string>* rejected) {
     std::string kept;

@@ -75,8 +75,8 @@ struct OutputTarget {
     /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat.
     ///
     /// **Off unless asked for** (the operator, 2026-10-02), which the "always publish" was not:
-    /// a receiver that takes only what a rule sends it complains about the rest (2026-10-01: *"my
-    /// receiver does not like the random osc spam"*), and every output a rig had got them
+    /// a receiver that takes only what a rule sends it complains about the rest, logging each
+    /// address it does not handle, and every output a rig had got them
     /// whether it wanted them or not. The main window's "/takt4 global messages to" picks the
     /// outputs that do. A rule aimed here goes either way. Written as "global" in the line
     /// (`formatOutputTarget`); an older line has no word, and is off. Ignored for the other kinds.

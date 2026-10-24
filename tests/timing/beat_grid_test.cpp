@@ -740,8 +740,8 @@ TEST_CASE("no two followed beats go out closer than 60 ms", "[timing][follow]") 
 
 TEST_CASE("a followed grid moved back across the beat just sent does not send it again",
           "[timing][follow]") {
-    // A Link peer that moves the phase back by 0.4 to 0.5 of a beat — another
-    // computer's old takt4 snapping at its START — made the beat just sent go out again, past the 0.4 of
+    // A Link peer that moves the phase back by 0.4 to 0.5 of a beat — an older takt4 on another
+    // computer snapping at its START — made the beat just sent go out again, past the 0.4 of
     // a beat that keeps a beat moved a little from going twice. Its number on the grid says it is
     // the same beat, however long ago it went.
     const double bpm = 120.0;

@@ -1290,7 +1290,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         // different things underneath. The media server is nudged *early*, which for a
         // message about a beat already heard means "just before the next one"; the winch,
         // which has to physically move, is pushed late — and is left out of takt4's own
-        // messages, which its bridge does not want, as the other two are not.
+        // messages, which a receiver of its rules alone does not want, as the other two are not.
         targets->push_back(target("wall", "192.168.1.41", "7000", true, -80.0f, true));
         targets->push_back(target("winch", "192.168.1.43", "7000", true, 352.0f));
         // The other kind of destination, so the picture shows both shapes of the row: a MIDI

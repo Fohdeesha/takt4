@@ -731,7 +731,7 @@ TEST_CASE("an edit to the targets keeps what is queued for the ones that stay", 
 }
 
 TEST_CASE("a target that takes only its rules is sent nothing of the namespace", "[output][osc]") {
-    // The operator, 2026-10-01: a receiver logs "Unhandled OSC address: /takt4/bpm" for
+    // A receiver of its rules alone logs "Unhandled OSC address: /takt4/bpm" for
     // what takt4 sends of its own accord. `OutputTarget::sendsNamespace` off keeps the namespace
     // from that target, and keeps nothing else from it.
     LoopbackReceiver deck;
@@ -887,8 +887,7 @@ TEST_CASE("a beat's timing says how long ago it landed and how long until the ne
           "[output][osc][remote]") {
     // For a show controller that schedules from takt4's own phase and tempo, so a datagram that is
     // late, or lost, costs nothing. The instant is the beat's moment and the rig's latency — where
-    // takt4's operator means it to land — so an output's own delay shows in it, with any lateness
-    // (a show controller's answer of 2026-10-22).
+    // takt4's operator means it to land — so an output's own delay shows in it, with any lateness.
     LoopbackReceiver prompt;
     LoopbackReceiver slow;
     OscPublisher publisher;

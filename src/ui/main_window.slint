@@ -662,7 +662,7 @@ export component MainWindow inherits Window {
     : root.holding ? "holding"
     : root.locked ? "locked"
     : "hunting";
-  /// The senders it is allowed from, as the window keeps them ("192.168.1.70, 192.168.1.60"), or
+  /// The senders it is allowed from, as the window keeps them ("192.168.1.50, 192.168.1.60"), or
   /// empty for any that reaches the socket. This machine is never refused.
   in-out property <string> osc-remote-from;
 

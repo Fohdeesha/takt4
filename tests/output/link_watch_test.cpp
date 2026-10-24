@@ -342,7 +342,7 @@ TEST_CASE("a real Link session's announcements are read, and takt4's own is not 
     // list is empty: takt4's own Link is never shown as a peer of itself.
     //
     // Not on a network with a Link session on it already: the two would join it and take its
-    // tempo (another computer, at 120 BPM, made "a peer at 120 BPM" of this test's own).
+    // tempo (another computer's, at 120 BPM, made "a peer at 120 BPM" of this test's own).
     takt4::testing::skipWhileLinkIsOnTheNetwork();
     takt4::output::LinkSession first(123.0);
     takt4::output::LinkSession second(97.0);

@@ -1128,7 +1128,7 @@ private:
     /// The switch and the list, to the control socket; and what the window shows of them.
     void applyRemoteSetup();
     void publishRemoteSetup(bool force);
-    /// "from 192.168.1.70 and this machine only." — who remote setup is open to.
+    /// "from 192.168.1.50 and this machine only." — who remote setup is open to.
     std::string remoteSendersText() const;
     /// `tick`'s round, before the status is published.
     void redraw();

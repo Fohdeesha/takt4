@@ -731,22 +731,22 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
     board.publish(status);
     control.start();
     REQUIRE(control.running());
-    takt4::testing::LoopbackReceiver bridge;
+    takt4::testing::LoopbackReceiver showController;
     const auto sendIt = [&](OscMessage message) {
-        REQUIRE(bridge.send(control.port(), message.packet()));
+        REQUIRE(showController.send(control.port(), message.packet()));
     };
 
     SECTION("the status, as one bundle, and the request number answered after it") {
         OscMessage ask("/takt4/ctl/status");
         ask.addInt(5);
         sendIt(ask);
-        const std::vector<takt4::testing::OscMsg> snapshot = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> snapshot = nextFrom(showController);
         const takt4::testing::OscMsg* version =
             takt4::testing::findOsc(snapshot, "/takt4/status/version");
         REQUIRE(version != nullptr);
         CHECK(version->args[0].s == "test");
         CHECK(takt4::testing::findOsc(snapshot, "/takt4/status/ui_age_ms") != nullptr);
-        const std::vector<takt4::testing::OscMsg> reply = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> reply = nextFrom(showController);
         REQUIRE(reply.size() == 1);
         CHECK(reply[0].address == "/takt4/reply");
         CHECK(reply[0].args[0].i == 5);
@@ -758,27 +758,27 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
 
     SECTION("the devices and the outputs, a message each and then how many") {
         sendIt(OscMessage("/takt4/ctl/audio/devices"));
-        const std::vector<takt4::testing::OscMsg> device = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> device = nextFrom(showController);
         REQUIRE(device.size() == 1);
         CHECK(device[0].address == "/takt4/status/audio/device");
         CHECK(device[0].args[1].s == "MOTU Pro Audio");
-        const std::vector<takt4::testing::OscMsg> count = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> count = nextFrom(showController);
         REQUIRE(count.size() == 1);
         CHECK(count[0].address == "/takt4/status/audio/devices");
         CHECK(count[0].args[0].i == 1);
 
         sendIt(OscMessage("/takt4/ctl/outputs"));
-        const std::vector<takt4::testing::OscMsg> output = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> output = nextFrom(showController);
         REQUIRE(output.size() == 1);
         CHECK(output[0].args[0].s == "o-00000001");
-        CHECK(nextFrom(bridge)[0].address == "/takt4/status/outputs");
+        CHECK(nextFrom(showController)[0].address == "/takt4/status/outputs");
         // Without a request number, an answer that is not a refusal says nothing more.
-        CHECK(nextFrom(bridge).empty());
+        CHECK(nextFrom(showController).empty());
     }
 
     SECTION("a change with remote setup off is refused to its sender, saying how to allow it") {
         sendIt(OscMessage("/takt4/ctl/audio/start"));
-        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(showController);
         REQUIRE(refused.size() == 1);
         CHECK(refused[0].address == "/takt4/status/refused");
         CHECK(refused[0].args[0].s == "/takt4/ctl/audio/start");
@@ -802,12 +802,12 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
         REQUIRE(command->seq.has_value());
         CHECK(*command->seq == 9);
         CHECK(command->from.ip == 0x7F000001u);
-        CHECK(command->from.port == bridge.port());
+        CHECK(command->from.port == showController.port());
         CHECK(control.commandsQueued() == 1);
         // Nothing is said here: the window is the one that knows what came of it.
-        CHECK(nextFrom(bridge).empty());
+        CHECK(nextFrom(showController).empty());
         control.answer(*command, true, "timing from Ableton Link");
-        const std::vector<takt4::testing::OscMsg> answered = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> answered = nextFrom(showController);
         REQUIRE(answered.size() == 1);
         CHECK(answered[0].address == "/takt4/reply");
         CHECK(answered[0].args[0].i == 9);
@@ -825,7 +825,7 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
         channel.addString("three");
         channel.addInt(4);
         sendIt(channel);
-        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(showController);
         REQUIRE(refused.size() == 1);
         CHECK(refused[0].address == "/takt4/status/refused");
         CHECK(refused[0].args[0].s == "/takt4/ctl/audio/channel");
@@ -840,7 +840,7 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
         OscMessage stop("/takt4/ctl/audio/stop");
         stop.addInt(2);
         sendIt(stop);
-        const std::vector<takt4::testing::OscMsg> refused = nextFrom(bridge);
+        const std::vector<takt4::testing::OscMsg> refused = nextFrom(showController);
         REQUIRE(refused.size() == 1);
         CHECK(refused[0].address == "/takt4/reply");
         CHECK(refused[0].args[1].s == "refused");
@@ -857,7 +857,7 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
         CHECK(control.dispatchRemote(start.packet(), {0xC0A80132u, 9000}));
         CHECK(control.remoteRefused() == 1);
         CHECK(commands.drain().empty());
-        // From .90, which is.
+        // From .70, which is.
         CHECK(control.dispatchRemote(start.packet(), {0xC0A80146u, 9000}));
         CHECK(commands.drain().size() == 1);
         // And from this machine, over the wire, whatever the list says.
@@ -874,7 +874,7 @@ TEST_CASE("a remote query is answered to whoever asked, and a change waits for r
         status.devices.assign(260, {"ASIO", "a device", 2});
         board.publish(status);
         CHECK(control.dispatchRemote(OscMessage("/takt4/ctl/audio/devices").packet(),
-                                     {0x7F000001u, bridge.port()}));
+                                     {0x7F000001u, showController.port()}));
         // 261 asked for, 200 a second: some 60 held, fewer if the sends took long enough for the
         // allowance to fill a little meanwhile.
         CHECK(control.repliesHeld() >= 20);

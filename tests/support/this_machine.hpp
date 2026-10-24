@@ -3,8 +3,8 @@
 // Which addresses are this machine's — for the [network] tests that hear Link announcements.
 //
 // A test that joins Link hears every Link session on the network, not only the ones it made, and
-// the rig's network has one of its own (a device at 192.168.1.70 running two sessions, which
-// failed two tests on 2026-09-30 by being heard, correctly). A session this process or a peer
+// a show network can have one of its own (another computer running two sessions failed two
+// tests by being heard, correctly). A session this process or a peer
 // process it starts runs announces from one of this machine's own addresses, so that is what
 // such a test counts.
 

@@ -123,7 +123,7 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
     }
     // What is queued follows its target to where it went; what was queued for a target that
     // is gone goes nowhere, which is what deleting or switching one off asks for — and the
-    // namespace's own messages go nowhere once their target has stopped taking it, or a winch
+    // namespace's own messages go nowhere once their target has stopped taking it, or a receiver
     // told to hear only its rules would still hear the last second of beats.
     std::size_t kept = 0;
     for (std::size_t i = 0; i < pending_.size(); ++i) {

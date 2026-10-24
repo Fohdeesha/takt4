@@ -345,7 +345,7 @@ TEST_CASE("the generic namespace goes to every output that asks for it, routed o
           "[output][routing]") {
     // the design had it go everywhere, "so anything can consume it with zero configuration"; since
     // 2026-10-02 it goes to the outputs ticked for it (`OutputTarget::sendsNamespace`) and no
-    // others, the operator's call after a winch's bridge complained of it. Which of those a *rule*
+    // others, the operator's call after a receiver complained of them. Which of those a *rule*
     // reaches has nothing to do with it.
     LoopbackReceiver deck;
     LoopbackReceiver wall;

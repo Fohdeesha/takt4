@@ -82,7 +82,7 @@ struct Gobo {
 /// What selects the clip at `index` in deck order: its page, and the **middle** of its slot's band
 /// of Gobo Select. Liberation divides 1-255 across 40 slots, about 6.4 values each, so a value at a
 /// band's edge would be one rounding away from the neighbouring clip. Slot 1 is 4, slot 20 is 125,
-/// slot 40 is 253 — the values a controller sends.
+/// slot 40 is 253.
 constexpr Gobo goboOf(int index) noexcept {
     const Clip clip = clipAt(index);
     const int bank = clip.column / kColumnsPerBank;

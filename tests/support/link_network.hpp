@@ -38,7 +38,7 @@ inline bool anyLinkHeard(double seconds, std::string& problem) {
 /// First thing in a [network] test that switches a Link session on: skipped while another Link
 /// session is on this network, or when Link cannot be listened to. Joined, a test's session takes
 /// that session's tempo and is counted in it, and whatever the test then sets — a tempo, a bar —
-/// is set for everyone in it: on the rig's network, another computer.
+/// is set for everyone in it, every other computer on the network among them.
 inline void skipWhileLinkIsOnTheNetwork() {
     std::string problem;
     const bool other = anyLinkHeard(2.0, problem);

@@ -1,8 +1,7 @@
 #pragma once
 
-// Remote status and control, for a show controller on the network — a show controller, which
-// hears takt4's global messages and fires cues on its beat (the operator's wish of 2026-10-19, and
-// the answers of 2026-10-22).
+// Remote status and control, for a show controller on the network: one that hears takt4's global
+// messages and fires cues on its beat.
 //
 // What it is made of, and on which thread each part lives:
 //

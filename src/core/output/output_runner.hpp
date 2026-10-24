@@ -325,8 +325,8 @@ public:
     /// Set before `start()`; the thread reads it without synchronisation.
     void setBeatObserver(BeatObserver observer);
 
-    /// **takt4's own status, to the outputs taking its global messages** (`remote`; a show controller's
-    /// ask of 2026-10-22): `/status/alive i n` and the whole `remote::Status` once a second, as one
+    /// **takt4's own status, to the outputs taking its global messages** (`remote`):
+    /// `/status/alive i n` and the whole `remote::Status` once a second, as one
     /// bundle, and each value that moves in between, loose; and the lines the window says
     /// (`/status/log`). From this thread because it runs for the application's whole life whatever
     /// the audio and the window are doing — so a heartbeat that stops means takt4 has, and one

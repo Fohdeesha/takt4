@@ -84,12 +84,11 @@ inline constexpr std::array<const char*, 5> kRigPresets{
 
 // --- Liberation ---------------------------------------------------------------------------
 //
-// Liberation's lasers over Art-Net, driven the way a controller
-// drives them (2026-10-05): a zone renders only while it is armed, lit and has a clip, so a clip
-// effect sets all three at once (`dmx::EffectKind::Clip`). **Not a rig that can be added blind**:
-// how many lasers, which clips, where Liberation is and where its zones are patched are the
-// operator's to say, so this entry opens a prompt (`RulesController::openLiberation`) and the
-// rules come from `planLiberation`.
+// Liberation's lasers over Art-Net, driven through its DMX Input: a zone renders only while it is
+// armed, lit and has a clip, so a clip effect sets all three at once (`dmx::EffectKind::Clip`).
+// **Not a rig that can be added blind**: how many lasers, which clips, where Liberation is and
+// where its zones are patched are the operator's to say, so this entry opens a prompt
+// (`RulesController::openLiberation`) and the rules come from `planLiberation`.
 
 /// The Liberation entry of the preset menu, counting from one as `rigPresetRules` does. It adds
 /// nothing by itself: it opens the prompt.

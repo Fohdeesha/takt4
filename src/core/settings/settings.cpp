@@ -1040,8 +1040,9 @@ Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::
         }
         // **Written by a newer takt4: not saved over without asking** (the operator, 2026-10-22).
         // Every field this one does not know was left out as it was read, and the first autosave
-        // wrote the file back without them — a run of the old takt4 on another computer cost a preset
-        // its timing source, its latencies and its CDJ settings, and the next start its backup.
+        // wrote the file back without them — a run of an older takt4 on another computer cost a
+        // preset its timing source, its latencies and its CDJ settings, and the next start its
+        // backup.
         if (isOurs && loaded.version > kFormatVersion) {
             out.writable = false;
             out.notice = name + " was written by a newer takt4 (settings format " +

@@ -440,7 +440,8 @@ def main():
 
     if options.report:
         options.report.write_text(json.dumps({
-            "cli": str(cli),
+            # By name: a report is committed, and the folder a build was in is nobody's business.
+            "cli": Path(cli).name,
             "dataset": str(options.dataset),
             "annotations": str(options.annotations or options.dataset),
             "weights": options.weights,

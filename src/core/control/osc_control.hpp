@@ -109,7 +109,7 @@ public:
     /// drives a sender on another machine, which no test's sender can be. True when it was one.
     bool dispatchRemote(std::span<const std::byte> packet, const remote::Endpoint& from);
 
-    // --- remote status and control (a show controller's, 2026-10-22) -------------------------------
+    // --- remote status and control -------------------------------------------------------------
 
     /// Where queries are answered from, and where commands go for the window to carry out. Both
     /// must outlive this; set before `start`. Without them, the remote addresses are refused.

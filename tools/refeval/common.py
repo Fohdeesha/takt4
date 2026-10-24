@@ -64,15 +64,16 @@ def cli_path():
 
 
 def cli_identity(cli):
-    """What a takt4-cli is, as a run records it: its path, the SHA-256 of the file (two builds
-    can share a path, never a hash) and what `--version` says of itself."""
+    """What a takt4-cli is, as a run records it: its file name, the SHA-256 of the file (two
+    builds can share a name, never a hash) and what `--version` says of itself. Not its path: the
+    records are committed, and the folder a build was in says nothing about the build."""
     import hashlib
     import subprocess
     digest = hashlib.sha256(Path(cli).read_bytes()).hexdigest()
     r = subprocess.run([str(cli), "--version"], capture_output=True, text=True)
     version = " / ".join(" ".join(line.split()) for line in r.stdout.splitlines()[:2]) \
         if r.returncode == 0 else ""
-    return {"cli": str(cli), "sha256": digest, "version": version}
+    return {"cli": Path(cli).name, "sha256": digest, "version": version}
 
 
 def provenance_path(tag):

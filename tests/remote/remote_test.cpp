@@ -66,18 +66,18 @@ TEST_CASE("remote setup's list of senders is dotted addresses, and anything else
           "guessed at",
           "[remote]") {
     std::vector<std::string> rejected;
-    CHECK(takt4::remote::senderList("192.168.1.70, 10.0.0.2;127.0.0.1\t192.168.1.70", &rejected) ==
-          std::vector<std::uint32_t>{0xC0A80146u, 0x0A000002u, 0x7F000001u});
+    CHECK(takt4::remote::senderList("192.168.1.50, 10.0.0.2;127.0.0.1\t192.168.1.50", &rejected) ==
+          std::vector<std::uint32_t>{0xC0A80132u, 0x0A000002u, 0x7F000001u});
     CHECK(rejected.empty());
 
     // A name would be looked up, a port or a mask is not a sender, and a number past 255 is no
     // address: each said back as typed, and none of them taken as something near it.
-    CHECK(takt4::remote::senderList("192.168.1.256 1.2.3 1.2.3.4.5 bridge.local 1.2.3.4:9000 "
+    CHECK(takt4::remote::senderList("192.168.1.256 1.2.3 1.2.3.4.5 controller.local 1.2.3.4:9000 "
                                     "192.168.1.0/24 0001.2.3.4 ..1 1.2.3.4.",
                                     &rejected)
               .empty());
     CHECK(rejected == std::vector<std::string>{"192.168.1.256", "1.2.3", "1.2.3.4.5",
-                                               "bridge.local", "1.2.3.4:9000", "192.168.1.0/24",
+                                               "controller.local", "1.2.3.4:9000", "192.168.1.0/24",
                                                "0001.2.3.4", "..1", "1.2.3.4."});
     rejected.clear();
     CHECK(takt4::remote::senderList("", &rejected).empty());
@@ -209,7 +209,7 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
 }
 
 TEST_CASE("a change of source_ok comes after the source_detail that says why", "[remote]") {
-    // show controller judges each datagram as it comes, and source_ok went before the detail: a
+    // A show controller judges each datagram as it comes, and source_ok went before the detail: a
     // source lost was a warning saying takt4 gave no reason, the reason following a moment later.
     const Status s = everything();
     const auto order = [](const Status& before, const Status& after) {

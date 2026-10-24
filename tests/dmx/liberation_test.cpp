@@ -89,7 +89,7 @@ TEST_CASE("Gobo Bank and Gobo Select decode to the clip they were made from", "[
         CHECK(eighth.bank == 1);
         CHECK(liberation::decode(eighth.bank, eighth.select) == Clip{8, 0});
     }
-    SECTION("the middle of each slot's band, as a controller sends it") {
+    SECTION("the middle of each slot's band") {
         CHECK(liberation::goboOf(0).select == 4);    // slot 1
         CHECK(liberation::goboOf(19).select == 125); // slot 20
         CHECK(liberation::goboOf(39).select == 253); // slot 40

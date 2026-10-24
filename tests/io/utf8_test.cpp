@@ -17,8 +17,8 @@ constexpr const char* kReplacement = "\xEF\xBF\xBD";
 
 TEST_CASE("well-formed UTF-8 passes through untouched", "[io][utf8]") {
     for (const char* text : {"", "takt4", "MOTU Pro Audio", "Friday\xE2\x80\x99s set", // ’
-                             "Shows \xE2\x80\x93 2026",                             // –
-                             "caf\xC3\xA9", "\xF0\x9F\x8E\xB5"}) {                  // é, 🎵
+                             "Shows \xE2\x80\x93 2026",                                // –
+                             "caf\xC3\xA9", "\xF0\x9F\x8E\xB5"}) {                     // é, 🎵
         INFO(text);
         CHECK(isValidUtf8(text));
         CHECK(validUtf8(text) == text);
