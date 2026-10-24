@@ -747,29 +747,23 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     REQUIRE(removed == std::vector<int>{0});
     removed.clear();
 
-    // Now the wheel, over the middle of the body. Slint animates a wheel scroll, so the
-    // timers have to run for it to land.
+    // Now the wheel, over the middle of the body, and the pointer out of the window, as it was for
+    // the first picture, so nothing is drawn hovered in one and not the other.
     window->window().dispatch_pointer_scroll_event(slint::LogicalPosition({500.0f, 300.0f}), 0.0f,
                                                    -120.0f);
-    pumpTimers(std::chrono::milliseconds(250));
-    // And the pointer out of the window, as it was for the first picture, so nothing is drawn
-    // hovered in one and not the other: a row's x lit is 50 of these pixels here. With the pointer
-    // left in, Linux failed 214 against 200 on two runs in five.
     window->window().dispatch_pointer_exit_event();
-    pumpTimers(std::chrono::milliseconds(50));
-    const takt4::tests::Shot after = takt4::tests::render(*window, kWidth, kHeight);
 
     // The body moved — by how much, measured on the picture itself: the body scrolls as one
     // piece, so the distance is the shift that lays the new picture over the old one. Not the
     // distance between the first row found each time, which is the distance between two
-    // different rows as soon as one has gone off the top.
-    const auto rowsAfter = rowsDown(after);
-    REQUIRE(!rowsAfter.empty());
-    REQUIRE(rowsBefore.size() >= 2);
-    const auto mismatches = [&](int shift) {
+    // different rows as soon as one has gone off the top. The scroll bar is left out: it is not
+    // the body, and it moves its own way, a little down as the body goes a lot up (119 of these
+    // pixels here).
+    constexpr int kBar = 15;
+    const auto mismatches = [&](const takt4::tests::Shot& after, int shift) {
         int count = 0;
         for (int y = 400; y + shift < kHeight - kFooter; y += 2) {
-            for (int x = 0; x < kWidth; x += 4) {
+            for (int x = 0; x < kWidth - kBar; x += 4) {
                 const slint::Rgb8Pixel a = before.at(x, y + shift);
                 const slint::Rgb8Pixel b = after.at(x, y);
                 count += (a.r != b.r || a.g != b.g || a.b != b.b) ? 1 : 0;
@@ -777,20 +771,40 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
         }
         return count;
     };
-    // The best of the shifts rather than an exact one, since a button the pointer has crossed
-    // can be drawn lit in one picture and not the other.
+    // Slint animates a wheel scroll, and how far it has got by a given moment is the machine's
+    // business: here it lands in under 200 ms, but a fixed 250 ms was caught short on Linux and
+    // macOS runners (214 against 200 — what a scroll a few pixels short of landing gives here, a
+    // body drawn a fraction of a pixel off differing at the edge of every glyph). So the timers run
+    // until the body lies exactly over the first picture, somewhere other than where it started,
+    // and is still there a picture later — the click below needs the row to have stopped.
+    takt4::tests::Shot after;
     int moved = 0;
     int fewest = std::numeric_limits<int>::max();
-    for (int shift = 0; shift < 300; ++shift) {
-        const int count = mismatches(shift);
-        if (count < fewest) {
-            fewest = count;
-            moved = shift;
+    int landedAt = -1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (true) {
+        pumpTimers(std::chrono::milliseconds(50));
+        after = takt4::tests::render(*window, kWidth, kHeight);
+        fewest = std::numeric_limits<int>::max();
+        for (int shift = 0; shift < 300; ++shift) {
+            const int count = mismatches(after, shift);
+            if (count < fewest) {
+                fewest = count;
+                moved = shift;
+            }
         }
+        const bool exact = fewest == 0 && moved > 0;
+        if ((exact && moved == landedAt) || std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        landedAt = exact ? moved : -1;
     }
-    CAPTURE(fewest);
-    CHECK(fewest < 200);
+    CAPTURE(fewest, moved);
+    CHECK(fewest == 0);
     CHECK(moved > 0);
+    const auto rowsAfter = rowsDown(after);
+    REQUIRE(!rowsAfter.empty());
+    REQUIRE(rowsBefore.size() >= 2);
     // Which row is first in the column now. Row 0 is `rowsBefore.front()` — the click above
     // took 0 away — and the rows are a fixed pitch apart.
     const int pitch = rowsBefore[1].first - rowsBefore[0].first;
