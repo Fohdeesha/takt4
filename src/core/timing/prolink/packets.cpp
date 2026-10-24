@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace takt4::timing::prolink {
 
@@ -347,6 +349,46 @@ std::string nameText(const Name& name) {
         text.pop_back();
     }
     return text;
+}
+
+std::string macText(const Mac& mac) {
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string text;
+    for (std::size_t i = 0; i < mac.size(); ++i) {
+        if (i != 0) {
+            text.push_back(':');
+        }
+        text.push_back(kHex[mac[i] >> 4]);
+        text.push_back(kHex[mac[i] & 0x0f]);
+    }
+    return text;
+}
+
+std::optional<Mac> parseMac(std::string_view text) {
+    // "aa:bb:cc:dd:ee:ff": seventeen characters, the separators at every third.
+    if (text.size() != 17) {
+        return std::nullopt;
+    }
+    const auto digit = [](char c) -> int {
+        return c >= '0' && c <= '9'   ? c - '0'
+               : c >= 'a' && c <= 'f' ? c - 'a' + 10
+               : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                      : -1;
+    };
+    Mac mac{};
+    for (std::size_t i = 0; i < mac.size(); ++i) {
+        const std::size_t at = i * 3;
+        if (i != 0 && text[at - 1] != ':' && text[at - 1] != '-') {
+            return std::nullopt;
+        }
+        const int high = digit(text[at]);
+        const int low = digit(text[at + 1]);
+        if (high < 0 || low < 0) {
+            return std::nullopt;
+        }
+        mac[i] = static_cast<std::uint8_t>(high * 16 + low);
+    }
+    return mac;
 }
 
 } // namespace takt4::timing::prolink

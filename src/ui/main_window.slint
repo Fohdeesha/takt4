@@ -456,7 +456,14 @@ export component MainWindow inherits Window {
   in-out property <[string]> cdj-follow-choices: ["tempo master"];
   in-out property <int> cdj-follow-index;
   callback cdj-follow-picked(int);
-  /// The network card the CDJs are joined on, or what picks it.
+  /// The network card the CDJs are joined on: "automatic" — the card they are heard on — then
+  /// this machine's cards that could reach one, and a card picked that is not here, saying so.
+  in-out property <[string]> cdj-card-choices: ["automatic"];
+  in-out property <[string]> cdj-card-asides;
+  in-out property <int> cdj-card-index;
+  callback cdj-card-picked(int);
+  /// After the card picker, as a reading: the card joined on, or the one START would join on
+  /// where the picker does not say — empty where it does.
   in-out property <string> timing-network;
   /// The banner's CHANGE: unfolds "02 inputs" and brings the timing row into view.
   callback timing-change-clicked();
@@ -689,6 +696,8 @@ export component MainWindow inherits Window {
   in-out property <bool> panicked;
   /// Whether the CDJs' follow list is open: its rows are not rebuilt under it while it is.
   out property <bool> cdj-follow-open;
+  /// The same of their card list.
+  out property <bool> cdj-card-open;
   /// Autosave is held — the settings file was written by a newer takt4, or another program held
   /// it at the start — until SAVE writes it: said beside SAVE for as long as it is.
   in property <bool> autosave-held;
@@ -1939,6 +1948,13 @@ export component MainWindow inherits Window {
                     min-width: 120px;
                     preferred-width: root.running ? 150px : 190px;
                     max-width: 190px;
+                    // **Said as it is made, too.** The box comes and goes with the CDJs' rows,
+                    // and one taken away open — a show controller changing the source while the
+                    // operator held the list — never says it closed: the flag stayed set, and
+                    // every later list was held back as if it were open under the pointer.
+                    init => {
+                      root.cdj-follow-open = self.open;
+                    }
                     changed open => {
                       root.cdj-follow-open = self.open;
                     }
@@ -2003,11 +2019,34 @@ export component MainWindow inherits Window {
                     }
                   }
                   // The CDJs count four to the bar themselves; what is left to say is which card
-                  // they are reached on.
-                  if root.timing-index == 3: Label { text: "network"; }
-                  if root.timing-index == 3: Text {
-                    text: root.timing-network;
-                    color: Wf.ink;
+                  // they are reached on — picked here, only while stopped, as START joins on it —
+                  // and, as a reading after it, which card that is where the box does not say:
+                  // automatic, or a card picked on another computer.
+                  if root.timing-index == 3: Label { text: "network card"; }
+                  if root.timing-index == 3: Pick {
+                    model: root.cdj-card-choices;
+                    current-index: root.cdj-card-index;
+                    asides: root.cdj-card-asides;
+                    footnote: "takt4 joins the CDJs on this card at START";
+                    locked: root.running;
+                    min-width: 120px;
+                    preferred-width: 220px;
+                    max-width: 260px;
+                    // Said as it is made, as the follow list's is.
+                    init => {
+                      root.cdj-card-open = self.open;
+                    }
+                    changed open => {
+                      root.cdj-card-open = self.open;
+                    }
+                    selected(index) => {
+                      root.cdj-card-index = index;
+                      root.cdj-card-picked(index);
+                    }
+                  }
+                  if root.timing-index == 3 && root.timing-network != "": Text {
+                    text: "→ " + root.timing-network;
+                    color: Wf.ink2;
                     font-size: 14px;
                     vertical-alignment: center;
                     min-width: 40px;
@@ -2023,10 +2062,8 @@ export component MainWindow inherits Window {
                       root.clock-obey-toggled(on);
                     }
                   }
-                  // Until it has been run against real CDJs, the CDJs say so.
-                  Text {
+                  if root.timing-index != 3: Text {
                     text: root.timing-note != "" ? root.timing-note
-                      : root.timing-index == 3 ? "experimental: not yet tried with real CDJs"
                       : root.timing-index == 2 ? "obey: tick for a DAW, not for a DJ mixer" : "";
                     // The hint is not a warning: the colour of the other words on the row.
                     color: root.timing-note == "" && root.timing-index == 2 ? Wf.ink2 : Wf.holding;
@@ -2046,6 +2083,24 @@ export component MainWindow inherits Window {
                   Text {
                     text: root.timing-problem;
                     color: Wf.alarm;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 40px;
+                    overflow: elide;
+                  }
+                }
+                // **The CDJs' note on a line of its own**, after anything that stops them: their row
+                // holds the card and which card that is, and at the window's narrowest a note beside
+                // them cut all three to a word or two — a card picked on another computer read
+                // "DJ LAN · 16…". Until they have been run against real CDJs, they say so here.
+                if root.following && root.timing-index == 3: HorizontalLayout {
+                  height: 20px;
+                  padding-left: 74px;
+                  Text {
+                    text: root.timing-note != "" ? root.timing-note
+                      : "experimental: not yet tried with real CDJs";
+                    color: Wf.holding;
                     font-size: 13px;
                     vertical-alignment: center;
                     horizontal-stretch: 1;

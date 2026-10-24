@@ -50,7 +50,7 @@ void printUsage(std::ostream& out) {
            "                  link-unreached, midi, midi-nostart, midi-coasting,\n"
            "                  midi-gone, midi-stopped, midi-measuring, midi-noport, cdj,\n"
            "                  cdj-nomaster, cdj-coasting, cdj-joining, cdj-pick,\n"
-           "                  cdj-blocked: running,\n"
+           "                  cdj-blocked, cdj-elsewhere: running,\n"
            "                  or with --stopped the source picked before START\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"

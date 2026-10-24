@@ -84,6 +84,7 @@ add_executable(takt4_tests
   timing/follow_runner_test.cpp
   timing/link_follower_test.cpp
   timing/midi_clock_follower_test.cpp
+  timing/prolink_cards_test.cpp
   timing/prolink_follower_test.cpp
   timing/prolink_network_test.cpp
   timing/prolink_packets_test.cpp

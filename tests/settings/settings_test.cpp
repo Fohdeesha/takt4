@@ -580,10 +580,10 @@ TEST_CASE("a settings file from a newer takt4 is read, and not saved over", "[se
     const TempDir dir;
     const std::filesystem::path file = dir.path() / "settings.json";
     const std::string newer =
-        R"({"version": 3, "machine": {"deviceName": "MOTU Pro Audio", "somethingNew": 7}})";
+        R"({"version": 4, "machine": {"deviceName": "MOTU Pro Audio", "somethingNew": 7}})";
     write(file, newer);
 
-    CHECK(takt4::settings::loadChecked(file).version == 3);
+    CHECK(takt4::settings::loadChecked(file).version == 4);
     const takt4::settings::Startup startup = takt4::settings::openAtStartup(file, file);
     // Read, as far as it is understood.
     CHECK(startup.settings.machine.deviceName == "MOTU Pro Audio");
@@ -591,7 +591,7 @@ TEST_CASE("a settings file from a newer takt4 is read, and not saved over", "[se
     CHECK_FALSE(startup.writable);
     INFO(startup.notice);
     CHECK(startup.notice.find("written by a newer takt4") != std::string::npos);
-    CHECK(startup.notice.find("settings format 3") != std::string::npos);
+    CHECK(startup.notice.find("settings format 4") != std::string::npos);
     CHECK(startup.notice.find("EXPORT") != std::string::npos);
     CHECK(readBytes(file) == newer);
     // The copy kept at a good start is the file as it is, unknown fields and all.
@@ -691,6 +691,7 @@ TEST_CASE("a settings file of this format or an older one opens to be saved as b
         CHECK(startup.notice.empty());
         CHECK(startup.settings.machine.deviceName == "MOTU Pro Audio");
     };
+    opens(R"({"version": 3, "machine": {"deviceName": "MOTU Pro Audio"}})", 3);
     opens(R"({"version": 2, "machine": {"deviceName": "MOTU Pro Audio"}})", 2);
     opens(R"({"version": 1, "machine": {"deviceName": "MOTU Pro Audio"}})", 1);
     // Every file before the version was read: some said 1, the oldest nothing.
@@ -702,7 +703,76 @@ TEST_CASE("a settings file of this format or an older one opens to be saved as b
     // And what is saved says the format it is in, so a takt4 older still can be told.
     REQUIRE(takt4::settings::save(Settings{}, file));
     CHECK(takt4::settings::loadChecked(file).version == takt4::settings::kFormatVersion);
-    CHECK(takt4::settings::kFormatVersion == 2);
+    // 3 since the CDJs' card kept its hardware address and name, which a takt4 of format 2 would
+    // leave out of what it saved.
+    CHECK(takt4::settings::kFormatVersion == 3);
+}
+
+TEST_CASE("the CDJs' network card is saved with its address, hardware address and name, and read "
+          "back as it was written",
+          "[settings]") {
+    const TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    Settings rig;
+    rig.machine.proLinkInterface = "169.254.20.7";
+    rig.machine.proLinkInterfaceMac = "00:1b:21:3a:4c:5d";
+    // Whatever a name may hold once it is fit to show: emoji, quotes, a backslash, another
+    // script, right-to-left text.
+    rig.machine.proLinkInterfaceName = "\xF0\x9F\x8E\xA7 \"DJ\" \\ LAN \xD7\xA9\xD7\xA7\xD7\xA2 "
+                                       "\xE3\x82\xA4\xE3\x83\xBC\xE3\x82\xB5";
+    REQUIRE(takt4::settings::save(rig, file));
+    const Settings back = takt4::settings::load(file);
+    CHECK(back.machine.proLinkInterface == rig.machine.proLinkInterface);
+    CHECK(back.machine.proLinkInterfaceMac == rig.machine.proLinkInterfaceMac);
+    CHECK(back.machine.proLinkInterfaceName == rig.machine.proLinkInterfaceName);
+    CHECK(takt4::settings::loadChecked(file).version == 3);
+
+    // Kept although it is no card here: the settings beside a takt4 on a shared drive are every
+    // computer's that runs it, and the card is still on the one it was picked on.
+    rig.machine.proLinkInterface = "10.9.9.9";
+    REQUIRE(takt4::settings::save(rig, file));
+    CHECK(takt4::settings::load(file).machine.proLinkInterface == "10.9.9.9");
+}
+
+TEST_CASE("a CDJ card written by hand is read as takt4 writes it, and what is not one is none",
+          "[settings]") {
+    const auto read = [](const std::string& address, const std::string& mac,
+                         const std::string& name) {
+        return takt4::settings::fromJson(R"({"version": 3, "machine": {"proLinkInterface": ")" +
+                                         address + R"(", "proLinkInterfaceMac": ")" + mac +
+                                         R"(", "proLinkInterfaceName": ")" + name + R"("}})")
+            .machine;
+    };
+    // Leading zeros, which one system's parser reads and another's refuses: written plainly.
+    auto machine = read("010.000.020.007", "00-1B-21-3A-4C-5D", "DJ LAN");
+    CHECK(machine.proLinkInterface == "10.0.20.7");
+    // A hardware address with dashes or in capitals: as takt4 writes one.
+    CHECK(machine.proLinkInterfaceMac == "00:1b:21:3a:4c:5d");
+    CHECK(machine.proLinkInterfaceName == "DJ LAN");
+    // A hardware address that is not one, or all zeros: none — found by its address alone.
+    machine = read("10.0.20.7", "00:1b:21:3a:4c", "DJ LAN");
+    CHECK(machine.proLinkInterface == "10.0.20.7");
+    CHECK(machine.proLinkInterfaceMac.empty());
+    CHECK(read("10.0.20.7", "00:00:00:00:00:00", "").proLinkInterfaceMac.empty());
+    CHECK(read("10.0.20.7", "zz:1b:21:3a:4c:5d", "").proLinkInterfaceMac.empty());
+    // An address that is not one: no card picked at all — nor its hardware address or name.
+    for (const char* bad : {"169.254.20", "169.254.20.7.1", "169.254.20.256", "eth0", "",
+                            " 169.254.20.7", "169.254.20.7 ", "-1.0.0.0", "1..2.3"}) {
+        INFO(bad);
+        machine = read(bad, "00:1b:21:3a:4c:5d", "DJ LAN");
+        CHECK(machine.proLinkInterface.empty());
+        CHECK(machine.proLinkInterfaceMac.empty());
+        CHECK(machine.proLinkInterfaceName.empty());
+    }
+    // A name holding what JSON can carry and a screen cannot is the window's to make fit, and
+    // read as it is.
+    CHECK(read("10.0.20.7", "", "DJ\\nLAN").proLinkInterfaceName == "DJ\nLAN");
+    // A file from before the hardware address and name were kept: the card by its address.
+    const Settings older = takt4::settings::fromJson(
+        R"({"version": 2, "machine": {"proLinkInterface": "169.254.20.7"}})");
+    CHECK(older.machine.proLinkInterface == "169.254.20.7");
+    CHECK(older.machine.proLinkInterfaceMac.empty());
+    CHECK(older.machine.proLinkInterfaceName.empty());
 }
 
 #if defined(_WIN32)

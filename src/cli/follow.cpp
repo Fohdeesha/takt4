@@ -393,7 +393,10 @@ int runFollow(const std::vector<std::string_view>& args) {
     case Followed::ProLink: {
         timing::prolink::Network::Config cdjConfig;
         cdjConfig.clock = [&transports] { return transports.link().now().count(); };
-        cdjConfig.interfaceAddress = parsed.proLinkInterface;
+        if (parsed.proLinkInterface) {
+            // By address alone: a card named on the command line is the one with it now.
+            cdjConfig.interfacePick = timing::prolink::CardPick{*parsed.proLinkInterface, {}, {}};
+        }
         cdjs.emplace(cdjConfig);
         cdjs->setFollow(parsed.proLinkFollow);
         std::string problem;

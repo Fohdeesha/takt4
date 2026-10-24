@@ -287,6 +287,12 @@ public:
     /// and by player number (0 the master). Any time, running or not: at once.
     void pickCdjFollow(int index);
     void setCdjFollow(std::uint8_t player);
+    /// The network card the CDJs are joined on, as an index into `cdj-card-choices` — 0
+    /// automatic, the card they are heard on — and as a card (nothing for automatic). **Only
+    /// while stopped**: the card is joined at START, and a run keeps it.
+    void pickCdjCard(int index);
+    void setCdjCard(std::optional<timing::prolink::CardPick> pick);
+    const std::optional<timing::prolink::CardPick>& cdjCard() const noexcept { return cdjPick_; }
     /// The CDJs' network, for a test to watch; and one of a test's own in its place — ports the
     /// sandbox lets it have, a card of its choosing — taken the next time the CDJs are picked or
     /// started. Only while stopped.
@@ -761,6 +767,15 @@ private:
     /// The CDJs' "follow" list from the players heard — republished only when it changes, so a
     /// picker held open is never rebuilt under the operator's hand.
     void publishCdjFollowList(const timing::prolink::Network::Snapshot& snapshot, bool force);
+    /// The CDJs' "network card" list from the cards last listed, the card picked and the card the
+    /// CDJs are heard on — published only when it changes, and never while it is open, unless
+    /// `force`d by something that cannot happen with it open.
+    void publishCdjCardList(const timing::prolink::Network::Snapshot& snapshot, bool force);
+    /// This machine's cards listed again (`Network::cards`), and when next to.
+    void listCdjCards(double now);
+    /// The card the CDJs are heard on, as a join with none picked would choose it, among the cards
+    /// last listed; 0 with nothing heard.
+    std::uint32_t cdjHeardOn(const timing::prolink::Network::Snapshot& snapshot) const;
     /// The CDJs' network, as the settings and the clock need it.
     timing::prolink::Network::Config cdjConfig() const;
     /// The latency the outputs are given: beat detection's own, or the source followed's.
@@ -1244,8 +1259,14 @@ private:
     std::unique_ptr<timing::ProLinkFollower> cdjFollower_;
     /// Whose beats: 0 the tempo master, or a player — as asked for, heard or not.
     std::uint8_t cdjFollow_ = 0;
-    /// The card asked for by the settings, by address; empty for the first device's.
-    std::string cdjInterface_;
+    /// The card picked, by the window or the settings file; nothing for the first device's.
+    std::optional<timing::prolink::CardPick> cdjPick_;
+    /// This machine's cards as last listed, while the CDJs are picked and stopped — every
+    /// `controlRetrySeconds_`, as the card joined on is looked for while running — and the card
+    /// list as last published.
+    std::vector<timing::prolink::Interface> cdjCards_;
+    double cdjCardsAt_ = 0.0;
+    CdjCardList cdjCardList_;
     /// The follow list as last published: each entry's player (0 the master), and its words.
     std::vector<std::uint8_t> cdjFollowNumbers_;
     std::vector<std::string> cdjFollowWords_;

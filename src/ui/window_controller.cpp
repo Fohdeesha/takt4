@@ -60,6 +60,21 @@ slint::SharedString shared(const std::string& text) {
     return slint::SharedString(io::validUtf8(text));
 }
 
+/// The card the settings pick for the CDJs, or nothing for the one they are heard on. A hardware
+/// address the file does not have, or not as one, leaves the card found by its address alone.
+std::optional<timing::prolink::CardPick> cardPickOf(const settings::MachineSettings& machine) {
+    const std::optional<std::uint32_t> ip = timing::prolink::parseAddress(machine.proLinkInterface);
+    if (!ip) {
+        return std::nullopt;
+    }
+    timing::prolink::CardPick pick;
+    pick.ip = *ip;
+    pick.mac =
+        timing::prolink::parseMac(machine.proLinkInterfaceMac).value_or(timing::prolink::Mac{});
+    pick.name = timing::prolink::cardName(machine.proLinkInterfaceName);
+    return pick;
+}
+
 /// Whether the engine has taken the settings the window sent it.
 ///
 /// Only the five fields the window can change. Comparing the rest would leave a control
@@ -704,6 +719,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_clock_obey_toggled([this](bool obey) { setClockObey(obey); });
     window_->on_timing_beats_per_bar_edited([this](int beats) { setExternalBeatsPerBar(beats); });
     window_->on_cdj_follow_picked([this](int index) { pickCdjFollow(index); });
+    window_->on_cdj_card_picked([this](int index) { pickCdjCard(index); });
     // The banner's CHANGE: the timing row, which is in "02 inputs", folded or not.
     window_->on_timing_change_clicked([this] {
         if (window_->get_inputs_folded()) {
@@ -863,9 +879,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     externalBeatsPerBar_ = settings.preset.externalBeatsPerBar;
     timingLatency_ = settings.preset.timingLatency;
     cdjFollow_ = settings.machine.proLinkFollow;
-    cdjInterface_ = settings.machine.proLinkInterface;
+    cdjPick_ = cardPickOf(settings.machine);
     cdjs_->setFollow(cdjFollow_);
-    cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
+    cdjs_->setInterface(cdjPick_);
     applyTiming();
     // **Remote status and control**, before the control socket opens and the output thread
     // starts: the board this window writes as it redraws — which the heartbeat and the socket's
@@ -1144,9 +1160,11 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
     // a pick would — and said, since START is the operator's to press.
     setClockObey(machine.midiClockObeyStartStop);
     setCdjFollow(machine.proLinkFollow);
-    if (machine.proLinkInterface != cdjInterface_) {
-        cdjInterface_ = machine.proLinkInterface;
-        cdjs_->setInterface(timing::prolink::parseAddress(cdjInterface_));
+    // The card, even while running: a run keeps the card it joined on, and the next START takes
+    // this one — which the card list says as soon as it is not open.
+    if (std::optional<timing::prolink::CardPick> pick = cardPickOf(machine); pick != cdjPick_) {
+        cdjPick_ = std::move(pick);
+        cdjs_->setInterface(cdjPick_);
     }
     const Timing wanted = timingOf(machine.timingSource);
     if (wanted != timing_ || machine.midiClockInPort != clockPort_) {
@@ -3471,7 +3489,12 @@ settings::Settings WindowController::currentSettings() const {
     out.machine.midiClockInPort = clockPort_;
     out.machine.midiClockObeyStartStop = clockObey_;
     out.machine.proLinkFollow = cdjFollow_;
-    out.machine.proLinkInterface = cdjInterface_;
+    out.machine.proLinkInterface =
+        cdjPick_ ? timing::prolink::addressText(cdjPick_->ip) : std::string();
+    out.machine.proLinkInterfaceMac = cdjPick_ && cdjPick_->mac != timing::prolink::Mac{}
+                                          ? timing::prolink::macText(cdjPick_->mac)
+                                          : std::string();
+    out.machine.proLinkInterfaceName = cdjPick_ ? cdjPick_->name : std::string();
     editor_.layoutInto(out.machine);
     patch_.layoutInto(out.machine);
 
@@ -3910,6 +3933,12 @@ void WindowController::retryControls(double now) {
     if (timing_ == Timing::ProLink && followed_.running() && now >= cdjCheckAt_) {
         cdjCheckAt_ = now + controlRetrySeconds_;
         cdjs_->recheckCard();
+    }
+    // And while stopped, the cards themselves, for the card list: one plugged in, taken out or
+    // given a new address is on it within as long. Not while running: the list is locked, and
+    // the card joined on is the one looked for.
+    if (timing_ == Timing::ProLink && !followed_.running() && now >= cdjCardsAt_) {
+        listCdjCards(now);
     }
 }
 
@@ -4546,6 +4575,8 @@ void WindowController::applyTiming() {
         std::string problem;
         (void)cdjs_->open(problem);
         publishCdjFollowList(cdjs_->snapshot(), true);
+        listCdjCards(nowSeconds());
+        publishCdjCardList(cdjs_->snapshot(), false);
     } else {
         cdjs_->close();
     }
@@ -4737,9 +4768,20 @@ void WindowController::publishTiming() {
     } else if (timing_ == Timing::ProLink) {
         const timing::prolink::Network::Snapshot cdjs = cdjs_->snapshot();
         readCdjFacts(cdjs, facts);
-        facts.cdjSavedCard = cdjInterface_;
         facts.cdjFollow = cdjFollow_;
+        if (cdjPick_) {
+            facts.cdjPicked = timing::prolink::pickText(*cdjPick_);
+            facts.cdjPickMissing = !timing::prolink::pickedCard(cdjCards_, *cdjPick_).has_value();
+        }
+        const std::uint32_t heardOn = cdjHeardOn(cdjs);
+        for (const timing::prolink::Interface& card : cdjCards_) {
+            if (heardOn != 0 && card.ip == heardOn) {
+                facts.cdjHeardOn = timing::prolink::cardText(card);
+                break;
+            }
+        }
         publishCdjFollowList(cdjs, false);
+        publishCdjCardList(cdjs, false);
     }
     publishTimingView(*window_, describeTiming(facts));
 }
@@ -4759,13 +4801,19 @@ void WindowController::useCdjNetworkForTests(timing::prolink::Network::Config co
     cdjFollower_.reset();
     cdjs_ = std::make_unique<timing::prolink::Network>(std::move(config));
     cdjs_->setFollow(cdjFollow_);
+    cdjs_->setInterface(cdjPick_);
     cdjFollower_ = std::make_unique<timing::ProLinkFollower>(*cdjs_);
     cdjFollowNumbers_.clear();
     cdjFollowWords_.clear();
+    // The test's own cards, from now on.
+    cdjCards_.clear();
+    cdjCardsAt_ = 0.0;
     if (timing_ == Timing::ProLink) {
         std::string problem;
         (void)cdjs_->open(problem);
         publishCdjFollowList(cdjs_->snapshot(), true);
+        listCdjCards(nowSeconds());
+        publishCdjCardList(cdjs_->snapshot(), false);
     }
 }
 
@@ -4812,6 +4860,61 @@ void WindowController::setCdjFollow(std::uint8_t player) {
     cdjFollow_ = player <= 15 ? player : std::uint8_t{0};
     cdjs_->setFollow(cdjFollow_);
     publishCdjFollowList(cdjs_->snapshot(), true);
+    publishTiming();
+}
+
+void WindowController::listCdjCards(double now) {
+    cdjCards_ = cdjs_->cards();
+    cdjCardsAt_ = now + controlRetrySeconds_;
+}
+
+std::uint32_t
+WindowController::cdjHeardOn(const timing::prolink::Network::Snapshot& snapshot) const {
+    if (snapshot.heardIp == 0) {
+        return 0;
+    }
+    const std::optional<timing::prolink::Interface> card =
+        timing::prolink::cardFor(cdjCards_, snapshot.heardIp, snapshot.heardVia);
+    return card ? card->ip : 0;
+}
+
+void WindowController::publishCdjCardList(const timing::prolink::Network::Snapshot& snapshot,
+                                          bool force) {
+    CdjCardList list = cdjCardList(cdjCards_, cdjPick_, cdjHeardOn(snapshot));
+    if (!force && list == cdjCardList_) {
+        return;
+    }
+    // Never under an open list: a card plugged in, or the CDJs heard on another, would move the
+    // rows under the pointer. Written the first redraw after it closes.
+    if (!force && window_->get_cdj_card_open()) {
+        return;
+    }
+    const bool entriesToo =
+        force || list.entries != cdjCardList_.entries || list.asides != cdjCardList_.asides;
+    publishCdjCards(*window_, list, entriesToo);
+    cdjCardList_ = std::move(list);
+}
+
+void WindowController::pickCdjCard(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= cdjCardList_.picks.size()) {
+        return;
+    }
+    setCdjCard(cdjCardList_.picks[static_cast<std::size_t>(index)]);
+}
+
+void WindowController::setCdjCard(std::optional<timing::prolink::CardPick> pick) {
+    if (followed_.running()) {
+        // The box is locked while running; this is the way round it — a test, a race with START.
+        // What it shows is put back.
+        publishCdjCards(*window_, cdjCardList_, false);
+        setStatus("Stop first: the CDJs' network card can only be changed while stopped.", true);
+        return;
+    }
+    cdjPick_ = std::move(pick);
+    cdjs_->setInterface(cdjPick_);
+    // Not forced: the list is open while its entry's click is handled, and is written the first
+    // redraw after it closes — a card from another computer drops off it once another is picked.
+    publishCdjCardList(cdjs_->snapshot(), false);
     publishTiming();
 }
 

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -20,7 +21,8 @@ namespace takt4::timing::prolink {
 
 /// One of this machine's IPv4 network cards: what takt4 announces itself as being at.
 struct Interface {
-    /// The name the system gives it — "Ethernet 2", "en5" — for the screen.
+    /// The name the system gives it — "Ethernet 2", "en5" — for the screen, as `cardName` makes
+    /// it fit to show.
     std::string name;
     std::uint32_t ip = 0;
     std::uint32_t mask = 0;
@@ -28,12 +30,67 @@ struct Interface {
     Mac mac{};
     /// The system's number for it, which a datagram read is said to have come in on; 0 unknown.
     std::uint32_t index = 0;
+    /// The system's loopback, as the system marks it rather than by its address.
+    bool loopback = false;
 };
 
 /// This machine's IPv4 cards that are up. The loopback is among them — no device on a network
 /// is ever on it, so it is joined only when asked for by its address, which is how the console
 /// is tried against a recording played on this machine.
 std::vector<Interface> listInterfaces();
+
+/// A card picked for the CDJs, as the settings keep it: its address, and the hardware address that
+/// stays with it when the address changes — a new link-local address, a lease. Its name is the
+/// one it had when it was picked, for the screen alone: a card is never found by its name, which
+/// the operator can change.
+struct CardPick {
+    std::uint32_t ip = 0;
+    /// All zero when it is not known: a pick by address alone, as the console's `--interface`
+    /// makes it and a settings file from before the hardware address was kept has it.
+    Mac mac{};
+    std::string name;
+    bool operator==(const CardPick&) const = default;
+};
+
+/// Whether `card` could reach a CDJ: an address, on a network wider than the card itself, and not
+/// the loopback — what the window offers to pick from. A VPN's single-address network (/32) or a
+/// card with no network reaches no device, and the loopback none on another machine.
+bool reachesDevices(const Interface& card) noexcept;
+
+/// The card `pick` names among `cards`: the one with its address and its hardware address; else
+/// the one with its address; else, the address gone, the one card with its hardware address — the
+/// same card on a new address. Nothing when no card is it, or when the address has gone and two
+/// cards share the hardware address — a virtual switch or a bridge carries the card it is on's —
+/// since a guess between them could be another network. A card listed once for each of its
+/// addresses is one card.
+std::optional<Interface> pickedCard(const std::vector<Interface>& cards, const CardPick& pick);
+
+/// Characters a card's name is cut to on the screen and in the settings file, "…" included: every
+/// name a system gives its own cards whole ("Bluetooth Network Connection" is 28), and short
+/// enough that a line of the card list still has room for the address after it — at 64, a long
+/// name pushed the address, which is what tells two cards apart, off the end.
+inline constexpr std::size_t kCardNameLength = 28;
+
+/// A card's name as the system gives it, made fit to show and to save. **Anything the system
+/// allows can be in one**: Windows lets a connection be renamed to any text at all, and Linux an
+/// interface to any bytes but '/', ':' and spaces — a byte that is not UTF-8 aborts the window
+/// (`io::validUtf8`). So: UTF-8 throughout, a byte that is not becoming U+FFFD; control
+/// characters and line breaks as spaces; the marks that reorder the text around them — a
+/// right-to-left override would turn the address after the name back to front — taken out, as
+/// are zero-width spaces; runs of spaces made one, none at either end; and at most
+/// `kCardNameLength` characters.
+std::string cardName(std::string_view raw);
+
+/// "Ethernet 2 · 169.254.3.4", or the address alone for a card with no name.
+std::string cardText(const Interface& card);
+/// The same of a card picked, as it was when it was picked.
+std::string pickText(const CardPick& pick);
+
+#if defined(_WIN32)
+/// A name Windows gives in UTF-16, as UTF-8 — an unpaired surrogate, which a name can hold,
+/// becoming U+FFFD. Empty for null. Here for the tests.
+std::string wideName(const wchar_t* wide);
+#endif
 
 /// The card whose network `address` is on, in host order — where a device heard at `address` can
 /// be answered from. Nothing when no card is on that network.
@@ -59,9 +116,9 @@ std::optional<std::uint32_t> parseAddress(const std::string& text);
 ///   listed (`snapshot`), and nothing is sent. Opening it is what first makes a firewall ask.
 /// * `join` binds the beat port (50001) and the status port (50002), on the card the devices
 ///   were heard on — the one the first device heard came in on (`cardFor`), unless
-///   `Config::interfaceAddress` names one that is here — and the player claims its number and
-///   starts its keep-alives. `leave` stops them and lets the two ports go. Both take effect on the
-///   thread's next round, a few milliseconds on.
+///   `Config::interfacePick` names one that is here (`pickedCard`) — and the player claims its
+///   number and starts its keep-alives. `leave` stops them and lets the two ports go. Both take
+///   effect on the thread's next round, a few milliseconds on.
 /// * Every datagram is stamped on `Config::clock` (Link's) the moment it is read, and the
 ///   followed device's beats go to the one consumer of `popBeat` — `ProLinkFollower`, on the
 ///   timing worker — through a lock-free ring. So the thread asks to run ahead
@@ -91,8 +148,9 @@ public:
         /// its announcements on 50000. Other than Pro DJ Link's own only in a test.
         Ports own;
         std::uint16_t peerAnnounce = kAnnouncePort;
-        /// The card to join on, by its address; otherwise the one the first device heard is on.
-        std::optional<std::uint32_t> interfaceAddress;
+        /// The card to join on (`pickedCard`); otherwise, or when it is not here, the one the
+        /// first device heard is on.
+        std::optional<CardPick> interfacePick;
         /// This machine's cards — a test's own, in place of `listInterfaces`. Called from the
         /// network's thread and from `recheckCard`'s, so a test's must be safe to call from both.
         std::function<std::vector<Interface>()> interfaces;
@@ -148,6 +206,11 @@ public:
         /// The card joined on, once there is one.
         std::string interfaceName;
         std::uint32_t interfaceIp = 0;
+        /// The first device heard, and the system's number for the card it came in on (0 where
+        /// the system does not say): what a join with no card picked goes by (`cardFor`), for the
+        /// window to name that card before START. Both 0 with nothing heard.
+        std::uint32_t heardIp = 0;
+        std::uint32_t heardVia = 0;
         std::uint64_t beatsHeard = 0;
         std::uint64_t beatsDropped = 0;
         std::uint64_t cueBeatsDropped = 0;
@@ -183,8 +246,14 @@ public:
     void setFollow(std::uint8_t follow) noexcept {
         follow_.store(follow, std::memory_order_relaxed);
     }
-    /// The card to join on next, by address, or nothing for the first device's. While left.
-    void setInterface(std::optional<std::uint32_t> address);
+    /// The card to join on next (`pickedCard`), or nothing for the first device's. Taken at the
+    /// next join: a run already joined stays where it is.
+    void setInterface(std::optional<CardPick> pick);
+
+    /// This machine's cards as the network lists them — the system's, or a test's
+    /// (`Config::interfaces`) — for the window's list to be the cards a join chooses among. A few
+    /// milliseconds of the system's, on the caller's thread: never the network's own.
+    std::vector<Interface> cards() const { return config_.interfaces(); }
 
     /// Lists this machine's cards — a few milliseconds, on the caller's thread, which is why it is
     /// asked from outside: the network's own thread stamps each beat as it reads it — and, when
@@ -256,7 +325,7 @@ private:
 
     mutable std::mutex mutex_;
     Snapshot snapshot_;
-    std::optional<std::uint32_t> interfaceWanted_;
+    std::optional<CardPick> interfaceWanted_;
 };
 
 } // namespace takt4::timing::prolink

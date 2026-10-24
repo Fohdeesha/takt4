@@ -213,12 +213,13 @@ TEST_CASE("with no card on the CDJs' network, joining says so, and with one pick
     // Left — STOP — and why it could not join is no longer said: it is not trying to.
     network.leave();
     CHECK(eventually([&] { return network.snapshot().problem.empty(); }, 1s));
-    network.setInterface(ipv4(10, 9, 9, 9));
+    network.setInterface(CardPick{ipv4(10, 9, 9, 9), {}, {}});
     network.join();
     CHECK(eventually(
         [&] {
             return network.snapshot().problem ==
-                   "no network card here has the address 10.9.9.9 picked for the CDJs";
+                   "the card picked for the CDJs, 10.9.9.9, is not on this computer, and no "
+                   "network card here is on the CDJs' network (127.0.0.2)";
         },
         2s));
     rig.stop();
@@ -447,7 +448,7 @@ TEST_CASE("a card picked for the CDJs that is not on this computer: joined on th
     }
     SimulatedRig rig;
     Network::Config config = testConfig(rig.announcePort(), steadyMicros);
-    config.interfaceAddress = ipv4(10, 9, 9, 9);
+    config.interfacePick = CardPick{ipv4(10, 9, 9, 9), {}, {}};
     Network network(config);
     std::string problem;
     REQUIRE(network.open(problem));

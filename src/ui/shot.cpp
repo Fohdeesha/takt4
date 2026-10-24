@@ -904,7 +904,7 @@ void fillAsMockup(MainWindow& window) {
 /// Whether `state` is one of the window's states following a source rather than the audio:
 /// `link`, `link-alone`, `link-joining`, `link-unreached`, `midi`, `midi-nostart`,
 /// `midi-coasting`, `midi-gone`, `midi-stopped`, `midi-measuring`, `midi-noport`, `cdj`,
-/// `cdj-nomaster`, `cdj-coasting`, `cdj-joining`, `cdj-pick`, `cdj-blocked`.
+/// `cdj-nomaster`, `cdj-coasting`, `cdj-joining`, `cdj-pick`, `cdj-blocked`, `cdj-elsewhere`.
 bool followingState(const std::string& state) {
     return state.rfind("link", 0) == 0 || state.rfind("midi", 0) == 0 || state.rfind("cdj", 0) == 0;
 }
@@ -918,9 +918,10 @@ bool followingState(const std::string& state) {
 /// heard and the session being joined (`link-joining`), or heard and not reached
 /// (`link-unreached`); a DAW's Stop obeyed (`midi-stopped`); a clock ticking whose tempo is still
 /// being measured (`midi-measuring`); the CDJs being joined (`cdj-joining`); two decks playing and
-/// neither the master (`cdj-pick`); and the CDJs' port held by rekordbox (`cdj-blocked`). `running`
-/// false is the source picked and START not yet pressed
-/// — and `midi-noport` is that, with no input picked for the clock.
+/// neither the master (`cdj-pick`); and the CDJs' port held by rekordbox (`cdj-blocked`). The CDJs'
+/// network card: automatic in each of those, and in `cdj-elsewhere` one picked on another
+/// computer, joined on the card they are heard on instead. `running` false is the source picked
+/// and START not yet pressed — and `midi-noport` is that, with no input picked for the clock.
 void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
                    const std::string& state, bool running) {
     const bool link = state.rfind("link", 0) == 0;
@@ -935,6 +936,7 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
     const bool cdjJoining = state == "cdj-joining";
     const bool cdjPick = state == "cdj-pick";
     const bool cdjBlocked = state == "cdj-blocked";
+    const bool cdjElsewhere = state == "cdj-elsewhere";
     // Waiting for the source, one way or another: no beats in the meantime.
     const bool waiting =
         linkHeard || clockStopped || measuring || cdjJoining || cdjPick || cdjBlocked;
@@ -1011,6 +1013,38 @@ void fillFollowing(MainWindow& window, slint::VectorModel<TracePoint>& trace,
         facts.cdjJoined = false;
     }
     facts.cdjInterface = running ? "Ethernet 2 \xC2\xB7 169.254.20.7" : "";
+    if (cdj) {
+        // The cards a laptop has: its cable to the DJ's network, where the CDJs are heard, and its
+        // Wi-Fi — and in `cdj-elsewhere`, a card picked on the computer the settings came from.
+        timing::prolink::Interface cable;
+        cable.name = "Ethernet 2";
+        cable.ip = 0xA9FE1407u; // 169.254.20.7
+        cable.mask = 0xffff0000u;
+        cable.mac = {0x00, 0x1b, 0x21, 0x3a, 0x4c, 0x5d};
+        cable.index = 12;
+        timing::prolink::Interface wifi;
+        wifi.name = "Wi-Fi";
+        wifi.ip = 0xC0A80117u; // 192.168.1.23
+        wifi.mask = 0xffffff00u;
+        wifi.mac = {0x3c, 0x22, 0xfb, 0x01, 0x02, 0x03};
+        wifi.index = 7;
+        std::optional<timing::prolink::CardPick> pick;
+        if (cdjElsewhere) {
+            pick = timing::prolink::CardPick{0xA9FE5801u, // 169.254.88.1
+                                             {0x00, 0x0e, 0xc6, 0x11, 0x22, 0x33},
+                                             "DJ LAN"};
+            facts.cdjPicked = timing::prolink::pickText(*pick);
+            facts.cdjPickMissing = true;
+            if (running) {
+                facts.cdjNote = "the card picked for the CDJs, " + facts.cdjPicked +
+                                ", is not on this computer \xE2\x80\x94 joined on " +
+                                timing::prolink::cardText(cable);
+            }
+        }
+        // Heard on the cable — unless the port is held, when nothing is heard at all.
+        facts.cdjHeardOn = cdjBlocked ? std::string() : timing::prolink::cardText(cable);
+        publishCdjCards(window, cdjCardList({cable, wifi}, pick, cdjBlocked ? 0u : cable.ip), true);
+    }
     publishTimingView(window, describeTiming(facts));
     if (link) {
         // The Link output's own count is the session followed: the three the row says while it is

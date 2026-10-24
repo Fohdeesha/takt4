@@ -1,5 +1,6 @@
 #include "core/timing/prolink/network.hpp"
 
+#include "core/io/utf8.hpp"
 #include "core/net/udp.hpp"
 #include "core/rt/thread_priority.hpp"
 #include "core/sandbox.hpp"
@@ -11,6 +12,7 @@
 #include <exception>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -49,21 +51,41 @@ constexpr std::int64_t kBeatingMicros = 2'000'000;
 std::uint32_t maskOfPrefix(unsigned prefix) noexcept {
     return prefix == 0 ? 0u : prefix >= 32 ? 0xffffffffu : ~((1u << (32 - prefix)) - 1u);
 }
-
-std::string narrow(const wchar_t* wide) {
-    if (wide == nullptr || *wide == L'\0') {
-        return {};
-    }
-    const int length = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-    if (length <= 1) {
-        return {};
-    }
-    std::string text(static_cast<std::size_t>(length), '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, text.data(), length, nullptr, nullptr);
-    text.resize(static_cast<std::size_t>(length - 1));
-    return text;
-}
 #endif
+
+/// One character of `text`, which is well-formed UTF-8, starting at `at`: its code point, and
+/// how many bytes it takes.
+std::pair<char32_t, std::size_t> decodeAt(std::string_view text, std::size_t at) noexcept {
+    const auto byte = [&](std::size_t i) {
+        return static_cast<char32_t>(static_cast<unsigned char>(text[at + i]));
+    };
+    const char32_t lead = byte(0);
+    if (lead < 0x80) {
+        return {lead, 1};
+    }
+    if (lead < 0xe0) {
+        return {((lead & 0x1f) << 6) | (byte(1) & 0x3f), 2};
+    }
+    if (lead < 0xf0) {
+        return {((lead & 0x0f) << 12) | ((byte(1) & 0x3f) << 6) | (byte(2) & 0x3f), 3};
+    }
+    return {((lead & 0x07) << 18) | ((byte(1) & 0x3f) << 12) | ((byte(2) & 0x3f) << 6) |
+                (byte(3) & 0x3f),
+            4};
+}
+
+/// A character that breaks a line or moves the text, shown as a space.
+bool controlCharacter(char32_t c) noexcept {
+    return c < 0x20 || (c >= 0x7f && c <= 0x9f) || c == 0x2028 || c == 0x2029;
+}
+
+/// A character that is not seen and changes what is around it: the marks and overrides that
+/// reorder text, and the zero-width spaces and byte order mark.
+bool hiddenCharacter(char32_t c) noexcept {
+    return c == 0x061c || c == 0x200b || c == 0x200e || c == 0x200f ||
+           (c >= 0x202a && c <= 0x202e) || c == 0x2060 || (c >= 0x2066 && c <= 0x2069) ||
+           c == 0xfeff;
+}
 
 bool lastErrorIsReset() noexcept {
     const int error = net::lastSocketError();
@@ -88,6 +110,117 @@ std::optional<std::uint32_t> parseAddress(const std::string& text) {
         return std::nullopt;
     }
     return ntohl(parsed.s_addr);
+}
+
+#if defined(_WIN32)
+std::string wideName(const wchar_t* wide) {
+    if (wide == nullptr || *wide == L'\0') {
+        return {};
+    }
+    // Without WC_ERR_INVALID_CHARS an unpaired surrogate is U+FFFD, rather than the whole name
+    // failing.
+    const int length = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+    if (length <= 1) {
+        return {};
+    }
+    std::string text(static_cast<std::size_t>(length), '\0');
+    if (::WideCharToMultiByte(CP_UTF8, 0, wide, -1, text.data(), length, nullptr, nullptr) !=
+        length) {
+        return {};
+    }
+    text.resize(static_cast<std::size_t>(length - 1));
+    return text;
+}
+#endif
+
+std::string cardName(std::string_view raw) {
+    const std::string valid = io::validUtf8(raw);
+    // Each character kept, as its bytes; a run of spaces, and of what is shown as one, as one.
+    std::vector<std::string_view> kept;
+    for (std::size_t at = 0; at < valid.size();) {
+        const auto [c, length] = decodeAt(valid, at);
+        const std::string_view bytes(valid.data() + at, length);
+        at += length;
+        if (hiddenCharacter(c)) {
+            continue;
+        }
+        if (c == U' ' || controlCharacter(c)) {
+            if (!kept.empty() && kept.back() != " ") {
+                kept.emplace_back(" ");
+            }
+            continue;
+        }
+        kept.push_back(bytes);
+    }
+    if (!kept.empty() && kept.back() == " ") {
+        kept.pop_back();
+    }
+    const bool cut = kept.size() > kCardNameLength;
+    if (cut) {
+        kept.resize(kCardNameLength - 1);
+        if (kept.back() == " ") {
+            kept.pop_back();
+        }
+    }
+    std::string name;
+    for (const std::string_view character : kept) {
+        name.append(character);
+    }
+    if (cut) {
+        name += "\xE2\x80\xA6";
+    }
+    return name;
+}
+
+std::string cardText(const Interface& card) {
+    const std::string name = cardName(card.name);
+    return (name.empty() ? std::string() : name + " \xC2\xB7 ") + addressText(card.ip);
+}
+
+std::string pickText(const CardPick& pick) {
+    const std::string name = cardName(pick.name);
+    return (name.empty() ? std::string() : name + " \xC2\xB7 ") + addressText(pick.ip);
+}
+
+bool reachesDevices(const Interface& card) noexcept {
+    return !card.loopback && card.ip != 0 && card.mask != 0 && card.mask != 0xffffffffu;
+}
+
+std::optional<Interface> pickedCard(const std::vector<Interface>& cards, const CardPick& pick) {
+    constexpr Mac kUnknown{};
+    const bool hasMac = pick.mac != kUnknown;
+    const Interface* byAddress = nullptr;
+    if (pick.ip != 0) {
+        for (const Interface& card : cards) {
+            if (card.ip != pick.ip) {
+                continue;
+            }
+            if (hasMac && card.mac == pick.mac) {
+                return card;
+            }
+            byAddress = byAddress != nullptr ? byAddress : &card;
+        }
+    }
+    if (byAddress != nullptr) {
+        return *byAddress;
+    }
+    if (!hasMac) {
+        return std::nullopt;
+    }
+    // The address gone: the card by its hardware address — if one card has it. A card listed once
+    // for each of its addresses is the same card each time; any other with it is not.
+    const Interface* byMac = nullptr;
+    for (const Interface& card : cards) {
+        if (card.mac != pick.mac) {
+            continue;
+        }
+        if (byMac == nullptr) {
+            byMac = &card;
+        } else if (byMac->index != 0 ? card.index != byMac->index : card.name != byMac->name) {
+            return std::nullopt;
+        }
+    }
+    return byMac != nullptr ? std::optional<Interface>(*byMac) : std::nullopt;
 }
 
 std::vector<Interface> listInterfaces() {
@@ -121,12 +254,13 @@ std::vector<Interface> listInterfaces() {
                 continue;
             }
             Interface card;
-            card.name = narrow(adapter->FriendlyName);
+            card.name = cardName(wideName(adapter->FriendlyName));
             card.ip = ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr);
             card.mask = maskOfPrefix(unicast->OnLinkPrefixLength);
             card.broadcast = card.ip | ~card.mask;
             card.mac = mac;
             card.index = adapter->IfIndex;
+            card.loopback = adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK;
             found.push_back(std::move(card));
         }
     }
@@ -140,9 +274,13 @@ std::vector<Interface> listInterfaces() {
             (entry->ifa_flags & IFF_UP) == 0) {
             continue;
         }
+        // The system's own name, for finding the card's other entries: the one shown is made fit
+        // to show, and may not be the same bytes.
+        const char* const systemName = entry->ifa_name != nullptr ? entry->ifa_name : "";
         Interface card;
-        card.name = entry->ifa_name != nullptr ? entry->ifa_name : "";
+        card.name = cardName(systemName);
         card.index = entry->ifa_name != nullptr ? ::if_nametoindex(entry->ifa_name) : 0u;
+        card.loopback = (entry->ifa_flags & IFF_LOOPBACK) != 0;
         card.ip = ntohl(reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr);
         card.mask =
             entry->ifa_netmask != nullptr
@@ -152,7 +290,7 @@ std::vector<Interface> listInterfaces() {
         // The card's hardware address is a separate entry of the same name.
         for (const ifaddrs* link = list; link != nullptr; link = link->ifa_next) {
             if (link->ifa_addr == nullptr || link->ifa_name == nullptr ||
-                std::strcmp(link->ifa_name, card.name.c_str()) != 0) {
+                std::strcmp(link->ifa_name, systemName) != 0) {
                 continue;
             }
 #if defined(__APPLE__)
@@ -322,13 +460,8 @@ struct Network::Sockets {
 
 namespace {
 
-/// "Ethernet 2 · 169.254.3.4", for the screen.
-std::string cardText(const Interface& card) {
-    return (card.name.empty() ? std::string() : card.name + " \xC2\xB7 ") + addressText(card.ip);
-}
-
-std::string noPickedCard(std::uint32_t wanted) {
-    return "no network card here has the address " + addressText(wanted) + " picked for the CDJs";
+std::string noPickedCard(const CardPick& wanted) {
+    return "the card picked for the CDJs, " + pickText(wanted) + ", is not on this computer";
 }
 
 /// A non-blocking datagram socket bound to `ip`:`port`, allowed to broadcast — or invalid, with
@@ -377,7 +510,7 @@ Network::Network(Config config) : config_(std::move(config)), player_(config_.pl
     if (!config_.interfaces) {
         config_.interfaces = listInterfaces;
     }
-    interfaceWanted_ = config_.interfaceAddress;
+    interfaceWanted_ = config_.interfacePick;
 }
 
 Network::~Network() {
@@ -394,9 +527,9 @@ void Network::setNote(std::string note) {
     snapshot_.note = std::move(note);
 }
 
-void Network::setInterface(std::optional<std::uint32_t> address) {
+void Network::setInterface(std::optional<CardPick> pick) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    interfaceWanted_ = address;
+    interfaceWanted_ = std::move(pick);
 }
 
 bool Network::open(std::string& problem) {
@@ -523,7 +656,7 @@ void Network::readAll(int which, std::int64_t& now) {
 
 bool Network::openJoined(std::int64_t now) {
     // The card: the one asked for, or the one the first device heard came in on.
-    std::optional<std::uint32_t> wanted;
+    std::optional<CardPick> wanted;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         wanted = interfaceWanted_;
@@ -532,11 +665,7 @@ bool Network::openJoined(std::int64_t now) {
     std::optional<Interface> card;
     std::string note;
     if (wanted) {
-        const auto match = std::find_if(cards.begin(), cards.end(),
-                                        [&](const Interface& c) { return c.ip == *wanted; });
-        if (match != cards.end()) {
-            card = *match;
-        }
+        card = pickedCard(cards, *wanted);
     }
     if (!card) {
         const std::vector<VirtualPlayer::Device>& devices = player_.devices();
@@ -549,16 +678,15 @@ bool Network::openJoined(std::int64_t now) {
         }
         card = cardFor(cards, devices.front().ip, devices.front().via);
         if (!card) {
-            setProblem(wanted ? noPickedCard(*wanted)
-                              : "no network card here is on the CDJs' network (" +
-                                    addressText(devices.front().ip) + ")");
+            const std::string noCard = "no network card here is on the CDJs' network (" +
+                                       addressText(devices.front().ip) + ")";
+            setProblem(wanted ? noPickedCard(*wanted) + ", and " + noCard : noCard);
             return false;
         }
         if (wanted) {
-            // The card picked has gone — its link-local address changed, the cable is in another
-            // port: joined where the CDJs are heard instead, and said, rather than not at all.
-            note = "the card picked for the CDJs, " + addressText(*wanted) +
-                   ", is not on this computer \xE2\x80\x94 joined on " + cardText(*card);
+            // The card picked has gone — taken out, or this is another computer with the same
+            // settings: joined where the CDJs are heard instead, and said, rather than not at all.
+            note = noPickedCard(*wanted) + " \xE2\x80\x94 joined on " + cardText(*card);
         }
     }
     std::string why;
@@ -760,6 +888,11 @@ void Network::publish(std::int64_t now) {
     if (interface_) {
         made.interfaceName = interface_->name;
         made.interfaceIp = interface_->ip;
+    }
+    // What a join with no card picked goes by: the first device heard, as `openJoined` takes it.
+    if (const std::vector<VirtualPlayer::Device>& heard = player_.devices(); !heard.empty()) {
+        made.heardIp = heard.front().ip;
+        made.heardVia = heard.front().via;
     }
     made.beatsHeard = beatsHeard_;
     made.beatsDropped = beatsDropped_;

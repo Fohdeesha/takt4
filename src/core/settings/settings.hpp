@@ -115,8 +115,15 @@ struct MachineSettings {
     /// `"master"` or `"player N"`, and anything else read as the master.
     std::uint8_t proLinkFollow = kProLinkFollowMaster;
     /// The network card the CDJs are joined on, by its IPv4 address; empty for the one the first
-    /// device heard is on. Only a dotted address is kept.
+    /// device heard is on. Only a dotted address is kept, and written plainly ("10.0.0.5").
     std::string proLinkInterface;
+    /// The same card's hardware address, "74:5e:1c:00:00:02" — which finds it when its address
+    /// has changed — and its name when it was picked, for the screen alone. Empty for a card
+    /// picked by address alone, and cleared with the address. **Kept when the card is not on this
+    /// computer**: a settings file beside a takt4 on a shared drive is every computer's that runs
+    /// it from there, and the card is still on the one it was picked on.
+    std::string proLinkInterfaceMac;
+    std::string proLinkInterfaceName;
 
     /// The main window's Inputs and Outputs folded down to their headings, as they were left —
     /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
@@ -359,7 +366,7 @@ struct Loaded {
 /// later one was written by a newer takt4, with fields this one does not know and would leave
 /// out of anything it saved — so it is not saved over automatically (`openAtStartup`). One more
 /// whenever a field is added that an older takt4 would lose.
-inline constexpr int kFormatVersion = 2;
+inline constexpr int kFormatVersion = 3;
 
 /// `load`, saying what happened. Never throws.
 Loaded loadChecked(const std::filesystem::path& path);

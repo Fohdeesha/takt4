@@ -217,7 +217,9 @@ int runProLinkWatch(const std::vector<std::string_view>& args) {
     output::LinkSession link(120.0);
     Network::Config config;
     config.clock = [&link] { return link.now().count(); };
-    config.interfaceAddress = parsed.interfaceAddress;
+    if (parsed.interfaceAddress) {
+        config.interfacePick = timing::prolink::CardPick{*parsed.interfaceAddress, {}, {}};
+    }
     Network network(config);
     network.setFollow(parsed.follow);
     std::string problem;

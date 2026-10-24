@@ -9,6 +9,7 @@
 #include "core/output/osc_publisher.hpp"
 #include "core/settings/rule_json.hpp"
 #include "core/settings/rule_json_node.hpp"
+#include "core/timing/prolink/packets.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -243,6 +244,23 @@ bool isDottedAddress(const std::string& text) {
         at = dot + 1;
     }
     return parts == 4;
+}
+
+/// `text` as `isDottedAddress` takes it, written plainly — "10.0.0.5" for "010.000.000.005", which
+/// one system's parser reads and another's refuses — or empty for anything else.
+std::string plainAddress(const std::string& text) {
+    if (!isDottedAddress(text)) {
+        return {};
+    }
+    std::string plain;
+    std::size_t at = 0;
+    for (int part = 0; part < 4; ++part) {
+        const std::size_t dot = text.find('.', at);
+        plain += std::to_string(std::stoi(text.substr(at, dot - at)));
+        plain += part < 3 ? "." : "";
+        at = dot + 1;
+    }
+    return plain;
 }
 
 /// The preset's half of the timing input: beats to the bar and each source's latency.
@@ -668,6 +686,8 @@ std::string toJson(const Settings& settings) {
              {"midiClockObeyStartStop", settings.machine.midiClockObeyStartStop},
              {"proLinkFollow", proLinkFollowText(settings.machine.proLinkFollow)},
              {"proLinkInterface", settings.machine.proLinkInterface},
+             {"proLinkInterfaceMac", settings.machine.proLinkInterfaceMac},
+             {"proLinkInterfaceName", settings.machine.proLinkInterfaceName},
              {"inputsFolded", settings.machine.inputsFolded},
              {"outputsFolded", settings.machine.outputsFolded},
              {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
@@ -725,8 +745,18 @@ Settings fromDocument(const json& document) {
         read(machine, "proLinkFollow", follow);
         settings.machine.proLinkFollow = proLinkFollowFrom(follow);
         read(machine, "proLinkInterface", settings.machine.proLinkInterface);
-        if (!isDottedAddress(settings.machine.proLinkInterface)) {
-            settings.machine.proLinkInterface.clear();
+        read(machine, "proLinkInterfaceMac", settings.machine.proLinkInterfaceMac);
+        read(machine, "proLinkInterfaceName", settings.machine.proLinkInterfaceName);
+        settings.machine.proLinkInterface = plainAddress(settings.machine.proLinkInterface);
+        // A hardware address that is not one, or is all zeros, is none: the card is found by its
+        // address alone. And with no address there is no card picked at all.
+        const std::optional<timing::prolink::Mac> mac =
+            timing::prolink::parseMac(settings.machine.proLinkInterfaceMac);
+        settings.machine.proLinkInterfaceMac =
+            mac && *mac != timing::prolink::Mac{} ? timing::prolink::macText(*mac) : std::string();
+        if (settings.machine.proLinkInterface.empty()) {
+            settings.machine.proLinkInterfaceMac.clear();
+            settings.machine.proLinkInterfaceName.clear();
         }
         read(machine, "inputsFolded", settings.machine.inputsFolded);
         read(machine, "outputsFolded", settings.machine.outputsFolded);

@@ -151,10 +151,14 @@ struct TimingFacts {
     std::uint8_t cdjFollow = 0;
     bool cdjMasterWithoutBeats = false;
     std::string cdjInterface;
-    /// The card the settings file asks for (`MachineSettings::proLinkInterface`), by address, or
-    /// empty for the one the CDJs are heard on: said while nothing is joined, since a card can
-    /// only be picked in the file and was seen nowhere.
-    std::string cdjSavedCard;
+    /// The card picked under "network card" (`timing::prolink::pickText`) — empty for automatic,
+    /// the card the CDJs are heard on — and whether it is not on this computer, in which case the
+    /// CDJs are joined on the one they are heard on instead.
+    std::string cdjPicked;
+    bool cdjPickMissing = false;
+    /// The card the CDJs are heard on, as a join with no card picked would choose it
+    /// (`timing::prolink::cardFor`); empty with nothing heard.
+    std::string cdjHeardOn;
     /// Joining: a mixer is giving takt4 its number, or every number takt4 may hold is taken.
     bool cdjAwaitingMixer = false;
     bool cdjNoNumber = false;
@@ -200,7 +204,9 @@ struct TimingView {
     int stripTicks = 0;
     /// The strip's words at its right: "beat 2 of 4", "player 2 · 3 of 4".
     std::string stripLabel;
-    /// The CDJs' network card, or what picks it.
+    /// After the CDJs' card picker, as a reading: the card joined on, or the one START would
+    /// join on when the picker does not say it — "automatic", or a card not on this computer.
+    /// Empty when the picker says it all.
     std::string network;
     int beatsPerBar = 4;
     bool obey = false;
@@ -231,6 +237,29 @@ struct CdjPlayer {
 /// turn a pick back into a player.
 std::vector<std::uint8_t>
 publishCdjFollow(MainWindow& window, const std::vector<CdjPlayer>& players, std::uint8_t follow);
+
+/// The CDJs' "network card" list. **Only what a join can use** (`timing::prolink::
+/// reachesDevices`): "automatic" first — the card the CDJs are heard on — then each of this
+/// machine's cards that could reach a CDJ, in the system's order; and the card picked, when it is
+/// not one of them, kept and said to be not on this computer (another computer's, from a shared
+/// settings file) or to reach no CDJ (the loopback). Never dropped for being missing: picking
+/// another is the operator's to do.
+struct CdjCardList {
+    std::vector<std::string> entries;
+    /// Beside each entry of the open list: "CDJs heard here" on the card they are heard on.
+    std::vector<std::string> asides;
+    /// What each entry picks: nothing for automatic.
+    std::vector<std::optional<timing::prolink::CardPick>> picks;
+    int index = 0;
+    bool operator==(const CdjCardList&) const = default;
+};
+
+/// `heardOn` is the address of the card the CDJs are heard on, 0 when none are.
+CdjCardList cdjCardList(const std::vector<timing::prolink::Interface>& cards,
+                        const std::optional<timing::prolink::CardPick>& pick,
+                        std::uint32_t heardOn);
+/// The list's entries and asides, when `entriesToo`, and which is picked.
+void publishCdjCards(MainWindow& window, const CdjCardList& list, bool entriesToo);
 
 /// How far the settings above can be dragged, from the constants the caller also clamps
 /// against — so a slider cannot offer a value the controller would refuse. Once, at

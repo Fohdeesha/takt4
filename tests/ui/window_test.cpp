@@ -10,6 +10,7 @@
 #include "core/engine/live_tracker.hpp"
 #include "core/fixtures/fixture_library.hpp"
 #include "core/fixtures/import.hpp"
+#include "core/io/utf8.hpp"
 #include "core/io/wav_file.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/output_target.hpp"
@@ -7041,7 +7042,6 @@ TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]
     CHECK(trouble == "2 rule messages \xE2\x80\x94 reached no output");
 }
 
-
 TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
     // an earlier review. At 125 % a 1920 x 1080 screen with a 40-pixel taskbar has a work area of
     // 1536 x 832 logical pixels, and the main window asked for 934: its status bar and PANIC
@@ -9484,8 +9484,9 @@ TEST_CASE("the CDJs are picked with the pointer: the follow list fills with the 
     CHECK(std::string(*choices->row_data(0)) == "tempo master");
     CHECK(std::string(*choices->row_data(1)) == "player 2 \xC2\xB7 CDJ-3000");
     CHECK(std::string(controller.window().get_timing_reading()) == "1 player, 1 mixer heard");
+    // Automatic, and the card they are heard on named, as what START joins on.
     CHECK(std::string(controller.window().get_timing_network()) ==
-          "the card the CDJs are heard on, at START");
+          "loopback \xC2\xB7 127.0.0.1, at START");
 
     // The row: timing, from, the picker, follow, the follow picker, and the reading.
     const auto row = inputsRow(controller, 73, y);
@@ -9717,6 +9718,9 @@ TEST_CASE("the CDJs keep a latency of their own, and whom to follow and the card
     saved.machine.timingSource = std::string(takt4::settings::kTimingProLink);
     saved.machine.proLinkFollow = 4;
     saved.machine.proLinkInterface = "169.254.30.1";
+    // As a hand might write them: kept as the window writes them.
+    saved.machine.proLinkInterfaceMac = "74-5E-1C-00-00-09";
+    saved.machine.proLinkInterfaceName = "DJ\nLAN";
     saved.preset.timingLatency.link = -0.010;
     saved.preset.timingLatency.proLink = 0.022;
     WindowController controller(tracker, saved);
@@ -9730,6 +9734,16 @@ TEST_CASE("the CDJs keep a latency of their own, and whom to follow and the card
     CHECK(out.machine.timingSource == "prolink");
     CHECK(out.machine.proLinkFollow == 4);
     CHECK(out.machine.proLinkInterface == "169.254.30.1");
+    CHECK(out.machine.proLinkInterfaceMac == "74:5e:1c:00:00:09");
+    CHECK(out.machine.proLinkInterfaceName == "DJ LAN");
+    // The card is not on this computer: kept, picked, and said to be missing.
+    controller.tick();
+    const auto cards = controller.window().get_cdj_card_choices();
+    REQUIRE(cards->row_count() >= 2);
+    const int picked = controller.window().get_cdj_card_index();
+    REQUIRE(picked == static_cast<int>(cards->row_count()) - 1);
+    CHECK(std::string(*cards->row_data(static_cast<std::size_t>(picked))) ==
+          "not on this computer: DJ LAN \xC2\xB7 169.254.30.1");
     // Player 4 is not on any network here: kept on the list, said not to be heard.
     controller.tick();
     const auto choices = controller.window().get_cdj_follow_choices();
@@ -9757,7 +9771,7 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     CHECK(view.shortName == "CDJ");
     CHECK(view.beatsPerBar == 4);
     CHECK(view.reading == "no CDJs heard on this network yet");
-    CHECK(view.network == "picked when a CDJ is heard");
+    CHECK(view.network == "the card a CDJ is first heard on, at START");
     CHECK_FALSE(view.waiting);
     facts.cdjPlayers = 3;
     facts.cdjMixers = 1;
@@ -9771,10 +9785,23 @@ TEST_CASE("what the window says about the CDJs, in each state they can be in", "
     facts.running = true;
     CHECK(describeTiming(facts).network == "the card the CDJs are heard on");
     facts.running = false;
-    // A card picked in the settings file: seen, where it was not anywhere.
-    facts.cdjSavedCard = "169.254.20.7";
-    CHECK(describeTiming(facts).network == "the card on 169.254.20.7, from the settings file");
-    facts.cdjSavedCard.clear();
+    // Automatic, and the card they are heard on known: named, as what START joins on.
+    facts.cdjHeardOn = "Ethernet 2 \xC2\xB7 169.254.20.7";
+    CHECK(describeTiming(facts).network == "Ethernet 2 \xC2\xB7 169.254.20.7, at START");
+    // A card picked, and here: the picker says it, and nothing is read after it.
+    facts.cdjPicked = "Ethernet 2 \xC2\xB7 169.254.20.7";
+    CHECK(describeTiming(facts).network.empty());
+    // A card picked on another computer: what is joined instead, stopped and running.
+    facts.cdjPicked = "DJ LAN \xC2\xB7 10.9.9.9";
+    facts.cdjPickMissing = true;
+    CHECK(describeTiming(facts).network == "instead: Ethernet 2 \xC2\xB7 169.254.20.7, at START");
+    facts.running = true;
+    CHECK(describeTiming(facts).network == "instead: Ethernet 2 \xC2\xB7 169.254.20.7");
+    facts.cdjHeardOn.clear();
+    CHECK(describeTiming(facts).network == "instead: the card the CDJs are heard on");
+    facts.running = false;
+    facts.cdjPicked.clear();
+    facts.cdjPickMissing = false;
     facts.cdjProblem = "cannot listen for CDJs: port 50000 is in use by another program";
     view = describeTiming(facts);
     // A few words on the row, the whole of it on a line of its own under the rows.
@@ -10591,18 +10618,566 @@ TEST_CASE("Link's row says what the follower is doing: peers heard and being joi
     CHECK(view.reading == "no peers \xE2\x80\x94 coasting at 127.98 BPM");
 }
 
-TEST_CASE("the CDJs' network card picked in the settings file is said while stopped",
-          "[ui][follow][prolink]") {
-    // A card can only be picked in the file (or by IMPORT), and was shown nowhere: the row said
-    // "picked when a CDJ is heard" whatever the file asked for.
+namespace {
+
+/// The CDJs' second row on a render of the window as it is now — "network card", the card picker,
+/// the reading after it, the note — and the picker's run: the first wider than a label.
+std::pair<int, int> cdjCardPicker(WindowController& controller, int& y) {
+    const auto row = inputsRow(controller, 117, y);
+    INFO("the CDJs' second row: " << spans(row));
+    for (const auto& run : row) {
+        if (run.second - run.first >= 110) {
+            return run;
+        }
+    }
+    FAIL("no card picker on the CDJs' second row");
+    return {};
+}
+
+constexpr takt4::timing::prolink::Mac kSecondCardMac{0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+
+/// The machine's cards, as a test has them: the loopback the simulated CDJs are heard on, and a
+/// second card on the same network, at 127.0.0.3.
+std::vector<takt4::timing::prolink::Interface> twoCards() {
+    namespace peer = takt4::testing::prolink_peer;
+    std::vector<takt4::timing::prolink::Interface> cards = peer::loopbackCard();
+    takt4::timing::prolink::Interface second = cards[0];
+    second.name = "second";
+    second.ip = peer::kMoved;
+    second.mac = kSecondCardMac;
+    cards.push_back(second);
+    return cards;
+}
+
+/// Whether a string handed to the window is one it can show: UTF-8, and nothing that breaks a line
+/// or reorders the text around it.
+bool fitToShow(const std::string& text) {
+    if (!takt4::io::isValidUtf8(text)) {
+        return false;
+    }
+    for (const char c : text) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (byte < 0x20 || byte == 0x7f) {
+            return false;
+        }
+    }
+    for (const char* hidden : {"\xE2\x80\xAE", "\xE2\x80\xAD", "\xE2\x81\xA6", "\xE2\x81\xA9",
+                               "\xE2\x80\x8F", "\xE2\x80\xA8", "\xC2\x85"}) {
+        if (text.find(hidden) != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("the CDJs' card list offers only cards that can reach a CDJ, marks where they are heard, "
+          "and keeps a card picked that is not one of those, saying why",
+          "[ui][prolink]") {
+    using takt4::testing::ipv4;
+    using takt4::timing::prolink::CardPick;
+    using takt4::timing::prolink::Interface;
+    using takt4::timing::prolink::Mac;
+    using takt4::ui::cdjCardList;
+    const auto card = [](const char* name, std::uint32_t ip, std::uint32_t mask, Mac mac,
+                         std::uint32_t index) {
+        Interface made;
+        made.name = name;
+        made.ip = ip;
+        made.mask = mask;
+        made.mac = mac;
+        made.index = index;
+        return made;
+    };
+    const Mac cableMac{0x00, 0x1b, 0x21, 0x3a, 0x4c, 0x5d};
+    const Mac wifiMac{0x3c, 0x22, 0xfb, 0x01, 0x02, 0x03};
+    Interface loopback =
+        card("Loopback Pseudo-Interface 1", ipv4(127, 0, 0, 1), 0xff000000u, {}, 1);
+    loopback.loopback = true;
+    const Interface cable = card("Ethernet 2", ipv4(169, 254, 20, 7), 0xffff0000u, cableMac, 12);
+    const Interface vpn = card("WireGuard", ipv4(10, 64, 0, 2), 0xffffffffu, {}, 30);
+    const Interface wifi = card("Wi-Fi", ipv4(192, 168, 1, 23), 0xffffff00u, wifiMac, 7);
+    const std::vector<Interface> cards{loopback, cable, vpn, wifi};
+    const std::string dot = " \xC2\xB7 ";
+
+    // Automatic, the CDJs heard on the cable: the cable and the Wi-Fi offered, the loopback and a
+    // network of one address not, and the cable marked.
+    auto list = cdjCardList(cards, std::nullopt, cable.ip);
+    CHECK(list.entries == std::vector<std::string>{"automatic", "Ethernet 2" + dot + "169.254.20.7",
+                                                   "Wi-Fi" + dot + "192.168.1.23"});
+    CHECK(list.asides ==
+          std::vector<std::string>{"the card the CDJs are heard on", "CDJs heard here", ""});
+    CHECK(list.index == 0);
+    REQUIRE(list.picks.size() == 3);
+    CHECK_FALSE(list.picks[0].has_value());
+    CHECK(list.picks[1] == CardPick{cable.ip, cableMac, "Ethernet 2"});
+    // Nothing heard: nothing marked.
+    CHECK(cdjCardList(cards, std::nullopt, 0).asides[1].empty());
+
+    // A card picked: its own line.
+    CHECK(cdjCardList(cards, CardPick{wifi.ip, wifiMac, "Wi-Fi"}, cable.ip).index == 2);
+    // The loopback, picked by hand in a file: kept, and said to reach no CDJ — first.
+    list = cdjCardList(cards, CardPick{loopback.ip, {}, ""}, cable.ip);
+    CHECK(list.entries.back() == "reaches no CDJ: Loopback Pseudo-Interface 1" + dot + "127.0.0.1");
+    CHECK(list.index == 3);
+    CHECK(list.picks.back() == CardPick{loopback.ip, {}, ""});
+    // Another computer's card: kept as it was picked, said not to be here.
+    const CardPick elsewhere{ipv4(10, 9, 9, 9), {0x00, 0x0e, 0xc6, 0x11, 0x22, 0x33}, "DJ LAN"};
+    list = cdjCardList(cards, elsewhere, cable.ip);
+    CHECK(list.entries.back() == "not on this computer: DJ LAN" + dot + "10.9.9.9");
+    CHECK(list.index == 3);
+    CHECK(list.picks.back() == elsewhere);
+
+    // The cable on a new address: found by its hardware address — its own line lit, no other added.
+    std::vector<Interface> moved = cards;
+    moved[1].ip = ipv4(169, 254, 99, 3);
+    list = cdjCardList(moved, CardPick{cable.ip, cableMac, "Ethernet 2"}, 0);
+    REQUIRE(list.entries.size() == 3);
+    CHECK(list.entries[static_cast<std::size_t>(list.index)] ==
+          "Ethernet 2" + dot + "169.254.99.3");
+
+    // Two cards on one address: the one picked by its hardware address is the one lit, as it is
+    // the one a join takes — not the first with the address.
+    Interface twin = wifi;
+    twin.name = "USB LAN";
+    twin.mac = {0x00, 0x24, 0x9b, 0x00, 0x00, 0x05};
+    twin.index = 15;
+    // Either of them, wherever it is listed.
+    list = cdjCardList({wifi, twin}, CardPick{wifi.ip, twin.mac, "USB LAN"}, 0);
+    CHECK(list.entries[static_cast<std::size_t>(list.index)] == "USB LAN" + dot + "192.168.1.23");
+    list = cdjCardList({wifi, twin}, CardPick{wifi.ip, wifiMac, "Wi-Fi"}, 0);
+    CHECK(list.entries[static_cast<std::size_t>(list.index)] == "Wi-Fi" + dot + "192.168.1.23");
+}
+
+TEST_CASE("the CDJs' network card is picked with the pointer from this machine's cards, saved with "
+          "the desk, and the one START joins on; locked while running; automatic again by the keys",
+          "[ui][follow][prolink][slow]") {
+    namespace peer = takt4::testing::prolink_peer;
+    using takt4::timing::prolink::CardPick;
+    using takt4::timing::prolink::VirtualPlayer;
+    if (!peer::canUseSecondLoopbackAddress() || !peer::canUseThirdLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2 or 127.0.0.3");
+    }
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    config.interfaces = twoCards;
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    controller.pickTiming(3);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    const takt4::tests::NothingReal nothingReal;
+
+    // Automatic, the CDJs heard on the loopback: the list names both cards, and marks where they
+    // are heard; the reading after the box says which START would join on.
+    waitUntil(controller, [&] {
+        return std::string(controller.window().get_timing_network()) ==
+               "loopback \xC2\xB7 127.0.0.1, at START";
+    });
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "loopback \xC2\xB7 127.0.0.1, at START");
+    const auto choices = controller.window().get_cdj_card_choices();
+    REQUIRE(choices->row_count() == 3);
+    CHECK(std::string(*choices->row_data(0)) == "automatic");
+    CHECK(std::string(*choices->row_data(1)) == "loopback \xC2\xB7 127.0.0.1");
+    CHECK(std::string(*choices->row_data(2)) == "second \xC2\xB7 127.0.0.3");
+    const auto asides = controller.window().get_cdj_card_asides();
+    REQUIRE(asides->row_count() == 3);
+    CHECK(std::string(*asides->row_data(1)) == "CDJs heard here");
+    CHECK(std::string(*asides->row_data(2)).empty());
+    CHECK(controller.window().get_cdj_card_index() == 0);
+
+    // The second card's line of the open list, clicked: found by probing outward from the box,
+    // since where a popup opens is Slint's to say. A probe that misses closes the list and sets
+    // off nothing under it, so the list is opened again for each; one that picks another card is
+    // put back.
+    int y = 0;
+    const auto box = cdjCardPicker(controller, y);
+    const auto clickLine = [&](int wanted) {
+        for (int d = 21; d < 700; d += 3) {
+            for (const int probe : {y + d, y - d}) {
+                if (probe < 100 || probe >= 1480 - 130) {
+                    continue;
+                }
+                if (!controller.window().get_cdj_card_open()) {
+                    clickAt(window, middleOf(box), static_cast<float>(y));
+                    settle();
+                }
+                const int before = controller.window().get_cdj_card_index();
+                const std::optional<CardPick> pickBefore = controller.cdjCard();
+                clickAt(window, middleOf(box), static_cast<float>(probe));
+                settle();
+                const int after = controller.window().get_cdj_card_index();
+                if (after != before && after == wanted) {
+                    return true;
+                }
+                if (after != before) {
+                    controller.setCdjCard(pickBefore);
+                    settle();
+                }
+            }
+        }
+        return false;
+    };
+    REQUIRE(clickLine(2));
+    settle();
+    CHECK_FALSE(controller.window().get_cdj_card_open());
+    REQUIRE(controller.cdjCard().has_value());
+    CHECK(*controller.cdjCard() == CardPick{peer::kMoved, kSecondCardMac, "second"});
+    const takt4::settings::MachineSettings saved = controller.currentSettings().machine;
+    CHECK(saved.proLinkInterface == "127.0.0.3");
+    CHECK(saved.proLinkInterfaceMac == "02:00:00:00:00:03");
+    CHECK(saved.proLinkInterfaceName == "second");
+    // The box says which card: nothing to read after it.
+    waitUntil(controller,
+              [&] { return std::string(controller.window().get_timing_network()).empty(); });
+    CHECK(std::string(controller.window().get_timing_network()).empty());
+    CHECK(controller.window().get_cdj_card_index() == 2);
+
+    // START joins on the card picked, though the CDJs are heard on the other.
+    controller.toggleRun();
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined;
+    });
+    REQUIRE(controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined);
+    CHECK(controller.cdjNetwork().snapshot().interfaceIp == peer::kMoved);
+    settle();
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "second \xC2\xB7 127.0.0.3 \xC2\xB7 takt4 is player 7");
+
+    // Running, the box is locked: a click opens nothing, and a pick made another way is refused
+    // and said.
+    const auto locked = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(locked), static_cast<float>(y));
+    settle();
+    CHECK_FALSE(controller.window().get_cdj_card_open());
+    controller.pickCdjCard(0);
+    settle();
+    REQUIRE(controller.cdjCard().has_value());
+    CHECK(controller.cdjCard()->ip == peer::kMoved);
+    CHECK(controller.window().get_cdj_card_index() == 2);
+    CHECK(std::string(controller.window().get_status()).rfind("Stop first", 0) == 0);
+    CHECK(controller.cdjNetwork().snapshot().interfaceIp == peer::kMoved);
+
+    // Stopped, automatic picked again with the keys: two lines up from the card picked. The
+    // network seen to have left first, so the join waited for below is the next run's.
+    controller.toggleRun();
+    waitUntil(controller, [&] {
+        return !controller.followed().running() &&
+               controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Listening;
+    });
+    REQUIRE_FALSE(controller.followed().running());
+    REQUIRE(controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Listening);
+    const auto stopped = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(stopped), static_cast<float>(y));
+    settle();
+    REQUIRE(controller.window().get_cdj_card_open());
+    press(window, kUp);
+    press(window, kUp);
+    press(window, "\n");
+    settle();
+    CHECK_FALSE(controller.cdjCard().has_value());
+    CHECK(controller.currentSettings().machine.proLinkInterface.empty());
+    CHECK(controller.currentSettings().machine.proLinkInterfaceMac.empty());
+    CHECK(controller.currentSettings().machine.proLinkInterfaceName.empty());
+    // And START joins where the CDJs are heard.
+    controller.toggleRun();
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined;
+    });
+    CHECK(controller.cdjNetwork().snapshot().interfaceIp == peer::kHere);
+    controller.toggleRun();
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+    rig.stop();
+    nothingReal.check();
+}
+
+TEST_CASE("a card picked on another computer is kept on the card list, said not to be here, and "
+          "START joins on the card the CDJs are heard on instead, saying so; picking another "
+          "drops it",
+          "[ui][follow][prolink][slow]") {
+    // A settings file beside a takt4 on a shared drive is every computer's that runs it: the card
+    // one of them picked is not on the next, and is still on the one it was picked on.
+    namespace peer = takt4::testing::prolink_peer;
+    using takt4::timing::prolink::VirtualPlayer;
+    if (!peer::canUseSecondLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2");
+    }
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
-    saved.machine.proLinkInterface = "169.254.20.7";
+    saved.machine.proLinkInterface = "10.9.9.9";
+    saved.machine.proLinkInterfaceMac = "00:0e:c6:11:22:33";
+    saved.machine.proLinkInterfaceName = "DJ LAN";
     WindowController controller(tracker, saved);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    const takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
     controller.pickTiming(3);
-    controller.tick();
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+
+    waitUntil(controller, [&] {
+        return std::string(controller.window().get_timing_network()) ==
+               "instead: loopback \xC2\xB7 127.0.0.1, at START";
+    });
     CHECK(std::string(controller.window().get_timing_network()) ==
-          "the card on 169.254.20.7, from the settings file");
+          "instead: loopback \xC2\xB7 127.0.0.1, at START");
+    const auto choices = controller.window().get_cdj_card_choices();
+    REQUIRE(choices->row_count() == 3);
+    CHECK(std::string(*choices->row_data(1)) == "loopback \xC2\xB7 127.0.0.1");
+    CHECK(std::string(*choices->row_data(2)) == "not on this computer: DJ LAN \xC2\xB7 10.9.9.9");
+    CHECK(controller.window().get_cdj_card_index() == 2);
+    // Kept as it was, for the computer it is on.
+    CHECK(controller.currentSettings().machine.proLinkInterface == "10.9.9.9");
+    CHECK(controller.currentSettings().machine.proLinkInterfaceMac == "00:0e:c6:11:22:33");
+    CHECK(controller.currentSettings().machine.proLinkInterfaceName == "DJ LAN");
+
+    // START: joined where they are heard, and said so on the row.
+    controller.toggleRun();
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined;
+    });
+    REQUIRE(controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined);
+    CHECK(controller.cdjNetwork().snapshot().interfaceIp == peer::kHere);
+    // The window's next round, which reads what the network now says: a wait looks before it
+    // ticks, so the round it ended on was the one before the join.
+    settle();
+    CHECK(std::string(controller.window().get_timing_note()) ==
+          "the card picked for the CDJs, DJ LAN \xC2\xB7 10.9.9.9, is not on this computer "
+          "\xE2\x80\x94 joined on loopback \xC2\xB7 127.0.0.1");
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          "loopback \xC2\xB7 127.0.0.1 \xC2\xB7 takt4 is player 7");
+    CHECK(controller.currentSettings().machine.proLinkInterface == "10.9.9.9");
+    controller.toggleRun();
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+
+    // The loopback picked with the keys, one line up: the other computer's card drops off the
+    // list once it has closed.
+    int y = 0;
+    const auto box = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(box), static_cast<float>(y));
+    settle();
+    REQUIRE(controller.window().get_cdj_card_open());
+    press(window, kUp);
+    press(window, "\n");
+    settle();
+    REQUIRE(controller.cdjCard().has_value());
+    CHECK(controller.cdjCard()->ip == peer::kHere);
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_card_choices()->row_count() == 2; });
+    CHECK(controller.window().get_cdj_card_choices()->row_count() == 2);
+    CHECK(controller.window().get_cdj_card_index() == 1);
+    CHECK(controller.currentSettings().machine.proLinkInterface == "127.0.0.1");
+    rig.stop();
+}
+
+TEST_CASE(
+    "the CDJs' card list is not rebuilt under the pointer while it is open: a card plugged in "
+    "is listed once it closes",
+    "[ui][follow][prolink]") {
+    namespace peer = takt4::testing::prolink_peer;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.setControlRetrySeconds(0.05);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto cards = std::make_shared<peer::Cards>(peer::loopbackCard());
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(peer::allowedPort(), [&controller] { return linkNow(controller); });
+    config.interfaces = [cards] { return cards->get(); };
+    controller.useCdjNetworkForTests(config);
+    controller.pickTiming(3);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_card_choices()->row_count() == 2; });
+    REQUIRE(controller.window().get_cdj_card_choices()->row_count() == 2);
+
+    int y = 0;
+    const auto box = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(box), static_cast<float>(y));
+    settle();
+    REQUIRE(controller.window().get_cdj_card_open());
+    const auto before = controller.window().get_cdj_card_choices();
+
+    // A USB card plugged in while the list is open, and listed — many times over at this rate.
+    takt4::timing::prolink::Interface usb;
+    usb.name = "USB LAN";
+    usb.ip = takt4::testing::ipv4(10, 0, 0, 5);
+    usb.mask = 0xff000000u;
+    usb.broadcast = takt4::testing::ipv4(10, 255, 255, 255);
+    usb.mac = {0x00, 0x24, 0x9b, 0x00, 0x00, 0x05};
+    std::vector<takt4::timing::prolink::Interface> plugged = peer::loopbackCard();
+    plugged.push_back(usb);
+    cards->set(plugged);
+    for (int i = 0; i < 30; ++i) {
+        settle();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    REQUIRE(controller.window().get_cdj_card_open());
+    CHECK(controller.window().get_cdj_card_choices().get() == before.get());
+    CHECK(controller.window().get_cdj_card_choices()->row_count() == 2);
+
+    // Closed, the next redraw writes it.
+    press(window, kEscape);
+    settle();
+    REQUIRE_FALSE(controller.window().get_cdj_card_open());
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_card_choices()->row_count() == 3; });
+    REQUIRE(controller.window().get_cdj_card_choices()->row_count() == 3);
+    CHECK(std::string(*controller.window().get_cdj_card_choices()->row_data(2)) ==
+          "USB LAN \xC2\xB7 10.0.0.5");
+    CHECK(controller.window().get_cdj_card_index() == 0);
+}
+
+TEST_CASE("cards named anything the system allows — bytes that are not UTF-8, line breaks, a "
+          "right-to-left override, hundreds of characters — are listed, picked, saved and joined "
+          "on without harm",
+          "[ui][follow][prolink][slow]") {
+    // A byte that is not UTF-8, handed to the window, aborts the process: a test that gets to its
+    // end has shown every one of these.
+    namespace peer = takt4::testing::prolink_peer;
+    using takt4::timing::prolink::VirtualPlayer;
+    if (!peer::canUseSecondLoopbackAddress() || !peer::canUseThirdLoopbackAddress()) {
+        SKIP("this system has no 127.0.0.2 or 127.0.0.3");
+    }
+    std::string euros;
+    for (int i = 0; i < 300; ++i) {
+        euros += "\xE2\x82\xAC";
+    }
+    const auto strange = [euros] {
+        std::vector<takt4::timing::prolink::Interface> cards = twoCards();
+        cards[0].name = std::string("eth\xff\xfe\r\n\xE2\x80\xAE"
+                                    "NAL JD");
+        cards[1].name = euros;
+        return cards;
+    };
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    peer::SimulatedRig rig;
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(rig.announcePort(), [&controller] { return linkNow(controller); });
+    config.interfaces = strange;
+    controller.useCdjNetworkForTests(config);
+    rig.start(config);
+    controller.pickTiming(3);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+
+    const std::string first = "eth\xEF\xBF\xBD\xEF\xBF\xBD NAL JD";
+    std::string cut;
+    for (std::size_t i = 0; i + 1 < takt4::timing::prolink::kCardNameLength; ++i) {
+        cut += "\xE2\x82\xAC";
+    }
+    cut += "\xE2\x80\xA6";
+    waitUntil(controller, [&] {
+        return std::string(controller.window().get_timing_network()) ==
+               first + " \xC2\xB7 127.0.0.1, at START";
+    });
+    CHECK(std::string(controller.window().get_timing_network()) ==
+          first + " \xC2\xB7 127.0.0.1, at START");
+    const auto choices = controller.window().get_cdj_card_choices();
+    REQUIRE(choices->row_count() == 3);
+    CHECK(std::string(*choices->row_data(1)) == first + " \xC2\xB7 127.0.0.1");
+    CHECK(std::string(*choices->row_data(2)) == cut + " \xC2\xB7 127.0.0.3");
+    for (std::size_t i = 0; i < choices->row_count(); ++i) {
+        INFO("entry " << i);
+        CHECK(fitToShow(std::string(*choices->row_data(i))));
+    }
+
+    // The box at the window's narrowest: no wider than it may be, the long name cut inside it.
+    int y = 0;
+    const auto box = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(box), static_cast<float>(y));
+    settle();
+    REQUIRE(controller.window().get_cdj_card_open());
+    press(window, kDown);
+    press(window, kDown);
+    press(window, "\n");
+    settle();
+    REQUIRE(controller.cdjCard().has_value());
+    CHECK(controller.cdjCard()->name == cut);
+    const auto picked = cdjCardPicker(controller, y);
+    CHECK(picked.second - picked.first + 1 >= 120);
+    CHECK(picked.second - picked.first + 1 <= 262);
+
+    // Saved and read back: the same card, the name as it was made fit.
+    const takt4::test::TempDir dir;
+    const std::filesystem::path file = dir.path() / "settings.json";
+    REQUIRE(takt4::settings::save(controller.currentSettings(), file));
+    const takt4::settings::Settings back = takt4::settings::load(file);
+    CHECK(back.machine.proLinkInterface == "127.0.0.3");
+    CHECK(back.machine.proLinkInterfaceMac == "02:00:00:00:00:03");
+    CHECK(back.machine.proLinkInterfaceName == cut);
+
+    // Joined on it, and named on the row.
+    controller.toggleRun();
+    waitUntil(controller, [&] {
+        return controller.cdjNetwork().snapshot().phase == VirtualPlayer::Phase::Joined;
+    });
+    REQUIRE(controller.cdjNetwork().snapshot().interfaceIp == peer::kMoved);
+    settle();
+    const std::string joined(controller.window().get_timing_network());
+    CHECK(joined == cut + " \xC2\xB7 127.0.0.3 \xC2\xB7 takt4 is player 7");
+    CHECK(fitToShow(joined));
+    controller.toggleRun();
+    waitUntil(controller, [&] { return !controller.followed().running(); });
+    rig.stop();
+}
+
+TEST_CASE("an IMPORT naming a card picks it, here or not, and one naming none puts automatic back",
+          "[ui][follow][prolink][settings]") {
+    using takt4::timing::prolink::CardPick;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.pickTiming(3);
+    const takt4::test::TempDir dir;
+    takt4::settings::Settings other = controller.currentSettings();
+    other.machine.proLinkInterface = "10.9.9.9";
+    other.machine.proLinkInterfaceMac = "00:0e:c6:11:22:33";
+    other.machine.proLinkInterfaceName = "DJ LAN";
+    const std::filesystem::path file = dir.path() / "other.json";
+    REQUIRE(takt4::settings::save(other, file));
+    REQUIRE(controller.importFrom(file));
+    REQUIRE(controller.cdjCard().has_value());
+    CHECK(*controller.cdjCard() == CardPick{takt4::testing::ipv4(10, 9, 9, 9),
+                                            {0x00, 0x0e, 0xc6, 0x11, 0x22, 0x33},
+                                            "DJ LAN"});
+    controller.tick();
+    slint::platform::update_timers_and_animations();
+    const auto choices = controller.window().get_cdj_card_choices();
+    const int picked = controller.window().get_cdj_card_index();
+    REQUIRE(picked >= 1);
+    CHECK(std::string(*choices->row_data(static_cast<std::size_t>(picked))) ==
+          "not on this computer: DJ LAN \xC2\xB7 10.9.9.9");
+
+    other.machine.proLinkInterface.clear();
+    REQUIRE(takt4::settings::save(other, file));
+    REQUIRE(controller.importFrom(file));
+    CHECK_FALSE(controller.cdjCard().has_value());
+    controller.tick();
+    slint::platform::update_timers_and_animations();
+    CHECK(controller.window().get_cdj_card_index() == 0);
 }
 
 TEST_CASE("the folded inputs heading says what a followed source is waiting for, and calls the "
@@ -10724,6 +11299,88 @@ numbered(const char* address, std::initializer_list<std::string_view> words, std
 }
 
 } // namespace
+
+TEST_CASE("a show controller's change of source while the CDJs' lists are open holds neither list "
+          "back afterwards",
+          "[ui][follow][prolink][remote]") {
+    // Each list's box goes with the CDJs' rows, open or not, and never says it closed: its flag
+    // stayed set, and every later list was held back as if it were still open under the pointer.
+    namespace peer = takt4::testing::prolink_peer;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.setControlRetrySeconds(0.05);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto cards = std::make_shared<peer::Cards>(peer::loopbackCard());
+    takt4::timing::prolink::Network::Config config =
+        peer::testConfig(peer::allowedPort(), [&controller] { return linkNow(controller); });
+    config.interfaces = [cards] { return cards->get(); };
+    controller.useCdjNetworkForTests(config);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver showController;
+    controller.pickTiming(3);
+    REQUIRE(laidOutWithInputs(controller).size() == 7);
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_card_choices()->row_count() == 2; });
+    REQUIRE(controller.window().get_cdj_card_choices()->row_count() == 2);
+
+    // One list or the other held open.
+    int y = 0;
+    SECTION("the card list") {
+        const auto box = cdjCardPicker(controller, y);
+        clickAt(window, middleOf(box), static_cast<float>(y));
+        settle();
+        REQUIRE(controller.window().get_cdj_card_open());
+    }
+    SECTION("the follow list") {
+        const auto row = inputsRow(controller, 73, y);
+        INFO("timing row, the CDJs: " << spans(row));
+        REQUIRE(row.size() == 6);
+        clickAt(window, middleOf(row[4]), static_cast<float>(y));
+        settle();
+        REQUIRE(controller.window().get_cdj_follow_open());
+    }
+
+    // Away to the audio and back, over the wire — and the window drawn after each, as it is live:
+    // drawing is what takes the CDJs' rows, and an open list with them, away.
+    const auto draw = [&controller] { (void)takt4::tests::render(controller.window(), 800, 1480); };
+    CHECK(replyIn(ask(controller, showController, numbered("/takt4/ctl/source", {"audio"}, 1)))
+              .verdict == "ok");
+    settle();
+    draw();
+    CHECK(controller.timingIndex() == 0);
+    CHECK(replyIn(ask(controller, showController, numbered("/takt4/ctl/source", {"prolink"}, 2)))
+              .verdict == "ok");
+    settle();
+    draw();
+    REQUIRE(controller.timingIndex() == 3);
+    CHECK_FALSE(controller.window().get_cdj_card_open());
+    CHECK_FALSE(controller.window().get_cdj_follow_open());
+
+    // A card plugged in now is listed, with nobody opening or closing anything.
+    takt4::timing::prolink::Interface usb = peer::loopbackCard()[0];
+    usb.name = "USB LAN";
+    usb.ip = takt4::testing::ipv4(10, 0, 0, 5);
+    usb.mask = 0xff000000u;
+    usb.mac = {0x00, 0x24, 0x9b, 0x00, 0x00, 0x05};
+    std::vector<takt4::timing::prolink::Interface> plugged = peer::loopbackCard();
+    plugged.push_back(usb);
+    cards->set(plugged);
+    waitUntil(controller,
+              [&] { return controller.window().get_cdj_card_choices()->row_count() == 3; });
+    CHECK(controller.window().get_cdj_card_choices()->row_count() == 3);
+    // And the card list opens on the first click — nothing left open swallows it — and closes.
+    const auto again = cdjCardPicker(controller, y);
+    clickAt(window, middleOf(again), static_cast<float>(y));
+    settle();
+    CHECK(controller.window().get_cdj_card_open());
+    press(window, kEscape);
+    settle();
+    CHECK_FALSE(controller.window().get_cdj_card_open());
+}
 
 TEST_CASE("remote setup has a line of its own under the OSC row while listening, and a list of "
           "senders with a mistake in it changes nothing",

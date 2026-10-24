@@ -2,6 +2,7 @@
 
 #include "core/audio/hop_meter.hpp"
 #include "core/io/chars.hpp"
+#include "core/io/utf8.hpp"
 #include "core/output/midi_ports.hpp"
 #include "core/output/output_target.hpp"
 #include "core/settings/settings.hpp"
@@ -119,14 +120,19 @@ TimingView describeCdjs(const TimingFacts& facts, TimingView view) {
     // The CDJs count four to the bar, whatever the setting says.
     view.beatsPerBar = 4;
     const bool heard = facts.cdjPlayers + facts.cdjMixers > 0;
-    // "picked when a CDJ is heard" sat under "3 players, 1 mixer heard": once they are heard, the
-    // card is the one they are heard on, taken at START.
-    view.network = !facts.cdjInterface.empty() ? facts.cdjInterface
-                   : !facts.cdjSavedCard.empty()
-                       ? "the card on " + facts.cdjSavedCard + ", from the settings file"
-                   : !heard        ? std::string("picked when a CDJ is heard")
-                   : facts.running ? std::string("the card the CDJs are heard on")
-                                   : std::string("the card the CDJs are heard on, at START");
+    // After the card picker, as a reading: the card joined on; or, where the picker does not say
+    // which card START joins on — automatic, or a card not on this computer — the one it would.
+    if (!facts.cdjInterface.empty()) {
+        view.network = facts.cdjInterface;
+    } else if (!facts.cdjPicked.empty() && !facts.cdjPickMissing) {
+        view.network.clear();
+    } else {
+        const std::string card = !facts.cdjHeardOn.empty() ? facts.cdjHeardOn
+                                 : heard ? std::string("the card the CDJs are heard on")
+                                         : std::string("the card a CDJ is first heard on");
+        view.network = std::string(facts.cdjPickMissing ? "instead: " : "") + card +
+                       (facts.running ? "" : ", at START");
+    }
     // Not one datagram, from anything: on a DJ network with no router — which Windows calls
     // Public, and a firewall rule ticked for Private alone drops everything from — this is what a
     // blocked takt4 sees, and nothing on the row said why.
@@ -398,29 +404,34 @@ void readCdjFacts(const timing::prolink::Network::Snapshot& snapshot, TimingFact
     facts.cdjMaster = snapshot.master;
     facts.cdjFollowed = snapshot.followed;
     if (snapshot.interfaceIp != 0) {
-        facts.cdjInterface =
-            (snapshot.interfaceName.empty() ? std::string()
-                                            : snapshot.interfaceName + " \xC2\xB7 ") +
-            timing::prolink::addressText(snapshot.interfaceIp);
+        timing::prolink::Interface joined;
+        joined.name = snapshot.interfaceName;
+        joined.ip = snapshot.interfaceIp;
+        facts.cdjInterface = timing::prolink::cardText(joined);
     }
 }
 
 void publishTimingView(MainWindow& window, const TimingView& view) {
+    // **Through `io::validUtf8`, every one**: a card's name is whatever the system allows, a
+    // problem names the card, and one byte that is not UTF-8 aborts the window.
+    const auto shown = [](const std::string& text) {
+        return slint::SharedString(io::validUtf8(text));
+    };
     window.set_timing_index(view.index);
-    window.set_timing_name(slint::SharedString(view.name));
-    window.set_timing_short(slint::SharedString(view.shortName));
-    window.set_timing_reading(slint::SharedString(view.reading));
-    window.set_timing_detail(slint::SharedString(view.detail));
-    window.set_timing_note(slint::SharedString(view.note));
-    window.set_timing_problem(slint::SharedString(view.problem));
+    window.set_timing_name(shown(view.name));
+    window.set_timing_short(shown(view.shortName));
+    window.set_timing_reading(shown(view.reading));
+    window.set_timing_detail(shown(view.detail));
+    window.set_timing_note(shown(view.note));
+    window.set_timing_problem(shown(view.problem));
     window.set_timing_waiting(view.waiting);
     window.set_timing_wait_tone(static_cast<int>(view.wait));
-    window.set_timing_waiting_word(slint::SharedString(view.waitingWord));
+    window.set_timing_waiting_word(shown(view.waitingWord));
     window.set_timing_coasting(view.coasting);
     window.set_strip_beat(view.stripBeat);
     window.set_strip_ticks(view.stripTicks);
-    window.set_strip_label(slint::SharedString(view.stripLabel));
-    window.set_timing_network(slint::SharedString(view.network));
+    window.set_strip_label(shown(view.stripLabel));
+    window.set_timing_network(shown(view.network));
     window.set_timing_beats_per_bar(view.beatsPerBar);
     window.set_clock_obey(view.obey);
     window.set_timing_ready(view.ready);
@@ -478,6 +489,60 @@ publishCdjFollow(MainWindow& window, const std::vector<CdjPlayer>& players, std:
     window.set_cdj_follow_choices(choices);
     window.set_cdj_follow_index(picked);
     return numbers;
+}
+
+CdjCardList cdjCardList(const std::vector<timing::prolink::Interface>& cards,
+                        const std::optional<timing::prolink::CardPick>& pick,
+                        std::uint32_t heardOn) {
+    namespace prolink = timing::prolink;
+    CdjCardList list;
+    list.entries.emplace_back("automatic");
+    list.asides.emplace_back("the card the CDJs are heard on");
+    list.picks.emplace_back(std::nullopt);
+    // The card picked, found as a join finds it: by its address, or on a new address by its
+    // hardware address.
+    const std::optional<prolink::Interface> found =
+        pick ? prolink::pickedCard(cards, *pick) : std::nullopt;
+    for (const prolink::Interface& card : cards) {
+        if (!prolink::reachesDevices(card)) {
+            continue;
+        }
+        list.entries.push_back(prolink::cardText(card));
+        list.asides.emplace_back(heardOn != 0 && card.ip == heardOn ? "CDJs heard here" : "");
+        list.picks.emplace_back(prolink::CardPick{card.ip, card.mac, prolink::cardName(card.name)});
+        // This very card, not the first with its address: two cards can have one, and the one
+        // picked by its hardware address is the one the join takes.
+        if (found && found->ip == card.ip && found->mac == card.mac && found->index == card.index &&
+            found->name == card.name) {
+            list.index = static_cast<int>(list.entries.size()) - 1;
+        }
+    }
+    // Picked and not on the list: kept on it, as picked, saying why it is not one of the others —
+    // first, so that the box, which cuts what does not fit, shows it.
+    if (pick && list.index == 0) {
+        list.entries.push_back(found ? "reaches no CDJ: " + prolink::cardText(*found)
+                                     : "not on this computer: " + prolink::pickText(*pick));
+        list.asides.emplace_back();
+        list.picks.emplace_back(*pick);
+        list.index = static_cast<int>(list.entries.size()) - 1;
+    }
+    return list;
+}
+
+void publishCdjCards(MainWindow& window, const CdjCardList& list, bool entriesToo) {
+    if (entriesToo) {
+        auto entries = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        auto asides = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        for (const std::string& entry : list.entries) {
+            entries->push_back(slint::SharedString(io::validUtf8(entry)));
+        }
+        for (const std::string& aside : list.asides) {
+            asides->push_back(slint::SharedString(io::validUtf8(aside)));
+        }
+        window.set_cdj_card_choices(entries);
+        window.set_cdj_card_asides(asides);
+    }
+    window.set_cdj_card_index(list.index);
 }
 
 void publishControlLimits(MainWindow& window) {

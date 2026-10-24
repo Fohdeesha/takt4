@@ -3,8 +3,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 /// **Pro DJ Link's packets**, read and written — the UDP protocol Pioneer's players and mixers
 /// speak to each other, as Deep Symmetry's DJ Link packet analysis describes it
@@ -182,5 +184,11 @@ Built buildNumberRequest(const std::string& name, std::uint32_t ip, const Mac& m
 
 /// The name as text, for a screen: the printable ASCII of it, the zeros dropped.
 std::string nameText(const Name& name);
+
+/// A hardware address as the settings file keeps it: "74:5e:1c:00:00:02", lower case.
+std::string macText(const Mac& mac);
+/// The other way: six pairs of hex digits, each pair after the first behind a ':' or a '-', in
+/// either case. Nothing for anything else.
+std::optional<Mac> parseMac(std::string_view text);
 
 } // namespace takt4::timing::prolink
